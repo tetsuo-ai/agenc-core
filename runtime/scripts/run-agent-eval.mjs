@@ -11,6 +11,7 @@ import {
   observeRolloutRecord,
   readRolloutDelta,
 } from "./eval/session-metrics.mjs";
+import { trustWorkspace } from "./eval/workspace-trust.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -31,7 +32,9 @@ const schemaPath = path.join(
   "agent-eval-report.schema.json",
 );
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
-const OUTPUT_CAPTURE_LIMIT = 64 * 1024;
+// The agent command in --output-format json prints one result object that
+// carries every event of the run; 64 KiB truncated it and lost the token usage.
+const OUTPUT_CAPTURE_LIMIT = 8 * 1024 * 1024;
 
 function usage() {
   return [
@@ -47,6 +50,7 @@ function usage() {
     "  --config <path>         Model/config matrix JSON ({\"matrix\": [...]})",
     "  --executor <mode>       'real' (default) or 'mock' (scripted solution.sh)",
     "  --agent-command <cmd>   Default shell command for each task",
+    "  --setup-command <cmd>   Shell command run in each task workspace before the agent (repeatable; real executor only; same placeholders as --agent-command)",
     "  --benchmark <name>      Override manifest benchmark name",
     "  --run-id <id>           Override generated run id",
     "  --agent-name <name>     Agent name for report metadata (default: agenc)",
@@ -79,6 +83,7 @@ function parseArgs(argv) {
     executor: "real",
     keepWorkspaces: false,
     agentCommand: undefined,
+    setupCommands: [],
     benchmark: undefined,
     runId: undefined,
     agentName: "agenc",
@@ -129,6 +134,9 @@ function parseArgs(argv) {
         break;
       case "--agent-command":
         parsed.agentCommand = readValue();
+        break;
+      case "--setup-command":
+        parsed.setupCommands.push(readValue());
         break;
       case "--benchmark":
         parsed.benchmark = readValue();
@@ -377,6 +385,7 @@ function runCommand(command, options) {
       shell: true,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      ...(options.env ? { env: options.env } : {}),
     });
     let stdout = "";
     let stderr = "";
@@ -560,7 +569,15 @@ async function runTaskInWorkspace(task, manifest, args, workspace) {
   const riskFlags = new Set(task.riskFlags);
   const rawResults = [];
 
-  for (const setupCommand of task.setupCommands) {
+  if (args.executor !== "mock") {
+    // Print mode has no TTY, so the trust prompt cannot run; trust the
+    // workspace inside the isolated home before anything executes there.
+    trustWorkspace({ agencHome: requireIsolatedHome(process.env), workspace: cwd });
+  }
+  const setupCommands = args.executor === "mock"
+    ? task.setupCommands
+    : [...(args.setupCommands ?? []), ...task.setupCommands];
+  for (const setupCommand of setupCommands) {
     const rendered = renderCommand(setupCommand, task, cwd, taskDir);
     const result = await runCommand(rendered, { cwd, timeoutMs });
     commands.push(commandReport(result));
@@ -610,6 +627,11 @@ async function runTaskInWorkspace(task, manifest, args, workspace) {
   agentResult = await runCommand(renderCommand(agentCommand, task, cwd, taskDir), {
     cwd,
     timeoutMs,
+    // The AgenC CLI lets AGENC_WORKSPACE take precedence over the invocation
+    // directory. The first real run inherited an operator's workspace from the
+    // shell and judged every task against that directory instead of its
+    // fixture. Pin the workspace to the task's own directory.
+    env: { ...process.env, AGENC_WORKSPACE: cwd },
   });
   commands.push(commandReport(agentResult));
   rawResults.push(agentResult);
@@ -675,9 +697,9 @@ function verifierStatus(verifiers) {
 }
 
 function sessionStatus(steps, verifiers) {
-  const all = [...steps.map((step) => step.status), verifierStatus(verifiers)];
-  if (all.includes("error")) return "error";
-  if (all.includes("failed")) return "failed";
+  const all = new Set([...steps.map((step) => step.status), verifierStatus(verifiers)]);
+  if (all.has("error")) return "error";
+  if (all.has("failed")) return "failed";
   return "passed";
 }
 
@@ -786,19 +808,144 @@ function requireIsolatedHome(env) {
  * tool-call, re-read, compaction and permission counters; the session rollout
  * feeds token counts, tool errors and compaction attempts after each step.
  */
+const DENY_APPROVALS = () => ({ behavior: "deny", reason: "eval runner denies interactive approvals" });
+
+function usageTokens(usage) {
+  if (!usage || typeof usage !== "object") return undefined;
+  const out = {};
+  if (Number.isFinite(usage.inputTokens)) out.input = usage.inputTokens;
+  if (Number.isFinite(usage.outputTokens)) out.output = usage.outputTokens;
+  if (Number.isFinite(usage.totalTokens)) out.total = usage.totalTokens;
+  return out;
+}
+
+function addTokens(tokens, stepTokens) {
+  if (!stepTokens) return;
+  tokens.input += stepTokens.input ?? 0;
+  tokens.output += stepTokens.output ?? 0;
+  tokens.total += stepTokens.total ?? (stepTokens.input ?? 0) + (stepTokens.output ?? 0);
+}
+
+function stopReasonOf(stepResult) {
+  return stepResult?.stopReason ? String(stepResult.stopReason) : undefined;
+}
+
+function stepOutcome({ step, stepResult, stepError, metrics, riskFlags }) {
+  if (stepError) {
+    riskFlags.add("agent_command_failed");
+    return {
+      exitCode: 1,
+      stopReason: stopReasonOf(stepResult),
+      notes: `step ${step.id}: ${stepError.message}`.slice(0, 1000),
+    };
+  }
+  // A turn the provider dropped after dispatch "completes" with an empty
+  // message and exit 0. That is not a pass: the prompt did no work.
+  const providerDropped = metrics.providerFailures > 0
+    && metrics.toolCalls === 0
+    && (stepResult?.finalMessage ?? "").trim().length === 0;
+  if (providerDropped) {
+    riskFlags.add("provider_call_failed");
+    riskFlags.add("agent_command_failed");
+    return {
+      exitCode: 1,
+      stopReason: "provider_failed",
+      notes: `step ${step.id}: the provider call failed after dispatch and the turn completed empty`,
+    };
+  }
+  const exitCode = stepResult?.exitCode ?? 1;
+  if (exitCode !== 0) riskFlags.add("agent_command_failed");
+  return { exitCode, stopReason: stopReasonOf(stepResult), notes: undefined };
+}
+
+async function promptStep({ session, task, step, metrics, timeoutMs, riskFlags }) {
+  const controller = new AbortController();
+  const stepTimeout = step.timeoutMs ?? timeoutMs;
+  const timer = setTimeout(
+    () => controller.abort(new Error(`step ${step.id} exceeded ${stepTimeout} ms`)),
+    stepTimeout,
+  );
+  try {
+    const run = session.prompt(step.prompt, {
+      includeUsage: true,
+      clientMessageId: `eval-${task.id}-${step.id}`,
+      signal: controller.signal,
+      onPermissionRequest: DENY_APPROVALS,
+    });
+    for await (const event of run) observePromptEvent(metrics, event);
+    return { stepResult: await run.result() };
+  } catch (error) {
+    if (controller.signal.aborted) riskFlags.add("agent_timeout");
+    return { stepError: error };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function createRolloutTracker({ client, session, agencHome, cwd, sinceMs, riskFlags }) {
+  let rolloutPath;
+  let offset = 0;
+  return {
+    get path() {
+      return rolloutPath;
+    },
+    async observe(metrics) {
+      rolloutPath ??= (await rolloutPathFromAgentLogs(client, session))
+        ?? findSessionRolloutForWorkspace(agencHome, cwd, sinceMs)
+        ?? findSessionRollout(agencHome, session.sessionId);
+      if (!rolloutPath) {
+        riskFlags.add("rollout_not_found");
+        return;
+      }
+      const delta = readRolloutDelta(rolloutPath, offset);
+      offset = delta.offset;
+      for (const record of delta.records) observeRolloutRecord(metrics, record);
+    },
+  };
+}
+
+async function runSessionStep({ session, rollout, task, step, cwd, taskDir, timeoutMs, rawResults, riskFlags, tokens }) {
+  const stepStarted = performance.now();
+  const metrics = createStepMetrics();
+  const { stepResult, stepError } = await promptStep({ session, task, step, metrics, timeoutMs, riskFlags });
+  await rollout.observe(metrics);
+  const stepTokens = usageTokens(stepResult?.usage);
+  addTokens(tokens, stepTokens);
+  const { exitCode, stopReason, notes } = stepOutcome({ step, stepResult, stepError, metrics, riskFlags });
+  const verifiers = exitCode === 0
+    ? await runStepVerifiers(step, task, cwd, taskDir, timeoutMs, rawResults, riskFlags)
+    : [];
+  return {
+    id: step.id,
+    status: exitCode !== 0 ? "error" : verifierStatus(verifiers),
+    durationMs: Math.round(performance.now() - stepStarted),
+    ...(stepTokens ? { tokens: stepTokens } : {}),
+    ...(stopReason ? { stopReason } : {}),
+    exitCode,
+    metrics: finalizeMetrics(metrics),
+    verifiers,
+    ...(notes ? { notes } : {}),
+  };
+}
+
+function describeSession(session, rolloutPath) {
+  if (!session) return "session was not created";
+  const rolloutNote = rolloutPath ? ` rollout ${path.basename(rolloutPath)}` : " (rollout not found)";
+  return `session ${session.sessionId}${rolloutNote}`;
+}
+
 async function runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted }) {
   const agencHome = requireIsolatedHome(process.env);
   const sdk = await loadSdk();
   const client = await sdk.connect({
     env: process.env,
     clientName: "agenc-eval",
-    onPermissionRequest: () => ({ behavior: "deny", reason: "eval runner denies interactive approvals" }),
+    onPermissionRequest: DENY_APPROVALS,
   });
   const steps = [];
   const tokens = { input: 0, output: 0, total: 0 };
   let session;
-  let rolloutPath;
-  let rolloutOffset = 0;
+  let rollout;
   // Rollouts written before this instant belong to earlier sessions in the home.
   const sessionStartedMs = Date.now() - 5000;
   try {
@@ -808,83 +955,13 @@ async function runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFla
       dangerouslyBypassApprovalsAndSandbox: true,
       metadata: { evalTaskId: task.id, evalRunner: "run-agent-eval" },
     });
+    rollout = createRolloutTracker({ client, session, agencHome, cwd, sinceMs: sessionStartedMs, riskFlags });
     for (const step of task.steps) {
-      const stepStarted = performance.now();
-      const metrics = createStepMetrics();
-      const controller = new AbortController();
-      const stepTimeout = step.timeoutMs ?? timeoutMs;
-      const timer = setTimeout(() => controller.abort(new Error(`step ${step.id} exceeded ${stepTimeout} ms`)), stepTimeout);
-      let stepResult;
-      let stepError;
-      try {
-        const run = session.prompt(step.prompt, {
-          includeUsage: true,
-          clientMessageId: `eval-${task.id}-${step.id}`,
-          signal: controller.signal,
-          onPermissionRequest: () => ({ behavior: "deny", reason: "eval runner denies interactive approvals" }),
-        });
-        for await (const event of run) observePromptEvent(metrics, event);
-        stepResult = await run.result();
-      } catch (error) {
-        stepError = error;
-        if (controller.signal.aborted) riskFlags.add("agent_timeout");
-      } finally {
-        clearTimeout(timer);
-      }
-      rolloutPath ??= (await rolloutPathFromAgentLogs(client, session))
-        ?? findSessionRolloutForWorkspace(agencHome, cwd, sessionStartedMs)
-        ?? findSessionRollout(agencHome, session.sessionId);
-      if (rolloutPath) {
-        const delta = readRolloutDelta(rolloutPath, rolloutOffset);
-        rolloutOffset = delta.offset;
-        for (const record of delta.records) observeRolloutRecord(metrics, record);
-      } else {
-        riskFlags.add("rollout_not_found");
-      }
-      const usage = stepResult?.usage && typeof stepResult.usage === "object" ? stepResult.usage : undefined;
-      const stepTokens = usage
-        ? {
-            ...(Number.isFinite(usage.inputTokens) ? { input: usage.inputTokens } : {}),
-            ...(Number.isFinite(usage.outputTokens) ? { output: usage.outputTokens } : {}),
-            ...(Number.isFinite(usage.totalTokens) ? { total: usage.totalTokens } : {}),
-          }
-        : undefined;
-      if (stepTokens) {
-        tokens.input += stepTokens.input ?? 0;
-        tokens.output += stepTokens.output ?? 0;
-        tokens.total += stepTokens.total ?? (stepTokens.input ?? 0) + (stepTokens.output ?? 0);
-      }
-      // A turn the provider dropped after dispatch "completes" with an empty
-      // message and exit 0. That is not a pass: the prompt did no work.
-      const providerDropped = !stepError
-        && metrics.providerFailures > 0
-        && metrics.toolCalls === 0
-        && (stepResult?.finalMessage ?? "").trim().length === 0;
-      if (providerDropped) riskFlags.add("provider_call_failed");
-      const exitCode = stepError ? 1 : providerDropped ? 1 : stepResult?.exitCode ?? 1;
-      if (exitCode !== 0) riskFlags.add("agent_command_failed");
-      const verifiers = exitCode === 0
-        ? await runStepVerifiers(step, task, cwd, taskDir, timeoutMs, rawResults, riskFlags)
-        : [];
-      const notes = stepError
-        ? `step ${step.id}: ${stepError.message}`.slice(0, 1000)
-        : providerDropped
-          ? `step ${step.id}: the provider call failed after dispatch and the turn completed empty`
-          : undefined;
-      steps.push({
-        id: step.id,
-        status: exitCode !== 0 ? "error" : verifierStatus(verifiers),
-        durationMs: Math.round(performance.now() - stepStarted),
-        ...(stepTokens ? { tokens: stepTokens } : {}),
-        ...(providerDropped
-          ? { stopReason: "provider_failed" }
-          : stepResult?.stopReason ? { stopReason: String(stepResult.stopReason) } : {}),
-        exitCode,
-        metrics: finalizeMetrics(metrics),
-        verifiers,
-        ...(notes ? { notes } : {}),
+      const record = await runSessionStep({
+        session, rollout, task, step, cwd, taskDir, timeoutMs, rawResults, riskFlags, tokens,
       });
-      if (exitCode !== 0) break;
+      steps.push(record);
+      if (record.exitCode !== 0) break;
     }
   } finally {
     if (session) {
@@ -892,9 +969,6 @@ async function runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFla
     }
     await client.close().catch(() => {});
   }
-  const sessionNote = session
-    ? `session ${session.sessionId}${rolloutPath ? ` rollout ${path.basename(rolloutPath)}` : " (rollout not found)"}`
-    : "session was not created";
   const completed = steps.length === task.steps.length && steps.every((step) => step.status !== "error");
   const verifiers = completed
     ? await runStepVerifiers({ verifiers: task.verifiers }, task, cwd, taskDir, timeoutMs, rawResults, riskFlags)
@@ -910,7 +984,7 @@ async function runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFla
     tokens: tokens.total > 0 || tokens.input > 0 ? tokens : undefined,
     steps,
     metrics: aggregateMetrics(steps.map((step) => step.metrics)),
-    notes: [sessionNote, taskNotes(rawResults)].filter(Boolean).join("\n").slice(0, 4000),
+    notes: [describeSession(session, rollout?.path), taskNotes(rawResults)].filter(Boolean).join("\n").slice(0, 4000),
   });
 }
 

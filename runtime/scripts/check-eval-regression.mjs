@@ -321,6 +321,33 @@ const SESSION_RATIO_CHECKS = [
   { key: "compactionsPerStep", label: "compactions per step", scale: 1, unit: "", limit: "maxCompactionsPerStepIncrease" },
 ];
 
+function compareSessionRatioCheck(check, base, next, limits, regressions, warnings) {
+  const before = base[check.key];
+  const after = next[check.key];
+  if (before === undefined || after === undefined) return;
+  const delta = (after - before) * check.scale;
+  if (delta <= EPSILON) return;
+  const shown = `${check.label} rose ${delta.toFixed(2)}${check.unit} ` +
+    `(${(before * check.scale).toFixed(2)}${check.unit} -> ${(after * check.scale).toFixed(2)}${check.unit})`;
+  const limit = limits[check.limit];
+  if (limit !== undefined && delta > limit + EPSILON) {
+    regressions.push(`${shown}, tolerated: ${limit}${check.unit}`);
+  } else {
+    warnings.push(shown);
+  }
+}
+
+function compareCacheHitRatio(base, next, warnings) {
+  const cacheBefore = base.cacheHitRatio;
+  const cacheAfter = next.cacheHitRatio;
+  if (cacheBefore === undefined || cacheAfter === undefined) return;
+  if (cacheBefore - cacheAfter <= EPSILON) return;
+  warnings.push(
+    `session cache-hit ratio fell ${((cacheBefore - cacheAfter) * 100).toFixed(2)}pp ` +
+      `(${(cacheBefore * 100).toFixed(2)}% -> ${(cacheAfter * 100).toFixed(2)}%)`,
+  );
+}
+
 function compareSessionRatios(base, next, limits, regressions, warnings) {
   if (!base.sessionRatios && !next.sessionRatios) return;
   if (!base.sessionRatios || !next.sessionRatios) {
@@ -332,28 +359,9 @@ function compareSessionRatios(base, next, limits, regressions, warnings) {
     return;
   }
   for (const check of SESSION_RATIO_CHECKS) {
-    const before = base.sessionRatios[check.key];
-    const after = next.sessionRatios[check.key];
-    if (before === undefined || after === undefined) continue;
-    const delta = (after - before) * check.scale;
-    if (delta <= EPSILON) continue;
-    const shown = `${check.label} rose ${delta.toFixed(2)}${check.unit} ` +
-      `(${(before * check.scale).toFixed(2)}${check.unit} -> ${(after * check.scale).toFixed(2)}${check.unit})`;
-    const limit = limits[check.limit];
-    if (limit !== undefined && delta > limit + EPSILON) {
-      regressions.push(`${shown}, tolerated: ${limit}${check.unit}`);
-    } else {
-      warnings.push(shown);
-    }
+    compareSessionRatioCheck(check, base.sessionRatios, next.sessionRatios, limits, regressions, warnings);
   }
-  const cacheBefore = base.sessionRatios.cacheHitRatio;
-  const cacheAfter = next.sessionRatios.cacheHitRatio;
-  if (cacheBefore !== undefined && cacheAfter !== undefined && cacheBefore - cacheAfter > EPSILON) {
-    warnings.push(
-      `session cache-hit ratio fell ${((cacheBefore - cacheAfter) * 100).toFixed(2)}pp ` +
-        `(${(cacheBefore * 100).toFixed(2)}% -> ${(cacheAfter * 100).toFixed(2)}%)`,
-    );
-  }
+  compareCacheHitRatio(base.sessionRatios, next.sessionRatios, warnings);
 }
 
 function compileValidator(schema) {

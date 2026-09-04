@@ -7,6 +7,6 @@ if (!/control|arrow|key/i.test(readme)) fail("README.md must describe the contro
 if (!existsSync("package.json")) fail("package.json missing");
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 if (!pkg.scripts || typeof pkg.scripts.start !== "string") fail("package.json needs a start script");
-const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 if (Object.keys(deps).length > 0) fail(`no dependencies allowed, found: ${Object.keys(deps).join(", ")}`);
 ok("README and dependency-free npm start present");

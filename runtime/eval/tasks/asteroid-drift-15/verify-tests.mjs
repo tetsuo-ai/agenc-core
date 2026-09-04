@@ -1,5 +1,5 @@
 import { runNodeTests, jsFiles, fail, ok } from "./checks.mjs";
-const testFiles = jsFiles().filter((f) => /(^|\/)(test|tests)\/|\.test\.(m?js)$/.test(f));
+const testFiles = jsFiles().filter((f) => /(?:(?:^|\/)tests?\/)|(?:\.test\.m?js$)/.test(f));
 if (testFiles.length === 0) fail("no test files found (test/ or *.test.js)");
 const result = runNodeTests();
 if (result.status !== 0) fail(`node --test failed (exit ${result.status}):\n${(result.stderr || result.stdout || "").slice(-2000)}`);

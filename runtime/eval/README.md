@@ -53,6 +53,13 @@ npm run eval:agent -- --suite eval/tasks \
   --output eval/reports/grok-4.json
 ```
 
+The real executor needs `AGENC_HOME` pointing at an isolated home, never your
+own. Print mode has no TTY for the project-trust prompt, so the runner trusts
+each temporary task workspace inside that home before the agent runs there.
+`--setup-command <cmd>` (repeatable) runs in every workspace before the agent,
+with the same placeholders as `--agent-command`; task-level `setupCommands`
+run after it.
+
 Model/config matrix (one schema-valid report per entry):
 
 ```bash

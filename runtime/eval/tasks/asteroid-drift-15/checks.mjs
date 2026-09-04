@@ -18,7 +18,7 @@ export function jsFiles(root = process.cwd()) {
     }
   };
   walk(root);
-  return out.sort();
+  return out.sort((a, b) => a.localeCompare(b));
 }
 
 export function read(path) {
@@ -75,7 +75,7 @@ export function checkStyle() {
         return;
       }
       if (trimmed.startsWith("//") || trimmed.length === 0) return;
-      if (/^\t/.test(line)) problems.push(`${rel}:${index + 1} tab indentation`);
+      if (line.startsWith("\t")) problems.push(`${rel}:${index + 1} tab indentation`);
       const indent = line.match(/^ */)[0].length;
       if (indent % 2 !== 0) problems.push(`${rel}:${index + 1} indentation of ${indent} is not a multiple of 2`);
       if (/;\s*(\/\/.*)?$/.test(line) && !/^\s*for\s*\(/.test(line)) {

@@ -54,41 +54,45 @@ function inputPath(input) {
 }
 
 /** Feed one SDK prompt event. Unknown event types are ignored. */
+function observeToolCall(metrics, event) {
+  metrics.toolCalls += 1;
+  const name = typeof event.toolName === "string" ? event.toolName : "?";
+  metrics.toolCallsByName.set(name, (metrics.toolCallsByName.get(name) ?? 0) + 1);
+  const path = inputPath(event.input);
+  if (READ_TOOLS.has(name)) {
+    metrics.fileReads += 1;
+    if (path === undefined) return;
+    if (metrics.readSinceWrite.has(path)) metrics.fileReReads += 1;
+    metrics.readSinceWrite.add(path);
+  } else if (WRITE_TOOLS.has(name) && path !== undefined) {
+    metrics.readSinceWrite.delete(path);
+  }
+}
+
+const PROMPT_EVENT_OBSERVERS = {
+  tool_call: observeToolCall,
+  history_reset(metrics, event) {
+    if (event.reason === "partial_compact") metrics.compactions += 1;
+    if (event.reason === "compaction_rollback") metrics.compactionRollbacks += 1;
+  },
+  permission_request(metrics) {
+    metrics.permissionRequests += 1;
+  },
+  text(metrics, event) {
+    if (typeof event.delta === "string") metrics.assistantChars += event.delta.length;
+  },
+  message_committed(metrics) {
+    metrics.assistantMessages += 1;
+  },
+};
+
+function observerFor(table, type) {
+  return typeof type === "string" && Object.hasOwn(table, type) ? table[type] : undefined;
+}
+
 export function observePromptEvent(metrics, event) {
   if (!event || typeof event !== "object") return;
-  switch (event.type) {
-    case "tool_call": {
-      metrics.toolCalls += 1;
-      const name = typeof event.toolName === "string" ? event.toolName : "?";
-      metrics.toolCallsByName.set(name, (metrics.toolCallsByName.get(name) ?? 0) + 1);
-      const path = inputPath(event.input);
-      if (READ_TOOLS.has(name)) {
-        metrics.fileReads += 1;
-        if (path !== undefined) {
-          if (metrics.readSinceWrite.has(path)) metrics.fileReReads += 1;
-          metrics.readSinceWrite.add(path);
-        }
-      } else if (WRITE_TOOLS.has(name) && path !== undefined) {
-        metrics.readSinceWrite.delete(path);
-      }
-      return;
-    }
-    case "history_reset":
-      if (event.reason === "partial_compact") metrics.compactions += 1;
-      if (event.reason === "compaction_rollback") metrics.compactionRollbacks += 1;
-      return;
-    case "permission_request":
-      metrics.permissionRequests += 1;
-      return;
-    case "text":
-      if (typeof event.delta === "string") metrics.assistantChars += event.delta.length;
-      return;
-    case "message_committed":
-      metrics.assistantMessages += 1;
-      return;
-    default:
-      return;
-  }
+  observerFor(PROMPT_EVENT_OBSERVERS, event.type)?.(metrics, event);
 }
 
 function numberField(record, keys) {
@@ -100,64 +104,82 @@ function numberField(record, keys) {
 }
 
 /** Feed one parsed rollout JSONL record. */
-export function observeRolloutRecord(metrics, record) {
-  if (!record || typeof record !== "object") return;
-  const type = record.type;
-  const payload = record.payload && typeof record.payload === "object" ? record.payload : {};
-  if (type === "event_msg") {
-    const msg = payload.msg && typeof payload.msg === "object" ? payload.msg : {};
-    const inner = msg.payload && typeof msg.payload === "object" ? msg.payload : {};
-    switch (msg.type) {
-      case "token_count": {
-        const prompt = numberField(inner, ["promptTokens", "prompt_tokens", "inputTokens"]);
-        const cached = numberField(inner, [
-          "cachedInputTokens",
-          "cached_input_tokens",
-          "cacheReadInputTokens",
-        ]);
-        const reasoning = numberField(inner, ["reasoningOutputTokens", "reasoning_output_tokens"]);
-        if (prompt !== undefined) {
-          if (metrics.promptTokensFirst === undefined) metrics.promptTokensFirst = prompt;
-          metrics.promptTokensLast = prompt;
-        }
-        if (cached !== undefined) {
-          metrics.cachedTokensLast = cached;
-          metrics.cachedTokensMax = Math.max(metrics.cachedTokensMax ?? 0, cached);
-        }
-        if (reasoning !== undefined) metrics.reasoningOutputTokens += reasoning;
-        return;
-      }
-      case "warning":
-        metrics.warnings += 1;
-        return;
-      case "execution_admission":
-        // A model turn that was dispatched and then lost to the provider ends
-        // in held_unknown; the turn still "completes", with nothing in it.
-        if (inner.event === "held_unknown" && inner.kind === "model_turn") {
-          metrics.providerFailures += 1;
-        }
-        return;
-      default:
-        return;
-    }
+function objectOr(value) {
+  return value && typeof value === "object" ? value : {};
+}
+
+function observeTokenCount(metrics, inner) {
+  const prompt = numberField(inner, ["promptTokens", "prompt_tokens", "inputTokens"]);
+  const cached = numberField(inner, [
+    "cachedInputTokens",
+    "cached_input_tokens",
+    "cacheReadInputTokens",
+  ]);
+  const reasoning = numberField(inner, ["reasoningOutputTokens", "reasoning_output_tokens"]);
+  if (prompt !== undefined) {
+    if (metrics.promptTokensFirst === undefined) metrics.promptTokensFirst = prompt;
+    metrics.promptTokensLast = prompt;
   }
-  if (type === "response_item" && (payload.role === "tool" || payload.type === "tool")) {
-    const content = payload.content ?? payload.output ?? "";
-    const text = typeof content === "string" ? content : JSON.stringify(content);
-    const flagged = payload.is_error === true || payload.isError === true;
-    if (flagged || /^(tool )?error\b/iu.test(text.trimStart().slice(0, 40))) {
+  if (cached !== undefined) {
+    metrics.cachedTokensLast = cached;
+    metrics.cachedTokensMax = Math.max(metrics.cachedTokensMax ?? 0, cached);
+  }
+  if (reasoning !== undefined) metrics.reasoningOutputTokens += reasoning;
+}
+
+const EVENT_MSG_OBSERVERS = {
+  token_count: observeTokenCount,
+  warning(metrics) {
+    metrics.warnings += 1;
+  },
+  execution_admission(metrics, inner) {
+    // A model turn that was dispatched and then lost to the provider ends
+    // in held_unknown; the turn still "completes", with nothing in it.
+    if (inner.event === "held_unknown" && inner.kind === "model_turn") {
+      metrics.providerFailures += 1;
+    }
+  },
+};
+
+function isToolError(payload) {
+  if (payload.is_error === true || payload.isError === true) return true;
+  const content = payload.content ?? payload.output ?? "";
+  const text = typeof content === "string" ? content : JSON.stringify(content);
+  return /^(tool )?error\b/iu.test(text.trimStart().slice(0, 40));
+}
+
+const ROLLOUT_RECORD_OBSERVERS = {
+  event_msg(metrics, payload) {
+    const msg = objectOr(payload.msg);
+    observerFor(EVENT_MSG_OBSERVERS, msg.type)?.(metrics, objectOr(msg.payload));
+  },
+  response_item(metrics, payload) {
+    if ((payload.role === "tool" || payload.type === "tool") && isToolError(payload)) {
       metrics.toolErrors += 1;
     }
-    return;
-  }
-  if (type === "compaction_intent") metrics.compactionAttempts += 1;
-  if (type === "compaction_failed") metrics.compactionFailures += 1;
+  },
+  compaction_intent(metrics) {
+    metrics.compactionAttempts += 1;
+  },
+  compaction_failed(metrics) {
+    metrics.compactionFailures += 1;
+  },
+};
+
+export function observeRolloutRecord(metrics, record) {
+  if (!record || typeof record !== "object") return;
+  observerFor(ROLLOUT_RECORD_OBSERVERS, record.type)?.(metrics, objectOr(record.payload));
 }
 
 /** The schema-shaped, JSON-serialisable view of one step or one task. */
+function compareKeys(a, b) {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
 export function finalizeMetrics(metrics) {
   const byName = Object.fromEntries(
-    [...metrics.toolCallsByName.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    [...metrics.toolCallsByName.entries()].sort(([a], [b]) => compareKeys(a, b)),
   );
   const out = {
     toolCalls: metrics.toolCalls,
@@ -193,7 +215,7 @@ export function aggregateMetrics(steps) {
   }
   const out = {
     toolCalls: sum("toolCalls"),
-    toolCallsByName: Object.fromEntries(Object.entries(byName).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+    toolCallsByName: Object.fromEntries(Object.entries(byName).sort(([a], [b]) => compareKeys(a, b))),
     toolErrors: sum("toolErrors"),
     fileReads: sum("fileReads"),
     fileReReads: sum("fileReReads"),
@@ -272,52 +294,48 @@ export function findSessionRollout(agencHome, sessionId) {
  * carries the workspace cwd, and each eval task runs in its own temp workspace.
  * Only rollouts modified at or after `sinceMs` are considered.
  */
-export function findSessionRolloutForWorkspace(agencHome, cwd, sinceMs = 0) {
-  const projects = join(agencHome, "projects");
-  const wanted = canonical(cwd);
-  let slugs;
+function listDir(dir) {
   try {
-    slugs = readdirSync(projects);
+    return readdirSync(dir);
   } catch {
-    return undefined;
+    return [];
   }
+}
+
+function rolloutFilesIn(dir, sinceMs) {
+  const out = [];
+  for (const name of listDir(dir)) {
+    if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) continue;
+    const path = join(dir, name);
+    let stat;
+    try {
+      stat = statSync(path);
+    } catch {
+      continue;
+    }
+    if (stat.mtimeMs >= sinceMs) out.push({ path, mtimeMs: stat.mtimeMs });
+  }
+  return out;
+}
+
+function rolloutCandidates(agencHome, sinceMs) {
+  const projects = join(agencHome, "projects");
   const candidates = [];
-  for (const slug of slugs) {
+  for (const slug of listDir(projects)) {
     for (const bucket of ["sessions", "archived_sessions"]) {
       const bucketDir = join(projects, slug, bucket);
-      let sessions;
-      try {
-        sessions = readdirSync(bucketDir);
-      } catch {
-        continue;
-      }
-      for (const sessionId of sessions) {
-        const dir = join(bucketDir, sessionId);
-        let entries;
-        try {
-          entries = readdirSync(dir);
-        } catch {
-          continue;
-        }
-        for (const name of entries) {
-          if (!/^rollout-.*\.jsonl$/u.test(name)) continue;
-          const path = join(dir, name);
-          let stat;
-          try {
-            stat = statSync(path);
-          } catch {
-            continue;
-          }
-          if (stat.mtimeMs < sinceMs) continue;
-          candidates.push({ path, mtimeMs: stat.mtimeMs });
-        }
+      for (const sessionId of listDir(bucketDir)) {
+        candidates.push(...rolloutFilesIn(join(bucketDir, sessionId), sinceMs));
       }
     }
   }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  for (const candidate of candidates) {
-    const meta = firstRecord(candidate.path);
-    const recorded = meta?.payload?.cwd;
+  return candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+export function findSessionRolloutForWorkspace(agencHome, cwd, sinceMs = 0) {
+  const wanted = canonical(cwd);
+  for (const candidate of rolloutCandidates(agencHome, sinceMs)) {
+    const recorded = firstRecord(candidate.path)?.payload?.cwd;
     if (typeof recorded === "string" && canonical(recorded) === wanted) return candidate.path;
   }
   return undefined;

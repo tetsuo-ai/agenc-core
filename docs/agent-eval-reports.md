@@ -152,9 +152,10 @@ over the AgenC SDK, so the report measures the whole coding loop instead of one
 patch: per-step wall time and tokens, tool calls and tool errors, re-reads of a
 path with no edit in between, compaction attempts and failures, prompt-token
 growth and cached tokens, and permission requests an unattended run had to
-deny. Real session runs require `AGENC_HOME` set to an isolated home whose
+deny. Every real run requires `AGENC_HOME` set to an isolated home whose
 `config.toml` selects the model under test; the runner never starts a daemon in
-the default home. The mock executor installs the task's scripted solution once
+the default home, and it trusts each temporary task workspace inside that home
+because print mode has no TTY for the trust prompt. The mock executor installs the task's scripted solution once
 and runs every verifier, which proves the checkers. See
 [`runtime/eval/README.md`](../runtime/eval/README.md) for the metric table and
 the first session task, `asteroid-drift-15`.

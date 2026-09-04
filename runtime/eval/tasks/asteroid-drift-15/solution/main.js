@@ -150,24 +150,35 @@ function commitInitials() {
   state.mode = 'gameover'
 }
 
+function toggleMute() {
+  state.muted = !state.muted
+  saveMuted(state.muted)
+}
+
+function togglePause() {
+  if (state.mode === 'playing') state.mode = 'paused'
+  else if (state.mode === 'paused') state.mode = 'playing'
+}
+
+function startFromMenu() {
+  if (state.mode !== 'start' && state.mode !== 'gameover') return
+  reset()
+  state.mode = 'playing'
+}
+
+function handleInitialsKey(event) {
+  if (/^Key[A-Z]$/.test(event.code) && state.initials.length < 3) state.initials += event.code.slice(3)
+  if (event.code === 'Backspace') state.initials = state.initials.slice(0, -1)
+  if (event.code === 'Enter') commitInitials()
+}
+
 window.addEventListener('keydown', (event) => {
   if (event.code === 'ArrowLeft' || event.code === 'KeyA') input.left = true
   if (event.code === 'ArrowRight' || event.code === 'KeyD') input.right = true
-  if (event.code === 'KeyM') {
-    state.muted = !state.muted
-    saveMuted(state.muted)
-  }
-  if (event.code === 'KeyP' && state.mode === 'playing') state.mode = 'paused'
-  else if (event.code === 'KeyP' && state.mode === 'paused') state.mode = 'playing'
-  if (event.code === 'Space' && (state.mode === 'start' || state.mode === 'gameover')) {
-    reset()
-    state.mode = 'playing'
-  }
-  if (state.mode === 'enter-initials') {
-    if (/^Key[A-Z]$/.test(event.code) && state.initials.length < 3) state.initials += event.code.slice(3)
-    if (event.code === 'Backspace') state.initials = state.initials.slice(0, -1)
-    if (event.code === 'Enter') commitInitials()
-  }
+  if (event.code === 'KeyM') toggleMute()
+  if (event.code === 'KeyP') togglePause()
+  if (event.code === 'Space') startFromMenu()
+  if (state.mode === 'enter-initials') handleInitialsKey(event)
 })
 
 window.addEventListener('keyup', (event) => {
