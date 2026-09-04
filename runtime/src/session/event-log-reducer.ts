@@ -56,8 +56,10 @@ export interface ReducedSessionState {
   history: ResponseItem[];
   /** Most-recent TurnContextItem emitted (turn baseline). */
   lastTurnContext?: TurnContextItem;
-  /** Cached agent task from the most recent session_state update. */
+  /** Cached agent task from the most recent session_state update that carried the slot. */
   agentTask?: unknown;
+  /** Cached memory-extraction cadence from the most recent session_state update that carried the slot. */
+  memoryExtractionTrigger?: unknown;
   /** Most-recent compaction boundary metadata. */
   lastCompaction?: CompactedItem;
   /** Running count of thread rollbacks observed. */
@@ -134,11 +136,17 @@ export function reduce(
         report: {},
       };
 
-    case "session_state":
-      return {
-        state: { ...state, agentTask: item.payload.agentTask },
-        report: {},
-      };
+    case "session_state": {
+      const next = { ...state };
+      if (Object.hasOwn(item.payload, "agentTask")) {
+        next.agentTask = item.payload.agentTask ?? undefined;
+      }
+      if (Object.hasOwn(item.payload, "memoryExtractionTrigger")) {
+        (next as { memoryExtractionTrigger?: unknown }).memoryExtractionTrigger =
+          item.payload.memoryExtractionTrigger ?? undefined;
+      }
+      return { state: next, report: {} };
+    }
 
     case "response_item":
       return {

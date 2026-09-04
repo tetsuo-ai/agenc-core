@@ -61,6 +61,7 @@ import {
   type ResolveAutoMemoryDirectoryOptions,
 } from "./memory-paths.js";
 import { buildExtractAutoOnlyPrompt } from "./prompts.js";
+import type { MemoryExtractionTriggerPersisted } from "../../session/rollout-item.js";
 
 const READ_TOOL_NAMES = new Set(["FileRead", "Grep", "Glob"]);
 const WRITE_TOOL_NAMES = new Set(["Edit", "MultiEdit", "Write"]);
@@ -529,15 +530,68 @@ export function initExtractMemories(
     return `anon:${id}`;
   }
 
-  function extractionLane(session: Session, memoryDir: string): ExtractionLane {
+  async function readSeededTrigger(
+    session: Session,
+    memoryDir: string,
+  ): Promise<MemoryExtractionTriggerState | undefined> {
+    const stateLock = session.state;
+    if (!stateLock?.with) return undefined;
+    return stateLock.with((s) => {
+      const stored = (
+        s as { memoryExtractionTrigger?: MemoryExtractionTriggerPersisted }
+      ).memoryExtractionTrigger;
+      if (stored?.memoryRoot !== memoryRoot(memoryDir)) return undefined;
+      return {
+        processedVisibleCount: stored.processedVisibleCount,
+        turnsSinceLastExtraction: stored.turnsSinceLastExtraction,
+      };
+    });
+  }
+
+  async function persistTrigger(
+    session: Session,
+    trigger: MemoryExtractionTriggerState,
+    memoryDir: string,
+  ): Promise<void> {
+    const snapshot: MemoryExtractionTriggerPersisted = {
+      processedVisibleCount: trigger.processedVisibleCount,
+      turnsSinceLastExtraction: trigger.turnsSinceLastExtraction,
+      memoryRoot: memoryRoot(memoryDir),
+    };
+    const stateLock = session.state;
+    if (stateLock?.with) {
+      await stateLock.with((s) => {
+        (
+          s as { memoryExtractionTrigger?: MemoryExtractionTriggerPersisted }
+        ).memoryExtractionTrigger = snapshot;
+      });
+    }
+    const rollout = session.services?.rollout;
+    if (!rollout?.record) return;
+    await rollout.record({
+      type: "session_state",
+      payload: { memoryExtractionTrigger: snapshot },
+    });
+  }
+
+  async function extractionLane(
+    session: Session,
+    memoryDir: string,
+  ): Promise<ExtractionLane> {
     const key = `${sessionLaneKey(session)}\0${memoryRoot(memoryDir)}`;
     const existing = lanes.get(key);
     if (existing) {
       existing.lastAccessedAt = Date.now();
       return existing;
     }
+    const seeded = await readSeededTrigger(session, memoryDir);
+    const raced = lanes.get(key);
+    if (raced) {
+      raced.lastAccessedAt = Date.now();
+      return raced;
+    }
     const created: ExtractionLane = {
-      trigger: createMemoryExtractionTriggerState(),
+      trigger: seeded ?? createMemoryExtractionTriggerState(),
       inProgress: false,
       lastAccessedAt: Date.now(),
       pendingContext: undefined,
@@ -594,6 +648,7 @@ export function initExtractMemories(
         "memory_extraction_skipped",
         "main agent already wrote memory in this range",
       );
+      await persistTrigger(queued.context.session, lane.trigger, memoryDir);
       return;
     }
 
@@ -608,6 +663,7 @@ export function initExtractMemories(
         "memory_extraction_skipped",
         `deferred by eligible-turn cadence (${cadence.waiting}/${Math.max(1, Math.trunc(deps.minEligibleTurns ?? DEFAULT_MIN_ELIGIBLE_TURNS))} eligible turns)`,
       );
+      await persistTrigger(queued.context.session, lane.trigger, memoryDir);
       return;
     }
 
@@ -658,6 +714,7 @@ export function initExtractMemories(
         "memory_extraction_failed",
         detail + "; " + newMessageCount + " message(s) stay queued for the next run",
       );
+      await persistTrigger(queued.context.session, lane.trigger, memoryDir);
       return;
     }
 
@@ -669,6 +726,7 @@ export function initExtractMemories(
       );
     }
     lane.trigger.processedVisibleCount = range.currentVisibleCount;
+    await persistTrigger(queued.context.session, lane.trigger, memoryDir);
     const savedPaths = [...tracker.savedPaths].filter(
       (path) => basename(path) !== AUTO_MEMORY_INDEX_FILE,
     );
@@ -726,7 +784,7 @@ export function initExtractMemories(
     const memoryDir = pathResult.path;
     const readOnlyMemoryRoots =
       globalMemoryRoot === undefined ? [] : [globalMemoryRoot];
-    const lane = extractionLane(queued.context.session, memoryDir);
+    const lane = await extractionLane(queued.context.session, memoryDir);
 
     if (lane.inProgress) {
       lane.pendingContext = queued;

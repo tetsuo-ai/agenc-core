@@ -7,6 +7,7 @@ import {
   ensureAgentTaskRegistered,
   lastTokenInfoFromRollout,
   latestPersistedAgentTask,
+  latestPersistedMemoryExtractionTrigger,
   maybePrewarmAgentTaskRegistration,
   recordInitialHistoryOnResume,
   restorePersistedAgentTask,
@@ -441,5 +442,65 @@ describe("agent task lifecycle", () => {
 
     // No events emitted, no state mutations.
     expect(session.txEvent.tryRecv()).toBeUndefined();
+  });
+
+  it("persisting memory-extraction cadence does not clear a persisted agent task", async () => {
+    const agentTask: SessionAgentTask = {
+      agentRuntimeId: "agent-slot",
+      taskId: "task-slot",
+      registeredAt: "2026-09-02T00:00:00Z",
+    };
+    const rollout: RolloutItem[] = [
+      { type: "session_state", payload: { agentTask } },
+      {
+        type: "session_state",
+        payload: {
+          memoryExtractionTrigger: {
+            processedVisibleCount: 4,
+            turnsSinceLastExtraction: 2,
+          },
+        },
+      },
+    ];
+
+    expect(latestPersistedAgentTask(rollout)).toEqual({ value: agentTask });
+    expect(latestPersistedMemoryExtractionTrigger(rollout)).toEqual({
+      value: {
+        processedVisibleCount: 4,
+        turnsSinceLastExtraction: 2,
+      },
+    });
+
+    const session = buildSession({
+      services: {
+        agentIdentityManager: {
+          ensureRegistered: async () => {},
+          registerTask: vi.fn(async () => null),
+          taskMatchesCurrentIdentity: vi.fn(async () => true),
+        } as SessionServices["agentIdentityManager"],
+      },
+    });
+
+    await recordInitialHistoryOnResume(session, rollout, {
+      previousModel: "grok-4-fast",
+      currentModel: "grok-4-fast",
+    });
+
+    expect(await readStoredAgentTask(session)).toEqual(agentTask);
+    const trigger = await session.state.with(
+      (state) =>
+        (
+          state as {
+            memoryExtractionTrigger?: {
+              processedVisibleCount: number;
+              turnsSinceLastExtraction: number;
+            };
+          }
+        ).memoryExtractionTrigger,
+    );
+    expect(trigger).toEqual({
+      processedVisibleCount: 4,
+      turnsSinceLastExtraction: 2,
+    });
   });
 });

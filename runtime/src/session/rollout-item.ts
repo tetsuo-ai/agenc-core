@@ -40,9 +40,26 @@ import {
 // Per-variant payloads
 // ─────────────────────────────────────────────────────────────────────
 
-/** agenc runtime `SessionStateUpdate` — session-scoped mutable slots. */
+/**
+ * Durable memory-extraction cadence cursor. Lives on `session_state` so a
+ * daemon restart continues the eligible-turn count instead of restarting it.
+ */
+export interface MemoryExtractionTriggerPersisted {
+  readonly processedVisibleCount: number;
+  readonly turnsSinceLastExtraction: number;
+  /** Normalized memory root this cadence cursor belongs to. */
+  readonly memoryRoot?: string;
+}
+
+/**
+ * Session-scoped mutable slots. Each writer may emit only its own slot.
+ * Walkers must skip items that omit their slot (`Object.hasOwn`), because
+ * `undefined` does not survive JSON and cannot mark "slot untouched".
+ * Clear a slot with an explicit `null` so the key survives the round trip.
+ */
 export interface SessionStateUpdate {
-  readonly agentTask?: SessionAgentTask;
+  readonly agentTask?: SessionAgentTask | null;
+  readonly memoryExtractionTrigger?: MemoryExtractionTriggerPersisted | null;
 }
 
 export type {
@@ -198,6 +215,26 @@ export type RolloutItem =
       readonly payload: { readonly raw: string; readonly originalType: string };
       readonly eventVersion?: number;
     };
+
+/**
+ * Walk rollout items newest-first and return the latest value written for
+ * one `session_state` slot. Items that omit the slot are skipped so a
+ * memory-extraction update cannot clear the agent task, and vice versa.
+ */
+export function latestPersistedSessionStateSlot<
+  K extends keyof SessionStateUpdate,
+>(
+  rolloutItems: ReadonlyArray<RolloutItem>,
+  slot: K,
+): { value: SessionStateUpdate[K] } | undefined {
+  for (let i = rolloutItems.length - 1; i >= 0; i -= 1) {
+    const item = rolloutItems[i];
+    if (item?.type !== "session_state") continue;
+    if (!Object.hasOwn(item.payload, slot)) continue;
+    return { value: item.payload[slot] };
+  }
+  return undefined;
+}
 
 const KNOWN_ROLLOUT_TYPES = Object.freeze(
   new Set<string>([

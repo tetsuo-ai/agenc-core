@@ -31,10 +31,19 @@
  */
 
 import type { Session } from "./session.js";
-import type { RolloutItem } from "./rollout-item.js";
+import {
+  latestPersistedSessionStateSlot,
+  type MemoryExtractionTriggerPersisted,
+  type RolloutItem,
+} from "./rollout-item.js";
 import type { TokenCountEvent } from "./event-log.js";
 
-export type { RolloutItem, SessionStateUpdate } from "./rollout-item.js";
+export type {
+  MemoryExtractionTriggerPersisted,
+  RolloutItem,
+  SessionStateUpdate,
+} from "./rollout-item.js";
+export { latestPersistedSessionStateSlot } from "./rollout-item.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep types — real impls in T9 (agent_identity).
@@ -118,6 +127,7 @@ function sessionAgentTaskEquals(
  */
 interface SessionStateWithAgentTask {
   agentTask?: SessionAgentTask;
+  memoryExtractionTrigger?: MemoryExtractionTriggerPersisted;
 }
 
 async function readAgentTask(session: Session): Promise<SessionAgentTask | undefined> {
@@ -201,22 +211,34 @@ export async function maybePrewarmAgentTaskRegistration(
 /**
  * AgenC-specific. Walks rollout items in reverse and returns the
  * `SessionAgentTask | undefined` from the most recent `SessionState`
- * update, wrapped in a `{ value }` envelope so callers can distinguish
- * "no SessionState ever persisted" (returns `undefined`) from
- * "SessionState persisted with the slot explicitly cleared" (returns
- * `{ value: undefined }`). Upstream agenc runtime does not persist an
- * agent-task slot on rollout, so there is no equivalent walker.
+ * update that carries the `agentTask` slot, wrapped in a `{ value }`
+ * envelope so callers can distinguish "no SessionState ever persisted
+ * this slot" (returns `undefined`) from "SessionState persisted with
+ * the slot explicitly cleared" (returns `{ value: undefined }`).
+ * Upstream agenc runtime does not persist an agent-task slot on
+ * rollout, so there is no equivalent walker.
  */
 export function latestPersistedAgentTask(
   rolloutItems: ReadonlyArray<RolloutItem>,
 ): { value: SessionAgentTask | undefined } | undefined {
-  for (let i = rolloutItems.length - 1; i >= 0; i -= 1) {
-    const item = rolloutItems[i];
-    if (item && item.type === "session_state") {
-      return { value: item.payload.agentTask };
-    }
-  }
-  return undefined;
+  const found = latestPersistedSessionStateSlot(rolloutItems, "agentTask");
+  if (found === undefined) return undefined;
+  return { value: found.value ?? undefined };
+}
+
+/**
+ * Newest `memoryExtractionTrigger` slot on the rollout, or `undefined`
+ * when no item ever carried that slot.
+ */
+export function latestPersistedMemoryExtractionTrigger(
+  rolloutItems: ReadonlyArray<RolloutItem>,
+): { value: MemoryExtractionTriggerPersisted | undefined } | undefined {
+  const found = latestPersistedSessionStateSlot(
+    rolloutItems,
+    "memoryExtractionTrigger",
+  );
+  if (found === undefined) return undefined;
+  return { value: found.value ?? undefined };
 }
 
 /**
@@ -248,6 +270,23 @@ export async function restorePersistedAgentTask(
   } else {
     await clearAgentTask(session);
   }
+}
+
+/**
+ * Seed the in-memory memory-extraction cadence cursor from the newest
+ * rollout item that carries that slot. No-op when the slot was never
+ * written.
+ */
+export async function restorePersistedMemoryExtractionTrigger(
+  session: Session,
+  rolloutItems: ReadonlyArray<RolloutItem>,
+): Promise<void> {
+  const found = latestPersistedMemoryExtractionTrigger(rolloutItems);
+  if (found === undefined) return;
+  await session.state.with((s) => {
+    const state = s as unknown as SessionStateWithAgentTask;
+    state.memoryExtractionTrigger = found.value;
+  });
 }
 
 /**
@@ -318,6 +357,7 @@ export async function recordInitialHistoryOnResume(
   // run first so the cached task lines up with the restored session
   // identity before any model-dependent state mutations.
   await restorePersistedAgentTask(session, rolloutItems);
+  await restorePersistedMemoryExtractionTrigger(session, rolloutItems);
 
   // 2. Model-change warning. Matches agenc runtime's sentence at
   // session/mod.rs:1189-1192 with "agenc runtime" → "AgenC".
@@ -363,7 +403,11 @@ async function persistAgentTaskUpdate(
     {
       type: "session_state",
       payload: {
-        agentTask: agentTask === null ? undefined : registeredAgentTaskToSessionAgentTask(agentTask),
+        // Explicit null keeps the key after JSON for slot-aware walkers.
+        agentTask:
+          agentTask === null
+            ? null
+            : registeredAgentTaskToSessionAgentTask(agentTask),
       },
     },
   ]);
