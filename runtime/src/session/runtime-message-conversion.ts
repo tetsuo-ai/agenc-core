@@ -33,11 +33,11 @@ export interface AgenCMessage {
   readonly role: AgenCMessageRole;
   readonly content: string | readonly LLMContentPart[];
   readonly providerReasoningContent?: string;
-  readonly providerReasoningProvenance?: LLMMessage["providerReasoningProvenance"];
+  readonly providerReasoningProvenance?: NonNullable<LLMMessage["providerReasoningProvenance"]>;
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly phase?: string;
-  readonly runtimeOnly?: LLMMessage["runtimeOnly"];
+  readonly runtimeOnly?: NonNullable<LLMMessage["runtimeOnly"]>;
 }
 
 export type AgenCRuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
@@ -51,7 +51,7 @@ export type AgenCRuntimeMessage = Omit<
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly providerReasoningContent?: string;
-  readonly providerReasoningProvenance?: LLMMessage["providerReasoningProvenance"];
+  readonly providerReasoningProvenance?: NonNullable<LLMMessage["providerReasoningProvenance"]>;
   readonly toolCalls?: readonly {
     readonly id: string;
     readonly name: string;
@@ -67,11 +67,11 @@ export type AgenCRuntimeMessage = Omit<
 
 type RuntimeOnlyProjectionSource = {
   readonly toolResultIntegrity?: NonNullable<
-    LLMMessage["runtimeOnly"]
-  >["toolResultIntegrity"];
+    NonNullable<LLMMessage["runtimeOnly"]>["toolResultIntegrity"]
+  >;
   readonly agentInvocation?: NonNullable<
-    LLMMessage["runtimeOnly"]
-  >["agentInvocation"];
+    NonNullable<LLMMessage["runtimeOnly"]>["agentInvocation"]
+  >;
 };
 
 /**
@@ -102,22 +102,8 @@ export function toAgenCRuntimeMessages(
       content: runtimeContent,
       role,
       ...(message.role !== role ? { originalRole: message.role } : {}),
-      type: role,
-      message: {
-        role,
-        content: runtimeContent,
-      },
-      uuid: `agenc-${role}-${index}`,
-      timestamp: new Date(0).toISOString(),
-      ...(message.toolCalls !== undefined
-        ? {
-            toolCalls: message.toolCalls.map((call) => ({
-              id: call.id,
-              name: call.name,
-              arguments: call.arguments,
-            })),
-          }
-        : {}),
+      ...runtimeWireEnvelope(role, runtimeContent, index),
+      ...toolCallsForRuntime(message.toolCalls),
       ...(message.role === "tool" ? { isMeta: true } : {}),
     };
   });
@@ -221,6 +207,33 @@ function projectRuntimeWireFields(
     ...(message.providerReasoningProvenance !== undefined
       ? { providerReasoningProvenance: message.providerReasoningProvenance }
       : {}),
+    ...projectToolExchangeFields(message),
+    ...projectRuntimeOnly(message.runtimeOnly),
+  };
+}
+
+/** The tool-exchange fields a persisted runtime message may carry. */
+export interface ToolExchangeSource {
+  readonly toolCalls?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly arguments?: string;
+  }[];
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly phase?: string;
+}
+
+/**
+ * Restore the tool exchange of a persisted runtime message the way the LLM
+ * message expects it: the assistant's calls with their arguments, the result's
+ * call id and tool name, and the phase when it is one the runtime emits. Shared
+ * by every runtime-to-LLM restore so the copies cannot drift apart again.
+ */
+export function projectToolExchangeFields(
+  message: ToolExchangeSource,
+): Pick<LLMMessage, "toolCalls" | "toolCallId" | "toolName" | "phase"> {
+  return {
     ...(message.toolCalls !== undefined
       ? {
           toolCalls: message.toolCalls.map((call) => ({
@@ -237,11 +250,43 @@ function projectRuntimeWireFields(
     ...(message.phase === "commentary" || message.phase === "final_answer"
       ? { phase: message.phase }
       : {}),
-    ...projectRuntimeOnly(message.runtimeOnly),
   };
 }
 
-function projectRuntimeOnly(
+/** The wire envelope every non-system runtime message carries. */
+export function runtimeWireEnvelope(
+  role: AgenCRuntimeWireRole,
+  content: unknown,
+  index: number,
+): {
+  readonly type: AgenCRuntimeWireRole;
+  readonly message: { readonly role: AgenCRuntimeWireRole; readonly content: unknown };
+  readonly uuid: string;
+  readonly timestamp: string;
+} {
+  return {
+    type: role,
+    message: { role, content },
+    uuid: `agenc-${role}-${index}`,
+    timestamp: new Date(0).toISOString(),
+  };
+}
+
+/** The assistant's tool calls as the runtime persists them (arguments verbatim). */
+export function toolCallsForRuntime(
+  toolCalls: LLMMessage["toolCalls"],
+): Pick<AgenCRuntimeMessage, "toolCalls"> {
+  if (toolCalls === undefined) return {};
+  return {
+    toolCalls: toolCalls.map((call) => ({
+      id: call.id,
+      name: call.name,
+      arguments: call.arguments,
+    })),
+  };
+}
+
+export function projectRuntimeOnly(
   runtimeOnly: RuntimeOnlyProjectionSource | undefined,
 ): Pick<LLMMessage, "runtimeOnly"> {
   if (
