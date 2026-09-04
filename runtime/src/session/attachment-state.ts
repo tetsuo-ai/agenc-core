@@ -182,6 +182,17 @@ export interface AttachmentTrackingState {
    * them.
    */
   listedSkillNames: Set<string>;
+  /**
+   * Workspace-instruction and memory-index texts at the head of the prompt,
+   * frozen for the session so the cached prefix holds (prompts/instruction-head.ts).
+   */
+  instructionHead?: { readonly workspaceText: string; readonly memoryText: string };
+  /** The workspace (turn cwd) the head was taken for; another cwd starts a new head. */
+  instructionHeadScope?: string;
+  /** The latest version of those texts the model has been told about. */
+  instructionAnnounced?: { readonly workspaceText: string; readonly memoryText: string };
+  /** A change waiting to be delivered by the instruction_update producer. */
+  pendingInstructionUpdate?: { readonly workspaceText?: string; readonly memoryText?: string };
 }
 
 const sessionAttachmentState = new WeakMap<object, AttachmentTrackingState>();
@@ -228,6 +239,12 @@ export function resetRelevantMemoryBudget(sessionKey: object): void {
   if (state === undefined) return;
   state.surfacedRelevantMemoryBytes = 0;
   state.surfacedRelevantMemoryPaths.clear();
+  // The compacted history is new bytes anyway: start the instruction head
+  // from the current files instead of carrying a stale snapshot forward.
+  state.instructionHead = undefined;
+  state.instructionHeadScope = undefined;
+  state.instructionAnnounced = undefined;
+  state.pendingInstructionUpdate = undefined;
 }
 
 /** Clears all tracking state for a session. Test-only. */

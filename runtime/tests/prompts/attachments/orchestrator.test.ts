@@ -44,6 +44,7 @@ describe("attachments orchestrator", () => {
       "agentListingDeltaProducer",
       "mcpInstructionsDeltaProducer",
       "dateChangeProducer",
+      "instructionUpdateProducer",
       "criticalReminderProducer",
       "outputStyleProducer",
       "relevantMemoriesProducer",

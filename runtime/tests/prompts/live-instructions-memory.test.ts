@@ -19,6 +19,7 @@ import {
 } from "../memory/paths.js";
 import { clearTieredInstructionsCacheForTesting } from "./agenc-md.js";
 import { resolveLiveInstructionEnvelope } from "./live-instructions.js";
+import { getAttachmentTrackingState, resetRelevantMemoryBudget } from "../session/attachment-state.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
@@ -76,11 +77,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function resolveEnvelope() {
-  const session = {
-    services: { configStore: store },
-    setProjectMemoryWarnings: vi.fn(),
-  } as unknown as Session;
+function resolveEnvelope(session: Session = makeSession()) {
   return runWithCanonicalSettingsAuthority(store, () =>
     resolveLiveInstructionEnvelope({
       session,
@@ -88,6 +85,13 @@ function resolveEnvelope() {
       baseInstructions: "BASE INSTRUCTIONS",
     }),
   );
+}
+
+function makeSession(): Session {
+  return {
+    services: { configStore: store },
+    setProjectMemoryWarnings: vi.fn(),
+  } as unknown as Session;
 }
 
 async function writeEntrypoints(global: string | null, projectIndex: string | null) {
@@ -168,6 +172,28 @@ describe("live instructions memory indexes", () => {
 
     expect(envelope.memoryText).toContain(`token=${REDACTED_SECRET}`);
     expect(envelope.memoryText).not.toContain(token);
+  });
+
+  it("keeps the session-start head when the memory index changes and queues the new version", async () => {
+    installAuthority();
+    await writeEntrypoints(null, "- [Release cadence](release.md): ships on Thursdays\n");
+    const session = makeSession();
+    const first = await resolveEnvelope(session);
+    expect(first.text).toContain("ships on Thursdays");
+
+    // The extraction child appended a line between turns.
+    await writeEntrypoints(null, "- [Release cadence](release.md): ships on Thursdays\n- [Style](style.md): two-space indent\n");
+    const second = await resolveEnvelope(session);
+    expect(second.text).toBe(first.text);
+    const tracking = getAttachmentTrackingState(session);
+    expect(tracking.pendingInstructionUpdate?.memoryText).toContain("two-space indent");
+    expect(tracking.pendingInstructionUpdate?.workspaceText).toBeUndefined();
+
+    // After compaction the head restarts from the current files.
+    resetRelevantMemoryBudget(session);
+    const third = await resolveEnvelope(session);
+    expect(third.text).toContain("two-space indent");
+    expect(getAttachmentTrackingState(session).pendingInstructionUpdate).toBeUndefined();
   });
 
   it("adds nothing when no index exists", async () => {
