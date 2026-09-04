@@ -121,43 +121,84 @@ function tokenTotal(tokens) {
     (Number.isFinite(tokens.output) ? tokens.output : 0);
 }
 
-function summarizeReport(report) {
-  const taskCounts = emptyStatusCounts();
-  const verifierCounts = emptyStatusCounts();
-  const riskFlags = new Map();
-  let durationMs = 0;
-  let tokenCount = 0;
-  let commandCount = 0;
-  let failedCommandCount = 0;
+function emptySummaryAccumulator() {
+  const sessions = { tasks: 0, steps: 0, stepDurationMs: 0 };
+  for (const key of SESSION_SUM_KEYS) sessions[key] = 0;
+  return {
+    taskCounts: emptyStatusCounts(),
+    verifierCounts: emptyStatusCounts(),
+    riskFlags: new Map(),
+    durationMs: 0,
+    tokenCount: 0,
+    commandCount: 0,
+    failedCommandCount: 0,
+    sessions,
+  };
+}
 
-  for (const task of report.tasks) {
-    taskCounts[task.status] += 1;
-    durationMs += task.durationMs;
-    tokenCount += tokenTotal(task.tokens);
-
-    for (const command of task.commands ?? []) {
-      commandCount += 1;
-      if (
-        Number.isInteger(command.exitCode) &&
-        command.exitCode !== 0
-      ) {
-        failedCommandCount += 1;
-      }
-    }
-
-    for (const verifier of task.verifiers) {
-      verifierCounts[verifier.status] += 1;
-    }
-
-    for (const flag of task.riskFlags ?? []) {
-      riskFlags.set(flag, (riskFlags.get(flag) ?? 0) + 1);
+function countCommands(acc, task) {
+  for (const command of task.commands ?? []) {
+    acc.commandCount += 1;
+    if (Number.isInteger(command.exitCode) && command.exitCode !== 0) {
+      acc.failedCommandCount += 1;
     }
   }
+}
 
+function countVerifiers(acc, task) {
+  for (const verifier of task.verifiers) {
+    acc.verifierCounts[verifier.status] += 1;
+  }
+  for (const step of task.steps ?? []) {
+    for (const verifier of step.verifiers ?? []) {
+      acc.verifierCounts[verifier.status] += 1;
+    }
+  }
+}
+
+function countSession(acc, task) {
+  if (!task.metrics) return;
+  const { sessions } = acc;
+  sessions.tasks += 1;
+  sessions.steps += task.metrics.steps ?? task.steps?.length ?? 0;
+  sessions.stepDurationMs += (task.steps ?? []).reduce((sum, step) => sum + step.durationMs, 0);
+  for (const key of SESSION_SUM_KEYS) {
+    sessions[key] += task.metrics[key] ?? 0;
+  }
+}
+
+function accumulateTask(acc, task) {
+  acc.taskCounts[task.status] += 1;
+  acc.durationMs += task.durationMs;
+  acc.tokenCount += tokenTotal(task.tokens);
+  countCommands(acc, task);
+  countVerifiers(acc, task);
+  countSession(acc, task);
+  for (const flag of task.riskFlags ?? []) {
+    acc.riskFlags.set(flag, (acc.riskFlags.get(flag) ?? 0) + 1);
+  }
+}
+
+function sessionSummary(sessions) {
+  if (sessions.tasks === 0) return {};
+  return {
+    sessions: {
+      ...sessions,
+      avgStepDurationMs: sessions.steps > 0
+        ? Math.round(sessions.stepDurationMs / sessions.steps)
+        : 0,
+      toolErrorRate: percent(sessions.toolErrors, sessions.toolCalls),
+      rereadRate: percent(sessions.fileReReads, sessions.fileReads),
+    },
+  };
+}
+
+function summarizeReport(report) {
+  const acc = emptySummaryAccumulator();
+  for (const task of report.tasks) accumulateTask(acc, task);
+  const { taskCounts, verifierCounts } = acc;
   const attemptedTasks = taskCounts.passed + taskCounts.failed + taskCounts.error;
-  const attemptedVerifiers = verifierCounts.passed +
-    verifierCounts.failed +
-    verifierCounts.error;
+  const attemptedVerifiers = verifierCounts.passed + verifierCounts.failed + verifierCounts.error;
 
   return {
     schemaVersion: report.schemaVersion,
@@ -169,27 +210,39 @@ function summarizeReport(report) {
       fixRate: percent(taskCounts.passed, attemptedTasks),
     },
     verifiers: {
-      total: verifierCounts.passed +
-        verifierCounts.failed +
-        verifierCounts.error +
-        verifierCounts.skipped,
+      total: attemptedVerifiers + verifierCounts.skipped,
       ...verifierCounts,
       attempted: attemptedVerifiers,
       passRate: percent(verifierCounts.passed, attemptedVerifiers),
     },
-    durationMs,
+    durationMs: acc.durationMs,
     tokens: {
-      total: tokenCount,
+      total: acc.tokenCount,
     },
     commands: {
-      total: commandCount,
-      failed: failedCommandCount,
+      total: acc.commandCount,
+      failed: acc.failedCommandCount,
     },
     riskFlags: Object.fromEntries(
-      [...riskFlags.entries()].sort((a, b) => a[0].localeCompare(b[0])),
+      [...acc.riskFlags.entries()].sort((a, b) => a[0].localeCompare(b[0])),
     ),
+    ...sessionSummary(acc.sessions),
   };
 }
+
+const SESSION_SUM_KEYS = [
+  "toolCalls",
+  "toolErrors",
+  "fileReads",
+  "fileReReads",
+  "compactions",
+  "compactionAttempts",
+  "compactionFailures",
+  "compactionRollbacks",
+  "permissionRequests",
+  "warnings",
+  "providerFailures",
+];
 
 function formatPercent(value) {
   return `${value.toFixed(2)}%`;
@@ -225,6 +278,13 @@ function formatMarkdownSummary(summary) {
     `Duration: ${formatDuration(summary.durationMs)}`,
     `Commands: ${summary.commands.total} total, ${summary.commands.failed} failed`,
     riskLine,
+    ...(summary.sessions
+      ? [
+          `Sessions: ${summary.sessions.tasks} task(s), ${summary.sessions.steps} steps, avg step ${formatDuration(summary.sessions.avgStepDurationMs)}`,
+          `Session tools: ${summary.sessions.toolCalls} calls, ${summary.sessions.toolErrors} errors (${formatPercent(summary.sessions.toolErrorRate)}), ${summary.sessions.fileReReads}/${summary.sessions.fileReads} re-reads (${formatPercent(summary.sessions.rereadRate)})`,
+          `Session context: ${summary.sessions.compactions} compactions (${summary.sessions.compactionAttempts} attempts, ${summary.sessions.compactionFailures} failed, ${summary.sessions.compactionRollbacks} rolled back), ${summary.sessions.permissionRequests} permission requests, ${summary.sessions.warnings} warnings, ${summary.sessions.providerFailures} provider failures`,
+        ]
+      : []),
   ].join("\n");
 }
 

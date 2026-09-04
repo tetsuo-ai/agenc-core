@@ -10,7 +10,10 @@
       "fixture": "fixture",
       "prompt": "sum() in sum.js returns NaN because the loop reads one element past the end of the array. Fix the loop bounds so sum([1,2,3]) returns 6 and sum([]) returns 0.",
       "verifiers": [
-        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "behavior",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -21,7 +24,10 @@
       "fixture": "fixture",
       "prompt": "greet() in greet.js throws when called with null, undefined, or a user without a name. It should fall back to the name \"guest\" in those cases and keep returning \"hello, <name>\" for users with a non-empty string name.",
       "verifiers": [
-        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "behavior",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -32,7 +38,10 @@
       "fixture": "fixture",
       "prompt": "Add an exported clamp(value, min, max) function to math.js that returns min when value < min, max when value > max, and value otherwise. Do not break the existing add() export.",
       "verifiers": [
-        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "behavior",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -43,7 +52,10 @@
       "fixture": "fixture",
       "prompt": "cli.mjs prints \"hello, <name>\" using the first CLI argument (default \"world\"). Add support for an --upper flag that uppercases the entire output line. The flag may appear before or after the name and must not be treated as the name itself.",
       "verifiers": [
-        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "behavior",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -54,7 +66,10 @@
       "fixture": "fixture",
       "prompt": "counter.js uses var declarations. Replace every var with const or let (whichever is correct) without changing the module's behavior: increment() advances the counter and reset() sets it back to 0.",
       "verifiers": [
-        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "behavior",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -65,7 +80,10 @@
       "fixture": "fixture",
       "prompt": "customerLabel() and employeeLabel() in report.js duplicate the same name-formatting expression. Extract it into an exported formatFullName(person) helper and make both label functions delegate to it. Output behavior must stay identical (trimmed first and last name, joined by a space, uppercased).",
       "verifiers": [
-        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "behavior",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -76,7 +94,10 @@
       "fixture": "fixture",
       "prompt": "Create slugify.test.mjs in the repo root. It must import { slugify } from ./slugify.js and use node:assert to verify at least: slugify(\"Hello World\") === \"hello-world\", slugify(\"  spaced  \") === \"spaced\", and slugify(\"a--b\") === \"a-b\". The script must exit nonzero when an assertion fails and exit 0 otherwise.",
       "verifiers": [
-        { "name": "tests-pass-and-catch-mutations", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "tests-pass-and-catch-mutations",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -87,7 +108,10 @@
       "fixture": "fixture",
       "prompt": "This repo configures its HTTP port in an ini settings file; other numbers in the tree are red herrings. Find the port the app actually uses and write just that number (no other text) to a new ANSWER.txt file in the repo root.",
       "verifiers": [
-        { "name": "answer", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "answer",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -98,7 +122,10 @@
       "fixture": "fixture",
       "prompt": "config.json fails JSON.parse because of a trailing comma. Fix the file so it parses, preserving every existing key and value exactly.",
       "verifiers": [
-        { "name": "parses", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "parses",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -109,7 +136,10 @@
       "fixture": "fixture",
       "prompt": "The function procesData in lib/data.js is misspelled. Rename it to processData everywhere it appears (definition, import, and call site in index.js) without changing behavior.",
       "verifiers": [
-        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "behavior",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -120,7 +150,10 @@
       "fixture": "fixture",
       "prompt": "README.md contains a TODO placeholder. Replace it with a \"## Usage\" section that shows how to run the widget with the exact command node index.js. Remove the TODO text entirely.",
       "verifiers": [
-        { "name": "readme", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "readme",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
     },
     {
@@ -131,8 +164,221 @@
       "fixture": "fixture",
       "prompt": "fizzbuzz() in fizzbuzz.js returns \"Fizz\" for multiples of 15 because the divisibility checks run in the wrong order. Fix it so multiples of 15 return \"FizzBuzz\" while multiples of only 3 or only 5 still return \"Fizz\" and \"Buzz\", and other numbers return their decimal string.",
       "verifiers": [
-        { "name": "behavior", "command": "node {taskDir}/verify.mjs" }
+        {
+          "name": "behavior",
+          "command": "node {taskDir}/verify.mjs"
+        }
       ]
+    },
+    {
+      "id": "asteroid-drift-15",
+      "kind": "session",
+      "source": "agenc-local",
+      "title": "Asteroid Drift: a 15-prompt browser game built in one session",
+      "dir": "asteroid-drift-15",
+      "fixture": "fixture",
+      "steps": [
+        {
+          "id": "01-scaffold",
+          "prompt": "Create a browser game called Asteroid Drift in this folder: index.html plus game.js, a canvas that fills the window, a requestAnimationFrame loop with delta time, and a player ship at the bottom that moves left and right with the arrow keys. Remember these rules for this project: 2-space indentation, no semicolons, plain ES modules, no frameworks, no build step.",
+          "verifiers": [
+            {
+              "name": "scaffold",
+              "command": "node {taskDir}/verify-scaffold.mjs"
+            },
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "02-asteroids",
+          "prompt": "Add asteroids that fall from the top at random x positions, with their speed rising over time. When one hits the ship the game ends with a Game Over screen.",
+          "verifiers": [
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "03-score",
+          "prompt": "Score is the number of seconds survived. Show it while playing and keep the best score in localStorage across reloads.",
+          "verifiers": [
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "04-start-pause",
+          "prompt": "Add a start screen before the game begins and a pause toggle on the P key.",
+          "verifiers": [
+            {
+              "name": "gameplay",
+              "command": "node {taskDir}/verify-gameplay.mjs"
+            },
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "05-modules",
+          "prompt": "Refactor the code into ES modules: player.js, asteroids.js, hud.js and main.js as the entry point, keeping the behavior identical. Keep the style rules from the first message.",
+          "verifiers": [
+            {
+              "name": "modules",
+              "command": "node {taskDir}/verify-modules.mjs"
+            },
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "06-effects",
+          "prompt": "Add a particle explosion and a short screen shake when the ship is destroyed.",
+          "verifiers": [
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "07-audio",
+          "prompt": "Add WebAudio beeps using an oscillator for events like death and level changes, plus a mute toggle on the M key whose state is remembered in localStorage.",
+          "verifiers": [
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "08-powerups",
+          "prompt": "Add two power-ups that spawn roughly every 10 seconds: a shield that absorbs one hit and a slow-time effect lasting 3 seconds.",
+          "verifiers": [
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "09-levels",
+          "prompt": "Add levels: every 20 points the level rises, asteroids spawn faster, and a banner announces the new level briefly.",
+          "verifiers": [
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "10-touch",
+          "prompt": "Add touch controls: dragging on the canvas moves the ship. Make the canvas responsive to window size changes.",
+          "verifiers": [
+            {
+              "name": "features",
+              "command": "node {taskDir}/verify-features.mjs"
+            },
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "11-tests",
+          "prompt": "Write unit tests with node:test for the pure logic: collision, scoring and leveling. Run them and show me the output.",
+          "verifiers": [
+            {
+              "name": "tests",
+              "command": "node {taskDir}/verify-tests.mjs"
+            },
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "12-readme",
+          "prompt": "Write a README.md that explains the controls and how to run the game, and add an npm start script that serves the folder locally with no dependencies.",
+          "verifiers": [
+            {
+              "name": "readme",
+              "command": "node {taskDir}/verify-readme.mjs"
+            },
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "13-review",
+          "prompt": "Review your own code for real bugs and fix at least two. Show me what changed and why. Do not invent bugs.",
+          "verifiers": [
+            {
+              "name": "tests",
+              "command": "node {taskDir}/verify-tests.mjs"
+            },
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "14-highscores",
+          "prompt": "Add a high-score table: the top 5 scores with three-letter initials, entered after Game Over and kept in localStorage.",
+          "verifiers": [
+            {
+              "name": "style",
+              "command": "node {taskDir}/verify-style.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "id": "15-final",
+          "prompt": "Final check: run the tests, confirm the style rules from the first message hold across every file, write a CHANGELOG.md that summarizes the 15 steps, and then stop.",
+          "verifiers": [
+            {
+              "name": "final",
+              "command": "node {taskDir}/verify-final.mjs"
+            }
+          ],
+          "timeoutMs": 900000
+        }
+      ],
+      "verifiers": [
+        {
+          "name": "final",
+          "command": "node {taskDir}/verify-final.mjs"
+        }
+      ],
+      "timeoutMs": 900000
     }
   ]
 }

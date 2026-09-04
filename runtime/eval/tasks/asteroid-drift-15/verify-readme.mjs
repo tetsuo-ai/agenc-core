@@ -1,0 +1,12 @@
+import { readFileSync, existsSync } from "node:fs";
+import { fail, ok } from "./checks.mjs";
+if (!existsSync("README.md")) fail("README.md missing");
+const readme = readFileSync("README.md", "utf8");
+if (!/npm start/i.test(readme)) fail("README.md must say how to run: npm start");
+if (!/control|arrow|key/i.test(readme)) fail("README.md must describe the controls");
+if (!existsSync("package.json")) fail("package.json missing");
+const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+if (!pkg.scripts || typeof pkg.scripts.start !== "string") fail("package.json needs a start script");
+const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+if (Object.keys(deps).length > 0) fail(`no dependencies allowed, found: ${Object.keys(deps).join(", ")}`);
+ok("README and dependency-free npm start present");

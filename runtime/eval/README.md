@@ -53,6 +53,24 @@ npm run eval:agent -- --suite eval/tasks \
   --output eval/reports/grok-4.json
 ```
 
+The real executor needs `AGENC_HOME` pointing at an isolated home, never your
+own. Print mode has no TTY for the project-trust prompt, so the runner trusts
+each temporary task workspace inside that home before the agent runs there.
+`--setup-command <cmd>` (repeatable) runs in every workspace before the agent,
+with the same placeholders as `--agent-command`; task-level `setupCommands`
+run after it.
+
+`eval/baseline-real-grok-4.6-xhigh.json` is the first real-agent baseline
+(grok-4.6 at xhigh effort over xAI, isolated home, 2026-09-04). It is a
+separate file from the mock baseline so each executor compares against its
+own kind of run; `npm run eval:coding:check` compares the newest report in
+`eval/reports` against it, warning on the session ratios and failing on the
+pass-rate, token and latency limits.
+In that run 12 of 12 command tasks passed and the session task passed 14 of
+15 steps; step 15 failed only because the changelog verifier counted list
+items while the agent wrote one headed section per step. The verifier now
+accepts both, so the recorded 92.31% fix rate understates the run.
+
 Model/config matrix (one schema-valid report per entry):
 
 ```bash
@@ -105,3 +123,47 @@ and a scripted `solution.sh` so the mock executor and the harness tests can
 prove the checker passes after the intended change (and fails without it —
 `tests/eval/agent-eval-suite.test.ts` checks a no-op solution yields
 `failed`). After adding a task, refresh the baseline (above).
+
+## Session tasks and harness metrics
+
+A task with `"kind": "session"` drives one daemon session through several
+prompts (`steps[]`) instead of running one agent command. It measures the loop
+the desktop and TUI users actually experience: context growth, compaction,
+tool errors, unnecessary re-reads and cache behaviour across a whole project,
+not one patch. `asteroid-drift-15` is the first one: the 15-prompt browser game
+from the September harness review, with deterministic verifiers after the
+steps that matter (scaffold, style rules, module layout, features, tests,
+README, final CHANGELOG and high scores) and a scripted reference solution so
+the mock executor proves the checkers.
+
+Real runs go through the AgenC SDK against a daemon in an isolated home. The
+runner refuses to start a daemon in the default home:
+
+```bash
+AGENC_HOME=/absolute/isolated/home npm run eval:coding
+```
+
+The home's `config.toml` selects the model under test (the September baseline
+is `grok-4.6` at `reasoning_effort = "xhigh"` over the xAI sign-in stored for
+that home). Each step records wall time, token usage, stop reason, its verifier
+results and a `metrics` block; the task carries the aggregate:
+
+| metric | source | meaning |
+| --- | --- | --- |
+| `toolCalls`, `toolCallsByName` | live `tool_call` events | how much work each prompt took |
+| `toolErrors`, `warnings` | rollout tool results and `warning` events | failed tool calls the model had to recover from |
+| `fileReads`, `fileReReads` | live events | a re-read is a second read of a path with no Edit or Write in between |
+| `compactions`, `compactionAttempts`, `compactionFailures`, `compactionRollbacks` | live `history_reset` plus rollout `compaction_*` records | context management pressure and its failure rate |
+| `promptTokensFirst`, `promptTokensLast`, `cachedTokensLast`, `cachedTokensMax` | rollout `token_count` | context growth and prompt-cache behaviour |
+| `permissionRequests` | live events | approvals the unattended run had to deny |
+| `providerFailures` | rollout `execution_admission` `held_unknown` records | model turns the provider dropped after dispatch; a step that did no work because of one is an error, not a pass |
+| `assistantMessages`, `assistantChars`, `reasoningOutputTokens` | live events and rollout | verbosity and reasoning spend |
+
+`check:eval-regression` derives tool-error rate, re-read ratio, compactions per
+step and cache-hit ratio from these and reports their movement against the
+baseline as warnings; `--max-tool-error-rate-increase-pp`,
+`--max-reread-ratio-increase-pp` and `--max-compactions-per-step-increase`
+turn any of them into a hard gate.
+
+This lane is diagnostic and non-confirmatory, like the rest of this directory;
+competitive claims come from the TFR suites under `eval/suites/`.

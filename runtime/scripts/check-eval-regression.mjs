@@ -19,6 +19,8 @@ const schemaPath = path.join(
 const defaultBaselinePath = path.join(runtimeRoot, "eval", "baseline-report.json");
 const defaultReportsDir = path.join(runtimeRoot, "eval", "reports");
 
+import { aggregateMetrics, deriveRatios } from "./eval/session-metrics.mjs";
+
 export const DEFAULT_THRESHOLDS = {
   // Percentage points of pass-rate drop tolerated before failing.
   maxPassRateDropPct: 0,
@@ -26,6 +28,11 @@ export const DEFAULT_THRESHOLDS = {
   maxTokenIncreasePct: 20,
   // Percent increase in average duration per attempted task tolerated.
   maxLatencyIncreasePct: 50,
+  // Session-metric movements (tool-error rate, re-read ratio, compactions per
+  // step) are reported as warnings unless a limit is given on the command line.
+  maxToolErrorRateIncreasePp: undefined,
+  maxRereadRatioIncreasePp: undefined,
+  maxCompactionsPerStepIncrease: undefined,
   // Treat a config-fingerprint mismatch as a regression instead of a warning.
   requireSameConfig: false,
 };
@@ -47,6 +54,9 @@ function usage() {
     `  --max-pass-rate-drop <pp>      Tolerated pass-rate drop in percentage points (default: ${DEFAULT_THRESHOLDS.maxPassRateDropPct})`,
     `  --max-token-increase-pct <pct> Tolerated avg-token increase percent (default: ${DEFAULT_THRESHOLDS.maxTokenIncreasePct})`,
     `  --max-latency-increase-pct <pct> Tolerated avg-latency increase percent (default: ${DEFAULT_THRESHOLDS.maxLatencyIncreasePct})`,
+    "  --max-tool-error-rate-increase-pp <pp>   Fail when the session tool-error rate rises more (default: warn only)",
+    "  --max-reread-ratio-increase-pp <pp>      Fail when the session re-read ratio rises more (default: warn only)",
+    "  --max-compactions-per-step-increase <n>  Fail when compactions per step rise more (default: warn only)",
     "  --require-same-config          Fail (not warn) on config fingerprint mismatch",
     "  --json                         Emit the comparison as JSON",
   ].join("\n");
@@ -96,6 +106,15 @@ function parseArgs(argv) {
         break;
       case "--max-latency-increase-pct":
         parsed.thresholds.maxLatencyIncreasePct = readNumber();
+        break;
+      case "--max-tool-error-rate-increase-pp":
+        parsed.thresholds.maxToolErrorRateIncreasePp = readNumber();
+        break;
+      case "--max-reread-ratio-increase-pp":
+        parsed.thresholds.maxRereadRatioIncreasePp = readNumber();
+        break;
+      case "--max-compactions-per-step-increase":
+        parsed.thresholds.maxCompactionsPerStepIncrease = readNumber();
         break;
       case "--require-same-config":
         parsed.thresholds.requireSameConfig = true;
@@ -185,8 +204,19 @@ export function reportMetrics(report) {
   }
 
   const attempted = passed + failed + error;
+  const sessionTasks = report.tasks.filter(
+    (task) => task.status !== "skipped" && task.metrics && typeof task.metrics === "object",
+  );
+  const session = sessionTasks.length > 0
+    ? aggregateMetrics(sessionTasks.map((task) => ({ ...task.metrics, steps: undefined })))
+    : undefined;
+  if (session) {
+    session.steps = sessionTasks.reduce((sum, task) => sum + (task.metrics.steps ?? task.steps?.length ?? 0), 0);
+  }
   return {
     totalTasks: report.tasks.length,
+    sessionTasks: sessionTasks.length,
+    ...(session ? { session, sessionRatios: deriveRatios(session) } : {}),
     attempted,
     passed,
     failed,
@@ -251,6 +281,8 @@ export function compareReports(baseline, candidate, thresholds = {}) {
     }
   }
 
+  compareSessionRatios(base, next, limits, regressions, warnings);
+
   if (base.totalTasks !== next.totalTasks) {
     warnings.push(
       `task count changed (${base.totalTasks} -> ${next.totalTasks})`,
@@ -283,6 +315,55 @@ export function compareReports(baseline, candidate, thresholds = {}) {
   };
 }
 
+const SESSION_RATIO_CHECKS = [
+  { key: "toolErrorRate", label: "session tool-error rate", scale: 100, unit: "pp", limit: "maxToolErrorRateIncreasePp" },
+  { key: "rereadRatio", label: "session re-read ratio", scale: 100, unit: "pp", limit: "maxRereadRatioIncreasePp" },
+  { key: "compactionsPerStep", label: "compactions per step", scale: 1, unit: "", limit: "maxCompactionsPerStepIncrease" },
+];
+
+function compareSessionRatioCheck(check, base, next, limits, regressions, warnings) {
+  const before = base[check.key];
+  const after = next[check.key];
+  if (before === undefined || after === undefined) return;
+  const delta = (after - before) * check.scale;
+  if (delta <= EPSILON) return;
+  const shown = `${check.label} rose ${delta.toFixed(2)}${check.unit} ` +
+    `(${(before * check.scale).toFixed(2)}${check.unit} -> ${(after * check.scale).toFixed(2)}${check.unit})`;
+  const limit = limits[check.limit];
+  if (limit !== undefined && delta > limit + EPSILON) {
+    regressions.push(`${shown}, tolerated: ${limit}${check.unit}`);
+  } else {
+    warnings.push(shown);
+  }
+}
+
+function compareCacheHitRatio(base, next, warnings) {
+  const cacheBefore = base.cacheHitRatio;
+  const cacheAfter = next.cacheHitRatio;
+  if (cacheBefore === undefined || cacheAfter === undefined) return;
+  if (cacheBefore - cacheAfter <= EPSILON) return;
+  warnings.push(
+    `session cache-hit ratio fell ${((cacheBefore - cacheAfter) * 100).toFixed(2)}pp ` +
+      `(${(cacheBefore * 100).toFixed(2)}% -> ${(cacheAfter * 100).toFixed(2)}%)`,
+  );
+}
+
+function compareSessionRatios(base, next, limits, regressions, warnings) {
+  if (!base.sessionRatios && !next.sessionRatios) return;
+  if (!base.sessionRatios || !next.sessionRatios) {
+    warnings.push(
+      base.sessionRatios
+        ? "candidate has no session tasks; harness metrics not comparable"
+        : "baseline has no session tasks; harness metrics not enforced",
+    );
+    return;
+  }
+  for (const check of SESSION_RATIO_CHECKS) {
+    compareSessionRatioCheck(check, base.sessionRatios, next.sessionRatios, limits, regressions, warnings);
+  }
+  compareCacheHitRatio(base.sessionRatios, next.sessionRatios, warnings);
+}
+
 function compileValidator(schema) {
   const ajv = new Ajv({ allErrors: true, strict: false });
   return ajv.compile(schema);
@@ -292,6 +373,14 @@ function formatAjvErrors(errors) {
   return (errors ?? [])
     .map((error) => `- ${error.instancePath || "/"}: ${error.message}`)
     .join("\n");
+}
+
+function formatRatioPct(value) {
+  return value === undefined ? "n/a" : `${(value * 100).toFixed(2)}%`;
+}
+
+function formatRatio(value) {
+  return value === undefined ? "n/a" : value.toFixed(2);
 }
 
 function formatSummary(comparison, reportPath, baselinePath) {
@@ -304,6 +393,14 @@ function formatSummary(comparison, reportPath, baselinePath) {
     `Pass rate: ${baseline.passRatePct.toFixed(2)}% -> ${candidate.passRatePct.toFixed(2)}%`,
     `Avg tokens/task: ${baseline.avgTokens.toFixed(1)} -> ${candidate.avgTokens.toFixed(1)}`,
     `Avg latency/task: ${baseline.avgDurationMs.toFixed(0)}ms -> ${candidate.avgDurationMs.toFixed(0)}ms`,
+    ...(baseline.sessionRatios || candidate.sessionRatios
+      ? [
+          `Session tool-error rate: ${formatRatioPct(baseline.sessionRatios?.toolErrorRate)} -> ${formatRatioPct(candidate.sessionRatios?.toolErrorRate)}`,
+          `Session re-read ratio: ${formatRatioPct(baseline.sessionRatios?.rereadRatio)} -> ${formatRatioPct(candidate.sessionRatios?.rereadRatio)}`,
+          `Compactions per step: ${formatRatio(baseline.sessionRatios?.compactionsPerStep)} -> ${formatRatio(candidate.sessionRatios?.compactionsPerStep)}`,
+          `Session cache-hit ratio: ${formatRatioPct(baseline.sessionRatios?.cacheHitRatio)} -> ${formatRatioPct(candidate.sessionRatios?.cacheHitRatio)}`,
+        ]
+      : []),
     `Tasks: ${baseline.totalTasks} -> ${candidate.totalTasks} (attempted ${baseline.attempted} -> ${candidate.attempted})`,
   ];
   if (comparison.warnings.length > 0) {

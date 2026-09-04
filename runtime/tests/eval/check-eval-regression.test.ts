@@ -16,6 +16,7 @@ interface TaskRow {
   status: "passed" | "failed" | "error" | "skipped";
   durationMs: number;
   tokens?: { input: number; output: number };
+  metrics?: Record<string, number>;
 }
 
 function buildReport(options: {
@@ -44,6 +45,7 @@ function buildReport(options: {
       status: task.status,
       durationMs: task.durationMs,
       ...(task.tokens ? { tokens: task.tokens } : {}),
+      ...(task.metrics ? { kind: "session", metrics: task.metrics } : {}),
       verifiers: [],
     })),
   };
@@ -151,6 +153,61 @@ describe("check-eval-regression", () => {
       "150",
     ]);
     expect(relaxed.status).toBe(0);
+  });
+
+  function sessionTasks(metrics: Record<string, number>): TaskRow[] {
+    return [
+      ...passingTasks(3),
+      // Same duration and token cost as the plain tasks, so only the harness
+      // ratios differ between baseline and candidate.
+      { id: "session-1", status: "passed", durationMs: 1000, tokens: { input: 400, output: 100 }, metrics },
+    ];
+  }
+
+  test("session ratio movements warn by default and fail only with an explicit limit", () => {
+    const dir = tempDir();
+    const baseline = writeReport(
+      dir,
+      "baseline.json",
+      buildReport({ tasks: sessionTasks({ steps: 10, toolCalls: 100, toolErrors: 2, fileReads: 40, fileReReads: 4, compactions: 1, promptTokensLast: 1000, cachedTokensLast: 800 }) }),
+    );
+    const candidate = writeReport(
+      dir,
+      "candidate.json",
+      buildReport({ tasks: sessionTasks({ steps: 10, toolCalls: 100, toolErrors: 12, fileReads: 40, fileReReads: 12, compactions: 4, promptTokensLast: 1000, cachedTokensLast: 200 }) }),
+    );
+    const lenient = runCheck([candidate, "--baseline", baseline]);
+    expect(lenient.status).toBe(0);
+    expect(lenient.stdout).toContain("session tool-error rate rose 10.00pp");
+    expect(lenient.stdout).toContain("session re-read ratio rose 20.00pp");
+    expect(lenient.stdout).toContain("compactions per step rose 0.30");
+    expect(lenient.stdout).toContain("session cache-hit ratio fell 60.00pp");
+    const strict = runCheck([
+      candidate,
+      "--baseline",
+      baseline,
+      "--max-tool-error-rate-increase-pp",
+      "5",
+      "--max-compactions-per-step-increase",
+      "0.1",
+    ]);
+    expect(strict.status).toBe(1);
+    expect(strict.stdout).toContain("session tool-error rate rose 10.00pp");
+    expect(strict.stdout).toContain("tolerated: 5pp");
+    expect(strict.stdout).toContain("tolerated: 0.1");
+  });
+
+  test("a baseline without session tasks does not enforce harness metrics", () => {
+    const dir = tempDir();
+    const baseline = writeReport(dir, "baseline.json", buildReport({ tasks: passingTasks(4) }));
+    const candidate = writeReport(
+      dir,
+      "candidate.json",
+      buildReport({ tasks: sessionTasks({ steps: 10, toolCalls: 100, toolErrors: 50 }) }),
+    );
+    const result = runCheck([candidate, "--baseline", baseline, "--max-tool-error-rate-increase-pp", "1"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("baseline has no session tasks");
   });
 
   test("config fingerprint mismatch warns by default, fails with --require-same-config", () => {
