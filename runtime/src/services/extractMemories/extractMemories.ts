@@ -17,6 +17,11 @@
  *   - Every gate that stops a run and every failed run emits a `warning`
  *     event (`memory_extraction_skipped` / `memory_extraction_failed`) so the
  *     reason is visible in the session log instead of being swallowed.
+ *   - Skill candidates ride the same child run: the prompt asks the reviewer
+ *     for at most two draft skills, answered as a fenced block in its final
+ *     reply, and `skills/skill-candidates.ts` validates and writes them as
+ *     inactive drafts under `<AGENC_HOME>/skill-candidates`. No second
+ *     scheduler, no extra model call.
  *
  * Scope boundaries:
  *   - remote feature-service lookups, team-memory routing, and shell access.
@@ -27,8 +32,14 @@ import type { LLMMessage } from "../../llm/types.js";
 import {
   cloneLlmMessageSnapshot as cloneMessage,
 } from "../../llm/content-conversion.js";
-import type { Session } from "../../session/session.js";
+import type { Session, SessionServices } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
+import { resolveAgencHome } from "../../config/env.js";
+import {
+  isSkillCandidatesDisabledByEnv,
+  parseSkillCandidateProposals,
+  writeSkillCandidates,
+} from "../../skills/skill-candidates.js";
 import type { CompletedToolResultRecord } from "../../session/turn-state.js";
 import type {
   ChildToolPolicy,
@@ -69,7 +80,10 @@ import {
   type MemoryPathEnv,
   type ResolveAutoMemoryDirectoryOptions,
 } from "./memory-paths.js";
-import { buildExtractAutoOnlyPrompt } from "./prompts.js";
+import {
+  buildExtractAutoOnlyPrompt,
+  buildSkillCandidatesPromptSection,
+} from "./prompts.js";
 
 const READ_TOOL_NAMES = new Set(["FileRead", "Grep", "Glob"]);
 const WRITE_TOOL_NAMES = new Set(["Edit", "MultiEdit", "Write"]);
@@ -92,7 +106,9 @@ type ExtractionWarningCause =
   | "memory_extraction_skipped"
   | "memory_extraction_failed"
   | "memory_extraction_denied_read"
-  | "memory_extraction_state_not_persisted";
+  | "memory_extraction_state_not_persisted"
+  | "skill_candidate_proposed"
+  | "skill_candidate_skipped";
 
 /**
  * Record why an extraction run stopped. Warning causes outside the TUI's
@@ -149,6 +165,11 @@ export interface ExtractMemoriesChildRequest {
 export interface ExtractMemoriesChildResult {
   readonly outcome: RunAgentResult["outcome"] | "rejected";
   readonly error?: unknown;
+  /**
+   * The child's final reply. Memory lands on disk through the tool policy;
+   * this text is read only for the optional `skill-candidates` block.
+   */
+  readonly finalMessage?: string;
 }
 
 export interface ExtractMemoriesDependencies {
@@ -165,6 +186,20 @@ export interface ExtractMemoriesDependencies {
   readonly minEligibleTurns?: number;
   readonly delegateFn?: typeof delegateFn;
   readonly ensureAgentControl?: typeof ensureAgentControlFn;
+  /**
+   * AgenC home that receives skill-candidate drafts. Defaults to the
+   * session's config-store home, then `resolveAgencHome(env)`. An injected
+   * `env` that names no `AGENC_HOME` turns proposals off instead of falling
+   * back to the process user's home.
+   */
+  readonly skillCandidatesHome?: string;
+  /**
+   * Names a proposal must not duplicate. Defaults to the session's skills
+   * manager plus the bundled registry.
+   */
+  readonly listInstalledSkillNames?: (
+    session: Session,
+  ) => Promise<readonly string[]>;
 }
 
 interface QueuedExtraction {
@@ -517,7 +552,139 @@ async function defaultRunChild(
   return {
     outcome: outcome.result.outcome,
     ...(outcome.result.error !== undefined ? { error: outcome.result.error } : {}),
+    ...(outcome.result.finalMessage !== undefined
+      ? { finalMessage: outcome.result.finalMessage }
+      : {}),
   };
+}
+
+interface SkillCandidateContext {
+  readonly agencHome: string;
+  readonly installedSkillNames: readonly string[];
+}
+
+function resolveSkillCandidatesHome(
+  session: Session,
+  deps: ExtractMemoriesDependencies,
+): string | undefined {
+  if (deps.skillCandidatesHome !== undefined) return deps.skillCandidatesHome;
+  const storeHome = (session.services as Partial<SessionServices> | undefined)
+    ?.configStore?.homeContext.path;
+  if (typeof storeHome === "string" && storeHome.length > 0) return storeHome;
+  const env = deps.env;
+  if (env !== undefined && (env.AGENC_HOME ?? "").trim().length === 0) {
+    return undefined;
+  }
+  try {
+    return resolveAgencHome(env ?? process.env);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The names an accepted draft would collide with: what the session's skills
+ * manager serves (every root, plugins included) plus the bundled registry.
+ */
+async function defaultInstalledSkillNames(
+  session: Session,
+): Promise<readonly string[]> {
+  const names = new Set<string>();
+  const manager = (session.services as Partial<SessionServices> | undefined)
+    ?.skillsManager;
+  if (manager !== undefined) {
+    const outcome = await manager.skillsForConfig(
+      (session as Partial<Pick<Session, "config">>).config ?? {},
+      null,
+    );
+    for (const skill of outcome.availableSkills ?? []) names.add(skill.name);
+  }
+  const { getBundledSkills } = await import("../../skills/bundledSkills.js");
+  for (const command of getBundledSkills()) names.add(command.name);
+  return [...names];
+}
+
+/**
+ * Where drafts go and what they must not duplicate, or undefined when
+ * proposals are off: `AGENC_SKILL_CANDIDATES=0`, or no AgenC home is known.
+ */
+async function resolveSkillCandidateContext(
+  session: Session,
+  deps: ExtractMemoriesDependencies,
+): Promise<SkillCandidateContext | undefined> {
+  if (isSkillCandidatesDisabledByEnv(deps.env)) return undefined;
+  const agencHome = resolveSkillCandidatesHome(session, deps);
+  if (agencHome === undefined) return undefined;
+  let installedSkillNames: readonly string[] = [];
+  try {
+    installedSkillNames = await (
+      deps.listInstalledSkillNames ?? defaultInstalledSkillNames
+    )(session);
+  } catch (error) {
+    // The writer still refuses names that exist as drafts, and accept
+    // re-checks the full inventory; a failed lookup only weakens the prompt.
+    emitExtractionWarning(
+      session,
+      "skill_candidate_skipped",
+      `installed skill names unavailable, proposals are deduped at accept time: ${errorText(error)}`,
+    );
+  }
+  return { agencHome, installedSkillNames };
+}
+
+/**
+ * Turn the child's `skill-candidates` block into drafts on disk. Runs only
+ * after a completed extraction, and every outcome is reported through the
+ * same warning channel as the extraction itself.
+ */
+async function proposeSkillCandidates(
+  context: ExtractMemoriesContext,
+  skillCandidates: SkillCandidateContext,
+  finalMessage: string | undefined,
+): Promise<void> {
+  const session = context.session;
+  const parsed = parseSkillCandidateProposals(finalMessage);
+  for (const reason of parsed.dropped) {
+    emitExtractionWarning(session, "skill_candidate_skipped", reason);
+  }
+  if (parsed.candidates.length === 0) return;
+  const sessionId = (session as { readonly conversationId?: unknown })
+    .conversationId;
+  const conversationId = (context.ctx as { readonly conversationId?: unknown })
+    .conversationId;
+  const model = (
+    session as { readonly modelInfo?: { readonly slug?: unknown } }
+  ).modelInfo?.slug;
+  const result = await writeSkillCandidates({
+    agencHome: skillCandidates.agencHome,
+    candidates: parsed.candidates,
+    installedSkillNames: skillCandidates.installedSkillNames,
+    provenance: {
+      ...(typeof sessionId === "string" && sessionId.length > 0
+        ? { sessionId }
+        : {}),
+      ...(typeof conversationId === "string" && conversationId.length > 0
+        ? { conversationId }
+        : {}),
+      ...(typeof model === "string" && model.length > 0 ? { model } : {}),
+    },
+  });
+  for (const skipped of result.skipped) {
+    emitExtractionWarning(
+      session,
+      "skill_candidate_skipped",
+      `${skipped.slug}: ${skipped.reason}`,
+    );
+  }
+  if (result.written.length > 0) {
+    emitExtractionWarning(
+      session,
+      "skill_candidate_proposed",
+      `draft skill${result.written.length === 1 ? "" : "s"} written for review: ${result.written
+        .map((entry) => entry.slug)
+        .join(", ")} (agenc skills candidates list)`,
+    );
+  }
 }
 
 export function initExtractMemories(
@@ -693,13 +860,26 @@ export function initExtractMemories(
         queued.context.signal,
       ),
     );
-    const prompt = buildExtractAutoOnlyPrompt(
-      newMessageCount,
-      existingMemories,
-      deps.omitIndexFile ?? false,
-      memoryDir,
-      readOnlyMemoryRoots[0],
-    );
+    // Skill candidates ride this same child run: one more thing the reviewer
+    // looks for, answered in its final reply, never a second scheduler.
+    const skillCandidates = await resolveSkillCandidateContext(session, deps);
+    const prompt = [
+      buildExtractAutoOnlyPrompt(
+        newMessageCount,
+        existingMemories,
+        deps.omitIndexFile ?? false,
+        memoryDir,
+        readOnlyMemoryRoots[0],
+      ),
+      ...(skillCandidates === undefined
+        ? []
+        : [
+            "",
+            buildSkillCandidatesPromptSection(
+              skillCandidates.installedSkillNames,
+            ),
+          ]),
+    ].join("\n");
     const maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
     const childResult = await (deps.runChild ??
       ((request) => defaultRunChild(request, maxTurns, deps)))({
@@ -749,6 +929,23 @@ export function initExtractMemories(
     );
     if (savedPaths.length > 0) {
       queued.appendSavedMemories?.(savedPaths);
+    }
+    if (skillCandidates !== undefined) {
+      try {
+        await proposeSkillCandidates(
+          queued.context,
+          skillCandidates,
+          childResult.finalMessage,
+        );
+      } catch (error) {
+        // The extraction itself succeeded and advanced; a draft that could
+        // not be written is a note, not a reason to re-run the child.
+        emitExtractionWarning(
+          session,
+          "skill_candidate_skipped",
+          `draft not written: ${errorText(error)}`,
+        );
+      }
     }
   }
 

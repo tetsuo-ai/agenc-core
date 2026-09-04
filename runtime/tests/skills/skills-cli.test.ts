@@ -1,8 +1,17 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { buildSkillsInventory, parseAgenCSkillsCliArgs } from "../../src/skills/skills-cli.js";
+import { describe, expect, it, vi } from "vitest";
+import { writeSkillCandidates } from "../../src/skills/skill-candidates.js";
+import {
+  buildSkillsInventory,
+  formatAgenCSkillsCliHelpText,
+  parseAgenCSkillsCliArgs,
+  runAgenCSkillsCli,
+  type SkillsCliOptions,
+} from "../../src/skills/skills-cli.js";
+
+vi.mock("bun:bundle", () => ({ feature: () => false }));
 
 async function writeSkill(root: string, name: string): Promise<void> {
   await mkdir(join(root, name), { recursive: true });
@@ -122,6 +131,180 @@ describe("agenc skills CLI", () => {
     } finally {
       if (previousCap === undefined) delete process.env.AGENC_MAX_SKILL_FILES_PER_ROOT;
       else process.env.AGENC_MAX_SKILL_FILES_PER_ROOT = previousCap;
+    }
+  });
+});
+
+describe("agenc skills candidates CLI", () => {
+  const draft = (name: string, evidence: string[] = ["one verified run"]) => ({
+    name,
+    description: `${name} description`,
+    whenToUse: `when ${name} applies`,
+    body: `# ${name}\n\n## Steps\n\n1. do it\n\n## Verification\n\ncheck it\n`,
+    evidence,
+  });
+
+  async function seedHome(): Promise<{ agencHome: string; options: SkillsCliOptions }> {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-skills-cli-cand-"));
+    const fakeUserHome = await mkdtemp(join(tmpdir(), "agenc-skills-cli-cand-user-"));
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skills-cli-cand-ws-"));
+    await writeSkill(join(agencHome, "skills"), "my-notes");
+    await writeSkillCandidates({
+      agencHome,
+      candidates: [draft("fresh-draft"), draft("my-notes", ["a", "b"]), draft("doomed-draft")],
+      installedSkillNames: [],
+      provenance: { sessionId: "conv-1", createdAt: "2026-09-05T00:00:00.000Z" },
+    });
+    return {
+      agencHome,
+      options: {
+        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
+        workspaceRoot,
+        env: { AGENC_HOME: agencHome, HOME: fakeUserHome },
+      },
+    };
+  }
+
+  function captureOutput(): { stdout: string[]; stderr: string[]; restore: () => void } {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const outSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        stdout.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write);
+    const errSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        stderr.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+    return {
+      stdout,
+      stderr,
+      restore: () => {
+        outSpy.mockRestore();
+        errSpy.mockRestore();
+      },
+    };
+  }
+
+  it("parses the candidates commands and reports malformed ones as errors", () => {
+    expect(parseAgenCSkillsCliArgs(["skills", "candidates", "list"])).toEqual({
+      kind: "candidates-list",
+      json: false,
+    });
+    expect(parseAgenCSkillsCliArgs(["skills", "candidates", "list", "--json"])).toEqual({
+      kind: "candidates-list",
+      json: true,
+    });
+    expect(parseAgenCSkillsCliArgs(["skills", "candidates", "show", "my-draft"])).toEqual({
+      kind: "candidates-show",
+      slug: "my-draft",
+    });
+    expect(parseAgenCSkillsCliArgs(["skills", "candidates", "accept", "my-draft"])).toEqual({
+      kind: "candidates-accept",
+      slug: "my-draft",
+    });
+    expect(parseAgenCSkillsCliArgs(["skills", "candidates", "reject", "my-draft"])).toEqual({
+      kind: "candidates-reject",
+      slug: "my-draft",
+    });
+    for (const argv of [
+      ["skills", "candidates"],
+      ["skills", "candidates", "accept"],
+      ["skills", "candidates", "accept", "Bad Name"],
+      ["skills", "candidates", "accept", "../skills"],
+      ["skills", "candidates", "reject", "one", "two"],
+      ["skills", "candidates", "list", "--verbose"],
+      ["skills", "candidates", "frobnicate"],
+    ]) {
+      expect(parseAgenCSkillsCliArgs(argv), argv.join(" ")).toMatchObject({ kind: "error" });
+    }
+    // The original list contract is unchanged.
+    expect(parseAgenCSkillsCliArgs(["skills", "list", "--verbose"])).toBeNull();
+    expect(parseAgenCSkillsCliArgs(["skills", "install", "x"])).toBeNull();
+    expect(formatAgenCSkillsCliHelpText()).toContain("candidates accept <name>");
+  });
+
+  it("lists and shows drafts", async () => {
+    const { agencHome, options } = await seedHome();
+    const output = captureOutput();
+    try {
+      expect(await runAgenCSkillsCli({ kind: "candidates-list", json: false }, options)).toBe(0);
+      const text = output.stdout.join("");
+      expect(text).toContain("fresh-draft  2026-09-05T00:00:00.000Z  fresh-draft description  (1 evidence)");
+      expect(text).toContain("my-notes  2026-09-05T00:00:00.000Z  my-notes description  (2 evidence)");
+
+      output.stdout.length = 0;
+      expect(await runAgenCSkillsCli({ kind: "candidates-list", json: true }, options)).toBe(0);
+      const document = JSON.parse(output.stdout.join("")) as {
+        kind: string;
+        root: string;
+        candidates: Array<{ slug: string; evidenceCount: number }>;
+        errors: string[];
+      };
+      expect(document.kind).toBe("agenc.skills.candidates");
+      expect(document.root).toBe(join(agencHome, "skill-candidates"));
+      expect(document.candidates.map((candidate) => candidate.slug)).toEqual([
+        "doomed-draft",
+        "fresh-draft",
+        "my-notes",
+      ]);
+      expect(document.errors).toEqual([]);
+
+      output.stdout.length = 0;
+      expect(await runAgenCSkillsCli({ kind: "candidates-show", slug: "fresh-draft" }, options)).toBe(0);
+      expect(output.stdout.join("")).toContain('name: "fresh-draft"');
+      expect(output.stdout.join("")).toContain("## Verification");
+
+      expect(await runAgenCSkillsCli({ kind: "candidates-show", slug: "no-such-draft" }, options)).toBe(1);
+      expect(output.stderr.join("")).toContain("agenc: no skill candidate named no-such-draft");
+      expect(await runAgenCSkillsCli({ kind: "error", message: "boom" }, options)).toBe(1);
+      expect(output.stderr.join("")).toContain("agenc: boom");
+    } finally {
+      output.restore();
+    }
+  });
+
+  it("accepts a draft into the user skills root, refuses a taken name, and rejects", async () => {
+    const { agencHome, options } = await seedHome();
+    const output = captureOutput();
+    try {
+      expect(await runAgenCSkillsCli({ kind: "candidates-accept", slug: "my-notes" }, options)).toBe(1);
+      expect(output.stderr.join("")).toContain("a skill named my-notes is already installed");
+      await expect(stat(join(agencHome, "skill-candidates", "my-notes", "SKILL.md"))).resolves.toBeDefined();
+
+      expect(await runAgenCSkillsCli({ kind: "candidates-accept", slug: "fresh-draft" }, options)).toBe(0);
+      expect(output.stdout.join("")).toContain(
+        `accepted fresh-draft: ${join(agencHome, "skills", "fresh-draft")}`,
+      );
+      await expect(stat(join(agencHome, "skills", "fresh-draft", "SKILL.md"))).resolves.toBeDefined();
+      await expect(stat(join(agencHome, "skills", "fresh-draft", "candidate.json"))).rejects.toThrow();
+      await expect(stat(join(agencHome, "skill-candidates", "fresh-draft"))).rejects.toThrow();
+      const inventory = await buildSkillsInventory(options);
+      expect(inventory.skills.some((skill) => skill.origin === "personal" && skill.name === "fresh-draft")).toBe(true);
+
+      expect(await runAgenCSkillsCli({ kind: "candidates-reject", slug: "doomed-draft" }, options)).toBe(0);
+      expect(output.stdout.join("")).toContain("rejected doomed-draft");
+      await expect(stat(join(agencHome, "skill-candidates", "doomed-draft"))).rejects.toThrow();
+      expect(await runAgenCSkillsCli({ kind: "candidates-reject", slug: "doomed-draft" }, options)).toBe(1);
+
+      const ledger = (await readFile(join(agencHome, "skill-candidates", "ledger.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { slug: string; action: string });
+      expect(ledger.map((entry) => `${entry.slug}:${entry.action}`)).toEqual([
+        "fresh-draft:proposed",
+        "my-notes:proposed",
+        "doomed-draft:proposed",
+        "fresh-draft:accepted",
+        "doomed-draft:rejected",
+      ]);
+    } finally {
+      output.restore();
     }
   });
 });

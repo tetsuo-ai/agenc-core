@@ -179,9 +179,10 @@ that session only.
 
 #### Constraints
 
-- The parser accepts only `agenc skills list` and optional `--json`.
-  `agenc skills`, `agenc skills --help`, `agenc skills install <name>`, and any
-  extra flag return `null` from `parseAgenCSkillsCliArgs` and fall through
+- The parser accepts `agenc skills list` with optional `--json`, and the
+  `agenc skills candidates ...` commands below. `agenc skills`,
+  `agenc skills --help`, `agenc skills install <name>`, and any extra flag
+  after `list` return `null` from `parseAgenCSkillsCliArgs` and fall through
   to the default CLI route, which treats the tokens as a **session prompt**.
   Use `agenc help skills` for syntax.
 - Top-level `agenc help` / `agenc --help` does not list this command.
@@ -195,6 +196,55 @@ that session only.
   `/skills` and remain absent from `agenc skills list`.
 - Duplicate `origin:name` keys keep the first row (local snapshot before
   the bundled-registry fallback).
+
+### Skill candidates
+
+The runtime can draft a skill from a session. The memory-extraction child
+(`services/extractMemories`, see [memory.md](memory.md)) already reviews a
+finished stretch of conversation on every third eligible turn. The same run
+is told to look for one more thing: a procedure that was carried out and then
+checked (at least 3 tool calls leading to a verified outcome, such as a test
+run or a build) that no installed skill covers. It answers with a fenced
+`skill-candidates` block at the end of its final reply, at most 2 entries per
+run. The parent validates each entry (kebab-case name, one-line description
+and when-to-use, a body under 16 KiB, at least one line of evidence, and the
+memory secrets scan over every field) and writes each survivor as a draft:
+
+```text
+$AGENC_HOME/skill-candidates/<name>/SKILL.md      frontmatter + body, ready to move
+$AGENC_HOME/skill-candidates/<name>/candidate.json provenance: session, created, model, evidence
+$AGENC_HOME/skill-candidates/ledger.jsonl         {slug, action, at, sessionId} per event
+```
+
+A draft is inert. `skill-candidates` is a sibling of `$AGENC_HOME/skills`; it
+is not one of the roots in [Load paths](#load-paths-discoverskillroots) and
+the loader only walks downward from a root, so a draft never reaches the
+skill listing, the command catalog, or the model. A name that already
+belongs to an installed skill or an existing draft is skipped and logged. The
+session log carries the outcome as `warning` events with cause
+`skill_candidate_proposed` or `skill_candidate_skipped`.
+
+Review with the CLI:
+
+```text
+agenc skills candidates list [--json]
+agenc skills candidates show <name>
+agenc skills candidates accept <name>
+agenc skills candidates reject <name>
+```
+
+`list` prints one line per draft (name, created, description, evidence
+count); `--json` emits `{ schemaVersion: 1, kind: "agenc.skills.candidates",
+root, candidates, errors }`. `show` prints the SKILL.md. `accept` moves the
+directory to `$AGENC_HOME/skills/<name>/`, drops `candidate.json`, and appends
+`accepted` to the ledger; it refuses when any installed skill (any origin,
+built-ins included) or an existing directory already has that name. `reject`
+deletes the directory and appends `rejected`. Unlike `list`, a malformed
+`candidates` command is an error (exit 1), not a session prompt.
+
+`AGENC_SKILL_CANDIDATES=0` turns proposals off. Proposals also stop whenever
+memory extraction does (`AGENC_DISABLE_EXTRACT_MEMORIES`, `--bare`, auto
+memory disabled), since they ride that child run.
 
 ---
 
