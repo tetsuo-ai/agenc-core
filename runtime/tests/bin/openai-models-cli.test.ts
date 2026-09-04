@@ -16,6 +16,10 @@ import {
   runOpenAiModelsCli,
   type OpenAiModelsCliIo,
 } from '../../src/bin/openai-models-cli.js'
+import {
+  captureHeadlessModelsCliIo,
+  lastHeadlessJson,
+} from './headless-models-cli-test-helpers.js'
 
 const home = resolveHomeContext(
   { AGENC_HOME: '/tmp/agenc-openai-models-cli-test' },
@@ -34,23 +38,7 @@ const ACCESS_TOKEN = [
 ].join('.')
 
 function captureIo(fetchImpl: OpenAiModelsCliIo['fetchImpl']) {
-  let stdout = ''
-  let stderr = ''
-  const io = {
-    stdout: { write: (value: string) => (stdout += value) },
-    stderr: { write: (value: string) => (stderr += value) },
-    fetchImpl,
-  } as unknown as OpenAiModelsCliIo
-  return {
-    io,
-    stdout: () => stdout,
-    stderr: () => stderr,
-  }
-}
-
-function lastJson(output: string): Record<string, unknown> {
-  const lines = output.split('\n').filter(Boolean)
-  return JSON.parse(lines[lines.length - 1] ?? '{}') as Record<string, unknown>
+  return captureHeadlessModelsCliIo<OpenAiModelsCliIo>(fetchImpl)
 }
 
 describe('headless OpenAI model discovery CLI', () => {
@@ -102,7 +90,7 @@ describe('headless OpenAI model discovery CLI', () => {
       io,
     )
     expect(code).toBe(0)
-    expect(lastJson(stdout())).toEqual({
+    expect(lastHeadlessJson(stdout())).toEqual({
       ok: true,
       models: ['gpt-5.6-sol', 'gpt-5.4'],
       authMode: 'chatgpt',
@@ -127,7 +115,7 @@ describe('headless OpenAI model discovery CLI', () => {
       io,
     )
     expect(code).toBe(0)
-    expect(lastJson(stdout())).toEqual({
+    expect(lastHeadlessJson(stdout())).toEqual({
       ok: true,
       models: ['gpt-5'],
       authMode: 'apiKey',
@@ -148,7 +136,7 @@ describe('headless OpenAI model discovery CLI', () => {
       io,
     )
     expect(code).toBe(0)
-    expect(lastJson(stdout())).toEqual({
+    expect(lastHeadlessJson(stdout())).toEqual({
       ok: true,
       models: ['gpt-5.4-mini'],
       authMode: 'apiKey',
@@ -164,7 +152,7 @@ describe('headless OpenAI model discovery CLI', () => {
       io,
     )
     expect(code).toBe(1)
-    expect(lastJson(stdout())).toEqual({
+    expect(lastHeadlessJson(stdout())).toEqual({
       ok: false,
       error:
         'Sign in with ChatGPT or add an OpenAI API key before refreshing models.',
@@ -189,7 +177,7 @@ describe('headless OpenAI model discovery CLI', () => {
       io,
     )
     expect(code).toBe(1)
-    const verdict = lastJson(stdout())
+    const verdict = lastHeadlessJson(stdout())
     expect(verdict.ok).toBe(false)
     expect(String(verdict.error)).toContain('403')
     expect(stdout()).not.toContain(ACCESS_TOKEN)

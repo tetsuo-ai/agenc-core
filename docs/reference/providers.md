@@ -360,8 +360,8 @@ controls are omitted, and every model uses
 The K2.x 64,000-token configurable ceiling is an AgenC safety guard, not a
 published Moonshot model maximum.
 
-K3 and K2.7 always think and reject a `thinking` request field. K2.6 receives
-`thinking: { type: "enabled", keep: "all" }`. AgenC keeps
+K3 and K2.7 always think; AgenC omits the optional `thinking` request field for
+both. K2.6 receives `thinking: { type: "enabled", keep: "all" }`. AgenC keeps
 `reasoning_content` outside visible assistant text and replays every historical
 block only to the exact same Kimi provider/model when the history is intact.
 Authenticated compaction markers describe an already-authoritative projected

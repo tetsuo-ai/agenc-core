@@ -4,6 +4,7 @@ import type {
   LLMResponse,
   StreamProgressCallback,
 } from "../../types.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
 
@@ -17,7 +18,7 @@ export const KIMI_CHAT_MODELS = Object.freeze([
 ] as const);
 
 const KIMI_CHAT_MODEL_SET = new Set<string>(KIMI_CHAT_MODELS);
-const KIMI_GLOBAL_BASE_URL = "https://api.moonshot.ai/v1";
+const KIMI_GLOBAL_BASE_URL = BUILT_IN_PROVIDER_BASE_URLS.kimi;
 
 function assertKimiChatModel(model: string | undefined): void {
   if (model === undefined) return;

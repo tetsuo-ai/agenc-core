@@ -188,6 +188,11 @@ import {
   runOpenAiModelsCli,
 } from "./openai-models-cli.js";
 import {
+  formatKimiModelsCliHelpText,
+  parseKimiModelsCliArgs,
+  runKimiModelsCli,
+} from "./kimi-models-cli.js";
+import {
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
   runAgenCMcpCli,
@@ -387,6 +392,7 @@ export function formatCliHelpText(): string {
     "       agenc <openai-login|openai-logout|openai-auth-status> [--json]",
     "       agenc <grok-login|grok-logout|grok-auth-status> [--json]",
     "       agenc openai-models [--json]",
+    "       agenc kimi-models [--json]",
     "       agenc providers [--json] [--no-local-check]",
     "       agenc config <command> [args]",
     "       agenc plugin <command> [options]",
@@ -419,6 +425,7 @@ export function formatCliHelpText(): string {
     "  grok-login | grok-logout                  Manage X / xAI subscription sign-in",
     "  grok-auth-status                          Inspect X / xAI sign-in",
     "  openai-models                             List models the OpenAI credential can reach",
+    "  kimi-models                               List native Kimi models the credential can reach",
     "  providers                               Check provider readiness and local health",
     "  config                                  Show, mutate, validate, or edit config.toml",
     "  plugin                                  Manage local plugins and marketplaces",
@@ -501,6 +508,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatGrokAuthCliHelpText();
     case "openai-models":
       return formatOpenAiModelsCliHelpText();
+    case "kimi-models":
+      return formatKimiModelsCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
     case "remote":
@@ -5606,6 +5615,18 @@ export async function main(): Promise<number> {
     return runOpenAiModelsCli(openAiModelsCommand, {
       home: ingress.home,
       environment: snapshotProviderEnvironment(ingress.environment),
+    });
+  }
+  const kimiModelsCommand = parseKimiModelsCliArgs(argv);
+  if (kimiModelsCommand !== null) {
+    const ingress = captureSecureStorageIngress(process.env);
+    const moonshotApiKey = ingress.environment.MOONSHOT_API_KEY;
+    return runKimiModelsCli(kimiModelsCommand, {
+      environment: snapshotProviderEnvironment(
+        moonshotApiKey === undefined
+          ? {}
+          : { MOONSHOT_API_KEY: moonshotApiKey },
+      ),
     });
   }
   const authCommand = parseAgenCAuthCliArgs(argv);
