@@ -103,6 +103,7 @@ comparison against a committed baseline.
 | `runtime/eval/tasks/<task-id>/fixture/` | Tiny self-contained fixture repo copied into a temp workspace |
 | `runtime/eval/tasks/<task-id>/verify.mjs` | Pure deterministic checker (cwd = workspace; exit nonzero on fail; no network) |
 | `runtime/eval/tasks/<task-id>/solution.sh` + `solution/` | Scripted "mock executor" answer (proves checkers can pass) |
+| `runtime/eval/tasks/asteroid-drift-15/` | The first `kind: "session"` task: 15 prompts with per-step verifiers and a reference solution for the mock executor |
 | `runtime/eval/baseline-report.json` | Committed baseline the regression gate compares against |
 | `runtime/eval/reports/` | Gitignored output directory for fresh runs |
 | `runtime/eval/eval-config.example.json` | Example model/config matrix |
@@ -144,6 +145,20 @@ and a `configFingerprint` (sha256 over the benchmark, executor, agent command,
 agent identity, and the normalized task list) so runs are only compared
 like-for-like.
 
+## Session tasks (multi-prompt) and harness metrics
+
+`"kind": "session"` tasks drive one daemon session through `steps[].prompt`
+over the AgenC SDK, so the report measures the whole coding loop instead of one
+patch: per-step wall time and tokens, tool calls and tool errors, re-reads of a
+path with no edit in between, compaction attempts and failures, prompt-token
+growth and cached tokens, and permission requests an unattended run had to
+deny. Real session runs require `AGENC_HOME` set to an isolated home whose
+`config.toml` selects the model under test; the runner never starts a daemon in
+the default home. The mock executor installs the task's scripted solution once
+and runs every verifier, which proves the checkers. See
+[`runtime/eval/README.md`](../runtime/eval/README.md) for the metric table and
+the first session task, `asteroid-drift-15`.
+
 ## Regression gate
 
 ```bash
@@ -161,6 +176,10 @@ Exits nonzero when the candidate regresses beyond thresholds. Defaults:
 | Pass rate | passed / attempted (skipped excluded) | any drop > 0pp fails |
 | Cost | avg tokens per attempted task | > +20% fails |
 | Latency | avg duration per attempted task | > +50% fails |
+| Session tool-error rate | tool errors / tool calls across session tasks | warns; `--max-tool-error-rate-increase-pp` makes it fail |
+| Session re-read ratio | re-reads / file reads across session tasks | warns; `--max-reread-ratio-increase-pp` makes it fail |
+| Compactions per step | compactions / steps across session tasks | warns; `--max-compactions-per-step-increase` makes it fail |
+| Session cache-hit ratio | cached tokens / prompt tokens at the last turn | warns on any drop |
 
 Override with `--max-pass-rate-drop <pp>`, `--max-token-increase-pct <pct>`,
 `--max-latency-increase-pct <pct>`. A config-fingerprint mismatch is a warning

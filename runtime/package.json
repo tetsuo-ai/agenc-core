@@ -66,6 +66,8 @@
     "check:eval-contract": "tsx src/eval-contract/cli.ts",
     "check:eval-suites": "tsx src/eval-suites/cli.ts",
     "check:eval-regression": "node scripts/check-eval-regression.mjs",
+    "eval:coding:mock": "node scripts/run-agent-eval.mjs --suite eval/tasks --executor mock --provider local --model scripted-mock --output eval/reports/mock-latest.json",
+    "eval:coding": "node scripts/run-agent-eval.mjs --suite eval/tasks --executor real --agent-command \"agenc -p --output-format json --dangerously-bypass-approvals-and-sandbox {prompt}\" --output-dir eval/reports",
     "benchmark:fnd-baseline": "node benchmarks/fnd/run-baselines.mjs",
     "benchmark:fuzzy-search": "node benchmarks/fuzzy-search/run.mjs",
     "benchmark:set-cancellation": "tsx benchmarks/set-based-cancellation.ts",

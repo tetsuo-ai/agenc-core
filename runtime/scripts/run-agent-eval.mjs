@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import {
+  aggregateMetrics,
+  createStepMetrics,
+  finalizeMetrics,
+  findSessionRollout,
+  findSessionRolloutForWorkspace,
+  observePromptEvent,
+  observeRolloutRecord,
+  readRolloutDelta,
+} from "./eval/session-metrics.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -46,6 +56,11 @@ function usage() {
     "  --repo <path>           Repository/workspace path (default: cwd)",
     "  --timeout-ms <ms>       Per-command timeout (default: 600000)",
     "  --keep-workspaces       Do not delete per-task fixture workspaces",
+    "",
+    "Session tasks (manifest task.kind = 'session') drive one daemon session",
+    "through task.steps[].prompt over the AgenC SDK. They require AGENC_HOME to",
+    "point at an isolated home whose config selects the model under test; the",
+    "runner refuses to start a daemon in the default home.",
     "",
     "Task commands may use placeholders: {prompt}, {promptJson}, {taskId}, {cwd},",
     "and {taskDir} (for suite tasks with a dir).",
@@ -252,8 +267,17 @@ function normalizeTask(raw, index) {
   if (verifiers !== undefined && !Array.isArray(verifiers)) {
     throw new Error(`task ${id} verifiers must be an array`);
   }
+  const kind = asString(task.kind) ?? "command";
+  if (kind !== "command" && kind !== "session") {
+    throw new Error(`task ${id} kind must be 'command' or 'session'`);
+  }
+  const steps = kind === "session"
+    ? normalizeSteps(task.steps, id)
+    : [];
   return {
     id,
+    kind,
+    steps,
     source: asString(task.source),
     title: asString(task.title),
     prompt: typeof task.prompt === "string" ? task.prompt : "",
@@ -275,6 +299,35 @@ function normalizeTask(raw, index) {
         ? Math.max(1, Math.floor(task.timeoutMs))
         : undefined,
   };
+}
+
+function normalizeSteps(raw, taskId) {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(`session task ${taskId} needs a non-empty steps array`);
+  }
+  const seen = new Set();
+  return raw.map((entry, index) => {
+    const step = asObject(entry, `task ${taskId} steps[${index}]`);
+    const id = asString(step.id) ?? `step-${index + 1}`;
+    if (seen.has(id)) throw new Error(`task ${taskId} repeats step id ${id}`);
+    seen.add(id);
+    const prompt = asString(step.prompt);
+    if (!prompt) throw new Error(`task ${taskId} step ${id} is missing prompt`);
+    const verifiers = step.verifiers;
+    if (verifiers !== undefined && !Array.isArray(verifiers)) {
+      throw new Error(`task ${taskId} step ${id} verifiers must be an array`);
+    }
+    return {
+      id,
+      prompt,
+      verifiers: (verifiers ?? []).map((verifier, verifierIndex) =>
+        normalizeVerifier(verifier, `${taskId}/${id}`, verifierIndex)),
+      timeoutMs:
+        typeof step.timeoutMs === "number" && Number.isFinite(step.timeoutMs)
+          ? Math.max(1, Math.floor(step.timeoutMs))
+          : undefined,
+    };
+  });
 }
 
 function normalizeVerifier(raw, taskId, index) {
@@ -527,6 +580,12 @@ async function runTaskInWorkspace(task, manifest, args, workspace) {
     }
   }
 
+  if (task.kind === "session") {
+    return args.executor === "mock"
+      ? runMockSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted })
+      : runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted });
+  }
+
   const agentCommand = args.executor === "mock"
     ? task.mockCommand ?? (taskDir ? "bash {taskDir}/solution.sh" : undefined)
     : task.agentCommand ?? manifest.agentCommand ?? args.agentCommand;
@@ -594,17 +653,270 @@ async function runTaskInWorkspace(task, manifest, args, workspace) {
   });
 }
 
+async function runStepVerifiers(step, task, cwd, taskDir, timeoutMs, rawResults, riskFlags) {
+  const verifiers = [];
+  for (const verifier of step.verifiers) {
+    const result = await runCommand(renderCommand(verifier.command, task, cwd, taskDir), {
+      cwd,
+      timeoutMs,
+    });
+    rawResults.push(result);
+    verifiers.push(verifierReport(verifier, result));
+    if (result.timedOut) riskFlags.add("verifier_timeout");
+    if (result.exitCode !== 0) riskFlags.add("verifier_failed");
+  }
+  return verifiers;
+}
+
+function verifierStatus(verifiers) {
+  if (verifiers.some((verifier) => verifier.status === "error")) return "error";
+  if (verifiers.some((verifier) => verifier.status === "failed")) return "failed";
+  return "passed";
+}
+
+function sessionStatus(steps, verifiers) {
+  const all = [...steps.map((step) => step.status), verifierStatus(verifiers)];
+  if (all.includes("error")) return "error";
+  if (all.includes("failed")) return "failed";
+  return "passed";
+}
+
+/**
+ * Mock executor for a session task: the scripted solution writes the finished
+ * project once, then every step's verifiers and the task verifiers run in
+ * order. This proves the checkers accept a known-good tree and gives the
+ * regression tests a deterministic session report.
+ */
+async function runMockSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted }) {
+  const solution = task.mockCommand ?? (taskDir ? "bash {taskDir}/solution.sh" : undefined);
+  if (!solution) {
+    riskFlags.add("mock_command_missing");
+    return buildTaskReport({
+      task, status: "error", durationMs: performance.now() - taskStarted, commands, verifiers: [], riskFlags, rawResults,
+      notes: "No mock command or task dir with solution.sh configured for session task.",
+    });
+  }
+  const solutionResult = await runCommand(renderCommand(solution, task, cwd, taskDir), { cwd, timeoutMs });
+  commands.push(commandReport(solutionResult));
+  rawResults.push(solutionResult);
+  if (solutionResult.exitCode !== 0) {
+    riskFlags.add("agent_command_failed");
+    return buildTaskReport({
+      task, status: "error", durationMs: performance.now() - taskStarted, commands, verifiers: [], riskFlags, rawResults,
+    });
+  }
+  const steps = [];
+  for (const step of task.steps) {
+    const stepStarted = performance.now();
+    const verifiers = await runStepVerifiers(step, task, cwd, taskDir, step.timeoutMs ?? timeoutMs, rawResults, riskFlags);
+    steps.push({
+      id: step.id,
+      status: verifierStatus(verifiers),
+      durationMs: Math.round(performance.now() - stepStarted),
+      tokens: { input: 1, output: 1 },
+      exitCode: 0,
+      metrics: finalizeMetrics(createStepMetrics()),
+      verifiers,
+    });
+  }
+  const verifiers = await runStepVerifiers({ verifiers: task.verifiers }, task, cwd, taskDir, timeoutMs, rawResults, riskFlags);
+  return buildTaskReport({
+    task,
+    status: sessionStatus(steps, verifiers),
+    durationMs: performance.now() - taskStarted,
+    commands,
+    verifiers,
+    riskFlags,
+    rawResults,
+    tokens: { input: steps.length, output: steps.length },
+    steps,
+    metrics: aggregateMetrics(steps.map((step) => step.metrics)),
+  });
+}
+
+async function loadSdk() {
+  const candidates = [
+    new URL("../../packages/agenc-sdk/dist/index.js", import.meta.url).href,
+    "@tetsuo-ai/agenc-sdk",
+  ];
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      return await import(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(
+    `session tasks need the built AgenC SDK (npm run build --workspace=@tetsuo-ai/agenc-sdk): ${lastError?.message ?? "not found"}`,
+  );
+}
+
+/**
+ * The daemon names rollout directories by conversation id, which the SDK does
+ * not expose. `agent.logs` reports each session's rolloutPath directly; when
+ * that call is unavailable the runner falls back to matching the workspace.
+ */
+async function rolloutPathFromAgentLogs(client, session) {
+  if (!session.agentId || typeof client.agentLogs !== "function") return undefined;
+  try {
+    const logs = await client.agentLogs(session.agentId);
+    const entry = (logs?.sessions ?? []).find(
+      (candidate) => candidate.sessionId === session.sessionId && typeof candidate.rolloutPath === "string",
+    ) ?? (logs?.sessions ?? []).find((candidate) => typeof candidate.rolloutPath === "string");
+    return entry?.rolloutPath;
+  } catch {
+    return undefined;
+  }
+}
+
+function requireIsolatedHome(env) {
+  const home = env.AGENC_HOME;
+  if (typeof home !== "string" || !path.isAbsolute(home)) {
+    throw new Error(
+      "session tasks require AGENC_HOME set to an absolute, isolated home; the eval runner will not start a daemon in the default home",
+    );
+  }
+  return home;
+}
+
+/**
+ * Real executor for a session task: one daemon session in the isolated
+ * AGENC_HOME, each step a prompt over the SDK. Live prompt events feed the
+ * tool-call, re-read, compaction and permission counters; the session rollout
+ * feeds token counts, tool errors and compaction attempts after each step.
+ */
+async function runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted }) {
+  const agencHome = requireIsolatedHome(process.env);
+  const sdk = await loadSdk();
+  const client = await sdk.connect({
+    env: process.env,
+    clientName: "agenc-eval",
+    onPermissionRequest: () => ({ behavior: "deny", reason: "eval runner denies interactive approvals" }),
+  });
+  const steps = [];
+  const tokens = { input: 0, output: 0, total: 0 };
+  let session;
+  let rolloutPath;
+  let rolloutOffset = 0;
+  // Rollouts written before this instant belong to earlier sessions in the home.
+  const sessionStartedMs = Date.now() - 5000;
+  try {
+    session = await client.createSession({
+      cwd,
+      pluginStorageRoot: path.join(agencHome, "plugins"),
+      dangerouslyBypassApprovalsAndSandbox: true,
+      metadata: { evalTaskId: task.id, evalRunner: "run-agent-eval" },
+    });
+    for (const step of task.steps) {
+      const stepStarted = performance.now();
+      const metrics = createStepMetrics();
+      const controller = new AbortController();
+      const stepTimeout = step.timeoutMs ?? timeoutMs;
+      const timer = setTimeout(() => controller.abort(new Error(`step ${step.id} exceeded ${stepTimeout} ms`)), stepTimeout);
+      let stepResult;
+      let stepError;
+      try {
+        const run = session.prompt(step.prompt, {
+          includeUsage: true,
+          clientMessageId: `eval-${task.id}-${step.id}`,
+          signal: controller.signal,
+          onPermissionRequest: () => ({ behavior: "deny", reason: "eval runner denies interactive approvals" }),
+        });
+        for await (const event of run) observePromptEvent(metrics, event);
+        stepResult = await run.result();
+      } catch (error) {
+        stepError = error;
+        if (controller.signal.aborted) riskFlags.add("agent_timeout");
+      } finally {
+        clearTimeout(timer);
+      }
+      rolloutPath ??= (await rolloutPathFromAgentLogs(client, session))
+        ?? findSessionRolloutForWorkspace(agencHome, cwd, sessionStartedMs)
+        ?? findSessionRollout(agencHome, session.sessionId);
+      if (rolloutPath) {
+        const delta = readRolloutDelta(rolloutPath, rolloutOffset);
+        rolloutOffset = delta.offset;
+        for (const record of delta.records) observeRolloutRecord(metrics, record);
+      } else {
+        riskFlags.add("rollout_not_found");
+      }
+      const usage = stepResult?.usage && typeof stepResult.usage === "object" ? stepResult.usage : undefined;
+      const stepTokens = usage
+        ? {
+            ...(Number.isFinite(usage.inputTokens) ? { input: usage.inputTokens } : {}),
+            ...(Number.isFinite(usage.outputTokens) ? { output: usage.outputTokens } : {}),
+            ...(Number.isFinite(usage.totalTokens) ? { total: usage.totalTokens } : {}),
+          }
+        : undefined;
+      if (stepTokens) {
+        tokens.input += stepTokens.input ?? 0;
+        tokens.output += stepTokens.output ?? 0;
+        tokens.total += stepTokens.total ?? (stepTokens.input ?? 0) + (stepTokens.output ?? 0);
+      }
+      const exitCode = stepError ? 1 : stepResult?.exitCode ?? 1;
+      if (exitCode !== 0) riskFlags.add("agent_command_failed");
+      const verifiers = exitCode === 0
+        ? await runStepVerifiers(step, task, cwd, taskDir, timeoutMs, rawResults, riskFlags)
+        : [];
+      const notes = stepError
+        ? `step ${step.id}: ${stepError.message}`.slice(0, 1000)
+        : undefined;
+      steps.push({
+        id: step.id,
+        status: exitCode !== 0 ? "error" : verifierStatus(verifiers),
+        durationMs: Math.round(performance.now() - stepStarted),
+        ...(stepTokens ? { tokens: stepTokens } : {}),
+        ...(stepResult?.stopReason ? { stopReason: String(stepResult.stopReason) } : {}),
+        exitCode,
+        metrics: finalizeMetrics(metrics),
+        verifiers,
+        ...(notes ? { notes } : {}),
+      });
+      if (exitCode !== 0) break;
+    }
+  } finally {
+    if (session) {
+      await session.terminate("eval session complete").catch(() => {});
+    }
+    await client.close().catch(() => {});
+  }
+  const sessionNote = session
+    ? `session ${session.sessionId}${rolloutPath ? ` rollout ${path.basename(rolloutPath)}` : " (rollout not found)"}`
+    : "session was not created";
+  const completed = steps.length === task.steps.length && steps.every((step) => step.status !== "error");
+  const verifiers = completed
+    ? await runStepVerifiers({ verifiers: task.verifiers }, task, cwd, taskDir, timeoutMs, rawResults, riskFlags)
+    : [];
+  return buildTaskReport({
+    task,
+    status: completed ? sessionStatus(steps, verifiers) : "error",
+    durationMs: performance.now() - taskStarted,
+    commands,
+    verifiers,
+    riskFlags,
+    rawResults,
+    tokens: tokens.total > 0 || tokens.input > 0 ? tokens : undefined,
+    steps,
+    metrics: aggregateMetrics(steps.map((step) => step.metrics)),
+    notes: [sessionNote, taskNotes(rawResults)].filter(Boolean).join("\n").slice(0, 4000),
+  });
+}
+
 function buildTaskReport(args) {
   const notes = args.notes ?? taskNotes(args.rawResults);
   return {
     id: args.task.id,
     ...(args.task.source ? { source: args.task.source } : {}),
     ...(args.task.title ? { title: args.task.title } : {}),
+    ...(args.task.kind === "session" ? { kind: "session" } : {}),
     status: args.status,
     durationMs: Math.round(args.durationMs),
     ...(args.tokens ? { tokens: args.tokens } : {}),
     ...(args.commands.length > 0 ? { commands: args.commands } : {}),
     verifiers: args.verifiers,
+    ...(args.steps ? { steps: args.steps } : {}),
+    ...(args.metrics ? { metrics: args.metrics } : {}),
     ...(args.riskFlags.size > 0 ? { riskFlags: [...args.riskFlags].sort() } : {}),
     ...(notes ? { notes } : {}),
   };
@@ -644,6 +956,12 @@ function computeConfigFingerprint(manifest, effective) {
     },
     tasks: manifest.tasks.map((task) => ({
       id: task.id,
+      kind: task.kind,
+      steps: task.steps.map((step) => ({
+        id: step.id,
+        prompt: step.prompt,
+        verifiers: step.verifiers,
+      })),
       prompt: task.prompt,
       setupCommands: task.setupCommands,
       agentCommand: task.agentCommand ?? null,

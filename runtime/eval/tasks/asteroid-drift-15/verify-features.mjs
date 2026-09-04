@@ -1,0 +1,10 @@
+import { requireAny, ok } from "./checks.mjs";
+requireAny([/particle/i], "a particle explosion");
+requireAny([/shake/i], "screen shake");
+requireAny([/AudioContext|createOscillator/], "WebAudio oscillator beeps");
+requireAny([/mute/i], "a mute toggle");
+requireAny([/shield/i], "a shield power-up");
+requireAny([/slow/i], "a slow-time power-up");
+requireAny([/level/i], "levels");
+requireAny([/touch|pointer/i], "touch or pointer controls");
+ok("feature markers present: particles, shake, audio, mute, shield, slow-time, levels, touch");

@@ -129,6 +129,8 @@ function summarizeReport(report) {
   let tokenCount = 0;
   let commandCount = 0;
   let failedCommandCount = 0;
+  const sessions = { tasks: 0, steps: 0, stepDurationMs: 0 };
+  for (const key of SESSION_SUM_KEYS) sessions[key] = 0;
 
   for (const task of report.tasks) {
     taskCounts[task.status] += 1;
@@ -147,6 +149,19 @@ function summarizeReport(report) {
 
     for (const verifier of task.verifiers) {
       verifierCounts[verifier.status] += 1;
+    }
+    for (const step of task.steps ?? []) {
+      for (const verifier of step.verifiers ?? []) {
+        verifierCounts[verifier.status] += 1;
+      }
+    }
+    if (task.metrics) {
+      sessions.tasks += 1;
+      sessions.steps += task.metrics.steps ?? task.steps?.length ?? 0;
+      sessions.stepDurationMs += (task.steps ?? []).reduce((sum, step) => sum + step.durationMs, 0);
+      for (const key of SESSION_SUM_KEYS) {
+        sessions[key] += task.metrics[key] ?? 0;
+      }
     }
 
     for (const flag of task.riskFlags ?? []) {
@@ -188,8 +203,33 @@ function summarizeReport(report) {
     riskFlags: Object.fromEntries(
       [...riskFlags.entries()].sort((a, b) => a[0].localeCompare(b[0])),
     ),
+    ...(sessions.tasks > 0
+      ? {
+          sessions: {
+            ...sessions,
+            avgStepDurationMs: sessions.steps > 0
+              ? Math.round(sessions.stepDurationMs / sessions.steps)
+              : 0,
+            toolErrorRate: percent(sessions.toolErrors, sessions.toolCalls),
+            rereadRate: percent(sessions.fileReReads, sessions.fileReads),
+          },
+        }
+      : {}),
   };
 }
+
+const SESSION_SUM_KEYS = [
+  "toolCalls",
+  "toolErrors",
+  "fileReads",
+  "fileReReads",
+  "compactions",
+  "compactionAttempts",
+  "compactionFailures",
+  "compactionRollbacks",
+  "permissionRequests",
+  "warnings",
+];
 
 function formatPercent(value) {
   return `${value.toFixed(2)}%`;
@@ -225,6 +265,13 @@ function formatMarkdownSummary(summary) {
     `Duration: ${formatDuration(summary.durationMs)}`,
     `Commands: ${summary.commands.total} total, ${summary.commands.failed} failed`,
     riskLine,
+    ...(summary.sessions
+      ? [
+          `Sessions: ${summary.sessions.tasks} task(s), ${summary.sessions.steps} steps, avg step ${formatDuration(summary.sessions.avgStepDurationMs)}`,
+          `Session tools: ${summary.sessions.toolCalls} calls, ${summary.sessions.toolErrors} errors (${formatPercent(summary.sessions.toolErrorRate)}), ${summary.sessions.fileReReads}/${summary.sessions.fileReads} re-reads (${formatPercent(summary.sessions.rereadRate)})`,
+          `Session context: ${summary.sessions.compactions} compactions (${summary.sessions.compactionAttempts} attempts, ${summary.sessions.compactionFailures} failed, ${summary.sessions.compactionRollbacks} rolled back), ${summary.sessions.permissionRequests} permission requests, ${summary.sessions.warnings} warnings`,
+        ]
+      : []),
   ].join("\n");
 }
 

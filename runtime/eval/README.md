@@ -105,3 +105,46 @@ and a scripted `solution.sh` so the mock executor and the harness tests can
 prove the checker passes after the intended change (and fails without it —
 `tests/eval/agent-eval-suite.test.ts` checks a no-op solution yields
 `failed`). After adding a task, refresh the baseline (above).
+
+## Session tasks and harness metrics
+
+A task with `"kind": "session"` drives one daemon session through several
+prompts (`steps[]`) instead of running one agent command. It measures the loop
+the desktop and TUI users actually experience: context growth, compaction,
+tool errors, unnecessary re-reads and cache behaviour across a whole project,
+not one patch. `asteroid-drift-15` is the first one: the 15-prompt browser game
+from the September harness review, with deterministic verifiers after the
+steps that matter (scaffold, style rules, module layout, features, tests,
+README, final CHANGELOG and high scores) and a scripted reference solution so
+the mock executor proves the checkers.
+
+Real runs go through the AgenC SDK against a daemon in an isolated home. The
+runner refuses to start a daemon in the default home:
+
+```bash
+AGENC_HOME=/absolute/isolated/home npm run eval:coding
+```
+
+The home's `config.toml` selects the model under test (the September baseline
+is `grok-4.6` at `reasoning_effort = "xhigh"` over the xAI sign-in stored for
+that home). Each step records wall time, token usage, stop reason, its verifier
+results and a `metrics` block; the task carries the aggregate:
+
+| metric | source | meaning |
+| --- | --- | --- |
+| `toolCalls`, `toolCallsByName` | live `tool_call` events | how much work each prompt took |
+| `toolErrors`, `warnings` | rollout tool results and `warning` events | failed tool calls the model had to recover from |
+| `fileReads`, `fileReReads` | live events | a re-read is a second read of a path with no Edit or Write in between |
+| `compactions`, `compactionAttempts`, `compactionFailures`, `compactionRollbacks` | live `history_reset` plus rollout `compaction_*` records | context management pressure and its failure rate |
+| `promptTokensFirst`, `promptTokensLast`, `cachedTokensLast`, `cachedTokensMax` | rollout `token_count` | context growth and prompt-cache behaviour |
+| `permissionRequests` | live events | approvals the unattended run had to deny |
+| `assistantMessages`, `assistantChars`, `reasoningOutputTokens` | live events and rollout | verbosity and reasoning spend |
+
+`check:eval-regression` derives tool-error rate, re-read ratio, compactions per
+step and cache-hit ratio from these and reports their movement against the
+baseline as warnings; `--max-tool-error-rate-increase-pp`,
+`--max-reread-ratio-increase-pp` and `--max-compactions-per-step-increase`
+turn any of them into a hard gate.
+
+This lane is diagnostic and non-confirmatory, like the rest of this directory;
+competitive claims come from the TFR suites under `eval/suites/`.

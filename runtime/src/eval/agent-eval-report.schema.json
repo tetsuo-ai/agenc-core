@@ -4,7 +4,11 @@
   "title": "AgenC Agent Evaluation Report",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "run", "tasks"],
+  "required": [
+    "schemaVersion",
+    "run",
+    "tasks"
+  ],
   "properties": {
     "schemaVersion": {
       "type": "integer",
@@ -13,7 +17,13 @@
     "run": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "benchmark", "startedAt", "finishedAt", "agent"],
+      "required": [
+        "id",
+        "benchmark",
+        "startedAt",
+        "finishedAt",
+        "agent"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -34,7 +44,9 @@
         "agent": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["name"],
+          "required": [
+            "name"
+          ],
           "properties": {
             "name": {
               "type": "string",
@@ -104,7 +116,12 @@
   "definitions": {
     "status": {
       "type": "string",
-      "enum": ["passed", "failed", "error", "skipped"]
+      "enum": [
+        "passed",
+        "failed",
+        "error",
+        "skipped"
+      ]
     },
     "tokenUsage": {
       "type": "object",
@@ -127,7 +144,9 @@
     "command": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command"],
+      "required": [
+        "command"
+      ],
       "properties": {
         "command": {
           "type": "string",
@@ -145,7 +164,10 @@
     "verifier": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "status"],
+      "required": [
+        "name",
+        "status"
+      ],
       "properties": {
         "name": {
           "type": "string",
@@ -184,7 +206,12 @@
     "task": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "status", "durationMs", "verifiers"],
+      "required": [
+        "id",
+        "status",
+        "durationMs",
+        "verifiers"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -230,6 +257,151 @@
             "minLength": 1
           },
           "uniqueItems": true
+        },
+        "notes": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "command",
+            "session"
+          ],
+          "description": "command: one agent command per task (default). session: one daemon session driven through several prompts."
+        },
+        "metrics": {
+          "$ref": "#/definitions/sessionMetrics"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          }
+        }
+      }
+    },
+    "sessionMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Harness metrics of one prompt turn or one whole session, from the live prompt events and the session rollout.",
+      "properties": {
+        "toolCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolCallsByName": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "toolErrors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fileReads": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fileReReads": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compactions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compactionAttempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compactionFailures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compactionRollbacks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "permissionRequests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warnings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "assistantMessages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "assistantChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reasoningOutputTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "promptTokensFirst": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "promptTokensLast": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cachedTokensLast": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cachedTokensMax": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "steps": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "durationMs"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/status"
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens": {
+          "$ref": "#/definitions/tokenUsage"
+        },
+        "stopReason": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "metrics": {
+          "$ref": "#/definitions/sessionMetrics"
+        },
+        "verifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/verifier"
+          }
         },
         "notes": {
           "type": "string"

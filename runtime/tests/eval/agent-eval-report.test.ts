@@ -119,6 +119,40 @@ function validReport() {
   };
 }
 
+function sessionTask() {
+  return {
+    id: "session-15",
+    kind: "session",
+    status: "passed",
+    durationMs: 900000,
+    tokens: { input: 400000, output: 60000, total: 460000 },
+    verifiers: [{ name: "final", status: "passed", command: "node verify-final.mjs" }],
+    steps: [
+      {
+        id: "01-scaffold",
+        status: "passed",
+        durationMs: 60000,
+        tokens: { input: 20000, output: 3000 },
+        stopReason: "stop",
+        exitCode: 0,
+        metrics: {
+          toolCalls: 12,
+          toolCallsByName: { FileRead: 4, FileWrite: 2, Bash: 6 },
+          toolErrors: 0,
+          fileReads: 4,
+          fileReReads: 1,
+          compactions: 0,
+          promptTokensFirst: 15000,
+          promptTokensLast: 19000,
+          cachedTokensLast: 14000,
+        },
+        verifiers: [{ name: "scaffold", status: "passed" }],
+      },
+    ],
+    metrics: { steps: 1, toolCalls: 12, toolErrors: 0, fileReads: 4, fileReReads: 1, compactions: 0 },
+  };
+}
+
 describe("agent eval report schema", () => {
   test("validates the documented report shape", () => {
     const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
@@ -126,6 +160,27 @@ describe("agent eval report schema", () => {
     const validate = ajv.compile(schema);
 
     expect(validate(validReport()), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  test("validates a session task with steps and harness metrics", () => {
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
+    const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+    const report = validReport();
+    report.tasks.push(sessionTask() as never);
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  test("rejects unknown metric fields and unknown task kinds", () => {
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
+    const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+    const unknownMetric = validReport();
+    const task = sessionTask();
+    (task.metrics as Record<string, unknown>).vibes = 1;
+    unknownMetric.tasks.push(task as never);
+    expect(validate(unknownMetric)).toBe(false);
+    const unknownKind = validReport();
+    unknownKind.tasks.push({ ...sessionTask(), kind: "swarm" } as never);
+    expect(validate(unknownKind)).toBe(false);
   });
 });
 
