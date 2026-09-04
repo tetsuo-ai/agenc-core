@@ -127,7 +127,7 @@ describe("micro compact — memory-bound-naming (live tool names)", () => {
           })),
         ),
         ...Array.from({ length: 6 }, (_, index) =>
-          toolResult(`other-${index + 1}`, "y".repeat(6_500))),
+          toolResult(`other-${index + 1}`, "y".repeat(25_000))),
       ];
 
       const result = await microcompactMessages(messages);

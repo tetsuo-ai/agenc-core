@@ -16,6 +16,10 @@ import { isRecord } from "../../utils/record.js";
 
 const MICROCOMPACT_MIN_CHARS = 6_000;
 const MICROCOMPACT_KEEP_RECENT = 5;
+/** Live compactable tool output (characters) a history may hold before the oldest results are cleared. */
+const MICROCOMPACT_PRESSURE_CHARS = 120_000;
+/** Share of the context window (at 4 characters per token) that caps that limit for small models. */
+const MICROCOMPACT_PRESSURE_WINDOW_SHARE = 0.25;
 const TOOL_RESULT_CLEARED_MESSAGE = "[Old tool result content cleared]";
 const MCP_TOOL_PREFIX = "mcp__";
 // Tool names MUST match the names the LIVE tool registry registers, not the
@@ -51,6 +55,79 @@ const PATH_BEARING_READ_TOOLS = new Set(["FileRead", "Read"]);
 
 let microcompactSequence = 0;
 
+function standaloneKey(message: RuntimeMessage, index: number): string {
+  return message.toolCallId ?? `msg:${index}`;
+}
+
+interface CompactableResultPosition {
+  readonly toolUseId: string;
+  /** Length of the result text as the model would see it. */
+  readonly chars: number;
+  /** Inside the time-based clear window: never a victim. */
+  readonly recent: boolean;
+}
+
+function pressureLimitChars(contextWindowTokens: number | undefined): number {
+  if (
+    contextWindowTokens === undefined ||
+    !Number.isFinite(contextWindowTokens) ||
+    contextWindowTokens <= 0
+  ) {
+    return MICROCOMPACT_PRESSURE_CHARS;
+  }
+  const windowShare = Math.floor(contextWindowTokens * 4 * MICROCOMPACT_PRESSURE_WINDOW_SHARE);
+  return Math.min(MICROCOMPACT_PRESSURE_CHARS, Math.max(MICROCOMPACT_MIN_CHARS * 2, windowShare));
+}
+
+/**
+ * Which compactable results are cleared, replayed over the append-only
+ * history so every projection of one history agrees byte for byte. Results
+ * accumulate until their live text exceeds the pressure limit; the valve then
+ * clears the oldest clearable ones down to half the limit, never the most
+ * recent ones, never the latest read of a path, never a result inside the
+ * time window. Between two firings nothing moves, so the provider's cached
+ * prefix breaks once per batch instead of once per call, which is what a
+ * recent-N window sliding with every tool result did (measured as mid-turn
+ * cache misses of the whole tail).
+ */
+function decideClearedResults(
+  positions: readonly CompactableResultPosition[],
+  readPathByToolUseId: ReadonlyMap<string, string>,
+  limitChars: number,
+): Set<string> {
+  const cleared = new Set<string>();
+  const live: CompactableResultPosition[] = [];
+  const latestReadByPath = new Map<string, string>();
+  const target = Math.floor(limitChars / 2);
+  let liveChars = 0;
+  for (const position of positions) {
+    const path = readPathByToolUseId.get(position.toolUseId);
+    if (path !== undefined) latestReadByPath.set(path, position.toolUseId);
+    if (position.chars < MICROCOMPACT_MIN_CHARS) continue;
+    live.push(position);
+    liveChars += position.chars;
+    if (liveChars <= limitChars) continue;
+    for (
+      let index = 0;
+      index < live.length - MICROCOMPACT_KEEP_RECENT && liveChars > target;
+
+    ) {
+      const victim = live[index]!;
+      const victimPath = readPathByToolUseId.get(victim.toolUseId);
+      const isLatestReadOfPath =
+        victimPath !== undefined && latestReadByPath.get(victimPath) === victim.toolUseId;
+      if (victim.recent || isLatestReadOfPath) {
+        index += 1;
+        continue;
+      }
+      cleared.add(victim.toolUseId);
+      liveChars -= victim.chars;
+      live.splice(index, 1);
+    }
+  }
+  return cleared;
+}
+
 export async function microcompactMessages(
   messages: RuntimeMessage[],
   context?: CompactContext,
@@ -63,41 +140,35 @@ export async function microcompactMessages(
 }> {
   const compactableIds = collectCompactableToolUseIds(messages);
   const readPathByToolUseId = collectReadFilePaths(messages);
-  const compactableResultPositions = collectCompactableToolResultPositions(
-    messages,
-    compactableIds,
-  );
-  const keepIds = new Set(
-    compactableResultPositions
-      .slice(-MICROCOMPACT_KEEP_RECENT)
-      .map((position) => position.toolUseId),
-  );
-  // Path-aware retention: always preserve the most-recently-read result for
-  // each distinct file path the agent has read. Without this, the active
-  // working file is evicted by the flat recent-N window and the agent
-  // re-reads it on the next turn (context-retention thrash).
-  for (
-    const toolUseId of latestReadResultPerPath(
-      compactableResultPositions,
-      readPathByToolUseId,
-    )
-  ) {
-    keepIds.add(toolUseId);
-  }
   const clearAfterMs = getTimeBasedMicrocompactClearAfterMs();
   const now = Date.now();
+  const positions = collectCompactableToolResultPositions(
+    messages,
+    compactableIds,
+    now,
+    clearAfterMs,
+  );
   const apiContextManagement = getAPIContextManagement(
     context?.options?.apiMicrocompact,
   );
+  // Stable labels: a cleared result is named by its position among the
+  // compactable results, which the append-only history never changes, instead
+  // of by a process counter that renumbered it on every re-projection.
+  const positionByToolUseId = new Map<string, number>(
+    positions.map((position, index) => [position.toolUseId, index + 1]),
+  );
+  const clearedIds = decideClearedResults(
+    positions,
+    readPathByToolUseId,
+    pressureLimitChars(context?.options?.contextWindowTokens),
+  );
+
   return {
-    messages: messages.map((message) => {
-      const rewrittenBlocks = isWithinTimeWindow(message, now, clearAfterMs)
-        ? undefined
-        : microcompactContentBlocks(
-          message.message?.content ?? message.content,
-          compactableIds,
-          keepIds,
-        );
+    messages: messages.map((message, index) => {
+      const rewrittenBlocks = microcompactContentBlocks(
+        message.message?.content ?? message.content,
+        clearedIds,
+      );
       if (rewrittenBlocks !== undefined) {
         return {
           ...message,
@@ -109,32 +180,16 @@ export async function microcompactMessages(
           isMeta: true,
         };
       }
+      const key = standaloneKey(message, index);
+      if (!clearedIds.has(key)) return message;
       const text = messageText(message);
-      // gaphunt3 #3: mirror the content-block branch's compactable-tool gate
-      // on the standalone tool-message branch. The live pipeline stores tool
-      // results as standalone role:"tool" messages, so without this gate every
-      // large result was cleared regardless of the COMPACTABLE_TOOLS allowlist,
-      // discarding results from non-compactable tools (Task/agent/custom tools).
-      const isNonCompactableTool =
-        message.toolName !== undefined && !isCompactableTool(message.toolName);
-      const isExcludedById =
-        message.toolCallId !== undefined &&
-        compactableIds.size > 0 &&
-        !compactableIds.has(message.toolCallId) &&
-        !(message.toolName !== undefined && isCompactableTool(message.toolName));
-      if (
-        text.length < MICROCOMPACT_MIN_CHARS ||
-        !isToolLikeMessage(message) ||
-        isNonCompactableTool ||
-        isExcludedById ||
-        (message.toolCallId !== undefined && keepIds.has(message.toolCallId)) ||
-        isWithinTimeWindow(message, now, clearAfterMs)
-      ) {
-        return message;
-      }
       microcompactSequence += 1;
+      const label =
+        (message.toolCallId !== undefined
+          ? positionByToolUseId.get(message.toolCallId)
+          : undefined) ?? index + 1;
       const content =
-        `[microcompact:${microcompactSequence}] Older tool output compressed; original length ${text.length.toLocaleString()} characters.`;
+        `[microcompact:${label}] Older tool output compressed; original length ${text.length.toLocaleString()} characters.`;
       return {
         ...message,
         content,
@@ -238,37 +293,22 @@ function readFilePathFromInput(input: unknown): string | undefined {
     : undefined;
 }
 
-/**
- * For each distinct file path, return the tool_use id of its last (most
- * recent) result position so that the active working file is never evicted.
- */
-function latestReadResultPerPath(
-  resultPositions: ReadonlyArray<{ readonly toolUseId: string }>,
-  readPathByToolUseId: ReadonlyMap<string, string>,
-): Set<string> {
-  const latestByPath = new Map<string, string>();
-  for (const position of resultPositions) {
-    const filePath = readPathByToolUseId.get(position.toolUseId);
-    if (filePath === undefined) continue;
-    latestByPath.set(filePath, position.toolUseId);
-  }
-  return new Set(latestByPath.values());
-}
 
 function collectCompactableToolResultPositions(
   messages: readonly RuntimeMessage[],
   compactableIds: ReadonlySet<string>,
-): Array<{ readonly toolUseId: string }> {
-  const positions: Array<{ readonly toolUseId: string }> = [];
+  now: number,
+  clearAfterMs: number,
+): CompactableResultPosition[] {
+  const positions: CompactableResultPosition[] = [];
   for (const message of messages) {
-    if (
-      (message.role === "tool" || message.originalRole === "tool") &&
-      message.toolCallId !== undefined &&
-      (compactableIds.size === 0 ||
-        compactableIds.has(message.toolCallId) ||
-        (message.toolName !== undefined && isCompactableTool(message.toolName)))
-    ) {
-      positions.push({ toolUseId: message.toolCallId });
+    const recent = isWithinTimeWindow(message, now, clearAfterMs);
+    if (isStandaloneCompactableResult(message, compactableIds)) {
+      positions.push({
+        toolUseId: message.toolCallId!,
+        chars: messageText(message).length,
+        recent,
+      });
       continue;
     }
     for (const block of asContentBlocks(message.message?.content ?? message.content)) {
@@ -276,17 +316,36 @@ function collectCompactableToolResultPositions(
         continue;
       }
       if (compactableIds.size === 0 || compactableIds.has(block.tool_use_id)) {
-        positions.push({ toolUseId: block.tool_use_id });
+        positions.push({
+          toolUseId: block.tool_use_id,
+          chars: stringifyContent(block.content ?? "").length,
+          recent,
+        });
       }
     }
   }
   return positions;
 }
 
+/**
+ * The live pipeline stores tool results as standalone role:"tool" messages.
+ * They count only when the tool is compactable (gaphunt3 #3: results of
+ * Task/agent/custom tools are never cleared), by allowlisted name or by the
+ * id the assistant's tool_use gave them.
+ */
+function isStandaloneCompactableResult(
+  message: RuntimeMessage,
+  compactableIds: ReadonlySet<string>,
+): boolean {
+  if (message.role !== "tool" && message.originalRole !== "tool") return false;
+  if (message.toolCallId === undefined || !isToolLikeMessage(message)) return false;
+  if (message.toolName !== undefined) return isCompactableTool(message.toolName);
+  return compactableIds.size === 0 || compactableIds.has(message.toolCallId);
+}
+
 function microcompactContentBlocks(
   content: unknown,
-  compactableIds: ReadonlySet<string>,
-  keepIds: ReadonlySet<string>,
+  clearedIds: ReadonlySet<string>,
 ): unknown[] | undefined {
   const blocks = asContentBlocks(content);
   if (blocks.length === 0) return undefined;
@@ -295,12 +354,7 @@ function microcompactContentBlocks(
     if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") {
       return block;
     }
-    if (keepIds.has(block.tool_use_id)) return block;
-    if (compactableIds.size > 0 && !compactableIds.has(block.tool_use_id)) {
-      return block;
-    }
-    const text = stringifyContent(block.content ?? "");
-    if (text.length < MICROCOMPACT_MIN_CHARS) return block;
+    if (!clearedIds.has(block.tool_use_id)) return block;
     touched = true;
     return {
       ...block,
