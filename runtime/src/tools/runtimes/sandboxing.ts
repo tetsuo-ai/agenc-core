@@ -24,6 +24,11 @@ import {
   SandboxDeniedError,
   type SandboxPolicy,
 } from "../../permissions/sandbox.js";
+import {
+  getPlansDirectory,
+  isSessionPlanFile,
+  type PlanFileContext,
+} from "../../planning/plan-files.js";
 import type { SandboxMode } from "../orchestrator.js";
 import type { Tool } from "../types.js";
 import type { ToolRuntimeAttemptContext } from "./context.js";
@@ -414,7 +419,8 @@ export function enforceRuntimeSandboxAttempt(
         target,
         cwd,
         sessionTempRoot,
-      )
+      ) &&
+      !(shellAccess === null && isActiveSessionPlanFile(input.context, target))
     ) {
       throw new SandboxDeniedError(
         `sandbox workspace_write blocked write outside workspace: ${target}`,
@@ -425,6 +431,65 @@ export function enforceRuntimeSandboxAttempt(
         },
       );
     }
+  }
+}
+
+/**
+ * The active session's plan file is the one write target outside the
+ * workspace that the runtime itself hands to the model: the plan-mode
+ * attachment advertises `<AGENC_HOME>/plans/<slug>.md`, and the filesystem
+ * tools carve that family out of their workspace allowlist
+ * (coding-common.ts, filesystem.ts). This preflight runs before any tool
+ * code, so without the same allowance every Write or Edit to the plan file
+ * dies here as "outside workspace" on any machine where the plans directory
+ * is not lexically inside the turn cwd, which is every real installation.
+ *
+ * Authority never comes from model args: the session id is read from the
+ * runtime's own session object and the home from that session's bound
+ * ConfigStore, falling back to the same resolver the plan attachment uses.
+ * Only the session's own plan-file family (`<slug>*.md` directly inside the
+ * plans directory) is admitted; `.slugs.json` and other sessions' plans stay
+ * denied, and shell tools get no carve-out because the platform sandbox
+ * cannot honor it. The plans directory is compared canonically as well as
+ * lexically so a symlinked home or temp directory (macOS `/tmp` resolving to
+ * `/private/tmp`) cannot turn the path the runtime advertised into a denial.
+ */
+function isActiveSessionPlanFile(
+  context: ToolRuntimeAttemptContext,
+  target: string,
+): boolean {
+  const session = context.invocation.session as {
+    readonly conversationId?: unknown;
+    readonly services?: {
+      readonly configStore?: {
+        readonly homeContext?: { readonly path?: unknown };
+      };
+    };
+  };
+  const sessionId = session.conversationId;
+  if (typeof sessionId !== "string" || sessionId.length === 0) return false;
+  const boundHome = session.services?.configStore?.homeContext?.path;
+  const planContext: PlanFileContext =
+    typeof boundHome === "string" && boundHome.length > 0
+      ? { sessionId, agencHome: boundHome }
+      : { sessionId };
+  try {
+    const plansDirectory = path.normalize(getPlansDirectory(planContext));
+    const targetDirectory = path.dirname(target);
+    if (
+      path.normalize(targetDirectory) !== plansDirectory &&
+      safeRealpath(targetDirectory) !== safeRealpath(plansDirectory)
+    ) {
+      return false;
+    }
+    return isSessionPlanFile(
+      path.join(plansDirectory, path.basename(target)),
+      planContext,
+    );
+  } catch {
+    // Home resolution can refuse an ambiguous session binding; the plan
+    // carve-out then stays closed and the ordinary denial applies.
+    return false;
   }
 }
 
