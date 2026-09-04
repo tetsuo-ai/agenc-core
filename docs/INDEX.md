@@ -35,6 +35,7 @@ history; the linked pages below are current product truth.
 | [migrate-from-hermes.md](migrate-from-hermes.md) | Surface map from Hermes Agent |
 | [trajectory-training-data.md](trajectory-training-data.md) | Enable trajectory export and curate SFT/DPO JSONL |
 | [agent-eval-reports.md](agent-eval-reports.md) | Legacy local diagnostic suite, reports, and regression gate (not TFR) |
+| [eval/real-agent-comparison-2026-09-04.md](eval/real-agent-comparison-2026-09-04.md) | Real-agent comparison, AgenC against Hermes on grok-4.6: 12 command tasks, the 15-step session, prompt-cache measurements, and the fixes the runs produced. |
 | [evaluation-contract-v1.md](evaluation-contract-v1.md) | Versioned real-agent task, preregistration, evidence, and score derivation contract |
 | [evaluation-suites-v1.md](evaluation-suites-v1.md) | Separate versioned competitive-coding and deterministic trust-conformance suite protocols |
 | [evaluation-pilot-v1.md](evaluation-pilot-v1.md) | Frozen 30-task public pilot candidates, qualification boundary, and powered-holdout design |
