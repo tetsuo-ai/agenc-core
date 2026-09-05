@@ -273,3 +273,15 @@ describe("secrets sanitizer", () => {
     expect(id).toMatch(/^cwd-[a-f0-9]{12}$/);
   });
 });
+
+describe("redaction is idempotent", () => {
+  it("leaves its own marker and already-redacted values unchanged", () => {
+    const once = redactSecretsInValue({
+      text: "xai-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6" + " and sk-" + "abcdefghijklmnopqrstuvwxyz0123456789",
+      nested: ["gsk_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", { marker: REDACTED_SECRET }],
+    });
+    expect(JSON.stringify(once)).toContain(REDACTED_SECRET);
+    expect(redactSecretsInValue(once)).toEqual(once);
+    expect(redactSecretsInValue(JSON.stringify(once))).toBe(JSON.stringify(once));
+  });
+});

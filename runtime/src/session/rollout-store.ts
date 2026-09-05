@@ -166,6 +166,7 @@ import {
   type CanonicalCompactionAttemptScan,
   type CanonicalRolloutScan,
 } from "./canonical-rollout-scanner.js";
+import { redactSecretsInValue } from "../secrets/sanitizer.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
   /** Session-owned temporary root captured at request ingress. */
@@ -465,9 +466,11 @@ function requireCompactionPayloadBundle(
       { cause: error },
     );
   }
+  // The bundle holds the redacted payload; expect the redacted value too.
   if (
     params.expectedValue !== undefined &&
-    canonicalizeJson(value) !== canonicalizeJson(params.expectedValue)
+    canonicalizeJson(value) !==
+      canonicalizeJson(redactSecretsInValue(params.expectedValue))
   ) {
     throw new CompactionTransactionError(
       params.failureStage,

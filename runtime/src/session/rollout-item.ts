@@ -304,7 +304,13 @@ export function serializeRolloutItem(item: RolloutItem): string {
     item.eventVersion === undefined
       ? { ...item, eventVersion: defaultEventVersion }
       : item;
-  const redacted = redactSecretsInValue(stamped) as typeof stamped;
+  // Compaction payload chunks are redacted when the bundle is created and are
+  // content-addressed (byte count and digest); redacting them again here is
+  // what the reader would reject.
+  const redacted =
+    item.type === "compaction_payload_chunk"
+      ? stamped
+      : (redactSecretsInValue(stamped) as typeof stamped);
   assertProviderReasoningUnchanged(stamped, redacted);
   return `${JSON.stringify(redacted)}\n`;
 }

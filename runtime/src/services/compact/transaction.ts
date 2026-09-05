@@ -85,6 +85,7 @@ import {
   compactActiveHistoryEntries,
   createCompactionPayloadBundleV1,
 } from "./payload-manifest.js";
+import { redactSecretsInValue } from "../../secrets/sanitizer.js";
 
 const COMPACTION_BOUNDARY_MESSAGE = "Conversation compacted transactionally";
 const COMPACTION_UNKNOWN_MODEL = "unknown";
@@ -1528,7 +1529,12 @@ function createAuthoritativeSelectionMapper(
         tool_result_integrity: identity,
       });
     }
-    return canonicalizeJson(canonicalCompactionSourceMessages([message]));
+    // The canonical side was secret-redacted when it was written; key the
+    // caller's live message the same way so a secret in a user or assistant
+    // message does not read as "no canonical match" (redaction is idempotent).
+    return canonicalizeJson(
+      redactSecretsInValue(canonicalCompactionSourceMessages([message])),
+    );
   };
   const preparedByKey = new Map<string, number[]>();
   prepared.messages.forEach((message, index) => {
