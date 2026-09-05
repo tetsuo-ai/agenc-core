@@ -44,6 +44,7 @@ import {
   type PluginResolutionKind,
   type ResolvedPluginSource,
 } from "../resolution.js";
+import { parsePluginIdentifier } from "../identifier.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -501,34 +502,62 @@ export async function installPluginOp(
   }
 }
 
+/**
+ * `plugin marketplace install name@marketplace` installs the plugin under its
+ * bare name: the marketplace is where it came from, not part of its installed
+ * identity. Uninstall and update therefore accept the same qualified id the
+ * operator installed with. The qualified form is tried first so a plugin whose
+ * own name legitimately contains "@" keeps resolving as before.
+ */
+async function resolveInstalledPluginForRemoval(
+  requestedId: string,
+  scope: PluginScope,
+  options: PluginOperationOptions,
+): Promise<{ readonly pluginId: string; readonly roots: string[] }> {
+  const direct = await resolvePluginRootsForRemoval(requestedId, scope, options);
+  if (direct.length > 0) return { pluginId: requestedId, roots: direct };
+  const parsed = parsePluginIdentifier(requestedId);
+  if (parsed.marketplace === undefined || parsed.name.length === 0) {
+    return { pluginId: requestedId, roots: [] };
+  }
+  const bare = await resolvePluginRootsForRemoval(parsed.name, scope, options);
+  return bare.length > 0
+    ? { pluginId: parsed.name, roots: bare }
+    : { pluginId: requestedId, roots: [] };
+}
+
 export async function uninstallPluginOp(
   input: UninstallPluginInput,
 ): Promise<UninstallPluginResult> {
   const scope = input.scope ?? "user";
-  const targetRoots = await resolvePluginRootsForRemoval(input.pluginId, scope, input);
+  const { pluginId, roots: targetRoots } = await resolveInstalledPluginForRemoval(
+    input.pluginId,
+    scope,
+    input,
+  );
   if (targetRoots.length === 0) {
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
   for (const root of targetRoots) {
     await rm(root, { recursive: true, force: true });
   }
-  const remainsInstalled = await pluginIdRemainsInstalled(input.pluginId, input);
+  const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
   const removedConfig = remainsInstalled
     ? false
-    : await removePluginConfigEntry(input.pluginId, input);
+    : await removePluginConfigEntry(pluginId, input);
   let removedData = false;
   if (!remainsInstalled && input.keepData !== true) {
     const authority = {
       pluginStorageRoot: input.pluginStorageRoot,
     };
-    const dataDir = pluginDataDirPath(input.pluginId, authority);
+    const dataDir = pluginDataDirPath(pluginId, authority);
     if (await pathExists(dataDir)) {
-      await deletePluginDataDir(input.pluginId, authority);
+      await deletePluginDataDir(pluginId, authority);
       removedData = !(await pathExists(dataDir));
     }
   }
   return {
-    pluginId: input.pluginId,
+    pluginId,
     removedRoots: targetRoots,
     removedConfig,
     removedData,
@@ -570,7 +599,11 @@ export async function updatePluginOp(
 ): Promise<UpdatePluginResult> {
   const scope = input.scope ?? "user";
   const workspaceRoot = resolvePluginWorkspaceRoot(input);
-  const roots = await resolvePluginRootsForRemoval(input.pluginId, scope, input);
+  const { pluginId, roots } = await resolveInstalledPluginForRemoval(
+    input.pluginId,
+    scope,
+    input,
+  );
   if (roots.length === 0) {
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
@@ -595,7 +628,7 @@ export async function updatePluginOp(
   const installed = await installPluginOp({
     ...input,
     source,
-    name: input.pluginId,
+    name: pluginId,
     scope,
     force: true,
     refreshCache: true,
