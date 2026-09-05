@@ -325,12 +325,22 @@ export function reclaimStateFreePages(
     return { ...base, mode: "none", freePagesAfter: freePagesBefore, reason: "below-threshold" };
   }
   // VACUUM rebuilds the file and applies the pending auto_vacuum mode, so every
-  // later pass on this database is incremental.
-  db.pragma("auto_vacuum = INCREMENTAL");
-  db.exec("VACUUM");
-  // In WAL mode the rebuilt image lives in the log until a checkpoint truncates
-  // the database file to its new size; do it now so the space is really back.
-  db.pragma("wal_checkpoint(TRUNCATE)");
+  // later pass on this database is incremental. The rebuild is staged in the
+  // temp store, which this connection keeps in memory (configureDatabase); a
+  // 1.3 GB file held the daemon at about 1 GB of RSS for minutes after start,
+  // so the temp store goes to disk for the duration of the rebuild.
+  const previousTempStore = pragmaNumber(db, "temp_store");
+  db.pragma("temp_store = FILE");
+  try {
+    db.pragma("auto_vacuum = INCREMENTAL");
+    db.exec("VACUUM");
+    // In WAL mode the rebuilt image lives in the log until a checkpoint
+    // truncates the database file to its new size; do it now so the space is
+    // really back.
+    db.pragma("wal_checkpoint(TRUNCATE)");
+  } finally {
+    db.pragma(`temp_store = ${previousTempStore}`);
+  }
   return { ...base, mode: "full", freePagesAfter: pragmaNumber(db, "freelist_count") };
 }
 
