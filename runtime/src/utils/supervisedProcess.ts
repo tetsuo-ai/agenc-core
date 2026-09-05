@@ -354,7 +354,7 @@ timer = setInterval(() => {
 }, 25);
 `;
 
-const POSIX_PROCESS_GATE_SCRIPT = String.raw`
+export const POSIX_PROCESS_GATE_SCRIPT = String.raw`
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -367,11 +367,39 @@ function fail(message, exitCode = 125) {
   }
 }
 
+// The handoff is one JSON document followed by a newline. Read until that
+// terminator (or end-of-file, for an older owner) with blocking reads. On
+// darwin a socketpair's end-of-file raced the child's first read and was
+// lost about one spawn in two hundred; the child then sat in readFileSync
+// forever and the owner timed it out with nothing to show for it.
 let config;
 try {
-  const encoded = fs.readFileSync(3, 'utf8');
+  const chunk = Buffer.alloc(65536);
+  const parts = [];
+  let terminated = false;
+  while (!terminated) {
+    let bytes;
+    try {
+      bytes = fs.readSync(3, chunk, 0, chunk.length, null);
+    } catch (error) {
+      if (error && (error.code === 'EAGAIN' || error.code === 'EWOULDBLOCK')) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        continue;
+      }
+      throw error;
+    }
+    if (bytes === 0) break;
+    const part = Buffer.from(chunk.subarray(0, bytes));
+    const newline = part.indexOf(0x0a);
+    if (newline === -1) {
+      parts.push(part);
+    } else {
+      parts.push(part.subarray(0, newline));
+      terminated = true;
+    }
+  }
   fs.closeSync(3);
-  config = JSON.parse(encoded);
+  config = JSON.parse(Buffer.concat(parts).toString('utf8'));
 } catch {
   fail('invalid containment handoff');
 }
@@ -529,7 +557,14 @@ export interface TerminateProcessTreeOptions {
   readonly label?: string;
 }
 
-function serializePosixProcessGatePayload(
+/**
+ * One JSON document plus a newline terminator. JSON.stringify never emits a
+ * raw newline, so the terminator is unambiguous, and the gate stops reading
+ * at it instead of waiting for an end-of-file that darwin socketpairs
+ * occasionally fail to deliver (see the gate script). Exported for the test
+ * that drives the gate script directly.
+ */
+export function serializePosixProcessGatePayload(
   program: string,
   args: readonly string[],
   options: ContainedProcessSpawnOptions,
@@ -538,12 +573,12 @@ function serializePosixProcessGatePayload(
   for (const [name, value] of Object.entries(options.env)) {
     if (value !== undefined) environment.push([name, String(value)]);
   }
-  return JSON.stringify({
+  return `${JSON.stringify({
     program,
     argv0: options.argv0 ?? program,
     args,
     environment,
-  });
+  })}\n`;
 }
 
 function trustedPosixBootstrapEnvironment(

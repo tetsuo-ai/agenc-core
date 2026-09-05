@@ -43,7 +43,10 @@ import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { AsyncLock } from "./_deps/async-lock.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { gitChildEnvironment } from "../sandbox/git-environment.js";
-import { runSupervisedProcess } from "../utils/supervisedProcess.js";
+import {
+  runSupervisedProcess,
+  type SupervisedProcessResult,
+} from "../utils/supervisedProcess.js";
 import type { AdditionalPermissionProfile } from "../sandbox/engine/index.js";
 import {
   hardenGitWorktreeMutationArgs,
@@ -109,8 +112,22 @@ export function runGit(
           ? 1
           : (result.exitCode ?? 1),
     stdout: result.stdout.toString("utf8"),
-    stderr: result.error?.message ?? result.stderr.toString("utf8"),
+    stderr: describeGitProcessFailure(result),
   }));
+}
+
+/**
+ * git's own stderr when it has any; otherwise what the supervised runner did
+ * to the process. A stop reason with no output (timeout, aborted, residual
+ * process) used to surface as an empty string, and the workflow reported
+ * "git status failed: " with nothing after the colon.
+ */
+function describeGitProcessFailure(result: SupervisedProcessResult): string {
+  if (result.error !== undefined) return result.error.message;
+  const stderr = result.stderr.toString("utf8");
+  if (stderr.trim().length > 0 || result.stopReason === undefined) return stderr;
+  const signal = result.signal !== null ? ` (${result.signal})` : "";
+  return `supervised process ${result.stopReason}${signal}`;
 }
 
 export function runGitMutation(
