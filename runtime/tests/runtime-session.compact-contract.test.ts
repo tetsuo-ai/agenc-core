@@ -150,7 +150,7 @@ describe("runtime session compact contract", () => {
 
   test("preflight microcompact compresses older compactable tool results while preserving recent ones", async () => {
     process.env.AGENC_DISABLE_AUTO_COMPACT = "1";
-    const history = Array.from({ length: 7 }, (_, index) => longToolExchange(index))
+    const history = Array.from({ length: 20 }, (_, index) => longToolExchange(index))
       .flat();
     const seen: LLMMessage[][] = [];
     const provider = mkProvider(
@@ -171,7 +171,7 @@ describe("runtime session compact contract", () => {
     const toolMessages = (seen[0] ?? []).filter(
       (message) => message.role === "tool",
     );
-    expect(toolMessages).toHaveLength(7);
+    expect(toolMessages).toHaveLength(20);
     expect(toolMessages[0]?.content).toContain(
       "Older tool output compressed",
     );

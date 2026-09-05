@@ -20,19 +20,61 @@ describe("micro compact", () => {
         })),
       ),
       ...Array.from({ length: 6 }, (_, index) =>
-        toolResult(`tool-${index + 1}`, "x".repeat(6_500))),
+        toolResult(`tool-${index + 1}`, "x".repeat(25_000))),
     ];
 
     const result = await microcompactMessages(messages);
     const contents = result.messages.slice(1).map((entry) => entry.content);
 
     expect(contents[0]).toBe(
-      "[microcompact:1] Older tool output compressed; original length 6,500 characters.",
+      "[microcompact:1] Older tool output compressed; original length 25,000 characters.",
     );
     expect(contents.slice(1)).toHaveLength(5);
-    expect(contents.slice(1).every((content) => content === "x".repeat(6_500)))
+    expect(contents.slice(1).every((content) => content === "x".repeat(25_000)))
       .toBe(true);
     expect(getMicrocompactSequenceForTests()).toBe(1);
+  });
+
+  test("labels a cleared result by its position so two projections agree byte for byte", async () => {
+    const big = "x".repeat(16_000);
+    const history = [
+      assistantToolUse(
+        Array.from({ length: 8 }, (_, index) => ({ id: `tool-${index + 1}`, name: "Read" })),
+      ),
+      ...Array.from({ length: 8 }, (_, index) => toolResult(`tool-${index + 1}`, big)),
+    ];
+    // Two projections of the same history, no reset in between: a process
+    // counter would have numbered the second one 4, 5, 6.
+    const first = await microcompactMessages(history);
+    const second = await microcompactMessages(history);
+    expect(first.messages[1]?.content).toMatch(/^\[microcompact:1\] Older tool output compressed/);
+    expect(first.messages[3]?.content).toMatch(/^\[microcompact:3\]/);
+    expect(second.messages).toEqual(first.messages);
+  });
+
+  test("clears the oldest results in batches under pressure and holds the projection between firings", async () => {
+    const big = "x".repeat(16_000);
+    const history = (count: number) => [
+      assistantToolUse(
+        Array.from({ length: count }, (_, index) => ({ id: `tool-${index + 1}`, name: "Read" })),
+      ),
+      ...Array.from({ length: count }, (_, index) => toolResult(`tool-${index + 1}`, big)),
+    ];
+    const results = (projected: { messages: RuntimeMessage[] }) => projected.messages.slice(1);
+
+    // 7 results, 112k characters: under the limit, nothing is cleared.
+    const below = await microcompactMessages(history(7));
+    expect(results(below).every((message) => message.content === big)).toBe(true);
+
+    // The 8th result crosses 120k: the oldest three go, the recent five stay.
+    const fired = await microcompactMessages(history(8));
+    expect(results(fired).slice(0, 3).every((message) => /^\[microcompact:/.test(String(message.content)))).toBe(true);
+    expect(results(fired).slice(3).every((message) => message.content === big)).toBe(true);
+
+    // Two more results (112k live) do not move a byte of the earlier ones.
+    const held = await microcompactMessages(history(10));
+    expect(results(held).slice(0, 8)).toEqual(results(fired));
+    expect(results(held).slice(8).every((message) => message.content === big)).toBe(true);
   });
 
   test("keeps recent tool results inside the time-based clear window", async () => {
@@ -83,7 +125,7 @@ describe("micro compact", () => {
         })),
       ),
       ...Array.from({ length: 6 }, (_, index) =>
-        toolResult(`other-${index + 1}`, "x".repeat(6_500))),
+        toolResult(`other-${index + 1}`, "x".repeat(25_000))),
     ];
 
     const result = await microcompactMessages(messages);
@@ -114,7 +156,7 @@ describe("micro compact", () => {
         })),
       ),
       ...Array.from({ length: 6 }, (_, index) =>
-        toolResult(`mid-${index + 1}`, "x".repeat(6_500))),
+        toolResult(`mid-${index + 1}`, "x".repeat(25_000))),
       {
         ...assistantToolUse([{ id: "dup-new", name: "Read" }]),
         toolCalls: [{ id: "dup-new", name: "Read", arguments: readArgs }],
@@ -197,13 +239,13 @@ describe("micro compact", () => {
     const spoofedReadResult = [
       { type: "tool_result", tool_use_id: "spoofed-read", content: longText },
     ];
-    const fillerToolUse = Array.from({ length: 6 }, (_, index) => ({
+    const fillerToolUse = Array.from({ length: 7 }, (_, index) => ({
       type: "tool_use",
       id: `filler-${index}`,
       name: "Read",
       input: { file_path: `/filler-${index}.ts` },
     }));
-    const fillerResults = Array.from({ length: 6 }, (_, index) => ({
+    const fillerResults = Array.from({ length: 7 }, (_, index) => ({
       type: "tool_result",
       tool_use_id: `filler-${index}`,
       content: longText,
@@ -269,7 +311,7 @@ describe("micro compact", () => {
   });
 
   test("supports MCP-prefixed tool uses in content blocks", async () => {
-    const longText = "m".repeat(6_500);
+    const longText = "m".repeat(25_000);
     const toolUseBlocks = [
       { type: "tool_use", id: "mcp-1", name: "mcp__search" },
       ...Array.from({ length: 5 }, (_, index) => ({
