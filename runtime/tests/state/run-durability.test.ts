@@ -122,6 +122,38 @@ function beginSideEffect(stepId = "step-write", sequence = 1) {
 }
 
 describe("StateRunDurabilityRepository", () => {
+  it("accepts a canonical replay of a child-backed intent journaled before childRunId existed", () => {
+    runs.ensureInitialEpoch({ runId: "run-1", openedAt: T0 });
+    const live = beginSideEffect("workflow.plan");
+    expect(live.value.childRunId).toBe("child-1");
+    const legacy = {
+      runId: "run-1",
+      epoch: 1,
+      stepId: "workflow.plan",
+      sessionId: "session-1",
+      toolName: "FileWrite",
+      recoveryCategory: "side-effecting" as const,
+      intentDigest: "sha256:intent:workflow.plan",
+      eventId: "event-intent-workflow.plan",
+      eventSequence: 1,
+      intentAt: T0,
+    };
+    // Same event, same sequence, same digest: the replay adopts the row.
+    const replayed = runs.beginEffect({ ...legacy, projection: "canonical_replay" });
+    expect(replayed.applied).toBe(false);
+    expect(replayed.value.childRunId).toBe("child-1");
+    // The tolerance is for replays only; a live writer dropping the child is
+    // a different intent, and so is a replay that differs in anything else.
+    expect(() => runs.beginEffect(legacy)).toThrow(RunDurabilityConflictError);
+    expect(() =>
+      runs.beginEffect({
+        ...legacy,
+        intentDigest: "sha256:intent:other",
+        projection: "canonical_replay",
+      }),
+    ).toThrow(/different effect intent/);
+  });
+
   it("records a single exact suspension and resumes it in the same epoch", () => {
     runs.ensureInitialEpoch({ runId: "run-1", openedAt: T0 });
     const suspended = runs.recordRunSuspended({

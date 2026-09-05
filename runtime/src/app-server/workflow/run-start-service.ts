@@ -15,6 +15,7 @@ import type {
 } from "../protocol/index.js";
 import type { AgenCStateAgentRunRecord } from "../../state/agent-runs.js";
 import {
+  type WorkflowDetachedCancelOutcome,
   VerifiedChangeWorkflowController,
   WorkflowIntakeError,
   type WorkflowStartParams,
@@ -76,6 +77,14 @@ export class DaemonWorkflowStartService {
   constructor(options: DaemonWorkflowStartServiceOptions) {
     this.#options = options;
     this.#now = options.now ?? (() => new Date());
+  }
+
+  /** See VerifiedChangeWorkflowController.cancelDetached. */
+  cancelDetachedRun(params: {
+    readonly runId: string;
+    readonly reason: string;
+  }): WorkflowDetachedCancelOutcome {
+    return this.#options.controller.cancelDetached(params.runId, params.reason);
   }
 
   async startRun(params: RunStartParams): Promise<RunStartResult> {

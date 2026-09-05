@@ -403,6 +403,17 @@ const EVIDENCE_MESSAGE_LIMIT = 20_000;
 // Internal control flow
 // ---------------------------------------------------------------------------
 
+/** Outcome of closing a run that no live pipeline is driving (see cancelDetached). */
+export type WorkflowDetachedCancelOutcome =
+  | "live"
+  | "not_a_workflow"
+  | "already_terminal"
+  | "cancelled"
+  | "not_recorded";
+
+/** Event id prefix for terminals recorded without a session journal. */
+const WORKFLOW_DETACHED_TERMINAL_EVENT_PREFIX = "workflow-detached-terminal:";
+
 interface WorkflowTerminalIntent {
   readonly status: RunTerminalStatus;
   readonly stopReason: WorkflowStopReason | null;
@@ -655,12 +666,88 @@ export class VerifiedChangeWorkflowController {
         if (started) resumed.push(runId);
       } catch (error) {
         if (error instanceof M5WorkflowFailpointError) throw error;
-        this.#deps.warn(
-          `workflow resume failed for ${runId}: ${errorMessage(error)}`,
+        const message = errorMessage(error);
+        this.#deps.warn(`workflow resume failed for ${runId}: ${message}`);
+        // Nothing is driving this run any more and, when the journal itself
+        // failed to open, nothing can journal through its session. Left as
+        // it is, the run reads "running" forever and run.cancel cannot reach
+        // it (a goal that survived a daemon restart used to do exactly
+        // that). Close it durably as failed instead.
+        this.#recordDetachedTerminal(
+          repo,
+          runId,
+          "failed",
+          `workflow resume failed after a daemon restart: ${message}. Any worktree the run created is left in place for review; re-submit the request to continue the work.`,
         );
       }
     }
     return resumed;
+  }
+
+  /**
+   * `run.cancel` reaches a live pipeline through the admission cascade, which
+   * the pipeline observes and terminalizes as cancelled. A run with no live
+   * pipeline in this process (its resume failed, or the process that ran it
+   * is gone) has nothing observing that cascade: the agents-rail row turns
+   * cancelled while the workflow projection stays "running". Close the
+   * projection directly so status and cancel agree.
+   */
+  cancelDetached(runId: string, reason: string): WorkflowDetachedCancelOutcome {
+    if (this.#active.has(runId)) return "live";
+    const repo = this.#deps.durability({ runId });
+    if (repo.getEffect(runId, "workflow.intake") === undefined) {
+      return "not_a_workflow";
+    }
+    if (repo.getCurrentTerminalResult(runId) !== undefined) {
+      return "already_terminal";
+    }
+    return this.#recordDetachedTerminal(
+      repo,
+      runId,
+      "cancelled",
+      `cancelled by run.cancel (${reason}); the run had no live pipeline`,
+    )
+      ? "cancelled"
+      : "not_recorded";
+  }
+
+  /**
+   * Durable-only terminal for a run without a live writer, the same offline
+   * authority run.cancel and child terminals already use. Never throws: a
+   * failure here is logged and the caller reports it, because the run is
+   * already beyond any journal this process can open.
+   */
+  #recordDetachedTerminal(
+    repo: StateRunDurabilityRepository,
+    runId: string,
+    status: "failed" | "cancelled",
+    finalMessage: string,
+  ): boolean {
+    try {
+      if (repo.getCurrentTerminalResult(runId) !== undefined) return true;
+      const epoch = repo.currentEpoch(runId)?.epoch;
+      if (epoch === undefined) return false;
+      repo.recordTerminalResult({
+        epoch,
+        eventId: `${WORKFLOW_DETACHED_TERMINAL_EVENT_PREFIX}${runId}:${epoch}`,
+        result: {
+          runId,
+          status,
+          exitCode: 1,
+          stopReason: null,
+          finalMessage,
+          usage: null,
+          lastSequence: null,
+          finishedAt: this.#nowIso(),
+        },
+      });
+      return true;
+    } catch (error) {
+      this.#deps.warn(
+        `workflow ${runId} could not record its ${status} terminal: ${errorMessage(error)}`,
+      );
+      return false;
+    }
   }
 
   async #resumeRun(

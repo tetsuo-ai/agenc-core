@@ -1211,6 +1211,19 @@ export class StateRunDurabilityRepository {
         if (effectIntentContent(existing) === effectIntentContent(params)) {
           return { applied: false, value: existing };
         }
+        // Rollouts written before effect_intent carried childRunId replay a
+        // child-backed step without it while the row projected live has it.
+        // Same event, same sequence, same digest: accept the replay rather
+        // than strand the run on its own history.
+        if (
+          params.projection === "canonical_replay" &&
+          params.childRunId === undefined &&
+          existing.childRunId !== undefined &&
+          effectIntentContent(existing) ===
+            effectIntentContent({ ...params, childRunId: existing.childRunId })
+        ) {
+          return { applied: false, value: existing };
+        }
         throw conflict(
           "RUN_EFFECT_INTENT_CONFLICT",
           `run ${params.runId} step ${params.stepId} already has a different effect intent`,

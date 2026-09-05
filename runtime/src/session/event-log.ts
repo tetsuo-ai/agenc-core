@@ -463,6 +463,14 @@ export interface EffectIntentEvent {
   readonly intentDigest: string;
   readonly attempt: number;
   readonly recordedAt: string;
+  /**
+   * The subordinate run that executes this step (a workflow's plan or
+   * implement child). Absent when the effect belongs to the journaling
+   * session itself. Projected to `run_effects.child_run_id`; a replay that
+   * drops it rebuilds a different intent identity, which is how a resumed
+   * workflow used to die on its own history.
+   */
+  readonly childRunId?: string;
 }
 
 /**

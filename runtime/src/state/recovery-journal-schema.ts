@@ -978,6 +978,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       formatVersion: literal(2),
       minimumReaderRuntime: isString,
       idempotencyKey: isString,
+      childRunId: isString,
     },
   ),
   effect_result: objectShape(

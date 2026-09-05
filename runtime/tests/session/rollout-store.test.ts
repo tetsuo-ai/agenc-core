@@ -21,6 +21,7 @@ import type { Session } from "./session.js";
 import type { AgentMetadata } from "../agents/registry.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import { createOperatorEffectReviewResolution } from "../state/effect-review.js";
+import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import {
   openStateDatabases,
   resolveStateDatabasePaths,
@@ -1739,6 +1740,72 @@ describe("RolloutStore thread-spawn edges", () => {
         status: "open",
       });
       expect(existsSync(snapshotPath)).toBe(true);
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("RolloutStore effect_intent childRunId", () => {
+  it("projects the journaled childRunId and accepts a legacy replay that lacks it", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const sessionId = "workflow-child-run-id";
+    const childRunId = `${sessionId}:plan#1`;
+    const store = openStore({ cwd, sessionId });
+    const payload = {
+      formatVersion: 2 as const,
+      minimumReaderRuntime: "0.14.0",
+      runId: sessionId,
+      stepId: "workflow.plan",
+      callId: "workflow.plan",
+      toolName: "workflow.plan",
+      recoveryCategory: "side-effecting" as const,
+      intentDigest: "digest-plan",
+      attempt: 1,
+      recordedAt: "2026-08-19T00:00:00.000Z",
+      childRunId,
+    };
+    const intent: Event = {
+      eventId: "event:1",
+      id: "event:1",
+      seq: 1,
+      msg: { type: "effect_intent", payload },
+    };
+    try {
+      expect(store.append(intent, { durable: true })).toBe(true);
+      store.recordEffectEvent(intent);
+      const driver = openStateDatabases({ cwd });
+      try {
+        const repo = new StateRunDurabilityRepository(driver);
+        expect(repo.getEffect(sessionId, "workflow.plan")?.childRunId).toBe(
+          childRunId,
+        );
+      } finally {
+        driver.close();
+      }
+      // A rollout written before effect_intent carried childRunId replays the
+      // same event without it; the live projection row must not conflict.
+      const { childRunId: _dropped, ...legacyPayload } = payload;
+      expect(() =>
+        store.recordEffectEvent(
+          { ...intent, msg: { type: "effect_intent", payload: legacyPayload } },
+          { epoch: 1, canonicalReplay: true },
+        ),
+      ).not.toThrow();
+      // Anything else that differs is still the conflict it always was.
+      expect(() =>
+        store.recordEffectEvent(
+          {
+            ...intent,
+            msg: {
+              type: "effect_intent",
+              payload: { ...legacyPayload, intentDigest: "digest-other" },
+            },
+          },
+          { epoch: 1, canonicalReplay: true },
+        ),
+      ).toThrow(/different effect intent/);
     } finally {
       store.close();
       rmSync(cwd, { recursive: true, force: true });

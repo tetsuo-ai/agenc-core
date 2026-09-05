@@ -5,7 +5,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
-import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import {
+  AgenCDaemonJsonRpcDispatcher,
+  type AgenCDaemonWorkflowStartService,
+} from "./daemon-dispatcher.js";
 import {
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   JSON_RPC_VERSION,
@@ -42,6 +45,7 @@ async function dispatchRunCancel(options: {
   readonly live?: boolean;
   readonly stopError?: Error;
   readonly liveTerminal?: AgenCBackgroundAgentTerminalSnapshot;
+  readonly workflow?: AgenCDaemonWorkflowStartService;
 }) {
   const order: string[] = [];
   const cancelDurable = vi.fn(async () => {
@@ -124,7 +128,10 @@ async function dispatchRunCancel(options: {
       sessionIds: [options.report.runId],
     });
   }
-  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+    agentManager,
+    ...(options.workflow !== undefined ? { workflow: options.workflow } : {}),
+  });
   const connection = dispatcher.createConnection({
     sendNotification: () => {},
   });
@@ -147,6 +154,47 @@ async function dispatchRunCancel(options: {
 }
 
 describe("run.cancel dispatcher contract", () => {
+  it("closes a workflow run's projection after the tree cancel when no pipeline is live", async () => {
+    const order: string[] = [];
+    const cancelDetachedRun = vi.fn(
+      (params: { readonly runId: string; readonly reason: string }) => {
+        order.push(`workflow_projection:${params.runId}:${params.reason}`);
+        return "cancelled";
+      },
+    );
+    const harness = await dispatchRunCancel({
+      report: cancelledReport("wf_a"),
+      workflow: { startRun: vi.fn(), cancelDetachedRun },
+    });
+    harness.cancelDurable.mockImplementation(async () => {
+      order.push("db_cascade");
+      return cancelledReport("wf_a");
+    });
+    const response = await harness.connection.dispatch(
+      request("rc-wf", "run.cancel", { runId: "wf_a", reason: "operator" }),
+    );
+    expect(response).toMatchObject({
+      result: { runId: "wf_a", cancelledRunIds: ["wf_a", "wf_a_child"] },
+    });
+    // The projection closes only after the durable cascade converged.
+    expect(order).toEqual(["db_cascade", "workflow_projection:wf_a:operator"]);
+  });
+
+  it("defaults the reason handed to the workflow projection", async () => {
+    const cancelDetachedRun = vi.fn(() => "already_terminal");
+    const harness = await dispatchRunCancel({
+      report: cancelledReport("wf_b"),
+      workflow: { startRun: vi.fn(), cancelDetachedRun },
+    });
+    await harness.connection.dispatch(
+      request("rc-wf2", "run.cancel", { runId: "wf_b" }),
+    );
+    expect(cancelDetachedRun).toHaveBeenCalledWith({
+      runId: "wf_b",
+      reason: "run.cancel",
+    });
+  });
+
   it("advertises the capability and routes to the tree-scoped cancel", async () => {
     const harness = await dispatchRunCancel({
       report: cancelledReport("run_a"),
