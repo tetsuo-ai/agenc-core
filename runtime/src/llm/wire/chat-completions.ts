@@ -48,6 +48,10 @@ import {
 import { splitLeadingThinkBlock } from "./think-tags.js";
 import { applyZaiImageInputContract } from "./zai-contract.js";
 import {
+  applyKimiImageInputContract,
+  assertKimiRequestPayloadSize,
+} from "./kimi-contract.js";
+import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
 } from "../errors.js";
@@ -212,6 +216,43 @@ function sameReasoningToolContinuation(
     });
 }
 
+function reasoningHistoryFingerprint(
+  messages: readonly LLMMessage[],
+  mergeConsecutiveUserText = false,
+): string {
+  const comparable: Array<Record<string, unknown>> = [];
+  for (const message of messages) {
+    const tail = comparable.at(-1);
+    if (
+      mergeConsecutiveUserText &&
+      tail?.role === "user" &&
+      message.role === "user" &&
+      tail.mergeBoundary !== true &&
+      message.runtimeOnly?.mergeBoundary === undefined &&
+      typeof tail.content === "string" &&
+      typeof message.content === "string"
+    ) {
+      tail.content = `${tail.content}\n\n${message.content}`;
+      continue;
+    }
+    comparable.push({
+      role: message.role,
+      content: message.content,
+      toolCalls: message.toolCalls?.map((call) => ({
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+      })),
+      toolCallId: message.toolCallId,
+      toolName: message.toolName,
+      providerReasoningContent: message.providerReasoningContent,
+      providerReasoningProvenance: message.providerReasoningProvenance,
+      mergeBoundary: message.runtimeOnly?.mergeBoundary !== undefined,
+    });
+  }
+  return JSON.stringify(comparable);
+}
+
 function toChatCompletionsMessages(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
@@ -223,8 +264,9 @@ function toChatCompletionsMessages(
   reasoningContentProvenance?: ProviderReasoningProvenance,
   replayOnlyAdjacentToolContinuation = false,
   reasoningContinuation?: ReasoningToolContinuation,
+  allowsFullReasoningHistoryReplay = true,
   requiresStrictToolResultSequence = false,
-  imageInputContract?: "cerebras_v2" | "zai_flash",
+  imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global",
   acceptsDirectImageInput?: boolean,
 ): Array<Record<string, unknown>> {
   // The caller passes the exact normalized sequence used to derive the
@@ -242,6 +284,8 @@ function toChatCompletionsMessages(
     );
   } else if (imageInputContract === "zai_flash") {
     imageSafeMessages = applyZaiImageInputContract(normalized);
+  } else if (imageInputContract === "kimi_global") {
+    imageSafeMessages = applyKimiImageInputContract(normalized);
   } else if (acceptsDirectImageInput === false) {
     imageSafeMessages = assertNoDirectImageInput(normalized);
   }
@@ -263,6 +307,7 @@ function toChatCompletionsMessages(
   ): string | undefined => {
     if (
       !replaysReasoningContent ||
+      !allowsFullReasoningHistoryReplay ||
       !message.providerReasoningContent ||
       reasoningContentProvenance === undefined ||
       message.providerReasoningProvenance === undefined
@@ -446,14 +491,23 @@ export function buildChatCompletionsRequest(
         input.providerCapabilityHints?.reasoningContentProvenance,
       )
     : undefined;
-  // A normalization boundary, orphan result, or compacted/incomplete tool
-  // chain invalidates provider-owned reasoning as a unit. Never send a subset.
+  // A normalization boundary or orphan result invalidates provider-owned
+  // reasoning as a unit. Durable compaction markers are runtime scaffolding:
+  // the projected post-compaction history is already authoritative, and the
+  // marker must not disable fresh reasoning replay for the rest of a session.
   const reasoningContinuation = sameReasoningToolContinuation(
       rawReasoningContinuation,
       normalizedReasoningContinuation,
     )
     ? normalizedReasoningContinuation
     : undefined;
+  const requiresIntactReasoningHistory =
+    input.providerCapabilityHints
+      ?.replaysReasoningContentOnlyForIntactHistory === true;
+  const allowsFullReasoningHistoryReplay =
+    !requiresIntactReasoningHistory ||
+    reasoningHistoryFingerprint(input.messages, true) ===
+      reasoningHistoryFingerprint(normalizedMessages);
   const body: Record<string, unknown> = {
     model: input.model,
     stream: false,
@@ -467,6 +521,7 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.reasoningContentProvenance,
       replayOnlyAdjacentToolContinuation,
       reasoningContinuation,
+      allowsFullReasoningHistoryReplay,
       input.providerCapabilityHints?.requiresStrictToolResultSequence === true,
       input.providerCapabilityHints?.imageInputContract,
       input.providerCapabilityHints?.acceptsDirectImageInput,
@@ -480,8 +535,10 @@ export function buildChatCompletionsRequest(
     requestedToolChoice !== undefined &&
     requestedToolChoice !== "auto" &&
     requestedToolChoice !== "none";
-  const autoOnlyToolChoice =
-    input.providerCapabilityHints?.toolChoicePolicy === "auto_only";
+  const toolChoicePolicy = input.providerCapabilityHints?.toolChoicePolicy;
+  const autoOnlyToolChoice = toolChoicePolicy === "auto_only";
+  const disallowsRequiredToolChoice = toolChoicePolicy === "no_required";
+  const disallowsNamedToolChoice = toolChoicePolicy === "no_named";
   const omitToolsForChoice =
     autoOnlyToolChoice && requestedToolChoice === "none";
   const maxToolDefinitions = positiveInteger(
@@ -507,7 +564,9 @@ export function buildChatCompletionsRequest(
     !omitToolsForChoice &&
     !omitToolControlsWithoutTools
   ) {
-    body.tool_choice = autoOnlyToolChoice
+    body.tool_choice = autoOnlyToolChoice ||
+        (disallowsRequiredToolChoice && requestedToolChoice === "required") ||
+        (disallowsNamedToolChoice && typeof requestedToolChoice === "object")
       ? "auto"
       : parseOpenAIToolChoice(requestedToolChoice);
   }
@@ -526,6 +585,9 @@ export function buildChatCompletionsRequest(
     const keepsAdjacentToolReasoning = reasoningContinuation !== undefined;
     body.thinking = {
       type: input.providerCapabilityHints.thinkingConfig.type,
+      ...(input.providerCapabilityHints.thinkingConfig.keep !== undefined
+        ? { keep: input.providerCapabilityHints.thinkingConfig.keep }
+        : {}),
       ...(input.providerCapabilityHints.thinkingConfig.clearThinking !==
           undefined
         ? {
@@ -545,7 +607,10 @@ export function buildChatCompletionsRequest(
   ) {
     body.parallel_tool_calls = input.options.parallelToolCalls;
   }
-  if (input.options?.temperature !== undefined) {
+  if (
+    input.options?.temperature !== undefined &&
+    input.providerCapabilityHints?.acceptsTemperature !== false
+  ) {
     body.temperature = input.options.temperature;
   }
   if (
@@ -602,6 +667,10 @@ export function buildChatCompletionsRequest(
   }
   if (input.providerCapabilityHints?.imageInputContract === "cerebras_v2") {
     assertCerebrasRequestPayloadSize(body);
+  } else if (
+    input.providerCapabilityHints?.imageInputContract === "kimi_global"
+  ) {
+    assertKimiRequestPayloadSize(body);
   }
   return body;
 }
@@ -695,7 +764,9 @@ export function parseChatCompletionsResponse(
     request.providerCapabilityHints?.requiresToolCallsFinishReason === true &&
     Array.isArray(message.tool_calls) &&
     message.tool_calls.length > 0 &&
-    (finishReason === "stop" || finishReason === "tool_calls") &&
+    (request.providerCapabilityHints.rejectsPartialToolCalls === true ||
+      finishReason === "stop" ||
+      finishReason === "tool_calls") &&
     choice.finish_reason !== "tool_calls"
   ) {
     throw new LLMInvalidResponseError(
@@ -798,6 +869,9 @@ export function parseChatCompletionsResponse(
       !Array.isArray(usageRecord.completion_tokens_details)
       ? (usageRecord.completion_tokens_details as Record<string, unknown>)
       : {};
+  const isKimiResponse =
+    request.providerCapabilityHints?.reasoningContentProvenance?.provider ===
+      "kimi";
   const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
     collectRequestMetrics(preparedMessages, request.tools),
@@ -844,7 +918,9 @@ export function parseChatCompletionsResponse(
       promptTokens: usageRecord.prompt_tokens,
       completionTokens: usageRecord.completion_tokens,
       totalTokens: usageRecord.total_tokens,
-      cachedInputTokens: promptDetails.cached_tokens,
+      cachedInputTokens:
+        promptDetails.cached_tokens ??
+        (isKimiResponse ? usageRecord.cached_tokens : undefined),
       reasoningOutputTokens: completionDetails.reasoning_tokens,
     }),
     model:

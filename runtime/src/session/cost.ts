@@ -217,6 +217,36 @@ const COST_TIER_ZAI_GLM_53_FLASH: Readonly<ModelCostEntry> = Object.freeze({
   cachedInputIncludedInInputTokens: true,
 });
 
+// Official Moonshot global API prices retrieved 2026-09-05.
+// https://platform.kimi.ai/docs/pricing/chat-k3
+// https://platform.kimi.ai/docs/pricing/chat-k27-code
+// https://platform.kimi.ai/docs/pricing/chat-k26
+const COST_TIER_KIMI_K3: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.003,
+  outputUsdPer1K: 0.015,
+  cachedInputUsdPer1K: 0.0003,
+  cachedInputIncludedInInputTokens: true,
+});
+const COST_TIER_KIMI_K27_CODE: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00095,
+  outputUsdPer1K: 0.004,
+  cachedInputUsdPer1K: 0.00019,
+  cachedInputIncludedInInputTokens: true,
+});
+const COST_TIER_KIMI_K27_CODE_HIGHSPEED: Readonly<ModelCostEntry> =
+  Object.freeze({
+    inputUsdPer1K: 0.0019,
+    outputUsdPer1K: 0.008,
+    cachedInputUsdPer1K: 0.00038,
+    cachedInputIncludedInInputTokens: true,
+  });
+const COST_TIER_KIMI_K26: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00095,
+  outputUsdPer1K: 0.004,
+  cachedInputUsdPer1K: 0.00016,
+  cachedInputIncludedInInputTokens: true,
+});
+
 const COST_TIER_SONNET: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.003,
   outputUsdPer1K: 0.015,
@@ -437,6 +467,10 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "cerebras:gemma-4-31b": COST_TIER_CEREBRAS_GEMMA_4_31B,
     "zai:glm-5.3": COST_TIER_ZAI_GLM_53,
     "zai:glm-5.3-flash": COST_TIER_ZAI_GLM_53_FLASH,
+    "kimi:kimi-k3": COST_TIER_KIMI_K3,
+    "kimi:kimi-k2.7-code": COST_TIER_KIMI_K27_CODE,
+    "kimi:kimi-k2.7-code-highspeed": COST_TIER_KIMI_K27_CODE_HIGHSPEED,
+    "kimi:kimi-k2.6": COST_TIER_KIMI_K26,
     "gemini:gemini-2.5-pro": {
       inputUsdPer1K: 0.00125,
       outputUsdPer1K: 0.01,

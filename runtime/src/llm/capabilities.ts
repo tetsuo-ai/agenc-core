@@ -285,6 +285,17 @@ function isZaiGlm53VisionModel(model: string): boolean {
   return matchesModelFamily(model, /(?:^|[/:])glm-5\.3-flash$/);
 }
 
+function isKimiGlobalChatModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])kimi-(?:k3|k2\.7-code(?:-highspeed)?|k2\.6)$/,
+  );
+}
+
+function isKimiK3Model(model: string): boolean {
+  return matchesModelFamily(model, /(?:^|[/:])kimi-k3$/);
+}
+
 function isQwen38ThinkingModel(model: string): boolean {
   return matchesModelFamily(
     model,
@@ -489,6 +500,14 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     acceptsImageHistory: isZaiGlm53VisionModel,
     acceptsThinkingHistory: isZaiGlm53Model,
     acceptsReasoningEffort: isZaiGlm53Model,
+  },
+  kimi: {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: isKimiGlobalChatModel,
+    supportsExtendedThinking: isKimiGlobalChatModel,
+    acceptsImageHistory: isKimiGlobalChatModel,
+    acceptsThinkingHistory: isKimiGlobalChatModel,
+    acceptsReasoningEffort: isKimiK3Model,
   },
   qwen: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,

@@ -57,6 +57,7 @@ import {
   buildOpenAIResponsesRequest,
   parseOpenAIResponsesResponse,
 } from "../../wire/responses-openai.js";
+import { assertKimiRequestPayloadSize } from "../../wire/kimi-contract.js";
 import {
   assertProviderStructuredOutputCompatibility,
 } from "../../provider-capabilities.js";
@@ -86,29 +87,36 @@ interface OpenAISseEvent {
   readonly data: Record<string, unknown>;
 }
 
+function decodeOpenAISseEvent(
+  frame: SSEFrame,
+  providerName: string,
+): OpenAISseEvent | undefined {
+  if (!frame.data) return undefined;
+  try {
+    return {
+      event: frame.event,
+      data: JSON.parse(frame.data) as Record<string, unknown>,
+    };
+  } catch (error) {
+    if (requiresStrictChatCompletionsSse(providerName)) {
+      throw new LLMInvalidResponseError(
+        providerName,
+        `Malformed JSON in ${providerName === "kimi" ? "Kimi" : "Z.AI"} SSE event: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return undefined;
+  }
+}
+
 function decodeOpenAISseEventBatch(
   frames: readonly SSEFrame[],
   providerName: string,
 ): { readonly events: readonly OpenAISseEvent[]; readonly done: boolean } {
   const events: OpenAISseEvent[] = [];
   for (const frame of frames) {
-    if (!frame.data || frame.data === "[DONE]") {
-      if (frame.data === "[DONE]") {
-        return { events, done: true };
-      }
-      continue;
-    }
-    try {
-      const data = JSON.parse(frame.data) as Record<string, unknown>;
-      events.push({ event: frame.event, data });
-    } catch (error) {
-      if (isZaiProviderName(providerName)) {
-        throw new LLMInvalidResponseError(
-          providerName,
-          `Malformed JSON in Z.AI SSE event: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
+    if (frame.data === "[DONE]") return { events, done: true };
+    const event = decodeOpenAISseEvent(frame, providerName);
+    if (event !== undefined) events.push(event);
   }
   return { events, done: false };
 }
@@ -225,6 +233,10 @@ function readNestedProviderCode(
 
 function isZaiProviderName(providerName: string): boolean {
   return providerName === "zai" || providerName === "zai-coding-plan";
+}
+
+function requiresStrictChatCompletionsSse(providerName: string): boolean {
+  return isZaiProviderName(providerName) || providerName === "kimi";
 }
 
 function isZaiInsufficientBalanceFailure(args: {
@@ -902,7 +914,8 @@ export class OpenAIProvider implements LLMProvider {
       this.name === "meta" ||
       this.name === "cerebras" ||
       this.name === "qwen" ||
-      this.name === "qwen-token-plan"
+      this.name === "qwen-token-plan" ||
+      this.name === "kimi"
     ) {
       return "max_completion_tokens";
     }
@@ -1327,6 +1340,12 @@ export class OpenAIProvider implements LLMProvider {
         ? { stream_options: { include_usage: true } }
         : {}),
     };
+    if (streamCapabilityHints.imageInputContract === "kimi_global") {
+      // The streaming decorations are part of Moonshot's 100 MB request
+      // limit too; checking only the pre-stream body can admit an oversized
+      // final payload by a few bytes at the boundary.
+      assertKimiRequestPayloadSize(request);
+    }
     let consecutiveFallbackFailures = 0;
     chatStreamAttempts: while (true) {
       let response: ProviderHttpStreamResponse;
@@ -1429,6 +1448,22 @@ export class OpenAIProvider implements LLMProvider {
         const choices = Array.isArray(chunk.choices)
           ? (chunk.choices as Array<Record<string, unknown>>)
           : [];
+        if (this.name === "kimi") {
+          const nestedUsage = choices.find((choice) =>
+            choice.usage &&
+            typeof choice.usage === "object" &&
+            !Array.isArray(choice.usage)
+          )?.usage;
+          if (nestedUsage && typeof nestedUsage === "object") {
+            // Kimi's streaming contract puts authoritative usage on the
+            // terminal choice. If a compatibility proxy also supplies
+            // top-level usage, the provider-native nested values win.
+            usage = {
+              ...usage,
+              ...(nestedUsage as Record<string, unknown>),
+            };
+          }
+        }
         for (const choice of choices) {
           const delta =
             choice.delta && typeof choice.delta === "object"
@@ -1541,11 +1576,13 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       if (
-        isZaiProviderName(this.name) &&
+        streamCapabilityHints.requiresExplicitFinishReason === true &&
         (!sawFinishReason ||
           rawFinishReasons.size > 1 ||
           (toolCallAccumulator.size > 0 &&
-            (finishReason === "stop" || finishReason === "tool_calls") &&
+            (streamCapabilityHints.rejectsPartialToolCalls === true ||
+              finishReason === "stop" ||
+              finishReason === "tool_calls") &&
             (rawFinishReasons.size !== 1 ||
               !rawFinishReasons.has("tool_calls"))))
       ) {
@@ -1554,7 +1591,9 @@ export class OpenAIProvider implements LLMProvider {
           rawFinishReasons.size > 1
             ? "Stream emitted conflicting finish_reason values"
             : toolCallAccumulator.size > 0 &&
-                (finishReason === "stop" || finishReason === "tool_calls")
+                (streamCapabilityHints.rejectsPartialToolCalls === true ||
+                  finishReason === "stop" ||
+                  finishReason === "tool_calls")
             ? "Streamed tool calls arrived without finish_reason=tool_calls"
             : "Stream closed without an explicit finish_reason",
         );
@@ -1625,7 +1664,8 @@ export class OpenAIProvider implements LLMProvider {
                     }
                     : {}),
                 },
-                finish_reason: isZaiProviderName(this.name) &&
+                finish_reason:
+                  streamCapabilityHints.requiresExplicitFinishReason === true &&
                     rawFinishReasons.size === 1
                   ? rawFinishReasons.values().next().value
                   : finishReason === "tool_calls"
@@ -1693,7 +1733,19 @@ export class OpenAIProvider implements LLMProvider {
     const parsed = parseSSEFrames(buffer, this.name);
     const batch = decodeOpenAISseEventBatch(parsed.frames, this.name);
     for (const event of batch.events) yield event;
-    if (batch.done) onDone?.();
+    if (batch.done) {
+      onDone?.();
+      return;
+    }
+    if (
+      requiresStrictChatCompletionsSse(this.name) &&
+      parsed.remaining.trim().length > 0
+    ) {
+      throw new LLMInvalidResponseError(
+        this.name,
+        `${this.name === "kimi" ? "Kimi" : "Z.AI"} SSE stream ended with an unterminated event`,
+      );
+    }
   }
 
   private async requestStream(args: {

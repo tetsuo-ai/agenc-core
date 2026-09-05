@@ -59,6 +59,7 @@ Credential values are not written into the canonical config snapshot.
 | Cerebras | `CEREBRAS_API_KEY`, `CEREBRAS_BASE_URL` |
 | Z.AI Pay-As-You-Go | `ZAI_API_KEY`, `ZAI_BASE_URL` |
 | Z.AI Coding Plan | `ZAI_CODING_PLAN_API_KEY`, `ZAI_CODING_PLAN_BASE_URL` |
+| Kimi (Moonshot) | `MOONSHOT_API_KEY`; native endpoint fixed to global `https://api.moonshot.ai/v1` |
 | Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, `GEMINI_AUTH_MODE` (`api-key`, `access-token`, or `adc`), `GEMINI_BASE_URL`, `GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_QUOTA_PROJECT`, `GOOGLE_APPLICATION_CREDENTIALS`, `GEMINI_VERTEX_LOCATION`, `GOOGLE_CLOUD_LOCATION`, `GEMINI_CACHED_CONTENT` |
 | Mistral | `MISTRAL_API_KEY`, `MISTRAL_BASE_URL` |
 | NVIDIA NIM | `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` |
@@ -81,6 +82,11 @@ the runtime appends `/chat/completions` or `/images/generations`.
 `ZAI_CODING_PLAN_API_KEY` and `ZAI_CODING_PLAN_BASE_URL` authorize only the
 separate Coding Plan chat route. The Coding Plan credential is never used for
 image generation, and a Z.AI media request never uses another provider's key.
+
+`MOONSHOT_API_KEY` authorizes only the native global `kimi` provider. That
+route has no endpoint environment override and never borrows
+`OPENAI_API_KEY`; custom or regional compatible endpoints belong under the
+separate `openai-compatible` provider.
 
 Amazon Bedrock uses the required access/secret pair for direct SigV4 signing;
 the session token is optional. Only the Bedrock variables in the table are

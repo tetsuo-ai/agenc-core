@@ -1470,13 +1470,13 @@ describe("skill candidates ride the extraction child", () => {
     expect(warnings.map((warning) => warning.cause)).not.toContain("skill_candidate_proposed");
   });
 
-  it("stays off when an injected env names no AgenC home", async () => {
+  it("does not treat memory-path env as the AgenC home authority", async () => {
     const runChild = vi.fn(async () => ({
       outcome: "completed" as const,
       finalMessage: replyWithCandidate(),
     }));
     initExtractMemories({
-      env: {},
+      env: { AGENC_HOME: agencHome },
       minEligibleTurns: 1,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
       runChild,

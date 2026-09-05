@@ -45,11 +45,12 @@ export interface ChatCompletionsCapabilityHints {
    */
   readonly reasoningEffortAllowedValues?: ReadonlySet<string>;
   /**
-   * Restricts explicit tool-choice values to `auto`. Requests for `required`
-   * or a named function are downgraded to `auto`; `none` preserves its
-   * no-tools semantics by omitting both `tools` and `tool_choice`.
+   * Restricts provider-specific explicit tool-choice values. `auto_only`
+   * downgrades `required` and named functions while preserving `none` by
+   * omitting tools. `no_required` and `no_named` downgrade only the named
+   * unsupported mode while keeping the other explicit choices intact.
    */
-  readonly toolChoicePolicy?: "auto_only";
+  readonly toolChoicePolicy?: "auto_only" | "no_required" | "no_named";
   /** Omit tool-selection controls when no tool definitions are attached. */
   readonly omitsToolControlsWithoutTools?: boolean;
   /** Whether the selected model accepts `parallel_tool_calls`. */
@@ -57,7 +58,7 @@ export interface ChatCompletionsCapabilityHints {
   /** Enforce API-v2 adjacent, complete, unique tool-call/result groups. */
   readonly requiresStrictToolResultSequence?: boolean;
   /** Apply Cerebras' strict base64 PNG/JPEG image payload contract. */
-  readonly imageInputContract?: "cerebras_v2" | "zai_flash";
+  readonly imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global";
   /** Whether the selected model accepts direct user image input. */
   readonly acceptsDirectImageInput?: boolean;
   /** Apply Cerebras API v2's supported strict JSON-Schema subset. */
@@ -86,12 +87,15 @@ export interface ChatCompletionsCapabilityHints {
    * later user turn.
    */
   readonly replaysReasoningContentOnlyForAdjacentToolContinuation?: boolean;
+  /** Replay all matching historical reasoning only if normalization changed none of the history. */
+  readonly replaysReasoningContentOnlyForIntactHistory?: boolean;
   /** Canonical destination required for opaque reasoning replay. */
   readonly reasoningContentProvenance?: ProviderReasoningProvenance;
   /** Provider-native nested thinking configuration for always-on reasoning. */
   readonly thinkingConfig?: {
     readonly type: "enabled";
     readonly clearThinking?: boolean;
+    readonly keep?: "all";
   };
   /** Enable provider-native incremental function argument streaming. */
   readonly streamsToolCalls?: boolean;
@@ -118,8 +122,14 @@ export interface ChatCompletionsCapabilityHints {
   readonly rejectsContextWindowExceededFinishReason?: boolean;
   /** Never dispatch tool calls unless the provider finalized with tool_calls. */
   readonly requiresToolCallsFinishReason?: boolean;
+  /** Reject truncated/error terminal responses that contain partial tool calls. */
+  readonly rejectsPartialToolCalls?: boolean;
   /** Provider-documented terminal finish reasons for final response frames. */
   readonly allowedFinishReasons?: ReadonlySet<string>;
+  /** Reject EOF/[DONE] unless a documented terminal finish reason was seen. */
+  readonly requiresExplicitFinishReason?: boolean;
+  /** Whether caller-supplied temperature is accepted by this wire contract. */
+  readonly acceptsTemperature?: boolean;
   /**
    * If `false`, `service_tier` is stripped. The field is recognized
    * only on an explicit provider allowlist; non-matching providers
@@ -212,6 +222,8 @@ const ZAI_FINISH_REASONS = new Set([
   "model_context_window_exceeded",
   "network_error",
 ]);
+const KIMI_K3_REASONING_EFFORT_VALUES = new Set(["low", "high", "max"]);
+const KIMI_FINISH_REASONS = new Set(["stop", "length", "tool_calls"]);
 
 // Providers explicitly known to reject `stream_options.include_usage`.
 // Currently empty by design: the default is "include" because losing
@@ -367,6 +379,12 @@ export function chatCompletionsCapabilityHintsForProvider(
     resolveModelCapabilityHints({ provider: slug, model })
       ?.supportsImageInput === true;
   const isZai = slug === "zai" || slug === "zai-coding-plan";
+  const isKimi = slug === "kimi";
+  const isKimiK3 = isKimi && normalizedModel === "kimi-k3";
+  const isKimiK27 =
+    isKimi && /^kimi-k2\.7-code(?:-highspeed)?$/u.test(normalizedModel);
+  const isKimiK26 = isKimi && normalizedModel === "kimi-k2.6";
+  const isKnownKimiModel = isKimiK3 || isKimiK27 || isKimiK26;
   const supportsZaiToolStreaming =
     isZai &&
     /(?:^|[/:])glm-(?:5(?:\.(?:1|2|3))?|4\.(?:6|7))(?:$|[-_.:])/i.test(
@@ -414,6 +432,9 @@ export function chatCompletionsCapabilityHintsForProvider(
     /(?:^|[/:])glm-5\.3(?:-flash)?$/i.test(model ?? "")
   ) {
     reasoningEffortAllowedValues = ZAI_GLM_53_REASONING_EFFORT_VALUES;
+    acceptsReasoningEffort = true;
+  } else if (isKimiK3) {
+    reasoningEffortAllowedValues = KIMI_K3_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
   } else if (
     slug === "cerebras" &&
@@ -471,6 +492,13 @@ export function chatCompletionsCapabilityHintsForProvider(
     ...(slug === "meta" || isZai
       ? { toolChoicePolicy: "auto_only" as const }
       : {}),
+    ...(isKimi
+      ? {
+          toolChoicePolicy: isKimiK3
+            ? ("no_named" as const)
+            : ("auto_only" as const),
+        }
+      : {}),
     ...(isZai
       ? {
           acceptsDirectImageInput: acceptsToolResultImages,
@@ -480,10 +508,36 @@ export function chatCompletionsCapabilityHintsForProvider(
           maxToolDefinitions: 128,
           rejectsContextWindowExceededFinishReason: true,
           requiresToolCallsFinishReason: true,
+          requiresExplicitFinishReason: true,
           allowedFinishReasons: ZAI_FINISH_REASONS,
         }
       : {}),
     ...(supportsZaiToolStreaming ? { streamsToolCalls: true } : {}),
+    ...(isKnownKimiModel
+      ? {
+          acceptsDirectImageInput: true,
+          acceptsParallelToolCalls: false,
+          maxToolDefinitions: 128,
+          ...(isKimiK3 ? { outputTokensCeiling: 1_048_576 } : {}),
+          requiresToolCallsFinishReason: true,
+          rejectsPartialToolCalls: true,
+          requiresExplicitFinishReason: true,
+          allowedFinishReasons: KIMI_FINISH_REASONS,
+          acceptsTemperature: false,
+          replaysReasoningContent: true,
+          replaysReasoningContentOnlyForIntactHistory: true,
+          reasoningContentField: "reasoning_content" as const,
+          imageInputContract: "kimi_global" as const,
+          ...(isKimiK26
+            ? {
+                thinkingConfig: {
+                  type: "enabled" as const,
+                  keep: "all" as const,
+                },
+              }
+            : {}),
+        }
+      : {}),
     ...(slug === "meta" ||
     slug === "qwen" ||
     slug === "qwen-token-plan" ||

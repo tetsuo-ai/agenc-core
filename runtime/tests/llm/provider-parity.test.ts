@@ -18,6 +18,7 @@ import {
   ZaiCodingPlanProvider,
   ZaiProvider,
 } from "./providers/zai/index.js";
+import { KimiProvider } from "./providers/kimi/index.js";
 import {
   QwenProvider,
   QwenTokenPlanProvider,
@@ -869,6 +870,23 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
       }),
   },
   {
+    provider: "kimi",
+    model: "kimi-k3",
+    apiKey: "moonshot-test",
+    env: { MOONSHOT_API_KEY: undefined },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new KimiProvider({
+            apiKey: "moonshot-test",
+            model: "kimi-k3",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("kimi-k3", parityCase),
+      }),
+  },
+  {
     provider: "qwen",
     model: "qwen3.8-max",
     apiKey: "sk-ws-test",
@@ -1060,7 +1078,8 @@ describe("provider parity", () => {
         entry.provider === "qwen" ||
           entry.provider === "qwen-token-plan" ||
           entry.provider === "zai" ||
-          entry.provider === "zai-coding-plan"
+          entry.provider === "zai-coding-plan" ||
+          entry.provider === "kimi"
           ? `${entry.provider}:${entry.model}`
           : entry.model,
       );

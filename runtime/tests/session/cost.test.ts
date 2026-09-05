@@ -355,6 +355,31 @@ describe("cost helpers", () => {
       .toContain("zai-coding-plan:glm-5.3");
   });
 
+  test("uses the official Moonshot global Kimi token rates", () => {
+    expect(DEFAULT_MODEL_COSTS["kimi:kimi-k3"]).toMatchObject({
+      inputUsdPer1K: 0.003,
+      outputUsdPer1K: 0.015,
+      cachedInputUsdPer1K: 0.0003,
+      cachedInputIncludedInInputTokens: true,
+    });
+    expect(DEFAULT_MODEL_COSTS["kimi:kimi-k2.7-code"]).toMatchObject({
+      inputUsdPer1K: 0.00095,
+      outputUsdPer1K: 0.004,
+      cachedInputUsdPer1K: 0.00019,
+    });
+    expect(DEFAULT_MODEL_COSTS["kimi:kimi-k2.7-code-highspeed"])
+      .toMatchObject({
+        inputUsdPer1K: 0.0019,
+        outputUsdPer1K: 0.008,
+        cachedInputUsdPer1K: 0.00038,
+      });
+    expect(DEFAULT_MODEL_COSTS["kimi:kimi-k2.6"]).toMatchObject({
+      inputUsdPer1K: 0.00095,
+      outputUsdPer1K: 0.004,
+      cachedInputUsdPer1K: 0.00016,
+    });
+  });
+
   test("current DeepSeek and Mistral defaults use their official cached-token tiers", () => {
     expect(DEFAULT_MODEL_COSTS["deepseek:deepseek-v4-flash"]).toMatchObject({
       inputUsdPer1K: 0.00014,

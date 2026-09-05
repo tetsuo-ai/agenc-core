@@ -304,6 +304,29 @@ providerTest('native Z.AI Coding Plan uses its own catalog limits', () => {
   }
 })
 
+providerTest('native Kimi uses official context and operational output reservations', () => {
+  const context = {
+    provider: 'kimi',
+    environment: {},
+  }
+  expect(getContextWindowForModelForContext('kimi-k3', context)).toBe(1_048_576)
+  expect(getModelMaxOutputTokensForContext('kimi-k3', context)).toEqual({
+    default: 131_072,
+    upperLimit: 1_048_576,
+  })
+  for (const model of [
+    'kimi-k2.7-code',
+    'kimi-k2.7-code-highspeed',
+    'kimi-k2.6',
+  ]) {
+    expect(getContextWindowForModelForContext(model, context)).toBe(262_144)
+    expect(getModelMaxOutputTokensForContext(model, context)).toEqual({
+      default: 32_768,
+      upperLimit: 64_000,
+    })
+  }
+})
+
 providerTest('native Z.ai respects the administrative 1M context disable switch', () => {
   const context = {
     provider: 'zai',

@@ -94,6 +94,27 @@ describe("provider metadata identity", () => {
     expect(resolved.source).toBe("built_in_heuristic");
     expect(resolved.contextWindow).toBe(500_000);
   });
+
+  test.each([
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.6",
+  ])("reserves 32768 output tokens for %s without cataloguing an upstream max", (model) => {
+    const resolved = new ModelMetadataResolver({ env: {} }).resolveSync({
+      provider: "kimi",
+      model,
+      config: EMPTY_CONFIG,
+    });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 262_144,
+      maxOutputTokens: 32_768,
+      // Operational harness safety ceiling, not Moonshot model metadata.
+      maxOutputTokensUpperLimit: 64_000,
+      source: "built_in_heuristic",
+      usedFallbackModelMetadata: false,
+    });
+  });
 });
 
 describe("local providers resolve the real context window", () => {

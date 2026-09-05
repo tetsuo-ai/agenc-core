@@ -1,7 +1,7 @@
 /**
  * Shared plumbing for the desktop-facing headless CLIs (openai-login,
- * grok-login, openai-models): one IO contract, one browser opener, and
- * one emit/fail pair so every command speaks the same NDJSON dialect.
+ * grok-login, openai-models, kimi-models): one IO contract, one browser
+ * opener, and one emit/fail pair so every command speaks the same NDJSON dialect.
  */
 
 import { spawn } from "node:child_process";
@@ -55,4 +55,3 @@ export function createHeadlessEmitters(
     },
   };
 }
-

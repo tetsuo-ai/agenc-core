@@ -123,6 +123,7 @@ export interface EnvSnapshot {
   readonly ZAI_BASE_URL?: string;
   readonly ZAI_CODING_PLAN_API_KEY?: string;
   readonly ZAI_CODING_PLAN_BASE_URL?: string;
+  readonly MOONSHOT_API_KEY?: string;
   readonly GEMINI_API_KEY?: string;
   readonly GEMINI_BASE_URL?: string;
   readonly GOOGLE_API_KEY?: string;

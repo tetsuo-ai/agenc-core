@@ -553,6 +553,7 @@ const OPENAI_COMPATIBLE_METADATA_PROVIDERS = new Set([
   "cerebras",
   "zai",
   "zai-coding-plan",
+  "kimi",
   "gemini",
   "ollama",
 ]);
@@ -568,6 +569,20 @@ function inferBuiltInMetadata(
     model,
   });
   if (hasAnyMetadata(catalog)) {
+    if (
+      normalizedProvider === "kimi" &&
+      /^kimi-k2\.(?:7-code(?:-highspeed)?|6)$/u.test(normalizedModel)
+    ) {
+      // Moonshot recommends 32,768 output tokens for long thinking tasks but
+      // does not publish a K2.x model maximum. Keep that as the runtime
+      // reservation while retaining the existing 64k harness safety ceiling;
+      // the curated catalog deliberately does not claim an upstream maximum.
+      return {
+        ...catalog,
+        maxOutputTokens: 32_768,
+        maxOutputTokensUpperLimit: DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
+      };
+    }
     return catalog;
   }
   if (OPENAI_COMPATIBLE_METADATA_PROVIDERS.has(normalizedProvider)) {
