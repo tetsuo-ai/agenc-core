@@ -148,6 +148,25 @@ function seedStateRows(driver: StateSqliteDriver): void {
       "running",
       "2026-05-01T00:01:00.000Z",
     );
+  // Settled calls stay in the table as history and must not count as in flight.
+  for (const [id, status] of [
+    ["tool-done", "completed"],
+    ["tool-failed", "failed"],
+    ["tool-poisoned", "poisoned"],
+  ] as const) {
+    driver
+      .prepareState(
+        `INSERT INTO in_flight_tool_calls (
+          session_id,
+          tool_call_id,
+          tool_name,
+          args_json,
+          status,
+          started_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run("session-health", id, "FileRead", "{}", status, "2026-05-01T00:00:30.000Z");
+  }
   driver
     .prepareLogs(
       `INSERT INTO logs (
