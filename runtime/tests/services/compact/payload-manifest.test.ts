@@ -22,6 +22,9 @@ import {
   readCompactionPersistedRollbackCommittedV1,
 } from "../../../src/session/compaction-event-reader.js";
 import { validateCanonicalJournalText } from "../../../src/state/recovery-journal-contract.js";
+import { serializeRolloutItem } from "../../../src/session/rollout-item.js";
+import { readCompactionRolloutPayload } from "../../../src/session/compaction-event-reader.js";
+import { REDACTED_SECRET } from "../../../src/secrets/sanitizer.js";
 
 const DIGEST = "a".repeat(64);
 
@@ -404,3 +407,35 @@ function serializedPayloadChunkUtf8Bytes(
 function rolloutLine(type: string, payload: unknown): string {
   return `${JSON.stringify({ type, payload, eventVersion: 2 })}\n`;
 }
+
+describe("payload chunks and the rollout line encoder", () => {
+  it("redacts a secret before the bytes are counted and hashed, so the written line decodes", () => {
+    const token = "xai-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+    const value = [
+      { role: "user", content: "read the npmrc" },
+      { role: "tool", content: `//npm.pkg.github.com/:_authToken = ${token}\n; node bin location = /usr/local/bin` },
+    ];
+    const bundle = createCompactionPayloadBundleV1({
+      attemptId: "compact-redaction-test",
+      recordedAtMs: 1_788_569_563_722,
+      payloadKind: "source_history",
+      value,
+      itemCount: value.length,
+    });
+    const chunk = bundle.chunks[0]!;
+    expect(bundle.chunks).toHaveLength(1);
+    expect(chunk.canonical_json_fragment).toContain(REDACTED_SECRET);
+    expect(chunk.canonical_json_fragment).not.toContain(token);
+    expect(chunk.fragment_utf8_bytes).toBe(Buffer.byteLength(chunk.canonical_json_fragment, "utf8"));
+
+    // The exact path that broke: encode the chunk as a rollout line, parse it back, decode strictly.
+    const line = serializeRolloutItem({ type: "compaction_payload_chunk", payload: chunk, eventVersion: 2 } as never);
+    expect(line).not.toContain(token);
+    const parsed = JSON.parse(line) as { readonly payload: unknown };
+    const decoded = readCompactionRolloutPayload("compaction_payload_chunk", parsed.payload);
+    expect(decoded).toEqual(chunk);
+    const reconstructed = reconstructCompactionPayloadV1(bundle.manifest, [chunk]);
+    expect(JSON.stringify(reconstructed)).toContain(REDACTED_SECRET);
+    expect(JSON.stringify(reconstructed)).not.toContain(token);
+  });
+});
