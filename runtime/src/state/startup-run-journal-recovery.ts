@@ -1774,11 +1774,16 @@ function projectEffectIntent(
   const category = requireRecoveryCategory(payload.recoveryCategory);
   const sessionId = row.thread_id;
   const idempotencyKey = optionalString(payload.idempotencyKey);
+  // Same rule as RolloutStore.recordEffectEvent: the journaled child run id
+  // is the step's identity; the session id only stands in when absent.
+  const childRunId =
+    optionalString(payload.childRunId) ??
+    (sessionId !== runId ? sessionId : undefined);
   repository.beginEffect({
     runId,
     epoch,
     stepId: requireString(payload.stepId, "stepId"),
-    ...(sessionId !== runId ? { childRunId: sessionId } : {}),
+    ...(childRunId !== undefined ? { childRunId } : {}),
     sessionId,
     callId: requireString(payload.callId, "callId"),
     toolName: requireString(payload.toolName, "toolName"),

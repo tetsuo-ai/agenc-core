@@ -493,6 +493,29 @@ describe("strict canonical journal contract", () => {
     },
   );
 
+  it("validates the optional effect_intent childRunId as a string", () => {
+    const intent = (childRunId: unknown) =>
+      validEvent(1, "effect_intent", {
+        formatVersion: 2,
+        minimumReaderRuntime: "0.14.0",
+        runId: "run-1",
+        stepId: "workflow.plan",
+        callId: "workflow.plan",
+        toolName: "workflow.plan",
+        recoveryCategory: "side-effecting",
+        intentDigest: "intent-digest",
+        attempt: 1,
+        recordedAt: "2026-08-19T00:00:00.000Z",
+        childRunId,
+      });
+    expect(() =>
+      validateCanonicalJournalText(intent("run-1:plan#1")),
+    ).not.toThrow(expect.objectContaining({ reasonCode: "schema_invalid" }));
+    expect(() => validateCanonicalJournalText(intent(7))).toThrow(
+      expect.objectContaining({ reasonCode: "schema_invalid" }),
+    );
+  });
+
   it("rejects invalid payloads for known event variants", () => {
     expect(() =>
       validateCanonicalJournalText(validEvent(1, "agent_message", {})),

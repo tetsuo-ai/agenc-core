@@ -486,6 +486,8 @@ interface Harness {
   ledgers: Map<string, MemoryLedger>;
   warnings: string[];
   controller: VerifiedChangeWorkflowController;
+  /** Test seams: `failJournalOpenWith` makes the next journal open throw. */
+  hooks: { failJournalOpenWith?: Error };
   cleanup(): void;
 }
 
@@ -505,9 +507,17 @@ function makeHarness(): Harness {
   spawner.durableRepo = repo;
   const ledgers = new Map<string, MemoryLedger>();
   const warnings: string[] = [];
+  const hooks: Harness["hooks"] = {};
   const controller = new VerifiedChangeWorkflowController({
     durability: () => repo,
-    journal: { open: async (runId) => new TestJournal(repo, runId) },
+    journal: {
+      open: async (runId) => {
+        if (hooks.failJournalOpenWith !== undefined) {
+          throw hooks.failJournalOpenWith;
+        }
+        return new TestJournal(repo, runId);
+      },
+    },
     admission: ({ runId }) => {
       admission.scope.runId = runId;
       return admission;
@@ -539,6 +549,7 @@ function makeHarness(): Harness {
     ledgers,
     warnings,
     controller,
+    hooks,
     cleanup: () => {
       driver.close();
       rmSync(home, { recursive: true, force: true });
@@ -1281,5 +1292,76 @@ describe("VerifiedChangeWorkflowController — child usage rollup", () => {
       totalTokens: 67,
       costUsd: 0.875,
     });
+  });
+});
+
+describe("VerifiedChangeWorkflowController — runs with no live pipeline", () => {
+  async function interruptBeforeWorktree(): Promise<void> {
+    armFailpoint("before_worktree_provision");
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(
+      /failpoint/,
+    );
+    disarmFailpoint();
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+  }
+
+  it("closes a run whose resume fails as failed instead of leaving it running", async () => {
+    await interruptBeforeWorktree();
+    harness.hooks.failJournalOpenWith = new Error(
+      `run ${RUN_ID} step workflow.plan already has a different effect intent`,
+    );
+    await expect(harness.controller.resumeOpenWorkflows()).resolves.toEqual([]);
+    const terminal = harness.repo.getCurrentTerminalResult(RUN_ID);
+    expect(terminal).toMatchObject({
+      status: "failed",
+      exitCode: 1,
+      stopReason: null,
+    });
+    expect(terminal?.finalMessage).toContain(
+      "workflow resume failed after a daemon restart",
+    );
+    expect(terminal?.finalMessage).toContain("different effect intent");
+    expect(
+      harness.warnings.some((w) =>
+        w.startsWith(`workflow resume failed for ${RUN_ID}:`),
+      ),
+    ).toBe(true);
+    // Terminal runs are skipped by the next sweep.
+    delete harness.hooks.failJournalOpenWith;
+    await expect(harness.controller.resumeOpenWorkflows()).resolves.toEqual([]);
+  });
+
+  it("cancelDetached closes a run with no live pipeline and reports everything else honestly", async () => {
+    await interruptBeforeWorktree();
+    expect(harness.controller.cancelDetached("run-unknown", "run.cancel")).toBe(
+      "not_a_workflow",
+    );
+    expect(harness.controller.cancelDetached(RUN_ID, "operator")).toBe(
+      "cancelled",
+    );
+    const terminal = harness.repo.getCurrentTerminalResult(RUN_ID);
+    expect(terminal).toMatchObject({
+      status: "cancelled",
+      exitCode: 1,
+      stopReason: null,
+    });
+    expect(terminal?.finalMessage).toContain("run.cancel (operator)");
+    expect(terminal?.finalMessage).toContain("no live pipeline");
+    expect(harness.controller.cancelDetached(RUN_ID, "operator")).toBe(
+      "already_terminal",
+    );
+    await expect(harness.controller.resumeOpenWorkflows()).resolves.toEqual([]);
+  });
+
+  it("cancelDetached leaves a live pipeline to the admission cascade", async () => {
+    const started = await harness.controller.start(startParams(harness));
+    expect(harness.controller.cancelDetached(started.runId, "operator")).toBe(
+      "live",
+    );
+    await harness.controller.awaitRun(started.runId);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe(
+      "completed",
+    );
   });
 });

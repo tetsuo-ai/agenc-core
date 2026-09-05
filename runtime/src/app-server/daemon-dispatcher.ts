@@ -209,6 +209,15 @@ import type { CodePredictionService } from "../services/code-prediction/service.
  */
 export interface AgenCDaemonWorkflowStartService {
   startRun(params: RunStartParams): Promise<RunStartResult>;
+  /**
+   * Closes a workflow run's projection when run.cancel finds no live
+   * pipeline for it. Optional: older wirings without it keep the previous
+   * behaviour (agents-rail cancel only).
+   */
+  cancelDetachedRun?(params: {
+    readonly runId: string;
+    readonly reason: string;
+  }): string | Promise<string>;
 }
 
 export interface AgenCDaemonConnectionInitializeState {
@@ -968,13 +977,18 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#runInspection.evidence(validateRunEvidenceParams(params)),
         );
-      case "run.cancel":
-        return successResponse(
-          id,
-          await this.#agentManager.cancelRunTree(
-            validateRunCancelParams(params),
-          ),
-        );
+      case "run.cancel": {
+        const cancelParams = validateRunCancelParams(params);
+        const result = await this.#agentManager.cancelRunTree(cancelParams);
+        // A workflow run with no live pipeline has nothing observing the
+        // cancellation cascade; close its projection so run.status agrees
+        // with the cancel that just succeeded.
+        await this.#workflow?.cancelDetachedRun?.({
+          runId: cancelParams.runId,
+          reason: cancelParams.reason ?? "run.cancel",
+        });
+        return successResponse(id, result);
+      }
       case "run.start":
         if (this.#workflow === undefined) {
           return methodNotImplementedResponse(id, method);

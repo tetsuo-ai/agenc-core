@@ -2974,13 +2974,18 @@ export class RolloutStore {
         projection === undefined
           ? this.requireRunEpoch(payload.runId)
           : { epoch: projection.epoch };
+      // The journaled child run id wins: a workflow session journals its
+      // plan/implement steps on behalf of a subordinate run, and a replay
+      // that derived the child from the session id alone rebuilt those
+      // intents without it and conflicted with the live projection.
+      const childRunId =
+        payload.childRunId ??
+        (this.sessionId !== payload.runId ? this.sessionId : undefined);
       this.runDurabilityRepo.beginEffect({
         runId: payload.runId,
         epoch: epoch.epoch,
         stepId: payload.stepId,
-        ...(this.sessionId !== payload.runId
-          ? { childRunId: this.sessionId }
-          : {}),
+        ...(childRunId !== undefined ? { childRunId } : {}),
         sessionId: this.sessionId,
         callId: payload.callId,
         toolName: payload.toolName,

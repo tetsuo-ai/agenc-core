@@ -430,6 +430,9 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
       intentDigest: input.intentDigest,
       attempt: parseWorkflowStepId(input.stepId)?.attempt ?? 1,
       recordedAt: input.intentAt,
+      ...(input.childRunId !== undefined
+        ? { childRunId: input.childRunId }
+        : {}),
     };
     const event = this.#emitDurable(
       { type: "effect_intent", payload },
