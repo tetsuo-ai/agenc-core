@@ -366,6 +366,15 @@ export interface WorkflowStartResult {
 }
 
 /** Intake failed before the pipeline began; the terminal result is durable. */
+/** The journaled failure message of a non-committed effect, as a suffix, or "". */
+function describeEffectFailure(result: unknown): string {
+  if (typeof result !== "object" || result === null) return "";
+  const failure = (result as { readonly failure?: unknown }).failure;
+  if (typeof failure !== "object" || failure === null) return "";
+  const message = (failure as { readonly message?: unknown }).message;
+  return typeof message === "string" && message.length > 0 ? `: ${message}` : "";
+}
+
 export class WorkflowIntakeError extends Error {
   constructor(
     readonly runId: string,
@@ -824,10 +833,13 @@ export class VerifiedChangeWorkflowController {
       },
     });
     if (result.outcome !== "committed") {
+      // The journal keeps the failure; the client used to see only
+      // "workflow intake failed" while the cause sat in run_effects.
+      const failure = describeEffectFailure(result);
       throw new WorkflowHaltError({
         status: result.outcome === "cancelled" ? "cancelled" : "failed",
         stopReason: null,
-        finalMessage: `workflow intake ${result.outcome}`,
+        finalMessage: `workflow intake ${result.outcome}${failure}`,
       });
     }
     if (ctx.ledger === undefined) {

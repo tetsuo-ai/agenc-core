@@ -68,6 +68,7 @@ import {
   type WorkflowSessionSeamsOptions,
 } from "./session-adapters.js";
 import { runWithBootstrapSessionScope } from "../../session/current-session.js";
+import { createPlatformProtectionVerifier } from "../../eval-contract/platform-protection.js";
 
 const WORKFLOW_TASK_ID = "verified-change";
 const WORKFLOW_SYSTEM_ID = "agenc.workflow.m5";
@@ -127,7 +128,13 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
   return async (spec: WorkflowSpec): Promise<WorkflowEvidenceLedger> => {
     const root = path.join(evidenceRoot, sanitizeIdentifierPart(spec.runId));
     await mkdir(root, { recursive: true, mode: 0o700 });
-    const access = { root };
+    // macOS and Windows need an ACL check the ledger cannot do itself; without
+    // one the ledger refuses and every goal run fails at intake on a Mac.
+    const platformProtection = createPlatformProtectionVerifier();
+    const access = {
+      root,
+      ...(platformProtection !== undefined ? { platformProtection } : {}),
+    };
     const context = {
       runId: spec.runId,
       contractDigest: computeSpecDigest(spec),
