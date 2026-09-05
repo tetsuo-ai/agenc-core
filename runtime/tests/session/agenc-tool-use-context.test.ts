@@ -2,6 +2,8 @@ import { describe, expect, test, vi } from "vitest";
 
 import { createAgentRoleWorkspace } from "../agents/role.js";
 import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 
@@ -226,5 +228,76 @@ describe("buildAgenCToolUseContext", () => {
 
     sessionAbort.abort("session_shutdown");
     expect(context.abortController.signal.aborted).toBe(true);
+  });
+});
+
+describe("daemon sessions route tool permission changes through the registry", () => {
+  test("EnterPlanMode's update lands in the registry and is visible to the next read", async () => {
+    const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const changes: string[] = [];
+    registry.subscribeToModeChange((next, previous) => {
+      changes.push(`${previous}->${next}`);
+    });
+    const session = createSession({
+      permissionModeRegistry: registry,
+      services: {
+        registry: { toLLMTools: () => [] },
+        provider: undefined,
+        permissionModeRegistry: registry,
+        skillsManager: {
+          skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+        },
+      },
+    });
+    const context = buildAgenCToolUseContext(
+      session as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+    const before = context.getAppState().toolPermissionContext as {
+      readonly mode: string;
+    };
+    expect(before.mode).toBe("default");
+    expect(context.setAppState).toBeDefined();
+
+    context.setAppState!((prev: { toolPermissionContext: Record<string, unknown> }) => ({
+      ...prev,
+      toolPermissionContext: {
+        ...prev.toolPermissionContext,
+        mode: "plan",
+        prePlanMode: "default",
+      },
+    }));
+    await vi.waitFor(() => expect(registry.current().mode).toBe("plan"));
+    expect(
+      (context.getAppState().toolPermissionContext as { mode: string }).mode,
+    ).toBe("plan");
+    expect(changes).toEqual(["default->plan"]);
+
+    // ExitPlanMode compares against the snapshot it read; a stale snapshot
+    // must not move the live context.
+    context.setAppState!((prev: { toolPermissionContext: unknown }) =>
+      prev.toolPermissionContext === before
+        ? { ...prev, toolPermissionContext: { mode: "acceptEdits" } }
+        : prev,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(registry.current().mode).toBe("plan");
+    expect(changes).toEqual(["default->plan"]);
+
+    // Returning the same snapshot publishes nothing.
+    context.setAppState!((prev: unknown) => prev);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(changes).toEqual(["default->plan"]);
+  });
+
+  test("an explicit app-state store still wins", () => {
+    const setAppState = vi.fn();
+    const context = buildAgenCToolUseContext(
+      createSession({ setAppState }) as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+    expect(context.setAppState).toBe(setAppState);
   });
 });
