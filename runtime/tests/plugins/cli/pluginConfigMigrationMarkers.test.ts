@@ -395,3 +395,54 @@ describe("plugin entries in canonical config", () => {
     ]);
   });
 });
+
+describe("marketplace-qualified plugin identifiers on removal", () => {
+  it("uninstall accepts the name@marketplace id the marketplace install was made with", async () => {
+    const { root, agencHome, workspaceRoot } = await tempRuntime();
+    const alphaSource = await writePlugin(root, "alpha");
+    // `plugin marketplace install alpha@bundled` installs under the bare name.
+    const installed = await installPluginOp({
+      ...pluginAuthority(agencHome, workspaceRoot),
+      source: alphaSource,
+      name: "alpha",
+    });
+    expect(installed.destination).toBe(
+      join(agencHome, "plugins", pluginFilesystemKey("alpha")),
+    );
+
+    const result = await uninstallPluginOp({
+      ...pluginAuthority(agencHome, workspaceRoot),
+      pluginId: "alpha@bundled",
+    });
+    expect(result.pluginId).toBe("alpha");
+    expect(result.removedRoots).toEqual([installed.destination]);
+    await expect(access(installed.destination)).rejects.toThrow();
+    const listed = await listInstalledPlugins(pluginAuthority(agencHome, workspaceRoot));
+    expect(listed.plugins.map((plugin) => plugin.id)).not.toContain("alpha");
+  });
+
+  it("update accepts the qualified id and reinstalls under the bare name", async () => {
+    const { root, agencHome, workspaceRoot } = await tempRuntime();
+    const alphaSource = await writePlugin(root, "alpha");
+    const authority = pluginAuthority(agencHome, workspaceRoot);
+    const installed = await installPluginOp({ ...authority, source: alphaSource, name: "alpha" });
+    const updated = await updatePluginOp({
+      ...authority,
+      pluginId: "alpha@bundled",
+      source: alphaSource,
+    });
+    expect(updated.destination).toBe(installed.destination);
+    const listed = await listInstalledPlugins(authority);
+    expect(listed.plugins.map((plugin) => plugin.id)).toEqual(["alpha"]);
+  });
+
+  it("a qualified id whose bare name is not installed is still reported as not installed", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    await expect(
+      uninstallPluginOp({
+        ...pluginAuthority(agencHome, workspaceRoot),
+        pluginId: "ghost@bundled",
+      }),
+    ).rejects.toThrow("plugin is not installed in user scope: ghost@bundled");
+  });
+});
