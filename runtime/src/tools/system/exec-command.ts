@@ -321,6 +321,11 @@ function processObservationDisposition(
   });
 }
 
+const REMOVED_ALIAS_HINTS = {
+  command: "the command line goes in `cmd`",
+  cwd: "the working directory goes in `workdir`",
+} as const;
+
 export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   const manager =
     config?.unifiedExecManager ??
@@ -454,7 +459,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
       for (const removedAlias of ["command", "cwd"] as const) {
         if (Object.prototype.hasOwnProperty.call(args, removedAlias)) {
-          const message = `unknown field \`${removedAlias}\``;
+          // Name the field that replaced the alias: a bare "unknown field"
+          // gave the model nothing to correct, and a goal run's implement
+          // child repeated the same `cwd` call 44 times until the backstop
+          // ended the turn.
+          const message =
+            `unknown field \`${removedAlias}\`; ${REMOVED_ALIAS_HINTS[removedAlias]}`;
           return {
             content: safeStringify({ error: message }),
             isError: true,
