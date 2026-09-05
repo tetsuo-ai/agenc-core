@@ -480,6 +480,12 @@ export interface Config {
     readonly minWaitTimeoutMs?: number;
     readonly defaultWaitTimeoutMs?: number;
     readonly maxWaitTimeoutMs?: number;
+    /**
+     * Consecutive timed-out `wait_agent` calls (no mailbox update in between)
+     * after which the wait fails and asks the model to decide instead of
+     * polling on. Minimum 1.
+     */
+    readonly maxConsecutiveWaitTimeouts?: number;
     readonly usageHintEnabled: boolean;
     readonly usageHintText: string;
     readonly rootAgentUsageHintText?: string;

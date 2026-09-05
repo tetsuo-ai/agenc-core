@@ -30,6 +30,12 @@ import { validationErrorToolResult } from "../../tools/results.js";
 export const MIN_WAIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 export const MAX_WAIT_TIMEOUT_MS = 3_600_000;
+/**
+ * Default number of consecutive timed-out `wait_agent` calls before the tool
+ * stops answering "timed out" and fails with a decision request. Four waits
+ * at the default timeout is two minutes of polling with nothing to show.
+ */
+export const DEFAULT_MAX_CONSECUTIVE_WAIT_TIMEOUTS = 4;
 
 /**
  * Shared evidence ref for agent-tool argument/identity refusals produced
