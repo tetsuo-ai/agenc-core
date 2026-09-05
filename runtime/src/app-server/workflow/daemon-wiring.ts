@@ -67,6 +67,7 @@ import {
   type WorkflowSessionSeams,
   type WorkflowSessionSeamsOptions,
 } from "./session-adapters.js";
+import { runWithBootstrapSessionScope } from "../../session/current-session.js";
 
 const WORKFLOW_TASK_ID = "verified-change";
 const WORKFLOW_SYSTEM_ID = "agenc.workflow.m5";
@@ -468,7 +469,13 @@ export function createDaemonWorkflowController(options: {
       for (const paths of candidatePaths()) {
         activeResumePaths = paths;
         try {
-          resumed.push(...(await controller.resumeOpenWorkflows()));
+          // Same scope as run.start: resumed runs spawn sessions from daemon
+          // context, where the ambient current session is undefined.
+          resumed.push(
+            ...(await runWithBootstrapSessionScope(() =>
+              controller.resumeOpenWorkflows(),
+            )),
+          );
         } finally {
           activeResumePaths = undefined;
         }
