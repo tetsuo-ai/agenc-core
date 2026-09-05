@@ -34,7 +34,6 @@ import {
 } from "../../llm/content-conversion.js";
 import type { Session, SessionServices } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
-import { resolveAgencHome } from "../../config/env.js";
 import {
   isSkillCandidatesDisabledByEnv,
   parseSkillCandidateProposals,
@@ -188,9 +187,8 @@ export interface ExtractMemoriesDependencies {
   readonly ensureAgentControl?: typeof ensureAgentControlFn;
   /**
    * AgenC home that receives skill-candidate drafts. Defaults to the
-   * session's config-store home, then `resolveAgencHome(env)`. An injected
-   * `env` that names no `AGENC_HOME` turns proposals off instead of falling
-   * back to the process user's home.
+   * session's config-store home. Tests and embeddings without that canonical
+   * authority must inject this value explicitly.
    */
   readonly skillCandidatesHome?: string;
   /**
@@ -571,15 +569,7 @@ function resolveSkillCandidatesHome(
   const storeHome = (session.services as Partial<SessionServices> | undefined)
     ?.configStore?.homeContext.path;
   if (typeof storeHome === "string" && storeHome.length > 0) return storeHome;
-  const env = deps.env;
-  if (env !== undefined && (env.AGENC_HOME ?? "").trim().length === 0) {
-    return undefined;
-  }
-  try {
-    return resolveAgencHome(env ?? process.env);
-  } catch {
-    return undefined;
-  }
+  return undefined;
 }
 
 /**
