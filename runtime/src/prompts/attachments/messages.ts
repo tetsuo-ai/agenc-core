@@ -335,8 +335,29 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         wrapSystemReminder(`${SKILL_RELEVANCE_REMINDER_HEADER}\n\n${content}`),
       );
     }
+    case "instruction_update": {
+      const sections: string[] = [];
+      if (attachment.workspaceText !== undefined) {
+        sections.push(
+          `${INSTRUCTION_UPDATE_WORKSPACE_HEADER}\n\n${sanitizeSystemReminderContent(attachment.workspaceText)}`,
+        );
+      }
+      if (attachment.memoryText !== undefined) {
+        sections.push(
+          `${INSTRUCTION_UPDATE_MEMORY_HEADER}\n\n${sanitizeSystemReminderContent(attachment.memoryText)}`,
+        );
+      }
+      if (sections.length === 0) return null;
+      return userContextMessage(wrapSystemReminder(sections.join("\n\n")));
+    }
   }
 }
+
+/** Opening sentences of the `instruction_update` reminder. */
+export const INSTRUCTION_UPDATE_WORKSPACE_HEADER =
+  "The workspace instructions changed since this session started. This version replaces the one at the start of the prompt:";
+export const INSTRUCTION_UPDATE_MEMORY_HEADER =
+  "The persistent memory index changed since this session started. This version replaces the one at the start of the prompt:";
 
 /** Opening sentence of the per-request `skill_relevance` reminder. */
 export const SKILL_RELEVANCE_REMINDER_HEADER =

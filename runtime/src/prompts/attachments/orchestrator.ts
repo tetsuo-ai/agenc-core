@@ -31,6 +31,7 @@ import { autoModeProducer } from "./auto-mode.js";
 import { swarmModeProducer } from "./swarm-mode.js";
 import { criticalReminderProducer } from "./critical-reminder.js";
 import { dateChangeProducer } from "./date-change.js";
+import { instructionUpdateProducer } from "./instruction-update.js";
 import { deferredToolsDeltaProducer } from "./deferred-tools-delta.js";
 import { mcpInstructionsDeltaProducer } from "./mcp-delta.js";
 import { outputStyleProducer } from "./output-style.js";
@@ -199,6 +200,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   //
   // Phase 4 — System reminders:
   dateChangeProducer,
+  instructionUpdateProducer,
   criticalReminderProducer,
   outputStyleProducer,
   //

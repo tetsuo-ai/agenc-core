@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1323,5 +1323,200 @@ describe("extraction cadence across a daemon restart", () => {
         message: expect.stringContaining("disk full"),
       },
     ]);
+  });
+});
+
+describe("skill candidates ride the extraction child", () => {
+  let root: string;
+  let memoryDir: string;
+  let agencHome: string;
+
+  const candidate = {
+    name: "run-hermetic-vitest",
+    description: "Run one runtime test file through the hermetic vitest runner.",
+    whenToUse: "When a runtime change needs its tests run in isolation.",
+    body: "# Purpose\n\nRun tests in isolation.\n\n## Steps\n\n1. node scripts/run-hermetic-vitest.mjs run <file>\n\n## Verification\n\nSummary line passes.\n\n## Pitfalls\n\nNever use the real AGENC_HOME.\n",
+    evidence: ["Three runner invocations, each checked against the summary line."],
+  };
+  const replyWithCandidate = (entry: Record<string, unknown> = candidate) =>
+    `Memory updated.\n\n\`\`\`skill-candidates\n${JSON.stringify({ skillCandidates: [entry] })}\n\`\`\`\n`;
+  const messages: LLMMessage[] = [
+    { role: "user", content: "run the runtime tests for this change" },
+    { role: "assistant", content: "done, all green" },
+  ];
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-extract-skillcand-"));
+    memoryDir = join(root, "memory");
+    agencHome = join(root, "agenc-home");
+    await mkdir(memoryDir, { recursive: true });
+    await mkdir(agencHome, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("asks the child for candidates and writes the one it returns as an inactive draft", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    const runChild = vi.fn(async (_request: ExtractMemoriesChildRequest) => ({
+      outcome: "completed" as const,
+      finalMessage: replyWithCandidate(),
+    }));
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+      skillCandidatesHome: agencHome,
+      listInstalledSkillNames: async () => ["verify", "already-there"],
+    });
+
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+
+    expect(runChild).toHaveBeenCalledOnce();
+    const prompt = runChild.mock.calls[0]![0].prompt;
+    expect(prompt).toContain("## Skill candidates (drafts for the user to review)");
+    expect(prompt).toContain("at least 3 tool calls");
+    expect(prompt).toContain("Installed skills: already-there, verify.");
+    expect(prompt).toContain("```skill-candidates");
+
+    const draftDir = join(agencHome, "skill-candidates", "run-hermetic-vitest");
+    const skill = await readFile(join(draftDir, "SKILL.md"), "utf8");
+    expect(skill).toContain('name: "run-hermetic-vitest"');
+    expect(skill).toContain("## Verification");
+    const record = JSON.parse(await readFile(join(draftDir, "candidate.json"), "utf8")) as {
+      provenance: { sessionId?: string; createdAt: string };
+      evidence: string[];
+    };
+    expect(record.provenance.sessionId).toBe(
+      (session as unknown as { conversationId: string }).conversationId,
+    );
+    expect(record.provenance.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    expect(record.evidence).toHaveLength(1);
+    const ledger = (await readFile(join(agencHome, "skill-candidates", "ledger.jsonl"), "utf8"))
+      .trim()
+      .split("\n");
+    expect(ledger).toHaveLength(1);
+    expect(JSON.parse(ledger[0]!)).toMatchObject({
+      slug: "run-hermetic-vitest",
+      action: "proposed",
+    });
+    // A draft is not a skill: nothing lands where the loader looks.
+    await expect(stat(join(agencHome, "skills"))).rejects.toThrow();
+    expect(warnings.at(-1)).toEqual({
+      cause: "skill_candidate_proposed",
+      message:
+        "draft skill written for review: run-hermetic-vitest (agenc skills candidates list)",
+    });
+  });
+
+  it("skips a candidate that duplicates an installed skill or trips validation, and says why", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild: vi.fn(async () => ({
+        outcome: "completed" as const,
+        finalMessage:
+          "```skill-candidates\n" +
+          JSON.stringify({
+            skillCandidates: [candidate, { ...candidate, name: "Not A Slug" }],
+          }) +
+          "\n```\n",
+      })),
+      skillCandidatesHome: agencHome,
+      listInstalledSkillNames: async () => ["run-hermetic-vitest"],
+    });
+
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+
+    await expect(stat(join(agencHome, "skill-candidates", "run-hermetic-vitest"))).rejects.toThrow();
+    const causes = warnings.map((warning) => warning.cause);
+    expect(causes).not.toContain("skill_candidate_proposed");
+    expect(causes.filter((cause) => cause === "skill_candidate_skipped")).toHaveLength(2);
+    expect(warnings.map((warning) => warning.message)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Not A Slug: name is not a kebab-case slug"),
+        "run-hermetic-vitest: a skill with this name is already installed",
+      ]),
+    );
+  });
+
+  it("neither asks for nor writes candidates when AGENC_SKILL_CANDIDATES=0", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    const runChild = vi.fn(async () => ({
+      outcome: "completed" as const,
+      finalMessage: replyWithCandidate(),
+    }));
+    initExtractMemories({
+      env: { AGENC_SKILL_CANDIDATES: "0" },
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+      skillCandidatesHome: agencHome,
+      listInstalledSkillNames: async () => [],
+    });
+
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(runChild.mock.calls[0]![0].prompt).not.toContain("Skill candidates");
+    await expect(stat(join(agencHome, "skill-candidates"))).rejects.toThrow();
+    expect(warnings.map((warning) => warning.cause)).not.toContain("skill_candidate_proposed");
+  });
+
+  it("stays off when an injected env names no AgenC home", async () => {
+    const runChild = vi.fn(async () => ({
+      outcome: "completed" as const,
+      finalMessage: replyWithCandidate(),
+    }));
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+      listInstalledSkillNames: async () => [],
+    });
+
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(runChild.mock.calls[0]![0].prompt).not.toContain("Skill candidates");
+    await expect(stat(join(agencHome, "skill-candidates"))).rejects.toThrow();
+  });
+
+  it("reads the candidate block from the real delegate result", async () => {
+    const delegateFn = vi.fn(async () => ({
+      kind: "sync_completed" as const,
+      result: {
+        threadId: "child-thread",
+        durationMs: 0,
+        outcome: "completed" as const,
+        finalMessage: replyWithCandidate(),
+      },
+      thread: {},
+    }));
+    const ensureAgentControl = vi.fn(() => ({ control: {}, registry: {} }));
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      delegateFn: delegateFn as never,
+      ensureAgentControl: ensureAgentControl as never,
+      skillCandidatesHome: agencHome,
+      listInstalledSkillNames: async () => [],
+    });
+
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+
+    expect(delegateFn).toHaveBeenCalledOnce();
+    await expect(
+      stat(join(agencHome, "skill-candidates", "run-hermetic-vitest", "SKILL.md")),
+    ).resolves.toBeDefined();
   });
 });

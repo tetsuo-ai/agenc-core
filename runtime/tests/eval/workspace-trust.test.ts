@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,6 +46,25 @@ describe("trustWorkspace", () => {
       { path: realpathSync(workspace), trustedAt: "2026-09-04T10:00:00.000Z" },
     ]);
     expect(record.projectMcpServerChoices).toEqual([{ path: "/somewhere/else", rejectedServers: ["x"] }]);
+  });
+
+  it("keeps every entry when two runners trust different workspaces at once", () => {
+    const { home, workspace } = freshRoot();
+    const second = join(workspace, "..", "ws2");
+    mkdirSync(second);
+    // Two processes, each trusting its own workspace against the same home.
+    const script = `import { trustWorkspace } from ${JSON.stringify(new URL("../../scripts/eval/workspace-trust.mjs", import.meta.url).href)};
+      for (let i = 0; i < 20; i += 1) trustWorkspace({ agencHome: process.argv[1], workspace: process.argv[2] });`;
+    const runners = [workspace, second].map((ws) =>
+      spawn(process.execPath, ["--input-type=module", "-e", script, home, ws], { stdio: "inherit" }));
+    return Promise.all(runners.map((child) => new Promise<void>((resolve, reject) => {
+      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`runner exited ${code}`))));
+    }))).then(() => {
+      const record = JSON.parse(readFileSync(join(home, "trusted-projects.json"), "utf8"));
+      const paths = record.trustedProjects.map((entry: { path: string }) => entry.path).sort();
+      expect(paths).toEqual([realpathSync(second), realpathSync(workspace)].sort());
+      expect(existsSync(join(home, "trusted-projects.json.lock"))).toBe(false);
+    });
   });
 
   it("replaces an unreadable record instead of failing", () => {

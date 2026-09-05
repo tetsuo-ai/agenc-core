@@ -51,6 +51,8 @@ function usage() {
     "  --executor <mode>       'real' (default) or 'mock' (scripted solution.sh)",
     "  --agent-command <cmd>   Default shell command for each task",
     "  --setup-command <cmd>   Shell command run in each task workspace before the agent (repeatable; real executor only; same placeholders as --agent-command)",
+    "  --session-command <cmd> Run session tasks as one shell command per step instead of an AgenC SDK session (external agents). Placeholders: {prompt} {stepId} {stepIndex} {continue} plus those of --agent-command",
+    "  --session-continue-arg <arg>  Text that {continue} expands to from the second step on (empty on the first); e.g. -c for agents that resume their last session",
     "  --benchmark <name>      Override manifest benchmark name",
     "  --run-id <id>           Override generated run id",
     "  --agent-name <name>     Agent name for report metadata (default: agenc)",
@@ -84,6 +86,8 @@ function parseArgs(argv) {
     keepWorkspaces: false,
     agentCommand: undefined,
     setupCommands: [],
+    sessionCommand: undefined,
+    sessionContinueArg: "",
     benchmark: undefined,
     runId: undefined,
     agentName: "agenc",
@@ -137,6 +141,12 @@ function parseArgs(argv) {
         break;
       case "--setup-command":
         parsed.setupCommands.push(readValue());
+        break;
+      case "--session-command":
+        parsed.sessionCommand = readValue();
+        break;
+      case "--session-continue-arg":
+        parsed.sessionContinueArg = readValue();
         break;
       case "--benchmark":
         parsed.benchmark = readValue();
@@ -598,9 +608,17 @@ async function runTaskInWorkspace(task, manifest, args, workspace) {
   }
 
   if (task.kind === "session") {
-    return args.executor === "mock"
-      ? runMockSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted })
-      : runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted });
+    if (args.executor === "mock") {
+      return runMockSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted });
+    }
+    if (args.sessionCommand) {
+      return runExternalSessionTask({
+        task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted,
+        sessionCommand: args.sessionCommand,
+        continueArg: args.sessionContinueArg ?? "",
+      });
+    }
+    return runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted });
   }
 
   const agentCommand = args.executor === "mock"
@@ -934,6 +952,94 @@ function describeSession(session, rolloutPath) {
   return `session ${session.sessionId}${rolloutNote}`;
 }
 
+/**
+ * A step of a session task as a shell command, for agents without an AgenC
+ * SDK: {prompt} is the step prompt, {continue} expands to the continuation
+ * argument from the second step on so the agent resumes the conversation it
+ * started in this workspace, and {stepId}/{stepIndex} name the step.
+ */
+function renderStepCommand(template, task, step, index, cwd, taskDir, continueArg) {
+  const base = renderCommand(template, { ...task, prompt: step.prompt }, cwd, taskDir);
+  return base
+    .replaceAll("{stepId}", shellQuote(step.id))
+    .replaceAll("{stepIndex}", String(index + 1))
+    .replaceAll("{continue}", index === 0 ? "" : continueArg);
+}
+
+/**
+ * Drive a session task through an external agent's CLI, one command per step
+ * in the same workspace, with the same step and task verifiers as the SDK
+ * path. Tool calls, re-reads and compaction stay unknown for an agent whose
+ * transcript the runner cannot read, so the step metrics are empty and the
+ * task notes say so; pass rate, wall time and any usage the command prints
+ * as JSON are comparable.
+ */
+async function runExternalSessionTask({
+  task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted, sessionCommand, continueArg,
+}) {
+  const steps = [];
+  const tokens = { input: 0, output: 0, total: 0 };
+  let sawTokens = false;
+  for (const [index, step] of task.steps.entries()) {
+    const stepStarted = performance.now();
+    const result = await runCommand(
+      renderStepCommand(sessionCommand, task, step, index, cwd, taskDir, continueArg),
+      {
+        cwd,
+        timeoutMs: step.timeoutMs ?? timeoutMs,
+        env: { ...process.env, AGENC_WORKSPACE: cwd },
+      },
+    );
+    commands.push(commandReport(result));
+    rawResults.push(result);
+    if (result.timedOut) riskFlags.add("agent_timeout");
+    const exitCode = result.exitCode ?? 1;
+    if (exitCode !== 0) riskFlags.add("agent_command_failed");
+    const stepTokens = extractTokens(result.stdout);
+    if (stepTokens) {
+      sawTokens = true;
+      addTokens(tokens, stepTokens);
+    }
+    const verifiers = exitCode === 0
+      ? await runStepVerifiers(step, task, cwd, taskDir, timeoutMs, rawResults, riskFlags)
+      : [];
+    steps.push({
+      id: step.id,
+      status: exitCode !== 0 ? "error" : verifierStatus(verifiers),
+      durationMs: Math.round(performance.now() - stepStarted),
+      ...(stepTokens ? { tokens: stepTokens } : {}),
+      exitCode,
+      metrics: finalizeMetrics(createStepMetrics()),
+      verifiers,
+    });
+    if (exitCode !== 0) break;
+  }
+  const completed = steps.length === task.steps.length && steps.every((step) => step.status !== "error");
+  const verifiers = completed
+    ? await runStepVerifiers({ verifiers: task.verifiers }, task, cwd, taskDir, timeoutMs, rawResults, riskFlags)
+    : [];
+  riskFlags.add("external_agent_no_session_metrics");
+  const how = continueArg
+    ? `steps ran as shell commands; steps after the first carried ${continueArg}`
+    : "steps ran as shell commands without a continuation argument";
+  return buildTaskReport({
+    task,
+    status: completed ? sessionStatus(steps, verifiers) : "error",
+    durationMs: performance.now() - taskStarted,
+    commands,
+    verifiers,
+    riskFlags,
+    rawResults,
+    tokens: sawTokens ? tokens : undefined,
+    steps,
+    metrics: aggregateMetrics(steps.map((step) => step.metrics)),
+    notes: [`${how}; session metrics are unavailable for an external agent`, taskNotes(rawResults)]
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 4000),
+  });
+}
+
 async function runSessionTask({ task, taskDir, cwd, timeoutMs, commands, riskFlags, rawResults, taskStarted }) {
   const agencHome = requireIsolatedHome(process.env);
   const sdk = await loadSdk();
@@ -1034,6 +1140,8 @@ function computeConfigFingerprint(manifest, effective) {
     benchmark: effective.benchmark ?? manifest.benchmark,
     executor: effective.executor,
     agentCommand: effective.agentCommand ?? manifest.agentCommand ?? null,
+    sessionCommand: effective.sessionCommand ?? null,
+    sessionContinueArg: effective.sessionContinueArg ?? null,
     agent: {
       name: effective.agentName ?? null,
       provider: effective.provider ?? null,
@@ -1153,11 +1261,14 @@ async function main() {
         args.outputDir,
         `report-${entry?.id ?? "default"}.json`,
       );
+      await mkdir(path.dirname(reportPath), { recursive: true });
       await writeFile(reportPath, output, "utf8");
       process.stdout.write(`Wrote eval report: ${reportPath}\n`);
       continue;
     }
     if (args.outputPath) {
+      // A fresh checkout has no eval/reports yet; a lost report after a long run is unrecoverable.
+      await mkdir(path.dirname(args.outputPath), { recursive: true });
       await writeFile(args.outputPath, output, "utf8");
       process.stdout.write(`Wrote eval report: ${args.outputPath}\n`);
       continue;

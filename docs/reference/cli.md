@@ -662,12 +662,23 @@ Install text mode never prints the specifier. See
 ```text
 agenc skills list
 agenc skills list --json
+agenc skills candidates list [--json]
+agenc skills candidates show <name>
+agenc skills candidates accept <name>
+agenc skills candidates reject <name>
 ```
 
 Skill inventory for the current cwd and `AGENC_HOME`. Desktop clients can use
 this instead of opening a session to read `/skills`. It does not install
 content or print skill bodies. Normal runtime initialization can still create
 runtime directories or migrate legacy plugin-data directories.
+
+`candidates` reviews the draft skills the runtime proposed from past sessions
+(`$AGENC_HOME/skill-candidates/<name>/`). Drafts are inactive until `accept`
+moves one into `$AGENC_HOME/skills/<name>/`; `accept` refuses a name any
+installed skill already uses, and `reject` deletes the draft. A malformed
+`candidates` command exits 1 instead of becoming a prompt. Details:
+[skills-plugins.md](skills-plugins.md#skill-candidates).
 
 ```bash
 agenc skills list --json
@@ -678,10 +689,10 @@ Text mode prints `[origin] name — description`. After an inventory is emitted,
 both modes exit 0; inspect `errors[]` (or stderr in text mode) for
 config/registry failures.
 
-Only `list` plus optional `--json` is a skills command. `agenc skills` or
-`agenc skills --help` is **not** help: the parser rejects it and the default
-route treats those tokens as a prompt. Use `agenc help skills`. Top-level
-`agenc help` does not list this command.
+Only `list` plus optional `--json` and the `candidates` commands are skills
+commands. `agenc skills` or `agenc skills --help` is **not** help: the parser
+rejects it and the default route treats those tokens as a prompt. Use
+`agenc help skills`. Top-level `agenc help` does not list this command.
 
 This is not `agenc plugin`. Details, JSON fields, and differences from
 `/skills`:

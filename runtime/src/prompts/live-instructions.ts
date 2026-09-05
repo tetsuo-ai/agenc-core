@@ -3,6 +3,8 @@ import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { Session } from "../session/session.js";
+import { getAttachmentTrackingState } from "../session/attachment-state.js";
+import { stabilizeInstructionHead } from "./instruction-head.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
   getGlobalMemoryEntrypoint,
@@ -497,22 +499,31 @@ export async function resolveLiveInstructionEnvelope(input: {
         ]
       : []),
   ];
-  const memoryText = await loadMemoryEntrypointsText();
+  const freshMemoryText = await loadMemoryEntrypointsText();
   input.session.setProjectMemoryWarnings(warnings);
   const sources = [
     ...sourcesFromTiers({ tiers }),
     ...additionalSources,
   ];
 
+  // The head keeps the session-start version of both blocks so the cached
+  // prefix holds; a change reaches the model through the instruction_update
+  // attachment instead (prompts/instruction-head.ts).
+  const head = stabilizeInstructionHead(
+    getAttachmentTrackingState(input.session),
+    { workspaceText, memoryText: freshMemoryText },
+    resolve(input.ctx.cwd),
+  );
+
   // The trusted role/base prompt is last and therefore cannot be textually
   // shadowed by lower-authority repository guidance or by persisted memory.
-  const text = [workspaceText, memoryText, input.baseInstructions]
+  const text = [head.workspaceText, head.memoryText, input.baseInstructions]
     .filter((part) => part.trim().length > 0)
     .join("\n\n");
   return {
     text,
-    workspaceText,
-    memoryText,
+    workspaceText: head.workspaceText,
+    memoryText: head.memoryText,
     sources,
     warnings,
     policy,

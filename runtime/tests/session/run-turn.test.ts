@@ -8,6 +8,7 @@
  * `process_killed` abort for every clean turn.
  */
 
+import { INSTRUCTION_UPDATE_WORKSPACE_HEADER } from "../../src/prompts/attachments/messages.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   chmodSync,
@@ -4083,7 +4084,7 @@ describe("runTurn — live sampling request contract", () => {
     expect(seenOptions?.skipCacheWrite).toBe(true);
   });
 
-  test("resolves on-disk workspace instructions for every turn and sends each source exactly once", async () => {
+  test("keeps the workspace instruction head stable across turns and delivers a change as an update reminder", async () => {
     const repo = mkdtempSync(join(tmpdir(), "agenc-live-instructions-"));
     const sentinel = "PROJECT_SENTINEL_7a8e";
     const updated = "PROJECT_SENTINEL_UPDATED_4f2c";
@@ -4131,13 +4132,30 @@ describe("runTurn — live sampling request contract", () => {
       expect(
         requests[0]!.systemPrompt.match(/BASE_SENTINEL_8c1d/g),
       ).toHaveLength(1);
-      expect(requests[1]!.systemPrompt).not.toContain(sentinel);
+      // The head keeps the session-start version so the provider's cached
+      // prefix holds; the changed file reaches the model as an update
+      // reminder in the same request (prompts/instruction-head.ts).
       expect(
-        requests[1]!.systemPrompt.match(new RegExp(updated, "g")),
+        requests[1]!.systemPrompt.match(new RegExp(sentinel, "g")),
       ).toHaveLength(1);
+      expect(requests[1]!.systemPrompt).not.toContain(updated);
       expect(
         requests[1]!.systemPrompt.match(/BASE_SENTINEL_8c1d/g),
       ).toHaveLength(1);
+      const updateReminders = requests[1]!.messages.filter(
+        (message) =>
+          typeof message.content === "string" &&
+          message.content.includes(INSTRUCTION_UPDATE_WORKSPACE_HEADER) &&
+          message.content.includes(updated),
+      );
+      expect(updateReminders).toHaveLength(1);
+      expect(
+        requests[0]!.messages.some(
+          (message) =>
+            typeof message.content === "string" &&
+            message.content.includes(INSTRUCTION_UPDATE_WORKSPACE_HEADER),
+        ),
+      ).toBe(false);
       const turnContexts = events.flatMap((event) =>
         event.msg.type === "turn_context" ? [event.msg.payload] : [],
       );

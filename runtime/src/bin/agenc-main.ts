@@ -5545,7 +5545,9 @@ export async function main(): Promise<number> {
         // Advisory only.
       }
     }
-    return runAgenCDaemonCli(daemonCommand);
+    // The real daemon process must not keep the caller's working directory;
+    // library callers (and tests running the daemon in-process) leave it.
+    return runAgenCDaemonCli(daemonCommand, { enterDaemonHome: true });
   }
   const remoteCommand = parseAgenCRemoteCliArgs(argv);
   if (remoteCommand !== null) {

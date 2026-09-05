@@ -7,6 +7,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
 import { randomUUID } from "node:crypto";
 import { createDaemonWorkflowController } from "./workflow/daemon-wiring.js";
 import { DaemonWorkflowStartService } from "./workflow/run-start-service.js";
@@ -368,6 +369,12 @@ export interface AgenCDaemonCliHost {
 export interface RunAgenCDaemonCliOptions {
   readonly io?: AgenCDaemonCliIo;
   readonly host?: AgenCDaemonCliHost;
+  /**
+   * Make a foreground daemon work from its home instead of the caller's
+   * directory (#2149). Set by the real CLI entry; library callers and tests
+   * that run the daemon inside their own process leave it unset.
+   */
+  readonly enterDaemonHome?: boolean;
   readonly signalProcess?: AgenCSignalProcess;
   readonly beforeDaemonReady?: () => void | Promise<void>;
   /** @internal Reload/shutdown interposition contract-test seam. */
@@ -924,6 +931,7 @@ async function runAgenCDaemonAction(
     }
     case "run":
       return runAgenCDaemonForeground(host, io, {
+        enterDaemonHome: options.enterDaemonHome,
         signalProcess: options.signalProcess,
         beforeDaemonReady: options.beforeDaemonReady,
         beforeDaemonReloadAdoption: options.beforeDaemonReloadAdoption,
@@ -2588,6 +2596,7 @@ async function runAgenCDaemonForeground(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
   options: {
+    readonly enterDaemonHome?: boolean;
     readonly signalProcess?: AgenCSignalProcess;
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
@@ -2604,6 +2613,14 @@ async function runAgenCDaemonForeground(
   } = {},
 ): Promise<number> {
   const startupStartedAt = Date.now();
+  // Leave the caller's directory before anything else: it may not outlive
+  // this process, and a dead cwd breaks every later child spawn (#2149).
+  if (options.enterDaemonHome === true) {
+    enterDaemonWorkingDirectory(
+      resolveAgenCDaemonHome(host.env, host.userHome),
+      io,
+    );
+  }
   writeAgenCDaemonStartupDebug(
     host,
     io,
@@ -5737,7 +5754,10 @@ async function writeAgenCDaemonSnapshot(
 
 export { ensureAgenCDaemonCookie } from "./transport/auth.js";
 
-export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
+export function createNodeDaemonCliHost(
+  deps: { readonly spawnProcess?: typeof spawn } = {},
+): AgenCDaemonCliHost {
+  const spawnProcess = deps.spawnProcess ?? spawn;
   const entrypointPath = process.argv[1] ?? "";
   const userHome = homedir();
   const spawnedStartupGuards = new Map<
@@ -5757,14 +5777,20 @@ export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
     platform: process.platform,
     ...(startupGuardReceiver === undefined ? {} : { startupGuardReceiver }),
     spawnDetachedDaemon: (env) => {
+      const daemonHome = resolveAgenCDaemonHome(env, userHome);
+      // The child works from its home, never from this caller's directory,
+      // which may be a scratch or eval workspace that is deleted while the
+      // daemon keeps running (#2149).
+      try {
+        mkdirSync(daemonHome, { recursive: true, mode: 0o700 });
+      } catch {
+        /* the pid path below fails with a clearer error if the home is unusable */
+      }
       if (!hasOperatorHeapSnapshotOption(env)) {
-        mkdirSync(
-          join(resolveAgenCDaemonHome(env, userHome), "oom-snapshots"),
-          {
-            recursive: true,
-            mode: 0o700,
-          },
-        );
+        mkdirSync(join(daemonHome, "oom-snapshots"), {
+          recursive: true,
+          mode: 0o700,
+        });
       }
       // Capture the child's raw stderr until its log sink takes over: a
       // crash before the sink installs (loader failure, fatal V8 error,
@@ -5788,11 +5814,12 @@ export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
       };
       let child: ChildProcess;
       try {
-        child = spawn(
+        child = spawnProcess(
           process.execPath,
           buildAgenCDaemonChildNodeArgs(entrypointPath, childEnv, userHome),
           {
             detached: true,
+            cwd: daemonHome,
             env: childEnv,
             // stdout stays detached from this short-lived parent; the
             // foreground daemon installs its own size-capped rotating log sink
