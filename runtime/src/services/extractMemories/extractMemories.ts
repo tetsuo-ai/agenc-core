@@ -100,6 +100,16 @@ export const MEMORY_EXTRACTION_TOOL_ALLOWLIST: readonly string[] = [
 export const MEMORY_EXTRACTION_AGENT_NAME = "memory_extraction";
 
 const DEFAULT_MAX_TURNS = 5;
+/**
+ * Visible messages one extraction run may cover. The child has
+ * DEFAULT_MAX_TURNS tool rounds; a run that failed on N messages was handed N
+ * plus everything new the next time, so a long session's extraction never
+ * completed again (backlog 6, 20, 25, 31 messages across four failed runs in
+ * one soak session). A bounded batch drains over several runs instead.
+ */
+const MAX_EXTRACTION_BATCH_MESSAGES = 12;
+/** Failed runs on the same batch before it is dropped so the lane recovers. */
+const MAX_FAILED_RUNS_PER_BATCH = 2;
 const MAX_EXTRACTION_LANES = 256;
 
 type ExtractionWarningCause =
@@ -216,6 +226,8 @@ interface VisibleRange {
 interface ExtractionLane {
   trigger: MemoryExtractionTriggerState;
   inProgress: boolean;
+  /** Consecutive failed runs on the current batch. */
+  failedRuns: number;
   lastAccessedAt: number;
   pendingContext: QueuedExtraction | undefined;
   /** The persisted cadence was read once, before the lane's first decision. */
@@ -720,6 +732,7 @@ export function initExtractMemories(
     const created: ExtractionLane = {
       trigger: createMemoryExtractionTriggerState(),
       inProgress: false,
+      failedRuns: 0,
       lastAccessedAt: Date.now(),
       pendingContext: undefined,
       restored: false,
@@ -811,7 +824,17 @@ export function initExtractMemories(
       queued.context.messages,
       lane.trigger.processedVisibleCount,
     );
-    const newMessageCount = range.unprocessedMessages.length;
+    // The cursor restarts at zero when the visible history shrank (a reset).
+    const batchStart =
+      range.currentVisibleCount < lane.trigger.processedVisibleCount
+        ? 0
+        : lane.trigger.processedVisibleCount;
+    const batch = range.unprocessedMessages.slice(
+      0,
+      MAX_EXTRACTION_BATCH_MESSAGES,
+    );
+    const batchEnd = batchStart + batch.length;
+    const newMessageCount = batch.length;
     if (newMessageCount === 0) {
       emitExtractionWarning(
         session,
@@ -823,14 +846,15 @@ export function initExtractMemories(
 
     if (
       hasSuccessfulMemoryWrite({
-        messages: range.unprocessedMessages,
+        messages: batch,
         completedToolResults: queued.context.completedToolResults,
         writeToolNames: WRITE_TOOL_NAMES,
         resolveMemoryPath: (value) =>
           resolveDirectMemoryWritePath(value, memoryDir),
       })
     ) {
-      lane.trigger.processedVisibleCount = range.currentVisibleCount;
+      lane.trigger.processedVisibleCount = batchEnd;
+      lane.failedRuns = 0;
       emitExtractionWarning(
         session,
         "memory_extraction_skipped",
@@ -884,7 +908,8 @@ export function initExtractMemories(
     const childResult = await (deps.runChild ??
       ((request) => defaultRunChild(request, maxTurns, deps)))({
       session: queued.context.session,
-      messages: queued.context.messages,
+      // The batch, not the whole history: the child's work stays bounded.
+      messages: batch,
       prompt,
       memoryDir,
       toolPolicy: createAutoMemoryToolPolicy(memoryDir, readOnlyMemoryRoots),
@@ -908,6 +933,19 @@ export function initExtractMemories(
       } else {
         detail = "a memory write failed";
       }
+      lane.failedRuns += 1;
+      if (lane.failedRuns >= MAX_FAILED_RUNS_PER_BATCH) {
+        // The same batch failed twice; move past it so the lane recovers.
+        lane.trigger.processedVisibleCount = batchEnd;
+        lane.failedRuns = 0;
+        emitExtractionWarning(
+          session,
+          "memory_extraction_failed",
+          detail + "; dropped " + newMessageCount + " message(s) after " +
+            MAX_FAILED_RUNS_PER_BATCH + " failed runs on the same batch",
+        );
+        return;
+      }
       emitExtractionWarning(
         session,
         "memory_extraction_failed",
@@ -923,7 +961,8 @@ export function initExtractMemories(
         `child tool policy denied ${tracker.deniedReads} read(s) outside the memory directory; the extraction completed`,
       );
     }
-    lane.trigger.processedVisibleCount = range.currentVisibleCount;
+    lane.trigger.processedVisibleCount = batchEnd;
+    lane.failedRuns = 0;
     const savedPaths = [...tracker.savedPaths].filter(
       (path) => basename(path) !== AUTO_MEMORY_INDEX_FILE,
     );

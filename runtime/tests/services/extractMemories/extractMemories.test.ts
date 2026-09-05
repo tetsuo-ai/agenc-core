@@ -1520,3 +1520,54 @@ describe("skill candidates ride the extraction child", () => {
     ).resolves.toBeDefined();
   });
 });
+
+describe("extraction batches and failed runs", () => {
+  let root = "";
+  let memoryDir = "";
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-extract-batches-"));
+    memoryDir = join(root, "memory");
+    await mkdir(memoryDir, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const conversation = (count: number): LLMMessage[] =>
+    Array.from({ length: count }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `turn ${index}: something durable about the project`,
+    }));
+
+  it("covers at most twelve messages per run and drains the rest on later runs", async () => {
+    const runChild = vi.fn(async (_request: ExtractMemoriesChildRequest) => ({ outcome: "completed" as const }));
+    initExtractMemories({ env: {}, minEligibleTurns: 1, resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }), runChild });
+    const messages = conversation(30);
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+    expect(runChild.mock.calls.map((call) => call[0].messages.length)).toEqual([12, 12, 6]);
+    expect(runChild.mock.calls[0]![0].messages[0]!.content).toContain("turn 0:");
+    expect(runChild.mock.calls[2]![0].messages[0]!.content).toContain("turn 24:");
+    expect(runChild.mock.calls[0]![0].prompt).toContain("~12 model-visible");
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+    expect(runChild).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops a batch after two failed runs and continues with the newer messages", async () => {
+    const outcomes: ExtractMemoriesChildResult[] = [
+      { outcome: "errored", error: new Error("subagent exceeded maxTurns (5)") },
+      { outcome: "errored", error: new Error("subagent exceeded maxTurns (5)") },
+      { outcome: "completed" },
+    ];
+    const runChild = vi.fn(async (_request: ExtractMemoriesChildRequest) => outcomes.shift() ?? { outcome: "completed" as const });
+    initExtractMemories({ env: {}, minEligibleTurns: 1, resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }), runChild });
+    const first = conversation(4);
+    await executeExtractMemories(extractionContext({ cwd: root, messages: first }));
+    await executeExtractMemories(extractionContext({ cwd: root, messages: first }));
+    expect(runChild.mock.calls.map((call) => call[0].messages.length)).toEqual([4, 4]);
+    const later = [...first, ...conversation(2).map((message, index) => ({ ...message, content: `turn ${index + 4}: newer` }))];
+    await executeExtractMemories(extractionContext({ cwd: root, messages: later }));
+    expect(runChild).toHaveBeenCalledTimes(3);
+    expect(runChild.mock.calls[2]![0].messages.map((message) => message.content)).toEqual(["turn 4: newer", "turn 5: newer"]);
+  });
+});
