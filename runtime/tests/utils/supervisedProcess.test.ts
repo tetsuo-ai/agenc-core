@@ -37,6 +37,8 @@ import {
   spawnContainedProcess,
   terminateProcessTreeAndWait,
   throwIfPreparedSpawnCleanupUnproven,
+  POSIX_PROCESS_GATE_SCRIPT,
+  serializePosixProcessGatePayload,
 } from "../../src/utils/supervisedProcess.js";
 import {
   SandboxExecutionBroker,
@@ -1897,5 +1899,64 @@ describe("terminateProcessTreeAndWait on Windows", () => {
           .map((line) => line.trim()),
       ).toEqual(["/PID 4242 /T", "/PID 4242 /T /F"]);
     });
+  });
+});
+
+describe("posix process gate handoff", () => {
+  it("execs once the newline terminator arrives, without waiting for end-of-file", async () => {
+    if (process.platform === "win32") return;
+    const payload = serializePosixProcessGatePayload("/bin/echo", ["gate-ok"], {
+      cwd: process.cwd(),
+      env: { PATH: "/usr/bin:/bin" },
+    } as never);
+    expect(payload.endsWith("\n")).toBe(true);
+    expect(payload.slice(0, -1)).not.toContain("\n");
+    const child = spawn(process.execPath, ["-e", POSIX_PROCESS_GATE_SCRIPT], {
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    const gate = child.stdio[3] as import("node:net").Socket;
+    gate.on("error", () => {});
+    let stdout = "";
+    let stderr = "";
+    child.stdout!.on("data", (chunk) => { stdout += chunk; });
+    child.stderr!.on("data", (chunk) => { stderr += chunk; });
+    child.stdin!.end();
+    // Two writes, split mid-document, and the owner never closes its end.
+    gate.write(payload.slice(0, 20));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    gate.write(payload.slice(20));
+    const code = await new Promise<number | null>((resolve) => {
+      const timer = setTimeout(() => resolve(-1), 5_000);
+      child.once("close", (exitCode) => { clearTimeout(timer); resolve(exitCode); });
+    });
+    gate.destroy();
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toBe("gate-ok\n");
+  });
+
+  it("still accepts an end-of-file terminated handoff from an older owner", async () => {
+    if (process.platform === "win32") return;
+    const payload = serializePosixProcessGatePayload("/bin/echo", ["legacy"], {
+      cwd: process.cwd(),
+      env: { PATH: "/usr/bin:/bin" },
+    } as never).slice(0, -1);
+    const child = spawn(process.execPath, ["-e", POSIX_PROCESS_GATE_SCRIPT], {
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    const gate = child.stdio[3] as import("node:net").Socket;
+    gate.on("error", () => {});
+    let stdout = "";
+    child.stdout!.on("data", (chunk) => { stdout += chunk; });
+    child.stdin!.end();
+    gate.end(payload);
+    const code = await new Promise<number | null>((resolve) => {
+      const timer = setTimeout(() => resolve(-1), 5_000);
+      child.once("close", (exitCode) => { clearTimeout(timer); resolve(exitCode); });
+    });
+    expect(code).toBe(0);
+    expect(stdout).toBe("legacy\n");
   });
 });

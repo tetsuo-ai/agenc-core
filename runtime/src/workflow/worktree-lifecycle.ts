@@ -82,7 +82,9 @@ export class WorkflowGitError extends Error {
   readonly operation: string;
 
   constructor(operation: string, detail: string) {
-    super(`workflow git ${operation} failed: ${detail}`);
+    super(
+      `workflow git ${operation} failed: ${detail.trim().length > 0 ? detail : "(no output)"}`,
+    );
     this.name = "WorkflowGitError";
     this.operation = operation;
   }
