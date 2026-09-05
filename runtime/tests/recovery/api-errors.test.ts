@@ -135,6 +135,14 @@ describe("isTransientProviderError", () => {
     ).toBe(false);
   });
 
+  test("a body that ends mid-stream (undici \"terminated\") is transient", () => {
+    const terminated = new TypeError("terminated");
+    expect(isTransientProviderError(terminated)).toBe(true);
+    const mapped = mapLLMError("grok", terminated, 30_000);
+    expect(mapped.message).toBe("grok error: terminated");
+    expect(isTransientProviderError(mapped)).toBe(true);
+  });
+
   test("401 + generic syntax → not transient", () => {
     const err401 = new Error("unauthorized");
     (err401 as unknown as { status: number }).status = 401;
