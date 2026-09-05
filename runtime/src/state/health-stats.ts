@@ -6,10 +6,7 @@ import {
   type StateSqliteReader,
 } from "./sqlite-driver.js";
 
-type StateCountTable =
-  | "agent_runs"
-  | "session_state_snapshots"
-  | "in_flight_tool_calls";
+type StateCountTable = "agent_runs" | "session_state_snapshots";
 
 /**
  * Read-only health counter for persisted AgenC state.
@@ -50,7 +47,9 @@ function readStateStatsForPath(paths: StateDatabasePaths): HealthStateStats {
       projectDir: reader.projectDir,
       agentRuns: countRows(reader, "agent_runs"),
       sessionStateSnapshots: countRows(reader, "session_state_snapshots"),
-      inFlightToolCalls: countRows(reader, "in_flight_tool_calls"),
+      // Completed, failed and poisoned calls stay in this table as durable
+      // history; only rows still marked running are work in flight.
+      inFlightToolCalls: countRunningToolCalls(reader),
       logs: countLogs(reader),
     };
   } finally {
@@ -74,6 +73,16 @@ function countRows(reader: StateSqliteReader, table: StateCountTable): number {
     reader
       .prepareState<[], { count: number }>(
         `SELECT COUNT(*) AS count FROM ${table}`,
+      )
+      .get()?.count ?? 0
+  );
+}
+
+function countRunningToolCalls(reader: StateSqliteReader): number {
+  return (
+    reader
+      .prepareState<[], { count: number }>(
+        `SELECT COUNT(*) AS count FROM in_flight_tool_calls WHERE status = 'running'`,
       )
       .get()?.count ?? 0
   );
