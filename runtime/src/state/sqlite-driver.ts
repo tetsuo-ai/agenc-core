@@ -52,6 +52,32 @@ export const STATE_PRE_V19_BACKUP_FILENAME = "agenc-state_1.pre-v19.sqlite";
 export const STATE_PRE_V21_BACKUP_FILENAME = "agenc-state_1.pre-v21.sqlite";
 
 export type SqliteDatabase = BetterSqlite3.Database;
+
+/** One free-page reclaim pass over a state database. */
+export interface StateFreePageReclaim {
+  readonly mode: "none" | "incremental" | "full";
+  readonly pageSize: number;
+  readonly pageCountBefore: number;
+  readonly freePagesBefore: number;
+  readonly freePagesAfter: number;
+  readonly reason?: "no-free-pages" | "below-threshold" | "full-vacuum-not-allowed";
+}
+
+export interface ReclaimStateFreePagesOptions {
+  /** Pages one incremental pass returns to the file system (default 2048, 8 MiB at 4 KiB pages). */
+  readonly maxPages?: number;
+  /** Allow one full VACUUM for a database created without auto_vacuum (default false). */
+  readonly allowFullVacuum?: boolean;
+  /** Full vacuum only when at least this share of the file is free (default 0.5). */
+  readonly fullVacuumMinFreeRatio?: number;
+  /** Full vacuum only when at least this many bytes are free (default 64 MiB). */
+  readonly fullVacuumMinFreeBytes?: number;
+}
+
+const AUTO_VACUUM_INCREMENTAL = 2;
+const DEFAULT_RECLAIM_MAX_PAGES = 2048;
+const DEFAULT_FULL_VACUUM_MIN_FREE_RATIO = 0.5;
+const DEFAULT_FULL_VACUUM_MIN_FREE_BYTES = 64 * 1024 * 1024;
 export type SqliteStatement<
   Params extends unknown[] = unknown[],
   Row = unknown,
@@ -72,6 +98,9 @@ export class StateSqliteDriver {
     let logs: SqliteDatabase | undefined;
     try {
       logs = new Database(paths.logsDbPath);
+      // Before the WAL pragma: switching the journal mode writes the file
+      // header, and auto_vacuum can only be chosen while there is none.
+      configureFreshDatabaseVacuum(state);
       configureDatabase(state);
       configureDatabase(logs);
       applyStateMigrations(state, paths);
@@ -115,6 +144,11 @@ export class StateSqliteDriver {
 
   logsTransaction<T>(fn: () => T): T {
     return this.logs.transaction(fn)();
+  }
+
+  /** Return free pages of the state database to the file system; see `reclaimStateFreePages`. */
+  reclaimFreePages(options: ReclaimStateFreePagesOptions = {}): StateFreePageReclaim {
+    return reclaimStateFreePages(this.state, options);
   }
 
   close(): void {
@@ -236,6 +270,68 @@ function configureDatabase(db: SqliteDatabase): void {
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   db.pragma("temp_store = MEMORY");
+}
+
+/**
+ * Deleted rows leave free pages that SQLite never returns to the file system
+ * on its own, so a state database only grew (a soak home reached 1.28 GB with
+ * 89% free pages). A fresh database is created with incremental auto-vacuum,
+ * which `reclaimStateFreePages` drains in bounded steps. The pragma takes
+ * effect only before the first table exists, so it is set ahead of migrations.
+ */
+function configureFreshDatabaseVacuum(db: SqliteDatabase): void {
+  if (hasUserStateTables(db)) return;
+  db.pragma("auto_vacuum = INCREMENTAL");
+}
+
+function pragmaNumber(db: SqliteDatabase, name: string): number {
+  const value: unknown = db.pragma(name, { simple: true });
+  return typeof value === "number" ? value : Number(value);
+}
+
+/**
+ * Reclaim free pages. A database with incremental auto-vacuum releases up to
+ * `maxPages` per call, cheap enough for a periodic tick. A database created
+ * before auto-vacuum existed needs one full VACUUM, which rewrites the file
+ * and switches it to incremental mode for good; that is allowed only when
+ * the caller says so (daemon start, before the socket opens) and only when
+ * enough of the file is free to justify the rewrite.
+ */
+export function reclaimStateFreePages(
+  db: SqliteDatabase,
+  options: ReclaimStateFreePagesOptions = {},
+): StateFreePageReclaim {
+  const pageSize = pragmaNumber(db, "page_size");
+  const pageCountBefore = pragmaNumber(db, "page_count");
+  const freePagesBefore = pragmaNumber(db, "freelist_count");
+  const base = { pageSize, pageCountBefore, freePagesBefore };
+  if (freePagesBefore === 0) {
+    return { ...base, mode: "none", freePagesAfter: 0, reason: "no-free-pages" };
+  }
+  if (pragmaNumber(db, "auto_vacuum") === AUTO_VACUUM_INCREMENTAL) {
+    const pages = Math.min(freePagesBefore, options.maxPages ?? DEFAULT_RECLAIM_MAX_PAGES);
+    db.pragma(`incremental_vacuum(${pages})`);
+    return { ...base, mode: "incremental", freePagesAfter: pragmaNumber(db, "freelist_count") };
+  }
+  if (options.allowFullVacuum !== true) {
+    return { ...base, mode: "none", freePagesAfter: freePagesBefore, reason: "full-vacuum-not-allowed" };
+  }
+  const freeRatio = freePagesBefore / Math.max(1, pageCountBefore);
+  const freeBytes = freePagesBefore * pageSize;
+  if (
+    freeRatio < (options.fullVacuumMinFreeRatio ?? DEFAULT_FULL_VACUUM_MIN_FREE_RATIO) ||
+    freeBytes < (options.fullVacuumMinFreeBytes ?? DEFAULT_FULL_VACUUM_MIN_FREE_BYTES)
+  ) {
+    return { ...base, mode: "none", freePagesAfter: freePagesBefore, reason: "below-threshold" };
+  }
+  // VACUUM rebuilds the file and applies the pending auto_vacuum mode, so every
+  // later pass on this database is incremental.
+  db.pragma("auto_vacuum = INCREMENTAL");
+  db.exec("VACUUM");
+  // In WAL mode the rebuilt image lives in the log until a checkpoint truncates
+  // the database file to its new size; do it now so the space is really back.
+  db.pragma("wal_checkpoint(TRUNCATE)");
+  return { ...base, mode: "full", freePagesAfter: pragmaNumber(db, "freelist_count") };
 }
 
 function configureReadOnlyDatabase(db: SqliteDatabase): void {

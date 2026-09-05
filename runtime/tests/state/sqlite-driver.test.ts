@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   rmSync,
 } from "node:fs";
+import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -13,6 +14,7 @@ import { StateSchemaMismatchError } from "./errors.js";
 import {
   applyMigrations,
   openStateDatabases,
+  reclaimStateFreePages,
   resolveStateDatabasePaths,
   STATE_PRE_V15_BACKUP_FILENAME,
   STATE_PRE_V12_BACKUP_FILENAME,
@@ -608,3 +610,103 @@ function seedCurrentMainStateWithoutMigration19(): ReturnType<
   }
   return paths;
 }
+
+describe("free-page reclaim", () => {
+  const PAGE = 4096;
+  function fillAndEmpty(db: Database.Database, rows: number): void {
+    db.exec("CREATE TABLE IF NOT EXISTS scratch (id INTEGER PRIMARY KEY, blob BLOB NOT NULL)");
+    const insert = db.prepare("INSERT INTO scratch (blob) VALUES (?)");
+    const payload = Buffer.alloc(PAGE - 64, 1);
+    db.transaction(() => {
+      for (let index = 0; index < rows; index += 1) insert.run(payload);
+    })();
+    db.exec("DELETE FROM scratch");
+  }
+  const freePages = (db: Database.Database): number =>
+    Number(db.pragma("freelist_count", { simple: true }));
+  const autoVacuum = (db: Database.Database): number =>
+    Number(db.pragma("auto_vacuum", { simple: true }));
+
+  it("creates a fresh state database with incremental auto-vacuum", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      expect(autoVacuum(driver.state)).toBe(2);
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("returns free pages of an incremental database in bounded steps", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      fillAndEmpty(driver.state, 3_000);
+      const before = freePages(driver.state);
+      expect(before).toBeGreaterThan(1_000);
+      const report = driver.reclaimFreePages({ maxPages: 100 });
+      expect(report.mode).toBe("incremental");
+      expect(report.freePagesBefore).toBe(before);
+      expect(before - report.freePagesAfter).toBeGreaterThan(0);
+      expect(before - report.freePagesAfter).toBeLessThanOrEqual(100);
+      expect(freePages(driver.state)).toBe(report.freePagesAfter);
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("rewrites a legacy database once when most of it is free, then it is incremental", () => {
+    const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
+    mkdirSync(paths.projectDir, { recursive: true });
+    const legacy = new Database(paths.stateDbPath);
+    fillAndEmpty(legacy, 4_000);
+    expect(autoVacuum(legacy)).toBe(0);
+    expect(freePages(legacy)).toBeGreaterThan(3_000);
+    legacy.close();
+    const sizeBefore = statSync(paths.stateDbPath).size;
+
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      // Existing tables: the fresh-database pragma must not have been applied.
+      expect(autoVacuum(driver.state)).toBe(0);
+      const declined = driver.reclaimFreePages();
+      expect(declined).toMatchObject({ mode: "none", reason: "full-vacuum-not-allowed" });
+      const report = driver.reclaimFreePages({
+        allowFullVacuum: true,
+        fullVacuumMinFreeBytes: 1024 * 1024,
+      });
+      expect(report.mode).toBe("full");
+      expect(report.freePagesAfter).toBe(0);
+      expect(autoVacuum(driver.state)).toBe(2);
+      expect(statSync(paths.stateDbPath).size).toBeLessThan(sizeBefore / 2);
+      // From now on the periodic path works without a full vacuum.
+      fillAndEmpty(driver.state, 500);
+      expect(driver.reclaimFreePages({ maxPages: 50 }).mode).toBe("incremental");
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("leaves a legacy database alone below the free-space threshold and reports why", () => {
+    const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
+    mkdirSync(paths.projectDir, { recursive: true });
+    const legacy = new Database(paths.stateDbPath);
+    legacy.exec("CREATE TABLE keep (id INTEGER PRIMARY KEY, blob BLOB NOT NULL)");
+    const insert = legacy.prepare("INSERT INTO keep (blob) VALUES (?)");
+    for (let index = 0; index < 400; index += 1) insert.run(Buffer.alloc(PAGE - 64, 2));
+    fillAndEmpty(legacy, 20);
+    expect(freePages(legacy)).toBeGreaterThan(0);
+    const report = reclaimStateFreePages(legacy, { allowFullVacuum: true });
+    expect(report).toMatchObject({ mode: "none", reason: "below-threshold" });
+    expect(freePages(legacy)).toBe(report.freePagesBefore);
+    legacy.close();
+  });
+
+  it("reports nothing to do when the file has no free pages", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      driver.reclaimFreePages({ maxPages: 100_000 });
+      expect(driver.reclaimFreePages()).toMatchObject({ mode: "none", reason: "no-free-pages" });
+    } finally {
+      driver.close();
+    }
+  });
+});
