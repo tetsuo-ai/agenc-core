@@ -676,6 +676,8 @@ describe("free-page reclaim", () => {
       expect(report.mode).toBe("full");
       expect(report.freePagesAfter).toBe(0);
       expect(autoVacuum(driver.state)).toBe(2);
+      // The rebuild spilled to disk and the connection is back on its memory temp store.
+      expect(Number(driver.state.pragma("temp_store", { simple: true }))).toBe(2);
       expect(statSync(paths.stateDbPath).size).toBeLessThan(sizeBefore / 2);
       // From now on the periodic path works without a full vacuum.
       fillAndEmpty(driver.state, 500);
