@@ -2544,7 +2544,7 @@ function stripModelSuppliedChildArgs(
   return out;
 }
 
-function injectChildToolArgs(
+export function injectChildToolArgs(
   parsedArgs: Record<string, unknown>,
   toolName: string,
   opts: {
@@ -2571,17 +2571,29 @@ function injectChildToolArgs(
   if (opts.worktree?.path) {
     injectedArgs = withSignedAllowedRoots(injectedArgs, [opts.worktree.path]);
   }
-  if (
-    opts.worktree?.path &&
-    (toolName === "system.bash" ||
-      toolName === "exec_command" ||
-      toolName === "apply_patch") &&
-    (typeof injectedArgs.cwd !== "string" || injectedArgs.cwd.length === 0)
-  ) {
-    injectedArgs.cwd = opts.worktree.path;
+  if (opts.worktree?.path) {
+    // Each tool names its working-directory field differently. exec_command
+    // takes `workdir` and rejects `cwd` as a removed alias, so injecting
+    // `cwd` there made every exec_command in a worktree child fail with a
+    // message that blamed the model for a field it never sent.
+    const field = WORKTREE_CWD_FIELD_BY_TOOL[toolName];
+    if (
+      field !== undefined &&
+      (typeof injectedArgs[field] !== "string" ||
+        (injectedArgs[field] as string).length === 0)
+    ) {
+      injectedArgs[field] = opts.worktree.path;
+    }
   }
   return injectedArgs;
 }
+
+/** Tools pinned to the child's worktree, and the argument that carries it. */
+export const WORKTREE_CWD_FIELD_BY_TOOL: Readonly<Record<string, string>> = {
+  "system.bash": "cwd",
+  exec_command: "workdir",
+  apply_patch: "cwd",
+};
 
 async function applyChildToolPolicy(
   tool: Pick<Tool, "name">,
