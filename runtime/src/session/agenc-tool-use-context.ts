@@ -197,7 +197,21 @@ export function buildAgenCToolUseContext(
         typeof value === "string" && value.length > 0,
     )
     .join("\n\n");
-  const setAppState = surface.setAppState;
+  const getAppState = createAppStateReader(session, surface, agentDefinitions);
+  const emitWarning: AgenCToolUseContext["emitWarning"] =
+    surface.emitWarning ??
+    ((warning) => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: warning,
+        },
+      });
+    });
+  const setAppState =
+    surface.setAppState ??
+    createRegistryBackedAppStateSetter(session, getAppState, emitWarning);
   const setAppStateForTasks = surface.setAppStateForTasks ?? setAppState;
   const appendSystemMessage =
     surface.appendSystemMessage ?? createSessionSystemMessageAppender(session);
@@ -236,7 +250,7 @@ export function buildAgenCToolUseContext(
       cwd,
       verbose: opts.verbose ?? surface.verbose ?? false,
     },
-    getAppState: createAppStateReader(session, surface, agentDefinitions),
+    getAppState,
     setAppState,
     setAppStateForTasks,
     appendSystemMessage,
@@ -252,17 +266,7 @@ export function buildAgenCToolUseContext(
     setResponseLength: surface.setResponseLength ?? (() => {}),
     onCompactProgress: surface.onCompactProgress ?? (() => {}),
     addNotification: surface.addNotification ?? (() => {}),
-    emitWarning:
-      surface.emitWarning ??
-      ((warning) => {
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: warning,
-          },
-        });
-      }),
+    emitWarning,
     ...(surface.queryTracking !== undefined
       ? { queryTracking: surface.queryTracking }
       : {}),
@@ -357,6 +361,65 @@ function createFallbackAppState(
     pendingWorkerRequest: null,
     pendingSandboxRequest: null,
     elicitation: { queue: [] },
+  };
+}
+
+/**
+ * Daemon-hosted sessions have no UI app-state store, so `setAppState` was
+ * undefined there: EnterPlanMode and ExitPlanMode "changed" a mode nothing
+ * read, and plan mode was a prompt paragraph plus advice while the agent
+ * edited files under a Plan chip (#2169). The only slice of app state those
+ * tools write is the permission context, and the session already owns it:
+ * its permission registry is the durable, journaled, client-notified path
+ * `session.setPermissionMode` takes. Route tool writes there.
+ *
+ * The updater runs against the snapshot the tool observed; if the registry
+ * moved underneath it the write is dropped, which is what ExitPlanMode's own
+ * compare-and-set expects (it re-reads and retries).
+ */
+function createRegistryBackedAppStateSetter(
+  session: Session,
+  getAppState: () => AppStateShape,
+  emitWarning: AgenCToolUseContext["emitWarning"],
+): (updater: unknown) => void {
+  return (updater) => {
+    const registry =
+      session.permissionModeRegistry ?? session.services?.permissionModeRegistry;
+    if (registry === undefined || typeof registry.transact !== "function") return;
+    const previous = getAppState();
+    const next =
+      typeof updater === "function"
+        ? (updater as (prev: AppStateShape) => unknown)(previous)
+        : updater;
+    if (!isRecord(next)) return;
+    const nextContext = readToolPermissionContext(next.toolPermissionContext);
+    if (nextContext === null || nextContext === previous.toolPermissionContext) {
+      return;
+    }
+    void registry
+      .transact((live) => {
+        if (live !== previous.toolPermissionContext) {
+          return { next: null, result: () => undefined };
+        }
+        return {
+          next: nextContext,
+          metadata: {
+            runtimeSettings: {
+              reason: "permission_mode_changed",
+              rollbackOfSettingsEventId: null,
+            },
+          },
+          result: () => undefined,
+        };
+      })
+      .catch((error: unknown) => {
+        emitWarning({
+          cause: "permission_context_publish_failed",
+          message: `a tool changed the permission context but the change was not published: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+      });
   };
 }
 
