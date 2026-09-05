@@ -155,6 +155,18 @@ describe("exec_command tool", () => {
       1,
     );
 
+    test("a removed alias names the field that replaced it, so the model can correct the call", async () => {
+      const { tool } = toolWith(completedExecOutput(""));
+      const byCwd = await tool.execute(sandboxedArgs({ cmd: "npm test", cwd: root }));
+      expect(byCwd.isError).toBe(true);
+      expect(String(byCwd.content)).toContain("unknown field `cwd`");
+      expect(String(byCwd.content)).toContain("`workdir`");
+      const byCommand = await tool.execute(sandboxedArgs({ command: "npm test" }));
+      expect(byCommand.isError).toBe(true);
+      expect(String(byCommand.content)).toContain("unknown field `command`");
+      expect(String(byCommand.content)).toContain("`cmd`");
+    });
+
     test("a denied bind says the sandbox did it and that retrying is pointless", async () => {
       const { tool } = toolWith(BIND_DENIED);
       const result = await tool.execute(sandboxedArgs({ cmd: "npm start", workdir: root }));
