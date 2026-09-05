@@ -53,9 +53,9 @@ describe("gaphunt3 #3 — microcompact standalone branch honors COMPACTABLE_TOOL
     // Confirms the gate does not over-protect: an old, large, COMPACTABLE
     // result outside the recent window is still compressed.
     const messages: RuntimeMessage[] = [
-      standaloneToolResult("old-read", "FileRead", "y".repeat(8_000)),
+      standaloneToolResult("old-read", "FileRead", "y".repeat(25_000)),
       ...Array.from({ length: 6 }, (_, index) =>
-        standaloneToolResult(`recent-${index}`, "FileRead", "z".repeat(7_000))),
+        standaloneToolResult(`recent-${index}`, "FileRead", "z".repeat(25_000))),
     ];
 
     const result = await microcompactMessages(messages);
