@@ -6169,6 +6169,7 @@ function deriveMinimalSessionConfig(
       minWaitTimeoutMs: 10_000,
       defaultWaitTimeoutMs: 30_000,
       maxWaitTimeoutMs: 3_600_000,
+      maxConsecutiveWaitTimeouts: 4,
       usageHintEnabled: false,
       usageHintText: "",
       hideSpawnAgentMetadata: false,

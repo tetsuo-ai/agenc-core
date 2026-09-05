@@ -1,7 +1,9 @@
 import type { Tool, ToolResult } from "../../tools/types.js";
+import type { Session } from "../../session/session.js";
 import {
   callIdFromArgs,
   currentAgentContext,
+  DEFAULT_MAX_CONSECUTIVE_WAIT_TIMEOUTS,
   DEFAULT_WAIT_TIMEOUT_MS,
   emit,
   getSessionOrError,
@@ -12,9 +14,50 @@ import {
   MIN_WAIT_TIMEOUT_MS,
   numberValue,
   strictArgs,
+  toListedAgentJson,
   toolMetadata,
   type MultiAgentV2Options,
 } from "./common.js";
+
+/**
+ * Consecutive timed-out waits with no mailbox update in between, per
+ * session. A wait that completes clears it. Kept off the session object so
+ * the tool needs nothing new from the runtime; the WeakMap dies with the
+ * session.
+ */
+interface WaitTimeoutStreak {
+  consecutive: number;
+  waitedMs: number;
+}
+const waitTimeoutStreaks = new WeakMap<object, WaitTimeoutStreak>();
+
+function maxConsecutiveWaitTimeouts(session: {
+  readonly config?: {
+    readonly multiAgentV2?: { readonly maxConsecutiveWaitTimeouts?: number };
+  };
+}): number {
+  const configured = configuredTimeoutOption(
+    session.config?.multiAgentV2?.maxConsecutiveWaitTimeouts,
+    DEFAULT_MAX_CONSECUTIVE_WAIT_TIMEOUTS,
+  );
+  return Math.max(1, configured);
+}
+
+function liveAgentsForDecision(
+  session: Session,
+  opts: MultiAgentV2Options,
+): ReturnType<typeof toListedAgentJson>[] {
+  try {
+    const { control } = opts.ensureAgentControl(session);
+    control.registerSessionRoot(session.conversationId);
+    return control
+      .listAgents()
+      .filter((agent) => agent.agentName !== "/root")
+      .map(toListedAgentJson);
+  } catch {
+    return [];
+  }
+}
 
 function waitTimeoutMs(
   args: Record<string, unknown>,
@@ -194,11 +237,49 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
         ...(updates.length > 0 ? { mailboxUpdates: updates } : {}),
       },
     });
-    return json({
-      message: timedOut ? "Wait timed out." : "Wait completed.",
-      timed_out: timedOut,
-      ...(updates.length > 0 ? { updates } : {}),
-    });
+    if (!timedOut) {
+      waitTimeoutStreaks.delete(sessionOrError);
+      return json({
+        message: "Wait completed.",
+        timed_out: false,
+        ...(updates.length > 0 ? { updates } : {}),
+      });
+    }
+    const streak = waitTimeoutStreaks.get(sessionOrError) ?? {
+      consecutive: 0,
+      waitedMs: 0,
+    };
+    streak.consecutive += 1;
+    streak.waitedMs += timeoutMs;
+    waitTimeoutStreaks.set(sessionOrError, streak);
+    const limit = maxConsecutiveWaitTimeouts(sessionOrError);
+    if (streak.consecutive < limit) {
+      return json({
+        message: "Wait timed out.",
+        timed_out: true,
+        consecutive_timeouts: streak.consecutive,
+        waited_ms: streak.waitedMs,
+      });
+    }
+    // Polling on is the one thing that cannot help: nothing arrived in
+    // `limit` waits. Fail the call so the model decides, and hand it the
+    // agents' status so it does not need another list_agents to do so.
+    const waitedSeconds = Math.round(streak.waitedMs / 1000);
+    return json(
+      {
+        error:
+          `wait_agent has timed out ${streak.consecutive} times in a row ` +
+          `(${waitedSeconds} s) with no mailbox update. Do not call it again ` +
+          `the same way. Decide: wait once more with a deadline you can afford ` +
+          `(timeout_ms up to ${maxTimeoutMs}), close the agent with close_agent, ` +
+          `or continue the task without its result and say so.`,
+        timed_out: true,
+        consecutive_timeouts: streak.consecutive,
+        waited_ms: streak.waitedMs,
+        agents: liveAgentsForDecision(sessionOrError, opts),
+      },
+      true,
+    );
   };
 
   return {
@@ -207,7 +288,9 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       "Wait for a mailbox update from any live agent, including queued messages " +
       "and final-status notifications. When updates arrive, returns the drained " +
       "mailbox content so you can report completed agent findings immediately. " +
-      "If no mailbox update arrives before the deadline, returns a timeout summary.",
+      "If no mailbox update arrives before the deadline, returns a timeout summary. " +
+      "After several consecutive timeouts with no update the call fails and asks " +
+      "you to decide (wait with a longer deadline, close the agent, or continue without it).",
     metadata: toolMetadata("agent", {
       mutating: true,
       virtualNoFsWrites: true,
