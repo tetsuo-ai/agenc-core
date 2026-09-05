@@ -293,7 +293,7 @@ function enforcePlanModeToolBoundary(
   state.messages.push({
     role: "user",
     content:
-      "Plan mode requires this step to end with a tool call. Do not ask questions or request approval in assistant text. If you need user input, call AskUserQuestion with concrete options. If the plan is ready for approval, call ExitPlanMode. If you need more context, call a read-only tool.",
+      "Plan mode requires this step to end with a tool call. Do not ask questions or request approval in assistant text. If you need user input, call AskUserQuestion with concrete options. If the plan is ready for approval, call ExitPlanMode. If you have concluded that nothing needs to change, that conclusion is the plan: call ExitPlanMode with it. Repeating the same text does not end the step. If you need more context, call a read-only tool.",
   });
   state.transition = { reason: "plan_tool_required" };
 }

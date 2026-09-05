@@ -70,7 +70,7 @@ import {
  *   - Workflow orchestration
  *   - Internal classifier tool (YoloClassifier)
  */
-const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
+export const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
   new Set<string>([
     // Read-only file operations
     "FileRead",

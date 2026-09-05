@@ -47,6 +47,7 @@ import {
   recordSuccess,
   type DenialTrackingState,
 } from "./denial-tracking.js";
+import { SAFE_YOLO_ALLOWLISTED_TOOLS } from "./classifier.js";
 import {
   getAskRuleForTool,
   getDenyRuleForTool,
@@ -274,6 +275,26 @@ export async function checkRuleBasedPermissions(
     });
   }
 
+  // 1a2. Plan mode is read, ask, plan. Any tool that changes something is
+  // denied until ExitPlanMode restores the mode the session came from, and
+  // the message says so. Read-only tools and the plan-mode UI tools pass;
+  // plan-with-auto keeps its classifier path below (the explicit exception).
+  // Before this the mode gated nothing here, and a session in plan mode ran
+  // whatever its underlying policy approved (#2169).
+  if (
+    appState.toolPermissionContext.mode === "plan" &&
+    appState.autoModeActive !== true &&
+    !toolDoesNotRequireApproval(tool) &&
+    !SAFE_YOLO_ALLOWLISTED_TOOLS.has(tool.name)
+  ) {
+    const message = planModeDenyMessage(tool.name);
+    return Object.freeze({
+      behavior: "deny" as const,
+      message,
+      decisionReason: { type: "other" as const, reason: message },
+    });
+  }
+
   // 1b. Whole-tool ask rule. Bash sandbox fallthrough: when sandboxing
   // is enabled and the Bash input would run inside the sandbox, skip
   // the ask short-circuit so tool.checkPermissions can auto-allow.
@@ -406,6 +427,14 @@ function checkModeGate(
   }
 
   return null;
+}
+
+function planModeDenyMessage(toolName: string): string {
+  return (
+    `Plan mode: ${toolName} would change something, so it is not allowed yet. ` +
+    "Explore with read-only tools, ask with AskUserQuestion if you must, then call " +
+    "ExitPlanMode to present the plan; changes start after it is approved."
+  );
 }
 
 function toolDoesNotRequireApproval(tool: ToolLike): boolean {
