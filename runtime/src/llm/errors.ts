@@ -487,7 +487,16 @@ export function mapLLMError(
     return new LLMServerError(providerName, 503, message);
   }
 
-  return new LLMProviderError(providerName, message, status);
+  const mapped = new LLMProviderError(providerName, message, status);
+  // Keep the transport error underneath: SDK connection failures carry the
+  // socket-level code (ECONNRESET, UND_ERR_SOCKET, ...) on their own cause,
+  // and the recovery ladder's transient classifier walks the cause chain.
+  // Without it a dropped connection became a bare "Connection error." that
+  // nothing retried, and one blip ended the turn.
+  if (err !== null && typeof err === "object") {
+    (mapped as { cause?: unknown }).cause = err;
+  }
+  return mapped;
 }
 
 /**

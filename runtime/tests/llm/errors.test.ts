@@ -7,6 +7,19 @@ import {
 } from "./errors.js";
 
 describe("LLM error network classification", () => {
+  test("mapLLMError keeps the transport error as the cause of a generic provider error", () => {
+    const socket = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    const sdkError = Object.assign(new Error("Connection error."), {
+      name: "APIConnectionError",
+      cause: socket,
+    });
+    const mapped = mapLLMError("grok", sdkError, 30_000);
+    expect(mapped.message).toBe("grok error: Connection error.");
+    expect((mapped as { cause?: unknown }).cause).toBe(sdkError);
+    // Already-typed errors pass through untouched, as before.
+    expect(mapLLMError("grok", mapped, 30_000)).toBe(mapped);
+  });
+
   test("mapLLMError promotes TLS validation failures into LLMCertificateError", () => {
     const mapped = mapLLMError(
       "openai",
