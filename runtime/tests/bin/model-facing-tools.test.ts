@@ -4649,6 +4649,8 @@ describe("model-facing tools", () => {
     expect(JSON.parse(result.content)).toEqual({
       message: "Wait timed out.",
       timed_out: true,
+      consecutive_timeouts: 1,
+      waited_ms: 10_000,
     });
     expect(waitForMailboxChange).toHaveBeenCalledWith(10_000);
   });
