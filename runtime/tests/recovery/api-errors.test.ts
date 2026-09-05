@@ -12,7 +12,7 @@ import {
   isWithheldMaxOutputTokens,
   parsePromptTooLongTokenCounts,
 } from "./api-errors.js";
-import { LLMProviderError } from "../llm/errors.js";
+import { LLMProviderError, mapLLMError } from "../llm/errors.js";
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 
 function mkMsg(
@@ -106,6 +106,35 @@ describe("isTransientProviderError", () => {
     expect(isTransientProviderError(err502)).toBe(true);
     expect(isTransientProviderError(new Error("stream_idle"))).toBe(true);
   });
+  test("an SDK connection error is transient, raw and after mapLLMError", () => {
+    // openai's APIConnectionError: fixed message, no status, the socket error as cause.
+    const socket = Object.assign(new Error("other side closed"), {
+      code: "UND_ERR_SOCKET",
+    });
+    const sdkError = Object.assign(new Error("Connection error."), {
+      name: "APIConnectionError",
+      cause: socket,
+    });
+    expect(isTransientProviderError(sdkError)).toBe(true);
+    const mapped = mapLLMError("grok", sdkError, 30_000);
+    expect(mapped).toBeInstanceOf(LLMProviderError);
+    expect(mapped.message).toBe("grok error: Connection error.");
+    expect(isTransientProviderError(mapped)).toBe(true);
+    // A bland message still classifies through the preserved cause code.
+    const bland = mapLLMError(
+      "grok",
+      Object.assign(new Error("request failed"), { cause: socket }),
+      30_000,
+    );
+    expect(isTransientProviderError(bland)).toBe(true);
+    // A mapped 4xx with a plain message stays non-transient.
+    expect(
+      isTransientProviderError(
+        mapLLMError("grok", Object.assign(new Error("bad request"), { status: 400 }), 30_000),
+      ),
+    ).toBe(false);
+  });
+
   test("401 + generic syntax → not transient", () => {
     const err401 = new Error("unauthorized");
     (err401 as unknown as { status: number }).status = 401;
