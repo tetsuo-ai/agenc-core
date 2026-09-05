@@ -75,6 +75,28 @@ describe("classifyShellWorkspaceWritePolicy", () => {
     expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
   });
 
+  it("treats a source/dot stdin heredoc as an untracked shell, like bash <<EOF", () => {
+    const body = [
+      "echo pwned > src/main.ts",
+      "rm -f src/secret.ts",
+      "EOF",
+    ].join("\n");
+
+    for (const prelude of [". <<EOF", "source <<EOF", "bash <<EOF"]) {
+      const decision = classify(`${prelude}\n${body}`);
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.message).toContain("Unable to confirm workspace write targets");
+    }
+  });
+
+  it("still allows sourcing a named script the way bash script.sh is allowed", () => {
+    expect(classify("source ./setup.sh").blocked).toBe(false);
+    expect(classify(". ./setup.sh").blocked).toBe(false);
+    expect(classify("bash ./setup.sh").blocked).toBe(false);
+  });
+
   it("still blocks an fd-prefixed redirect into a workspace file", () => {
     const decision = classify("make 2> build/make.log 2>> src/errors.log");
 

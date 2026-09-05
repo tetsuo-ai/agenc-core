@@ -17,6 +17,12 @@ const SHELL_WRAPPER_COMMANDS = new Set([
   "ksh",
   "sh",
   "zsh",
+  // `.` / `source` run their operand (or a stdin heredoc) in the current
+  // shell. Without this, `. <<EOF` classified as an unknown command and
+  // returned empty targets after the tokenizer started skipping heredoc
+  // bodies, so plan-mode sessions could write workspace files.
+  ".",
+  "source",
 ]);
 const ALL_REDIRECT_OPERATORS = new Set([
   ">",
