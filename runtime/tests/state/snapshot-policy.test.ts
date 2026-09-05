@@ -1597,3 +1597,32 @@ function clock(values: readonly string[]): () => string {
     return value;
   };
 }
+
+describe("free-page reclaim on the periodic tick", () => {
+  it("reports the pages a periodic flush returned to the file system", () => {
+    const reports: Array<{ mode: string; freePagesBefore: number; freePagesAfter: number }> = [];
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: () => "2026-05-01T00:00:00.000Z",
+      agencHome: home,
+      onReclaimReport: (report) => reports.push(report),
+    });
+    driver.state.exec("CREATE TABLE scratch (id INTEGER PRIMARY KEY, blob BLOB NOT NULL)");
+    const insert = driver.prepareState<[Buffer]>("INSERT INTO scratch (blob) VALUES (?)");
+    driver.transaction(() => {
+      for (let index = 0; index < 1_000; index += 1) insert.run(Buffer.alloc(4_000, 3));
+    });
+    driver.state.exec("DELETE FROM scratch");
+    const freeBefore = Number(driver.state.pragma("freelist_count", { simple: true }));
+    expect(freeBefore).toBeGreaterThan(500);
+
+    policy.flushPeriodic();
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ mode: "incremental", freePagesBefore: freeBefore });
+    expect(reports[0]!.freePagesAfter).toBeLessThan(freeBefore);
+    // Nothing to report once the free list is drained.
+    while (Number(driver.state.pragma("freelist_count", { simple: true })) > 0) driver.reclaimFreePages();
+    policy.flushPeriodic();
+    expect(reports).toHaveLength(1);
+  });
+});

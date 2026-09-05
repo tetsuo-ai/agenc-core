@@ -179,6 +179,7 @@ import {
   discoverStateDatabasePaths,
   LOGS_DATABASE_FILENAME,
   openStateDatabasePaths,
+  type StateFreePageReclaim,
   resolveStateDatabasePaths,
   STATE_DATABASE_FILENAME,
   type StateDatabasePaths,
@@ -4139,6 +4140,16 @@ function describeSnapshotRetention(
   return `${configured} (hard cap ${SESSION_SNAPSHOT_HARD_CAP} rows per session)`;
 }
 
+function describeStateReclaim(
+  report: StateFreePageReclaim,
+  stateDbPath: string,
+): string {
+  const pages = report.freePagesBefore - report.freePagesAfter;
+  const mib = ((pages * report.pageSize) / (1024 * 1024)).toFixed(1);
+  const how = report.mode === "full" ? "full vacuum, now incremental" : "incremental";
+  return `daemon state reclaimed ${pages} free page(s) (${mib} MiB, ${how}) in ${stateDbPath}`;
+}
+
 function recoverAgenCDaemonStartupState(
   daemonHome: string,
   cwd: string,
@@ -4176,6 +4187,12 @@ function recoverAgenCDaemonStartupState(
           driver,
           config.agent?.retention,
         );
+        // Before the socket opens is the one moment a full VACUUM cannot stall a
+        // client; a database created without auto-vacuum is converted here once.
+        const reclaimed = driver.reclaimFreePages({ allowFullVacuum: true });
+        if (reclaimed.mode !== "none") {
+          log(describeStateReclaim(reclaimed, pathSet.stateDbPath));
+        }
         const prunedSnapshots =
           prunedRuns.prunedSnapshots +
           prunedPerSession.prunedSnapshots +
@@ -4703,6 +4720,8 @@ class AgenCDaemonSnapshotPolicyRegistry {
           `daemon snapshot retention pruned ${report.prunedSnapshots} row(s) ` +
             `across ${report.prunedSessionIds.length} session(s) in ${paths.projectDir}`,
         ),
+      onReclaimReport: (report) =>
+        this.#log(describeStateReclaim(report, paths.stateDbPath)),
     });
     const entry = { driver, policy };
     this.#policies.set(paths.stateDbPath, entry);
