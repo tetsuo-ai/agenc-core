@@ -196,6 +196,26 @@ export function resetRecoveryReentries(state: TurnState): void {
   state.recoveryReentryCount = 0;
 }
 
+/**
+ * Turn states that reserved a re-entry in this process. A resumed turn
+ * restores its pre-crash count and must keep it until something happens
+ * here; a count built up live is different: once a sample completes after
+ * it, the run made progress and the cap starts over.
+ */
+const liveRecoveryReentries = new WeakSet<object>();
+
+/**
+ * The re-entry cap stops a turn that keeps recovering without getting
+ * anywhere. A completed sample is getting somewhere. Without this, five
+ * transient reconnects spread over a long turn ended it as if it had looped
+ * (each retry had succeeded; the count only ever went up).
+ */
+export function resetRecoveryReentriesAfterProgress(state: TurnState): void {
+  if (!liveRecoveryReentries.has(state)) return;
+  liveRecoveryReentries.delete(state);
+  state.recoveryReentryCount = 0;
+}
+
 export type RecoveryReentryReservation =
   | { readonly kind: "reserved"; readonly count: number }
   | { readonly kind: "exhausted"; readonly cap: number };
@@ -218,6 +238,7 @@ function reserveRecoveryReentryLocked(
   }
 
   state.recoveryReentryCount += 1;
+  liveRecoveryReentries.add(state);
   if (triggerName) {
     emitWarning(
       session.eventLog,

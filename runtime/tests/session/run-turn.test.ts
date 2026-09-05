@@ -4993,6 +4993,68 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     vi.restoreAllMocks();
   });
 
+  test("spaced transient drops do not exhaust the recovery cap once samples complete in between", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    // Six drops, each followed by a sample that completes with a tool call,
+    // then a final answer. The cap is MAX_RECOVERY_REENTRIES = 5 consecutive
+    // re-entries; progress in between must bring the count back down.
+    let attempts = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts % 2 === 1 && attempts <= 11) {
+          throw Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+            statusCode: 502,
+          });
+        }
+        if (attempts < 12) {
+          return {
+            content: "",
+            toolCalls: [{ id: `tool_${attempts}`, name: "queue_tool", arguments: "{}" }],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          };
+        }
+        return {
+          content: "final",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry(),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(12);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({ lastAgentMessage: "final" }),
+        },
+      }),
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "error" &&
+          String((event.msg.payload as { message?: string }).message ?? "").includes(
+            "recovery ladder exceeded",
+          ),
+      ),
+    ).toBe(false);
+  });
+
   test("LP-07 retries a mid-stream network drop and emits a stream_error notice", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
 

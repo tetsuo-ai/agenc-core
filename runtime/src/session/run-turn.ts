@@ -101,6 +101,7 @@ import { reconnectWithBackoff } from "../recovery/reconnection.js";
 import {
   MAX_RECOVERY_REENTRIES,
   reserveRecoveryReentry,
+  resetRecoveryReentriesAfterProgress,
 } from "../recovery/fallback-ladder.js";
 import * as planModeHelpers from "./plan-mode.js";
 import type { ResponseItem } from "./rollout-item.js";
@@ -2308,6 +2309,11 @@ async function* runTurnKernelInner(
       // sampling request so the terminal turn_complete event carries
       // cumulative token consumption across continuation iterations.
       usage = cumulativeUsage(usage, result.usage);
+      // A sample that came back is forward progress. The recovery re-entry
+      // cap exists to stop a turn that keeps failing without getting
+      // anywhere; it was never brought back down, so five transient
+      // reconnects spread over a long turn ended it as if it had looped.
+      resetRecoveryReentriesAfterProgress(state);
       modelNeedsFollowUp = result.needsFollowUp;
       if (result.terminal) {
         if (result.assistantText.length > 0) {
