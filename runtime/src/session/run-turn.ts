@@ -1674,11 +1674,20 @@ async function* runTurnKernelInner(
       const content = pairing.halt
         ? sideEffectHaltMessage(pairing.toolName)
         : `result not persisted before crash; the read-only tool ${pairing.toolName} was not retried automatically — safe to re-invoke if its result is needed.`;
+      // The bootstrap replay may already have closed this call with its own
+      // persisted result (a restart between the model's calls and their
+      // results). The model's thread still needs the pairing; the rollout
+      // must not receive a second result for the id.
+      const alreadyPersisted =
+        session.rolloutStore?.liveToolCallResolved(pairing.callId) === true;
       state.messages.push({
         role: "tool",
         content,
         toolCallId: pairing.callId,
         toolName: pairing.toolName,
+        ...(alreadyPersisted
+          ? { runtimeOnly: { excludeFromDurableHistory: true } }
+          : {}),
       });
     }
     restoreFromCheckpoint(state, opts.resume.restoreSlice);

@@ -774,6 +774,7 @@ export class RolloutStore {
     CompactionSourcePayloadBundlesV1
   >();
   private liveToolPairProjection: ToolPairProjection | undefined;
+  private liveToolPairProjectionId: string | undefined;
   private liveToolPairValidator: StreamingToolPairValidator | undefined;
   private openedAt: string | undefined;
   private openedEpoch: number | undefined;
@@ -3450,6 +3451,7 @@ export class RolloutStore {
       throw new Error("live tool-pair projection did not initialize");
     }
     this.liveToolPairProjection = context.projection;
+    this.liveToolPairProjectionId = context.projectionId;
     this.liveToolPairValidator = validator;
   }
 
@@ -3464,6 +3466,20 @@ export class RolloutStore {
     const failure = this.liveToolPairValidator?.terminalFailureOutcome;
     if (failure === undefined) return undefined;
     return new ToolPairHistoryBlockedError("live append", failure).message;
+  }
+
+  /**
+   * Whether the live history already holds a result for this tool call. A
+   * durable resume asks before it persists a synthetic result for a dangling
+   * call: the bootstrap replay may already have closed the call, and a second
+   * result for one call id is a duplicate the live validator rejects, which
+   * blocks the session's history for good.
+   */
+  liveToolCallResolved(callId: string): boolean {
+    const projection = this.liveToolPairProjection;
+    const projectionId = this.liveToolPairProjectionId;
+    if (projection === undefined || projectionId === undefined) return false;
+    return projection.find(projectionId, callId)?.resultIndex !== undefined;
   }
 
   private validateLiveResponseItem(message: ToolPairMessage): void {

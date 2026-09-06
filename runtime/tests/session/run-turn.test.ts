@@ -7921,6 +7921,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       assertCompactionProjectionReady: () => {},
       append: vi.fn(),
       appendRollout: vi.fn(),
+      liveToolCallResolved: () => false,
       rolloutPath: "/tmp/does-not-matter.jsonl",
     } as unknown as Session["rolloutStore"];
 
@@ -7979,6 +7980,79 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     // The turn re-opened durably.
     expect(events.some((e) => e.msg.type === "turn_resumed")).toBe(true);
     expect(events.some((e) => e.msg.type === "turn_complete")).toBe(true);
+  });
+
+  test("a dangling call the bootstrap replay already closed is paired for the model but not persisted a second time", async () => {
+    const sideEffectTool: Tool = {
+      name: "settle",
+      description: "on-chain settlement (side-effecting)",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: true,
+      recoveryCategory: "side-effecting",
+      execute: vi.fn(async () => ({ content: "SIDE EFFECT FIRED", isError: false })),
+    } as unknown as Tool;
+    const registry: ToolRegistry = {
+      tools: [sideEffectTool],
+      toLLMTools: () => [],
+      dispatch: vi.fn(async () => ({ content: "SIDE EFFECT FIRED", isError: false })),
+    } as unknown as ToolRegistry;
+    const { session, events } = mkSession({
+      provider: mkProvider({
+        content: "acknowledged, not retrying",
+        toolCalls: [],
+      }),
+      registry,
+    });
+    const appendRollout = vi.fn();
+    session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
+      append: vi.fn(),
+      appendRollout,
+      // The replay closer already wrote a result for settle-1.
+      liveToolCallResolved: vi.fn((callId: string) => callId === "settle-1"),
+      rolloutPath: "/tmp/does-not-matter.jsonl",
+    } as unknown as Session["rolloutStore"];
+    const history: LLMMessage[] = [
+      { role: "user", content: "settle the task" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "settle-1", name: "settle", arguments: "{}" }],
+      },
+    ];
+
+    await drain(
+      session.runTurn("", {
+        subId: "turn-resumed-closed",
+        history,
+        displayUserMessage: null,
+        resume: {
+          turnId: "turn-resumed-closed",
+          fromIteration: 1,
+          fromCheckpointSeq: 1,
+          persistedMessageCount: history.length,
+          restoreSlice: {
+            turnCount: 2,
+            recoveryReentryCount: 0,
+            maxOutputTokensRecoveryCount: 0,
+            continuationNudgeCount: 0,
+            stopHookBlockingCount: 0,
+          },
+          haltedSideEffectingTools: ["settle"],
+          danglingPairings: [
+            { callId: "settle-1", toolName: "settle", halt: true },
+          ],
+        },
+      }),
+    );
+
+    expect(events.some((e) => e.msg.type === "turn_complete")).toBe(true);
+    // No second result for settle-1 reaches the rollout.
+    const persistedResults = appendRollout.mock.calls.filter(
+      ([item]: [{ type: string; payload?: { toolCallId?: string } }]) =>
+        item.type === "response_item" && item.payload?.toolCallId === "settle-1",
+    );
+    expect(persistedResults).toHaveLength(0);
   });
 
   test("crash mid-drain → resume CONTINUES (restored counters hold pre-crash values, not reset)", async () => {
@@ -8153,6 +8227,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       assertCompactionProjectionReady: () => {},
       append: vi.fn(),
       appendRollout: vi.fn(),
+      liveToolCallResolved: () => false,
       rolloutPath: "/tmp/does-not-matter.jsonl",
     } as unknown as Session["rolloutStore"];
 
