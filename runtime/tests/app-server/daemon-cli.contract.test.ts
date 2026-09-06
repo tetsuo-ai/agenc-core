@@ -3022,85 +3022,83 @@ describe("AgenC daemon CLI", () => {
   // #2225: while the replacement daemon recovers its agent runs it is serving
   // but has not committed its identity; the heartbeat proves it is alive, so
   // status says so instead of "indeterminate".
-  function writeHeartbeat(agencHome: string, pid: number, ageMs: number): void {
-    writeFileSync(
-      resolveAgenCDaemonHeartbeatPath(agencHome),
-      JSON.stringify({
-        pid,
-        beat: 45,
-        at: new Date(Date.now() - ageMs).toISOString(),
-        uptimeS: 225,
-        rssMb: 950,
-        heapUsedMb: 700,
-        eventLoopLagMs: 12,
-      }),
-    );
-  }
-
-  it("reports an unbound live pid as alive but not yet bound when its heartbeat is fresh", async () => {
+  async function statusOfUnboundPid(
+    heartbeat: { readonly pid: number; readonly ageMs: number } | null,
+  ): Promise<{
+    readonly code: number;
+    readonly out: string;
+    readonly err: string;
+    readonly terminatedPids: readonly number[];
+    readonly healthProbes: number;
+  }> {
     const agencHome = await tempAgencHome();
     const host = { ...createHost(agencHome), platform: "darwin" as const };
     const io = createIo();
     host.runningPids.add(4602);
     await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), 4602);
-    writeHeartbeat(agencHome, 4602, 2_000);
+    if (heartbeat !== null) {
+      writeFileSync(
+        resolveAgenCDaemonHeartbeatPath(agencHome),
+        JSON.stringify({
+          pid: heartbeat.pid,
+          beat: 45,
+          at: new Date(Date.now() - heartbeat.ageMs).toISOString(),
+          uptimeS: 225,
+          rssMb: 950,
+          heapUsedMb: 700,
+          eventLoopLagMs: 12,
+        }),
+      );
+    }
     const requestHealthStats = vi.fn(async () => {
       throw new Error("must not probe an unbound pid");
     });
-
-    await expect(
-      runAgenCDaemonCli({ kind: "command", action: "status" }, { host, io, requestHealthStats }),
-    ).resolves.toBe(1);
-
-    const out = io.stdoutText();
-    expect(out).toContain("AgenC daemon alive but not yet bound (pid 4602)");
-    expect(out).toContain("identity: not published yet");
-    expect(out).toMatch(/heartbeat: \d+ s ago, rss 950 MB, heap 700 MB, event-loop lag 12 ms, up 4 min/u);
-    expect(out).not.toContain("daemon running");
-    expect(io.stderrText()).not.toContain("indeterminate");
-    expect(requestHealthStats).not.toHaveBeenCalled();
-    expect(host.terminatedPids).toEqual([]);
-
+    const code = await runAgenCDaemonCli(
+      { kind: "command", action: "status" },
+      { host, io, requestHealthStats },
+    );
     await rm(agencHome, { recursive: true, force: true });
+    return {
+      code,
+      out: io.stdoutText(),
+      err: io.stderrText(),
+      terminatedPids: host.terminatedPids,
+      healthProbes: requestHealthStats.mock.calls.length,
+    };
+  }
+
+  it("reports an unbound live pid as alive but not yet bound when its heartbeat is fresh", async () => {
+    const result = await statusOfUnboundPid({ pid: 4602, ageMs: 2_000 });
+    expect(result.code).toBe(1);
+    expect(result.out).toContain("AgenC daemon alive but not yet bound (pid 4602)");
+    expect(result.out).toContain("identity: not published yet");
+    expect(result.out).toMatch(
+      /heartbeat: \d+ s ago, rss 950 MB, heap 700 MB, event-loop lag 12 ms, up 4 min/u,
+    );
+    expect(result.out).not.toContain("daemon running");
+    expect(result.err).not.toContain("indeterminate");
+    expect(result.healthProbes).toBe(0);
+    expect(result.terminatedPids).toEqual([]);
   });
 
   it("keeps an unbound pid indeterminate when its heartbeat is stale, and says how old it is", async () => {
-    const agencHome = await tempAgencHome();
-    const host = { ...createHost(agencHome), platform: "darwin" as const };
-    const io = createIo();
-    host.runningPids.add(4602);
-    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), 4602);
-    writeHeartbeat(agencHome, 4602, AGENC_DAEMON_HEARTBEAT_FRESH_MS + 45_000);
-
-    await expect(
-      runAgenCDaemonCli({ kind: "command", action: "status" }, { host, io }),
-    ).resolves.toBe(1);
-
-    expect(io.stdoutText()).not.toContain("alive but not yet bound");
-    expect(io.stderrText()).toContain("indeterminate for unbound pid 4602");
-    expect(io.stderrText()).toMatch(/its last heartbeat is \d+ s old .* so the process may be hung/u);
-
-    await rm(agencHome, { recursive: true, force: true });
+    const result = await statusOfUnboundPid({
+      pid: 4602,
+      ageMs: AGENC_DAEMON_HEARTBEAT_FRESH_MS + 45_000,
+    });
+    expect(result.code).toBe(1);
+    expect(result.out).not.toContain("alive but not yet bound");
+    expect(result.err).toContain("indeterminate for unbound pid 4602");
+    expect(result.err).toMatch(/its last heartbeat is \d+ s old .* so the process may be hung/u);
   });
 
   it("does not vouch for an unbound pid on another process's heartbeat", async () => {
-    const agencHome = await tempAgencHome();
-    const host = { ...createHost(agencHome), platform: "darwin" as const };
-    const io = createIo();
-    host.runningPids.add(4602);
-    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), 4602);
-    writeHeartbeat(agencHome, 4601, 2_000);
-
-    await expect(
-      runAgenCDaemonCli({ kind: "command", action: "status" }, { host, io }),
-    ).resolves.toBe(1);
-
-    expect(io.stdoutText()).not.toContain("alive but not yet bound");
-    expect(io.stderrText()).toContain(
+    const result = await statusOfUnboundPid({ pid: 4601, ageMs: 2_000 });
+    expect(result.code).toBe(1);
+    expect(result.out).not.toContain("alive but not yet bound");
+    expect(result.err).toContain(
       "indeterminate for unbound pid 4602; no portable instance identity is available",
     );
-
-    await rm(agencHome, { recursive: true, force: true });
   });
 
   it("reload targets the authenticated sidecar instead of a live reused pid", async () => {
