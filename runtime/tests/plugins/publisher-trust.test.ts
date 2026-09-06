@@ -5,6 +5,10 @@ import { pluginSignaturePayloadBytes } from "./resolution.js";
 import {
   OFFICIAL_PLUGIN_PUBLISHER_KEY_SHA256,
   OFFICIAL_PLUGIN_PUBLISHER_PUBLIC_KEY,
+  OFFICIAL_PLUGIN_PUBLISHER_ROLLOVER_PUBLIC_KEY,
+  OFFICIAL_PLUGIN_PUBLISHER_ROLLOVER_KEY_SHA256,
+  builtInPluginPublisherPublicKey,
+  builtInPluginPublisherPublicKeys,
   pluginPublisherKeyFingerprint,
 } from "./publisher-trust.js";
 
@@ -89,6 +93,22 @@ const SIGNATURE =
   "Bm7Nu3ioVXWncjJraWg6m77pjJO4q20A5cgaSUsGumt0Owt6rMKO9J2WA4NPDh+0jFpAYzDndqUlkXDxn5+vBg==";
 
 describe("official plugin publisher trust", () => {
+  it("adds the audited rollover key without changing the legacy API or key", () => {
+    expect(builtInPluginPublisherPublicKey("tetsuo-ai")).toBe(OFFICIAL_PLUGIN_PUBLISHER_PUBLIC_KEY);
+    expect(builtInPluginPublisherPublicKeys("tetsuo-ai")).toEqual([
+      OFFICIAL_PLUGIN_PUBLISHER_PUBLIC_KEY,
+      OFFICIAL_PLUGIN_PUBLISHER_ROLLOVER_PUBLIC_KEY,
+    ]);
+    expect(Object.isFrozen(builtInPluginPublisherPublicKeys("tetsuo-ai"))).toBe(true);
+    expect(builtInPluginPublisherPublicKeys("unrelated")).toBeUndefined();
+    expect(pluginPublisherKeyFingerprint(OFFICIAL_PLUGIN_PUBLISHER_ROLLOVER_PUBLIC_KEY))
+      .toBe(OFFICIAL_PLUGIN_PUBLISHER_ROLLOVER_KEY_SHA256);
+    expect(createPublicKey({
+      key: Buffer.from(OFFICIAL_PLUGIN_PUBLISHER_ROLLOVER_PUBLIC_KEY, "base64"),
+      format: "der", type: "spki",
+    }).asymmetricKeyType).toBe("ed25519");
+  });
+
   it("matches the audited fingerprint and verifies an official signature", () => {
     expect(
       pluginPublisherKeyFingerprint(OFFICIAL_PLUGIN_PUBLISHER_PUBLIC_KEY),

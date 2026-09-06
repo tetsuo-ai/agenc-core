@@ -763,7 +763,7 @@ same-named workspace directory. The shipped CLI cannot opt out.
 Default path: `$AGENC_HOME/plugin-publishers.json`. The resolver accepts an
 in-process `publishersPath` override; there is no operator CLI for it.
 
-AgenC includes the `tetsuo-ai` public key as its official publisher trust root,
+AgenC includes the legacy and approved rollover `tetsuo-ai` public keys,
 so signed plugins from the shipped marketplace work in a clean profile. The
 default keyring can add third-party publishers or explicitly replace that entry.
 An in-process `publishersPath` override is authoritative and does not use the
@@ -780,15 +780,35 @@ other publisher.
 }
 ```
 
-A publisher entry may be that base64 string directly. An explicit entry with
+A publisher entry may be that base64 string directly. Rollover-aware clients
+also accept `{"publicKey":"<legacy key>","publicKeys":["<legacy key>","<new key>"]}`
+or `{"publicKeys":["<legacy key>","<new key>"]}`. The union is deduplicated and
+limited to sixteen distinct keys; a supplied list must contain 1-16 entries.
+Every supplied value must be a canonical base64 DER-SPKI Ed25519 public key.
+All values are checked before verifying a signature: one malformed key rejects
+the entire publisher entry even if another key would verify. The legacy
+`publicKey` field is retained for older clients, which ignore `publicKeys` and
+therefore cannot verify packages signed only by the new key.
+
+An explicit entry with
 an empty or unusable value is authoritative and throws
 `plugin publisher is not trusted: <name>`; it never falls back to the shipped
 root. A missing default keyring uses the built-in root only for `tetsuo-ai`.
 Missing keyrings for other publishers, unreadable files, and malformed JSON
 surface their filesystem or JSON error. A well-formed public key and signature
 that do not verify throw
-`plugin signature verification failed for publisher <name>`; malformed key
-material can surface a crypto parsing error.
+`plugin signature verification failed for publisher <name>`.
+
+The built-in rollover retains historical signatures; it does not override an
+operator's explicit old-only pin. Such users must deliberately verify and add
+the new fingerprint to their keyring. Core never fetches trust keys from the
+catalog, promotes a downloaded key, or rewrites operator trust. Cached plugin
+payloads are reverified against current trust during resolution.
+
+Official decoded DER-SPKI SHA-256 fingerprints:
+
+- Legacy: `8174e96296289bd8eed26b832296309015216afe544a7f15097356b10aa1b932`
+- Rollover: `d3cd019ab546d8512619fabc80cb4b363c66d1a70bfa25a35bbef5aacf3836c3`
 
 #### Signature file
 

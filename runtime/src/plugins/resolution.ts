@@ -18,13 +18,14 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 
 import {
   createHash,
   createPublicKey,
+  type KeyObject,
   verify as verifySignatureBytes,
 } from "node:crypto";
 import { redactSecrets } from "../secrets/index.js";
 import { isRecord } from "../utils/record.js";
 import { findPluginManifestPath, loadPluginManifest } from "./manifest.js";
 import { pluginCacheDirPath, sanitizePluginId } from "./directories.js";
-import { builtInPluginPublisherPublicKey } from "./publisher-trust.js";
+import { builtInPluginPublisherPublicKeys } from "./publisher-trust.js";
 import {
   buildPluginIdentifier,
   isCanonicalPluginIdentity,
@@ -138,8 +139,10 @@ interface SignatureFile {
 }
 
 interface PublisherKeyring {
-  readonly publishers?: Readonly<Record<string, string | { readonly publicKey?: string }>>;
+  readonly publishers?: Readonly<Record<string, unknown>>;
 }
+
+const MAX_PUBLISHER_PUBLIC_KEYS = 16;
 
 const DEFAULT_PROCESS_TIMEOUT_MS = 120_000;
 const DEFAULT_PROCESS_MAX_OUTPUT_BYTES = 1_048_576;
@@ -761,13 +764,13 @@ export async function verifyResolvedPluginSignature(
   const publishersPath = options.publishersPath ?? defaultPublishersPath(
     options.agencHome,
   );
-  const publicKey = await readPublisherPublicKey(
+  const publicKeys = await readPublisherPublicKeys(
     publishersPath,
     signature.publisher,
     // An explicit path is an authoritative caller-supplied trust store. The
     // built-in AgenC root is only the fallback for the normal profile keyring.
     options.publishersPath === undefined
-      ? builtInPluginPublisherPublicKey(signature.publisher)
+      ? builtInPluginPublisherPublicKeys(signature.publisher)
       : undefined,
   );
   const manifestPath = await findPluginManifestPath(pluginRoot);
@@ -776,11 +779,11 @@ export async function verifyResolvedPluginSignature(
   const actualFiles = await collectPluginPayloadDigests(pluginRoot, manifestPath, signaturePath, options);
   assertSignedPayloadMatches(signature.files, actualFiles);
   const payload = pluginSignaturePayloadBytes(manifestBytes, signature.files);
-  const verified = verifyEd25519Signature({
+  const verified = publicKeys.some((publicKey) => verifyEd25519Signature({
     publicKey,
     payload,
     signature: signature.signature,
-  });
+  }));
   if (!verified) throw new Error(`plugin signature verification failed for publisher ${signature.publisher}`);
   return {
     required: options.requireSignature === true,
@@ -807,19 +810,14 @@ export function pluginSignaturePayloadBytes(
 }
 
 function verifyEd25519Signature(input: {
-  readonly publicKey: string;
+  readonly publicKey: KeyObject;
   readonly payload: Uint8Array;
   readonly signature: string;
 }): boolean {
-  const key = createPublicKey({
-    key: Buffer.from(input.publicKey, "base64"),
-    format: "der",
-    type: "spki",
-  });
   return verifySignatureBytes(
     null,
     Buffer.from(input.payload),
-    key,
+    input.publicKey,
     Buffer.from(input.signature, "base64"),
   );
 }
@@ -1642,36 +1640,81 @@ function redactPluginResolutionError(error: unknown): Error {
   return new Error(redactPluginSource(String(error)));
 }
 
-async function readPublisherPublicKey(
+/** Validate the entire entry before trying any key, including legacy fields. */
+function parsePublisherPublicKeys(entry: unknown, publisher: string): readonly KeyObject[] {
+  const invalid = () => new Error(`plugin publisher is not trusted: ${publisher}`);
+  const candidates: unknown[] = [];
+  if (typeof entry === "string") {
+    candidates.push(entry);
+  } else if (isRecord(entry)) {
+    if (Object.hasOwn(entry, "publicKey")) candidates.push(entry.publicKey);
+    if (Object.hasOwn(entry, "publicKeys")) {
+      if (
+        !Array.isArray(entry.publicKeys) ||
+        entry.publicKeys.length === 0 ||
+        entry.publicKeys.length > MAX_PUBLISHER_PUBLIC_KEYS
+      ) throw invalid();
+      candidates.push(...entry.publicKeys);
+    }
+  } else {
+    throw invalid();
+  }
+  if (candidates.length === 0) throw invalid();
+  const keys = new Map<string, KeyObject>();
+  for (const candidate of candidates) {
+    // Ed25519 DER-SPKI is exactly 44 bytes, encoded as 60 canonical base64
+    // characters. Reject permissive decoder inputs and oversized key material.
+    if (typeof candidate !== "string" || candidate.length !== 60) throw invalid();
+    const der = Buffer.from(candidate, "base64");
+    if (der.toString("base64") !== candidate) throw invalid();
+    let key: KeyObject;
+    try {
+      key = createPublicKey({ key: der, format: "der", type: "spki" });
+      if (
+        key.asymmetricKeyType !== "ed25519" ||
+        !Buffer.from(key.export({ format: "der", type: "spki" })).equals(der)
+      ) throw invalid();
+    } catch {
+      throw invalid();
+    }
+    keys.set(candidate, key);
+  }
+  if (keys.size > MAX_PUBLISHER_PUBLIC_KEYS) throw invalid();
+  return [...keys.values()];
+}
+
+async function readPublisherPublicKeys(
   path: string,
   publisher: string,
-  builtInPublicKey?: string,
-): Promise<string> {
+  builtInPublicKeys?: readonly string[],
+): Promise<readonly KeyObject[]> {
   let parsed: PublisherKeyring;
   try {
     parsed = JSON.parse(await readFile(path, "utf8")) as PublisherKeyring;
   } catch (error) {
     if (
       (error as NodeJS.ErrnoException).code === "ENOENT" &&
-      builtInPublicKey !== undefined
+      builtInPublicKeys !== undefined
     ) {
-      return builtInPublicKey;
+      return parsePublisherPublicKeys({ publicKeys: builtInPublicKeys }, publisher);
     }
     throw error;
+  }
+  if (!isRecord(parsed) || (parsed.publishers !== undefined && !isRecord(parsed.publishers))) {
+    throw new Error("plugin publisher keyring must contain a publishers object");
   }
   const publishers = parsed.publishers;
   const hasExplicitEntry =
     publishers !== undefined &&
     Object.prototype.hasOwnProperty.call(publishers, publisher);
-  const entry = publishers?.[publisher];
-  const publicKey = typeof entry === "string" ? entry : entry?.publicKey;
-  if (publicKey) return publicKey;
   // An entry with an empty or malformed value is still an explicit operator
   // decision. Never mask it with the shipped root.
   if (hasExplicitEntry) {
-    throw new Error(`plugin publisher is not trusted: ${publisher}`);
+    return parsePublisherPublicKeys(publishers![publisher], publisher);
   }
-  if (builtInPublicKey !== undefined) return builtInPublicKey;
+  if (builtInPublicKeys !== undefined) {
+    return parsePublisherPublicKeys({ publicKeys: builtInPublicKeys }, publisher);
+  }
   throw new Error(`plugin publisher is not trusted: ${publisher}`);
 }
 
