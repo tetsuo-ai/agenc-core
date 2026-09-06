@@ -187,29 +187,7 @@ describe("pruneRolloutSessions", () => {
     const reviewedPath = seedSession(reviewed, 60);
     const plain = "thread-old-plain";
     const plainPath = seedSession(plain, 60);
-    const runs = new StateRunDurabilityRepository(driver);
-    runs.ensureInitialEpoch({ runId: reviewed, openedAt: NOW });
-    runs.beginEffect({
-      runId: reviewed,
-      stepId: "tool:step-1",
-      epoch: 1,
-      sessionId: reviewed,
-      callId: "call-1",
-      toolName: "exec_command",
-      recoveryCategory: "side-effecting",
-      intentDigest: "d".repeat(64),
-      eventId: "intent-1",
-      eventSequence: 1,
-      intentAt: NOW,
-    });
-    runs.markEffectUnknown({
-      runId: reviewed,
-      stepId: "tool:step-1",
-      eventId: "unknown-1",
-      eventSequence: 2,
-      reason: "tool_error_result_without_authoritative_effect_disposition",
-      observedAt: NOW,
-    });
+    seedPendingEffectReview(driver, reviewed, NOW);
 
     const report = pruneRolloutSessions(driver, {
       sessionsDir: join(driver.projectDir, "sessions"),
