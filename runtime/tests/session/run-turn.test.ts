@@ -7886,7 +7886,16 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 });
 
 describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
-  test("THE HEADLINE SAFETY TEST: a side-effecting dangling tool_use is NOT re-dispatched on resume (no double side effect)", async () => {
+  /**
+   * A resumed turn whose checkpoint prefix ends in one dangling side-effecting
+   * `settle` call. The provider answers without new tool calls, so the resume
+   * completes once the dangling call is paired. `resolvedCallIds` is what the
+   * rollout store reports as already holding a result.
+   */
+  async function resumeWithDanglingSettle(opts: {
+    readonly turnId: string;
+    readonly resolvedCallIds?: ReadonlyArray<string>;
+  }) {
     const executeSpy = vi.fn(async () => ({
       content: "SIDE EFFECT FIRED",
       isError: false,
@@ -7908,8 +7917,6 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       toLLMTools: () => [],
       dispatch: dispatchSpy,
     } as unknown as ToolRegistry;
-    // Provider returns a terminal answer so the resumed turn completes
-    // without issuing any new tool calls.
     const { session, events } = mkSession({
       provider: mkProvider({
         content: "acknowledged, not retrying",
@@ -7917,16 +7924,15 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       }),
       registry,
     });
+    const appendRollout = vi.fn();
+    const resolved = new Set(opts.resolvedCallIds ?? []);
     session.rolloutStore = {
       assertCompactionProjectionReady: () => {},
       append: vi.fn(),
-      appendRollout: vi.fn(),
-      liveToolCallResolved: () => false,
+      appendRollout,
+      liveToolCallResolved: (callId: string) => resolved.has(callId),
       rolloutPath: "/tmp/does-not-matter.jsonl",
     } as unknown as Session["rolloutStore"];
-
-    // Resume prefix: an assistant message with a DANGLING side-effecting
-    // tool_use (no recorded result).
     const history: LLMMessage[] = [
       { role: "user", content: "settle the task" },
       {
@@ -7935,14 +7941,13 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
         toolCalls: [{ id: "settle-1", name: "settle", arguments: "{}" }],
       },
     ];
-
     await drain(
       session.runTurn("", {
-        subId: "turn-resumed-1",
+        subId: opts.turnId,
         history,
         displayUserMessage: null,
         resume: {
-          turnId: "turn-resumed-1",
+          turnId: opts.turnId,
           fromIteration: 1,
           fromCheckpointSeq: 1,
           persistedMessageCount: history.length,
@@ -7960,6 +7965,17 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
         },
       }),
     );
+    const persistedSettleResults = appendRollout.mock.calls.filter(
+      ([item]: [{ type: string; payload?: { toolCallId?: string } }]) =>
+        item.type === "response_item" && item.payload?.toolCallId === "settle-1",
+    );
+    return { executeSpy, dispatchSpy, events, persistedSettleResults };
+  }
+
+  test("THE HEADLINE SAFETY TEST: a side-effecting dangling tool_use is NOT re-dispatched on resume (no double side effect)", async () => {
+    const { executeSpy, dispatchSpy, events } = await resumeWithDanglingSettle({
+      turnId: "turn-resumed-1",
+    });
 
     // The on-chain-safety property: the side-effecting tool is NEVER
     // re-dispatched on resume.
@@ -7983,76 +7999,22 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
   });
 
   test("a dangling call the bootstrap replay already closed is paired for the model but not persisted a second time", async () => {
-    const sideEffectTool: Tool = {
-      name: "settle",
-      description: "on-chain settlement (side-effecting)",
-      inputSchema: { type: "object", additionalProperties: false },
-      requiresApproval: true,
-      recoveryCategory: "side-effecting",
-      execute: vi.fn(async () => ({ content: "SIDE EFFECT FIRED", isError: false })),
-    } as unknown as Tool;
-    const registry: ToolRegistry = {
-      tools: [sideEffectTool],
-      toLLMTools: () => [],
-      dispatch: vi.fn(async () => ({ content: "SIDE EFFECT FIRED", isError: false })),
-    } as unknown as ToolRegistry;
-    const { session, events } = mkSession({
-      provider: mkProvider({
-        content: "acknowledged, not retrying",
-        toolCalls: [],
-      }),
-      registry,
+    const { events, persistedSettleResults } = await resumeWithDanglingSettle({
+      turnId: "turn-resumed-closed",
+      resolvedCallIds: ["settle-1"],
     });
-    const appendRollout = vi.fn();
-    session.rolloutStore = {
-      assertCompactionProjectionReady: () => {},
-      append: vi.fn(),
-      appendRollout,
-      // The replay closer already wrote a result for settle-1.
-      liveToolCallResolved: vi.fn((callId: string) => callId === "settle-1"),
-      rolloutPath: "/tmp/does-not-matter.jsonl",
-    } as unknown as Session["rolloutStore"];
-    const history: LLMMessage[] = [
-      { role: "user", content: "settle the task" },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{ id: "settle-1", name: "settle", arguments: "{}" }],
-      },
-    ];
-
-    await drain(
-      session.runTurn("", {
-        subId: "turn-resumed-closed",
-        history,
-        displayUserMessage: null,
-        resume: {
-          turnId: "turn-resumed-closed",
-          fromIteration: 1,
-          fromCheckpointSeq: 1,
-          persistedMessageCount: history.length,
-          restoreSlice: {
-            turnCount: 2,
-            recoveryReentryCount: 0,
-            maxOutputTokensRecoveryCount: 0,
-            continuationNudgeCount: 0,
-            stopHookBlockingCount: 0,
-          },
-          haltedSideEffectingTools: ["settle"],
-          danglingPairings: [
-            { callId: "settle-1", toolName: "settle", halt: true },
-          ],
-        },
-      }),
-    );
 
     expect(events.some((e) => e.msg.type === "turn_complete")).toBe(true);
-    // No second result for settle-1 reaches the rollout.
-    const persistedResults = appendRollout.mock.calls.filter(
-      ([item]: [{ type: string; payload?: { toolCallId?: string } }]) =>
-        item.type === "response_item" && item.payload?.toolCallId === "settle-1",
-    );
-    expect(persistedResults).toHaveLength(0);
+    // The rollout already holds the replay's result: no second one reaches it.
+    expect(persistedSettleResults).toHaveLength(0);
+  });
+
+  test("a dangling call nobody has resolved yet gets its synthetic result persisted", async () => {
+    const { persistedSettleResults } = await resumeWithDanglingSettle({
+      turnId: "turn-resumed-open",
+    });
+
+    expect(persistedSettleResults).toHaveLength(1);
   });
 
   test("crash mid-drain → resume CONTINUES (restored counters hold pre-crash values, not reset)", async () => {
