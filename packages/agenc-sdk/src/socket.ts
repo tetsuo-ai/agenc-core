@@ -320,12 +320,35 @@ export type AgencSpawnFn = (
   args: readonly string[],
   options: {
     readonly env: NodeJS.ProcessEnv;
-    readonly stdio: "ignore";
+    /** stdin and stdout are discarded; stderr is piped so a failed start can say why. */
+    readonly stdio: "ignore" | readonly ["ignore", "ignore", "pipe"];
   },
 ) => {
   once(event: "exit", listener: (code: number | null) => void): unknown;
   once(event: "error", listener: (error: Error) => void): unknown;
+  /** Present when stderr is piped; absent or null spawners keep the bare exit message. */
+  readonly stderr?: {
+    on(event: "data", listener: (chunk: Buffer | string) => void): unknown;
+  } | null;
 };
+
+/** How much of the CLI's stderr a failed daemon start carries into its error. */
+const DAEMON_START_STDERR_TAIL_BYTES = 2_048;
+
+/**
+ * Keep the last bytes the daemon CLI wrote to stderr, and render them as the
+ * last non-empty lines, so "exited with code 1" says what the CLI said (for
+ * example that an unbound daemon cannot be signalled on this platform).
+ */
+export function describeDaemonStartStderr(chunks: readonly string[]): string {
+  const tail = chunks.join("").slice(-DAEMON_START_STDERR_TAIL_BYTES);
+  const lines = tail
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(-3);
+  return lines.length === 0 ? "" : `: ${lines.join(" | ")}`;
+}
 
 export interface AgencConnectOptions {
   readonly env?: NodeJS.ProcessEnv;
@@ -474,11 +497,31 @@ function startDaemonViaCli(
   }
   const spawner: AgencSpawnFn =
     spawnFn ??
-    ((cmd, args, spawnOptions) => nodeSpawn(cmd, [...args], spawnOptions));
+    ((cmd, args, spawnOptions) =>
+      nodeSpawn(cmd, [...args], {
+        env: spawnOptions.env,
+        // Node wants a mutable stdio array; the option type is readonly.
+        stdio:
+          spawnOptions.stdio === "ignore" ? "ignore" : [...spawnOptions.stdio],
+      }));
   return new Promise((resolve, reject) => {
     const child = spawner(executable, [...prefixArgs, "daemon", "start"], {
       env,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const stderrChunks: string[] = [];
+    let stderrBytes = 0;
+    child.stderr?.on("data", (chunk) => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      stderrChunks.push(text);
+      stderrBytes += text.length;
+      // Bound the buffer: drop whole leading chunks once the tail is covered.
+      while (
+        stderrChunks.length > 1 &&
+        stderrBytes - stderrChunks[0].length >= DAEMON_START_STDERR_TAIL_BYTES
+      ) {
+        stderrBytes -= stderrChunks.shift()!.length;
+      }
     });
     child.once("error", (error: Error) => {
       reject(
@@ -492,7 +535,8 @@ function startDaemonViaCli(
       }
       reject(
         new Error(
-          `AgenC daemon start exited with code ${code ?? "null"} (command: ${executable})`,
+          `AgenC daemon start exited with code ${code ?? "null"} (command: ${executable})` +
+            describeDaemonStartStderr(stderrChunks),
         ),
       );
     });

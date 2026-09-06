@@ -70,7 +70,7 @@ await client.close();
 - Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; a stable per-home named pipe on Windows
 - Cookie: `${AGENC_HOME:-~/.agenc}/daemon.cookie` (first message must be `initialize` with `authCookie`; `connect()` handles this)
 - Plugin storage: `createSession()` requires an exact absolute `pluginStorageRoot` of at most 4096 UTF-8 bytes, with no surrounding whitespace. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR`, derive a root from `AGENC_HOME`, or accept `agentId`; use `attachAgent()` for an existing agent.
-- Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`)
+- Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`); when that start fails, the error carries the CLI's exit code and its last stderr lines
 - Hook authority: `createSession()` sends `allowUntrustedHooks: false`. A caller using `spawnAgent()` must send complete runtime options and may set the field to `true` only after vetting the workspace. It permits command effects only and cannot override `simpleMode` hook suppression.
 - Home authority: `AGENC_HOME` must be absolute and is canonicalized before daemon paths are derived. Explicit socket and cookie paths do not bypass home-authority validation.
 
