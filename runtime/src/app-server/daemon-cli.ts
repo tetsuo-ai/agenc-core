@@ -56,7 +56,11 @@ import {
   writeDaemonRuntimeInfo,
 } from "./daemon-runtime-info.js";
 import {
+  describeUnboundDaemonHeartbeat,
+  heartbeatAgeSeconds,
   installAgenCDaemonHeartbeat,
+  isDaemonHeartbeatFresh,
+  readAgenCDaemonHeartbeat,
   reportLastDaemonHeartbeat,
   resolveAgenCDaemonHeartbeatPath,
 } from "./daemon-heartbeat.js";
@@ -2134,25 +2138,48 @@ async function statusAgenCDaemon(
         : pidSnapshot !== null && host.isPidRunning(pidSnapshot)
           ? pidSnapshot
           : null;
+    const heartbeatPath = resolveAgenCDaemonHeartbeatPath(
+      resolveAgenCDaemonHome(host.env, host.userHome),
+    );
     if (legacyPid === null) {
       const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
       if (await canConnectToUnixSocket(socketPath)) {
+        // A daemon that is serving but has not committed its identity yet
+        // (still recovering its agent runs) is beating; say so instead of
+        // leaving the operator with "indeterminate" (#2225).
+        const heartbeat = readAgenCDaemonHeartbeat(heartbeatPath);
+        const nowMs = Date.now();
+        if (
+          heartbeat !== null &&
+          host.isPidRunning(heartbeat.pid) &&
+          isDaemonHeartbeatFresh(heartbeat, nowMs)
+        ) {
+          io.stdout.write(describeUnboundDaemonHeartbeat(heartbeat, nowMs));
+          return 1;
+        }
         io.stderr.write(
           "agenc: daemon control socket is active but no process identity is recorded; status is indeterminate\n",
         );
         return 1;
       }
-      reportLastDaemonHeartbeat(
-        io,
-        resolveAgenCDaemonHeartbeatPath(
-          resolveAgenCDaemonHome(host.env, host.userHome),
-        ),
-        null,
-      );
+      reportLastDaemonHeartbeat(io, heartbeatPath, null);
       io.stdout.write("AgenC daemon stopped\n");
       return 1;
     }
     if ((host.platform ?? process.platform) !== "linux") {
+      const heartbeat = readAgenCDaemonHeartbeat(heartbeatPath);
+      if (heartbeat !== null && heartbeat.pid === legacyPid) {
+        const nowMs = Date.now();
+        if (isDaemonHeartbeatFresh(heartbeat, nowMs)) {
+          io.stdout.write(describeUnboundDaemonHeartbeat(heartbeat, nowMs));
+          return 1;
+        }
+        io.stderr.write(
+          `agenc: daemon status is indeterminate for unbound pid ${legacyPid}; ` +
+            `its last heartbeat is ${heartbeatAgeSeconds(heartbeat, nowMs)} s old (at ${heartbeat.at}), so the process may be hung\n`,
+        );
+        return 1;
+      }
       io.stderr.write(
         `agenc: daemon status is indeterminate for unbound pid ${legacyPid}; no portable instance identity is available\n`,
       );

@@ -67,6 +67,17 @@ agenc daemon restart
 agenc daemon stop
 ```
 
+`agenc daemon status` distinguishes three states. `running (pid N)` with uptime
+and memory: the daemon is bound and answering. `alive but not yet bound (pid N)`
+with its last heartbeat: the process is beating but has not published its
+identity record, because it is still starting (recovering its agent runs, which
+takes a while under memory pressure) or the record was removed; lifecycle
+commands wait for the record, and the exit code stays 1 until it appears.
+`stopped`, with the previous daemon's last heartbeat when one was left behind:
+a daemon that vanished without any handler running (an OS SIGKILL, for
+instance) leaves that heartbeat, so the last known pid, memory and event-loop
+lag survive the exit.
+
 Packaging units under `packaging/` (systemd, launchd, Windows service) run
 `agenc daemon start --foreground`.
 

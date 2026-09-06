@@ -14,6 +14,11 @@ import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
  */
 export const AGENC_DAEMON_HEARTBEAT_FILENAME = "daemon-heartbeat.json";
 export const AGENC_DAEMON_HEARTBEAT_INTERVAL_MS = 5_000;
+/**
+ * A heartbeat older than this is stale: the process may still exist, but it
+ * has missed several ticks, so `status` must not vouch for it.
+ */
+export const AGENC_DAEMON_HEARTBEAT_FRESH_MS = 3 * AGENC_DAEMON_HEARTBEAT_INTERVAL_MS;
 
 export interface DaemonHeartbeat {
   readonly pid: number;
@@ -112,16 +117,50 @@ export function readAgenCDaemonHeartbeat(path: string): DaemonHeartbeat | null {
   return record as unknown as DaemonHeartbeat;
 }
 
+export function heartbeatAgeSeconds(heartbeat: DaemonHeartbeat, nowMs: number): number {
+  return Math.max(0, Math.round((nowMs - Date.parse(heartbeat.at)) / 1000));
+}
+
+export function isDaemonHeartbeatFresh(heartbeat: DaemonHeartbeat, nowMs: number): boolean {
+  const ageMs = nowMs - Date.parse(heartbeat.at);
+  return ageMs >= 0 ? ageMs <= AGENC_DAEMON_HEARTBEAT_FRESH_MS : true;
+}
+
+function describeUptime(uptimeS: number): string {
+  return uptimeS >= 3600
+    ? `${Math.floor(uptimeS / 3600)} h ${Math.round((uptimeS % 3600) / 60)} min`
+    : `${Math.round(uptimeS / 60)} min`;
+}
+
+/** "rss 600 MB, heap 250 MB, event-loop lag 0 ms, up 27 min" */
+export function describeDaemonHeartbeatVitals(heartbeat: DaemonHeartbeat): string {
+  return (
+    `rss ${heartbeat.rssMb} MB, heap ${heartbeat.heapUsedMb} MB, ` +
+    `event-loop lag ${heartbeat.eventLoopLagMs} ms, up ${describeUptime(heartbeat.uptimeS)}`
+  );
+}
+
 /** One line for the status command: what the daemon last said about itself. */
 export function describeDaemonHeartbeat(heartbeat: DaemonHeartbeat, nowMs: number): string {
-  const ageS = Math.max(0, Math.round((nowMs - Date.parse(heartbeat.at)) / 1000));
-  const uptime =
-    heartbeat.uptimeS >= 3600
-      ? `${Math.floor(heartbeat.uptimeS / 3600)} h ${Math.round((heartbeat.uptimeS % 3600) / 60)} min`
-      : `${Math.round(heartbeat.uptimeS / 60)} min`;
   return (
-    `the last daemon (pid ${heartbeat.pid}) sent its last heartbeat at ${heartbeat.at}, ${ageS} s ago: ` +
-    `rss ${heartbeat.rssMb} MB, heap ${heartbeat.heapUsedMb} MB, event-loop lag ${heartbeat.eventLoopLagMs} ms, up ${uptime}`
+    `the last daemon (pid ${heartbeat.pid}) sent its last heartbeat at ${heartbeat.at}, ` +
+    `${heartbeatAgeSeconds(heartbeat, nowMs)} s ago: ${describeDaemonHeartbeatVitals(heartbeat)}`
+  );
+}
+
+/**
+ * The status lines for a daemon that is alive and beating but has not
+ * published its identity record: it is still starting (recovering its agent
+ * runs, which takes a while under memory pressure) or the record was removed.
+ * Lifecycle commands wait for the record; clients may already be connected.
+ * Without this, `status` could only call such a pid indeterminate (#2225).
+ */
+export function describeUnboundDaemonHeartbeat(heartbeat: DaemonHeartbeat, nowMs: number): string {
+  return (
+    `AgenC daemon alive but not yet bound (pid ${heartbeat.pid})\n` +
+    "  identity: not published yet (still starting, or the runtime record was removed); " +
+    "lifecycle commands wait for it\n" +
+    `  heartbeat: ${heartbeatAgeSeconds(heartbeat, nowMs)} s ago, ${describeDaemonHeartbeatVitals(heartbeat)}\n`
   );
 }
 
