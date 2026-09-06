@@ -127,11 +127,14 @@ export function permissionProfileForSandboxMode(
  * bubblewrap, and —
  * because the writable roots carry no existing `.git`/`.agenc` carve-outs —
  * fully expressible by the Landlock fallback, so plugin MCP servers keep
- * working on hosts where bubblewrap is unusable.
+ * working on hosts where bubblewrap is unusable. Network authority must come
+ * from the owning broker, never from plugin metadata; absent authority stays
+ * denied. Tightening filesystem access must not discard an operator's grant.
  */
-export function pluginMcpPermissionProfile(metadata: {
-  readonly pluginDataDir: string;
-}): PermissionProfile {
+export function pluginMcpPermissionProfile(
+  metadata: { readonly pluginDataDir: string },
+  approvedNetwork: NetworkSandboxPolicy = "disabled",
+): PermissionProfile {
   return permissionProfileFromRuntimePermissions(
     restrictedFileSystemPolicy(
       [
@@ -140,7 +143,7 @@ export function pluginMcpPermissionProfile(metadata: {
       ],
       { includePlatformDefaults: true },
     ),
-    defaultNetworkForSandboxMode("workspace_write"),
+    approvedNetwork,
   );
 }
 

@@ -331,9 +331,15 @@ export class AgenCStdioClientTransport implements Transport {
         broker.sessionTempRoot,
       );
       childTempRoot = pluginAuthority.tempRoot;
-      permissionProfileOverride = pluginMcpPermissionProfile({
-        pluginDataDir: pluginAuthority.dataRoot,
-      });
+      // Preserve only the owning session's approved network policy. A plugin
+      // cannot grant itself access, and each restart re-reads current authority.
+      const approvedNetwork = broker.mode === "workspace_write"
+        ? broker.executionAuthority?.().permissionProfile?.network
+        : undefined;
+      permissionProfileOverride = pluginMcpPermissionProfile(
+        { pluginDataDir: pluginAuthority.dataRoot },
+        approvedNetwork,
+      );
     }
     const env = withChildTempAuthority(
       this.server.env ?? {},

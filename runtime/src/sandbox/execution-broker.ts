@@ -158,6 +158,8 @@ export interface SandboxExecutionBrokerLike {
   readonly sessionTempRoot: string;
   /** Zero for a root session; increments for each isolated child authority. */
   readonly forkDepth?: number;
+  /** Captured operator-owned policy; reading it grants no spawn admission. */
+  executionAuthority?(): SandboxExecutionBrokerAuthority;
   /** Permanent authority poison set after a lifecycle rollback cannot recover. */
   isClosedAfterLifecycleAuthorityFailure?(): boolean;
   /** Fork an independent boundary for a child session or worktree. */
