@@ -2363,6 +2363,36 @@ describe("AgenC delegate background-agent runner", () => {
     ).resolves.not.toBeNull();
   });
 
+  it("reports a cold-restored agent idle until a turn starts", async () => {
+    // A hydrated thread reports pending_init, which maps to "running"; with
+    // nothing to resume the restored agent must read idle until its next
+    // prompt, not sit in every agent list as a working agent.
+    const harness = makeTopLevelRunner({
+      conversationId: "session-restored-idle",
+      threadInitialStatus: { status: "pending_init" },
+    });
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: "session-restored-idle",
+        objective: "retained objective",
+        explicitColdResume: true,
+        initialMessages: [{ role: "user" as const, content: "retained" }],
+      }),
+    ).resolves.toBe(true);
+    const restored = await harness.runner.getAgentSnapshot("session-restored-idle");
+    expect(restored?.status).toBe("idle");
+
+    harness.stub.pushStatus({
+      status: "running",
+      turnId: "turn-after-restart",
+      startedAtMs: 3,
+    });
+    await vi.waitFor(async () => {
+      const snapshot = await harness.runner.getAgentSnapshot("session-restored-idle");
+      expect(snapshot?.status).toBe("running");
+    });
+  });
+
   it("retires a failed restore generation so an exact retry can proceed", async () => {
     let harness: ReturnType<typeof makeTopLevelRunner>;
     let hydrationAttempts = 0;

@@ -1076,7 +1076,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           bootstrap,
           control,
           thread: managedThread,
-          status: "running",
+          // A restored agent is only running when there is a turn to pick
+          // back up. Otherwise it is idle until its next prompt; reporting
+          // "running" here kept every session restored by a daemon restart
+          // listed as a working agent for the rest of the day (#2167).
+          status:
+            canonicalRuntimeState.pendingStartupActivationResumeEventId !==
+            undefined
+              ? "running"
+              : "idle",
           startedAt,
           ...(params.restoreAttemptId !== undefined
             ? { restoreAttemptId: params.restoreAttemptId }
@@ -1209,6 +1217,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.unsubscribeElicitationEvents =
           this.#installSessionEventLogBridge(active);
         this.#trackAgentStatus(active);
+        // The thread replays its current status on subscribe, and a hydrated
+        // thread reports pending_init, which maps to "running". A restored
+        // agent with no turn to pick up is idle until its next prompt; left
+        // as "running" it sat in every agent list as a working agent for the
+        // rest of the day (#2167).
+        if (
+          canonicalRuntimeState.pendingStartupActivationResumeEventId ===
+            undefined &&
+          managedThread.status().status === "pending_init"
+        ) {
+          active.status = "idle";
+        }
         active.unsubscribePhaseEvents = bootstrap.session.subscribeToEvents(
           (phase) => {
             const progress = phaseEventToProgressEvent(phase);
