@@ -56,6 +56,11 @@ import {
   writeDaemonRuntimeInfo,
 } from "./daemon-runtime-info.js";
 import {
+  installAgenCDaemonHeartbeat,
+  reportLastDaemonHeartbeat,
+  resolveAgenCDaemonHeartbeatPath,
+} from "./daemon-heartbeat.js";
+import {
   findLinuxAgenCDaemonProcesses,
   inspectLinuxAgenCDaemonProcess,
   isAgenCDaemonInstanceIdentity,
@@ -1913,6 +1918,11 @@ async function stopAgenCDaemon(
         removeDaemonRuntimeInfo(runtimeInfoPath, runtimeInfo.instanceId);
       }
     }
+    reportLastDaemonHeartbeat(
+      io,
+      resolveAgenCDaemonHeartbeatPath(daemonHome),
+      pid,
+    );
     io.stdout.write(`AgenC daemon stopped (pid ${pid})\n`);
     return 0;
   });
@@ -2132,6 +2142,13 @@ async function statusAgenCDaemon(
         );
         return 1;
       }
+      reportLastDaemonHeartbeat(
+        io,
+        resolveAgenCDaemonHeartbeatPath(
+          resolveAgenCDaemonHome(host.env, host.userHome),
+        ),
+        null,
+      );
       io.stdout.write("AgenC daemon stopped\n");
       return 1;
     }
@@ -3179,6 +3196,19 @@ async function runAgenCDaemonForegroundLocked(
           logSink.dispose();
         });
       }
+      // The heartbeat outlives every handler: a daemon killed without warning
+      // leaves its last pid, memory and event-loop lag on disk for `status`.
+      const disposeHeartbeat = installAgenCDaemonHeartbeat({
+        path: resolveAgenCDaemonHeartbeatPath(
+          resolveAgenCDaemonHome(host.env, host.userHome),
+        ),
+        onError: (error) => {
+          logSink?.sink.write(
+            `agenc: daemon heartbeat write failed: ${formatCleanupError(error)}\n`,
+          );
+        },
+      });
+      cleanup.register("daemon-heartbeat", disposeHeartbeat);
     }
     let shuttingDown = false;
     let resolveRpcShutdown!: () => void;
