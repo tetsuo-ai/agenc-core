@@ -926,6 +926,74 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     expect(dispatched).not.toHaveBeenCalled();
   });
 
+  test("sandbox_permissions=require_escalated: bypassPermissions grants the escalation without a prompt", async () => {
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const dispatched = vi.fn(async () => "ok");
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: {
+        ...mkCtx(),
+        invocation: {
+          session: approvalSession({
+            permissionModeRegistry: {
+              current: () => ({ mode: "bypassPermissions" }),
+            },
+          }),
+        } as never,
+      },
+      approvalPolicy: "never",
+      sandboxMode: "workspace_write",
+      approvalArgs: { sandbox_permissions: "require_escalated" },
+      dispatch: dispatched,
+      approvalResolver: resolver,
+    });
+
+    expect(result).toBe("ok");
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(dispatched).toHaveBeenCalledOnce();
+    // The grant runs the call the way an approval would: outside the sandbox.
+    expect(dispatched.mock.calls[0]?.[0]).toBe("danger_full_access");
+  });
+
+  test("sandbox_permissions=with_additional_permissions: bypassPermissions grants the permissions without a prompt", async () => {
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const dispatched = vi.fn(async () => "ok");
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: {
+        ...mkCtx(),
+        invocation: {
+          session: approvalSession({
+            permissionModeRegistry: {
+              current: () => ({ mode: "bypassPermissions" }),
+            },
+          }),
+        } as never,
+      },
+      approvalPolicy: "never",
+      sandboxMode: "workspace_write",
+      approvalArgs: {
+        sandbox_permissions: "with_additional_permissions",
+        additional_permissions: { network: { enabled: true } },
+      },
+      dispatch: dispatched,
+      approvalResolver: resolver,
+    });
+
+    expect(result).toBe("ok");
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(dispatched).toHaveBeenCalledOnce();
+    // Still sandboxed, with the requested permissions passed through.
+    expect(dispatched.mock.calls[0]?.[0]).toBe("workspace_write");
+    expect(dispatched.mock.calls[0]?.[1]).toMatchObject({
+      additionalPermissions: { network: { enabled: true } },
+    });
+  });
+
   test("sandbox_permissions=with_additional_permissions stays sandboxed after approval", async () => {
     const dispatches: string[] = [];
     const resolver = vi.fn(async (ctx: ApprovalCtx) => {

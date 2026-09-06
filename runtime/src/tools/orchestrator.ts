@@ -546,6 +546,7 @@ function approvalRejectionMessage(
 
 type SandboxPermissionApprovalAction =
   | { readonly kind: "none" }
+  | { readonly kind: "granted"; readonly reason: string }
   | { readonly kind: "prompt"; readonly reason: string }
   | { readonly kind: "deny"; readonly reason: string };
 
@@ -553,11 +554,24 @@ function sandboxPermissionApprovalAction(opts: {
   readonly request: SandboxPermissionsRequest;
   readonly approvalPolicy: ApprovalPolicy;
   readonly granular?: GranularApprovalConfig;
+  /**
+   * The session runs in the `bypassPermissions` mode. Bypass suppresses the
+   * approval a sandbox request would otherwise prompt for, so the request is
+   * granted the way an approval would grant it. The `never` approval policy
+   * outside bypass still denies: there nobody chose to skip the question.
+   */
+  readonly bypassPermissions?: boolean;
 }): SandboxPermissionApprovalAction {
   switch (opts.request.kind) {
     case "default":
       return { kind: "none" };
     case "require_escalated":
+      if (opts.bypassPermissions === true) {
+        return {
+          kind: "granted",
+          reason: "sandbox escalation granted by the bypass permission mode",
+        };
+      }
       if (opts.approvalPolicy === "never") {
         return {
           kind: "deny",
@@ -581,6 +595,13 @@ function sandboxPermissionApprovalAction(opts: {
     case "with_additional_permissions":
       if (!hasAdditionalSandboxPermissions(opts.request.additionalPermissions)) {
         return { kind: "none" };
+      }
+      if (opts.bypassPermissions === true) {
+        return {
+          kind: "granted",
+          reason:
+            "additional sandbox permissions granted by the bypass permission mode",
+        };
       }
       if (opts.approvalPolicy === "never") {
         return {
@@ -713,6 +734,7 @@ export async function orchestrateToolCall<T>(
     request: normalizedSandboxPermissions,
     approvalPolicy: effectiveApprovalPolicy,
     granular: opts.granular,
+    bypassPermissions: isBypassPermissionsMode,
   });
   const execPolicyAction = evaluateLocalShellExecPolicyAction({
     policy: opts.execPolicy,
@@ -830,7 +852,8 @@ export async function orchestrateToolCall<T>(
     alreadyApproved = true;
   }
   const additionalPermissions =
-    alreadyApproved && sandboxPermissionApproval.kind === "prompt"
+    (alreadyApproved && sandboxPermissionApproval.kind === "prompt") ||
+    sandboxPermissionApproval.kind === "granted"
       ? requestedAdditionalPermissions
       : undefined;
 
