@@ -166,6 +166,29 @@ export function toAgenCModelContext(ctx: TurnContext): AgenCModelContext {
   };
 }
 
+/**
+ * The controller a turn's tool-use context descends from: the running task of
+ * this turn when the session has one, so a cancel of the turn reaches every
+ * model call the context makes (compaction included), else the session's
+ * controller, so session teardown still stops the work.
+ */
+function abortParentForTurn(
+  session: Session,
+  ctx: TurnContext,
+): AbortController | undefined {
+  const activeTurn = (
+    session as { activeTurn?: { unsafePeek?: () => unknown } }
+  ).activeTurn;
+  const peeked =
+    typeof activeTurn?.unsafePeek === "function"
+      ? (activeTurn.unsafePeek as () => unknown).call(activeTurn)
+      : undefined;
+  const tasks = (peeked as { tasks?: Map<string, { abortController?: AbortController }> } | null)
+    ?.tasks;
+  const task = tasks?.get(ctx.subId);
+  return task?.abortController ?? session.abortController;
+}
+
 export function buildAgenCToolUseContext(
   session: Session,
   ctx: TurnContext,
@@ -217,15 +240,20 @@ export function buildAgenCToolUseContext(
     surface.appendSystemMessage ?? createSessionSystemMessageAppender(session);
   const attachmentState = getAttachmentTrackingState(session);
 
+  const abortParent = abortParentForTurn(session, ctx);
   return {
-    // A child of the session's controller, never the controller itself.
-    // This context is handed to the tool/agent runtime, which aborts it to
-    // cancel the context's own work; aliasing the session's one-shot root
-    // controller here meant one collab interrupt permanently poisoned the
-    // session — every later turn was born aborted.
+    // A child of the turn's task controller when this turn has one, else of
+    // the session's controller; never either controller itself. This context
+    // is handed to the tool/agent runtime, which aborts it to cancel the
+    // context's own work; aliasing the session's one-shot root controller here
+    // meant one collab interrupt permanently poisoned the session — every later
+    // turn was born aborted. Descending from the session alone meant the
+    // user's stop never reached the model calls made through this context: a
+    // compaction summarizer call ran on for minutes after the turn was
+    // cancelled (desktop soak, 2026-09-06).
     abortController:
-      session.abortController !== undefined
-        ? createChildAbortController(session.abortController)
+      abortParent !== undefined
+        ? createChildAbortController(abortParent)
         : new AbortController(),
     agentId: inferAgentId(session, ctx, surface, opts.querySource),
     agentType: surface.agentType,

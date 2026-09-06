@@ -231,6 +231,66 @@ describe("buildAgenCToolUseContext", () => {
   });
 });
 
+describe("the turn's stop reaches the context", () => {
+  // Desktop soak, 2026-09-06: the context descended from the session's
+  // controller alone, so a cancelled turn's compaction summarizer call ran on
+  // for minutes; stop only landed when the provider gave up.
+  function sessionWithRunningTask(ctx: TurnContext, taskAbort: AbortController, subId = ctx.subId) {
+    return createSession({
+      abortController: new AbortController(),
+      activeTurn: {
+        unsafePeek: () => ({
+          turnId: ctx.subId,
+          tasks: new Map([[subId, { subId, abortController: taskAbort }]]),
+        }),
+      },
+    });
+  }
+
+  test("aborting the turn's task aborts the context", () => {
+    const ctx = createTurnContext();
+    const taskAbort = new AbortController();
+    const context = buildAgenCToolUseContext(
+      sessionWithRunningTask(ctx, taskAbort) as unknown as Session,
+      ctx,
+      { llmTools: [] },
+    );
+
+    expect(context.abortController.signal.aborted).toBe(false);
+    taskAbort.abort("interrupted");
+    expect(context.abortController.signal.aborted).toBe(true);
+  });
+
+  test("aborting the context never stops the turn's task", () => {
+    const ctx = createTurnContext();
+    const taskAbort = new AbortController();
+    const context = buildAgenCToolUseContext(
+      sessionWithRunningTask(ctx, taskAbort) as unknown as Session,
+      ctx,
+      { llmTools: [] },
+    );
+
+    context.abortController.abort("tool runtime done");
+    expect(taskAbort.signal.aborted).toBe(false);
+  });
+
+  test("another turn's task is not this context's parent", () => {
+    const ctx = createTurnContext();
+    const otherTaskAbort = new AbortController();
+    const session = sessionWithRunningTask(ctx, otherTaskAbort, "some-other-turn");
+    const context = buildAgenCToolUseContext(
+      session as unknown as Session,
+      ctx,
+      { llmTools: [] },
+    );
+
+    otherTaskAbort.abort("interrupted");
+    expect(context.abortController.signal.aborted).toBe(false);
+    (session.abortController as AbortController).abort("session_shutdown");
+    expect(context.abortController.signal.aborted).toBe(true);
+  });
+});
+
 describe("daemon sessions route tool permission changes through the registry", () => {
   test("EnterPlanMode's update lands in the registry and is visible to the next read", async () => {
     const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
