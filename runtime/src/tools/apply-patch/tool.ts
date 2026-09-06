@@ -26,7 +26,11 @@ import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
 import { WorkspaceMutationRejectedError } from "../../workspace/mutation-coordinator.js";
 import type { ApplyPatchHunk } from "./types.js";
-import { ApplyPatchInputError, ApplyPatchParseError } from "./types.js";
+import {
+  ApplyPatchInputError,
+  ApplyPatchParseError,
+  ApplyPatchRuntimeError,
+} from "./types.js";
 
 export const APPLY_PATCH_TOOL_NAME = "apply_patch";
 
@@ -238,8 +242,9 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
         // Failures that happen before any file is touched carry a confirmed
         // no-effect disposition. Without it the admission layer files the
         // error as an unknown outcome and blocks every side-effecting tool of
-        // the session until an operator runs /resolve (#2190). A runtime
-        // failure may have applied part of the patch and stays undecided.
+        // the session until an operator runs /resolve (#2190). That includes
+        // planning-phase ApplyPatchRuntimeError (unread file, missing path,
+        // allowlist). A failure after the mutation boundary stays undecided.
         if (error instanceof WorkspaceMutationRejectedError) {
           // Admission refused the proposal before any byte was written.
           return {
@@ -257,6 +262,12 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
           error instanceof ApplyPatchInputError
         ) {
           return validationErrorToolResult("tool:apply_patch:parse", message);
+        }
+        if (error instanceof ApplyPatchRuntimeError && error.preEffect) {
+          return validationErrorToolResult(
+            "tool:apply_patch:pre-effect",
+            message,
+          );
         }
         return errorResult(message);
       }

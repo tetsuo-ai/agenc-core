@@ -44,6 +44,7 @@ import {
 } from "./limits.js";
 import {
   ApplyPatchRuntimeError,
+  markApplyPatchPreEffect,
   type AffectedPaths,
   type AppliedPatch,
   type ApplyPatchArgs,
@@ -772,6 +773,26 @@ async function applyHunksToFiles(
   readonly affected: AffectedPaths;
   readonly mutationMetadata: readonly MutationMetadataEntry[];
 }> {
+  const effect = { crossed: false };
+  try {
+    return await applyHunksToFilesInner(hunks, opts, control, effect);
+  } catch (error) {
+    if (!effect.crossed) {
+      throw markApplyPatchPreEffect(error);
+    }
+    throw error;
+  }
+}
+
+async function applyHunksToFilesInner(
+  hunks: readonly ApplyPatchHunk[],
+  opts: ApplyPatchRuntimeOptions,
+  control: SeekSequenceControl,
+  effect: { crossed: boolean },
+): Promise<{
+  readonly affected: AffectedPaths;
+  readonly mutationMetadata: readonly MutationMetadataEntry[];
+}> {
   if (hunks.length === 0) {
     throw new ApplyPatchRuntimeError("No files were modified.");
   }
@@ -1068,6 +1089,7 @@ async function applyHunksToFiles(
     await releaseBatchTopology();
     throw error;
   }
+  effect.crossed = true;
   try {
     assertApplyPatchActive(control, "workspace admission");
     for (const admission of admissions) beginWorkspaceMutation(admission);
@@ -1393,8 +1415,14 @@ export async function applyPatchText(
   patch: string,
   opts: ApplyPatchRuntimeOptions,
 ): Promise<ApplyPatchResult> {
-  const control = createRuntimeControl(opts);
-  assertApplyPatchActive(control, "payload parsing");
-  const parsed = parsePatch(patch, "lenient", control);
+  let control: SeekSequenceControl;
+  let parsed: ApplyPatchArgs;
+  try {
+    control = createRuntimeControl(opts);
+    assertApplyPatchActive(control, "payload parsing");
+    parsed = parsePatch(patch, "lenient", control);
+  } catch (error) {
+    throw markApplyPatchPreEffect(error);
+  }
   return applyParsedPatch(parsed, opts, control);
 }

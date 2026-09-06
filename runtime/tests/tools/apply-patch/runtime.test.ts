@@ -18,6 +18,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { ConfigStore } from "../../config/store.js";
 import { enterCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import { applyPatchText, unifiedDiffFromChunks } from "./runtime.js";
+import { ApplyPatchRuntimeError } from "./types.js";
 import { parsePatch } from "./parser.js";
 import {
   canonicalizePath,
@@ -352,6 +353,42 @@ describe("apply-patch read-before-write gate", () => {
       "File has not been read yet. Read it first before writing to it.",
     );
     await expect(readFile(path, "utf8")).resolves.toBe("foo\n");
+  });
+
+  test("marks a planning refusal as pre-effect and a commit-race as not", async () => {
+    const root = await tempRoot();
+    const unread = join(root, "unread.txt");
+    await writeFile(unread, "foo\n", "utf8");
+    await expect(
+      applyPatchText(updatePatch(unread, "foo", "bar"), {
+        cwd: root,
+        allowedPaths: [root],
+        sessionId: SESSION_ID,
+      }),
+    ).rejects.toMatchObject({
+      name: "ApplyPatchRuntimeError",
+      preEffect: true,
+    });
+
+    try {
+      await applyPatchText(
+        wrapPatch(`*** Add File: commit-race.txt\n+hello`),
+        {
+          cwd: root,
+          allowedPaths: [root],
+          __testAfterBackupsCaptured: async () => {
+            throw new ApplyPatchRuntimeError("injected commit-phase failure");
+          },
+        },
+      );
+      throw new Error("expected commit-phase failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApplyPatchRuntimeError);
+      expect((error as ApplyPatchRuntimeError).preEffect).toBe(false);
+      expect((error as ApplyPatchRuntimeError).message).toContain(
+        "injected commit-phase failure",
+      );
+    }
   });
 
   test("authorizes an update after a partial offset/limit read", async () => {
