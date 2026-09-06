@@ -19,6 +19,7 @@ import { SessionLock, SessionLockedError } from "../session/session-store.js";
 import { backfillProjectRollouts } from "./backfill.js";
 import { pruneRolloutSessions } from "./pruning.js";
 import { StateRunDurabilityRepository } from "./run-durability.js";
+import { seedPendingEffectReview } from "./helpers/effect-review-fixture.js";
 import { AgenCSessionSnapshotPolicy } from "./snapshot-policy.js";
 import { recoverCanonicalRunJournalForRun } from "./startup-run-journal-recovery.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
