@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  resolveWorkflowPermissionMode,
   VerifiedChangeWorkflowController,
   WorkflowIntakeError,
   type WorkflowAgentSpawner,
@@ -591,6 +592,24 @@ let harness: Harness;
 
 beforeEach(() => {
   harness = makeHarness();
+});
+
+describe("permission mode at start", () => {
+  // Desktop soak F63: a goal started from the app in default mode planned, then
+  // both implement attempts died because no approver existed for the headless
+  // children and every Edit, Write and command was refused.
+  it("runs a default-mode or unset request under the workflow's own default", () => {
+    expect(resolveWorkflowPermissionMode("default")).toBe("acceptEdits");
+    expect(resolveWorkflowPermissionMode(undefined)).toBe("acceptEdits");
+    expect(resolveWorkflowPermissionMode("plan")).toBe("plan");
+    expect(resolveWorkflowPermissionMode("bypassPermissions")).toBe("bypassPermissions");
+  });
+
+  it("warns once when a run asked for default mode, and still completes", async () => {
+    await runToTerminal(harness, { permissionMode: "default" });
+    expect(harness.warnings.filter((w) => /default permission mode/.test(w))).toHaveLength(1);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "completed" });
+  });
 });
 
 describe("reviewer model resolution at start", () => {

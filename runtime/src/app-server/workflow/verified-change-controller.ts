@@ -396,6 +396,22 @@ export class WorkflowIntakeError extends Error {
 
 const DEFAULT_MAX_IMPLEMENT_ATTEMPTS = 2;
 const DEFAULT_PERMISSION_MODE: WorkflowSpec["permissionMode"] = "acceptEdits";
+
+/**
+ * The permission mode a workflow's children run under. A run's children are
+ * headless sessions in the run's worktree: in `default` mode nothing can
+ * approve them, so every edit, write and command is refused and the implement
+ * step dies on the repeat-failure backstop (desktop soak F63, ten minutes and
+ * three dollars for nothing). `default` and an unset mode both become the
+ * workflow's own default; the other modes pass through.
+ */
+export function resolveWorkflowPermissionMode(
+  requested: WorkflowSpec["permissionMode"] | undefined,
+): WorkflowSpec["permissionMode"] {
+  return requested === undefined || requested === "default"
+    ? DEFAULT_PERMISSION_MODE
+    : requested;
+}
 /** Bounded per-stage retry budget for stage-level (non-verdict) failures. */
 const MAX_STAGE_ATTEMPTS = 2;
 const ZERO_ESTIMATE = {
@@ -566,11 +582,16 @@ export class VerifiedChangeWorkflowController {
       );
     }
     const runId = params.runId ?? this.#newRunId();
+    if (params.permissionMode === "default") {
+      this.#deps.warn(
+        `workflow ${runId} was started in default permission mode, which has no approver for its headless children; running it with ${DEFAULT_PERMISSION_MODE}`,
+      );
+    }
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
     const journal = await this.#deps.journal.open(runId, {
       repoPath: params.repoPath,
       policy: {
-        permissionMode: params.permissionMode ?? DEFAULT_PERMISSION_MODE,
+        permissionMode: resolveWorkflowPermissionMode(params.permissionMode),
         ...(params.unattendedAllow !== undefined
           ? { unattendedAllow: params.unattendedAllow }
           : {}),
@@ -2492,7 +2513,7 @@ function freezeWorkflowSpec(
     ...(params.model !== undefined ? { model: params.model } : {}),
     ...(params.provider !== undefined ? { provider: params.provider } : {}),
     reviewerModel: resolveReviewerModel(runId, params, daemonDefaultModel),
-    permissionMode: params.permissionMode ?? DEFAULT_PERMISSION_MODE,
+    permissionMode: resolveWorkflowPermissionMode(params.permissionMode),
     ...(params.unattendedAllow !== undefined
       ? { unattendedAllow: params.unattendedAllow }
       : {}),
