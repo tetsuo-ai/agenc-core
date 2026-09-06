@@ -88,6 +88,42 @@ describe("apply_patch tool", () => {
     expect(decision.behavior).not.toBe("allow");
   });
 
+  describe("failures before any file is touched are confirmed no-effect", () => {
+    // #2190: a bare isError from a side-effecting tool is filed as an unknown
+    // outcome and gates the session behind /resolve.
+    test("an empty payload", async () => {
+      const tool = createApplyPatchTool({ cwd: "/tmp", allowedPaths: ["/tmp"] });
+      const result = await tool.execute({ input: "" });
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    });
+
+    test("a payload the parser rejects", async () => {
+      const tool = createApplyPatchTool({ cwd: "/tmp", allowedPaths: ["/tmp"] });
+      const result = await tool.execute({
+        input: "this is not a valid apply_patch payload",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("invalid patch");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    });
+
+    test("a runtime failure while applying stays undecided", async () => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-apply-patch-runtime-"));
+      const tool = createApplyPatchTool({ cwd: root, allowedPaths: [root] });
+      const result = await tool.execute({
+        input: `*** Begin Patch
+*** Update File: ${join(root, "missing.txt")}
+@@
+-old
++new
+*** End Patch`,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition).toBeUndefined();
+    });
+  });
+
   test("declares a deferred mutating filesystem surface", () => {
     const tool = createApplyPatchTool({ cwd: "/tmp", allowedPaths: ["/tmp"] });
 
