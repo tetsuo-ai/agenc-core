@@ -203,12 +203,10 @@ export interface AgentRunRetentionConfig {
   readonly snapshot_days?: number;
   readonly snapshot_max_count?: number;
   readonly snapshot_max_bytes?: number;
-  // Rollout/session disk retention window (days). Lights up the reserved
-  // `agent.retention.rollout_days` retention intent: when set, the daemon's
-  // throttled sweep deletes session dirs + their rollout JSONL + the
-  // thread_rollout_items mirror rows once their newest rollout is older than
-  // this many days. Unset → DISABLED (no pruning; the conservative default,
-  // since this deletes user data).
+  // Rollout/session disk retention window (days). The daemon's throttled
+  // sweep deletes session dirs + their rollout JSONL + the thread_rollout_items
+  // mirror rows once their newest rollout is older than this many days.
+  // Default 30 (#2228); 0 disables the sweep and keeps every session forever.
   readonly rollout_days?: number;
 }
 
@@ -1187,6 +1185,10 @@ export function defaultConfig(): AgenCConfig {
         snapshot_days: 3,
         snapshot_max_count: 10_000,
         snapshot_max_bytes: 67_108_864,
+        // Sessions untouched for a month are pruned with their rollout files
+        // and mirror rows; without a window a project's state database grows
+        // without bound (693 MB in two days of soak, #2228). 0 keeps forever.
+        rollout_days: 30,
       }) as AgentRunRetentionConfig,
     }) as AgentConfig,
   } satisfies AgenCConfig);

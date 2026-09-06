@@ -4632,14 +4632,20 @@ function uniqueStateDatabasePaths(
 
 /**
  * Project the rollout/session disk-retention window out of the agent retention
- * config. Returns undefined (sweep stays DISABLED) unless `rollout_days` is set
- * — the conservative default, since the sweep deletes user data.
+ * config. Returns undefined (sweep stays DISABLED) when `rollout_days` is unset
+ * or 0. The config default is 30 days (#2228); the sweep deletes user data, so
+ * 0 is the documented way to keep every session.
  */
-function rolloutRetentionPolicy(
+export function rolloutRetentionPolicy(
   retention: AgentRunRetentionConfig | undefined,
 ): RolloutRetentionPolicy | undefined {
   const days = retention?.rollout_days;
-  if (days === undefined) return undefined;
+  // 0 (or anything that is not a positive number) keeps every session: a
+  // zero-day window handed to the sweep would delete everything but the
+  // active session at the first tick.
+  if (days === undefined || !Number.isFinite(days) || days <= 0) {
+    return undefined;
+  }
   return { retention_days: days };
 }
 

@@ -102,6 +102,7 @@ describe("schema: defaultConfig", () => {
       snapshot_days: 3,
       snapshot_max_count: 10_000,
       snapshot_max_bytes: 67_108_864,
+      rollout_days: 30,
     });
     expect(Object.isFrozen(cfg)).toBe(true);
   });

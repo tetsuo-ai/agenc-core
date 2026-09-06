@@ -307,6 +307,7 @@ otherwise.
 | `agent.retention.snapshot_days` | `3` |
 | `agent.retention.snapshot_max_count` | `10000` |
 | `agent.retention.snapshot_max_bytes` | `67108864` |
+| `agent.retention.rollout_days` | `30` (0 keeps every session) |
 
 `max_turns` is unset by default; an unset turn cap does not impose a
 synthetic stop. `stream_watchdog_timeout_ms` defaults to `600000` (ten
@@ -402,7 +403,7 @@ from a late CLI layer is rejected.
 | --- | --- |
 | `autoUpdates`, `autoUpdatesChannel` | Update enablement and `latest`/`stable` channel. Absent enablement preserves the updater default. |
 | `respectGitignore`, `includeGitInstructions` | Git-aware discovery and instruction behavior. |
-| `transcriptPersistenceEnabled` | Persist session transcripts (default `true`). Retention is configured only by `agent.retention.rollout_days`. |
+| `transcriptPersistenceEnabled` | Persist session transcripts (default `true`). Retention: `agent.retention.rollout_days`, default 30 days; sessions untouched for longer are deleted with their rollout files; 0 keeps every session. |
 | `outputStyle` | Named assistant response style. |
 | `defaultShell` | `bash` or `powershell`. |
 | `language` | Preferred response language. |

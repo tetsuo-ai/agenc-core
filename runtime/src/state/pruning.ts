@@ -337,7 +337,8 @@ export function pruneSessionSnapshotsPerSession(
 // point at the removed rollout files so the index can't outlive its source.
 //
 // CONSERVATISM (this deletes user data):
-//   - Disabled by default — `retention_days === undefined` is a no-op.
+//   - `retention_days === undefined` is a no-op; the daemon maps a configured
+//     0 to undefined. The config default is 30 days (#2228).
 //   - Only sessions whose newest rollout mtime is strictly older than the
 //     cutoff are eligible.
 //   - The active session is never pruned.
