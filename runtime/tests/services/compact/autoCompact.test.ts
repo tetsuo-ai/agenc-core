@@ -7,7 +7,11 @@ import {
   isAutoCompactEnabled,
 } from "./autoCompact.js";
 import type { RuntimeMessage } from "./types.js";
-import { createCompactionTransactionHarness } from "../../helpers/compaction-transaction-harness.js";
+import type { LLMMessage } from "../../../src/llm/types.js";
+import {
+  createCompactionTransactionHarness,
+  createProvider,
+} from "../../helpers/compaction-transaction-harness.js";
 import { runWithStartupProviderSelection } from "../../utils/model/providers.js";
 
 describe("auto compact", () => {
@@ -221,6 +225,63 @@ describe("auto compact", () => {
       /reconstruction is required/i,
     );
     harness.close();
+  });
+
+  describe("a transient summarizer failure", () => {
+    // Desktop soak, 2026-09-06: a session over the context limit lost its one
+    // way forward when the compaction call died on "Connection error." and
+    // the attempt was filed as a failure instead of retried.
+    function compactionWithChat(chat: (messages: LLMMessage[]) => Promise<unknown>) {
+      const messages = [message("x".repeat(10_000)), message("recent request")];
+      const harness = createCompactionTransactionHarness(messages, {
+        compactionMode: "automatic",
+        chat: chat as never,
+      });
+      process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "1";
+      installNoopCompactionHooks(harness.session);
+      return {
+        harness,
+        run: () => runWithCapturedEnvironment(() => autoCompactIfNeeded(messages, harness.context)),
+      };
+    }
+
+    test("is retried once and the compaction goes through", async () => {
+      const fallback = createProvider(undefined, false);
+      const chat = vi.fn(async (messages: LLMMessage[]) => {
+        if (chat.mock.calls.length === 1) throw new Error("grok error: Connection error.");
+        return fallback.chat(messages);
+      });
+      const { harness, run } = compactionWithChat(chat);
+      const result = await run();
+      expect(result.wasCompacted).toBe(true);
+      expect(result.consecutiveFailures).toBe(0);
+      expect(chat).toHaveBeenCalledTimes(2);
+      harness.close();
+    });
+
+    test("that repeats is reported after the one retry", async () => {
+      const chat = vi.fn(async () => {
+        throw new Error("grok error: Connection error.");
+      });
+      const { harness, run } = compactionWithChat(chat);
+      const result = await run();
+      expect(result.wasCompacted).toBe(false);
+      expect(result.consecutiveFailures).toBe(1);
+      expect(result.skippedReason).toContain("Connection error");
+      expect(chat).toHaveBeenCalledTimes(2);
+      harness.close();
+    });
+
+    test("does not cover a failure that is not transient", async () => {
+      const chat = vi.fn(async () => {
+        throw new Error("prompt is too long for this model");
+      });
+      const { harness, run } = compactionWithChat(chat);
+      const result = await run();
+      expect(result.wasCompacted).toBe(false);
+      expect(chat).toHaveBeenCalledTimes(1);
+      harness.close();
+    });
   });
 
   test("respects AgenC disable switches", async () => {

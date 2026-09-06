@@ -7,6 +7,7 @@
 
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { compactConversation } from "./compact.js";
+import { isTransientProviderError } from "../../recovery/api-errors.js";
 import { CompactionReconstructionRequiredError } from "./transaction-types.js";
 import {
   estimateMessagesTokens,
@@ -65,6 +66,36 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000;
 
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3;
 
+/**
+ * One immediate retry of the summarizer call when it fails on a transient
+ * provider error (a dropped connection, a body cut mid-stream). A turn that
+ * has run past the context limit has exactly one way forward, and a single
+ * network blip used to end it: the attempt was recorded as a failure and the
+ * turn went on sampling a prompt the provider would not serve (desktop soak,
+ * 2026-09-06). Only one retry: the transaction refuses further automatic
+ * attempts after two durable failures for the same history.
+ */
+const MAX_TRANSIENT_COMPACTION_RETRIES = 1;
+const TRANSIENT_COMPACTION_RETRY_DELAY_MS = 1_000;
+
+function transientRetryDelay(context: CompactContext): Promise<void> {
+  const signal = context.abortController?.signal;
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(done, TRANSIENT_COMPACTION_RETRY_DELAY_MS);
+    timer.unref?.();
+    function done(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
 export async function autoCompactIfNeeded(
   messages: RuntimeMessage[],
   context: CompactContext,
@@ -105,36 +136,48 @@ export async function autoCompactIfNeeded(
   if (options.force !== true && tokenCount < autoCompactThreshold(context)) {
     return { wasCompacted: false, consecutiveFailures: 0 };
   }
-  try {
-    // Every destructive compaction uses the canonical transaction. Session
-    // memory remains recall input; it is never an unauthenticated replacement
-    // history or a bypass around pin/intent/provider validation/commit.
-    const compactionResult = await compactConversation(messages, context);
-    return {
-      wasCompacted: true,
-      compactionResult,
-      consecutiveFailures: 0,
-    };
-  } catch (error) {
-    // gaphunt3 #41: a user/provider abort mid-compaction is a cancellation,
-    // not a compaction failure. Re-throw it so the cancel propagates instead
-    // of being swallowed, and do NOT increment consecutiveFailures (which
-    // would otherwise trip the 3-strike circuit breaker and disable
-    // auto-compaction for the rest of the turn on benign cancels).
-    if (
-      error instanceof CompactionReconstructionRequiredError ||
-      isAbortError(context, error)
-    ) {
-      throw error;
+  let transientRetries = 0;
+  for (;;) {
+    try {
+      // Every destructive compaction uses the canonical transaction. Session
+      // memory remains recall input; it is never an unauthenticated replacement
+      // history or a bypass around pin/intent/provider validation/commit.
+      const compactionResult = await compactConversation(messages, context);
+      return {
+        wasCompacted: true,
+        compactionResult,
+        consecutiveFailures: 0,
+      };
+    } catch (error) {
+      // gaphunt3 #41: a user/provider abort mid-compaction is a cancellation,
+      // not a compaction failure. Re-throw it so the cancel propagates instead
+      // of being swallowed, and do NOT increment consecutiveFailures (which
+      // would otherwise trip the 3-strike circuit breaker and disable
+      // auto-compaction for the rest of the turn on benign cancels).
+      if (
+        error instanceof CompactionReconstructionRequiredError ||
+        isAbortError(context, error)
+      ) {
+        throw error;
+      }
+      if (
+        transientRetries < MAX_TRANSIENT_COMPACTION_RETRIES &&
+        isTransientProviderError(error) &&
+        context.abortController?.signal.aborted !== true
+      ) {
+        transientRetries += 1;
+        await transientRetryDelay(context);
+        continue;
+      }
+      return {
+        wasCompacted: false,
+        consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1,
+        skippedReason:
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : String(error),
+      };
     }
-    return {
-      wasCompacted: false,
-      consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1,
-      skippedReason:
-        error instanceof Error && error.message.trim().length > 0
-          ? error.message
-          : String(error),
-    };
   }
 }
 
