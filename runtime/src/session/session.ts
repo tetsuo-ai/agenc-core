@@ -5182,6 +5182,27 @@ export class Session {
     return messages;
   }
 
+  private stoppedByUserSinceLastPromptFlag = false;
+
+  /**
+   * A user Stop holds the session quiet until the user speaks again: while
+   * this is set, a child agent's receipt does not start a parent follow-up
+   * turn (#2236). The daemon sets it on a client-initiated interrupt and
+   * clears it when the next user message is submitted; receipts that arrive
+   * meanwhile wait in the mailbox for that turn.
+   */
+  markStoppedByUser(): void {
+    this.stoppedByUserSinceLastPromptFlag = true;
+  }
+
+  clearUserStop(): void {
+    this.stoppedByUserSinceLastPromptFlag = false;
+  }
+
+  get stoppedByUserSinceLastPrompt(): boolean {
+    return this.stoppedByUserSinceLastPromptFlag;
+  }
+
   hasDeferredAgentMailboxMessages(): boolean {
     return this.hasDeferredAgentMailboxProjection;
   }

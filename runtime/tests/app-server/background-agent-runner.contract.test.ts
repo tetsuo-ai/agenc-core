@@ -806,6 +806,8 @@ function makeTopLevelRunner(opts: {
       unsafePeek: () => sessionState,
     },
     abortAllTasks: vi.fn(async () => {}),
+    markStoppedByUser: vi.fn(),
+    clearUserStop: vi.fn(),
     trackDurableOperation: <T>(operation: Promise<T>): Promise<T> => {
       durableOperations.add(operation);
       void operation.then(
@@ -9685,6 +9687,8 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(interrupted).toBe(true);
     expect(session.abortAllTasks).toHaveBeenCalledWith("interrupted");
+    // #2236: the stop is latched so child receipts do not restart the turn.
+    expect(session.markStoppedByUser).toHaveBeenCalledTimes(1);
     expect(stub.thread.submit).toHaveBeenCalledWith({
       type: "interrupt",
       reason: "user_cancel",

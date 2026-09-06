@@ -2279,6 +2279,41 @@ describe("runAgent", () => {
     expect(session.mailbox.hasPending()).toBe(false);
   });
 
+  // #2236: after a user Stop, a child's receipt must not start a parent turn;
+  // it waits in the mailbox for the user's next prompt.
+  it("holds a parent follow-up while the user's stop is latched; the receipt waits for the next user turn", async () => {
+    vi.useFakeTimers();
+    const provider = makeProvider([{ content: "follow-up result" }]);
+    const session = makeStubSession({ services: { provider } });
+    const submit = vi.fn(async () => {
+      session.drainPendingInputMessages();
+    });
+    session.installTurnDriverHooks({ submit });
+    session.markStoppedByUser();
+    const { live } = await spawnLive(session);
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "schedule follow-up" }],
+        taskPrompt: "schedule follow-up",
+      }),
+    );
+    expect(result.outcome).toBe("completed");
+    expect(session.mailbox.hasPending()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(submit).not.toHaveBeenCalled();
+    expect(session.mailbox.hasPending()).toBe(true);
+
+    // The next user prompt clears the latch and its turn drains the receipt.
+    session.clearUserStop();
+    expect(session.stoppedByUserSinceLastPrompt).toBe(false);
+    session.drainPendingInputMessages();
+    expect(session.mailbox.hasPending()).toBe(false);
+  });
+
   it("durably NACKs an accepted assignment that teardown prevents from starting", async () => {
     const provider = makeProvider([{ content: "initial result" }]);
     const session = makeStubSession({ services: { provider } });

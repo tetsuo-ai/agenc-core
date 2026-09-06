@@ -200,7 +200,9 @@ prompt; consumed or indeterminate outcomes are not duplicated. Per model
 turn, agent projection is capped at 32 records / 128 KiB. Oversized first
 records are visibly truncated for forward progress; only deferred triggers
 schedule autonomous follow-up turns, while passive context waits for the next
-human/root turn.
+human/root turn. A user Stop holds even the deferred triggers: until the user
+speaks again, a child receipt stays in the mailbox instead of starting a parent
+turn, so stopping a turn does not let its verifiers resume it.
 
 `wait_agent` drains all currently delivered updates, not one named worker. It
 is therefore mutating and intentionally has no target filter. Use

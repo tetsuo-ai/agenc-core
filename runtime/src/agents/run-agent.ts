@@ -1591,6 +1591,11 @@ function requestParentFollowupTurn(params: {
   readonly parent: Session;
 }): void {
   const parent = params.parent;
+  // The user stopped this session's last turn and has not spoken since: hold
+  // the receipt in the mailbox for the next user turn instead of starting a
+  // turn of our own, which would resume the very work the user stopped
+  // (#2236: an interrupted verifier's receipt restarted an 18-minute turn).
+  if (parent.stoppedByUserSinceLastPrompt === true) return;
   // Coalesce bursts of subagent completions into ONE parent turn. Each
   // completion notifies the parent's mailbox and then requests a follow-up
   // turn; without coalescing, N near-simultaneous completions queue N
@@ -1620,6 +1625,11 @@ function requestParentFollowupTurn(params: {
   const schedule = (delayMs = PARENT_FOLLOWUP_COALESCE_MS): void => {
     state.timer = setTimeout(() => {
       state.timer = null;
+      // A stop that landed inside the coalescing window holds the burst too.
+      if (parent.stoppedByUserSinceLastPrompt === true) {
+        followupTurnStateByParent.delete(parent);
+        return;
+      }
       state.submitInFlight = true;
       let transientSubmitFailure = false;
       void parent

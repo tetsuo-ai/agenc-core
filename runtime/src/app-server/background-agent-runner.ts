@@ -1756,6 +1756,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    // The user speaks again: child receipts held since a stop may now start
+    // follow-up turns (#2236).
+    active.bootstrap.session.clearUserStop?.();
     const contentFingerprint = messageContentFingerprint(
       params.originalContent,
     );
@@ -3960,6 +3963,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const active = this.#active.get(agentId);
     if (active === undefined || !isInterruptibleActiveAgent(active))
       return false;
+    // A client asked for the stop; hold child receipts until the next prompt.
+    active.bootstrap.session.markStoppedByUser?.();
     try {
       await active.bootstrap.session.abortAllTasks("interrupted");
     } catch {
@@ -4015,6 +4020,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(turnAfterAttempt !== expectedTurnId ? { stale: true } : {}),
       };
     }
+    active.bootstrap.session.markStoppedByUser?.();
     for (const [childThreadId] of active.control.openThreadSpawnChildren(
       active.thread.threadId,
     )) {
