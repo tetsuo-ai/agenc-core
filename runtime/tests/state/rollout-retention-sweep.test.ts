@@ -180,6 +180,47 @@ describe("pruneRolloutSessions", () => {
     expect(existsSync(sourcePath)).toBe(false);
   });
 
+  // #2238: a run with an effect still under review needs its journal as
+  // evidence, and startup recovery refuses to start when the review has none.
+  it("keeps a session whose run has an effect still under review", () => {
+    const reviewed = "thread-pending-review";
+    const reviewedPath = seedSession(reviewed, 60);
+    const plain = "thread-old-plain";
+    const plainPath = seedSession(plain, 60);
+    const runs = new StateRunDurabilityRepository(driver);
+    runs.ensureInitialEpoch({ runId: reviewed, openedAt: NOW });
+    runs.beginEffect({
+      runId: reviewed,
+      stepId: "tool:step-1",
+      epoch: 1,
+      sessionId: reviewed,
+      callId: "call-1",
+      toolName: "exec_command",
+      recoveryCategory: "side-effecting",
+      intentDigest: "d".repeat(64),
+      eventId: "intent-1",
+      eventSequence: 1,
+      intentAt: NOW,
+    });
+    runs.markEffectUnknown({
+      runId: reviewed,
+      stepId: "tool:step-1",
+      eventId: "unknown-1",
+      eventSequence: 2,
+      reason: "tool_error_result_without_authoritative_effect_disposition",
+      observedAt: NOW,
+    });
+
+    const report = pruneRolloutSessions(driver, {
+      sessionsDir: join(driver.projectDir, "sessions"),
+      retention_days: 30,
+      now: () => NOW,
+    });
+    expect(report.prunedSessionIds).toEqual([plain]);
+    expect(existsSync(plainPath)).toBe(false);
+    expect(existsSync(reviewedPath)).toBe(true);
+  });
+
   it("deletes an old session + its mirror rows, keeps recent and active", () => {
     const oldPath = seedSession("thread-old", 60); // older than the window
     const recentPath = seedSession("thread-recent", 5); // inside the window

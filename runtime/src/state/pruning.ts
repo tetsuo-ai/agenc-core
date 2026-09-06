@@ -422,6 +422,10 @@ export function pruneRolloutSessions(
     // of file age. Only the durable released state makes whole-session
     // retention eligible again.
     if (sessionHasUnreleasedCompactionSource(driver, sessionId)) continue;
+    // A run with an effect still under review needs its canonical journal as
+    // evidence; startup recovery refuses to start a daemon whose review has
+    // none (#2238). Keep the session until the review is settled.
+    if (sessionHasPendingEffectReview(driver, sessionId)) continue;
     // Live-writer guard: never prune a session whose rollout lock is held by a
     // live process. The daemon shares this sessions dir with separate foreground
     // processes; the mtime cutoff already spares actively-written sessions, and
@@ -495,6 +499,30 @@ export function pruneRolloutSessions(
     prunedMirrorRows,
     prunedSessionIds,
   };
+}
+
+/**
+ * A `run_effects` row still awaiting review pins the session's journal: the
+ * review needs it as evidence, and startup recovery treats a pending review
+ * without retained journal files as fatal (#2238).
+ */
+export function sessionHasPendingEffectReview(
+  driver: StateSqliteDriver,
+  sessionId: string,
+): boolean {
+  try {
+    const row = driver
+      .prepareState<[string], { readonly one: number }>(
+        `SELECT 1 AS one FROM run_effects
+         WHERE session_id = ? AND review_status = 'pending'
+         LIMIT 1`,
+      )
+      .get(sessionId);
+    return row !== undefined;
+  } catch {
+    // A database without the run_effects table has nothing under review.
+    return false;
+  }
 }
 
 function sessionHasUnreleasedCompactionSource(
