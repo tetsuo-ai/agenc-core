@@ -4828,6 +4828,7 @@ export class Session {
   async waitForMailboxChange(
     timeoutMs: number,
     ownership?: IdleInputOwnership,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     if (this.hasPendingInput(ownership)) {
       return true;
@@ -4835,17 +4836,25 @@ export class Session {
     if (this.mailboxSeqWatch.isClosed) {
       return false;
     }
+    // A stopped turn must not sit out the deadline: the wait ends at once and
+    // reports no change, and the caller sees the aborted signal (#2201).
+    if (signal?.aborted === true) {
+      return false;
+    }
     const startSeq = this.mailboxSeqWatch.value;
     return new Promise<boolean>((resolve) => {
       let settled = false;
       let unsubscribe: (() => void) | null = null;
+      const onAbort = (): void => finish(false);
       const finish = (value: boolean): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         unsubscribe?.();
+        signal?.removeEventListener("abort", onAbort);
         resolve(value);
       };
+      signal?.addEventListener("abort", onAbort, { once: true });
       const timer = setTimeout(() => finish(false), timeoutMs);
       const subscription = this.mailboxSeqWatch.subscribe((seq) => {
         if (seq !== startSeq && this.hasPendingInput(ownership)) {

@@ -246,6 +246,18 @@ describe("Session idle-input → mailbox merge", () => {
     await expect(waiting).resolves.toBe(true);
   });
 
+  it("waitForMailboxChange ends at once on an aborted signal and reports no change", async () => {
+    // #2201: a stopped swarm's parent turn sat out the wait's deadline.
+    const session = buildSession();
+    const early = new AbortController();
+    early.abort("interrupted");
+    await expect(session.waitForMailboxChange(60_000, undefined, early.signal)).resolves.toBe(false);
+    const late = new AbortController();
+    const waiting = session.waitForMailboxChange(60_000, undefined, late.signal);
+    late.abort("interrupted");
+    await expect(waiting).resolves.toBe(false);
+  });
+
   it("waitForMailboxChange does not lose traffic arriving before its sequence snapshot", async () => {
     const session = buildSession();
     const originalHasPending = session.hasPendingInput.bind(session);

@@ -7,7 +7,9 @@ function fixture(options?: {
   readonly maxConsecutiveWaitTimeouts?: number;
   readonly conversationId?: string;
 }) {
-  const waitForMailboxChange = vi.fn(async (_timeoutMs: number) => false);
+  const waitForMailboxChange = vi.fn(
+    async (_timeoutMs: number, _ownership?: unknown, _signal?: AbortSignal) => false,
+  );
   const emit = vi.fn();
   const session = {
     conversationId: options?.conversationId ?? "root-session",
@@ -97,6 +99,27 @@ describe("wait_agent consecutive timeouts", () => {
     const fifth = await call(tool);
     expect(fifth.isError).toBe(true);
     expect(fifth.body).toMatchObject({ consecutive_timeouts: 5 });
+  });
+
+  it("returns at once when the turn's abort signal fires, and counts no timeout", async () => {
+    // #2201: a stopped swarm held its parent turn open until the wait's deadline.
+    const { tool, waitForMailboxChange } = fixture();
+    const controller = new AbortController();
+    waitForMailboxChange.mockImplementationOnce(async (_timeoutMs, _ownership, signal) => {
+      controller.abort("interrupted");
+      return signal?.aborted === true ? false : true;
+    });
+    const args: Record<string, unknown> = {};
+    Object.defineProperty(args, "__abortSignal", { value: controller.signal, enumerable: false });
+    const interrupted = await call(tool, args);
+    expect(interrupted.body).toMatchObject({ interrupted: true, timed_out: false });
+    expect(waitForMailboxChange).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      undefined,
+      controller.signal,
+    );
+    const next = await call(tool);
+    expect(next.body).toMatchObject({ timed_out: true, consecutive_timeouts: 1 });
   });
 
   it("a completed wait clears the streak", async () => {
