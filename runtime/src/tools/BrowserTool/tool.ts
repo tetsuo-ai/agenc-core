@@ -14,6 +14,7 @@
  */
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import type { PermissionResult, PermissionUpdate } from "../../permissions/types.js";
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
@@ -84,6 +85,15 @@ function str(value: unknown): string | undefined {
 
 function errorResult(message: string): ToolResult {
   return { content: message, isError: true };
+}
+
+/**
+ * A refusal made before the browser was touched. A bare error from this
+ * mutating tool is filed as an unknown outcome and gates the session behind
+ * /resolve (#2190); a failed browser action keeps the bare form.
+ */
+function refuse(message: string): ToolResult {
+  return validationErrorToolResult("tool:Browser:validation", message);
 }
 
 function safeAgencHome(explicit?: string): string | undefined {
@@ -235,12 +245,10 @@ export function createBrowserTool(
   ): Promise<ToolResult> {
     const action = str(input.action);
     if (action === undefined || !BROWSER_ACTIONS.includes(action as never)) {
-      return errorResult(
-        `action must be one of: ${BROWSER_ACTIONS.join(", ")}`,
-      );
+      return refuse(`action must be one of: ${BROWSER_ACTIONS.join(", ")}`);
     }
     const requiredError = validateRequired(action, input);
-    if (requiredError !== undefined) return errorResult(requiredError);
+    if (requiredError !== undefined) return refuse(requiredError);
     if (sandboxExecutionBroker === undefined) {
       throw missingSandboxExecutionBoundary("browser");
     }
@@ -358,7 +366,7 @@ export function createBrowserTool(
         return { content: `Closed tab ${tabId}.`, metadata: { action, tabId } };
       }
       default:
-        return errorResult(`unsupported action: ${action}`);
+        return refuse(`unsupported action: ${action}`);
     }
   }
 

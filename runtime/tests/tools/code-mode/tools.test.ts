@@ -66,4 +66,18 @@ describe("code-mode tools", () => {
     expect(result.content).toMatch(/\[code_mode status=completed [^\]]+\]$/);
     expect(exec.description).toContain("system_echo");
   });
+
+  test("exec refuses before a cell runs, and says the boundary was not crossed", async () => {
+    // #2190: a bare error from a mutating tool gates the session behind /resolve.
+    const [exec] = createCodeModeTools({
+      service: new QuickJsCodeModeService({ enabled: true }),
+      getEnabledTools: () => [],
+    });
+    for (const args of [{}, { code: 42 }]) {
+      const result = await exec.execute(args);
+      expect(result.isError).toBe(true);
+      expect(String(result.content)).toContain("code must be a string");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+  });
 });

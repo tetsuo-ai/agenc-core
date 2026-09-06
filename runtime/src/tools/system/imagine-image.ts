@@ -28,6 +28,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
 
@@ -39,6 +40,18 @@ export interface ImagineImageToolOptions {
   } | null;
   readonly env?: NodeJS.ProcessEnv;
   readonly fetchImpl?: typeof fetch;
+}
+
+/**
+ * A refusal made before any provider request. A bare error from this
+ * mutating tool is filed as an unknown outcome and gates the session behind
+ * /resolve (#2190); failures after the request keep the bare form.
+ */
+function refusal(payload: unknown): ToolResult {
+  return validationErrorToolResult(
+    "tool:ImagineImage:validation",
+    safeStringify(payload),
+  );
 }
 
 function json(payload: unknown, isError?: boolean): ToolResult {
@@ -768,12 +781,12 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       admittedSignal?.throwIfAborted();
       const backendResolution = resolveImageBackend(opts);
       if ("error" in backendResolution) {
-        return json({ error: backendResolution.error }, true);
+        return refusal({ error: backendResolution.error });
       }
       const { backend } = backendResolution;
 
       const prompt = stringValue(args.prompt);
-      if (!prompt) return json({ error: "prompt is required" }, true);
+      if (!prompt) return refusal({ error: "prompt is required" });
 
       const model =
         stringValue(args.model) ??
@@ -788,7 +801,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
               : "grok-imagine-image");
       if (backend.kind === "meta") {
         if (model !== "muse-image-1.0") {
-          return json({ error: "Meta image model must be muse-image-1.0" }, true);
+          return refusal({ error: "Meta image model must be muse-image-1.0" });
         }
       } else if (backend.kind === "qwen") {
         const isPayGoModel = /^qwen-image-3\.0(?:-pro)?$/i.test(model);
@@ -860,7 +873,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         resolution !== "1k" &&
         resolution !== "2k"
       ) {
-        return json({ error: "resolution must be 1k or 2k" }, true);
+        return refusal({ error: "resolution must be 1k or 2k" });
       }
       if (backend.kind === "zai" && resolution !== undefined) {
         return json(
@@ -877,10 +890,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         quality !== "hd" &&
         quality !== "standard"
       ) {
-        return json({ error: "quality must be hd or standard" }, true);
+        return refusal({ error: "quality must be hd or standard" });
       }
       if (backend.kind !== "zai" && quality !== undefined) {
-        return json({ error: "quality is supported only by Z.AI images" }, true);
+        return refusal({ error: "quality is supported only by Z.AI images" });
       }
 
       const body: Record<string, unknown> =
@@ -916,7 +929,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         if (backend.kind === "qwen") {
           const origin = qwenApiOrigin(backend.baseURL);
           if (origin === undefined) {
-            return json({ error: "QwenCloud image endpoint is invalid" }, true);
+            return refusal({ error: "QwenCloud image endpoint is invalid" });
           }
           const size = qwenImageSize(aspect_ratio, resolution);
           if (/^wan2\.7-image(?:-pro)?$/i.test(model)) {

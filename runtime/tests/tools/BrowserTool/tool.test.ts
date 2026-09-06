@@ -114,12 +114,15 @@ describe("Browser tool validation (no browser launched)", () => {
     const result = await createBrowserTool().execute({ action: "fly" });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("action must be one of");
+    // #2190: refused before the browser was touched, and the result says so.
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
   });
 
   test("rejects navigate without a url", async () => {
     const result = await createBrowserTool().execute({ action: "navigate" });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("requires a url");
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
   });
 
   test("rejects click without a ref", async () => {

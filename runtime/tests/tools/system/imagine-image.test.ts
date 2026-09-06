@@ -1116,4 +1116,14 @@ describe("ImagineImage tool", () => {
     await expect(running).rejects.toBe(reason);
     expect(requestSignal?.aborted).toBe(true);
   });
+
+  it("refuses a missing prompt before any request, and says so", async () => {
+    // #2190: a bare error from a mutating tool gates the session behind /resolve.
+    const fetchImpl = vi.fn(async () => new Response("unreachable", { status: 500 }));
+    const result = await createQwenImagineTool("qwen", fetchImpl).execute({});
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("prompt is required");
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });

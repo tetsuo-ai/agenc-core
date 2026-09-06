@@ -1,5 +1,6 @@
 import type { FunctionCallOutputContentItem } from "../context.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
 import {
   buildExecToolDescription,
   buildWaitToolDescription,
@@ -166,8 +167,17 @@ async function executeCodeMode(
   stringArgumentFields: Readonly<Record<string, string>> | undefined,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
-  const source = readStringArg(args, ["code", "source", "input"]);
-  const parsed = parseExecSource(source);
+  // Argument and pragma errors happen before any cell runs; say so, or the
+  // bare error is filed as an unknown outcome and gates the session (#2190).
+  let parsed: ReturnType<typeof parseExecSource>;
+  try {
+    parsed = parseExecSource(readStringArg(args, ["code", "source", "input"]));
+  } catch (error) {
+    return validationErrorToolResult(
+      "tool:exec:validation",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
   const response = await service.execute({
     cellId: service.allocateCellId(),
     toolCallId: callId(args),
