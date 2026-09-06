@@ -212,6 +212,11 @@ export class StreamingToolPairValidator {
     });
   }
 
+  /** The failure that closed this validator, if one has. Every later push returns it. */
+  get terminalFailureOutcome(): ToolPairTerminalFailureOutcome | undefined {
+    return this.terminalFailure;
+  }
+
   push(message: ToolPairMessage): ToolPairTerminalFailureOutcome | undefined {
     if (this.terminalFailure !== undefined) return this.terminalFailure;
     if (

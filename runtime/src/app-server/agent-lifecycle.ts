@@ -212,7 +212,8 @@ export type AgenCDaemonAgentLifecycleErrorCode =
   | "RUN_CANCEL_UNAVAILABLE"
   | "TURN_IN_PROGRESS"
   | "CLIENT_MESSAGE_ID_CONFLICT"
-  | "PROMPT_BLOCKED";
+  | "PROMPT_BLOCKED"
+  | "SESSION_HISTORY_BLOCKED";
 
 export class AgenCDaemonAgentLifecycleError extends Error {
   readonly code: AgenCDaemonAgentLifecycleErrorCode;

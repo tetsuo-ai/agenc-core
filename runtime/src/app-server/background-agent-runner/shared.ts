@@ -298,7 +298,10 @@ export interface AgenCBackgroundAgentMessageTerminal extends JsonObject {
 }
 
 export type AgenCBackgroundAgentMessageErrorCode =
-  "TURN_IN_PROGRESS" | "CLIENT_MESSAGE_ID_CONFLICT" | "PROMPT_BLOCKED";
+  | "TURN_IN_PROGRESS"
+  | "CLIENT_MESSAGE_ID_CONFLICT"
+  | "PROMPT_BLOCKED"
+  | "SESSION_HISTORY_BLOCKED";
 
 export class AgenCBackgroundAgentMessageError extends Error {
   readonly code: AgenCBackgroundAgentMessageErrorCode;

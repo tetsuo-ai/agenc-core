@@ -498,6 +498,7 @@ describe("A3b shared ID-paired validator cutover", () => {
       store.appendRollout({ type: "response_item", payload: tool });
     }).not.toThrow();
     store.flushDurable();
+    expect(store.liveHistoryBlockedReason()).toBeUndefined();
 
     expect(() =>
       store.appendRollout(
@@ -533,6 +534,11 @@ describe("A3b shared ID-paired validator cutover", () => {
         }),
       }),
     );
+    // Once the live validator has closed, the store says why, in the words the
+    // rejected append used, so a turn can be refused before it opens.
+    expect(store.liveHistoryBlockedReason()).toMatch(
+      /^tool-pair history rejected during live append: /,
+    );
 
     store.close();
 
@@ -555,6 +561,7 @@ describe("A3b shared ID-paired validator cutover", () => {
         content: "next result",
       }),
     };
+    expect(restarted.liveHistoryBlockedReason()).toBeUndefined();
     expect(() => {
       restarted.appendRollout({
         type: "response_item",

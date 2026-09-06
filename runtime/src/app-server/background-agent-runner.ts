@@ -1802,6 +1802,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         `session ${params.sessionId} already has an active or queued turn`,
       );
     }
+    // A history the live tool-pair validator has closed cannot take the user
+    // message this turn would start with. Refusing here gives the client the
+    // reason; opening the turn gave it an empty turn that ended in seconds.
+    const historyBlocked =
+      active.bootstrap.rolloutStore.liveHistoryBlockedReason();
+    if (historyBlocked !== undefined) {
+      throw new AgenCBackgroundAgentMessageError(
+        "SESSION_HISTORY_BLOCKED",
+        `session ${params.sessionId} cannot start a turn: ${historyBlocked}. ` +
+          "Its history no longer accepts new entries; continue in a new session.",
+      );
+    }
 
     let resolveSubmission!: (result: AgenCBackgroundAgentMessageResult) => void;
     let rejectSubmission!: (error: unknown) => void;

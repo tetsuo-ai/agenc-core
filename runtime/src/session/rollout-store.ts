@@ -3453,6 +3453,19 @@ export class RolloutStore {
     this.liveToolPairValidator = validator;
   }
 
+  /**
+   * Why this session's live history can no longer take a response item, once
+   * the live tool-pair validator has closed on a failure; `undefined` while
+   * appends are still accepted. Callers that start turns check this before
+   * opening one, so a client hears the reason instead of watching an empty
+   * turn end.
+   */
+  liveHistoryBlockedReason(): string | undefined {
+    const failure = this.liveToolPairValidator?.terminalFailureOutcome;
+    if (failure === undefined) return undefined;
+    return new ToolPairHistoryBlockedError("live append", failure).message;
+  }
+
   private validateLiveResponseItem(message: ToolPairMessage): void {
     const projection = this.liveToolPairProjection;
     const validator = this.liveToolPairValidator;

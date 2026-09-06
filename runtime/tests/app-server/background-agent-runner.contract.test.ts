@@ -578,6 +578,7 @@ function makeTopLevelRunner(opts: {
   const rolloutStore = {
     rolloutPath: `/tmp/${opts.conversationId}.jsonl`,
     readAll: () => [...rolloutItems],
+    liveHistoryBlockedReason: vi.fn((): string | undefined => undefined),
     assertRunSuspendable: vi.fn(() => {}),
     recordRunSuspensionEvent: vi.fn(() => {}),
     recordRunStartupActivationEvent: vi.fn(() => {}),
@@ -8807,6 +8808,34 @@ describe("AgenC delegate background-agent runner", () => {
       terminal: { code: 0 },
     });
     expect(control.sendInput).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a message once the session's live history is blocked", async () => {
+    const { runner, rolloutStore } = makeTopLevelRunner({
+      conversationId: "session-history-blocked",
+    });
+    await runner.startAgent({
+      objective: "history closes after this",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const reason =
+      'tool-pair history rejected during live append: tool result repeats "call-22" (44 UTF-8 bytes)';
+    rolloutStore.liveHistoryBlockedReason.mockReturnValue(reason);
+
+    await expect(
+      runner.submitAgentMessage("session-history-blocked", {
+        sessionId: "session_1",
+        content: "another prompt",
+        originalContent: "another prompt",
+        messageId: "blocked-message",
+        streamId: "blocked-message",
+        acceptedAt: "2026-08-17T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "SESSION_HISTORY_BLOCKED",
+      message: expect.stringContaining(reason),
+    });
   });
 
   it("[managed-thread] rejects opt-in admission during the initial turn without changing legacy FIFO", async () => {
