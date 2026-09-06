@@ -54,7 +54,10 @@ import {
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
-import { plainTextErrorToolResult as errorResult } from "../results.js";
+import {
+  plainTextErrorToolResult as errorResult,
+  validationErrorToolResult,
+} from "../results.js";
 import { runSandboxedToolCommand } from "./coding-common.js";
 import { verifiedPlanFileContextFromArgs } from "./filesystem.js";
 import {
@@ -336,6 +339,15 @@ export interface WorktreeToolConfig {
   readonly cwd: string;
 }
 
+/**
+ * A refusal made before any git command ran. A bare error from this mutating
+ * tool is filed as an unknown outcome and gates the session behind /resolve
+ * (#2190); failures after `git worktree add` started keep the bare form.
+ */
+function refuse(tool: "EnterWorktree" | "ExitWorktree", message: string): ToolResult {
+  return validationErrorToolResult(`tool:${tool}:validation`, message);
+}
+
 export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
   return {
     name: "EnterWorktree",
@@ -366,7 +378,8 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
       const args = rawArgs as ToolExecutionInjectedArgs & { name?: unknown };
       const planContext = verifiedPlanFileContextFromArgs(rawArgs);
       if (planContext === null || planContext.sessionId === undefined) {
-        return errorResult(
+        return refuse(
+          "EnterWorktree",
           "EnterWorktree requires signed session and canonical home context from a session-bound dispatcher.",
         );
       }
@@ -375,7 +388,8 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
       // matches donor `EnterWorktreeTool.call:79-81`.
       const existing = getCurrentWorktreeSession(sessionId);
       if (existing !== undefined) {
-        return errorResult(
+        return refuse(
+          "EnterWorktree",
           `Already in a worktree session at ${existing.worktreePath}. Use ExitWorktree first.`,
         );
       }
@@ -387,7 +401,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
           validateWorktreeSlug(slugRaw);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          return errorResult(message);
+          return refuse("EnterWorktree", message);
         }
         slug = slugRaw;
       } else {
@@ -405,7 +419,8 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
       const startCwd = resolve(config.cwd);
       const mainRepoRoot = await findGitRoot(startCwd, rawArgs);
       if (mainRepoRoot === null) {
-        return errorResult(
+        return refuse(
+          "EnterWorktree",
           `Not in a git repository (no rev-parse --show-toplevel from ${startCwd}). EnterWorktree requires a git repo or configured WorktreeCreate hooks (the latter aren't yet wired in AgenC).`,
         );
       }
@@ -421,7 +436,8 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         worktreePath !== worktreesRoot &&
         !worktreePath.startsWith(`${worktreesRoot}/`)
       ) {
-        return errorResult(
+        return refuse(
+          "EnterWorktree",
           `Refusing to create worktree: resolved path ${worktreePath} escapes ${worktreesRoot}.`,
         );
       }
@@ -629,14 +645,15 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
       };
       const planContext = verifiedPlanFileContextFromArgs(rawArgs);
       if (planContext === null || planContext.sessionId === undefined) {
-        return errorResult(
+        return refuse(
+          "ExitWorktree",
           "ExitWorktree requires signed session and canonical home context from a session-bound dispatcher.",
         );
       }
       const sessionId = planContext.sessionId;
       const action = asNonEmptyString(args.action);
       if (action !== "keep" && action !== "remove") {
-        return errorResult('action must be "keep" or "remove"');
+        return refuse("ExitWorktree", 'action must be "keep" or "remove"');
       }
       const discardChanges = args.discard_changes === true;
 

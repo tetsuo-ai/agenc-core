@@ -274,3 +274,64 @@ describe("EnterWorktree / ExitWorktree (AgenC port)", () => {
     }
   });
 });
+
+// #2190: a bare error from a mutating tool is filed as an unknown outcome and
+// gates the session behind /resolve. Every refusal made before a git command
+// runs must say the boundary was not crossed.
+describe("worktree refusals before any git command", () => {
+  let repo: Awaited<ReturnType<typeof setupRepo>>;
+  const sessionId = "test-session";
+
+  beforeEach(async () => {
+    __resetWorktreeSessionsForTesting();
+    repo = await setupRepo();
+  });
+
+  afterEach(async () => {
+    __resetWorktreeSessionsForTesting();
+    if (repo) await repo.cleanup();
+  });
+
+  function expectNoEffect(result: unknown, contains: RegExp): void {
+    const r = result as { isError?: boolean; content: unknown; effectDisposition?: { disposition?: string } };
+    expect(r.isError).toBe(true);
+    expect(String(r.content)).toMatch(contains);
+    expect(r.effectDisposition?.disposition).toBe("confirmed_no_effect");
+  }
+
+  test("EnterWorktree: a bad slug, a session already in a worktree, a missing session", async () => {
+    const enter = createEnterWorktreeTool({ cwd: repo.root });
+    expectNoEffect(
+      await enter.execute({ name: "has space", __agencSessionId: sessionId }),
+      /letters, digits/,
+    );
+    await enter.execute({ name: "first.tree", __agencSessionId: sessionId });
+    expectNoEffect(
+      await enter.execute({ name: "second.tree", __agencSessionId: sessionId }),
+      /Already in a worktree session/,
+    );
+    expectNoEffect(await enter.execute({ name: "third.tree" }), /requires signed session/);
+  });
+
+  test("EnterWorktree outside a git repository", async () => {
+    const plain = await mkdtemp(join(tmpdir(), "agenc-worktree-nogit-"));
+    try {
+      const enter = createEnterWorktreeTool({ cwd: plain });
+      expectNoEffect(
+        await enter.execute({ name: "nowhere", __agencSessionId: sessionId }),
+        /Not in a git repository/,
+      );
+    } finally {
+      await rm(plain, { recursive: true, force: true });
+    }
+  });
+
+  test("ExitWorktree: a bad action and a missing session", async () => {
+    const exit = createExitWorktreeTool({ cwd: repo.root });
+    expectNoEffect(
+      await exit.execute({ action: "burn", __agencSessionId: sessionId }),
+      /action must be/,
+    );
+    expectNoEffect(await exit.execute({ action: "keep" }), /requires signed session/);
+  });
+});

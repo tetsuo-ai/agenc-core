@@ -12,6 +12,7 @@
  */
 
 import type { Tool, ToolResult } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { sharedServer } from "../concurrency.js";
 
@@ -57,6 +58,21 @@ export function taskTextResult(
   };
 }
 
+/**
+ * A refusal made before the tool touched anything. Without the disposition a
+ * bare error from a mutating Task* tool is filed as an unknown outcome and
+ * gates the whole session behind /resolve (#2190).
+ */
+export function taskValidationResult(
+  content: string,
+  codeModeResult?: unknown,
+): ToolResult {
+  return {
+    ...validationErrorToolResult("tool:tasks:validation", content),
+    ...(codeModeResult !== undefined ? { codeModeResult } : {}),
+  };
+}
+
 export function taskStrictArgs(
   args: Record<string, unknown>,
   opts: {
@@ -71,20 +87,16 @@ export function taskStrictArgs(
   ]);
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) {
-      return taskTextResult(
-        `unknown field \`${key}\``,
-        { error: `unknown field \`${key}\`` },
-        true,
-      );
+      return taskValidationResult(`unknown field \`${key}\``, {
+        error: `unknown field \`${key}\``,
+      });
     }
   }
   for (const key of opts.required ?? []) {
     if (typeof args[key] !== "string" || args[key].trim().length === 0) {
-      return taskTextResult(
-        `${key} is required`,
-        { error: `${key} is required` },
-        true,
-      );
+      return taskValidationResult(`${key} is required`, {
+        error: `${key} is required`,
+      });
     }
   }
   return null;

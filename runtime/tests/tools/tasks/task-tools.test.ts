@@ -223,3 +223,56 @@ describe("createTaskTools", () => {
     expect(again.content).toBe("task bash-1 is not running (status: killed)");
   });
 });
+
+// #2190: a bare error from a mutating Task* tool is filed as an unknown outcome
+// and gates the session behind /resolve. Refusals made before the store is
+// touched must say the boundary was not crossed.
+describe("Task* refusals before the store is touched", () => {
+  function expectNoEffect(result: ToolResult, content: string | RegExp): void {
+    expect(result.isError).toBe(true);
+    if (typeof content === "string") expect(result.content).toBe(content);
+    else expect(String(result.content)).toMatch(content);
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+  }
+
+  it("names the boundary on every argument refusal", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-task-tools-"));
+    try {
+      const map = byName(
+        createTaskTools({ workspaceRoot: process.cwd(), agencHome: home, getSession: () => null }),
+      );
+      const create = map.get("TaskCreate")!;
+      const update = map.get("TaskUpdate")!;
+      expectNoEffect(await create.execute({}), "subject is required");
+      expectNoEffect(await create.execute({ subject: "x", bogus: 1 }), /unknown field/);
+      expectNoEffect(await create.execute({ subject: "x", metadata: [] }), "metadata must be an object");
+      expectNoEffect(await update.execute({ taskId: "no-such-task" }), "Task not found");
+      expectNoEffect(await map.get("TaskStop")!.execute({ task_id: "" }), /task_id/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an unknown status before writing", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-task-tools-"));
+    try {
+      const map = byName(
+        createTaskTools({ workspaceRoot: process.cwd(), agencHome: home, getSession: () => null }),
+      );
+      const created = await map.get("TaskCreate")!.execute({ subject: "Status check" });
+      const id = codeMode<{ task: { id: string } }>(created).task.id;
+      expectNoEffect(
+        await map.get("TaskUpdate")!.execute({ taskId: id, status: "paused" }),
+        /status must be/,
+      );
+      expectNoEffect(
+        await map.get("TaskUpdate")!.execute({ taskId: id, addBlocks: [1] }),
+        /array of task id strings/,
+      );
+      const after = await map.get("TaskGet")!.execute({ taskId: id });
+      expect(codeMode<{ task: { status: string } }>(after).task.status).toBe("pending");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});

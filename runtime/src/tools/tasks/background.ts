@@ -26,6 +26,7 @@ import {
   stringValue,
   taskStrictArgs,
   taskTextResult,
+  taskValidationResult,
   toolMetadata,
 } from "./helpers.js";
 
@@ -191,11 +192,9 @@ export function createBackgroundTaskTools(
         if (strict) return strict;
         const taskId = stringValue(args.task_id);
         if (!taskId) {
-          return taskTextResult(
-            "Missing required parameter: task_id",
-            { error: "Missing required parameter: task_id" },
-            true,
-          );
+          return taskValidationResult("Missing required parameter: task_id", {
+            error: "Missing required parameter: task_id",
+          });
         }
         try {
           const stopped = await stopTask(taskId, {

@@ -33,6 +33,7 @@ import {
   stringValue,
   taskStrictArgs,
   taskTextResult,
+  taskValidationResult,
   toolMetadata,
   type TaskToolOptions,
 } from "./helpers.js";
@@ -79,11 +80,9 @@ function parseTaskMetadata(value: unknown): {
     return { metadata: value };
   }
   return {
-    error: taskTextResult(
-      "metadata must be an object",
-      { error: "metadata must be an object" },
-      true,
-    ),
+    error: taskValidationResult("metadata must be an object", {
+      error: "metadata must be an object",
+    }),
   };
 }
 
@@ -93,11 +92,9 @@ function taskStringArray(
 ): ToolResult | readonly string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    return taskTextResult(
-      `${field} must be an array of task id strings`,
-      { error: `${field} must be an array of task id strings` },
-      true,
-    );
+    return taskValidationResult(`${field} must be an array of task id strings`, {
+      error: `${field} must be an array of task id strings`,
+    });
   }
   return value;
 }
@@ -226,7 +223,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         if (strict) return strict;
         const subject = stringValue(args.subject);
         if (!subject) {
-          return taskTextResult("subject is required", { error: "subject is required" }, true);
+          return taskValidationResult("subject is required", { error: "subject is required" });
         }
         // Models routinely send only a subject — that is how the tool
         // reads. The description is display copy layered over it.
@@ -273,15 +270,14 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         if (strict) return strict;
         const taskId = stringValue(args.taskId);
         if (!taskId) {
-          return taskTextResult("taskId is required", { error: "taskId is required" }, true);
+          return taskValidationResult("taskId is required", { error: "taskId is required" });
         }
         const task = await taskLoadOne(storeOpts, taskId);
         if (task === null) {
-          return taskTextResult(
-            "Task not found",
-            { error: "Task not found", taskId },
-            true,
-          );
+          return taskValidationResult("Task not found", {
+            error: "Task not found",
+            taskId,
+          });
         }
         return taskTextResult(formatTask(task), { task: publicTask(task) });
       },
@@ -333,15 +329,14 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         if (strict) return strict;
         const taskId = stringValue(args.taskId);
         if (!taskId) {
-          return taskTextResult("taskId is required", { error: "taskId is required" }, true);
+          return taskValidationResult("taskId is required", { error: "taskId is required" });
         }
         const existing = await taskLoadOne(storeOpts, taskId);
         if (existing === null) {
-          return taskTextResult(
-            "Task not found",
-            { error: "Task not found", taskId },
-            true,
-          );
+          return taskValidationResult("Task not found", {
+            error: "Task not found",
+            taskId,
+          });
         }
         const update: UpdateTaskInput = {};
         const subject = stringValue(args.subject);
@@ -356,10 +351,9 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
         }
         const status = normalizeTaskUpdateStatus(args.status);
         if (args.status !== undefined && status === undefined) {
-          return taskTextResult(
+          return taskValidationResult(
             "status must be pending, in_progress, completed, or deleted",
             { error: "invalid status" },
-            true,
           );
         }
         if (status !== undefined) {
