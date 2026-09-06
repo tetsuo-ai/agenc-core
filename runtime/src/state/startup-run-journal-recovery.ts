@@ -45,6 +45,7 @@ import {
   type PreparedPinnedRolloutRun,
 } from "./backfill.js";
 import { RecoveryOperationalError } from "./recovery-contract.js";
+import { StateRecoveryIncidentRepository } from "./recovery-incidents.js";
 import { RecoveryDescriptorBudget } from "./recovery-file.js";
 import {
   StartupRecoveryBudget,
@@ -256,6 +257,48 @@ export function recoverCanonicalRunJournalForRun(
   return recoverStrictRun(driver, threads, run, sources, options.strict);
 }
 
+/** The sha256 recorded for a source that no longer exists; an operator confirms it to abandon the incident. */
+export const MISSING_RECOVERY_SOURCE_SHA256 = "0".repeat(64);
+
+/**
+ * A run whose pending effect review has no retained canonical journal cannot
+ * be reviewed and cannot be executed, but it must not stop the daemon from
+ * starting (#2238). Record one quarantine incident for it (idempotent: an
+ * existing exclusion is returned as is) with a sentinel source so the
+ * operator can list and abandon it.
+ */
+function quarantineReviewWithoutEvidence(
+  driver: StateSqliteDriver,
+  runId: string,
+): RecoveryRunExclusion {
+  const existing = getRecoveryRunExclusion(driver, runId);
+  if (existing !== undefined) return existing;
+  const detectedAtMs = Date.now();
+  new StateRecoveryIncidentRepository(driver).recordQuarantine({
+    runId,
+    sourceKind: "run_journal",
+    sourcePath: join(
+      driver.projectDir,
+      "sessions",
+      runId,
+      "canonical-rollout-unavailable.jsonl",
+    ),
+    // The schema pins the reason codes; "source_changed" is the closest truth:
+    // the bound source no longer exists.
+    reasonCode: "source_changed",
+    safeDetail: {
+      message:
+        "pending effect review without retained canonical journal evidence; " +
+        "the journal was removed (retention or loss) before the review was settled",
+    },
+    sourceSizeBytes: 0,
+    sourceMtimeMs: detectedAtMs,
+    sourceSha256: MISSING_RECOVERY_SOURCE_SHA256,
+    detectedAtMs,
+  });
+  return getRecoveryRunExclusion(driver, runId)!;
+}
+
 /**
  * Project the bounded set of review-locked runs independently of executable
  * run status. Offline human review may append leased audit evidence after the
@@ -307,9 +350,13 @@ export function recoverPendingEffectReviewsOnStartup(
       continue;
     }
     if (projected.filesScanned === 0) {
-      throw new Error(
-        `run ${row.run_id} has a pending effect review without retained canonical journal evidence`,
-      );
+      // The review's evidence is gone (a swept or lost journal). Refusing to
+      // start here left a home with no daemon at all: every start died on
+      // this run (#2238). Quarantine the run instead, so it stays out of
+      // executable recovery and shows in `agenc state recovery quarantine
+      // list`, and let the daemon start.
+      exclusions.push(quarantineReviewWithoutEvidence(driver, row.run_id));
+      continue;
     }
     filesScanned += projected.filesScanned;
     eventsProjected += projected.eventsProjected;
