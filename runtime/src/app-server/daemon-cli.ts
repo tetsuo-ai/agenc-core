@@ -331,6 +331,11 @@ const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
 // ceiling. Startup cancellation checkpoints bracket that query and every
 // other slow phase, so the parent allowance includes bounded cleanup margin.
 const AGENC_DAEMON_STARTUP_CANCELLATION_TIMEOUT_MS = 60_000;
+// A daemon whose startup was cancelled has served nobody, so its cleanup only
+// has to be safe, not complete: each task gets this long before the run moves
+// on. Without the bound one hung task kept a cancelled daemon alive for eight
+// minutes while every autostart refused to replace it (#2232).
+const AGENC_DAEMON_STARTUP_CANCEL_CLEANUP_TASK_TIMEOUT_MS = 5_000;
 export const AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST =
   DEFAULT_DAEMON_WEBSOCKET_URL.hostname;
 export const AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT = Number(
@@ -392,6 +397,8 @@ export interface RunAgenCDaemonCliOptions {
   readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
   /** @internal Deterministic lifecycle-cleanup interposition test seam. */
   readonly beforeDaemonAuthorityCleanup?: () => void | Promise<void>;
+  /** Test seam: per-task bound for the cleanup of a cancelled startup. */
+  readonly startupCancelCleanupTaskTimeoutMs?: number;
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
   readonly nativePeerCredentialAddonPath?: string;
@@ -1061,6 +1068,7 @@ async function runAgenCDaemonAction(
         beforeDaemonReady: options.beforeDaemonReady,
         beforeDaemonReloadAdoption: options.beforeDaemonReloadAdoption,
         beforeDaemonAuthorityCleanup: options.beforeDaemonAuthorityCleanup,
+        startupCancelCleanupTaskTimeoutMs: options.startupCancelCleanupTaskTimeoutMs,
         runner: options.runner,
         nativePeerCredentialBinding: options.nativePeerCredentialBinding,
         nativePeerCredentialAddonPath: options.nativePeerCredentialAddonPath,
@@ -2829,6 +2837,7 @@ async function runAgenCDaemonForeground(
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
     readonly beforeDaemonAuthorityCleanup?: () => void | Promise<void>;
+    readonly startupCancelCleanupTaskTimeoutMs?: number;
     readonly runner?: AgenCBackgroundAgentRunner;
     readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
     readonly nativePeerCredentialAddonPath?: string;
@@ -2903,6 +2912,7 @@ async function runAgenCDaemonForegroundLocked(
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
     readonly beforeDaemonAuthorityCleanup?: () => void | Promise<void>;
+    readonly startupCancelCleanupTaskTimeoutMs?: number;
     readonly runner?: AgenCBackgroundAgentRunner;
     readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
     readonly nativePeerCredentialAddonPath?: string;
@@ -3306,6 +3316,7 @@ async function runAgenCDaemonForegroundLocked(
       cleanup.register("daemon-heartbeat", disposeHeartbeat);
     }
     let shuttingDown = false;
+    let startupCancelled = false;
     let resolveRpcShutdown!: () => void;
     const rpcShutdownCompleted = new Promise<void>((resolve) => {
       resolveRpcShutdown = resolve;
@@ -4053,7 +4064,8 @@ async function runAgenCDaemonForegroundLocked(
         exitCode = 1;
       } else {
         cleanupContext = { reason: "daemon_shutdown" };
-        exitCode = termination.kind === "startup_cancel" ? 1 : 0;
+        startupCancelled = termination.kind === "startup_cancel";
+        exitCode = startupCancelled ? 1 : 0;
       }
     } finally {
       shuttingDown = true;
@@ -4061,7 +4073,16 @@ async function runAgenCDaemonForegroundLocked(
       // Any reload admitted before the ingress fence must either finish or
       // reject its prepared resources before MCP/socket cleanup begins.
       await reloadChain.catch(() => null);
-      const results = await cleanup.run(cleanupContext);
+      const results = await cleanup.run(
+        cleanupContext,
+        startupCancelled
+          ? {
+              taskTimeoutMs:
+                options.startupCancelCleanupTaskTimeoutMs ??
+                AGENC_DAEMON_STARTUP_CANCEL_CLEANUP_TASK_TIMEOUT_MS,
+            }
+          : {},
+      );
       cleanupHandled = true;
       const failed = results.filter((result) => !result.ok);
       if (failed.length > 0) {

@@ -28,6 +28,49 @@ export interface AgenCCleanupResult {
   readonly error?: unknown;
 }
 
+export interface AgenCCleanupRunOptions {
+  /**
+   * When set, a task that has not settled within this many milliseconds is
+   * recorded as failed with a timeout error and the run moves on to the next
+   * task, instead of waiting on it forever. A cancelled daemon startup uses
+   * this so a hung cleanup cannot keep the process alive for minutes (#2232).
+   */
+  readonly taskTimeoutMs?: number;
+}
+
+export class AgenCCleanupTimeoutError extends Error {
+  constructor(name: string, timeoutMs: number) {
+    super(`cleanup task "${name}" did not finish within ${timeoutMs} ms`);
+    this.name = "AgenCCleanupTimeoutError";
+  }
+}
+
+async function runCleanupTaskWithin(
+  task: AgenCCleanupTask,
+  context: AgenCCleanupContext,
+  name: string,
+  timeoutMs: number | undefined,
+): Promise<void> {
+  if (timeoutMs === undefined) {
+    await task(context);
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => task(context)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new AgenCCleanupTimeoutError(name, timeoutMs)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export type AgenCCleanupTask = (
   context: AgenCCleanupContext,
 ) => void | Promise<void>;
@@ -53,22 +96,24 @@ export class AgenCCleanupRegistry {
 
   async run(
     context: AgenCCleanupContext,
+    options: AgenCCleanupRunOptions = {},
   ): Promise<readonly AgenCCleanupResult[]> {
     if (this.#completed !== null) return this.#completed;
     if (this.#running !== null) return this.#running;
-    this.#running = this.#runOnce(context);
+    this.#running = this.#runOnce(context, options);
     this.#completed = await this.#running;
     return this.#completed;
   }
 
   async #runOnce(
     context: AgenCCleanupContext,
+    options: AgenCCleanupRunOptions,
   ): Promise<readonly AgenCCleanupResult[]> {
     const results: AgenCCleanupResult[] = [];
     const tasks = [...this.#tasks.entries()].reverse();
     for (const [name, task] of tasks) {
       try {
-        await task(context);
+        await runCleanupTaskWithin(task, context, name, options.taskTimeoutMs);
         results.push({ name, ok: true });
       } catch (error) {
         results.push({ name, ok: false, error });

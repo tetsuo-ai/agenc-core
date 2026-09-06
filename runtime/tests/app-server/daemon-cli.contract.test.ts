@@ -2899,6 +2899,59 @@ describe("AgenC daemon CLI", () => {
     }
   });
 
+  // #2232: a startup cancelled during recovery must not linger on a hung
+  // cleanup task; each task is bounded and the daemon exits.
+  it("bounds a hung cleanup task after a cancelled startup instead of lingering", async () => {
+    const agencHome = await tempAgencHome();
+    const baseHost = createHost(agencHome);
+    const io = createIo();
+    const acknowledgeAfterCleanup = vi.fn(async () => {});
+    let requested = false;
+    let resolveRequested!: () => void;
+    const requestedPromise = new Promise<void>((resolve) => {
+      resolveRequested = () => {
+        requested = true;
+        resolve();
+      };
+    });
+    const host: AgenCDaemonCliHost = {
+      ...baseHost,
+      startupGuardReceiver: {
+        requested: requestedPromise,
+        wasRequested: () => requested,
+        acknowledgeAfterCleanup,
+        close: () => {},
+      },
+    };
+    const started = Date.now();
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "run" },
+        {
+          host,
+          io,
+          // The parent cancels while recovery is still running, as in the
+          // incident; recovery itself never finishes.
+          beforeDaemonReady: () => {
+            resolveRequested();
+            return new Promise<void>(() => {});
+          },
+          beforeDaemonAuthorityCleanup: () => new Promise<void>(() => {}),
+          startupCancelCleanupTaskTimeoutMs: 100,
+        },
+      ),
+    ).resolves.toBe(1);
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(io.stderrText()).toContain(
+      'cleanup[daemon-authority] failed: cleanup task "daemon-authority" did not finish within 100 ms',
+    );
+    // The real receiver closes its channel after the first send, so the parent
+    // sees the cleanup verdict: not ok. The foreground wrapper's later call is
+    // a no-op there; this fake records it, hence the first-call assertion.
+    expect(acknowledgeAfterCleanup.mock.calls[0]).toEqual([false]);
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("consumes rejected lifecycle lock diagnostic observers", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

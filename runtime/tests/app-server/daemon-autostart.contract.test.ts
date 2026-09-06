@@ -15,6 +15,7 @@ import {
   resolveAgenCDaemonAutostartConfig,
   shouldAutostartAgenCDaemon,
 } from "./daemon-autostart.js";
+import { resolveAgenCDaemonHeartbeatPath } from "./daemon-heartbeat.js";
 import {
   acquireAgenCDaemonLifecycleLock,
   DEFAULT_DAEMON_READY_TIMEOUT_MS,
@@ -1139,6 +1140,103 @@ autostart = true
       expect(host.spawnedPids).toEqual([]);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  // #2232: an unbound daemon off Linux is never signalled, but one that is
+  // beating (still starting, or leaving after a cancelled startup) is given a
+  // bounded chance to exit before the refusal stands.
+  async function beatingOrphanScenario(params: {
+    readonly heartbeatAgeMs: number;
+    readonly exitsAfterPolls: number | null;
+    readonly waitMs: number;
+  }): Promise<{
+    readonly outcome: PromiseSettledResult<unknown>;
+    readonly signals: NodeJS.Signals[];
+    readonly spawned: number[];
+    readonly cleanup: () => Promise<void>;
+  }> {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const orphanPid = 5320;
+    host.platform = "darwin";
+    host.runningPids.add(orphanPid);
+    const signals: NodeJS.Signals[] = [];
+    host.terminatePid = (_pid, signal = "SIGTERM") => {
+      signals.push(signal);
+    };
+    let polls = 0;
+    const isPidRunning = host.isPidRunning.bind(host);
+    host.isPidRunning = (pid) => {
+      if (pid === orphanPid && params.exitsAfterPolls !== null) {
+        polls += 1;
+        if (polls > params.exitsAfterPolls) host.runningPids.delete(orphanPid);
+      }
+      return isPidRunning(pid);
+    };
+    await writeFile(
+      resolveAgenCDaemonHeartbeatPath(agencHome),
+      JSON.stringify({
+        pid: orphanPid,
+        beat: 7,
+        at: new Date(Date.now() - params.heartbeatAgeMs).toISOString(),
+        uptimeS: 35,
+        rssMb: 400,
+        heapUsedMb: 120,
+        eventLoopLagMs: 1,
+      }),
+    );
+    const [outcome] = await Promise.allSettled([
+      ensureAgenCDaemonAutostart({
+        host,
+        findOrphanDaemonPids: () => [orphanPid],
+        unboundDaemonExitWaitMs: params.waitMs,
+        isReady: () => true,
+      }),
+    ]);
+    return {
+      outcome,
+      signals,
+      spawned: host.spawnedPids,
+      cleanup: () => rm(agencHome, { recursive: true, force: true }),
+    };
+  }
+
+  it("waits for a beating unbound non-Linux daemon to exit, then spawns", async () => {
+    const run = await beatingOrphanScenario({ heartbeatAgeMs: 1_000, exitsAfterPolls: 3, waitMs: 5_000 });
+    try {
+      expect(run.outcome.status).toBe("fulfilled");
+      expect(run.signals).toEqual([]);
+      expect(run.spawned).toHaveLength(1);
+    } finally {
+      await run.cleanup();
+    }
+  });
+
+  it("keeps refusing a beating unbound daemon that never exits within the budget", async () => {
+    const run = await beatingOrphanScenario({ heartbeatAgeMs: 1_000, exitsAfterPolls: null, waitMs: 150 });
+    try {
+      expect(run.outcome.status).toBe("rejected");
+      expect(String((run.outcome as PromiseRejectedResult).reason)).toMatch(
+        /unbound daemon cannot be signalled/u,
+      );
+      expect(run.signals).toEqual([]);
+      expect(run.spawned).toEqual([]);
+    } finally {
+      await run.cleanup();
+    }
+  });
+
+  it("does not wait on a stale heartbeat", async () => {
+    const run = await beatingOrphanScenario({ heartbeatAgeMs: 120_000, exitsAfterPolls: 3, waitMs: 5_000 });
+    try {
+      expect(run.outcome.status).toBe("rejected");
+      expect(String((run.outcome as PromiseRejectedResult).reason)).toMatch(
+        /unbound daemon cannot be signalled/u,
+      );
+      expect(run.spawned).toEqual([]);
+    } finally {
+      await run.cleanup();
     }
   });
 

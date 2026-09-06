@@ -78,6 +78,42 @@ describe("AgenC lifecycle cleanup registry", () => {
     ]);
   });
 
+  // #2232: a cancelled daemon startup bounds each cleanup task so one hung
+  // task cannot keep the process alive.
+  it("records a task that outlives the per-task timeout and keeps going", async () => {
+    const registry = new AgenCCleanupRegistry();
+    const calls: string[] = [];
+    registry.register("first", () => {
+      calls.push("first");
+    });
+    registry.register("hangs", () => new Promise<void>(() => {}));
+    registry.register("last", () => {
+      calls.push("last");
+    });
+    const started = Date.now();
+    const results = await registry.run(
+      { reason: "daemon_shutdown" },
+      { taskTimeoutMs: 20 },
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(calls).toEqual(["last", "first"]);
+    expect(results.map((r) => [r.name, r.ok])).toEqual([
+      ["last", true],
+      ["hangs", false],
+      ["first", true],
+    ]);
+    expect(String(results[1]?.error)).toContain(
+      'cleanup task "hangs" did not finish within 20 ms',
+    );
+  });
+
+  it("does not bound tasks when no timeout is given", async () => {
+    const registry = new AgenCCleanupRegistry();
+    registry.register("slow", () => new Promise<void>((resolve) => setTimeout(resolve, 30)));
+    const results = await registry.run({ reason: "daemon_shutdown" });
+    expect(results).toEqual([{ name: "slow", ok: true }]);
+  });
+
   it("unregisters cleanup tasks before shutdown starts", async () => {
     const registry = new AgenCCleanupRegistry();
     const cleanup = vi.fn();

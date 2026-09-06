@@ -30,7 +30,10 @@ Further restarts wait 250 ms, then 1 s, then 4 s. After the cap it throws
 opens the TUI and shows the `daemon-autostart-failed` status notice. Background
 agents and reconnectable sessions stay unavailable until `agenc daemon start`
 succeeds. Inspect with `agenc daemon status`; stop a wedged process with
-`agenc daemon stop`.
+`agenc daemon stop`. Off Linux an unbound daemon is never signalled; if its
+heartbeat is fresh (still starting, or leaving after a cancelled startup),
+autostart waits up to 30 s for it to exit before refusing. A daemon whose
+startup was cancelled bounds each cleanup task to 5 s so it cannot linger.
 
 Ready-wait timeout for clients that start the daemon
 (`AGENC_DAEMON_READY_TIMEOUT_MS`):
