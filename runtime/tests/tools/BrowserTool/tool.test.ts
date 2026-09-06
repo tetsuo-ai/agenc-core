@@ -110,19 +110,17 @@ describe("Browser tool permissions", () => {
 });
 
 describe("Browser tool validation (no browser launched)", () => {
-  test("rejects an unknown action", async () => {
-    const result = await createBrowserTool().execute({ action: "fly" });
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain("action must be one of");
-    // #2190: refused before the browser was touched, and the result says so.
-    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
-  });
-
-  test("rejects navigate without a url", async () => {
-    const result = await createBrowserTool().execute({ action: "navigate" });
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain("requires a url");
-    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+  test("refuses an unknown action and a navigate without a url before touching the browser", async () => {
+    // #2190: each refusal happens before the browser was touched, and says so.
+    for (const [input, message] of [
+      [{ action: "fly" }, "action must be one of"],
+      [{ action: "navigate" }, "requires a url"],
+    ] as const) {
+      const result = await createBrowserTool().execute({ ...input });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(message);
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
   });
 
   test("rejects click without a ref", async () => {
