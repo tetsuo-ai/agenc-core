@@ -148,6 +148,8 @@ export class UnifiedExecError extends Error {
     | "unknown_process"
     | "stdin_closed"
     | "write_stdin"
+    /** The write itself failed after bytes may have reached the process. */
+    | "stdin_write_failed"
     | "process_limit"
     | "owner_denied";
 

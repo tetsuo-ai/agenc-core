@@ -11,7 +11,11 @@ import {
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
-import { runtimeSandboxForExec } from "./exec-command.js";
+import {
+  confirmedNoEffectDisposition,
+  runtimeSandboxForExec,
+} from "./exec-command.js";
+import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 
 export interface WriteStdinToolConfig {
   readonly cwd?: string;
@@ -31,6 +35,27 @@ function asNumber(value: unknown): number | undefined {
     : undefined;
 }
 
+/**
+ * A failure that happened before any byte reached the process: an argument the
+ * tool rejected, a session it could not find or reach, a closed stdin, or a
+ * sandbox boundary it could not build. These carry a confirmed no-effect
+ * disposition; without it the admission layer files the error as an unknown
+ * outcome, poisons the live effect, and blocks every side-effecting tool of the
+ * session until an operator runs `/resolve` (desktop soak, 2026-09-06). Only a
+ * write that failed after it started stays undecided.
+ */
+function preWriteFailure(error: unknown, message: string): Partial<ToolResult> {
+  if (error instanceof UnifiedExecError && error.code === "stdin_write_failed") {
+    return {};
+  }
+  return {
+    effectDisposition: confirmedNoEffectDisposition(
+      "tool:system.write-stdin:pre-write-error",
+      message,
+    ),
+  };
+}
+
 function errorResult(error: unknown): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
   return {
@@ -39,6 +64,20 @@ function errorResult(error: unknown): ToolResult {
       ...(error instanceof UnifiedExecError ? { code: error.code } : {}),
     }),
     isError: true,
+    ...(error instanceof UnifiedExecError || error instanceof SandboxExecutionError
+      ? preWriteFailure(error, message)
+      : {}),
+  };
+}
+
+function argumentErrorResult(message: string): ToolResult {
+  return {
+    content: safeStringify({ error: message }),
+    isError: true,
+    effectDisposition: confirmedNoEffectDisposition(
+      "tool:system.write-stdin:argument-error",
+      message,
+    ),
   };
 }
 export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
@@ -96,6 +135,41 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           type: "number",
           description: "Maximum output tokens to return.",
         },
+        sandbox_permissions: {
+          type: "string",
+          enum: [
+            "default",
+            "require_escalated",
+            "with_additional_permissions",
+          ],
+          description:
+            "Sandbox escalation mode. A session started by exec_command with sandbox_permissions runs in that sandbox; pass the same value here to reach it.",
+        },
+        additional_permissions: {
+          type: "object",
+          properties: {
+            network: {
+              type: "object",
+              properties: { enabled: { type: "boolean" } },
+              additionalProperties: false,
+            },
+            file_system: {
+              type: "object",
+              properties: {
+                read: { type: "array", items: { type: "string" } },
+                write: { type: "array", items: { type: "string" } },
+              },
+              additionalProperties: false,
+            },
+          },
+          additionalProperties: false,
+          description:
+            "Scoped permissions to request alongside sandbox_permissions \"with_additional_permissions\".",
+        },
+        justification: {
+          type: "string",
+          description: "Why elevated execution is needed, when applicable.",
+        },
       },
       required: ["session_id"],
       additionalProperties: false,
@@ -103,16 +177,11 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
       if (Object.prototype.hasOwnProperty.call(args, "process_id")) {
-        return errorResult("unknown field `process_id`");
+        return argumentErrorResult("unknown field `process_id`");
       }
       const sessionId = asNumber(args.session_id);
       if (sessionId === undefined) {
-        return {
-          content: safeStringify({
-            error: "session_id must be a number",
-          }),
-          isError: true,
-        };
+        return argumentErrorResult("session_id must be a number");
       }
       const chars = asString(args.chars) ?? "";
       if (chars.trim().length > 0) {
@@ -123,15 +192,18 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           ...shellWorkspaceMutationPermission(args),
         });
         if (workspaceWriteDecision.blocked) {
+          const blockedMessage =
+            workspaceWriteDecision.message ??
+            "Shell workspace write policy blocked the input.";
           return {
-            content: safeStringify({
-              error:
-                workspaceWriteDecision.message ??
-                "Shell workspace write policy blocked the input.",
-            }),
+            content: safeStringify({ error: blockedMessage }),
             isError: true,
             metadata: buildRecoverableToolFailureMetadata(
               "shell_workspace_write_policy",
+            ),
+            effectDisposition: confirmedNoEffectDisposition(
+              "tool:system.write-stdin:workspace-write-policy",
+              blockedMessage,
             ),
           };
         }

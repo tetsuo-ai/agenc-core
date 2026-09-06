@@ -678,7 +678,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     ) {
       throw new UnifiedExecError(
         "write_stdin",
-        "write_stdin requires an existing session with a compatible sandbox profile",
+        "write_stdin requires an existing session with a compatible sandbox profile; " +
+          "a session started with sandbox_permissions (an escalated or widened sandbox) " +
+          "is reached by passing the same sandbox_permissions, and justification, to write_stdin",
       );
     }
     if (input.length > 0) {
@@ -710,7 +712,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         }
         throw error instanceof UnifiedExecError
           ? error
-          : new UnifiedExecError("write_stdin", "failed to write to stdin");
+          : new UnifiedExecError("stdin_write_failed", "failed to write to stdin");
       }
     }
 

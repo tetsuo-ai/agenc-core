@@ -283,7 +283,7 @@ function errorResult(error: unknown): ToolResult {
   };
 }
 
-function confirmedNoEffectDisposition(
+export function confirmedNoEffectDisposition(
   evidenceRef: string,
   evidenceMaterial: string,
 ) {
