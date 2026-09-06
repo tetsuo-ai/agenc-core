@@ -252,6 +252,21 @@ export function repeatedFailingCallStopExplanation(
 }
 
 /**
+ * Whether `blockRepeatedFailingCall` would refuse this call, decided without
+ * emitting anything. The streaming dispatch path asks this before it queues a
+ * call, so a call that is about to be refused never runs, and the refusal is
+ * recorded once by the post-stream pass as the call's only result.
+ */
+export function isRepeatedFailingCall(
+  state: TurnState,
+  call: LLMToolCall,
+): boolean {
+  return (
+    identicalFailureRun(state, call).count >= REPEATED_FAILURE_BLOCK_THRESHOLD
+  );
+}
+
+/**
  * Refuse a call that has already failed identically
  * `REPEATED_FAILURE_BLOCK_THRESHOLD` times in this turn. Returns the
  * synthetic error result to record in place of a dispatch, or null when the

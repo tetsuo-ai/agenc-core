@@ -61,6 +61,7 @@ import {
   appendRepeatToolAdvisory,
   blockRepeatedFailingCall,
   repeatedFailingCallStopExplanation,
+  isRepeatedFailingCall,
 } from "./repeat-tool-advisory.js";
 import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
@@ -602,6 +603,11 @@ export function queueStreamingToolCall(
     .getToolStates()
     .some((state) => state.id === call.id);
   if (alreadyQueued) return false;
+  // A call the repeat guard is about to refuse must not run. Leaving it to
+  // the post-stream pass records the refusal as the call's single result;
+  // dispatching it here raced that refusal with the real result under one
+  // call id, and the rollout's tool-pair validator rejected the second.
+  if (state !== undefined && isRepeatedFailingCall(state, call)) return false;
   if (
     call.name === EDITOR_PROPOSAL_TOOL_NAME &&
     ctx?.editorInteraction === undefined
@@ -965,7 +971,14 @@ export async function executeTools(
 
     // Hard stop for a byte-identical call that already failed the same way
     // three times this turn: refuse it instead of burning another round trip.
-    const blocked = blockRepeatedFailingCall(state, session, call);
+    // A call the streaming path already dispatched has a result on the way;
+    // refusing it here would record a second result for the same call id.
+    const alreadyDispatched = executor
+      .getToolStates()
+      .some((toolState) => toolState.id === call.id);
+    const blocked = alreadyDispatched
+      ? null
+      : blockRepeatedFailingCall(state, session, call);
     if (blocked !== null) {
       session.emit({
         id: session.nextInternalSubId(),

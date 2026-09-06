@@ -1223,6 +1223,125 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     });
   });
 
+  test("the streaming path does not dispatch a call the repeat guard is about to refuse", async () => {
+    const denial =
+      '{"error":"sandbox escalation requires approval, but approval policy is never"}';
+    let executed = 0;
+    const args = JSON.stringify({ cmd: "npm install" });
+    const call: LLMToolCall = { id: "exec-4", name: "exec_command", arguments: args };
+    const { state, session, warnings, emitted, run } = singleToolRun(
+      {
+        name: "exec_command",
+        description: "runs a command",
+        inputSchema: { type: "object" },
+        metadata: { family: "shell", source: "builtin", mutating: true },
+        execute: async () => {
+          executed += 1;
+          return { content: denial, isError: true };
+        },
+      },
+      call,
+    );
+    state.completedToolResults = [1, 2, 3].map((n) => ({
+      callId: `exec-${n}`,
+      toolName: "exec_command",
+      arguments: args,
+      content: denial,
+      isError: true,
+    }));
+    const executor = ensureStreamingToolExecutor(state, mkCtx(), session);
+
+    // The fourth identical call streams in: it must not start.
+    expect(
+      queueStreamingToolCall(
+        executor,
+        { type: "tool_use", id: call.id, name: call.name, input: {} },
+        call,
+        session,
+        mkCtx(),
+        state,
+      ),
+    ).toBe(false);
+    expect(executor.getToolStates()).toHaveLength(0);
+
+    await run();
+
+    expect(executed).toBe(0);
+    expect(
+      warnings.filter((cause) => cause === "repeated_failing_call_blocked"),
+    ).toHaveLength(1);
+    // One result for the call id: the refusal, recorded by the post-stream pass.
+    expect(
+      emitted.filter(
+        (event) =>
+          event.msg.type === "tool_call_completed" &&
+          event.msg.payload?.callId === call.id,
+      ),
+    ).toHaveLength(1);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.content).toContain("will not run again");
+  });
+
+  test("a call the streaming path already dispatched is not refused again by the post-stream pass", async () => {
+    const denial =
+      '{"error":"sandbox escalation requires approval, but approval policy is never"}';
+    let executed = 0;
+    const args = JSON.stringify({ cmd: "npm install" });
+    const call: LLMToolCall = { id: "exec-4", name: "exec_command", arguments: args };
+    const { state, session, warnings, emitted, run } = singleToolRun(
+      {
+        name: "exec_command",
+        description: "runs a command",
+        inputSchema: { type: "object" },
+        metadata: { family: "shell", source: "builtin", mutating: true },
+        execute: async () => {
+          executed += 1;
+          return { content: denial, isError: true };
+        },
+      },
+      call,
+    );
+    const failures = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        callId: `exec-${i + 1}`,
+        toolName: "exec_command",
+        arguments: args,
+        content: denial,
+        isError: true,
+      }));
+    // Two identical failures so far: the guard lets the call stream in.
+    state.completedToolResults = failures(2);
+    const executor = ensureStreamingToolExecutor(state, mkCtx(), session);
+    expect(
+      queueStreamingToolCall(
+        executor,
+        { type: "tool_use", id: call.id, name: call.name, input: {} },
+        call,
+        session,
+        mkCtx(),
+        state,
+      ),
+    ).toBe(true);
+    // A third identical failure lands before the post-stream pass reaches the call.
+    state.completedToolResults = failures(3);
+
+    await run();
+
+    // The dispatched call's own result is the only result for its id.
+    expect(executed).toBe(1);
+    expect(warnings).not.toContain("repeated_failing_call_blocked");
+    expect(
+      emitted.filter(
+        (event) =>
+          event.msg.type === "tool_call_completed" &&
+          event.msg.payload?.callId === call.id,
+      ),
+    ).toHaveLength(1);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.content).toContain("approval policy is never");
+    expect(state.messages[0]?.content).not.toContain("will not run again");
+  });
+
   test("identical calls that keep succeeding are never refused", async () => {
     let executed = 0;
     const args = JSON.stringify({ file_path: "src/app.ts" });
