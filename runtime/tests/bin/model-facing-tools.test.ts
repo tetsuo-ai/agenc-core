@@ -4495,7 +4495,9 @@ describe("model-facing tools", () => {
         message: "Wait completed.",
         timed_out: false,
       });
-      expect(waitForMailboxChange).toHaveBeenCalledWith(30_000);
+      // The wait now also receives the ownership slot and the turn's abort
+      // signal (#2201); neither is set when the executor injected no signal.
+      expect(waitForMailboxChange).toHaveBeenCalledWith(30_000, undefined, undefined);
       expect(control.listAgents).not.toHaveBeenCalled();
       expect(control.subscribeStatus).not.toHaveBeenCalled();
       expect(
