@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { dirname, relative, resolve as resolvePath } from "node:path";
 
 import type { Tool } from "../types.js";
+import { preEffectRefusal } from "../results.js";
 import { collectWorkspaceLanguages } from "./code-intel.js";
 import {
   codingToolMetadata,
@@ -408,9 +409,12 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     },
     async execute(args) {
       const worktreePath = toOptionalString(args.worktreePath);
-      if (!worktreePath) return errorResult("worktreePath must be a non-empty string");
+      // Refusals before git runs carry a no-effect verdict (#2190).
+      if (!worktreePath) {
+        return preEffectRefusal("system.gitWorktree", "worktreePath must be a non-empty string");
+      }
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
-      if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
+      if (typeof repoRoot !== "string") return preEffectRefusal("system.gitWorktree", repoRoot.error);
       const allowedPaths = resolveToolAllowedPaths(config.allowedPaths, args);
       const safeWorktreePath = await safePath(worktreePath, allowedPaths);
       if (!safeWorktreePath.safe) {
@@ -505,9 +509,12 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     },
     async execute(args) {
       const worktreePath = toOptionalString(args.worktreePath);
-      if (!worktreePath) return errorResult("worktreePath must be a non-empty string");
+      // Refusals before git runs carry a no-effect verdict (#2190).
+      if (!worktreePath) {
+        return preEffectRefusal("system.gitWorktree", "worktreePath must be a non-empty string");
+      }
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
-      if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
+      if (typeof repoRoot !== "string") return preEffectRefusal("system.gitWorktree", repoRoot.error);
       const allowedPaths = resolveToolAllowedPaths(config.allowedPaths, args);
       const safeWorktreePath = await safePath(worktreePath, allowedPaths);
       if (!safeWorktreePath.safe) {
@@ -571,7 +578,9 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     },
     async execute(args) {
       const worktreePath = toOptionalString(args.worktreePath);
-      if (!worktreePath) return errorResult("worktreePath must be a non-empty string");
+      if (!worktreePath) {
+        return preEffectRefusal("system.gitWorktree", "worktreePath must be a non-empty string");
+      }
       const allowedPaths = resolveToolAllowedPaths(config.allowedPaths, args);
       const safeWorktreePath = await safePath(worktreePath, allowedPaths);
       if (!safeWorktreePath.safe) {

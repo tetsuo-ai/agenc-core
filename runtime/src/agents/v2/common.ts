@@ -153,16 +153,28 @@ export function strictArgs(
   ]);
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) {
-      return json({ error: `unknown field \`${key}\`` }, true);
+      return refusal({ error: `unknown field \`${key}\`` });
     }
   }
   for (const key of opts.required ?? []) {
     const value = args[key];
     if (typeof value !== "string") {
-      return json({ error: `${key} is required` }, true);
+      return refusal({ error: `${key} is required` });
     }
   }
   return null;
+}
+
+/**
+ * A refusal made before the tool touched anything. A bare error from a
+ * mutating agent tool is filed as an unknown outcome and gates the whole
+ * session behind /resolve (#2190).
+ */
+function refusal(content: Record<string, unknown>): ToolResult {
+  return validationErrorToolResult(
+    "tool:agents:validation",
+    JSON.stringify(content),
+  );
 }
 
 export function getSessionOrError(
@@ -170,7 +182,7 @@ export function getSessionOrError(
 ): Session | ToolResult {
   const session = opts.getSession();
   if (session === null) {
-    return json({ error: "tool invoked before session was initialized" }, true);
+    return refusal({ error: "tool invoked before session was initialized" });
   }
   return session;
 }

@@ -10,6 +10,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../tools/types.js";
+import { preEffectRefusal } from "../tools/results.js";
 import { safeStringify } from "../tools/types.js";
 import type { SessionConfiguration } from "../session/turn-context.js";
 import {
@@ -70,6 +71,9 @@ export interface CreateRequestLedgerTransferToolOptions {
   readonly now?: () => number;
   readonly actionTtlMs?: number;
 }
+
+const refuse = (message: string): ToolResult =>
+  preEffectRefusal("request_ledger_transfer", message);
 
 function errorResult(message: string): ToolResult {
   return { content: safeStringify({ error: message }), isError: true };
@@ -312,16 +316,16 @@ export function createRequestLedgerTransferTool(
     timeoutBehavior: "tool",
     async execute(args: Record<string, unknown>): Promise<ToolResult> {
       const session = opts.getSession();
-      if (session === null) return errorResult("request_ledger_transfer requires an active session");
+      if (session === null) return refuse("request_ledger_transfer requires an active session");
       if (isSubagentSource(session.sessionConfiguration.sessionSource)) {
-        return errorResult("request_ledger_transfer can only be used by the root agent");
+        return refuse("request_ledger_transfer can only be used by the root agent");
       }
       const rootHumanTurn = session.currentRootHumanTurn();
       if (
         rootHumanTurn === null ||
         !hasExactLedgerMention(rootHumanTurn.text)
       ) {
-        return errorResult(
+        return refuse(
           "request_ledger_transfer requires an exact @ledger token in the active root human turn",
         );
       }
@@ -330,10 +334,10 @@ export function createRequestLedgerTransferTool(
       try {
         input = parseInput(args);
       } catch (error) {
-        return errorResult(error instanceof Error ? error.message : String(error));
+        return refuse(error instanceof Error ? error.message : String(error));
       }
       if (!(await session.claimLedgerTransferAuthorization(rootHumanTurn.turnId))) {
-        return errorResult(
+        return refuse(
           "request_ledger_transfer authorization was already consumed for this human turn",
         );
       }
@@ -344,7 +348,7 @@ export function createRequestLedgerTransferTool(
       const responseNonce = opts.createResponseNonce?.() ??
         randomBytes(32).toString("base64url");
       if (!RESPONSE_NONCE.test(responseNonce)) {
-        return errorResult("failed to generate a valid mobile Ledger response challenge");
+        return refuse("failed to generate a valid mobile Ledger response challenge");
       }
       const clientAction: LedgerSolanaTransferClientAction = {
         type: "ledger_solana_transfer_v1",

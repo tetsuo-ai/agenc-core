@@ -15,6 +15,7 @@
  */
 
 import type { Tool, ToolResult } from "../tools/types.js";
+import { preEffectRefusal } from "../tools/results.js";
 import { safeStringify, type ToolExecutionInjectedArgs } from "../tools/types.js";
 import type {
   ManagedFeatures,
@@ -66,6 +67,9 @@ function json(content: unknown, isError?: boolean): ToolResult {
     ...(isError ? { isError: true } : {}),
   };
 }
+
+const refuse = (message: string): ToolResult =>
+  preEffectRefusal("request_user_input", message);
 
 function err(message: string): ToolResult {
   return json({ error: message }, true);
@@ -300,16 +304,16 @@ export function createRequestUserInputTool(
     async execute(args: Record<string, unknown>): Promise<ToolResult> {
       const liveSession = opts.getSession();
       if (liveSession === null) {
-        return err("request_user_input requires an active session");
+        return refuse("request_user_input requires an active session");
       }
       if (isSubagentSession(liveSession.sessionConfiguration.sessionSource)) {
-        return err("request_user_input can only be used by the root thread");
+        return refuse("request_user_input can only be used by the root thread");
       }
       const modes = requestUserInputAvailableModes(liveSession.features);
       const mode = liveSession.permissionModeRegistry.current().mode;
       const unavailable = requestUserInputUnavailableMessage(mode, modes);
       if (unavailable !== null) {
-        return err(unavailable);
+        return refuse(unavailable);
       }
 
       let normalized: RequestUserInputArgs;

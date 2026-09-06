@@ -14,6 +14,15 @@ export function plainTextErrorToolResult(message: string): ToolResult {
  * (#1751 — a misfired ExitPlanMode blocked every later side-effecting call).
  * Only use this for paths that provably touched nothing.
  */
+/**
+ * A refusal a mutating tool makes before it touches anything, named after the
+ * tool. Without the disposition the executor files the error as an unknown
+ * outcome and gates the whole session behind /resolve (#2190).
+ */
+export function preEffectRefusal(toolName: string, message: string): ToolResult {
+  return validationErrorToolResult(`tool:${toolName}:validation`, message);
+}
+
 export function validationErrorToolResult(
   evidenceRef: string,
   message: string,

@@ -61,6 +61,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../tools/types.js";
+import { validationErrorToolResult } from "../tools/results.js";
 import { safeStringify } from "../tools/types.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "../tools/system/notebook-edit.js";
@@ -238,6 +239,14 @@ function json(content: unknown, isError?: boolean): ToolResult {
     content: safeStringify(content),
     ...(isError ? { isError: true } : {}),
   };
+}
+
+/** A refusal made before the tool touched anything; see preEffectRefusal. */
+function refusal(content: unknown): ToolResult {
+  return validationErrorToolResult(
+    "tool:model-facing:validation",
+    safeStringify(content),
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -1585,13 +1594,13 @@ function strictArgs(
   ]);
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) {
-      return json({ error: `unknown field \`${key}\`` }, true);
+      return refusal({ error: `unknown field \`${key}\`` });
     }
   }
   for (const key of opts.required ?? []) {
     const value = args[key];
     if (typeof value !== "string") {
-      return json({ error: `${key} is required` }, true);
+      return refusal({ error: `${key} is required` });
     }
   }
   return null;
@@ -1652,7 +1661,7 @@ function currentAgentContext(
 function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
   const session = opts.getSession();
   if (session === null) {
-    return json({ error: "tool invoked before session was initialized" }, true);
+    return refusal({ error: "tool invoked before session was initialized" });
   }
   return session;
 }
@@ -4667,10 +4676,7 @@ function createCronAndWorkflowTools(
       execute: async (args) => {
         const conversationId = opts.getSession()?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
-          return json(
-            { error: "CronCreate requires an active owning conversation" },
-            true,
-          );
+          return refusal({ error: "CronCreate requires an active owning conversation" });
         }
         const schedule = stringValue(args.cron) ?? stringValue(args.schedule);
         const prompt = stringValue(args.prompt);
@@ -4751,10 +4757,7 @@ function createCronAndWorkflowTools(
       execute: async (args) => {
         const conversationId = opts.getSession()?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
-          return json(
-            { error: "CronDelete requires an active owning conversation" },
-            true,
-          );
+          return refusal({ error: "CronDelete requires an active owning conversation" });
         }
         const id = stringValue(args.id);
         if (!id) return json({ error: "id is required" }, true);
@@ -4789,10 +4792,7 @@ function createCronAndWorkflowTools(
       execute: async () => {
         const conversationId = opts.getSession()?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
-          return json(
-            { error: "CronList requires an active owning conversation" },
-            true,
-          );
+          return refusal({ error: "CronList requires an active owning conversation" });
         }
         const { listAllCronTasks } = await import("../utils/cronTasks.js");
         const tasks = await listAllCronTasks(
@@ -4838,18 +4838,16 @@ function createCronAndWorkflowTools(
             ],
           });
         } catch (error) {
-          return json(
-            {
-              error: error instanceof Error ? error.message : String(error),
-              ...(typeof error === "object" &&
-              error !== null &&
-              "code" in error &&
-              typeof error.code === "string"
-                ? { code: error.code }
-                : {}),
-            },
-            true,
-          );
+          // Validation and manifest loading precede the workflow itself.
+          return refusal({
+            error: error instanceof Error ? error.message : String(error),
+            ...(typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            typeof error.code === "string"
+              ? { code: error.code }
+              : {}),
+          });
         }
         const { document } = loaded;
         const name = invocation.name;
