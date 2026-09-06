@@ -42,6 +42,7 @@ import {
   resolveAgenCDaemonHeartbeatPath,
 } from "./daemon-heartbeat.js";
 import {
+  acquireAgenCDaemonLifecycleLock,
   AGENC_DAEMON_PID_MAX_BYTES,
   AGENC_DAEMON_READY_TIMEOUT_MS_ENV,
   AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST,
@@ -49,27 +50,27 @@ import {
   AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT,
   AGENC_DAEMON_WEBSOCKET_PORT_ENV,
   AgenCDaemonRpcShutdownCoordinator,
-  acquireAgenCDaemonLifecycleLock,
+  createAgenCDaemonRealtimeHeaderResolver,
   DEFAULT_DAEMON_READY_TIMEOUT_MS,
   defaultAgenCDaemonPidPath,
-  resolveAgenCDaemonReadyTimeoutMs,
   ensureAgenCDaemonCookie,
   formatAgenCDaemonCliHelpText,
-  createAgenCDaemonRealtimeHeaderResolver,
+  formatAgenCDaemonStateDatabasesLine,
   parseAgenCDaemonCliArgs,
   readAgenCDaemonPid,
-  resolveAgenCDaemonRealtimeBaseUrl,
-  resolveAgenCDaemonWebSocketListenOptions,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
+  resolveAgenCDaemonReadyTimeoutMs,
+  resolveAgenCDaemonRealtimeBaseUrl,
   resolveAgenCDaemonSnapshotPath,
   resolveAgenCDaemonSocketPath,
+  resolveAgenCDaemonWebSocketListenOptions,
   runAgenCDaemonAuthorityCleanup,
   runAgenCDaemonCli,
-  validateAgenCDaemonWebSocketOrigin,
-  writeAgenCDaemonPid,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
+  validateAgenCDaemonWebSocketOrigin,
+  writeAgenCDaemonPid,
 } from "./daemon-cli.js";
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -1481,6 +1482,73 @@ describe("AgenC daemon CLI", () => {
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
+  });
+
+  // #2228: the project state databases on disk are part of status, so a home
+  // whose database keeps growing shows it before every start gets slow.
+  it("status reports the project state databases on disk", async () => {
+    const agencHome = await tempAgencHome();
+    // Pin the Linux branch so the pid is proven by the injected inspector on
+    // every host; off Linux an unbound pid is indeterminate by design.
+    const host = { ...createHost(agencHome), platform: "linux" as const };
+    const io = createIo();
+    host.runningPids.add(4555);
+    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), 4555);
+    const projects = join(agencHome, "projects");
+    for (const name of ["alpha", "beta", "empty"]) {
+      await mkdir(join(projects, name), { recursive: true });
+    }
+    const mebibyte = 1024 * 1024;
+    await writeFile(join(projects, "alpha", "agenc-state_1.sqlite"), Buffer.alloc(3 * mebibyte));
+    await writeFile(join(projects, "alpha", "agenc-state_1.sqlite-wal"), Buffer.alloc(mebibyte));
+    await writeFile(join(projects, "beta", "agenc-state_1.sqlite"), Buffer.alloc(mebibyte));
+
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "status" },
+        {
+          host,
+          io,
+          // The footprint comes from disk, so it is reported even when
+          // health.stats is unavailable.
+          requestHealthStats: vi.fn(async () => {
+            throw new Error("health.stats unavailable");
+          }),
+          inspectLegacyDaemonProcess: inspectLegacyTestDaemon,
+          waitForDaemonReady: async () => true,
+        },
+      ),
+    ).resolves.toBe(0);
+
+    const out = io.stdoutText();
+    expect(out).toContain("AgenC daemon running (pid 4555)");
+    expect(out).toMatch(
+      /databases: \d+ project state DB\(s\), [\d.]+ MiB on disk \(largest 4\.0 MiB: alpha\)/u,
+    );
+    expect(out).not.toContain("uptime:");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("omits the databases line when no project has a state database", () => {
+    expect(
+      formatAgenCDaemonStateDatabasesLine({
+        projects: 0,
+        totalBytes: 0,
+        largestBytes: 0,
+        largestProject: null,
+      }),
+    ).toBeNull();
+    expect(
+      formatAgenCDaemonStateDatabasesLine({
+        projects: 196,
+        totalBytes: 1_235_812_352,
+        largestBytes: 693_108_736,
+        largestProject: "Users-tetsuoarena-claude-agenc-work-be0c0dda",
+      }),
+    ).toBe(
+      "  databases: 196 project state DB(s), 1178.6 MiB on disk (largest 661.0 MiB: Users-tetsuoarena-claude-agenc-work-be0c0dda)",
+    );
   });
 
   it("status enriches the running line with health.stats over the socket", async () => {

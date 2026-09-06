@@ -23,7 +23,7 @@ import {
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { resolveHomeContext } from "../config/home.js";
 import {
   AgenCDaemonAgentManager,
@@ -2243,6 +2243,20 @@ async function statusAgenCDaemon(
       // Leave the pid-only line in place; the daemon is up but health.stats
       // is unavailable (older daemon, missing cookie, socket race, timeout).
     }
+    // The project state databases are read from disk, not over the socket, so
+    // their footprint is reported even when health.stats is unavailable. A
+    // database that keeps growing is how a long-lived home gets slow to start
+    // and heavy to recover (#2228); this line makes that growth visible.
+    try {
+      const databasesLine = formatAgenCDaemonStateDatabasesLine(
+        measureAgenCDaemonStateDatabases(
+          resolveAgenCDaemonHome(host.env, host.userHome),
+        ),
+      );
+      if (databasesLine !== null) io.stdout.write(`${databasesLine}\n`);
+    } catch {
+      // A projects directory that cannot be listed is not a status failure.
+    }
     return 0;
   }
   io.stdout.write("AgenC daemon stopped\n");
@@ -2450,6 +2464,60 @@ export function formatAgenCDaemonHealthStatsLines(
     );
   }
   return lines;
+}
+
+export interface AgenCDaemonStateDatabaseFootprint {
+  /** Projects whose state database (plus WAL) occupies any bytes on disk. */
+  readonly projects: number;
+  readonly totalBytes: number;
+  readonly largestBytes: number;
+  /** Project directory name of the largest database, when there is one. */
+  readonly largestProject: string | null;
+}
+
+function fileSizeOrZero(path: string): number {
+  return statSync(path, { throwIfNoEntry: false })?.size ?? 0;
+}
+
+/**
+ * Sum every project's state database and its WAL under `<home>/projects`.
+ * Read from disk so `status` can report it without the daemon's help.
+ */
+export function measureAgenCDaemonStateDatabases(
+  daemonHome: string,
+  sizeOf: (path: string) => number = fileSizeOrZero,
+): AgenCDaemonStateDatabaseFootprint {
+  let projects = 0;
+  let totalBytes = 0;
+  let largestBytes = 0;
+  let largestProject: string | null = null;
+  for (const paths of discoverStateDatabasePaths(daemonHome)) {
+    const bytes =
+      sizeOf(paths.stateDbPath) + sizeOf(`${paths.stateDbPath}-wal`);
+    if (bytes === 0) continue;
+    projects += 1;
+    totalBytes += bytes;
+    if (bytes > largestBytes) {
+      largestBytes = bytes;
+      largestProject = basename(paths.projectDir);
+    }
+  }
+  return { projects, totalBytes, largestBytes, largestProject };
+}
+
+/** The status line for the footprint, or null when no project has a database. */
+export function formatAgenCDaemonStateDatabasesLine(
+  footprint: AgenCDaemonStateDatabaseFootprint,
+): string | null {
+  if (footprint.projects === 0) return null;
+  const largest =
+    footprint.largestProject === null
+      ? ""
+      : ` (largest ${formatDaemonMebibytes(footprint.largestBytes)}: ${footprint.largestProject})`;
+  return (
+    `  databases: ${footprint.projects} project state DB(s), ` +
+    `${formatDaemonMebibytes(footprint.totalBytes)} on disk${largest}`
+  );
 }
 
 function formatDaemonUptime(uptimeMs: number): string {

@@ -67,8 +67,8 @@ agenc daemon restart
 agenc daemon stop
 ```
 
-`agenc daemon status` distinguishes three states. `running (pid N)` with uptime
-and memory: the daemon is bound and answering. `alive but not yet bound (pid N)`
+`agenc daemon status` distinguishes three states. `running (pid N)` with uptime,
+memory and the project state databases on disk (count, total, largest): the daemon is bound and answering. `alive but not yet bound (pid N)`
 with its last heartbeat: the process is beating but has not published its
 identity record, because it is still starting (recovering its agent runs, which
 takes a while under memory pressure) or the record was removed; lifecycle
