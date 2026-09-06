@@ -838,6 +838,79 @@ export function installAgenCDaemonLogSink(options: {
   };
 }
 
+type DaemonExitDiagnosticsProcess = Pick<NodeJS.Process, "on" | "off" | "pid" | "kill">;
+
+const DAEMON_EXIT_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+
+/**
+ * Record how the detached daemon's process ends, in its own log, before the
+ * process is gone.
+ *
+ * The soak saw a daemon exit mid-turn with no line in `daemon.log`, no crash
+ * report and nothing in the system log; the app autostarted a replacement in
+ * three seconds and the only trace was a turn that ended with "connection
+ * closed" (#2199). Node prints an uncaught exception to stderr and dies on a
+ * signal without a word; neither reaches the log sink. This writes one line
+ * for each: the exit code on `exit`, the signal on SIGTERM/SIGINT/SIGHUP
+ * (then re-raised so the default termination and its exit code stand), and
+ * the error with its stack on an uncaught exception or unhandled rejection
+ * (then exit 1, as node would). Writes never throw: a sink already closed by
+ * cleanup swallows the line rather than failing the exit.
+ */
+export function installAgenCDaemonExitDiagnostics(options: {
+  readonly sink: Pick<SizeCappedFileLogSink, "write">;
+  readonly proc?: DaemonExitDiagnosticsProcess;
+  readonly now?: () => string;
+  readonly exit?: (code: number) => void;
+}): () => void {
+  const proc = options.proc ?? (process as DaemonExitDiagnosticsProcess);
+  const now = options.now ?? (() => new Date().toISOString());
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const line = (text: string): void => {
+    try {
+      options.sink.write(`agenc: daemon ${text} (pid ${proc.pid}) at ${now()}\n`);
+    } catch {
+      /* the sink may already be closed; the exit must not fail on its own log */
+    }
+  };
+  const describe = (thrown: unknown): string =>
+    thrown instanceof Error ? (thrown.stack ?? thrown.message) : String(thrown);
+  const onExit = (code: number): void => line(`process exit code=${code}`);
+  const onUncaught = (error: unknown): void => {
+    line(`uncaught exception: ${describe(error)}`);
+    exit(1);
+  };
+  const onRejection = (reason: unknown): void => {
+    line(`unhandled rejection: ${describe(reason)}`);
+    exit(1);
+  };
+  const signalHandlers = new Map<NodeJS.Signals, () => void>();
+  const removeSignalHandlers = (): void => {
+    for (const [signal, handler] of signalHandlers) proc.off(signal, handler);
+    signalHandlers.clear();
+  };
+  for (const signal of DAEMON_EXIT_SIGNALS) {
+    const handler = (): void => {
+      line(`received ${signal}`);
+      // Re-raise with our handlers gone so the default termination, and the
+      // exit code that goes with it, stands.
+      removeSignalHandlers();
+      proc.kill(proc.pid, signal);
+    };
+    signalHandlers.set(signal, handler);
+    proc.on(signal, handler);
+  }
+  proc.on("exit", onExit);
+  proc.on("uncaughtException", onUncaught);
+  proc.on("unhandledRejection", onRejection);
+  return () => {
+    removeSignalHandlers();
+    proc.off("exit", onExit);
+    proc.off("uncaughtException", onUncaught);
+    proc.off("unhandledRejection", onRejection);
+  };
+}
+
 function safeStringifyLogArg(arg: unknown): string {
   if (arg instanceof Error) return arg.stack ?? arg.message;
   try {
@@ -3098,7 +3171,11 @@ async function runAgenCDaemonForegroundLocked(
         path: resolveAgenCDaemonLogPath(host.env, host.userHome),
       });
       if (logSink !== null) {
+        const disposeExitDiagnostics = installAgenCDaemonExitDiagnostics({
+          sink: logSink.sink,
+        });
         cleanup.register("daemon-log-sink", () => {
+          disposeExitDiagnostics();
           logSink.dispose();
         });
       }
