@@ -14,7 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createDaemonWorkflowController } from "../../src/app-server/workflow/daemon-wiring.js";
+import {
+  createDaemonWorkflowController,
+  resolveDaemonDefaultReviewerModel,
+} from "../../src/app-server/workflow/daemon-wiring.js";
 import type {
   WorkflowAgentSpawner,
   WorkflowChildOutcome,
@@ -316,7 +319,7 @@ function makeSeams(): WorkflowSessionSeams & {
   };
 }
 
-function makeWiring() {
+function makeWiring(options: { readonly config?: () => { readonly model?: string } } = {}) {
   const admission = new FakeAdmission();
   const kernel = {
     bindClient: ({ scope }: { scope: { runId: string } }) => {
@@ -332,6 +335,7 @@ function makeWiring() {
     warn: () => {},
     env: {},
     argv: ["node", "agenc"],
+    ...(options.config !== undefined ? { config: options.config } : {}),
     stateDatabasePaths: () => [
       resolveStateDatabasePaths({ cwd: projectA.cwd, agencHome: home }),
       resolveStateDatabasePaths({ cwd: projectB.cwd, agencHome: home }),
@@ -376,6 +380,25 @@ describe("createDaemonWorkflowController — reviewer model", () => {
     expect(projectB.repo.getCurrentTerminalResult("wf-default-reviewer")).toMatchObject({
       status: "completed",
     });
+  });
+
+  it("resolves the reviewer model from the scope first and the configured model second", () => {
+    // The daemon's RPC handlers run outside any session startup scope, which is
+    // where an SDK or script client that names no model arrives (soak F62).
+    const unbound = () => {
+      throw new Error("No provider authority is bound");
+    };
+    expect(resolveDaemonDefaultReviewerModel(() => "grok-4.6", () => "grok-4.6-fast")).toBe(
+      "grok-4.6",
+    );
+    expect(resolveDaemonDefaultReviewerModel(unbound, () => "grok-4.6-fast")).toBe(
+      "grok-4.6-fast",
+    );
+    expect(resolveDaemonDefaultReviewerModel(() => "  ", () => " grok-4.6-fast ")).toBe(
+      "grok-4.6-fast",
+    );
+    expect(resolveDaemonDefaultReviewerModel(unbound, () => undefined)).toBeUndefined();
+    expect(resolveDaemonDefaultReviewerModel(unbound, () => "")).toBeUndefined();
   });
 });
 

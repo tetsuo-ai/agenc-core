@@ -310,12 +310,39 @@ export interface DaemonWorkflowWiring {
   close(): void;
 }
 
+/**
+ * The reviewer model for a goal whose caller named none: the provider model
+ * selected in the current scope when one is bound, else the daemon's
+ * configured model. The selection accessor throws outside a startup or
+ * session scope, which is where the daemon's RPC handlers run (soak F62).
+ */
+export function resolveDaemonDefaultReviewerModel(
+  selected: () => string,
+  configured: () => string | undefined,
+): string | undefined {
+  try {
+    const model = selected().trim();
+    if (model.length > 0) return model;
+  } catch {
+    // No provider scope is bound here; the configured model decides below.
+  }
+  const fallback = configured()?.trim();
+  return fallback !== undefined && fallback.length > 0 ? fallback : undefined;
+}
+
 export function createDaemonWorkflowController(options: {
   readonly agencHome: string;
   readonly primaryCwd: string;
   readonly kernel: ExecutionAdmissionKernel;
   readonly warn: (message: string) => void;
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * The daemon's active config. A goal started without a model by a client
+   * that names none (the SDK, a script) needs a reviewer model; the selected
+   * provider model exists only inside a session's startup scope, which the
+   * daemon's RPC handlers never bind, so the configured pair is the fallback.
+   */
+  readonly config?: () => { readonly model?: string } | undefined;
   /** Executable and entrypoint coordinates for child-session bootstraps. */
   readonly argv: readonly string[];
   readonly authBackend?: AuthBackend;
@@ -465,14 +492,11 @@ export function createDaemonWorkflowController(options: {
     commands: seams.commands,
     spawner: seams.spawner,
     reviewer: seams.reviewer,
-    defaultReviewerModel: () => {
-      try {
-        const model = getSelectedProviderModel().trim();
-        return model.length > 0 ? model : undefined;
-      } catch {
-        return undefined;
-      }
-    },
+    defaultReviewerModel: () =>
+      resolveDaemonDefaultReviewerModel(
+        getSelectedProviderModel,
+        () => options.config?.()?.model,
+      ),
     warn: options.warn,
   });
   return {

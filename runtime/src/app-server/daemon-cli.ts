@@ -3456,6 +3456,7 @@ async function runAgenCDaemonForegroundLocked(
       kernel: executionAdmissionKernel,
       warn: (message) => io.stderr.write(`agenc: ${message}\n`),
       env: host.env,
+      config: () => activeConfig,
       argv: [host.execPath, host.entrypointPath],
       authBackend: reloadableAuthBackend,
       stateDatabasePaths: () =>
