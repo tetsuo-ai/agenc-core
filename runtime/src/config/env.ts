@@ -10,6 +10,8 @@
 //   AGENC_MAX_TURNS                               → max_turns
 //   AGENC_COORDINATOR_MODE                        → coordinator_mode
 //   AGENC_STREAM_IDLE_TIMEOUT_MS                  → stream_watchdog_timeout_ms
+//   AGENC_PROVIDER_OUTAGE_WAIT_MS                 → provider_outage_wait_ms
+//   AGENC_PROVIDER_OUTAGE_RETRY_MS                → provider_outage_retry_ms
 //   AGENC_XAI_INCREMENTAL                         → providers.grok.incremental_continuation
 //   AGENC_WORKSPACE is consumed only by pre-repository bootstrap cwd
 //   resolution. It is captured here but is not projected into AgenCConfig.
@@ -57,6 +59,8 @@ export interface EnvSnapshot {
   readonly AGENC_MAX_TURNS?: string;
   readonly AGENC_COORDINATOR_MODE?: string;
   readonly AGENC_STREAM_IDLE_TIMEOUT_MS?: string;
+  readonly AGENC_PROVIDER_OUTAGE_WAIT_MS?: string;
+  readonly AGENC_PROVIDER_OUTAGE_RETRY_MS?: string;
   readonly AGENC_XAI_INCREMENTAL?: string;
   readonly AGENC_DISABLE_STREAM_WATCHDOG?: string;
   readonly AGENC_ENABLE_STREAM_WATCHDOG?: string;
@@ -444,6 +448,26 @@ export function applyEnvOverrides(
     } else if (e.AGENC_STREAM_IDLE_TIMEOUT_MS.trim().length > 0) {
       onWarn?.(
         `[agenc:config] invalid AGENC_STREAM_IDLE_TIMEOUT_MS="${e.AGENC_STREAM_IDLE_TIMEOUT_MS}"; expected a non-negative integer`,
+      );
+    }
+  }
+  if (e.AGENC_PROVIDER_OUTAGE_WAIT_MS !== undefined) {
+    const waitMs = readNonNegativeInteger(e.AGENC_PROVIDER_OUTAGE_WAIT_MS);
+    if (waitMs !== undefined) {
+      override.provider_outage_wait_ms = waitMs;
+    } else if (e.AGENC_PROVIDER_OUTAGE_WAIT_MS.trim().length > 0) {
+      onWarn?.(
+        `[agenc:config] invalid AGENC_PROVIDER_OUTAGE_WAIT_MS="${e.AGENC_PROVIDER_OUTAGE_WAIT_MS}"; expected a non-negative integer`,
+      );
+    }
+  }
+  if (e.AGENC_PROVIDER_OUTAGE_RETRY_MS !== undefined) {
+    const retryMs = readNonNegativeInteger(e.AGENC_PROVIDER_OUTAGE_RETRY_MS);
+    if (retryMs !== undefined && retryMs > 0) {
+      override.provider_outage_retry_ms = retryMs;
+    } else if (e.AGENC_PROVIDER_OUTAGE_RETRY_MS.trim().length > 0) {
+      onWarn?.(
+        `[agenc:config] invalid AGENC_PROVIDER_OUTAGE_RETRY_MS="${e.AGENC_PROVIDER_OUTAGE_RETRY_MS}"; expected a positive integer`,
       );
     }
   }

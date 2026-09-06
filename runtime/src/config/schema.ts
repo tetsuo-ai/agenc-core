@@ -900,6 +900,8 @@ export interface AgenCConfig {
   readonly agent?: AgentConfig;
   readonly durableTurns?: DurableTurnsConfig;
   readonly stream_watchdog_timeout_ms?: number;
+  readonly provider_outage_wait_ms?: number;
+  readonly provider_outage_retry_ms?: number;
   readonly max_output_tokens?: number;
   readonly capped_default_max_output_tokens?: boolean;
   readonly max_turns?: number;
@@ -1038,6 +1040,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "pluginTrustMessage",
   "agent",
   "stream_watchdog_timeout_ms",
+  "provider_outage_wait_ms",
+  "provider_outage_retry_ms",
   "max_output_tokens",
   "capped_default_max_output_tokens",
   "max_turns",
@@ -1061,6 +1065,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
  * set `stream_watchdog_timeout_ms = 0` to disable it.
  */
 export const DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS = 600_000;
+/** Total time a turn keeps waiting for a provider outage to end (30 min). */
+export const DEFAULT_PROVIDER_OUTAGE_WAIT_MS = 1_800_000;
+/** First slow-retry delay after the reconnect ladder is spent (30 s). */
+export const DEFAULT_PROVIDER_OUTAGE_RETRY_MS = 30_000;
 
 export function defaultConfig(): AgenCConfig {
   return Object.freeze({
@@ -1115,6 +1123,12 @@ export function defaultConfig(): AgenCConfig {
     // provider stream otherwise hangs the turn until the user cancels;
     // `0` disables the deadline for operators who need unbounded silence.
     stream_watchdog_timeout_ms: DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS,
+    // A provider that is down for minutes is not the turn's fault (#2212).
+    // Once the fast reconnect ladder is spent, the turn waits with a slow
+    // backoff (30 s doubling to 5 min) and tries again for up to this long;
+    // `0` ends the turn as soon as the ladder is exhausted.
+    provider_outage_wait_ms: DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
+    provider_outage_retry_ms: DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
     // No default turn cap. Interactive / long-running agents stop on the
     // model’s own stop signal (or explicit cancel / budget). Operators who
     // want a runaway-loop backstop can set `max_turns` (or its documented env

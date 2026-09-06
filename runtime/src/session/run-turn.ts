@@ -97,7 +97,11 @@ import {
   isWithheld413Message,
   isWithheldMaxOutputTokens,
 } from "../recovery/api-errors.js";
-import { reconnectWithBackoff } from "../recovery/reconnection.js";
+import { abortableSleep, reconnectWithBackoff } from "../recovery/reconnection.js";
+import {
+  DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
+  DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
+} from "../config/schema.js";
 import {
   MAX_RECOVERY_REENTRIES,
   reserveRecoveryReentry,
@@ -121,7 +125,7 @@ import type {
   SessionTaskRunContext,
   RunningTask,
 } from "./tasks.js";
-import { emitError } from "./event-log.js";
+import { emitError, emitWarning } from "./event-log.js";
 import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
 import {
   advanceModelSampleOrdinal,
@@ -1005,86 +1009,167 @@ async function runSamplingRequest(
   );
   if (prepared.kind === "terminal") return prepared.result;
 
-  const outcome = await reconnectWithBackoff<SamplingRequestResult>({
-    session,
-    signal,
-    // One initial provider call plus the five recovery-ladder reservations.
-    // The reservation hook remains authoritative when another recovery path
-    // has already consumed part of the shared A1 ladder.
-    maxAttempts: MAX_RECOVERY_REENTRIES + 1,
-    attempt: () =>
-      tryRunSamplingRequest(
-        state,
-        ctx,
-        session,
-        prepared.request,
-        signal,
-        events,
-        assistantOutputSink,
-      ),
-    isTransient: (err) => {
-      if (isPartialProviderResponseError(err)) return false;
-      if (isRetryableStreamError(err)) return true;
-      // Fall-through: the raw-error classifier covers bare
-      // ECONNRESET / 5xx / socket-hang-up failures that never got
-      // wrapped in StreamModelError.
-      if (err instanceof StreamModelError) {
-        return isTransientProviderError(err.cause);
-      }
-      return isTransientProviderError(err);
-    },
-    onTransientRetry: async (attempt, err) => {
-      const blockedReason = interruptedStreamRetryBlockReason(state, session);
-      if (blockedReason !== null) {
-        suppressInterruptedStreamToolHistory(state);
-        cancelQueuedInterruptedTools(state);
+  const outage = providerOutagePolicy(session);
+  let waitedMs = 0;
+  let outageRetries = 0;
+  for (;;) {
+    let retryBlocked = false;
+    const outcome = await reconnectWithBackoff<SamplingRequestResult>({
+      session,
+      signal,
+      // One initial provider call plus the five recovery-ladder reservations.
+      // The reservation hook remains authoritative when another recovery path
+      // has already consumed part of the shared A1 ladder.
+      maxAttempts: MAX_RECOVERY_REENTRIES + 1,
+      attempt: () =>
+        tryRunSamplingRequest(
+          state,
+          ctx,
+          session,
+          prepared.request,
+          signal,
+          events,
+          assistantOutputSink,
+        ),
+      isTransient: isTransientSamplingError,
+      onTransientRetry: async (attempt, err) => {
+        const blockedReason = interruptedStreamRetryBlockReason(state, session);
+        if (blockedReason !== null) {
+          retryBlocked = true;
+          suppressInterruptedStreamToolHistory(state);
+          cancelQueuedInterruptedTools(state);
+          emitError(session, session.nextInternalSubId(), {
+            cause: "stream_disconnected",
+            message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+            provider: session.services.provider.name,
+            status: streamRetryErrorStatus(err),
+            streamError: true,
+          });
+          return false;
+        }
+        const reservation = await reserveRecoveryReentry(session, state, {
+          triggerName: "reconnect",
+        });
+        if (reservation.kind !== "reserved") {
+          // The fast ladder is spent. Whether the turn now waits for the
+          // provider or ends is decided below, once the outcome is known.
+          return false;
+        }
+        cleanupInterruptedStreamAttempt(state, session, err);
         emitError(session, session.nextInternalSubId(), {
           cause: "stream_disconnected",
-          message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+          message: streamRetryNoticeMessage(
+            err,
+            attempt,
+            MAX_RECOVERY_REENTRIES + 1,
+          ),
           provider: session.services.provider.name,
           status: streamRetryErrorStatus(err),
           streamError: true,
         });
-        return false;
-      }
-      const reservation = await reserveRecoveryReentry(session, state, {
-        triggerName: "reconnect",
-      });
-      if (reservation.kind !== "reserved") {
+        return true;
+      },
+    });
+
+    if (outcome.kind === "ok") return outcome.value;
+    if (outcome.kind === "aborted") {
+      throw samplingAbortError(signal, outcome.reason);
+    }
+    // The fast ladder is exhausted. A provider that is down for minutes is
+    // not the turn's fault (#2212): wait with a slow backoff and try again,
+    // within the operator's patience, unless retrying is unsafe.
+    const lastError = outcome.lastError;
+    const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
+    const canWait =
+      !retryBlocked &&
+      outage.waitMs > 0 &&
+      waitedMs + delayMs <= outage.waitMs &&
+      isTransientSamplingError(lastError);
+    if (!canWait) {
+      if (!retryBlocked) {
         suppressInterruptedStreamToolHistory(state);
         cancelQueuedInterruptedTools(state);
-        return false;
       }
-      cleanupInterruptedStreamAttempt(state, session, err);
-      emitError(session, session.nextInternalSubId(), {
-        cause: "stream_disconnected",
-        message: streamRetryNoticeMessage(
-          err,
-          attempt,
-          MAX_RECOVERY_REENTRIES + 1,
-        ),
-        provider: session.services.provider.name,
-        status: streamRetryErrorStatus(err),
-        streamError: true,
-      });
-      return true;
-    },
-  });
-
-  if (outcome.kind === "ok") return outcome.value;
-  if (outcome.kind === "aborted") {
-    const abortReason =
-      (signal as AbortSignal & { reason?: unknown }).reason ?? outcome.reason;
-    throw new StreamModelError(
-      abortReason instanceof Error
-        ? abortReason
-        : new Error(String(abortReason)),
+      if (lastError instanceof Error) throw lastError;
+      throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+    }
+    outageRetries += 1;
+    waitedMs += delayMs;
+    cleanupInterruptedStreamAttempt(state, session, lastError);
+    emitWarning(
+      session.eventLog,
+      session.nextInternalSubId(),
+      "provider_outage_wait",
+      `${session.services.provider.name} unavailable after ${outcome.attempts} attempt(s) ` +
+        `(${errorSummary(lastError)}); retry ${outageRetries} in ${Math.round(delayMs / 1000)} s, ` +
+        `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left`,
     );
+    await abortableSleep(delayMs, signal);
+    if (signal.aborted) throw samplingAbortError(signal, "aborted");
   }
-  // exhausted
-  const lastError = outcome.lastError;
-  if (lastError instanceof Error) throw lastError;
-  throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+}
+
+function isTransientSamplingError(err: unknown): boolean {
+  if (isPartialProviderResponseError(err)) return false;
+  if (isRetryableStreamError(err)) return true;
+  // Fall-through: the raw-error classifier covers bare
+  // ECONNRESET / 5xx / socket-hang-up failures that never got
+  // wrapped in StreamModelError.
+  if (err instanceof StreamModelError) {
+    return isTransientProviderError(err.cause);
+  }
+  return isTransientProviderError(err);
+}
+
+function samplingAbortError(signal: AbortSignal, fallback: unknown): StreamModelError {
+  const abortReason =
+    (signal as AbortSignal & { reason?: unknown }).reason ?? fallback;
+  return new StreamModelError(
+    abortReason instanceof Error ? abortReason : new Error(String(abortReason)),
+  );
+}
+
+function errorSummary(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+}
+
+/**
+ * How long a turn keeps waiting for a provider outage to end, and the first
+ * slow-retry delay, from the live config (`provider_outage_wait_ms`,
+ * `provider_outage_retry_ms`) with the documented defaults.
+ */
+function providerOutagePolicy(session: Session): {
+  readonly waitMs: number;
+  readonly retryMs: number;
+} {
+  let current: { provider_outage_wait_ms?: unknown; provider_outage_retry_ms?: unknown } | undefined;
+  try {
+    current = (
+      session.services as {
+        configStore?: { current?: () => typeof current };
+      }
+    ).configStore?.current?.();
+  } catch {
+    current = undefined;
+  }
+  const wait = current?.provider_outage_wait_ms;
+  const retry = current?.provider_outage_retry_ms;
+  return {
+    waitMs:
+      typeof wait === "number" && Number.isFinite(wait) && wait >= 0
+        ? wait
+        : DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
+    retryMs:
+      typeof retry === "number" && Number.isFinite(retry) && retry > 0
+        ? retry
+        : DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
+  };
+}
+
+/** Slow backoff: the base delay doubling per retry, capped at ten times it. */
+export function providerOutageDelayMs(retryMs: number, outageRetries: number): number {
+  return Math.min(retryMs * 2 ** outageRetries, retryMs * 10);
 }
 
 /**

@@ -35,6 +35,8 @@ Boolean-like values that go through `applyEnvOverrides` treat
 | `AGENC_AGENT_MAX_DEPTH` | Non-negative subagent nesting cap projected to `agent_max_depth`; `0` disables spawning |
 | `AGENC_COORDINATOR_MODE` | Overrides `coordinator_mode` both ways when the `COORDINATOR_MODE` build flag is on (it is on in `runtime/src/build/feature.ts`). `0` / `false` / `off` force off |
 | `AGENC_STREAM_IDLE_TIMEOUT_MS` | Stream idle deadline in milliseconds. Unset keeps the `600000` config default; `0` means no idle deadline |
+| `AGENC_PROVIDER_OUTAGE_WAIT_MS` | Overrides `provider_outage_wait_ms`: how long a turn keeps waiting for a provider outage to end after the reconnect ladder is spent. Unset keeps the `1800000` default; `0` ends the turn when the ladder is exhausted |
+| `AGENC_PROVIDER_OUTAGE_RETRY_MS` | Overrides `provider_outage_retry_ms`: the first slow-retry delay during a provider outage, doubling up to ten times the value. Unset keeps the `30000` default |
 | `AGENC_MARKETPLACE_CLI` | Path to marketplace-cli (`[protocol].cli_path`) |
 
 ## Provider credentials and endpoints

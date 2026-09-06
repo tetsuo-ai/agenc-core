@@ -316,6 +316,15 @@ the stream with a retryable `stream_idle` error at the deadline. Set it to
 turns only: a one-shot review delegate (`/review`, guardian approval review)
 carries its own deadline, so the ten-minute default is not layered on top of
 it. A value you configure yourself is still honoured inside a review delegate.
+
+`provider_outage_wait_ms` and `provider_outage_retry_ms` govern what happens
+after the fast reconnect ladder gives up on a transient provider error
+(connection refused or reset, a 5xx, a request timeout). Instead of ending the
+turn, the runtime waits `provider_outage_retry_ms` (30 s), then twice that,
+doubling up to ten times the base (5 min), and tries again until the waits
+would exceed `provider_outage_wait_ms` (30 min); each wait is announced by a
+`provider_outage_wait` warning event, and cancelling the turn ends it at once.
+A streamed tool call that makes a retry unsafe still ends the turn immediately.
 The guardian approval review behind a permission prompt runs under a
 ten-minute deadline of its own, so a dead provider socket expires that review
 instead of parking the approval. `[budget]`, `[heartbeat]`, `[browser]`, and
@@ -375,6 +384,8 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `autonomous_mode` | Boolean autonomous runtime mode. |
 | `coordinator_mode` | Boolean coordinator-only main-session behavior. |
 | `stream_watchdog_timeout_ms` | Non-negative inter-chunk idle timeout; default `600000`, `0` disables. |
+| `provider_outage_wait_ms` | Non-negative total time a turn keeps waiting for a provider outage to end once the reconnect ladder is spent; default `1800000` (30 minutes), `0` ends the turn as soon as the ladder is exhausted. |
+| `provider_outage_retry_ms` | Positive first slow-retry delay during a provider outage, doubling up to ten times this value; default `30000`. |
 
 Project-root discovery happens before project and local configuration can be
 loaded. Its marker authority is therefore limited to the built-in/plugin/user

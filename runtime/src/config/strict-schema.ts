@@ -635,6 +635,8 @@ const ROOT_FIELD_VALIDATORS = {
   agent: delegatedObjectValidator("agent"),
   durableTurns: validateDurableTurns,
   stream_watchdog_timeout_ms: fieldValidator("stream_watchdog_timeout_ms", optionalNonNegativeInteger),
+  provider_outage_wait_ms: fieldValidator("provider_outage_wait_ms", optionalNonNegativeInteger),
+  provider_outage_retry_ms: fieldValidator("provider_outage_retry_ms", optionalPositiveInteger),
   max_output_tokens: fieldValidator("max_output_tokens", optionalPositiveInteger),
   capped_default_max_output_tokens: fieldValidator("capped_default_max_output_tokens", optionalBoolean),
   max_turns: fieldValidator("max_turns", optionalPositiveInteger),

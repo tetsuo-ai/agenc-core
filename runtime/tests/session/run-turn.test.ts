@@ -5769,6 +5769,8 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
       const { session, events, getState } = mkSession({
         provider,
         registry,
+        // Terminal exhaustion is this test's subject; no provider-outage wait.
+        configStoreBase: { provider_outage_wait_ms: 0 },
         permissionModeRegistry: new PermissionModeRegistry(
           createEmptyToolPermissionContext({
             mode: "bypassPermissions",
@@ -8236,5 +8238,104 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       ),
     ).toBe(false);
     expect(events.some((e) => e.msg.type === "turn_complete")).toBe(true);
+  });
+});
+
+describe("provider outage wait (#2212)", () => {
+  function connectionError(): Error {
+    return Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+  }
+
+  /** Spend the fast ladder at once so each slow retry is one provider call. */
+  async function spentLadder(): Promise<() => void> {
+    const recovery = await import("../recovery/fallback-ladder.js");
+    const reserveRecoveryReentry = recovery.reserveRecoveryReentry;
+    const spy = vi
+      .spyOn(recovery, "reserveRecoveryReentry")
+      .mockImplementation(async (session, state, opts) => {
+        state.recoveryReentryCount = recovery.MAX_RECOVERY_REENTRIES;
+        return reserveRecoveryReentry(session, state, opts);
+      });
+    return () => spy.mockRestore();
+  }
+
+  function failingThenSucceeding(failures: number): { provider: LLMProvider; attempts: () => number } {
+    let attempts = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (
+        _messages: LLMMessage[],
+        onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts <= failures) throw connectionError();
+        onChunk({ content: "resumed", done: false });
+        return {
+          content: "resumed",
+          toolCalls: [],
+          usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    return { provider, attempts: () => attempts };
+  }
+
+  test("waits out a provider outage with a slow backoff and finishes the turn", async () => {
+    const restore = await spentLadder();
+    try {
+      const { provider, attempts } = failingThenSucceeding(2);
+      const { session, events } = mkSession({
+        provider,
+        registry: mkRegistry(),
+        configStoreBase: {
+          provider_outage_wait_ms: 60_000,
+          provider_outage_retry_ms: 1,
+        },
+      });
+      await drain(session.runTurn("hello", { ctx: mkCtx() }));
+      expect(attempts()).toBe(3);
+      const waits = events.filter(
+        (event) =>
+          event.msg.type === "warning" &&
+          (event.msg.payload as { cause?: string }).cause === "provider_outage_wait",
+      );
+      expect(waits).toHaveLength(2);
+      expect(String((waits[0]!.msg.payload as { message: string }).message)).toContain("retry 1 in 0 s");
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          msg: expect.objectContaining({ type: "agent_message", payload: expect.objectContaining({ message: "resumed" }) }),
+        }),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  test("ends the turn when the first slow retry would exceed the operator's patience", async () => {
+    const restore = await spentLadder();
+    try {
+      const { provider, attempts } = failingThenSucceeding(5);
+      const { session, events } = mkSession({
+        provider,
+        registry: mkRegistry(),
+        configStoreBase: {
+          provider_outage_wait_ms: 1,
+          provider_outage_retry_ms: 1_000,
+        },
+      });
+      await drain(session.runTurn("hello", { ctx: mkCtx() }));
+      expect(attempts()).toBe(1);
+      expect(
+        events.some(
+          (event) =>
+            event.msg.type === "warning" &&
+            (event.msg.payload as { cause?: string }).cause === "provider_outage_wait",
+        ),
+      ).toBe(false);
+    } finally {
+      restore();
+    }
   });
 });

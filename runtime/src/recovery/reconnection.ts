@@ -489,7 +489,7 @@ function isReconnectAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
 }
 
-function abortableSleep(
+export function abortableSleep(
   delayMs: number,
   signal: AbortSignal | undefined,
 ): Promise<void> {
