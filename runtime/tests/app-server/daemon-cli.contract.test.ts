@@ -6202,7 +6202,7 @@ snapshot_max_bytes = 64
     );
     expect(recovered).toMatchObject({
       agentId: createdAgentId,
-      status: "running",
+      status: "idle",
       metadata: {
         recovery: {
           runnable: true,
