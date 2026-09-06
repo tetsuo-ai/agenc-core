@@ -46,6 +46,7 @@ import {
   stringValue,
   toolMetadata,
   type MultiAgentV2Options,
+  agentValidationError,
 } from "./common.js";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
@@ -228,11 +229,8 @@ async function validateSpawnModelOverrides(opts: {
       modelsManager.tryListModels() ?? (await modelsManager.listModels());
     if (!listed.some((candidate) => candidate.slug === opts.model)) {
       const available = listed.map((candidate) => candidate.slug).join(", ");
-      return json(
-        {
-          error: `Unknown model \`${opts.model}\` for spawn_agent. Available models: ${available}`,
-        },
-        true,
+      return agentValidationError(
+        `Unknown model \`${opts.model}\` for spawn_agent. Available models: ${available}`,
       );
     }
   }
@@ -246,11 +244,8 @@ async function validateSpawnModelOverrides(opts: {
         : await modelsManager.getModelInfo(model);
     if (!modelInfo.supportedReasoningLevels.includes(opts.reasoningEffort)) {
       const supported = modelInfo.supportedReasoningLevels.join(", ");
-      return json(
-        {
-          error: `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${model}\`. Supported reasoning efforts: ${supported}`,
-        },
-        true,
+      return agentValidationError(
+        `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${model}\`. Supported reasoning efforts: ${supported}`,
       );
     }
   }
@@ -276,12 +271,8 @@ async function resolveSpawnServiceTier(opts: {
     opts.session.sessionConfiguration.collaborationMode.model ??
     opts.session.modelInfo.slug;
   if (!model) {
-    return json(
-      {
-        error:
-          "spawn_agent could not resolve the child model for service tier validation",
-      },
-      true,
+    return agentValidationError(
+      "spawn_agent could not resolve the child model for service tier validation",
     );
   }
   const modelInfo =
@@ -292,11 +283,8 @@ async function resolveSpawnServiceTier(opts: {
     opts.requestedServiceTier !== undefined &&
     !modelSupportsServiceTier(modelInfo, opts.requestedServiceTier)
   ) {
-    return json(
-      {
-        error: `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
-      },
-      true,
+    return agentValidationError(
+      `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
     );
   }
   for (const candidate of [

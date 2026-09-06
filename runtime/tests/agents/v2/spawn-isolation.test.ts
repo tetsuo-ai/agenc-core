@@ -107,6 +107,25 @@ describe("spawn_agent isolation", () => {
     mockDelegate.mockReset();
   });
 
+  it("refuses an unknown model as a confirmed no-effect failure before anything is spawned", async () => {
+    // #2190: a bare isError from a side-effecting tool is filed as an unknown
+    // outcome and gates the session behind /resolve; nothing was spawned here.
+    const session = makeSession();
+    const tool = createSpawnAgentTool(makeOptions(session));
+
+    const result = await tool.execute({
+      message: "review the change",
+      task_name: "review",
+      model: "sonnet",
+      __callId: "spawn-unknown-model",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("Unknown model");
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["review-patch", "review_patch"],
     ["Review Patch", "review_patch"],
