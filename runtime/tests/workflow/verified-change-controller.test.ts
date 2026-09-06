@@ -493,7 +493,9 @@ interface Harness {
 
 const RUN_ID = "run-wf-1";
 
-function makeHarness(): Harness {
+function makeHarness(
+  options: { readonly defaultReviewerModel?: () => string | undefined } = {},
+): Harness {
   const home = mkdtempSync(join(tmpdir(), "agenc-m5-controller-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "agenc-m5-controller-cwd-"));
   mkdirSync(join(cwd, ".git"));
@@ -526,6 +528,9 @@ function makeHarness(): Harness {
     commands,
     spawner,
     reviewer,
+    ...(options.defaultReviewerModel !== undefined
+      ? { defaultReviewerModel: options.defaultReviewerModel }
+      : {}),
     evidenceLedger: async (spec) => {
       let ledger = ledgers.get(spec.runId);
       if (ledger === undefined) {
@@ -586,6 +591,32 @@ let harness: Harness;
 
 beforeEach(() => {
   harness = makeHarness();
+});
+
+describe("reviewer model resolution at start", () => {
+  // Desktop soak, 2026-09-06: with neither `reviewerModel` nor `model` the
+  // spec froze the placeholder "default-reviewer", the provider answered 404,
+  // and a goal whose other stages had all committed ended unknown_outcome.
+  it("pins the daemon's default model when the caller names none", async () => {
+    const own = makeHarness({ defaultReviewerModel: () => "grok-4.6" });
+    await runToTerminal(own, { model: undefined, reviewerModel: undefined });
+    expect(own.reviewer.invocations[0]?.reviewerModel).toBe("grok-4.6");
+  });
+
+  it("prefers the caller's model over the daemon's default", async () => {
+    const own = makeHarness({ defaultReviewerModel: () => "grok-4.6" });
+    await runToTerminal(own, { model: "grok-4", reviewerModel: undefined });
+    expect(own.reviewer.invocations[0]?.reviewerModel).toBe("grok-4");
+  });
+
+  it("refuses a start that can name no reviewer model", async () => {
+    const own = makeHarness();
+    await expect(
+      own.controller.start(
+        startParams(own, { model: undefined, reviewerModel: undefined }),
+      ),
+    ).rejects.toThrow(/no reviewer model/);
+  });
 });
 
 afterEach(() => {

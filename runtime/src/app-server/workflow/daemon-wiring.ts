@@ -69,6 +69,7 @@ import {
 } from "./session-adapters.js";
 import { runWithBootstrapSessionScope } from "../../session/current-session.js";
 import { createPlatformProtectionVerifier } from "../../eval-contract/platform-protection.js";
+import { getSelectedProviderModel } from "../../utils/model/providers.js";
 
 const WORKFLOW_TASK_ID = "verified-change";
 const WORKFLOW_SYSTEM_ID = "agenc.workflow.m5";
@@ -464,6 +465,14 @@ export function createDaemonWorkflowController(options: {
     commands: seams.commands,
     spawner: seams.spawner,
     reviewer: seams.reviewer,
+    defaultReviewerModel: () => {
+      try {
+        const model = getSelectedProviderModel().trim();
+        return model.length > 0 ? model : undefined;
+      } catch {
+        return undefined;
+      }
+    },
     warn: options.warn,
   });
   return {

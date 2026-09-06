@@ -40,6 +40,7 @@ import {
 } from "../../src/state/sqlite-driver.js";
 import type { WorkflowCommandRunner } from "../../src/workflow/verification.js";
 import type { ReviewerInvoker } from "../../src/workflow/independent-review.js";
+import { runWithStartupProviderSelection } from "../../src/utils/model/providers.js";
 import type { WorktreeHandle } from "../../src/agents/worktree.js";
 
 const BASE_COMMIT = "c".repeat(40);
@@ -238,8 +239,12 @@ const commands: WorkflowCommandRunner = {
   }),
 };
 
+const reviewerInvocations: { readonly reviewerModel: string }[] = [];
 const reviewer: ReviewerInvoker = {
-  invoke: async () => APPROVING_REVIEW,
+  invoke: async (input) => {
+    reviewerInvocations.push({ reviewerModel: input.reviewerModel });
+    return APPROVING_REVIEW;
+  },
 };
 
 interface ProjectFixture {
@@ -348,6 +353,30 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(projectA.cwd, { recursive: true, force: true });
   rmSync(projectB.cwd, { recursive: true, force: true });
+});
+
+describe("createDaemonWorkflowController — reviewer model", () => {
+  it("pins the daemon's selected model as the reviewer model when the caller names none", async () => {
+    const { wiring } = makeWiring();
+    const before = reviewerInvocations.length;
+    const started = await runWithStartupProviderSelection(
+      { provider: "grok", model: "grok-4.6", environment: { ...process.env } },
+      () =>
+        wiring.controller.start({
+          goal: "fix a bug with the daemon's default model",
+          repoPath: projectB.cwd,
+          requiredVerification: [{ label: "unit", script: "run-tests" }],
+          runId: "wf-default-reviewer",
+        }),
+    );
+    await wiring.controller.awaitRun(started.runId);
+    expect(reviewerInvocations.slice(before).map((entry) => entry.reviewerModel)).toEqual([
+      "grok-4.6",
+    ]);
+    expect(projectB.repo.getCurrentTerminalResult("wf-default-reviewer")).toMatchObject({
+      status: "completed",
+    });
+  });
 });
 
 describe("createDaemonWorkflowController — per-run durability resolution", () => {

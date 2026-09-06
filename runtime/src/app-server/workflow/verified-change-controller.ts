@@ -328,6 +328,14 @@ export interface VerifiedChangeWorkflowControllerDeps {
   readonly commands: WorkflowCommandRunner;
   readonly spawner: WorkflowAgentSpawner;
   readonly reviewer: ReviewerInvoker;
+  /**
+   * The model the daemon would give a new session, used as the reviewer model
+   * when the caller pins neither `reviewerModel` nor `model`. Without it the
+   * spec froze a placeholder that reached the provider as a model id (desktop
+   * soak, 2026-09-06: a 404 on `default-reviewer` ended a goal in
+   * `unknown_outcome` after every other stage had committed).
+   */
+  readonly defaultReviewerModel?: () => string | undefined;
   readonly evidenceLedger: (spec: WorkflowSpec) => Promise<WorkflowEvidenceLedger>;
   readonly warn: (message: string) => void;
   readonly now?: () => Date;
@@ -579,7 +587,12 @@ export class VerifiedChangeWorkflowController {
     const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
       runId,
     });
-    const spec = freezeWorkflowSpec(runId, params, base);
+    const spec = freezeWorkflowSpec(
+      runId,
+      params,
+      base,
+      this.#deps.defaultReviewerModel?.(),
+    );
     const specDigest = computeSpecDigest(spec);
     const admission = this.#deps.admission({
       runId,
@@ -2436,10 +2449,35 @@ export class VerifiedChangeWorkflowController {
 // Spec freeze + prompts
 // ---------------------------------------------------------------------------
 
+/**
+ * The reviewer model is resolved once, here, and pinned: the caller's
+ * `reviewerModel`, else the caller's `model`, else the model the daemon gives
+ * a new session. A start that can name none is refused instead of freezing a
+ * name the provider has never heard of.
+ */
+function resolveReviewerModel(
+  runId: string,
+  params: WorkflowStartParams,
+  daemonDefaultModel: string | undefined,
+): string {
+  const candidate =
+    params.reviewerModel ?? params.model ?? daemonDefaultModel;
+  const trimmed = candidate?.trim() ?? "";
+  if (trimmed.length === 0) {
+    throw new WorkflowIntakeError(
+      runId,
+      null,
+      "no reviewer model: pass `reviewerModel` or `model`, or configure the daemon's default model",
+    );
+  }
+  return trimmed;
+}
+
 function freezeWorkflowSpec(
   runId: string,
   params: WorkflowStartParams,
   base: BaseState,
+  daemonDefaultModel: string | undefined,
 ): WorkflowSpec {
   return {
     runId,
@@ -2453,8 +2491,7 @@ function freezeWorkflowSpec(
     },
     ...(params.model !== undefined ? { model: params.model } : {}),
     ...(params.provider !== undefined ? { provider: params.provider } : {}),
-    reviewerModel:
-      params.reviewerModel ?? params.model ?? "default-reviewer",
+    reviewerModel: resolveReviewerModel(runId, params, daemonDefaultModel),
     permissionMode: params.permissionMode ?? DEFAULT_PERMISSION_MODE,
     ...(params.unattendedAllow !== undefined
       ? { unattendedAllow: params.unattendedAllow }
