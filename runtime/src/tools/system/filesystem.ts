@@ -79,6 +79,7 @@ import {
   withSignedSessionId,
 } from "../../agents/_deps/filesystem-args.js";
 import type { Tool, ToolResult } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
 import {
   completeWorkspaceTopologyMutation,
@@ -899,6 +900,21 @@ function errorResult(message: string): ToolResult {
   return { content: safeStringify({ error: message }), isError: true };
 }
 
+/**
+ * An error result for a refusal that happened before the tool touched the
+ * filesystem: a bad argument, a path outside the allowed roots, a missing
+ * source, an Editor conflict, a refused reservation. It carries a confirmed
+ * no-effect disposition; a bare error from a side-effecting tool is filed as
+ * an unknown outcome and gates the session behind /resolve (#2190). Failures
+ * after mkdir, rm or rename started keep the bare result.
+ */
+function preEffectErrorResult(message: string): ToolResult {
+  return {
+    ...validationErrorToolResult("tool:system.filesystem:pre-effect", message),
+    content: safeStringify({ error: message }),
+  };
+}
+
 /** Format error for fallback catch without leaking resolved internal paths. */
 function safeError(err: unknown, operation: string): string {
   const code = (err as NodeJS.ErrnoException)?.code;
@@ -1196,7 +1212,7 @@ async function validatePath(
   args?: Record<string, unknown>,
 ): Promise<[string | null, ToolResult | null]> {
   if (typeof input !== "string" || input.trim().length === 0) {
-    return [null, errorResult(`${paramName} must be a non-empty string`)];
+    return [null, preEffectErrorResult(`${paramName} must be a non-empty string`)];
   }
   const result = await safePath(
     input,
@@ -1221,7 +1237,7 @@ async function validatePath(
       // canonicalize threw — fall through to the original rejection.
     }
   }
-  return [null, errorResult(`Access denied: ${result.reason}`)];
+  return [null, preEffectErrorResult(`Access denied: ${result.reason}`)];
 }
 
 /**
@@ -1456,7 +1472,7 @@ function createDeleteTool(
         if (pathErr) return pathErr;
 
         if (!allowDelete) {
-          return errorResult(
+          return preEffectErrorResult(
             "Delete operations are disabled. Set allowDelete: true in config.",
           );
         }
@@ -1474,20 +1490,20 @@ function createDeleteTool(
             );
           }
           if (resolved === canonicalAllowed) {
-            return errorResult("Cannot delete sandbox root directory");
+            return preEffectErrorResult("Cannot delete sandbox root directory");
           }
         }
 
         // Check if target is a directory — require explicit recursive opt-in
         const targetStat = await stat(resolved!);
         if (targetStat.isDirectory() && args.recursive !== true) {
-          return errorResult("Cannot delete directory without recursive: true");
+          return preEffectErrorResult("Cannot delete directory without recursive: true");
         }
         const conflict = workspaceMutationPathConflict(resolved!, {
           includeDescendants: targetStat.isDirectory(),
         });
         if (conflict !== null) {
-          return errorResult(
+          return preEffectErrorResult(
             `Cannot delete ${String(args.path)}: ${conflict.path} has ${
               conflict.authority === "editor_dirty"
                 ? "unsaved editor changes"
@@ -1499,7 +1515,7 @@ function createDeleteTool(
           includeDescendants: targetStat.isDirectory(),
         });
         if (loadedConflict !== null) {
-          return errorResult(
+          return preEffectErrorResult(
             `Cannot delete ${String(args.path)}: ${loadedConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to delete it safely.`,
           );
         }
@@ -1531,11 +1547,12 @@ function createDeleteTool(
         };
       } catch (err) {
         if (err instanceof WorkspaceMutationCoordinatorError) {
-          return errorResult(err.message);
+          // The reservation was refused before rm ran.
+          return preEffectErrorResult(err.message);
         }
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("ENOENT"))
-          return errorResult(`Path not found: ${args.path}`);
+          return preEffectErrorResult(`Path not found: ${args.path}`);
         return errorResult(safeError(err, "delete"));
       }
     },
@@ -1585,7 +1602,7 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
           includeDescendants: sourceStat.isDirectory(),
         });
         if (sourceConflict !== null) {
-          return errorResult(
+          return preEffectErrorResult(
             `Cannot move ${String(args.source)}: ${sourceConflict.path} has ${
               sourceConflict.authority === "editor_dirty"
                 ? "unsaved editor changes"
@@ -1597,7 +1614,7 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
           includeDescendants: sourceStat.isDirectory(),
         });
         if (loadedSourceConflict !== null) {
-          return errorResult(
+          return preEffectErrorResult(
             `Cannot move ${String(args.source)}: ${loadedSourceConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to move it safely.`,
           );
         }
@@ -1605,7 +1622,7 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
           includeDescendants: true,
         });
         if (destinationConflict !== null) {
-          return errorResult(
+          return preEffectErrorResult(
             `Cannot move to ${String(args.destination)}: ${destinationConflict.path} has ${
               destinationConflict.authority === "editor_dirty"
                 ? "unsaved editor changes"
@@ -1620,7 +1637,7 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
           },
         );
         if (loadedDestinationConflict !== null) {
-          return errorResult(
+          return preEffectErrorResult(
             `Cannot move to ${String(args.destination)}: ${loadedDestinationConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to move it safely.`,
           );
         }
@@ -1658,11 +1675,12 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
         };
       } catch (err) {
         if (err instanceof WorkspaceMutationCoordinatorError) {
-          return errorResult(err.message);
+          // The reservation was refused before rename ran.
+          return preEffectErrorResult(err.message);
         }
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("ENOENT"))
-          return errorResult(`Source not found: ${args.source}`);
+          return preEffectErrorResult(`Source not found: ${args.source}`);
         return errorResult(safeError(err, "move"));
       }
     },

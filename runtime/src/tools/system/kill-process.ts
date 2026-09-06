@@ -7,6 +7,8 @@
  * for the manager's hard timeout.
  */
 import type { Tool, ToolResult } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { safeStringify } from "../types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
@@ -84,26 +86,22 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       additionalProperties: false,
     },
     async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      // Refusals before any signal is sent carry a confirmed no-effect
+      // disposition; a bare error from a side-effecting tool gates the
+      // session behind /resolve (#2190).
+      const refuse = (error: string): ToolResult => ({
+        ...validationErrorToolResult("tool:system.kill-process:validation", error),
+        content: safeStringify({ error }),
+      });
       if (Object.prototype.hasOwnProperty.call(args, "process_id")) {
-        return {
-          content: safeStringify({ error: "unknown field `process_id`" }),
-          isError: true,
-        };
+        return refuse("unknown field `process_id`");
       }
       const sessionId = asNumber(args.session_id);
       if (sessionId === undefined) {
-        return {
-          content: safeStringify({ error: "session_id must be a number" }),
-          isError: true,
-        };
+        return refuse("session_id must be a number");
       }
       if (manager.terminateProcess === undefined) {
-        return {
-          content: safeStringify({
-            error: "process termination is not supported by this runtime",
-          }),
-          isError: true,
-        };
+        return refuse("process termination is not supported by this runtime");
       }
       const ownerId = processOwnerIdFromToolArgs(args);
       try {
@@ -133,6 +131,18 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
               : {}),
           }),
           isError: true,
+          // The manager refuses (unknown owner, denied access) before it
+          // signals the process.
+          ...(error instanceof UnifiedExecError
+            ? {
+                effectDisposition: createToolEffectDispositionEvidence({
+                  disposition: "confirmed_no_effect",
+                  evidenceKind: "boundary_not_crossed",
+                  evidenceRef: "tool:system.kill-process:refused",
+                  evidenceMaterial: message,
+                }),
+              }
+            : {}),
         };
       }
     },

@@ -14,6 +14,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
@@ -72,17 +73,16 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
       const command = asNonEmptyString(args.command);
       const description = asNonEmptyString(args.description);
       if (!command) {
-        return {
-          content: "command must be a non-empty string",
-          isError: true,
-        };
+        return validationErrorToolResult(
+          "tool:system.monitor:validation",
+          "command must be a non-empty string",
+        );
       }
       if (!description) {
-        return {
-          content:
-            "description must be a non-empty string (active-voice summary of the command)",
-          isError: true,
-        };
+        return validationErrorToolResult(
+          "tool:system.monitor:validation",
+          "description must be a non-empty string (active-voice summary of the command)",
+        );
       }
 
       const startedAt = Date.now();

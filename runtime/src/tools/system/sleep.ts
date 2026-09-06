@@ -16,6 +16,8 @@
  */
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 
 const SLEEP_MIN_MS = 0;
 const SLEEP_MAX_MS = 60 * 60 * 1000; // 1 hour ceiling — same as AgenC.
@@ -77,10 +79,10 @@ export function createSleepTool(): Tool {
       const args = rawArgs as SleepToolInput;
       const requested = asNumber(args.durationMs);
       if (requested === undefined) {
-        return {
-          content: "durationMs must be a finite number of milliseconds",
-          isError: true,
-        };
+        return validationErrorToolResult(
+          "tool:system.sleep:validation",
+          "durationMs must be a finite number of milliseconds",
+        );
       }
       const durationMs = Math.max(
         SLEEP_MIN_MS,
@@ -114,6 +116,14 @@ export function createSleepTool(): Tool {
         return {
           content: `Sleep interrupted after ${elapsedMs}ms`,
           isError: true,
+          // Waiting changes nothing outside this process; an interrupted
+          // wait is not an unknown effect (#2190).
+          effectDisposition: createToolEffectDispositionEvidence({
+            disposition: "confirmed_no_effect",
+            evidenceKind: "boundary_not_crossed",
+            evidenceRef: "tool:system.sleep:interrupted",
+            evidenceMaterial: `Sleep interrupted after ${elapsedMs}ms`,
+          }),
           metadata: {
             interrupted: true,
             elapsedMs,
