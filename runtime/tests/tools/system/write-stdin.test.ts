@@ -21,26 +21,12 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function completedOutput(stdout: string): ExecCommandToolOutput {
-  return {
-    output: stdout,
-    stdout,
-    stderr: "",
-    exitCode: 0,
-    exit_code: 0,
-    durationMs: 1,
-    wall_time_seconds: 0.001,
-    timedOut: false,
-    truncated: false,
-    original_token_count: 1,
-  };
-}
-
 /** A write_stdin tool whose manager answers every write with `outcome`. */
 function toolWhoseManager(outcome: () => Promise<ExecCommandToolOutput>) {
   const manager: UnifiedExecProcessManagerLike = {
     maxTimeoutMs: 30_000,
-    execCommand: vi.fn(async () => completedOutput("")),
+    // Never reached: these tests fail before or inside the write.
+    execCommand: vi.fn(async () => undefined as never),
     writeStdin: vi.fn(outcome),
     closeAll: vi.fn(async () => {}),
   };
@@ -100,7 +86,7 @@ describe("write_stdin failures before any byte reaches the process", () => {
   }
 
   test("a rejected argument is a confirmed no-effect failure", async () => {
-    const tool = toolWhoseManager(async () => completedOutput(""));
+    const tool = toolWhoseManager(async () => undefined as never);
     const missing = await tool.execute({ chars: "" });
     expect(missing.isError).toBe(true);
     expect(parsed(missing).error).toBe("session_id must be a number");
@@ -126,7 +112,7 @@ describe("write_stdin failures after the write started", () => {
 
 describe("write_stdin reaches a session started in another sandbox", () => {
   test("the schema takes the same sandbox permission fields as exec_command", () => {
-    const tool = toolWhoseManager(async () => completedOutput(""));
+    const tool = toolWhoseManager(async () => undefined as never);
     const properties = (tool.inputSchema as { properties: Record<string, unknown> })
       .properties;
     expect(properties.sandbox_permissions).toMatchObject({
