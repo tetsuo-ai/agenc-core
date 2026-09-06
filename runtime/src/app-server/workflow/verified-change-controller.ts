@@ -2579,6 +2579,11 @@ function buildVerifyAgentPrompt(
     "You are an ADVERSARIAL verification agent for a proposed code change.",
     "Independently verify the change in the current worktree against the goal.",
     "Re-run spot checks; do not trust the implementer's claims.",
+    // Soak F65: the verifier wrote its fixtures to /tmp and by redirection into
+    // tracked paths, and the sandbox refused both; say where scratch may go.
+    "Write any scratch files or fixtures you need under `tmp/` inside the worktree:",
+    "the sandbox refuses writes outside the workspace (including /tmp) and shell",
+    "redirection into other workspace paths.",
     "",
     "## Goal",
     spec.goal,

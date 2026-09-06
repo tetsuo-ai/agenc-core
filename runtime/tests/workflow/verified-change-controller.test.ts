@@ -594,6 +594,16 @@ beforeEach(() => {
   harness = makeHarness();
 });
 
+describe("verifier prompt", () => {
+  it("tells the verifier where scratch files may go", async () => {
+    // Soak F65: a verifier wrote fixtures to /tmp and the sandbox refused them.
+    await runToTerminal(harness);
+    const verify = harness.spawner.spawns.find((spawn) => spawn.kind === "verify_agent");
+    expect(verify?.prompt).toContain("under `tmp/` inside the worktree");
+    expect(verify?.prompt).toContain("refuses writes outside the workspace");
+  });
+});
+
 describe("permission mode at start", () => {
   // Desktop soak F63: a goal started from the app in default mode planned, then
   // both implement attempts died because no approver existed for the headless
