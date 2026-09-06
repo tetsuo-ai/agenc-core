@@ -608,12 +608,71 @@ function createStateBackup(
   }
 }
 
+type StateFileListener = (current: Stats, previous: Stats) => void;
 type WatchFile = (
   path: string,
   options: { readonly interval: number; readonly persistent: boolean },
-  listener: (current: Stats, previous: Stats) => void,
+  listener: StateFileListener,
 ) => void;
-type UnwatchFile = (path: string) => void;
+type UnwatchFile = (path: string, listener?: StateFileListener) => void;
+
+/**
+ * One OS-level poller per state file, however many repositories watch it.
+ *
+ * Every `ConfigStore` owns a repository, and the daemon builds one per session
+ * bootstrap and per permission-settings load. Each used to call
+ * `fs.watchFile` itself, which adds one more change listener to the single
+ * `StatWatcher` node keeps per path: the listener count grew with every
+ * session for the life of the process (the `MaxListenersExceededWarning: 11
+ * change listeners added to [StatWatcher]` in the daemon log), and a
+ * repository closing called `fs.unwatchFile(path)` without its listener, which
+ * removed every other repository's listener as well. The registry subscribes
+ * the path once, fans the change out to each live repository, and stops the
+ * poller when the last one closes.
+ */
+export function createSharedFileWatch(primitives: {
+  readonly watchFile: WatchFile;
+  readonly unwatchFile: UnwatchFile;
+}): {
+  readonly watchFile: WatchFile;
+  readonly unwatchFile: UnwatchFile;
+  readonly activeWatchCount: () => number;
+} {
+  const watches = new Map<
+    string,
+    { readonly listeners: Set<StateFileListener>; readonly dispatch: StateFileListener }
+  >();
+  return {
+    watchFile(path, options, listener) {
+      let watch = watches.get(path);
+      if (watch === undefined) {
+        const listeners = new Set<StateFileListener>();
+        const dispatch: StateFileListener = (current, previous) => {
+          for (const each of [...listeners]) each(current, previous);
+        };
+        watch = { listeners, dispatch };
+        watches.set(path, watch);
+        primitives.watchFile(path, options, dispatch);
+      }
+      watch.listeners.add(listener);
+    },
+    unwatchFile(path, listener) {
+      const watch = watches.get(path);
+      if (watch === undefined) return;
+      if (listener === undefined) watch.listeners.clear();
+      else watch.listeners.delete(listener);
+      if (watch.listeners.size > 0) return;
+      watches.delete(path);
+      primitives.unwatchFile(path, watch.dispatch);
+    },
+    activeWatchCount: () => watches.size,
+  };
+}
+
+const SHARED_STATE_FILE_WATCH = createSharedFileWatch({
+  watchFile: nodeWatchFile,
+  unwatchFile: nodeUnwatchFile,
+});
 
 export interface RuntimeStateRepositoryOptions {
   /** Tests default to isolated in-memory state; disk tests opt in explicitly. */
@@ -733,6 +792,7 @@ export class RuntimeStateRepository {
   readonly #watchFile: WatchFile;
   readonly #unwatchFile: UnwatchFile;
   readonly #freshnessPollMs: number;
+  #watchListener: StateFileListener | undefined;
   #cache: StateCache = { loaded: false, config: null };
   #memoryState: GlobalRuntimeState = immutableGlobalState({});
   #watcherStarted = false;
@@ -746,8 +806,9 @@ export class RuntimeStateRepository {
     this.homeContext = Object.freeze({ ...homeContext });
     this.#storage = options.storage ??
       (process.env.NODE_ENV === "test" ? "memory" : "disk");
-    this.#watchFile = options.watchFile ?? nodeWatchFile;
-    this.#unwatchFile = options.unwatchFile ?? nodeUnwatchFile;
+    this.#watchFile = options.watchFile ?? SHARED_STATE_FILE_WATCH.watchFile;
+    this.#unwatchFile =
+      options.unwatchFile ?? SHARED_STATE_FILE_WATCH.unwatchFile;
     this.#freshnessPollMs = options.freshnessPollMs ?? STATE_FRESHNESS_POLL_MS;
   }
 
@@ -905,7 +966,8 @@ export class RuntimeStateRepository {
     this.#closed = true;
     this.#refreshGeneration += 1;
     if (this.#watcherStarted) {
-      this.#unwatchFile(this.statePath);
+      this.#unwatchFile(this.statePath, this.#watchListener);
+      this.#watchListener = undefined;
       this.#watcherStarted = false;
     }
   }
@@ -937,10 +999,11 @@ export class RuntimeStateRepository {
   #startFreshnessWatcher(): void {
     if (this.#watcherStarted || this.#closed || this.#storage === "memory") return;
     this.#watcherStarted = true;
+    this.#watchListener = () => this.#refreshAfterWatchEvent();
     this.#watchFile(
       this.statePath,
       { interval: this.#freshnessPollMs, persistent: false },
-      () => this.#refreshAfterWatchEvent(),
+      this.#watchListener,
     );
     registerCleanup(async () => this.close());
   }
