@@ -5033,7 +5033,7 @@ snapshot_max_bytes = 64
     });
     expect(agentList.agents[0]).toMatchObject({
       agentId: "run-other",
-      status: "running",
+      status: "idle",
       metadata: {
         recovery: {
           runStatus: "blocked",
