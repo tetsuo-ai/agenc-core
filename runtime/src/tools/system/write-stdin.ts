@@ -14,6 +14,7 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
   confirmedNoEffectDisposition,
   runtimeSandboxForExec,
+  SANDBOX_PERMISSION_INPUT_PROPERTIES,
 } from "./exec-command.js";
 import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 
@@ -135,40 +136,11 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           type: "number",
           description: "Maximum output tokens to return.",
         },
+        ...SANDBOX_PERMISSION_INPUT_PROPERTIES,
         sandbox_permissions: {
-          type: "string",
-          enum: [
-            "default",
-            "require_escalated",
-            "with_additional_permissions",
-          ],
+          ...SANDBOX_PERMISSION_INPUT_PROPERTIES.sandbox_permissions,
           description:
             "Sandbox escalation mode. A session started by exec_command with sandbox_permissions runs in that sandbox; pass the same value here to reach it.",
-        },
-        additional_permissions: {
-          type: "object",
-          properties: {
-            network: {
-              type: "object",
-              properties: { enabled: { type: "boolean" } },
-              additionalProperties: false,
-            },
-            file_system: {
-              type: "object",
-              properties: {
-                read: { type: "array", items: { type: "string" } },
-                write: { type: "array", items: { type: "string" } },
-              },
-              additionalProperties: false,
-            },
-          },
-          additionalProperties: false,
-          description:
-            "Scoped permissions to request alongside sandbox_permissions \"with_additional_permissions\".",
-        },
-        justification: {
-          type: "string",
-          description: "Why elevated execution is needed, when applicable.",
         },
       },
       required: ["session_id"],

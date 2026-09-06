@@ -88,6 +88,49 @@ function isMcpShellPlaceholderCommand(command: string): boolean {
   );
 }
 
+/**
+ * The sandbox permission fields a tool takes when it may need a wider sandbox
+ * than the turn's default: exec_command for the command it starts, write_stdin
+ * for a session exec_command started that way. The orchestrator reads them
+ * from any tool's arguments.
+ */
+export const SANDBOX_PERMISSION_INPUT_PROPERTIES = {
+  sandbox_permissions: {
+    // Only the three documented modes. The former `{type:"object"}`
+    // alternative invited a shape no parser accepted, so a model could
+    // send an escalation request that was discarded without a word.
+    type: "string",
+    enum: ["default", "require_escalated", "with_additional_permissions"],
+    description:
+      "Sandbox escalation mode. Scoped permissions go in additional_permissions.",
+  },
+  additional_permissions: {
+    type: "object",
+    properties: {
+      network: {
+        type: "object",
+        properties: { enabled: { type: "boolean" } },
+        additionalProperties: false,
+      },
+      file_system: {
+        type: "object",
+        properties: {
+          read: { type: "array", items: { type: "string" } },
+          write: { type: "array", items: { type: "string" } },
+        },
+        additionalProperties: false,
+      },
+    },
+    additionalProperties: false,
+    description:
+      'Scoped permissions to request alongside sandbox_permissions "with_additional_permissions".',
+  },
+  justification: {
+    type: "string",
+    description: "Why elevated execution is needed, when applicable.",
+  },
+} as const;
+
 export function runtimeSandboxForExec(
   args: Record<string, unknown>,
   fallbackCwd: string,
@@ -408,44 +451,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           description:
             "Shell executable to run the command through. Defaults to the user's shell.",
         },
-        sandbox_permissions: {
-          // Only the three documented modes. The former `{type:"object"}`
-          // alternative invited a shape no parser accepted, so a model could
-          // send an escalation request that was discarded without a word.
-          type: "string",
-          enum: [
-            "default",
-            "require_escalated",
-            "with_additional_permissions",
-          ],
-          description:
-            "Sandbox escalation mode. Scoped permissions go in additional_permissions.",
-        },
-        additional_permissions: {
-          type: "object",
-          properties: {
-            network: {
-              type: "object",
-              properties: { enabled: { type: "boolean" } },
-              additionalProperties: false,
-            },
-            file_system: {
-              type: "object",
-              properties: {
-                read: { type: "array", items: { type: "string" } },
-                write: { type: "array", items: { type: "string" } },
-              },
-              additionalProperties: false,
-            },
-          },
-          additionalProperties: false,
-          description:
-            "Scoped permissions to request alongside sandbox_permissions \"with_additional_permissions\".",
-        },
-        justification: {
-          type: "string",
-          description: "Why elevated execution is needed, when applicable.",
-        },
+        ...SANDBOX_PERMISSION_INPUT_PROPERTIES,
         prefix_rule: {
           type: "array",
           items: { type: "string" },
