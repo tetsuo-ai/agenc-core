@@ -4555,15 +4555,15 @@ describe("model-facing tools", () => {
 
       const tooSmall = await wait.execute({ timeout_ms: 5_000 });
       expect(tooSmall.isError).toBeUndefined();
-      expect(waitForMailboxChange).toHaveBeenLastCalledWith(10_000);
+      expect(waitForMailboxChange).toHaveBeenLastCalledWith(10_000, undefined, undefined);
 
       const tooLarge = await wait.execute({ timeout_ms: 3_600_001 });
       expect(tooLarge.isError).toBeUndefined();
-      expect(waitForMailboxChange).toHaveBeenLastCalledWith(3_600_000);
+      expect(waitForMailboxChange).toHaveBeenLastCalledWith(3_600_000, undefined, undefined);
 
       const inRange = await wait.execute({ timeout_ms: 45_000 });
       expect(inRange.isError).toBeUndefined();
-      expect(waitForMailboxChange).toHaveBeenLastCalledWith(45_000);
+      expect(waitForMailboxChange).toHaveBeenLastCalledWith(45_000, undefined, undefined);
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
@@ -4654,7 +4654,7 @@ describe("model-facing tools", () => {
       consecutive_timeouts: 1,
       waited_ms: 10_000,
     });
-    expect(waitForMailboxChange).toHaveBeenCalledWith(10_000);
+    expect(waitForMailboxChange).toHaveBeenCalledWith(10_000, undefined, undefined);
   });
 
   it("wait_agent rejects the removed target filter instead of draining unrelated receipts", async () => {
@@ -4708,12 +4708,12 @@ describe("model-facing tools", () => {
     const tooSmall = await wait.execute({ timeout_ms: 100 });
 
     expect(defaulted.isError).toBeUndefined();
-    expect(waitForMailboxChange).toHaveBeenNthCalledWith(1, 1_250);
+    expect(waitForMailboxChange).toHaveBeenNthCalledWith(1, 1_250, undefined, undefined);
     // Out-of-range values clamp to the configured bounds instead of erroring.
     expect(tooLarge.isError).toBeUndefined();
-    expect(waitForMailboxChange).toHaveBeenNthCalledWith(2, 2_000);
+    expect(waitForMailboxChange).toHaveBeenNthCalledWith(2, 2_000, undefined, undefined);
     expect(tooSmall.isError).toBeUndefined();
-    expect(waitForMailboxChange).toHaveBeenNthCalledWith(3, 500);
+    expect(waitForMailboxChange).toHaveBeenNthCalledWith(3, 500, undefined, undefined);
     expect(wait.inputSchema.properties?.timeout_ms).toMatchObject({
       minimum: 500,
       maximum: 2_000,
