@@ -235,6 +235,46 @@ function rolloutBackedParentMessages(input: ForkContextInput): LLMMessage[] {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
+ * Cut a copied parent history at its last paired tool boundary.
+ *
+ * A fork taken while the parent is mid-batch ends with an assistant message
+ * whose tool calls have no results yet (they are still running, or their
+ * results have not reached the rollout). A child that starts from that copy
+ * sends a request the provider rejects (`Invalid tool-turn sequence
+ * (tool_result_missing)`): the memory-extraction subagent lost a run that way
+ * in the desktop soak, 2026-09-06. The unfinished batch belongs to the
+ * parent; the child gets the history up to the message before it.
+ */
+function trimUnansweredToolBatch(
+  messages: ReadonlyArray<LLMMessage>,
+): LLMMessage[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message === undefined) break;
+    if (message.role === "tool") continue;
+    if (
+      message.role === "assistant" &&
+      message.toolCalls !== undefined &&
+      message.toolCalls.length > 0
+    ) {
+      const answered = new Set(
+        messages
+          .slice(index + 1)
+          .filter((later) => later.role === "tool")
+          .map((later) => later.toolCallId),
+      );
+      const unanswered = message.toolCalls.some(
+        (call) => !answered.has(call.id),
+      );
+      return unanswered ? messages.slice(0, index) : [...messages];
+    }
+    // A user or plain assistant message closes every batch before it.
+    break;
+  }
+  return [...messages];
+}
+
+/**
  * Produce the initial message array for a child agent.
  *
  * I-36: before reading the parent's messages, we force-flush the
@@ -278,7 +318,9 @@ export async function forkSubagent(
     };
   }
 
-  const parentMessages = rolloutBackedParentMessages(input);
+  const parentMessages = trimUnansweredToolBatch(
+    rolloutBackedParentMessages(input),
+  );
   validateAgentInvocationMessageSequence(parentMessages);
 
   switch (input.mode.kind) {

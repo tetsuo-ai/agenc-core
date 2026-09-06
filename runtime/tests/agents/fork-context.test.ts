@@ -165,6 +165,53 @@ describe("forkSubagent", () => {
     expect(res.messages.length).toBe(history.length + 1);
   });
 
+  it("a fork taken mid-batch stops before the parent's unanswered tool calls", async () => {
+    // The memory-extraction subagent forked a parent with four running tools
+    // and the provider refused its first request (tool_result_missing).
+    const midBatch: ReadonlyArray<LLMMessage> = [
+      ...history,
+      { role: "user", content: "turn 4 user" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "c1", name: "FileRead", arguments: "{}" },
+          { id: "c2", name: "FileRead", arguments: "{}" },
+        ],
+      },
+      { role: "tool", toolCallId: "c1", toolName: "FileRead", content: "one" },
+    ];
+    const res = await forkSubagent({
+      parent: stubSession(),
+      parentMessages: midBatch,
+      mode: { kind: "full_history" },
+      taskPrompt: "t",
+    });
+    // history + the turn 4 user message + directive; the half-answered batch is left to the parent.
+    expect(res.messages.length).toBe(history.length + 1 + 1);
+    expect(res.messages.some((message) => message.role === "tool")).toBe(false);
+    expect(res.messages.at(-2)).toMatchObject({ role: "user", content: "turn 4 user" });
+  });
+
+  it("a fully answered batch is kept in the fork", async () => {
+    const answered: ReadonlyArray<LLMMessage> = [
+      ...history,
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "c1", name: "FileRead", arguments: "{}" }],
+      },
+      { role: "tool", toolCallId: "c1", toolName: "FileRead", content: "one" },
+    ];
+    const res = await forkSubagent({
+      parent: stubSession(),
+      parentMessages: answered,
+      mode: { kind: "full_history" },
+      taskPrompt: "t",
+    });
+    expect(res.messages.length).toBe(answered.length + 1);
+  });
+
   it("mode=last_n_turns slices from the Nth user turn", async () => {
     const res = await forkSubagent({
       parent: stubSession(),
