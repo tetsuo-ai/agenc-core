@@ -13,6 +13,7 @@
 
 import type { Tool, ToolResult } from "../types.js";
 import { validationErrorToolResult } from "../results.js";
+import { strictArgsRefusal } from "../strict-args.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { sharedServer } from "../concurrency.js";
 
@@ -80,26 +81,11 @@ export function taskStrictArgs(
     readonly required?: ReadonlyArray<string>;
   },
 ): ToolResult | null {
-  const allowed = new Set<string>([
-    ...opts.allowed,
-    "__callId",
-    SESSION_ID_ARG,
-  ]);
-  for (const key of Object.keys(args)) {
-    if (!allowed.has(key)) {
-      return taskValidationResult(`unknown field \`${key}\``, {
-        error: `unknown field \`${key}\``,
-      });
-    }
-  }
-  for (const key of opts.required ?? []) {
-    if (typeof args[key] !== "string" || args[key].trim().length === 0) {
-      return taskValidationResult(`${key} is required`, {
-        error: `${key} is required`,
-      });
-    }
-  }
-  return null;
+  return strictArgsRefusal(
+    args,
+    { ...opts, injected: ["__callId", SESSION_ID_ARG] },
+    (message) => taskValidationResult(message, { error: message }),
+  );
 }
 
 export function stringValue(value: unknown): string | undefined {

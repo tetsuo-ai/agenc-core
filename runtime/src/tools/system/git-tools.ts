@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { dirname, relative, resolve as resolvePath } from "node:path";
 
-import type { Tool } from "../types.js";
+import type { Tool, ToolResult } from "../types.js";
 import { preEffectRefusal } from "../results.js";
 import { collectWorkspaceLanguages } from "./code-intel.js";
 import {
@@ -49,6 +49,33 @@ function runGitToolCommand(
     ...(additionalPermissions !== undefined ? { additionalPermissions } : {}),
     trustedExecutable: true,
   });
+}
+
+/**
+ * The shared start of the worktree create and remove tools. Every refusal
+ * here precedes any git command, so each carries a no-effect verdict (#2190).
+ */
+async function worktreeTarget(
+  config: CodingToolConfig,
+  args: Record<string, unknown>,
+): Promise<{ readonly repoRoot: string; readonly resolved: string } | ToolResult> {
+  const worktreePath = toOptionalString(args.worktreePath);
+  if (!worktreePath) {
+    return preEffectRefusal("system.gitWorktree", "worktreePath must be a non-empty string");
+  }
+  const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
+  if (typeof repoRoot !== "string") return preEffectRefusal("system.gitWorktree", repoRoot.error);
+  const safeWorktreePath = await safePath(
+    worktreePath,
+    resolveToolAllowedPaths(config.allowedPaths, args),
+  );
+  if (!safeWorktreePath.safe) {
+    return preEffectRefusal(
+      "system.gitWorktree",
+      safeWorktreePath.reason ?? "worktreePath is outside allowed directories",
+    );
+  }
+  return { repoRoot, resolved: safeWorktreePath.resolved };
 }
 
 export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[] {
@@ -408,18 +435,9 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       additionalProperties: false,
     },
     async execute(args) {
-      const worktreePath = toOptionalString(args.worktreePath);
-      // Refusals before git runs carry a no-effect verdict (#2190).
-      if (!worktreePath) {
-        return preEffectRefusal("system.gitWorktree", "worktreePath must be a non-empty string");
-      }
-      const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
-      if (typeof repoRoot !== "string") return preEffectRefusal("system.gitWorktree", repoRoot.error);
-      const allowedPaths = resolveToolAllowedPaths(config.allowedPaths, args);
-      const safeWorktreePath = await safePath(worktreePath, allowedPaths);
-      if (!safeWorktreePath.safe) {
-        return errorResult(safeWorktreePath.reason ?? "worktreePath is outside allowed directories");
-      }
+      const target = await worktreeTarget(config, args);
+      if (!("repoRoot" in target)) return target;
+      const { repoRoot, resolved } = target;
       const command = ["-C", repoRoot, "worktree", "add", "--no-checkout"];
       if (args.detached === true) command.push("--detach");
       const branch = toOptionalString(args.branch);
@@ -437,7 +455,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (branch) {
         command.push("-b", branch);
       }
-      command.push(safeWorktreePath.resolved);
+      command.push(resolved);
       if (ref) {
         command.push(ref);
       }
@@ -447,7 +465,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
         repoRoot,
         undefined,
         worktreeMutationPermissions(repoRoot, [
-          dirname(safeWorktreePath.resolved),
+          dirname(resolved),
         ]),
       );
       if (result.exitCode !== 0) {
@@ -457,19 +475,19 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       }
       const checkout = await runGitToolCommand(
         args,
-        ["-C", safeWorktreePath.resolved, "checkout", "HEAD"],
+        ["-C", resolved, "checkout", "HEAD"],
         repoRoot,
         undefined,
-        worktreeCheckoutPermissions(repoRoot, safeWorktreePath.resolved),
+        worktreeCheckoutPermissions(repoRoot, resolved),
       );
       if (checkout.exitCode !== 0) {
         await runGitToolCommand(
           args,
-          ["-C", repoRoot, "worktree", "remove", "--force", safeWorktreePath.resolved],
+          ["-C", repoRoot, "worktree", "remove", "--force", resolved],
           repoRoot,
           undefined,
           worktreeMutationPermissions(repoRoot, [
-            dirname(safeWorktreePath.resolved),
+            dirname(resolved),
           ]),
         );
         return errorResult(
@@ -478,7 +496,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       }
       return okResult({
         repoRoot,
-        worktreePath: safeWorktreePath.resolved,
+        worktreePath: resolved,
         branch: branch ?? null,
         ref: ref ?? null,
         detached: args.detached === true,
@@ -508,27 +526,18 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       additionalProperties: false,
     },
     async execute(args) {
-      const worktreePath = toOptionalString(args.worktreePath);
-      // Refusals before git runs carry a no-effect verdict (#2190).
-      if (!worktreePath) {
-        return preEffectRefusal("system.gitWorktree", "worktreePath must be a non-empty string");
-      }
-      const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
-      if (typeof repoRoot !== "string") return preEffectRefusal("system.gitWorktree", repoRoot.error);
-      const allowedPaths = resolveToolAllowedPaths(config.allowedPaths, args);
-      const safeWorktreePath = await safePath(worktreePath, allowedPaths);
-      if (!safeWorktreePath.safe) {
-        return errorResult(safeWorktreePath.reason ?? "worktreePath is outside allowed directories");
-      }
+      const target = await worktreeTarget(config, args);
+      if (!("repoRoot" in target)) return target;
+      const { repoRoot, resolved } = target;
       const status = await runGitToolCommand(
         args,
-        ["-C", safeWorktreePath.resolved, "status", "--porcelain", "--untracked-files=normal"],
-        safeWorktreePath.resolved,
+        ["-C", resolved, "status", "--porcelain", "--untracked-files=normal"],
+        resolved,
       );
       const dirty = status.exitCode === 0 && status.stdout.trim().length > 0;
       if (dirty && args.force !== true) {
         return errorResult(
-          `Worktree ${safeWorktreePath.resolved} has uncommitted changes; re-run with force=true to remove it.`,
+          `Worktree ${resolved} has uncommitted changes; re-run with force=true to remove it.`,
         );
       }
       const result = await runGitToolCommand(
@@ -539,11 +548,11 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
           "worktree",
           "remove",
           ...(args.force === true ? ["--force"] : []),
-          safeWorktreePath.resolved,
+          resolved,
         ],
         repoRoot,
         undefined,
-        worktreeMutationPermissions(repoRoot, [safeWorktreePath.resolved]),
+        worktreeMutationPermissions(repoRoot, [resolved]),
       );
       if (result.exitCode !== 0) {
         return errorResult(
@@ -552,7 +561,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       }
       return okResult({
         repoRoot,
-        worktreePath: safeWorktreePath.resolved,
+        worktreePath: resolved,
         dirty,
         removed: true,
       });

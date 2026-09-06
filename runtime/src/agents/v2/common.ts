@@ -26,6 +26,7 @@ import type {
 } from "../../tools/types.js";
 import { safeStringify } from "../../tools/types.js";
 import { validationErrorToolResult } from "../../tools/results.js";
+import { strictArgsRefusal } from "../../tools/strict-args.js";
 
 export const MIN_WAIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
@@ -145,24 +146,15 @@ export function strictArgs(
     readonly required?: ReadonlyArray<string>;
   },
 ): ToolResult | null {
-  const allowed = new Set<string>([
-    ...opts.allowed,
-    "__callId",
-    SESSION_ID_ARG,
-    SESSION_ID_SIG_ARG,
-  ]);
-  for (const key of Object.keys(args)) {
-    if (!allowed.has(key)) {
-      return refusal({ error: `unknown field \`${key}\`` });
-    }
-  }
-  for (const key of opts.required ?? []) {
-    const value = args[key];
-    if (typeof value !== "string") {
-      return refusal({ error: `${key} is required` });
-    }
-  }
-  return null;
+  return strictArgsRefusal(
+    args,
+    {
+      ...opts,
+      injected: ["__callId", SESSION_ID_ARG, SESSION_ID_SIG_ARG],
+      allowBlank: true,
+    },
+    (message) => refusal({ error: message }),
+  );
 }
 
 /**
