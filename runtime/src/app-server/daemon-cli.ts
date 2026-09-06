@@ -18,6 +18,7 @@ import {
   openSync,
   readFileSync,
   statSync,
+  renameSync,
 } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
@@ -656,6 +657,47 @@ export function resolveAgenCDaemonCookiePath(
  * undiagnosable without rebuilding the runtime.
  */
 export const AGENC_DAEMON_SPAWN_STDERR_FILENAME = "daemon-spawn-stderr.log";
+
+/**
+ * The previous spawn's stderr capture. Each spawn moves the current file here
+ * before it opens a fresh one, so a daemon that died silently and was
+ * replaced by an autostart three seconds later still leaves its last words
+ * on disk instead of having them truncated by the spawn that replaced it.
+ */
+export const AGENC_DAEMON_SPAWN_STDERR_PREVIOUS_FILENAME =
+  "daemon-spawn-stderr.prev.log";
+
+export function resolveAgenCDaemonSpawnStderrPreviousPath(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  return join(
+    resolveAgenCDaemonHome(env, userHome),
+    AGENC_DAEMON_SPAWN_STDERR_PREVIOUS_FILENAME,
+  );
+}
+
+/**
+ * Open the stderr capture for a daemon spawn: keep the previous capture as
+ * the `.prev.log` sibling, then open the current path truncated. Best-effort:
+ * a failure to keep or to open returns `"ignore"` and the spawn proceeds
+ * without the capture, as before.
+ */
+export function openDaemonSpawnStderrCapture(
+  path: string,
+  previousPath: string,
+): number | "ignore" {
+  try {
+    renameSync(path, previousPath);
+  } catch {
+    /* no previous capture, or it cannot be kept; the current one still opens */
+  }
+  try {
+    return openSync(path, "w", 0o600);
+  } catch {
+    return "ignore";
+  }
+}
 
 export function resolveAgenCDaemonSpawnStderrPath(
   env: NodeJS.ProcessEnv = process.env,
@@ -5813,19 +5855,14 @@ export function createNodeDaemonCliHost(
       }
       // Capture the child's raw stderr until its log sink takes over: a
       // crash before the sink installs (loader failure, fatal V8 error,
-      // top-level throw) is otherwise unobservable. A plain file fd keeps
-      // this short-lived parent decoupled (no pipe); truncated per spawn so
-      // it only ever holds the latest attempt's early stderr.
-      let stderrFd: number | "ignore" = "ignore";
-      try {
-        stderrFd = openSync(
-          resolveAgenCDaemonSpawnStderrPath(env, userHome),
-          "w",
-          0o600,
-        );
-      } catch {
-        /* capture is best-effort; spawn proceeds without it */
-      }
+      // top-level throw) is otherwise unobservable, and the fd stays the
+      // daemon's stderr for its whole life, so a late fatal lands here too.
+      // A plain file fd keeps this short-lived parent decoupled (no pipe).
+      // The previous attempt's capture is kept as the `.prev.log` sibling.
+      const stderrFd = openDaemonSpawnStderrCapture(
+        resolveAgenCDaemonSpawnStderrPath(env, userHome),
+        resolveAgenCDaemonSpawnStderrPreviousPath(env, userHome),
+      );
       const startupGuardToken = randomUUID();
       const childEnv = {
         ...env,
