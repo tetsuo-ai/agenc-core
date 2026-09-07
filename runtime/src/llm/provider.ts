@@ -80,7 +80,7 @@ import {
 export { resolveBuiltInProviderSlug } from "./registry/provider-info.js";
 import {
   forceRefreshXaiOauthCredentials,
-  isXaiOauthBearer,
+  readXaiOauthAccessToken,
   xaiOauthRequiresRelogin,
 } from "../utils/xaiOauthCredentials.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
@@ -1614,10 +1614,19 @@ export function createProvider(
       // X means subscription access; leftover XAI_API_KEY must not shadow it.
       // Bearer refreshes via the adapter's I-14 401-recovery hook.
       const factoryApiKey = resolveFactoryApiKey(opts);
-      const usesXaiOauth =
-        opts.credentialHome !== undefined &&
-        isXaiOauthBearer(opts.credentialHome, factoryApiKey);
-      const apiKey = factoryApiKey ?? requireFactoryApiKey("grok", opts);
+      // The stored grant wins whenever it exists, here and not only in the
+      // option resolver upstream. Soak F76: a provider re-created from
+      // another instance's recorded factory options carries that instance's
+      // bearer snapshot; once the stored grant has been refreshed the
+      // snapshot no longer matches, and treating it as an API key sends a
+      // dead token with no refresh path (xAI answers 403).
+      const storedOauthBearer =
+        opts.credentialHome !== undefined
+          ? readXaiOauthAccessToken(opts.credentialHome)
+          : undefined;
+      const usesXaiOauth = storedOauthBearer !== undefined;
+      const apiKey =
+        storedOauthBearer ?? factoryApiKey ?? requireFactoryApiKey("grok", opts);
       const model = requireModel("grok", opts.model, defaultModelFor("grok"));
       const cfg: GrokProviderConfig = {
         ...buildCommonConfig(extra),

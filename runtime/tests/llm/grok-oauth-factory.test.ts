@@ -32,6 +32,8 @@ async function importProviderModule() {
   ])
   return {
     ...providerModule,
+    /** The factory itself, without the option resolver's OAuth substitution. */
+    createProviderRaw: providerModule.createProvider,
     createProvider: (
       provider: 'grok',
       requested: Parameters<typeof providerModule.createProvider>[1],
@@ -235,4 +237,53 @@ test('API-key mode keeps the no-refresh default callback', async () => {
     previousError: Object.assign(new Error('401'), { status: 401 }),
   })
   expect(outcome.kind).toBe('skipped')
+})
+
+test('a stale bearer snapshot passed as apiKey does not demote the raw factory to API-key mode', async () => {
+  // Soak F76: the verified-change reviewer's provider was re-created from
+  // the parent session's recorded factory options, which held the bearer
+  // resolved at run start. The stored grant had been refreshed since, so
+  // the snapshot matched nothing and the raw factory picked API-key mode:
+  // no refresh callbacks, no pre-flight, and xAI answered 403.
+  storedAccessToken = 'oauth-bearer-2'
+  const { createProviderRaw } = await importProviderModule()
+
+  const provider = createProviderRaw('grok', {
+    apiKey: 'oauth-bearer-1',
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  })
+  expect((provider as unknown as { config: { apiKey: string } }).config.apiKey).toBe(
+    'oauth-bearer-2',
+  )
+  // OAuth mode is active: the bearer is refused for a non-xAI host.
+  expect(() =>
+    createProviderRaw('grok', {
+      apiKey: 'oauth-bearer-1',
+      model: 'grok-4.5',
+      credentialHome: CREDENTIAL_HOME,
+      baseURL: 'https://attacker.example/v1',
+    }),
+  ).toThrow(/refusing to send the xAI OAuth bearer/)
+})
+
+test('a provider re-created from recorded factory options after a refresh carries the current grant', async () => {
+  storedAccessToken = 'oauth-bearer-1'
+  const { createProviderRaw, readProviderFactoryOptions } = await importProviderModule()
+  const first = createProviderRaw('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  })
+
+  storedAccessToken = 'oauth-bearer-2'
+  const second = createProviderRaw('grok', {
+    ...readProviderFactoryOptions(first),
+    model: 'grok-4.5',
+  })
+  expect((second as unknown as { config: { apiKey: string } }).config.apiKey).toBe(
+    'oauth-bearer-2',
+  )
+  expect(
+    (second as unknown as { oauthCallbacksInstalled: boolean }).oauthCallbacksInstalled,
+  ).toBe(true)
 })

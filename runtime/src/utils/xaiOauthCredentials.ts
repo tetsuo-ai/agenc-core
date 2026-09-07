@@ -103,18 +103,6 @@ export function readXaiOauthAccessToken(home: HomeContext): string | undefined {
   return blob.accessToken
 }
 
-/** True when `apiKey` is the stored OAuth bearer (vs a real xAI API key). */
-export function isXaiOauthBearer(
-  home: HomeContext,
-  apiKey: string | undefined,
-): boolean {
-  if (!apiKey) return false
-  const blob = readXaiOauthCredentials(home)
-  return blob !== undefined &&
-    blob.quarantinedAt === undefined &&
-    blob.accessToken === apiKey
-}
-
 export function saveXaiOauthCredentials(
   home: HomeContext,
   blob: XaiOauthCredentialBlob,
