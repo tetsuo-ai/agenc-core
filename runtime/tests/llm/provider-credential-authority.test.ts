@@ -380,8 +380,8 @@ describe("provider credential authority", () => {
     expect(
       openAiCredentials.saveOpenAiOauthCredentials(home, {
         apiKey: "stored-openai-platform-key",
-      }).success,
-    ).toBe(true);
+      }),
+    ).toMatchObject({ success: true });
 
     const resolved = providerOptions.resolveProviderCredentialAuthority(
       "openai",
