@@ -365,7 +365,7 @@ describe("reproducible install and release contract", () => {
     expect(powershellJob).toContain('["powershellTestRuntime"]["linux-x64"]');
     expect(powershellJob).toContain("--require-zero-skips");
     expect(powershellJob).toContain("--config vitest.powershell.config.ts");
-    expect(powershellJob).toContain("const expectedTests = 40");
+    expect(powershellJob).toContain("const expectedTests = 51");
     expect(powershellJob).toContain("numTotalTestSuites: 5");
     expect(powershellJob).toContain("numPassedTestSuites: 5");
     for (const testFile of [

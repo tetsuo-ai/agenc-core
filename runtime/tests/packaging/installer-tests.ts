@@ -3770,26 +3770,26 @@ function registerInstallPs1Tests(): void {
       expect(existsSync(windowsPaths(home).installDir)).toBe(false);
     });
 
-    test("PowerShell bounded HTTPS trust rejects malformed manifests and truncated/overrun artifacts without residue", () => {
-      const artifact = makeSyntheticArtifact(work);
-      const fixture = startHttpsFixture(work, trustBoundaryRoutes(artifact, "win"));
-      const fetchRewrite = writeGithubArtifactFetchRewrite(work);
-      try {
-        const cases = [
-          ["oversized-manifest.json", "download exceeds 1048576 byte limit"],
-          ["manifest-length.json", "Content-Length exceeds 1048576 byte limit"],
-          ["invalid-utf8.json", "runtime manifest is not valid UTF-8"],
-          ["short-manifest.json", "download byte count mismatch"],
-          ["overrun-manifest.json", "download exceeds declared"],
-          ["length-manifest.json", "Content-Length mismatch"],
-          ["duplicate-manifest.json", "duplicate runtime manifest artifact"],
-          ["missing-tag-manifest.json", "runtime manifest release identity is invalid"],
-          ["missing-provenance-manifest.json", "runtime manifest build provenance is invalid"],
-          ["detached-artifact-manifest.json", "manifest artifact URL is not canonical"],
-          ["cross-scheme-manifest.json", "remote manifests may only reference HTTPS artifacts"],
-          ["artifact-ceiling-manifest.json", "manifest artifact identity is invalid"],
-        ] as const;
-        for (const [name, expected] of cases) {
+    test.each([
+      ["oversized-manifest.json", "download exceeds 1048576 byte limit"],
+      ["manifest-length.json", "Content-Length exceeds 1048576 byte limit"],
+      ["invalid-utf8.json", "runtime manifest is not valid UTF-8"],
+      ["short-manifest.json", "download byte count mismatch"],
+      ["overrun-manifest.json", "download exceeds declared"],
+      ["length-manifest.json", "Content-Length mismatch"],
+      ["duplicate-manifest.json", "duplicate runtime manifest artifact"],
+      ["missing-tag-manifest.json", "runtime manifest release identity is invalid"],
+      ["missing-provenance-manifest.json", "runtime manifest build provenance is invalid"],
+      ["detached-artifact-manifest.json", "manifest artifact URL is not canonical"],
+      ["cross-scheme-manifest.json", "remote manifests may only reference HTTPS artifacts"],
+      ["artifact-ceiling-manifest.json", "manifest artifact identity is invalid"],
+    ] as const)(
+      "PowerShell bounded HTTPS trust rejects %s without residue",
+      (name, expected) => {
+        const artifact = makeSyntheticArtifact(work);
+        const fixture = startHttpsFixture(work, trustBoundaryRoutes(artifact, "win"));
+        const fetchRewrite = writeGithubArtifactFetchRewrite(work);
+        try {
           const home = join(work, `powershell-${name}`);
           mkdirSync(home, { recursive: true, mode: 0o700 });
           const result = runPowerShell(
@@ -3810,11 +3810,12 @@ function registerInstallPs1Tests(): void {
           expect(result.status, `${name}: ${output}`).not.toBe(0);
           expect(output, name).toContain(expected);
           expectFailedInstallCleanup(home);
+        } finally {
+          fixture.stop();
         }
-      } finally {
-        fixture.stop();
-      }
-    }, 30_000);
+      },
+      30_000,
+    );
 
     test("PowerShell preserves a custom CMD shim containing only the historical marker", () => {
       const home = join(work, "home");
