@@ -387,8 +387,7 @@ export const WebSearchTool = buildTool({
     return true
   },
   // Read-only: no external effect to settle, so an unknown outcome must not
-  // poison the session. See the note in WebFetchTool for what the
-  // side-effecting default costs.
+  // block later mutations in the session.
   recoveryCategory: 'idempotent',
   // A search is a search: fold the result list into the collapsed group
   // summary instead of printing every hit, matching Grep and Glob.

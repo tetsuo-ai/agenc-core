@@ -6,7 +6,6 @@
  * 2. Sandbox settings consume the filtered canonical authority
  * 3. Plugin git clone/pull hooks disabled
  * 4. ANTHROPIC_FOUNDRY_API_KEY removed from SAFE_ENV_VARS
- * 5. WebFetch SSRF protection via ssrfGuardedLookup
  */
 
 import { describe, test, expect } from 'bun:test'
@@ -106,35 +105,5 @@ describe('SAFE_ENV_VARS excludes credentials', () => {
     const safeEnd = content.indexOf('])', safeStart)
     const safeSection = content.slice(safeStart, safeEnd)
     expect(safeSection).not.toContain('ANTHROPIC_FOUNDRY_API_KEY')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Fix 5: WebFetch SSRF protection
-// ---------------------------------------------------------------------------
-describe('WebFetch SSRF guard', () => {
-  test('getWithPermittedRedirects uses ssrfGuardedLookup', async () => {
-    const content = await file('tools/WebFetchTool/utils.ts').text()
-    expect(content).toContain(
-      "import { ssrfGuardedLookup } from '../../utils/hooks/ssrfGuard.js'",
-    )
-    // Direct requests pin the connection to an SSRF-validated address. When
-    // an explicit proxy is active, target DNS belongs to the proxy instead.
-    const fnStart = content.indexOf(
-      'export async function getWithPermittedRedirects(',
-    )
-    const fnSection = content.slice(
-      fnStart,
-      content.indexOf('export async function getURLMarkdownContent(', fnStart),
-    )
-    expect(fnSection).toContain(
-      '!shouldBypassProxy(url, getNoProxy(environment))',
-    )
-    expect(fnSection).toMatch(
-      /lookup:\s*envProxyActive\s*\?\s*undefined\s*:\s*ssrfGuardedLookup/,
-    )
-    expect(fnSection).toMatch(
-      /envProxyActive[\s\S]*?getProxyFetchOptions\(\{ environment \}\)[\s\S]*?dispatcher: getSsrfGuardedFetchDispatcher\(\)/,
-    )
   })
 })

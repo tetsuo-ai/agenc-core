@@ -103,7 +103,6 @@ const toolContractExportFiles = [
   "src/tools/SyntheticOutputTool/SyntheticOutputTool.ts",
   "src/tools/TeamCreateTool/TeamCreateTool.ts",
   "src/tools/TeamDeleteTool/TeamDeleteTool.ts",
-  "src/tools/WebFetchTool/utils.ts",
   "src/tools/WebFetchTool/prompt.ts",
   "src/tools/WebSearchTool/WebSearchTool.ts",
   "src/tools/WebSearchTool/providers/custom.ts",

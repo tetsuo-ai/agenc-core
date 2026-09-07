@@ -49,7 +49,6 @@ describe("config layer authority architecture", () => {
 
   test("managed-only consumers project the managed source explicitly", () => {
     for (const relativePath of [
-      "tools/WebFetchTool/utils.ts",
       "memory/agencmd.ts",
     ]) {
       expect(source(relativePath), relativePath).toContain(
