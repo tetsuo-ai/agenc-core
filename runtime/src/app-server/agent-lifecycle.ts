@@ -1772,7 +1772,9 @@ export class AgenCDaemonAgentManager {
     const runner = this.#runner;
     const stopRunner = runner?.stopAgent?.bind(runner);
     let transitionAt: string | undefined;
-    await this.#refreshAgentFromRunner(agentId);
+    // Snapshot availability cannot veto teardown. A failed refresh leaves the
+    // last known state available for selecting and stopping this runner.
+    await this.#refreshAgentFromRunner(agentId).catch(() => {});
     const target = await this.#state.with((state) => {
       const refreshed = state.agents.get(agentId);
       if (refreshed === undefined) {
@@ -2217,7 +2219,8 @@ export class AgenCDaemonAgentManager {
     } catch (error) {
       createDrainFailure = error;
     }
-    await this.#refreshAgentsFromRunner();
+    // Shutdown must reach every retained runner even when a status read fails.
+    await this.#refreshAgentsFromRunner().catch(() => {});
     const targets = await this.#state.with((state) => {
       return [...state.agents.values()].filter(isActiveAgent).map((agent) => ({
         agentId: agent.agentId,

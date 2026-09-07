@@ -7,6 +7,67 @@ import type { AgenCBackgroundAgentSnapshot } from "../../src/app-server/backgrou
 const timestamp = "2026-09-07T00:00:00.000Z";
 
 describe("daemon lifecycle lock boundaries", () => {
+  it.each(["stopAgent", "stopAll"] as const)(
+    "%s still tears down a runner whose snapshot hangs",
+    async (method) => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const stopAgent = vi.fn(async () => {});
+      const manager = new AgenCDaemonAgentManager({
+        runner: {
+          startAgent: async () => {
+            throw new Error("unexpected start");
+          },
+          stopAgent,
+          getAgentSnapshot: async () => {
+            entered.resolve();
+            await release.promise;
+            return { status: "running", lastActiveAt: timestamp };
+          },
+        },
+      });
+      await manager.restoreAgent({
+        agentId: "stalled-snapshot",
+        objective: "stop me",
+        runtimeAvailable: true,
+      });
+      if (method === "stopAll") {
+        await manager.restoreAgent({
+          agentId: "second-agent",
+          objective: "stop me too",
+          runtimeAvailable: true,
+        });
+      }
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const stopping = (
+        method === "stopAgent"
+          ? manager.stopAgent({ agentId: "stalled-snapshot" })
+          : manager.stopAll()
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      try {
+        await entered.promise;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(stopAgent).toHaveBeenCalledWith(
+          "stalled-snapshot",
+          expect.any(String),
+        );
+        if (method === "stopAll") {
+          expect(stopAgent).toHaveBeenCalledWith("second-agent", "daemon_shutdown");
+        }
+        expect(await stopping).toBeUndefined();
+        expect(await manager.getAgent("stalled-snapshot")).toMatchObject({
+          status: "stopped",
+        });
+      } finally {
+        release.resolve();
+        await stopping;
+        vi.useRealTimers();
+      }
+    },
+  );
   it.each(["session lookup", "status persistence"] as const)(
     "keeps unrelated agents readable during a blocked %s",
     async (operation) => {
