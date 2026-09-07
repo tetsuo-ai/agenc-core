@@ -20,12 +20,12 @@
 import { describe, expect, test } from "vitest";
 
 import { boundInMemoryToolResultContent } from "../../src/session/run-turn-query-messages.js";
+import { CLEARED_MARKER as BARE_MARKER } from "./helpers/cleared-tool-result-marker.js";
 import type { LLMMessage } from "../../src/llm/types.js";
 
 const BIG = "x".repeat(20_000);
 const MICROCOMPACT_MARKER =
   "[microcompact:1] Older tool output compressed; original length 20,000 characters.";
-const BARE_MARKER = "[Old tool result content cleared]";
 
 // `exec_command` is compactable but not path-bearing, so these fixtures
 // exercise the keep-recent window without the latest-read-per-path retention
@@ -49,6 +49,24 @@ function shellResult(id: string, content: string): LLMMessage {
   } as LLMMessage;
 }
 
+/** The tool results of a history, as the outbound projection would carry them. */
+function outboundOf(
+  messages: readonly LLMMessage[],
+  rewrite: (message: LLMMessage) => LLMMessage = (message) => ({ ...message }),
+): LLMMessage[] {
+  return messages
+    .filter((message) => message.toolCallId !== undefined)
+    .map(rewrite);
+}
+
+/** Bound the whole history as `syncSessionState` does once everything is persisted. */
+function boundAll(
+  messages: LLMMessage[],
+  outbound: readonly LLMMessage[] | undefined,
+): number {
+  return boundInMemoryToolResultContent(messages, messages.length, outbound);
+}
+
 /** Enough results that the oldest fall outside the keep-recent window. */
 function historyOfReads(count: number): LLMMessage[] {
   const messages: LLMMessage[] = [];
@@ -63,15 +81,7 @@ describe("boundInMemoryToolResultContent mirrors the outbound view", () => {
   test("a result the request still carries in full is left full in memory", () => {
     const messages = historyOfReads(12);
     // The wire carried every result whole: nothing may be cleared, however old.
-    const outbound = messages
-      .filter((message) => message.toolCallId !== undefined)
-      .map((message) => ({ ...message }));
-
-    const cleared = boundInMemoryToolResultContent(
-      messages,
-      messages.length,
-      outbound,
-    );
+    const cleared = boundAll(messages, outboundOf(messages));
 
     expect(cleared).toBe(0);
     const bodies = messages.filter(
@@ -85,18 +95,13 @@ describe("boundInMemoryToolResultContent mirrors the outbound view", () => {
 
   test("a result the request carried shrunken is adopted byte for byte", () => {
     const messages = historyOfReads(12);
-    const outbound = messages
-      .filter((message) => message.toolCallId !== undefined)
-      .map((message) =>
+    const cleared = boundAll(
+      messages,
+      outboundOf(messages, (message) =>
         message.toolCallId === "call_1"
           ? { ...message, content: MICROCOMPACT_MARKER }
           : { ...message },
-      );
-
-    const cleared = boundInMemoryToolResultContent(
-      messages,
-      messages.length,
-      outbound,
+      ),
     );
 
     expect(cleared).toBe(1);
@@ -134,15 +139,7 @@ describe("boundInMemoryToolResultContent mirrors the outbound view", () => {
     );
     const messages = [...before, boundary, ...after];
     // The outbound view starts after the boundary and carried everything whole.
-    const outbound = after
-      .filter((message) => message.toolCallId !== undefined)
-      .map((message) => ({ ...message }));
-
-    const cleared = boundInMemoryToolResultContent(
-      messages,
-      messages.length,
-      outbound,
-    );
+    const cleared = boundAll(messages, outboundOf(after));
 
     // Exactly the three pre-boundary results: never sent again, so free.
     expect(cleared).toBe(3);
@@ -160,17 +157,11 @@ describe("boundInMemoryToolResultContent mirrors the outbound view", () => {
     const messages = historyOfReads(12);
     // No boundary and an outbound view that simply does not mention call_1:
     // the safe reading is that a future request may still carry it.
-    const outbound = messages
-      .filter(
-        (message) =>
-          message.toolCallId !== undefined && message.toolCallId !== "call_1",
-      )
-      .map((message) => ({ ...message }));
-
-    const cleared = boundInMemoryToolResultContent(
+    const cleared = boundAll(
       messages,
-      messages.length,
-      outbound,
+      outboundOf(messages).filter(
+        (message) => message.toolCallId !== "call_1",
+      ),
     );
 
     expect(cleared).toBe(0);
@@ -180,23 +171,22 @@ describe("boundInMemoryToolResultContent mirrors the outbound view", () => {
 
   test("not-yet-persisted tail messages are never touched", () => {
     const messages = historyOfReads(12);
-    const outbound = messages
-      .filter((message) => message.toolCallId !== undefined)
-      .map((message) => ({ ...message, content: MICROCOMPACT_MARKER }));
-
     // boundUpToIndex 0: nothing has been persisted yet.
-    const cleared = boundInMemoryToolResultContent(messages, 0, outbound);
+    const cleared = boundInMemoryToolResultContent(
+      messages,
+      0,
+      outboundOf(messages, (message) => ({
+        ...message,
+        content: MICROCOMPACT_MARKER,
+      })),
+    );
 
     expect(cleared).toBe(0);
   });
 
   test("no outbound view at all clears nothing without a boundary", () => {
     const messages = historyOfReads(12);
-    const cleared = boundInMemoryToolResultContent(
-      messages,
-      messages.length,
-      undefined,
-    );
+    const cleared = boundAll(messages, undefined);
     expect(cleared).toBe(0);
   });
 });
