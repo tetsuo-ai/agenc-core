@@ -44,6 +44,10 @@ import {
 import { asRecord } from "../utils/record.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
+  toRuntimeTools,
+  type RuntimeTool as AgenCRuntimeTool,
+} from "../llm/runtime-tool-projection.js";
+import {
   getAutoCompactThresholdForEnvironment,
   getEffectiveContextWindowSizeForEnvironment,
   isAutoCompactEnabledForEnvironment,
@@ -460,14 +464,6 @@ interface AgenCToolUseContext {
   readonly deps?: { readonly cleanup?: CompactCleanupDeps };
 }
 
-type AgenCRuntimeTool = LLMTool & {
-  readonly name: string;
-  readonly description: string;
-  readonly inputJSONSchema: Record<string, unknown>;
-  readonly isMcp: boolean;
-  readonly maxResultSizeChars: number;
-};
-
 function buildAgenCToolUseContext(
   session: Session,
   ctx: TurnContext,
@@ -509,7 +505,10 @@ function buildAgenCToolUseContext(
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,
-      tools: toAgenCRuntimeTools(session.services.registry.toLLMTools()),
+      tools: toRuntimeTools(
+        session.services.registry.toLLMTools(),
+        DEFAULT_MAX_RESULT_SIZE_CHARS,
+      ),
       mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
       contextWindowTokens: model.contextWindowTokens,
       ...(model.maxOutputTokens !== undefined
@@ -571,20 +570,6 @@ function buildAgenCToolUseContext(
     provider: session.services.provider,
     cwd,
   };
-}
-
-function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
-  return tools.map((tool) => {
-    const name = tool.function.name;
-    return {
-      ...tool,
-      name,
-      description: tool.function.description,
-      inputJSONSchema: tool.function.parameters,
-      isMcp: name.startsWith("mcp__"),
-      maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
-    };
-  });
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {

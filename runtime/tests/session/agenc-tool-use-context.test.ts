@@ -46,6 +46,32 @@ function createSession(overrides: Record<string, unknown> = {}) {
 }
 
 describe("buildAgenCToolUseContext", () => {
+  test("preserves builtin and MCP metadata from the selected registry input", () => {
+    const tools = ["system.echo", "mcp__fixture__echo"].map((name) => ({
+      type: "function" as const,
+      function: {
+        name,
+        description: `Describe ${name}`,
+        parameters: { type: "object", properties: { text: { type: "string" } } },
+      },
+      annotations: { readOnly: true },
+    }));
+    const context = buildAgenCToolUseContext(
+      createSession() as unknown as Session,
+      createTurnContext(),
+      { llmTools: tools },
+    );
+    expect(context.options.tools.map((tool) => tool.name))
+      .toEqual(tools.map((tool) => tool.function.name));
+    expect(context.options.tools.map((tool) => tool.isMcp)).toEqual([false, true]);
+    for (const [index, projected] of context.options.tools.entries()) {
+      expect(projected.function).toBe(tools[index]!.function);
+      expect(projected.description).toBe(tools[index]!.function.description);
+      expect(projected.inputJSONSchema).toBe(tools[index]!.function.parameters);
+      expect(projected).toHaveProperty("annotations", tools[index]!.annotations);
+    }
+  });
+
   test("carries the exact admitted prompt snapshot into tool execution", () => {
     const session = createSession();
     const context = buildAgenCToolUseContext(

@@ -27,7 +27,6 @@ import type {
   LLMProvider,
   LLMProviderStartupPrewarmHandle,
   LLMProviderStartupPrewarmParams,
-  LLMTool,
   LLMUsage,
 } from "../llm/types.js";
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
@@ -43,6 +42,10 @@ import {
 } from "../llm/provider.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
+import {
+  toRuntimeTools,
+  type RuntimeTool as AgentRuntimeTool,
+} from "../llm/runtime-tool-projection.js";
 import type {
   ToolRegistry,
   ToolDispatchResult,
@@ -656,14 +659,6 @@ interface AgentRunContext {
   readonly cwd?: string;
 }
 
-type AgentRuntimeTool = LLMTool & {
-  readonly name: string;
-  readonly description: string;
-  readonly inputJSONSchema: Record<string, unknown>;
-  readonly isMcp: boolean;
-  readonly maxResultSizeChars: number;
-};
-
 interface AgentModelContext {
   readonly model: string;
   readonly contextWindowTokens: number;
@@ -733,7 +728,10 @@ function buildAgentRunContext(
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,
-      tools: toAgentRuntimeTools(session.services.registry.toLLMTools()),
+      tools: toRuntimeTools(
+        session.services.registry.toLLMTools(),
+        DEFAULT_MAX_RESULT_SIZE_CHARS,
+      ),
       mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
       contextWindowTokens: model.contextWindowTokens,
       ...(model.maxOutputTokens !== undefined
@@ -805,20 +803,6 @@ function toAgentModelContext(ctx: TurnContext): AgentModelContext {
       ? { maxOutputTokens: ctx.modelInfo.maxOutputTokens }
       : {}),
   };
-}
-
-function toAgentRuntimeTools(tools: readonly LLMTool[]): AgentRuntimeTool[] {
-  return tools.map((tool) => {
-    const name = tool.function.name;
-    return {
-      ...tool,
-      name,
-      description: tool.function.description,
-      inputJSONSchema: tool.function.parameters,
-      isMcp: name.startsWith("mcp__"),
-      maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
-    };
-  });
 }
 
 function firstNonEmpty(

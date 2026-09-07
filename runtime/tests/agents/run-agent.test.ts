@@ -71,6 +71,8 @@ import {
 } from "../sandbox/execution-broker.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
   disposeSandboxExecutionBroker,
   isSandboxExecutionBrokerDisposed,
@@ -97,6 +99,7 @@ import type {
   ManagedFeatures,
   ModelInfo,
   SessionConfiguration,
+  TurnContext,
 } from "../session/turn-context.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type {
@@ -1715,12 +1718,13 @@ describe("runAgent", () => {
     });
   });
 
-  it("captures AgentSummary cache-safe params from the real child run state", async () => {
+  it("captures matching session and child tool metadata from the same registry", async () => {
+    const toolName = "system.echo";
     const provider = makeProvider([{ content: "summary seed" }]);
     const registry = {
       tools: [
         {
-          name: "system.echo",
+          name: toolName,
           description: "echo",
           inputSchema: { type: "object" },
           execute: async () => ({ content: JSON.stringify({ ok: true }) }),
@@ -1730,7 +1734,7 @@ describe("runAgent", () => {
         {
           type: "function",
           function: {
-            name: "system.echo",
+            name: toolName,
             description: "echo",
             parameters: { type: "object" },
           },
@@ -1789,6 +1793,23 @@ describe("runAgent", () => {
     expect(params.toolUseContext.options.contextWindowTokens).toBe(
       providerOptions.contextWindowTokens,
     );
+    const mainContext = buildAgenCToolUseContext(session, {
+      cwd: "/tmp",
+      modelInfo: {
+        slug: "fake-model",
+        contextWindow: 200_000,
+        effectiveContextWindowPercent: 100,
+      },
+    } as TurnContext);
+    expect(params.toolUseContext.options.tools).toEqual(mainContext.options.tools);
+    expect(params.toolUseContext.options.tools).toEqual([{
+      ...registry.toLLMTools()[0],
+      name: toolName,
+      description: "echo",
+      inputJSONSchema: { type: "object" },
+      isMcp: toolName.startsWith("mcp__"),
+      maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
+    }]);
     expect(typeof params.toolUseContext.getAppState).toBe("function");
     expect(params.toolUseContext.readFileState.max).toBeGreaterThan(0);
     expect(params.toolUseContext.readFileState.maxSize).toBeGreaterThan(0);

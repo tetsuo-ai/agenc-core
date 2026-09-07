@@ -1,4 +1,5 @@
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
+import { toRuntimeTools, type RuntimeTool } from "../llm/runtime-tool-projection.js";
 import { createChildAbortController } from "../utils/abortController.js";
 import { assertAgentRoleWorkspaceMatches } from "../agents/role-workspace.js";
 import type { LLMProvider, LLMTool } from "../llm/types.js";
@@ -94,13 +95,7 @@ export interface AgenCToolUseContext {
   readonly renderedSystemPrompt: SystemPrompt;
 }
 
-export type AgenCRuntimeTool = LLMTool & {
-  readonly name: string;
-  readonly description: string;
-  readonly inputJSONSchema: Record<string, unknown>;
-  readonly isMcp: boolean;
-  readonly maxResultSizeChars: number;
-};
+export type AgenCRuntimeTool = RuntimeTool;
 
 type AppStateShape = ReturnType<AgenCToolUseContext["getAppState"]>;
 
@@ -260,7 +255,7 @@ export function buildAgenCToolUseContext(
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,
-      tools: toAgenCRuntimeTools(llmTools),
+      tools: toRuntimeTools(llmTools, DEFAULT_MAX_RESULT_SIZE_CHARS),
       mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
       contextWindowTokens: model.contextWindowTokens,
       ...(model.maxOutputTokens !== undefined
@@ -312,20 +307,6 @@ export function buildAgenCToolUseContext(
       systemPrompt.length === 0 ? [] : [systemPrompt],
     ),
   };
-}
-
-function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
-  return tools.map((tool) => {
-    const name = tool.function.name;
-    return {
-      ...tool,
-      name,
-      description: tool.function.description,
-      inputJSONSchema: tool.function.parameters,
-      isMcp: name.startsWith("mcp__"),
-      maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
-    };
-  });
 }
 
 function normalizeAgentDefinitions(
