@@ -1047,22 +1047,22 @@ describe("BufferSurface", () => {
     try {
       await runWithCwdOverride(dir, async () => {
         root.render(<App retryAttempt={0} />);
-        await sleep();
-
         const store = getWorkbenchBufferStore();
-        expect(store.getSnapshot()).toMatchObject({
-          status: "error",
-          filePath: null,
+        await vi.waitFor(() => {
+          expect(store.getSnapshot()).toMatchObject({
+            status: "error",
+            filePath: null,
+          });
         });
 
         await writeFile(join(dir, "missing.ts"), "created\n", "utf8");
         root.render(<App retryAttempt={1} />);
-        await sleep();
-
-        expect(store.getSnapshot()).toMatchObject({
-          status: "ready",
-          filePath: "missing.ts",
-          dirty: false,
+        await vi.waitFor(() => {
+          expect(store.getSnapshot()).toMatchObject({
+            status: "ready",
+            filePath: "missing.ts",
+            dirty: false,
+          });
         });
         expect(store.getText()).toBe("created\n");
       });

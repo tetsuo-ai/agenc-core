@@ -1089,6 +1089,87 @@ function runInstallerAsync(opts: {
   });
 }
 
+// Keep activation contenders at an explicit barrier until SQLite reports contention.
+// Instrument only the extracted test copy; the shipped installer is unchanged.
+function writeSynchronizedActivationHelper(work: string): string {
+  const embedded = readFileSync(INSTALL_SH, "utf8").match(
+    /<<'AGENC_RUNTIME_INSTALLER'\n([\s\S]*?)\nAGENC_RUNTIME_INSTALLER/,
+  )?.[1];
+  expect(embedded).toBeTruthy();
+  const holdCall = 'activationTestDelay("AGENC_INSTALL_TEST_HOLD_ACTIVATION_LOCK_MS");';
+  expect(embedded!.split(holdCall)).toHaveLength(2);
+  const helper = join(work, "synchronized-runtime-installer.cjs");
+  writeFileSync(helper, `
+const { DatabaseSync: TestDatabaseSync } = require("node:sqlite");
+const testDatabaseExec = TestDatabaseSync.prototype.exec;
+TestDatabaseSync.prototype.exec = function(sql) {
+  try { return testDatabaseExec.call(this, sql); }
+  catch (error) {
+    if (sql === "BEGIN IMMEDIATE" && (error.errcode & 0xff) === 5) {
+      process.send("contended");
+    }
+    throw error;
+  }
+};
+process.channel.unref();
+async function testActivationBarrier() {
+  if (process.env.AGENC_INSTALL_TEST_HOLD_ACTIVATION_LOCK_MS === undefined) return;
+  await new Promise((resume) => {
+    process.channel.ref();
+    process.once("message", () => { process.channel.unref(); resume(); });
+    process.send("locked");
+  });
+}
+${embedded!.replace(holdCall, "await testActivationBarrier();")}`);
+  return helper;
+}
+
+function spawnSynchronizedActivation(
+  helper: string,
+  desired: string,
+  wrapper: string,
+  home: string,
+  version: string,
+  env: NodeJS.ProcessEnv,
+) {
+  const child = spawn(
+    process.execPath,
+    [helper, "activate", desired, wrapper, home, version, "false"],
+    { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe", "ipc"] },
+  );
+  const phases = new Set<unknown>();
+  child.on("message", (phase) => phases.add(phase));
+  const result = new Promise<RunResult>((resolveRun) => {
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => { stderr += error.message; });
+    child.on("close", (code) => resolveRun({ status: code ?? -1, stdout, stderr }));
+  });
+  const waitForPhase = async (phase: string) => {
+    if (phases.has(phase)) return;
+    let listener: (message: unknown) => void;
+    let timer: ReturnType<typeof setTimeout>;
+    try {
+      await Promise.race([
+        new Promise<void>((resolvePhase, rejectPhase) => {
+          listener = (message) => { if (message === phase) resolvePhase(); };
+          child.on("message", listener);
+          timer = setTimeout(() => rejectPhase(new Error(`activation did not report ${phase}`)), 10_000);
+        }),
+        result.then(({ status, stderr }) => {
+          throw new Error(`activation exited ${status} before ${phase}: ${stderr}`);
+        }),
+      ]);
+    } finally {
+      child.off("message", listener!);
+      clearTimeout(timer!);
+    }
+  };
+  return { child, result, waitForPhase };
+}
+
 export type InstallerTestLane = "shell" | "powershell";
 
 let registeredInstallerTestLane: InstallerTestLane | undefined;
@@ -2608,12 +2689,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
   });
 
   test("the embedded activation lock makes a waiting older version re-read the winner", async () => {
-    const embedded = readFileSync(INSTALL_SH, "utf8").match(
-      /<<'AGENC_RUNTIME_INSTALLER'\n([\s\S]*?)\nAGENC_RUNTIME_INSTALLER/,
-    )?.[1];
-    expect(embedded).toBeTruthy();
-    const helper = join(work, "runtime-installer.cjs");
-    writeFileSync(helper, embedded!);
+    const helper = writeSynchronizedActivationHelper(work);
     const agencHome = join(work, "activation-home");
     mkdirSync(agencHome, { recursive: true, mode: 0o700 });
     const wrapper = join(work, "activation-bin", "agenc");
@@ -2633,36 +2709,23 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     writeFileSync(highDesired, wrapperText("10.0.0"));
     writeFileSync(lowDesired, wrapperText("9.0.0"));
 
-    const runActivation = (
-      desired: string,
-      version: string,
-      env: NodeJS.ProcessEnv,
-    ): Promise<RunResult> => new Promise((resolveRun) => {
-      const child = spawn(
-        process.execPath,
-        [helper, "activate", desired, wrapper, agencHome, version, "false"],
-        { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] },
-      );
-      let stdout = "";
-      let stderr = "";
-      child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
-      child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
-      child.on("close", (code) => resolveRun({ status: code ?? -1, stdout, stderr }));
+    const high = spawnSynchronizedActivation(helper, highDesired, wrapper, agencHome, "10.0.0", {
+      AGENC_INSTALL_TEST_HOLD_ACTIVATION_LOCK_MS: "1",
     });
-
-    const high = runActivation(highDesired, "10.0.0", {
-      AGENC_INSTALL_TEST_HOLD_ACTIVATION_LOCK_MS: "300",
-    });
-    const activationLock = join(agencHome, "runtime", ".activation-lock.sqlite");
-    const deadline = Date.now() + 2_000;
-    while (!existsSync(activationLock) && Date.now() < deadline) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    let low: ReturnType<typeof spawnSynchronizedActivation> | undefined;
+    let highResult: RunResult;
+    let lowResult: RunResult;
+    try {
+      await high.waitForPhase("locked");
+      low = spawnSynchronizedActivation(helper, lowDesired, wrapper, agencHome, "9.0.0", {});
+      await low.waitForPhase("contended");
+      high.child.send("resume");
+      [highResult, lowResult] = await Promise.all([high.result, low.result]);
+    } finally {
+      high.child.kill();
+      low?.child.kill();
+      await Promise.all([high.result, low?.result]);
     }
-    expect(existsSync(activationLock)).toBe(true);
-    const low = runActivation(lowDesired, "9.0.0", {
-      AGENC_INSTALL_TEST_AFTER_ACTIVATION_READ_MS: "500",
-    });
-    const [highResult, lowResult] = await Promise.all([high, low]);
 
     expect(highResult.status, highResult.stderr).toBe(0);
     expect(lowResult.status, lowResult.stderr).toBe(0);
@@ -2672,12 +2735,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
   });
 
   test("cross-home activations share the OS-account registry despite mutable HOME variables", async () => {
-    const embedded = readFileSync(INSTALL_SH, "utf8").match(
-      /<<'AGENC_RUNTIME_INSTALLER'\n([\s\S]*?)\nAGENC_RUNTIME_INSTALLER/,
-    )?.[1];
-    expect(embedded).toBeTruthy();
-    const helper = join(work, "cross-home-runtime-installer.cjs");
-    writeFileSync(helper, embedded!);
+    const helper = writeSynchronizedActivationHelper(work);
     const firstHome = join(work, "first-agenc-home");
     const secondHome = join(work, "second-agenc-home");
     mkdirSync(firstHome, { recursive: true, mode: 0o700 });
@@ -2702,44 +2760,28 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     };
     const firstDesired = desired(firstHome, "10.0.0", "first-desired-wrapper");
     const secondDesired = desired(secondHome, "11.0.0", "second-desired-wrapper");
-    const spawnActivation = (
-      desiredPath: string,
-      home: string,
-      version: string,
-      env: NodeJS.ProcessEnv,
-    ): { child: ReturnType<typeof spawn>; result: Promise<RunResult> } => {
-      const child = spawn(
-        process.execPath,
-        [helper, "activate", desiredPath, wrapper, home, version, "false"],
-        { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] },
-      );
-      const result = new Promise<RunResult>((resolveRun) => {
-        let stdout = "";
-        let stderr = "";
-        child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
-        child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
-        child.on("close", (code) => resolveRun({ status: code ?? -1, stdout, stderr }));
-      });
-      return { child, result };
-    };
-
-    const first = spawnActivation(firstDesired, firstHome, "10.0.0", {
+    const first = spawnSynchronizedActivation(helper, firstDesired, wrapper, firstHome, "10.0.0", {
       HOME: join(work, "mutable-home-a"),
       LOCALAPPDATA: join(work, "mutable-local-app-data-a"),
-      AGENC_INSTALL_TEST_HOLD_ACTIVATION_LOCK_MS: "400",
+      AGENC_INSTALL_TEST_HOLD_ACTIVATION_LOCK_MS: "1",
     });
-    const firstHomeLock = join(firstHome, "runtime", ".activation-lock.sqlite");
-    const deadline = Date.now() + 2_000;
-    while (!existsSync(firstHomeLock) && Date.now() < deadline) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    let second: ReturnType<typeof spawnSynchronizedActivation> | undefined;
+    let firstResult: RunResult;
+    let secondResult: RunResult;
+    try {
+      await first.waitForPhase("locked");
+      second = spawnSynchronizedActivation(helper, secondDesired, wrapper, secondHome, "11.0.0", {
+        HOME: join(work, "mutable-home-b"),
+        LOCALAPPDATA: join(work, "mutable-local-app-data-b"),
+      });
+      await second.waitForPhase("contended");
+      first.child.send("resume");
+      [firstResult, secondResult] = await Promise.all([first.result, second.result]);
+    } finally {
+      first.child.kill();
+      second?.child.kill();
+      await Promise.all([first.result, second?.result]);
     }
-    expect(existsSync(firstHomeLock)).toBe(true);
-    await new Promise((resolveWait) => setTimeout(resolveWait, 75));
-    const second = spawnActivation(secondDesired, secondHome, "11.0.0", {
-      HOME: join(work, "mutable-home-b"),
-      LOCALAPPDATA: join(work, "mutable-local-app-data-b"),
-    });
-    const [firstResult, secondResult] = await Promise.all([first.result, second.result]);
 
     expect(firstResult.status, firstResult.stderr).toBe(0);
     expect(secondResult.status).not.toBe(0);

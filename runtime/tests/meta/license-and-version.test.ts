@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
@@ -190,7 +191,7 @@ describe("runtime SDK surface hygiene", () => {
     }
   });
 
-  test("generated SDK type workflow uses the checked-in validator", () => {
+  test("generated SDK type workflow uses the checked-in validator", async () => {
     const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
       scripts?: Record<string, string>;
     };
@@ -215,10 +216,11 @@ describe("runtime SDK surface hygiene", () => {
       expect(source).toContain(checkCommand);
     }
 
-    execFileSync(
+    // The validator compiles the full wire contract, as sdk-wire-parity.test.ts does.
+    await promisify(execFile)(
       process.execPath,
       ["runtime/scripts/check-sdk-generated-types.mjs"],
-      { cwd: repoRoot, stdio: "pipe" },
+      { cwd: repoRoot, timeout: 55_000, killSignal: "SIGKILL" },
     );
-  });
+  }, 60_000);
 });
