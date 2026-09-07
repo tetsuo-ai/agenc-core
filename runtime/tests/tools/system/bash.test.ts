@@ -2025,6 +2025,33 @@ describe("system.bash tool", () => {
       expect(parseContent(denied).error).toContain("allow list");
     });
 
+    it.each(["2>/dev/null socat -", "echo safe |& socat -", "cat <<EOF\nEO\\\nF\nsocat -"])(
+      "checks denied executables after redirects or separators: %s",
+      async (command) => {
+        await expectShellModeExecutionError(command, "denied");
+      },
+    );
+
+    it.each([
+      'echo "$(socat -)"', "cat <(socat -)", "echo $\\\n(socat -)",
+      "cat <<EOF\n$(socat -)\nEOF",
+    ])("blocks active substitutions outside the command word: %s", async (command) => {
+      const tool = createBashTool();
+      const result = await tool.execute({ command });
+      expect(result.isError).toBe(true);
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+
+    it.each(["echo 'open", 'echo "open', "cat <<EOF\nbody"])(
+      "rejects malformed shell input before spawning: %s",
+      async (command) => {
+        const tool = createBashTool();
+        const result = await tool.execute({ command });
+        expect(result.isError).toBe(true);
+        expect(mockSpawn).not.toHaveBeenCalled();
+      },
+    );
+
     // ---- Shell mode safe commands ----
 
     it("allows rm in shell mode (deny list pruned to real threats)", async () => {

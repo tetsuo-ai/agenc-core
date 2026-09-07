@@ -26,4 +26,19 @@ describe("command-line", () => {
     expect(parseDirectCommandLine("git status --short | cat")).toBeUndefined();
     expect(parseDirectCommandLine("FOO=bar git status")).toBeUndefined();
   });
+
+  it("preserves literal metacharacters, empty arguments, and escaped trailing space", () => {
+    expect(parseDirectCommandLine("printf '' '|' \\> '\\$' end\\ ")).toEqual({
+      command: "printf",
+      args: ["", "|", ">", "\\$", "end "],
+    });
+  });
+
+  it.each([
+    "cat 2>&1", "cat <>file", 'cat <<< "text"', "echo hi &>>out",
+    "cat |& wc", "echo $(pwd)", 'echo "$(pwd)"', "echo `pwd`",
+    "echo $\\\n(pwd)", "echo 'open", 'echo "open', "echo trailing\\",
+  ])("rejects shell syntax or malformed quoting: %s", (command) => {
+    expect(parseDirectCommandLine(command)).toBeUndefined();
+  });
 });

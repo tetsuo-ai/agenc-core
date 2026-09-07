@@ -2,9 +2,11 @@ import { homedir, tmpdir } from "node:os";
 import { basename, relative, resolve as resolvePath, sep } from "node:path";
 
 import {
-  SHELL_COMMAND_SEPARATORS,
-  tokenizeShellCommand,
-} from "./_deps/command-line.js";
+  getShellRedirectOperator,
+  isShellCommandSeparator,
+  lexShellCommand,
+  type ShellToken,
+} from "../utils/shell/command-line.js";
 
 const SHELL_WORKSPACE_WRITE_TOOL_NAMES = new Set([
   "exec_command",
@@ -18,28 +20,6 @@ const SHELL_WRAPPER_COMMANDS = new Set([
   "sh",
   "zsh",
 ]);
-const ALL_REDIRECT_OPERATORS = new Set([
-  ">",
-  ">>",
-  ">|",
-  "<",
-  "<<",
-  "<<-",
-  "<>",
-  ">&",
-  "<&",
-  "&>",
-  "&>>",
-]);
-// The tokenizer keeps a file-descriptor prefix glued to its operator
-// (`2>`, `2>>`, `2>&`, `0<`). The prefix does not change what the
-// redirection writes to, so classification looks at the bare operator.
-const FD_PREFIXED_REDIRECT_RE = /^\d+(>>|>&|>\||<<-|<<|<&|<>|>|<)$/;
-
-function redirectOperator(token: string): string | undefined {
-  if (ALL_REDIRECT_OPERATORS.has(token)) return token;
-  return FD_PREFIXED_REDIRECT_RE.exec(token)?.[1];
-}
 const WRITE_REDIRECT_OPERATORS = new Set([
   ">",
   ">>",
@@ -47,6 +27,7 @@ const WRITE_REDIRECT_OPERATORS = new Set([
   ">&",
   "&>",
   "&>>",
+  "<>",
 ]);
 const WORKSPACE_GENERATED_ROOTS = new Set([
   "build",
@@ -267,18 +248,17 @@ function workspaceRelation(
   return "inside";
 }
 
-function stripRedirections(tokens: readonly string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (!token) continue;
-    if (redirectOperator(token) !== undefined) {
-      i += 1;
+function stripRedirections(tokens: readonly ShellToken[]): ShellToken[] {
+  const output: ShellToken[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (getShellRedirectOperator(token) !== undefined) {
+      index += 1;
       continue;
     }
-    out.push(token);
+    output.push(token);
   }
-  return out;
+  return output;
 }
 
 function extractWrappedShellCommand(args: readonly string[]): string | undefined {
@@ -512,41 +492,40 @@ function collectDirectCommandWriteTargets(params: {
 }
 
 function collectRedirectionTargets(
-  tokens: readonly string[],
+  tokens: readonly ShellToken[],
   cwd: string,
 ): ShellWriteTargetCollection {
   const collection = emptyTargetCollection();
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    const operator = token === undefined ? undefined : redirectOperator(token);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const operator = getShellRedirectOperator(tokens[index]!);
     if (operator === undefined || !WRITE_REDIRECT_OPERATORS.has(operator)) {
       continue;
     }
-    const next = tokens[i + 1];
+    const next = tokens[index + 1];
     if (
-      !next ||
-      SHELL_COMMAND_SEPARATORS.has(next) ||
-      redirectOperator(next) !== undefined
+      next === undefined ||
+      next.kind !== "word" ||
+      next.value.length === 0
     ) {
       collection.indeterminate = true;
       continue;
     }
     if (
       operator === ">&" &&
-      (/^\d+$/.test(next) || /^&\d+$/.test(next))
+      (/^\d+-?$/.test(next.value) || next.value === "-")
     ) {
       continue;
     }
-    if (isSafePseudoDevicePath(next)) {
+    if (isSafePseudoDevicePath(next.value)) {
       continue;
     }
-    mergeTargetCollections(collection, normalizeConcreteTargetPath(next, cwd));
+    mergeTargetCollections(collection, normalizeConcreteTargetPath(next.value, cwd));
   }
   return collection;
 }
 
 function collectSegmentCommandWriteTargets(
-  segment: readonly string[],
+  segment: readonly ShellToken[],
   cwd: string,
 ): ShellWriteTargetCollection {
   const stripped = stripRedirections(segment);
@@ -556,17 +535,18 @@ function collectSegmentCommandWriteTargets(
   let commandIndex = 0;
   while (
     commandIndex < stripped.length &&
-    ENV_ASSIGNMENT_RE.test(stripped[commandIndex] ?? "")
+    ENV_ASSIGNMENT_RE.test(stripped[commandIndex]?.value ?? "")
   ) {
     commandIndex += 1;
   }
   const command = stripped[commandIndex];
-  if (!command) {
+  if (command === undefined || command.value.length === 0) {
     return emptyTargetCollection();
   }
+  if (command.requiresExpansion) return indeterminateTargetCollection();
   return collectDirectCommandWriteTargets({
-    command,
-    args: stripped.slice(commandIndex + 1),
+    command: command.value,
+    args: stripped.slice(commandIndex + 1).map((token) => token.value),
     cwd,
   });
 }
@@ -575,9 +555,10 @@ function collectShellCommandWriteTargets(
   commandLine: string,
   cwd: string,
 ): ShellWriteTargetCollection {
-  const tokens = tokenizeShellCommand(commandLine);
-  const collection = collectRedirectionTargets(tokens, cwd);
-  let segment: string[] = [];
+  const parsed = lexShellCommand(commandLine);
+  const collection = collectRedirectionTargets(parsed.tokens, cwd);
+  collection.indeterminate ||= parsed.malformed || parsed.hasCommandSubstitution;
+  let segment: ShellToken[] = [];
   const flushSegment = (): void => {
     mergeTargetCollections(
       collection,
@@ -585,8 +566,8 @@ function collectShellCommandWriteTargets(
     );
     segment = [];
   };
-  for (const token of tokens) {
-    if (SHELL_COMMAND_SEPARATORS.has(token)) {
+  for (const token of parsed.tokens) {
+    if (isShellCommandSeparator(token)) {
       flushSegment();
       continue;
     }

@@ -21,6 +21,50 @@ const REFACTOR_CLEANUP =
   "rm arcade15/game.js && ls -la arcade15 && node --check arcade15/main.js";
 
 describe("classifyShellWorkspaceWritePolicy", () => {
+  it.each([">", ">>", ">|", "&>", "&>>", "<>", "2>", "3<>"])(
+    "blocks workspace writes through %s",
+    (operator) => {
+      const decision = classify(`cat ${operator} src/output.txt`);
+      expect(decision.blockedTargets).toContain("/repo/src/output.txt");
+      expect(decision.blocked).toBe(true);
+    },
+  );
+
+  it.each(["&&", "||", ";", "&", "|", "|&"])(
+    "checks writes after chained operator %s",
+    (operator) => expect(classify(`echo safe ${operator} touch src/file`).blocked).toBe(true),
+  );
+
+  it.each(["echo '>' src/file", "echo \\> src/file", "echo '|' touch src/file"])(
+    "does not treat literal metacharacters as shell syntax: %s",
+    (command) => {
+      expect(classify(command).observedTargets).toEqual([]);
+      expect(classify(command).blocked).toBe(false);
+    },
+  );
+
+  it.each([
+    "echo $(touch src/file)", 'echo "$(touch src/file)"', "echo `touch src/file`",
+    "cat <(touch src/file)", "echo $\\\n(touch src/file)",
+    "cat <<EOF\n$(touch src/file)\nEOF", "echo 'open", 'echo "open', "cat <<EOF\nbody",
+  ])("fails closed for active substitution or malformed input: %s", (command) => {
+    const decision = classify(command);
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+  });
+
+  it("checks writes after a continued heredoc delimiter", () => {
+    expect(classify("cat <<EOF\nEO\\\nF\ntouch src/file").blockedTargets).toContain("/repo/src/file");
+  });
+
+  it("treats descriptor moves and closes as non-file redirects", () => {
+    expect(classify("cat 2>&1- 3>&-").observedTargets).toEqual([]);
+  });
+
+  it("does not interpret here-string data as a path or a command", () => {
+    expect(classify('cat <<< "touch src/file > src/output"').blocked).toBe(false);
+  });
+
   it("does not read the fd prefix of 2>/dev/null as an rmdir operand", () => {
     const decision = classify("rmdir tmp 2>/dev/null");
 

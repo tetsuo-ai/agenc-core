@@ -98,8 +98,7 @@ describe("tokenizeShellCommand", () => {
   it("leaves here-strings alone", () => {
     expect(tokenizeShellCommand('cat <<< "text"')).toEqual([
       "cat",
-      "<<",
-      "<",
+      "<<<",
       "text",
     ]);
   });

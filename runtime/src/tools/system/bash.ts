@@ -17,8 +17,13 @@ import {
   SHELL_COMMAND_SEPARATORS,
   SHELL_REDIRECT_OPERATORS,
   parseDirectCommandLine,
-  tokenizeShellCommand,
 } from "./command-line.js";
+import {
+  getShellRedirectOperator,
+  isShellCommandSeparator,
+  lexShellCommand,
+  type ShellToken,
+} from "../../utils/shell/command-line.js";
 import {
   DEFAULT_DENY_LIST,
   DEFAULT_DENY_PREFIXES,
@@ -625,18 +630,12 @@ function getDynamicShellExecutableReason(
 }
 
 function getShellRedirectionSkipIndex(
-  tokens: string[],
+  tokens: readonly ShellToken[],
   index: number,
 ): number | null {
   const token = tokens[index];
-  const next = tokens[index + 1];
-
-  if (SHELL_REDIRECT_OPERATORS.has(token)) {
+  if (token !== undefined && getShellRedirectOperator(token) !== undefined) {
     return Math.min(index + 1, tokens.length - 1);
-  }
-
-  if (/^\d+$/.test(token) && next && SHELL_REDIRECT_OPERATORS.has(next)) {
-    return Math.min(index + 2, tokens.length - 1);
   }
 
   return null;
@@ -659,18 +658,31 @@ function extractShellExecutables(command: string): {
   executables: string[];
   dynamicExecutableReason: string | null;
 } {
-  const tokens = tokenizeShellCommand(command);
+  const parsed = lexShellCommand(command);
+  if (parsed.hasCommandSubstitution) {
+    return {
+      executables: [],
+      dynamicExecutableReason: DYNAMIC_SHELL_EXECUTABLE_REASON,
+    };
+  }
+  if (parsed.malformed) {
+    return {
+      executables: [],
+      dynamicExecutableReason: "Malformed shell quoting or heredoc is not allowed.",
+    };
+  }
+  const tokens = parsed.tokens;
   const executables: string[] = [];
   let expectCommand = true;
   let index = 0;
 
   while (index < tokens.length) {
-    const token = tokens[index];
-    const next = tokens[index + 1];
+    const token = tokens[index]!;
+    const next = tokens[index + 1]?.value;
 
     if (expectCommand) {
       const dynamicExecutableReason = getDynamicShellExecutableReason(
-        token,
+        token.value,
         next,
       );
       if (dynamicExecutableReason) {
@@ -678,7 +690,7 @@ function extractShellExecutables(command: string): {
       }
     }
 
-    if (SHELL_COMMAND_SEPARATORS.has(token)) {
+    if (isShellCommandSeparator(token)) {
       expectCommand = true;
       index += 1;
       continue;
@@ -695,12 +707,12 @@ function extractShellExecutables(command: string): {
       continue;
     }
 
-    if (shouldSkipExecutableCandidate(token)) {
+    if (shouldSkipExecutableCandidate(token.value)) {
       index += 1;
       continue;
     }
 
-    expectCommand = !consumeShellExecutable(token, executables);
+    expectCommand = !consumeShellExecutable(token.value, executables);
     index += 1;
   }
 

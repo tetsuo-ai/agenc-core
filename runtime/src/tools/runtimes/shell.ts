@@ -1,8 +1,8 @@
 import path from "node:path";
 import {
-  SHELL_COMMAND_SEPARATORS,
-  tokenizeShellCommand,
-} from "../../llm/_deps/command-line.js";
+  isShellCommandSeparator,
+  lexShellCommand,
+} from "../../utils/shell/command-line.js";
 import {
   classifyShellWorkspaceWritePolicy,
   isSafePseudoDevicePath,
@@ -96,6 +96,8 @@ export function analyzeShellRuntimeAccess(
 }
 
 function isShellCommandKnownReadOnly(command: string): boolean {
+  const parsed = lexShellCommand(command);
+  if (parsed.malformed || parsed.hasCommandSubstitution) return false;
   const segments = tokenizeShellLike(command);
   return segments.length > 0 && segments.every(isShellSegmentKnownReadOnly);
 }
@@ -105,7 +107,8 @@ function shellCommandReadTargets(
   cwd: string,
 ): { readonly targets: readonly string[]; readonly indeterminate: boolean } {
   const targets = new Set<string>();
-  let indeterminate = false;
+  const parsed = lexShellCommand(command);
+  let indeterminate = parsed.malformed || parsed.hasCommandSubstitution;
   for (const segment of tokenizeShellLike(command)) {
     const result = collectShellSegmentReadTargets(segment, cwd, targets);
     indeterminate ||= result.indeterminate;
@@ -159,13 +162,13 @@ function isShellSegmentKnownReadOnly(segment: readonly string[]): boolean {
 function tokenizeShellLike(command: string): string[][] {
   const segments: string[][] = [];
   let current: string[] = [];
-  for (const token of tokenizeShellCommand(command)) {
-    if (SHELL_COMMAND_SEPARATORS.has(token)) {
+  for (const token of lexShellCommand(command).tokens) {
+    if (isShellCommandSeparator(token)) {
       segments.push(current);
       current = [];
       continue;
     }
-    current.push(token);
+    current.push(token.value);
   }
   segments.push(current);
   return segments.filter((segment) => segment.length > 0);
