@@ -4669,55 +4669,83 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     () => listTuiCommandList(commandRegistry),
     [commandRegistry],
   );
-  // The slash palette (and findCommand execution) previously saw ONLY built-in
-  // Commands include skills from `.agenc/skills` and bundled sources.
-  // skills, and plugin commands were loaded for the model but never surfaced
-  // in the composer. Load the full command set for this workspace and merge
-  // it in, keeping registry built-ins authoritative on name collisions.
+  // Palette display and submission share one command list. A changed source
+  // invalidates the previous snapshot during render, before effects run.
   const dynamicCommandsCwd =
     props.session.cwd ??
     props.session.sessionConfiguration?.cwd ??
     process.cwd();
   const dynamicCommandPluginStorageRoot =
     props.session.services.runtimeOptions?.pluginStorageRoot;
-  const [dynamicTuiCommands, setDynamicTuiCommands] = useState<
-    readonly Command[]
-  >([]);
+  const dynamicCommandSource = useMemo(
+    () => ({
+      cwd: dynamicCommandsCwd,
+      pluginStorageRoot: dynamicCommandPluginStorageRoot,
+      skillsManager: props.session.services.skillsManager,
+      config,
+    }),
+    [
+      dynamicCommandsCwd,
+      dynamicCommandPluginStorageRoot,
+      props.session.services.skillsManager,
+      config,
+    ],
+  );
+  const [dynamicCommandSnapshot, setDynamicCommandSnapshot] = useState<{
+    readonly source: typeof dynamicCommandSource | null;
+    readonly status: "loading" | "ready" | "failed";
+    readonly commands: readonly Command[];
+    readonly error?: string;
+  }>({ source: null, status: "loading", commands: [] });
   useEffect(() => {
-    if (dynamicCommandPluginStorageRoot === undefined) {
-      setDynamicTuiCommands([]);
+    const source = dynamicCommandSource;
+    let cancelled = false;
+    setDynamicCommandSnapshot({ source, status: "loading", commands: [] });
+    if (source.pluginStorageRoot === undefined) {
+      const error = "This session cannot load skills and plugins";
+      setDynamicCommandSnapshot({
+        source,
+        status: "failed",
+        commands: [],
+        error,
+      });
       logForDebugging(
         "dynamic TUI command load skipped: session is missing captured plugin storage authority",
         { level: "warn" },
       );
       return;
     }
-    let cancelled = false;
     void getCommands(
-      dynamicCommandsCwd,
+      source.cwd,
       {
-        pluginStorageRoot: dynamicCommandPluginStorageRoot,
-        ...(props.session.services.skillsManager !== undefined
-          ? { skillsManager: props.session.services.skillsManager }
+        pluginStorageRoot: source.pluginStorageRoot,
+        ...(source.skillsManager !== undefined
+          ? { skillsManager: source.skillsManager }
           : {}),
       },
-      config,
+      source.config,
     )
       .then((all) => {
         if (cancelled) return;
-        setDynamicTuiCommands(
-          all.filter(
+        setDynamicCommandSnapshot({
+          source,
+          status: "ready",
+          commands: all.filter(
             (cmd) =>
               cmd.userInvocable !== false &&
               cmd.isHidden !== true &&
               isCommandEnabled(cmd),
           ),
-        );
+        });
       })
       .catch((error) => {
-        // Palette degrades to built-ins only on load failure — never silently:
-        // a rejected load leaves every dynamic command (skills, rails,
-        // plugins) reporting "Unknown command" on submit.
+        if (cancelled) return;
+        setDynamicCommandSnapshot({
+          source,
+          status: "failed",
+          commands: [],
+          error: error instanceof Error ? error.message : String(error),
+        });
         logForDebugging(
           `dynamic TUI command load failed; palette degraded to built-ins: ${
             error instanceof Error
@@ -4730,21 +4758,27 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [
-    dynamicCommandPluginStorageRoot,
-    dynamicCommandsCwd,
-    config,
-    props.session.services.skillsManager,
-  ]);
+  }, [dynamicCommandSource]);
+  const dynamicCommandLoadError =
+    dynamicCommandSnapshot.source === dynamicCommandSource &&
+    dynamicCommandSnapshot.status === "failed"
+      ? dynamicCommandSnapshot.error
+      : undefined;
   const commands = useMemo(() => {
     const seen = new Set(
       builtinTuiCommands.map((cmd) => cmd.name.toLowerCase()),
     );
-    const extras = dynamicTuiCommands.filter(
-      (cmd) => !seen.has(cmd.name.toLowerCase()),
-    );
-    return [...builtinTuiCommands, ...extras];
-  }, [builtinTuiCommands, dynamicTuiCommands]);
+    const dynamic =
+      dynamicCommandSnapshot.source === dynamicCommandSource &&
+      dynamicCommandSnapshot.status === "ready"
+        ? dynamicCommandSnapshot.commands
+        : [];
+    return [
+      ...builtinTuiCommands,
+      ...dynamic.filter((cmd) => !seen.has(cmd.name.toLowerCase())),
+    ];
+  }, [builtinTuiCommands, dynamicCommandSource, dynamicCommandSnapshot]);
+
   const agents = useAppState((state) => state.agentDefinitions.activeAgents);
   const appTasks = useAppState((s) => s.tasks);
   const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
@@ -7229,6 +7263,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   ) : null;
   const bottomContent = (
     <Box flexDirection="column" flexGrow={1}>
+      {dynamicCommandLoadError !== undefined ? (
+        <Text color="warning" wrap="wrap">
+          Dynamic commands unavailable: {dynamicCommandLoadError}. Built-in
+          commands remain available.
+        </Text>
+      ) : null}
       {backpressureWarning !== null ? (
         <Text color="warning" wrap="truncate">
           {backpressureWarning}

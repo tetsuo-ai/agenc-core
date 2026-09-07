@@ -51,6 +51,7 @@ let mockWorktreeSession: unknown = null;
 let mockGlobalConfig: Record<string, unknown> = {};
 const mockTuiCommandList = vi.hoisted(() => [] as Array<Record<string, any>>);
 const commandDiscoveryProbe = vi.hoisted(() => vi.fn());
+const commandDebugProbe = vi.hoisted(() => vi.fn());
 const roleDefinitionProbe = vi.hoisted(() =>
   vi.fn((_cwd: string) => [
     {
@@ -143,7 +144,7 @@ vi.mock("bun:bundle", () => ({
 }));
 
 vi.mock("src/utils/debug.js", () => ({
-  logForDebugging: () => {},
+  logForDebugging: commandDebugProbe,
 }));
 
 vi.mock("src/utils/envUtils.js", () => ({
@@ -478,8 +479,7 @@ vi.mock("../../commands.js", () => ({
       (command) => command.name === name || command.aliases?.includes(name),
     ) ?? null,
   getCommands: async (...args: unknown[]) => {
-    commandDiscoveryProbe(...args);
-    return mockTuiCommandList;
+    return commandDiscoveryProbe(...args) ?? mockTuiCommandList;
   },
   isCommandEnabled: () => true,
   listTuiCommandList: () => mockTuiCommandList,
@@ -865,7 +865,8 @@ function resetShellSurfaceProbe(): void {
   ledgerStatusProbe.refresh.mockClear();
   dismissLedgerVerification();
   mockTuiCommandList.length = 0;
-  commandDiscoveryProbe.mockClear();
+  commandDiscoveryProbe.mockReset();
+  commandDebugProbe.mockClear();
   mockTotalCost = 0;
   mockHasConsoleBillingAccess = false;
   mockWorktreeSession = null;
@@ -1025,9 +1026,9 @@ function createSession(
       ? { agentDefinitions: opts.agentDefinitions }
       : {}),
     services: {
-      ...(opts.runtimeOptions !== undefined
-        ? { runtimeOptions: opts.runtimeOptions }
-        : {}),
+      runtimeOptions: opts.runtimeOptions ?? {
+        pluginStorageRoot: join(tmpdir(), "agenc-app-render-plugins"),
+      } as never,
       configStore: opts.configStore ?? testConfigStore,
       providerEnvironment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
       permissionModeRegistry: {
@@ -1387,6 +1388,185 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         for (const call of commandDiscoveryProbe.mock.calls) {
           expect(call[1]).toMatchObject({ pluginStorageRoot });
         }
+      },
+    );
+  });
+
+  test.each(["failure", "pending", "removed"] as const)(
+    "invalidates dynamic command display and execution after a %s reload",
+    async (outcome) => {
+      const { AgenCTuiApp } = await import("./App.js");
+      resetShellSurfaceProbe();
+      mockTuiCommandList.push({ name: "help", type: "local", load: vi.fn() });
+      const getPromptForCommand = vi.fn(async () => [
+        { type: "text", text: "obsolete expansion" },
+      ]);
+      const dynamic = {
+        name: "reloadable",
+        type: "prompt",
+        loadedFrom: "skills",
+        progressMessage: "Loading",
+        contentLength: 1,
+        getPromptForCommand,
+      };
+      const configStore = createAppConfigStore();
+      const session = createSession({
+        configStore,
+        runtimeOptions: { pluginStorageRoot: "/tmp/command-reload" } as never,
+      });
+      commandDiscoveryProbe.mockResolvedValue([dynamic]);
+      const commands = () =>
+        providerProbe.promptProps.at(-1)?.commands as Array<{ name: string }>;
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async ({ output }) => {
+          await vi.waitFor(() =>
+            expect(commands().map((command) => command.name)).toContain(
+              "reloadable",
+            ),
+          );
+          await providerProbe.promptSubmits.at(-1)!("$reloadable", {
+            clearBuffer: vi.fn(),
+            resetHistory: vi.fn(),
+            setCursorOffset: vi.fn(),
+          });
+          expect(getPromptForCommand).toHaveBeenCalledTimes(1);
+          const pending = Promise.withResolvers<unknown[]>();
+          if (outcome === "failure")
+            commandDiscoveryProbe.mockRejectedValue(
+              new Error("command source removed"),
+            );
+          else if (outcome === "pending")
+            commandDiscoveryProbe.mockReturnValue(pending.promise);
+          else commandDiscoveryProbe.mockResolvedValue([]);
+          const calls = commandDiscoveryProbe.mock.calls.length;
+          await configStore.reload();
+          await vi.waitFor(() =>
+            expect(commandDiscoveryProbe.mock.calls.length).toBeGreaterThan(
+              calls,
+            ),
+          );
+          if (outcome === "failure") {
+            await vi.waitFor(() =>
+              expect(
+                commandDebugProbe.mock.calls.some(([message]) =>
+                  String(message).includes("command source removed"),
+                ),
+              ).toBe(true),
+            );
+          }
+          await vi.waitFor(() =>
+            expect(commands().map((command) => command.name)).toEqual(["help"]),
+          );
+          await providerProbe.promptSubmits.at(-1)!("$reloadable", {
+            clearBuffer: vi.fn(),
+            resetHistory: vi.fn(),
+            setCursorOffset: vi.fn(),
+          });
+          expect(getPromptForCommand).toHaveBeenCalledTimes(1);
+          if (outcome === "failure")
+            expect(stripAnsi(output()).replace(/\s+/gu, "")).toContain(
+              "Dynamiccommandsunavailable",
+            );
+          pending.resolve([]);
+        },
+      );
+    },
+  );
+
+  test.each(["success", "failure"] as const)(
+    "ignores an older command generation's late %s",
+    async (outcome) => {
+      const { AgenCTuiApp } = await import("./App.js");
+      resetShellSurfaceProbe();
+      const configStore = createAppConfigStore();
+      const session = createSession({
+        configStore,
+        runtimeOptions: { pluginStorageRoot: "/tmp/command-race" } as never,
+      });
+      const old = Promise.withResolvers<unknown[]>();
+      commandDiscoveryProbe.mockReturnValue(old.promise);
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async () => {
+          await vi.waitFor(() =>
+            expect(commandDiscoveryProbe).toHaveBeenCalled(),
+          );
+          commandDiscoveryProbe.mockResolvedValue([
+            { name: "current-command", type: "prompt" },
+          ]);
+          await configStore.reload();
+          const names = () =>
+            (
+              providerProbe.promptProps.at(-1)?.commands as Array<{
+                name: string;
+              }>
+            ).map((command) => command.name);
+          await vi.waitFor(() => expect(names()).toEqual(["current-command"]));
+          commandDebugProbe.mockClear();
+          if (outcome === "success")
+            old.resolve([{ name: "obsolete-command", type: "prompt" }]);
+          else old.reject(new Error("obsolete command failure"));
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          expect(names()).toEqual(["current-command"]);
+          expect(
+            commandDebugProbe.mock.calls.some(([message]) =>
+              String(message).includes("obsolete command failure"),
+            ),
+          ).toBe(false);
+        },
+      );
+    },
+  );
+
+  test("removes commands when their authority disappears and clears the notice after recovery", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    fullscreenProbe.fullscreen = true;
+    const session = createSession();
+    const runtimeOptions = session.services.runtimeOptions;
+    commandDiscoveryProbe.mockResolvedValue([
+      { name: "before-removal", type: "prompt" },
+    ]);
+    const names = () =>
+      (
+        providerProbe.promptProps.at(-1)?.commands as Array<{ name: string }>
+      ).map((command) => command.name);
+    const textIn = (node: React.ReactNode): string => {
+      if (typeof node === "string" || typeof node === "number")
+        return String(node);
+      if (Array.isArray(node)) return node.map(textIn).join("");
+      if (!React.isValidElement(node)) return "";
+      return textIn((node.props as { children?: React.ReactNode }).children);
+    };
+    const notice = () =>
+      textIn(
+        providerProbe.workbenchLayoutProps.at(-1)?.composer ??
+          providerProbe.fullscreenLayoutProps.at(-1)?.bottom,
+      );
+    await withRenderedApp(
+      <AgenCTuiApp session={session} isInteractive={false} />,
+      async ({ render }) => {
+        await vi.waitFor(() => expect(names()).toEqual(["before-removal"]));
+        const calls = commandDiscoveryProbe.mock.calls.length;
+        Object.assign(session.services, { runtimeOptions: undefined });
+        await render(
+          <AgenCTuiApp session={{ ...session }} isInteractive={false} />,
+        );
+        await vi.waitFor(() => expect(names()).toEqual([]));
+        expect(commandDiscoveryProbe.mock.calls.length).toBe(calls);
+        await vi.waitFor(() =>
+          expect(notice()).toContain("Dynamic commands unavailable"),
+        );
+        commandDiscoveryProbe.mockResolvedValue([
+          { name: "after-recovery", type: "prompt" },
+        ]);
+        Object.assign(session.services, { runtimeOptions });
+        await render(
+          <AgenCTuiApp session={{ ...session }} isInteractive={false} />,
+        );
+        await vi.waitFor(() => expect(names()).toEqual(["after-recovery"]));
+        expect(notice()).not.toContain("Dynamic commands unavailable");
       },
     );
   });
