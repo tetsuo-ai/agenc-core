@@ -62,6 +62,7 @@ const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
 const REMOTE_AUTH_STATE_FILENAME = "auth.json" as const;
 const REMOTE_AUTH_STATE_VERSION = 1 as const;
 const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
+const REMOTE_AUTH_REQUEST_TIMEOUT_MS = 30_000;
 const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 5_000;
 const REMOTE_AUTH_STATE_VERIFY_MAX_ATTEMPTS = 3;
 const REMOTE_AUTH_STATE_LOCK_OPTIONS = {
@@ -874,10 +875,14 @@ async function remoteAuthFetch(
   environment: EnvSnapshot,
   configureTransport: boolean,
 ): Promise<Response> {
+  const deadline = AbortSignal.timeout(REMOTE_AUTH_REQUEST_TIMEOUT_MS);
   try {
     return await fetchImpl(input, {
       ...init,
       ...(configureTransport ? getProxyFetchOptions({ environment }) : {}),
+      signal: init.signal == null
+        ? deadline
+        : AbortSignal.any([init.signal, deadline]),
     });
   } catch (error) {
     throw new Error(
@@ -1061,8 +1066,11 @@ async function readRemoteAuthJsonResponse(
 ): Promise<unknown> {
   try {
     return await response.json();
-  } catch {
-    throw new Error(`RemoteAuthBackend ${operation} returned invalid JSON`);
+  } catch (error) {
+    const message = error instanceof SyntaxError
+      ? `RemoteAuthBackend ${operation} returned invalid JSON`
+      : `RemoteAuthBackend ${operation} response read failed: ${formatRemoteAuthNetworkError(error)}`;
+    throw new Error(message, { cause: error });
   }
 }
 

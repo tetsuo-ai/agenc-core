@@ -51,8 +51,9 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonPreemptiveMessage({ method: 1 })).toBe(false);
   });
 
-  it("prioritizes bounded health, status, and session lookup methods", () => {
+  it("prioritizes bounded creation, health, status, and session lookup methods", () => {
     for (const method of [
+      "agent.create",
       "agent.list",
       "run.status",
       "run.result",

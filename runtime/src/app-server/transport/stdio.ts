@@ -146,6 +146,11 @@ export class AgenCStdioTransport {
         .catch((error) => {
           this.#options.onError?.(asError(error), line);
         });
+      if (message.method === "agent.create") {
+        // Create can start during a stream, but a later attach must still
+        // wait for its session to exist.
+        this.#dispatchChain = Promise.all([this.#dispatchChain, pending]).then(() => {});
+      }
       this.#pendingMessages.add(pending);
       pending.finally(() => {
         this.#pendingMessages.delete(pending);

@@ -9,6 +9,7 @@
 
 import { isAbsolute } from "node:path";
 import { isSafeSessionIdSegment } from "../session/session-store.js";
+import { DaemonOperationTimeoutError } from "./operation-deadline.js";
 
 import {
   AgenCDaemonAgentLifecycleError,
@@ -924,6 +925,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.createAgent(
             validateAgentCreateParams(params),
+            { signal },
           ),
         );
       case "agent.list":
@@ -2206,6 +2208,7 @@ function methodSupportsRequestCancellation(
   method: AgenCDaemonKnownMethod,
 ): boolean {
   return (
+    method === "agent.create" ||
     method === "fs.fuzzy_search" ||
     method === "commandExec.start" ||
     method === "csvJob.review.list" ||
@@ -5515,6 +5518,11 @@ function mapDispatchError(
   id: RequestId | null,
   error: unknown,
 ): AgenCDaemonResponse {
+  if (error instanceof DaemonOperationTimeoutError) {
+    return errorResponse(id, -32000, error.message, {
+      code: error.code, operation: error.operation, timeoutMs: error.timeoutMs,
+    });
+  }
   if (error instanceof PermissionRuleMutationPrecommitError) {
     return errorResponse(id, -32602, error.message, {
       code: "PERMISSION_RULE_MUTATION_REJECTED",

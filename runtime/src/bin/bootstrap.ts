@@ -65,6 +65,8 @@ import {
   type BootstrapSessionConfiguredPayload,
 } from "../session/bootstrap.js";
 import { SidecarManager, type Sidecar } from "../session/sidecar.js";
+import { withTimeout } from "../utils/sleep.js";
+import { DaemonOperationScope, DAEMON_AGENT_CREATE_TIMEOUT_MS } from "../app-server/operation-deadline.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
@@ -586,6 +588,7 @@ function createMemoryAutoSaveSidecar(): Sidecar {
 }
 
 export interface BootstrapLocalRuntimeSessionOptions {
+  readonly signal?: AbortSignal;
   readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
   readonly fetchImpl?: typeof fetch;
@@ -680,25 +683,12 @@ export interface PreparedConfiguredExecutionAuthority {
   rollback(): void;
 }
 
-async function waitForPartialMcpDisposal(task: Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new Error(
-            `partial MCP disposal exceeded ${SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS}ms`,
-          ),
-        ),
-      SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
-    );
-    timer.unref?.();
-  });
-  try {
-    await Promise.race([task, timeout]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+function waitForPartialMcpDisposal(task: Promise<void>): Promise<void> {
+  return withTimeout(
+    task,
+    SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
+    `partial MCP disposal exceeded ${SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS}ms`,
+  );
 }
 
 function parsePositiveFileIdentity(value: string, label: string): bigint {
@@ -773,6 +763,7 @@ function snapshotGrokAcpChildEnvironment(
 export async function bootstrapLocalRuntimeSession(
   options: BootstrapLocalRuntimeSessionOptions,
 ): Promise<LocalRuntimeBootstrap> {
+  options.signal?.throwIfAborted();
   const env = { ...(options.env ?? process.env) };
   const providerEnvironment = snapshotProviderEnvironment(env);
   const mcpRequestEnvironment = snapshotMcpRequestEnvironment(env);
@@ -786,6 +777,7 @@ export async function bootstrapLocalRuntimeSession(
         cli.dangerouslyBypassApprovalsAndSandbox === true,
     });
   const commandShellPath = await findSuitableShell(parsedRuntimeOptions, env);
+  options.signal?.throwIfAborted();
   const commandExecutionAuthority = resolveCommandExecutionAuthority(
     parsedRuntimeOptions,
     commandShellPath,
@@ -1716,7 +1708,13 @@ async function bootstrapLocalRuntimeSessionScoped(
     return task;
   };
 
+  const abortStartup = (): void => {
+    sessionForShutdown?.beginShutdown();
+    sessionForShutdown?.abortController.abort(options.signal?.reason);
+  };
+  options.signal?.addEventListener("abort", abortStartup, { once: true });
   try {
+    options.signal?.throwIfAborted();
     // Construct the session through `bootstrapSession` so shell
     // discovery, SessionConfigured emit, startup prewarm, and
     // resume-history recording all flow through the shared entry
@@ -1729,6 +1727,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     // (session.rs:856-908); the `onAfterSessionConfigured` hook does
     // that work instead.
     const session = await bootstrapSession({
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
       conversationId,
       roleWorkspace,
       agentDefinitions,
@@ -2085,9 +2084,16 @@ async function bootstrapLocalRuntimeSessionScoped(
           // daemon session this additionally waits for ordinary Agent
           // authority, because configured stdio servers are processes.
           assertStartupActive();
-          await s.startMcpManager(mcpManager, {
-            signal: startupSignal,
-          });
+          try {
+            await withTimeout(
+              s.startMcpManager(mcpManager, { signal: startupSignal }),
+              60_000,
+              "MCP startup exceeded 60000ms",
+            );
+          } catch (error) {
+            s.services.mcpStartupCancellationToken.cancel();
+            throw error;
+          }
           assertStartupActive();
 
           // Re-arm persisted cron jobs across restarts only once ordinary
@@ -2159,7 +2165,20 @@ async function bootstrapLocalRuntimeSessionScoped(
               );
             }
             assertStartupActive();
-            await activeConversationManager.runStartupPrewarm(s);
+            const prewarm = new DaemonOperationScope(
+              "session startup prewarm", DAEMON_AGENT_CREATE_TIMEOUT_MS, options.signal,
+            );
+            const abortPrewarm = (): void => {
+              s.beginShutdown();
+              s.abortController.abort(prewarm.signal.reason);
+            };
+            prewarm.signal.addEventListener("abort", abortPrewarm, { once: true });
+            try {
+              await prewarm.wait(() => activeConversationManager.runStartupPrewarm(s));
+            } finally {
+              prewarm.signal.removeEventListener("abort", abortPrewarm);
+              prewarm.dispose();
+            }
             assertStartupActive();
           }
         };
@@ -2213,7 +2232,8 @@ async function bootstrapLocalRuntimeSessionScoped(
     };
   } catch (err) {
     try {
-      await shutdown();
+      await withTimeout(shutdown(), SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
+        "failed bootstrap cleanup exceeded its shutdown budget");
     } catch (shutdownError) {
       throw new AggregateError(
         [err, shutdownError],
@@ -2228,6 +2248,8 @@ async function bootstrapLocalRuntimeSessionScoped(
       throw err;
     }
     throw err;
+  } finally {
+    options.signal?.removeEventListener("abort", abortStartup);
   }
   });
 }

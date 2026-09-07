@@ -49,6 +49,8 @@ export interface SessionLifecycleOpts {
   readonly mcpManager?: MCPManager;
   /** Override budget for testing (ms). */
   readonly shutdownBudgetMs?: number;
+  /** Escalated teardown skips the optional memory-extraction grace period. */
+  readonly skipMemoryExtractionDrain?: boolean;
 }
 
 /**
@@ -80,12 +82,14 @@ export async function shutdownSessionLifecycle(
   // Step 0: memory extraction is fire-and-forget at turn end and must not
   // block turn completion, so shutdown is the one place that waits for it.
   // A no-op when nothing is in flight; bounded by its own budget otherwise.
-  await raceBudget(
-    drainPendingExtraction(MEMORY_EXTRACTION_SHUTDOWN_DRAIN_MS),
-    monotonicMs() + MEMORY_EXTRACTION_SHUTDOWN_DRAIN_MS,
-    "memory_extraction_drain",
-    opts.session,
-  );
+  if (opts.skipMemoryExtractionDrain !== true) {
+    await raceBudget(
+      drainPendingExtraction(MEMORY_EXTRACTION_SHUTDOWN_DRAIN_MS),
+      monotonicMs() + MEMORY_EXTRACTION_SHUTDOWN_DRAIN_MS,
+      "memory_extraction_drain",
+      opts.session,
+    );
+  }
 
   const deadlineMs = monotonicMs() + budgetMs;
 

@@ -20,6 +20,7 @@ function nextChunk(stream: PassThrough): Promise<string> {
 }
 
 const RESPONSIVE_CONTROL_METHODS = [
+  "agent.create",
   "run.cancel",
   "session.cancelTurn",
   "agent.list",

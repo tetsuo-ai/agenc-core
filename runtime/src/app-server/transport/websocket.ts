@@ -466,6 +466,10 @@ export class AgenCWebSocketServer {
         .catch((error) => {
           this.#options.onError?.(asError(error), context.connectionId);
         });
+      if (message.method === "agent.create") {
+        // Preserve create-to-attach ordering without delaying creation behind a stream.
+        active.dispatchChain = Promise.all([active.dispatchChain, pending]).then(() => {});
+      }
       active.pendingMessages.add(pending);
       pending.finally(() => {
         active.pendingMessages.delete(pending);

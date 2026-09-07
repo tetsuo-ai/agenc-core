@@ -155,6 +155,7 @@ describe("RemoteAuthBackend", () => {
         "https://api.agenc.tech/test/subscription-tier",
         {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: {
             "content-type": "application/json",
             authorization: "Bearer bootstrap-token",
@@ -307,6 +308,7 @@ describe("RemoteAuthBackend", () => {
         "https://api.agenc.tech/test/auth/me",
         {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: {
             "content-type": "application/json",
             authorization: "Bearer remote-token",
@@ -637,6 +639,7 @@ describe("RemoteAuthBackend", () => {
         "https://api.agenc.tech/test/llm-usage",
         {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: {
             "content-type": "application/json",
             authorization: "Bearer bootstrap-token",
@@ -705,6 +708,7 @@ describe("RemoteAuthBackend", () => {
         "https://api.agenc.tech/test/login/start",
         {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ sessionId: "cli" }),
         },
@@ -714,6 +718,7 @@ describe("RemoteAuthBackend", () => {
         "https://api.agenc.tech/test/login/poll",
         {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             deviceCode: "device-1",
@@ -726,6 +731,7 @@ describe("RemoteAuthBackend", () => {
         "https://api.agenc.tech/test/login/poll",
         {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             deviceCode: "device-1",
@@ -861,6 +867,7 @@ describe("RemoteAuthBackend", () => {
         "https://api.agenc.tech/test/login/poll",
         {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             deviceCode: "device-1",
@@ -1263,6 +1270,7 @@ describe("RemoteAuthBackend", () => {
       "https://api.agenc.tech/test/vend-key",
       {
         method: "POST",
+        signal: expect.any(AbortSignal),
         headers: {
           "content-type": "application/json",
           authorization: "Bearer remote-token",
@@ -1305,6 +1313,7 @@ describe("RemoteAuthBackend", () => {
       "https://id.agenc.ag/v1/auth/llm-credential",
       {
         method: "POST",
+        signal: expect.any(AbortSignal),
         headers: {
           "content-type": "application/json",
           authorization: "Bearer remote-token",
@@ -1576,6 +1585,7 @@ describe("RemoteAuthBackend", () => {
       "https://api.agenc.tech/test/infer-model",
       {
         method: "POST",
+        signal: expect.any(AbortSignal),
         headers: {
           "content-type": "application/json",
           authorization: "Bearer remote-token",
@@ -1710,6 +1720,7 @@ describe("RemoteAuthBackend", () => {
       "https://api.agenc.tech/test/subscription-tier",
       {
         method: "POST",
+        signal: expect.any(AbortSignal),
         headers: {
           "content-type": "application/json",
           authorization: "Bearer remote-token",

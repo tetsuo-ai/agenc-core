@@ -42,6 +42,7 @@ const DAEMON_PREEMPTIVE_METHODS = new Set<string>([
 ]);
 
 const DAEMON_PRIORITY_METHODS = new Set<string>([
+  "agent.create",
   ...DAEMON_PREEMPTIVE_METHODS,
   "agent.list",
   "run.status",
@@ -81,11 +82,11 @@ export function isDaemonPreemptiveMessage(message: JsonObject): boolean {
 /**
  * Requests that use the connection's priority lane instead of waiting behind
  * a full streaming model turn. Abort/decision messages are included, along
- * with bounded health, status, and session lookup operations. Attach requests
+ * with bounded agent creation, health, status, and session lookup operations. Attach requests
  * remain in the normal FIFO because they commonly depend on a preceding
  * create request from the same connection.
  *
- * Read-only priority requests remain subject to the normal connection
+ * Priority requests remain subject to the normal connection
  * limiter. Only {@link isDaemonControlMessage} operations are overload-exempt.
  */
 export function isDaemonPriorityMessage(message: JsonObject): boolean {

@@ -607,6 +607,7 @@ describe("ImagineImage tool", () => {
   });
 
   it("rejects unsupported Z.ai image requests and untrusted result hosts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-zai-untrusted-"));
     const provider = createProvider("zai", {
       apiKey: "isolated-zai-key",
       model: "glm-5.3",
@@ -620,8 +621,8 @@ describe("ImagineImage tool", () => {
       }),
     );
     const tool = createImagineImageTool({
-      workspaceRoot: process.cwd(),
-      home: testHome(process.cwd()),
+      workspaceRoot: root,
+      home: testHome(root),
       getSession: () => ({ services: { provider } }) as unknown as Session,
       env: {},
       fetchImpl,
@@ -771,6 +772,7 @@ describe("ImagineImage tool", () => {
   });
 
   it("blocks a signed-image redirect that leaves trusted HTTPS hosts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-qwen-redirect-"));
     const signed =
       "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/image.png";
     const fetchImpl = vi.fn(async (url: string | URL | Request) =>
@@ -780,7 +782,7 @@ describe("ImagineImage tool", () => {
             status: 302,
             headers: { location: "http://127.0.0.1/internal" },
           }));
-    const tool = createQwenImagineTool("qwen", fetchImpl);
+    const tool = createQwenImagineTool("qwen", fetchImpl, root);
 
     const result = await tool.execute({ prompt: "safe redirect handling" });
 
@@ -790,6 +792,7 @@ describe("ImagineImage tool", () => {
   });
 
   it("rejects oversized signed images before buffering the response", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-qwen-oversized-"));
     const signed =
       "https://dashscope-result-sg.oss-ap-southeast-1.aliyuncs.com/large.png";
     const fetchImpl = vi.fn(async (url: string | URL | Request) =>
@@ -802,7 +805,7 @@ describe("ImagineImage tool", () => {
               "content-length": String(20 * 1024 * 1024 + 1),
             },
           }));
-    const tool = createQwenImagineTool("qwen", fetchImpl);
+    const tool = createQwenImagineTool("qwen", fetchImpl, root);
 
     const result = await tool.execute({ prompt: "bounded download" });
 

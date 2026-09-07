@@ -3332,6 +3332,9 @@ async function runAgenCDaemonForegroundLocked(
     let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
     if (runner === undefined) {
       configuredRunner = new AgenCDelegateBackgroundAgentRunner({
+        ...(activeConfig.daemon?.agent_stop_timeout_ms !== undefined
+          ? { agentStopTimeoutMs: activeConfig.daemon.agent_stop_timeout_ms }
+          : {}),
         env: host.env,
         argv: [host.execPath, host.entrypointPath, "--autonomous"],
         executionAdmissionKernel,

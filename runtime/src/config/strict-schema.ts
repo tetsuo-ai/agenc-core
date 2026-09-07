@@ -282,8 +282,12 @@ function validateDaemon(value: unknown): void {
   if (value === undefined) return;
   const field = "daemon";
   const record = requirePlainObject(value, field);
-  rejectUnknownFields(record, new Set(["autostart"]), field);
+  rejectUnknownFields(record, new Set(["autostart", "agent_stop_timeout_ms"]), field);
   optionalBoolean(record.autostart, `${field}.autostart`);
+  optionalPositiveInteger(record.agent_stop_timeout_ms, `${field}.agent_stop_timeout_ms`);
+  if (typeof record.agent_stop_timeout_ms === "number" && record.agent_stop_timeout_ms > 2_147_483_647) {
+    throw new InvalidStrictConfigError(`${field}.agent_stop_timeout_ms`, "exceeds the maximum timer interval");
+  }
 }
 
 function validateGateway(value: unknown): void {

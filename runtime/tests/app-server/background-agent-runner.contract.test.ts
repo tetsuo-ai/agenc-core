@@ -2314,6 +2314,81 @@ describe("AgenC delegate background-agent runner", () => {
     expect(runtimeEnvironment).not.toHaveProperty("AGENC_CREDENTIAL_DOCS_MCP");
   });
 
+  it.each([30_000, 50])("bounds a hung stop at %i ms, aborts execution, and retires the generation", async (timeoutMs) => {
+    const release = Promise.withResolvers<void>();
+    const h = makeTopLevelRunner({
+      conversationId: "session-stop-deadline",
+      additionalRunnerOptions: { agentStopTimeoutMs: timeoutMs },
+      bootstrapShutdown: vi.fn(() => release.promise),
+    });
+    const abortController = new AbortController();
+    const beginShutdown = vi.fn();
+    Object.assign(h.session, {
+      abortController, beginShutdown,
+      abortAllTasks: vi.fn(() => release.promise),
+    });
+    await h.runner.startAgent({
+      objective: "bounded stop", initialContent: [],
+      unattendedAllow: [], unattendedDeny: [],
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let settled = false;
+    const stopping = h.runner.stopAgent("session-stop-deadline").catch((error: unknown) => {
+      settled = true;
+      return error;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(timeoutMs);
+      expect(abortController.signal.aborted).toBe(true);
+      expect(beginShutdown).toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(true);
+      expect(await stopping).toMatchObject({
+        name: "DaemonOperationTimeoutError", code: "DAEMON_OPERATION_TIMEOUT",
+      });
+      expect(await h.runner.getAgentSnapshot("session-stop-deadline")).toBeNull();
+    } finally {
+      release.resolve();
+      await stopping;
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds restore waiting for a previous generation without starting another bootstrap", async () => {
+    const release = Promise.withResolvers<void>();
+    const h = makeTopLevelRunner({
+      conversationId: "session-restore-deadline",
+      bootstrapShutdown: vi.fn(() => release.promise),
+    });
+    Object.assign(h.session, {
+      abortController: new AbortController(),
+      abortAllTasks: vi.fn(() => release.promise),
+    });
+    await h.runner.startAgent({
+      objective: "bounded restore", initialContent: [],
+      unattendedAllow: [], unattendedDeny: [],
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    h.stub.pushStatus({ status: "completed", turnId: "old-turn", endedAtMs: 2, lastMessage: "done" });
+    await vi.advanceTimersByTimeAsync(0);
+    let settled = false;
+    const restoring = h.runner.restoreAgent({
+      agentId: "session-restore-deadline", objective: "bounded restore",
+      reopenTerminalRun: true,
+    }).catch((error: unknown) => { settled = true; return error; });
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(true);
+      expect(await restoring).toMatchObject({ name: "DaemonOperationTimeoutError" });
+      expect(h.bootstrap).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await restoring;
+      vi.useRealTimers();
+    }
+  });
+
   it("waits for the exact terminal generation cleanup before explicit restore", async () => {
     let releaseShutdown!: () => void;
     const shutdownBlocked = new Promise<void>((resolve) => {

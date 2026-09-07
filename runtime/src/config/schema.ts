@@ -355,6 +355,7 @@ export type ProtocolConfig =
 
 export interface DaemonConfig {
   readonly autostart?: boolean;
+  readonly agent_stop_timeout_ms?: number;
 }
 
 export type GatewayDmPolicy = "pairing" | "allowlist" | "open" | "disabled";

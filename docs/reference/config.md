@@ -268,6 +268,7 @@ otherwise.
 | `mcp.server.enabled` | `false` |
 | `mcp.server.transport` | `stdio` |
 | `daemon.autostart` | `true` |
+| `daemon.agent_stop_timeout_ms` | `30000` |
 | `gateway.defaultAgent` | `default` |
 | `gateway.hooks.enabled` | `false` |
 | `project_root_markers` | `.git`, `package.json`, `Cargo.toml`, `pyproject.toml` |
@@ -700,6 +701,7 @@ environment ingress.
 | Paths | Type / meaning |
 | --- | --- |
 | `daemon`, `daemon.autostart` | Daemon block and automatic daemon startup. The local daemon transport is fixed by the platform runtime. |
+| `daemon.agent_stop_timeout_ms` | Graceful agent stop and previous-generation cleanup deadline in milliseconds (default `30000`, positive integer up to `2147483647`). A stop that exceeds this deadline aborts execution and allows up to `5000` ms for hard teardown before reporting failure. Restart the daemon after changing this setting. |
 | `browser` | Chromium execution policy. |
 | `browser.executable_path`, `browser.profile_dir` | Browser binary/profile paths. |
 | `browser.headless`, `browser.allow_private_network`, `browser.no_sandbox` | Security/runtime booleans. |

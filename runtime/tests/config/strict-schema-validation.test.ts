@@ -89,6 +89,9 @@ describe("strict schema-v2 validation coverage", () => {
       /web_search_endpoint_kind/u,
     ],
     ["daemon unknown field", { daemon: { socket: true } }, /daemon\.socket/u],
+    ["daemon zero stop timeout", { daemon: { agent_stop_timeout_ms: 0 } }, /daemon\.agent_stop_timeout_ms/u],
+    ["daemon fractional stop timeout", { daemon: { agent_stop_timeout_ms: 1.5 } }, /daemon\.agent_stop_timeout_ms/u],
+    ["daemon overflowing stop timeout", { daemon: { agent_stop_timeout_ms: 2_147_483_648 } }, /daemon\.agent_stop_timeout_ms/u],
     ["daemon unknown transport", { daemon: { transport: "unix" } }, /daemon\.transport.*unknown field/u],
     [
       "LSP unknown field",

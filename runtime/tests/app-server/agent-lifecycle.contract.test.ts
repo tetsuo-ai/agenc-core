@@ -2534,6 +2534,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(starts).toEqual([
       {
         objective: "build the parser",
+        signal: expect.any(AbortSignal),
         cwd: process.cwd(),
         addDirs: ["../shared workspace", "/tmp/shared"],
         metadata: {
@@ -2897,6 +2898,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(startAgent).not.toHaveBeenCalled();
     expect(restoreAgent).toHaveBeenCalledWith({
       agentId: "conv-retained1",
+      signal: expect.any(AbortSignal),
       resumeRolloutPath: fixture.rolloutPath,
       resumeRolloutLease: expect.objectContaining({
         rolloutPath: fixture.rolloutPath,
@@ -6820,6 +6822,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(starts).toEqual([
       {
         objective: "index queued work",
+        signal: expect.any(AbortSignal),
         cwd: process.cwd(),
         envOverrides: expect.any(Object),
         metadata: {

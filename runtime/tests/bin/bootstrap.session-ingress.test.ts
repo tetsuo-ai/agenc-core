@@ -89,6 +89,84 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
     }
   });
 
+  it("cancels stalled MCP startup before prewarm and rejects bootstrap", async () => {
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
+      name: "stub",
+      chat: async () => ({
+        content: "ok", toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      }),
+    }) as never);
+    const entered = Promise.withResolvers<AbortSignal | undefined>();
+    const release = Promise.withResolvers<void>();
+    vi.spyOn(Session.prototype, "startMcpManager").mockImplementation(
+      async (_manager, options) => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        entered.resolve(options?.signal);
+        await release.promise;
+      },
+    );
+    const prewarm = vi.spyOn(
+      ConversationThreadManager.prototype, "runStartupPrewarm",
+    ).mockResolvedValue("ready");
+    const outcome = bootstrapLocalRuntimeSession({
+      apiKey: "test-key",
+      conversationId: "mcp_startup_timeout",
+      env: {
+        ...process.env, AGENC_HOME: home, AGENC_WORKSPACE: workspace, HOME: home,
+      },
+    }).then(
+      (boot) => ({ boot, error: undefined }),
+      (error: unknown) => ({ boot: undefined, error }),
+    );
+    try {
+      const signal = await entered.promise;
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(signal?.aborted).toBe(true);
+      expect(prewarm).not.toHaveBeenCalled();
+      vi.useRealTimers();
+      expect((await outcome).error).toMatchObject({
+        message: "MCP startup exceeded 60000ms",
+      });
+    } finally {
+      vi.useRealTimers();
+      release.resolve();
+      const result = await outcome;
+      await result.boot?.shutdown();
+    }
+  });
+
+  it("cancels bootstrap while startup prewarm is stuck", async () => {
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
+      name: "stub", chat: async () => ({ content: "ok", toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      }),
+    }) as never);
+    const entered = Promise.withResolvers<Session>();
+    const release = Promise.withResolvers<"ready">();
+    vi.spyOn(ConversationThreadManager.prototype, "runStartupPrewarm").mockImplementation(async (session) => {
+      entered.resolve(session);
+      return release.promise;
+    });
+    const controller = new AbortController();
+    const outcome = bootstrapLocalRuntimeSession({
+      apiKey: "test-key", conversationId: "cancel_startup_prewarm", signal: controller.signal,
+      env: { ...process.env, AGENC_HOME: home, AGENC_WORKSPACE: workspace, HOME: home },
+    }).then((boot) => ({ boot, error: undefined }), (error: unknown) => ({ boot: undefined, error }));
+    try {
+      const session = await entered.promise;
+      controller.abort(new Error("cancelled startup prewarm"));
+      expect(session.abortController.signal.aborted).toBe(true);
+      expect((await outcome).error).toMatchObject({ message: "cancelled startup prewarm" });
+    } finally {
+      release.resolve("ready");
+      await (await outcome).boot?.shutdown();
+    }
+  });
+
   it("binds Grok ACP to the scrubbed client child environment", async () => {
     const providerMod = await import("../llm/provider.js");
     let capturedOptions:

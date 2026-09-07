@@ -31,6 +31,7 @@ function nextClose(socket: WebSocket): Promise<void> {
 }
 
 const RESPONSIVE_CONTROL_METHODS = [
+  "agent.create",
   "run.cancel",
   "session.cancelTurn",
   "agent.list",
@@ -155,6 +156,39 @@ describe("AgenC websocket app-server transport", () => {
     client.close();
     await nextClose(client);
     await server.close();
+  });
+
+  it("does not let attach overtake a pipelined create dependency", async () => {
+    const events: string[] = [];
+    const release = Promise.withResolvers<void>();
+    const server = new AgenCWebSocketServer({
+      onMessage: async (message) => {
+        if (message.method === "agent.create") {
+          events.push("create:start");
+          await release.promise;
+          events.push("create:end");
+        } else {
+          events.push(String(message.method));
+        }
+      },
+    });
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    try {
+      client.send('{"jsonrpc":"2.0","id":1,"method":"agent.create"}');
+      client.send('{"jsonrpc":"2.0","id":2,"method":"agent.attach"}');
+      await delay(20);
+      expect(events).toEqual(["create:start"]);
+      release.resolve();
+      await delay(20);
+      expect(events).toEqual(["create:start", "create:end", "agent.attach"]);
+    } finally {
+      release.resolve();
+      client.close();
+      await nextClose(client);
+      await server.close();
+    }
   });
 
   it("does not let a priority request overtake connection initialization", async () => {
