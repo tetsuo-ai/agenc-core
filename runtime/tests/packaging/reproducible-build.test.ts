@@ -544,7 +544,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).toContain("--config vitest.native.config.ts");
     expect(windowsJob).toContain("numTotalTestSuites: 19");
-    expect(windowsJob).toContain("numTotalTests: 110");
+    expect(windowsJob).toContain("numTotalTests: 111");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
@@ -554,7 +554,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows FND/native capability lane passed 110 tests in 12 files with zero skipped",
+      "Windows FND/native capability lane passed 111 tests in 12 files with zero skipped",
     );
 
     // Six lanes: default-suite plus the five hosted capability lanes.

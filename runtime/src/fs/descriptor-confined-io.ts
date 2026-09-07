@@ -154,7 +154,8 @@ export async function withRegularChild<Result>(
     name === ".." ||
     basename(name) !== name ||
     win32.basename(name) !== name ||
-    /[\\/\u0000]/u.test(name)
+    /[\\/]/u.test(name) ||
+    name.includes("\0")
   ) {
     throw new TypeError("confined child must be one basename");
   }
@@ -182,11 +183,13 @@ export async function withRegularChild<Result>(
   }
   assertRegularFile(before, root.policy);
   assertByteLength(before, limits);
-  verifyPrivatePath(path, "file", root.policy);
+  assertPrivateChildPath(path, root.policy);
   let handle: FileHandle;
   try {
     handle = await open(path, verifiedFileOpenFlags());
   } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if (!isChildReplacementError(cause)) throw cause;
     throw new ConfinedIoError(
       "CHILD_CHANGED",
       `child changed while opening: ${path}`,
@@ -217,9 +220,9 @@ export async function withRegularChild<Result>(
           ]);
           assertRegularFile(opened, root.policy);
           assertRegularFile(current, root.policy);
-          verifyPrivatePath(path, "file", root.policy);
+          assertPrivateChildPath(path, root.policy);
           if (!sameSnapshot(snapshot, opened) || !sameSnapshot(snapshot, current)) {
-            throw new Error("child snapshot changed");
+            throw new ConfinedIoError("CHILD_CHANGED", "child snapshot changed");
           }
           if (
             dirname(canonical) !== root.canonicalPath ||
@@ -231,12 +234,7 @@ export async function withRegularChild<Result>(
             );
           }
         } catch (cause) {
-          if (
-            cause instanceof ConfinedIoError &&
-            cause.code === "CHILD_OUTSIDE_ROOT"
-          ) {
-            throw cause;
-          }
+          if (cause instanceof ConfinedIoError || !isChildReplacementError(cause)) throw cause;
           throw new ConfinedIoError(
             "CHILD_CHANGED",
             `child changed during I/O: ${path}`,
@@ -262,6 +260,24 @@ export async function readConfinedFile(file: ConfinedFile): Promise<Buffer> {
     offset += chunk.byteLength;
   });
   return bytes;
+}
+
+function isChildReplacementError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP";
+}
+
+function assertPrivateChildPath(path: string, policy: ConfinedIoPolicy): void {
+  try {
+    verifyPrivatePath(path, "file", policy);
+  } catch (cause) {
+    if (cause instanceof ConfinedIoError) throw cause;
+    throw new ConfinedIoError(
+      "CHILD_UNSAFE",
+      `child does not have the required private ACL: ${path}`,
+      { cause },
+    );
+  }
 }
 
 export async function scanConfinedFile(

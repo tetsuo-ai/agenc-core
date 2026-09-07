@@ -17,6 +17,7 @@ import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 const controls = vi.hoisted(() => ({
   hideAliases: false,
   beforeOpen: undefined as ((path: string) => Promise<void>) | undefined,
+  beforeRealpath: undefined as ((path: string) => Promise<void>) | undefined,
   afterRead: undefined as (() => Promise<void>) | undefined,
   maximumReadBytes: undefined as number | undefined,
   handles: [] as FileHandle[],
@@ -28,6 +29,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     realpath: vi.fn(async (...args: Parameters<typeof actual.realpath>) => {
+      await controls.beforeRealpath?.(String(args[0]));
       if (controls.hideAliases && /^\/(?:proc\/self\/fd|dev\/fd)\//u.test(String(args[0]))) {
         throw Object.assign(new Error("descriptor aliases unavailable"), { code: "ENOENT" });
       }
@@ -72,6 +74,7 @@ let candidate: string;
 beforeEach(async () => {
   controls.hideAliases = false;
   controls.beforeOpen = undefined;
+  controls.beforeRealpath = undefined;
   controls.afterRead = undefined;
   controls.maximumReadBytes = undefined;
   controls.handles = [];
@@ -85,6 +88,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   controls.beforeOpen = undefined;
+  controls.beforeRealpath = undefined;
   controls.afterRead = undefined;
   for (const handle of controls.handles) {
     if (handle.fd !== -1) await handle.close();
@@ -103,6 +107,27 @@ function readCandidate(
 }
 
 describe("descriptor-confined I/O", () => {
+  it("preserves an operational failure during post-read verification", async () => {
+    const failure = Object.assign(new Error("temporary verification failure"), { code: "EIO" });
+    controls.afterRead = async () => {
+      controls.beforeRealpath = async (path) => {
+        if (path.endsWith("candidate")) throw failure;
+      };
+    };
+    await expect(readCandidate()).rejects.toBe(failure);
+    expect(controls.handles.every((handle) => handle.fd === -1)).toBe(true);
+  });
+
+  it("reports a child removed between inspection and opening as missing", async () => {
+    controls.beforeOpen = async (path) => {
+      if (!path.endsWith("candidate")) return;
+      controls.beforeOpen = undefined;
+      await unlink(candidate);
+    };
+    expect(await readCandidate()).toBeUndefined();
+    expect(controls.requestedBytes).toEqual([]);
+  });
+
   it("reads the exact cap, handles short reads, and closes both descriptors", async () => {
     controls.maximumReadBytes = 1;
     expect(await readCandidate()).toEqual(Buffer.from("safe"));
@@ -268,6 +293,72 @@ describe("descriptor-confined I/O", () => {
 });
 
 describe("workflow consumer filesystem policies", () => {
+  it.each([
+    ["read", "EMFILE"], ["read", "EACCES"], ["read", "EIO"],
+    ["cleanup", "EMFILE"], ["cleanup", "EACCES"], ["cleanup", "EIO"],
+    ["recovery", "EMFILE"], ["recovery", "EACCES"], ["recovery", "EIO"],
+  ])("keeps %s retryable after a child open returns %s", async (operation, code) => {
+    const driver = openStateDatabases({
+      cwd: temporaryDirectory, agencHome: join(temporaryDirectory, "home"),
+    });
+    try {
+      let now = 1_000_000;
+      let artifactId = "";
+      const store = new WorkflowHandoffArtifactStore({
+        driver, trustedRoot: join(temporaryDirectory, "handoffs"),
+        retentionMs: 100, intentRecoveryGraceMs: 0, now: () => now,
+        hooks: {
+          afterArtifactInstalled(installedId) {
+            artifactId = installedId;
+            if (operation === "recovery") throw new Error("reserved for recovery");
+          },
+        },
+      });
+      const publication = store.publish({
+        owner: { run_id: "run", workflow_id: "workflow", producer_step_id: "step" },
+        idempotencyKey: "retryable", bytes: Buffer.from("safe"), tokenCount: 1,
+      });
+      if (operation === "recovery") {
+        await expect(publication).rejects.toThrow("reserved for recovery");
+      } else {
+        await publication;
+      }
+      const failure = Object.assign(new Error("temporary open failure"), { code });
+      controls.beforeOpen = async (path) => {
+        if (path.endsWith(`${artifactId}.handoff`)) throw failure;
+      };
+      now += 101;
+      const attempt = () => operation === "read"
+        ? store.read(artifactId)
+        : operation === "cleanup" ? store.cleanupExpired() : store.recoverIntents();
+      await expect(attempt()).rejects.toBe(failure);
+      expect(store.inspectForOperator(artifactId).status).toBe(
+        operation === "read" ? "committed" : operation === "cleanup" ? "deleting" : "intent",
+      );
+      controls.beforeOpen = undefined;
+      await expect(attempt()).resolves.toBeDefined();
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("maps a rejected Windows child ACL to a child conflict", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      await expect(readCandidate({
+        ...privatePolicy,
+        unavailableAlias: "windows-private-path",
+        verifyWindowsPrivatePath(_path, role) {
+          if (role === "file") throw new Error("child ACL is inherited");
+        },
+      })).rejects.toMatchObject({ code: "CHILD_UNSAFE" });
+      expect(controls.requestedBytes).toEqual([]);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
   it("rejects an oversized handoff cleanup candidate before opening it", async () => {
     const driver = openStateDatabases({
       cwd: temporaryDirectory,

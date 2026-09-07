@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { link, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,10 @@ import { loadNamedWorkflowManifest } from "../../src/agents/workflow-manifest.js
 import { WorkflowHandoffArtifactStore } from "../../src/agents/workflow-handoff-store.js";
 import { assertWindowsPrivatePathSecurity } from "../../src/agents/workflow-private-path.js";
 import { openStateDatabases, type StateSqliteDriver } from "../../src/state/sqlite-driver.js";
+import {
+  resolveTrustedWindowsSystemExecutable,
+  resolveTrustedWindowsSystemPaths,
+} from "../../src/utils/windows-system-path.js";
 
 if (process.platform !== "win32") {
   throw new Error("workflow filesystem native tests require Windows");
@@ -141,4 +146,33 @@ it("verifies a streamed Windows publication against an existing bounded candidat
     },
   });
   expect(Buffer.from((await store.read(artifact.artifact_id)).bytes)).toEqual(bytes);
+}, 90_000);
+
+it("continues Windows cleanup after rejecting one inherited file ACL", async () => {
+  driver = openStateDatabases({
+    cwd: temporaryDirectory, agencHome: join(temporaryDirectory, "home"),
+  });
+  let now = 1_000_000;
+  const root = join(temporaryDirectory, "handoffs");
+  const store = new WorkflowHandoffArtifactStore({
+    driver, trustedRoot: root, retentionMs: 100, now: () => now,
+  });
+  const rejected = await store.publish({
+    owner, idempotencyKey: "rejected", bytes: Buffer.from("bad-acl"), tokenCount: 1,
+  });
+  const accepted = await store.publish({
+    owner, idempotencyKey: "accepted", bytes: Buffer.from("private"), tokenCount: 1,
+  });
+  const rejectedPath = join(root, `${rejected.artifact_id}.handoff`);
+  const icacls = resolveTrustedWindowsSystemExecutable(
+    resolveTrustedWindowsSystemPaths(), ["System32", "icacls.exe"],
+  );
+  execFileSync(icacls, [rejectedPath, "/inheritance:e"], { windowsHide: true });
+  await expect(store.read(rejected.artifact_id))
+    .rejects.toMatchObject({ code: "WORKFLOW_HANDOFF_CORRUPT" });
+  now += 101;
+  expect(await store.cleanupExpired()).toMatchObject({ removed: 1, conflicts: 1 });
+  expect(await readFile(rejectedPath, "utf8")).toBe("bad-acl");
+  await expect(readFile(join(root, `${accepted.artifact_id}.handoff`)))
+    .rejects.toMatchObject({ code: "ENOENT" });
 }, 90_000);
