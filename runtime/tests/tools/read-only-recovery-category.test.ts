@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,7 @@ import type {
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
 import type { ToolEvaluatorContext } from "../../src/permissions/evaluator.js";
+import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
 import type { Session } from "../../src/session/session.js";
@@ -61,7 +62,7 @@ function registeredTool(name: string): Tool {
   return tool;
 }
 
-function admissionHarness() {
+function admissionHarness(toolPermissionContext = createEmptyToolPermissionContext()) {
   const events: Event[] = [];
   const eventLog = new EventLog();
   eventLog.subscribe((event) => events.push(event));
@@ -103,7 +104,11 @@ function admissionHarness() {
     eventLog,
     emit: (event: Event) => eventLog.emit(event),
     rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
-    services: { executionAdmission: admission, admissionRequired: true },
+    services: {
+      executionAdmission: admission,
+      admissionRequired: true,
+      permissionModeRegistry: new PermissionModeRegistry(toolPermissionContext),
+    },
   } as unknown as Session;
   return { session, events, acquire };
 }
@@ -205,15 +210,15 @@ describe("production read-only tool recovery", () => {
     expect(events.some((event) => event.msg.type === "effect_unknown_outcome")).toBe(false);
   });
 
-  it.each(["deny", "ask"] as const)("keeps web-fetch %s rules off the code-mode fallback", async (behavior) => {
-    const { session, acquire } = admissionHarness();
+  it.each(["deny", "ask", "allow"] as const)("evaluates web-fetch %s rules before nested dispatch", async (behavior) => {
     const web = registeredTool("web_fetch");
     const args = { url: "https://agenc.tech/restricted" };
     const toolPermissionContext = createEmptyToolPermissionContext({
-      [behavior === "deny" ? "alwaysDenyRules" : "alwaysAskRules"]: {
+      [behavior === "deny" ? "alwaysDenyRules" : behavior === "ask" ? "alwaysAskRules" : "alwaysAllowRules"]: {
         localSettings: ["web_fetch(domain:agenc.tech)"],
       },
     });
+    const { session, acquire } = admissionHarness(toolPermissionContext);
     const permissionContext = {
       getAppState: () => ({ toolPermissionContext }),
     } as unknown as ToolEvaluatorContext;
@@ -223,7 +228,7 @@ describe("production read-only tool recovery", () => {
       callback(null, [{ address: "8.8.8.8", family: 4 }]);
     });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("must not be fetched", { headers: { "content-type": "text/plain" } }),
+      new Response("approved response", { headers: { "content-type": "text/plain" } }),
     );
     const liveRegistry = buildToolRegistry({
       workspaceRoot,
@@ -231,15 +236,111 @@ describe("production read-only tool recovery", () => {
       getSession: () => session,
       modelFacingTools: [web],
     });
-    await expect(liveRegistry.dispatchCodeModeNestedTool?.({
+    const result = await liveRegistry.dispatchCodeModeNestedTool?.({
       id: `nested-web-${behavior}`,
       name: "web_fetch",
       input: args,
-    })).resolves.toMatchObject({
+    });
+    if (behavior === "allow") {
+      expect(result?.isError).not.toBe(true);
+      expect(result?.content).toContain("approved response");
+      expect(acquire).toHaveBeenCalledOnce();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      return;
+    }
+    expect(result).toMatchObject({
       isError: true,
-      content: expect.stringContaining("requires permission-aware dispatch"),
+      content: expect.stringContaining(behavior === "deny" ? "denied" : "permission"),
     });
     expect(acquire).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["FileRead", "NotebookRead"])("keeps permitted %s available to nested dispatch", async (name) => {
+    const { session } = admissionHarness();
+    const filePath = join(workspaceRoot, name === "FileRead" ? "read.txt" : "read.ipynb");
+    const content = name === "FileRead"
+      ? "permitted file contents"
+      : JSON.stringify({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {},
+          cells: [{ cell_type: "markdown", metadata: {}, source: ["permitted file contents"] }],
+        });
+    await writeFile(filePath, content);
+    const liveRegistry = buildToolRegistry({
+      workspaceRoot,
+      agencHome: workspaceRoot,
+      getSession: () => session,
+      modelFacingTools: [registeredTool("NotebookRead")],
+    });
+    const result = await liveRegistry.dispatchCodeModeNestedTool?.({
+      id: `nested-${name}`,
+      name,
+      input: name === "FileRead" ? { file_path: filePath } : { notebook_path: filePath },
+    });
+    expect(result?.isError).not.toBe(true);
+    expect(result?.content).toContain("permitted file contents");
+  });
+
+  it("fails closed when a nested tool's permission hook throws", async () => {
+    const { session, acquire } = admissionHarness();
+    const execute = vi.fn(async () => ({ content: "must not run" }));
+    const liveRegistry = buildToolRegistry({
+      workspaceRoot,
+      getSession: () => session,
+      extraTools: [{
+        name: "custom.permission-error",
+        description: "Read-only tool with a failing permission hook.",
+        inputSchema: { type: "object" },
+        isReadOnly: true,
+        recoveryCategory: "idempotent",
+        checkPermissions() { throw new Error("policy unavailable"); },
+        execute,
+      }],
+    });
+    const result = await liveRegistry.dispatchCodeModeNestedTool?.({
+      id: "nested-permission-error",
+      name: "custom.permission-error",
+      input: {},
+    });
+    expect(result).toMatchObject({
+      isError: true,
+      content: expect.stringContaining("Permission check failed"),
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["WebSearch", "deny"],
+    ["WebSearch", "ask"],
+    ["XSearch", "deny"],
+    ["XSearch", "ask"],
+  ] as const)("enforces whole-tool %s %s rules without a permission hook", async (name, behavior) => {
+    const { session, acquire } = admissionHarness(createEmptyToolPermissionContext({
+      [behavior === "deny" ? "alwaysDenyRules" : "alwaysAskRules"]: {
+        localSettings: [name],
+      },
+    }));
+    const search = registeredTool(name);
+    expect(search.checkPermissions).toBeUndefined();
+    const execute = vi.fn(async () => ({ content: "must not run" }));
+    const liveRegistry = buildToolRegistry({
+      workspaceRoot,
+      getSession: () => session,
+      modelFacingTools: [{ ...search, execute }],
+    });
+    const result = await liveRegistry.dispatchCodeModeNestedTool?.({
+      id: `nested-${behavior}-${name}`,
+      name,
+      input: { query: "example" },
+    });
+    expect(result).toMatchObject({
+      isError: true,
+      content: expect.stringContaining(behavior === "deny" ? "denied" : "Permission required"),
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 });

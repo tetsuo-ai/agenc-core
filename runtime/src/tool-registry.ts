@@ -108,6 +108,11 @@ import { getAttachmentTrackingState } from "./session/attachment-state.js";
 import { runAdmittedToolCall } from "./budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "./budget/admission-client.js";
 import type { ToolEffectDispositionEvidence } from "./contracts/run-contracts.js";
+import { freshDenialTracking } from "./permissions/denial-tracking.js";
+import {
+  attachContextDefaults,
+  hasPermissionsToUseTool,
+} from "./permissions/evaluator.js";
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -473,8 +478,6 @@ function parseCodeModeNestedToolArguments(
 function canDirectDispatchFromCodeMode(tool: Tool): boolean {
   return (
     tool.requiresApproval !== true &&
-    // The fallback has no evaluator context for tool-specific permissions.
-    tool.checkPermissions === undefined &&
     tool.isReadOnly === true &&
     tool.recoveryCategory === "idempotent"
   );
@@ -1272,11 +1275,79 @@ export function buildToolRegistry(
         };
       }
       try {
-        const args = parseCodeModeNestedToolArguments(
+        let args = parseCodeModeNestedToolArguments(
           toolCall.name,
           toolCall.input,
           builtinSurface.stringArgumentFields,
         );
+        const session = options.getSession?.() ?? null;
+        const permissionRegistry = session?.services.permissionModeRegistry;
+        if (session !== null && permissionRegistry !== undefined) {
+          const denialTracking = session.denialTracking ?? freshDenialTracking();
+          const checkPermissions = spec.tool.checkPermissions;
+          const permissionTool: Tool = checkPermissions === undefined
+            ? spec.tool
+            : {
+                ...spec.tool,
+                async checkPermissions(input, context) {
+                  try {
+                    return await checkPermissions.call(spec.tool, input, context);
+                  } catch (error) {
+                    context.signal?.throwIfAborted();
+                    return {
+                      behavior: "deny",
+                      message: `Permission check failed: ${error instanceof Error ? error.message : String(error)}`,
+                      decisionReason: {
+                        type: "other",
+                        reason: "tool-specific permission check failed",
+                      },
+                    };
+                  }
+                },
+              };
+          const decision = await hasPermissionsToUseTool(
+            permissionTool,
+            args,
+            attachContextDefaults({
+              session,
+              denialTracking,
+              ...(toolCall.abortSignal !== undefined
+                ? { signal: toolCall.abortSignal }
+                : {}),
+              getAppState() {
+                const toolPermissionContext = permissionRegistry.current();
+                return {
+                  toolPermissionContext,
+                  denialTracking,
+                  autoModeActive: toolPermissionContext.autoModeActive === true,
+                };
+              },
+            }),
+          );
+          if (decision.behavior !== "allow") {
+            return {
+              content: safeStringify({
+                error: decision.message,
+              }),
+              isError: true,
+            };
+          }
+          if (decision.updatedInput !== undefined) {
+            args = parseCodeModeNestedToolArguments(
+              toolCall.name,
+              decision.updatedInput,
+              builtinSurface.stringArgumentFields,
+            );
+          }
+        } else if (spec.tool.checkPermissions !== undefined) {
+          return {
+            content: safeStringify({
+              error: `code-mode nested tool \`${toolCall.name}\` requires permission-aware dispatch with a live session permission registry`,
+            }),
+            isError: true,
+          };
+        }
+        toolCall.abortSignal?.throwIfAborted();
         return await executeConfiguredTool(spec, toolCall.id, args, {
           abortSignal: toolCall.abortSignal,
         });
