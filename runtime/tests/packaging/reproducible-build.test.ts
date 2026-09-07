@@ -450,6 +450,9 @@ describe("reproducible install and release contract", () => {
     expect(macosJob).toContain(
       "tests/durability/atomic-artifact.darwin.test.ts",
     );
+    expect(macosJob).toContain(
+      "tests/eval-contract/platform-protection.darwin.test.ts",
+    );
     expect(macosJob).toContain("tests/fnd/benchmark-harness-faults.test.ts");
     expect(macosJob).toContain("tests/fnd/bounded-file-io.test.ts");
     expect(macosJob).toContain("tests/fnd/fnd-fixtures.test.ts");
@@ -462,10 +465,10 @@ describe("reproducible install and release contract", () => {
       "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts",
     );
     expect(macosJob).toContain("--config vitest.native.config.ts");
-    expect(macosJob).toContain("numTotalTestSuites: 14");
-    expect(macosJob).toContain("numTotalTests: 101");
+    expect(macosJob).toContain("numTotalTestSuites: 16");
+    expect(macosJob).toContain("numTotalTests: 105");
     expect(macosJob).toContain(
-      "macOS FND/native capability lane passed 101 tests in 9 files with zero skipped",
+      "macOS FND/native capability lane passed 105 tests in 10 files with zero skipped",
     );
     expect(macosJob).toContain(
       "Run the suites that only fail on macOS when darwin is broken",

@@ -1234,6 +1234,7 @@ jobs:
             run \
             tests/agents/jobs/csv-output.native.test.ts \
             tests/durability/atomic-artifact.darwin.test.ts \
+            tests/eval-contract/platform-protection.darwin.test.ts \
             tests/fnd/benchmark-harness-faults.test.ts \
             tests/fnd/bounded-file-io.test.ts \
             tests/fnd/fnd-fixtures.test.ts \
@@ -1256,6 +1257,7 @@ jobs:
           const expectedFiles = [
             "tests/agents/jobs/csv-output.native.test.ts",
             "tests/durability/atomic-artifact.darwin.test.ts",
+            "tests/eval-contract/platform-protection.darwin.test.ts",
             "tests/fnd/benchmark-harness-faults.test.ts",
             "tests/fnd/bounded-file-io.test.ts",
             "tests/fnd/fnd-fixtures.test.ts",
@@ -1265,12 +1267,12 @@ jobs:
             "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 14,
-            numPassedTestSuites: 14,
+            numTotalTestSuites: 16,
+            numPassedTestSuites: 16,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 101,
-            numPassedTests: 101,
+            numTotalTests: 105,
+            numPassedTests: 105,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1297,7 +1299,7 @@ jobs:
               `macOS-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("macOS FND/native capability lane passed 101 tests in 9 files with zero skipped");
+          console.log("macOS FND/native capability lane passed 105 tests in 10 files with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 

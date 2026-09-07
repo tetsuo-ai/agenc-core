@@ -10,9 +10,11 @@ import {
 } from "../../src/eval-contract/platform-protection.js";
 import { sha256Digest } from "../../src/eval-contract/canonical-json.js";
 
-const onDarwin = process.platform === "darwin";
+if (process.platform !== "darwin") {
+  throw new Error("the platform protection integration tests require macOS");
+}
 
-describe.skipIf(!onDarwin)("darwin platform protection verifier", () => {
+describe("darwin platform protection verifier", () => {
   const roots: string[] = [];
   afterEach(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });

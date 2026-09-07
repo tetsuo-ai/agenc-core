@@ -57,6 +57,7 @@ const NATIVE_TEST_FILES = [
   "tests/app-server/windows-named-pipe.win32.test.ts",
   "tests/durability/atomic-artifact.darwin.test.ts",
   "tests/durability/atomic-artifact.win32.test.ts",
+  "tests/eval-contract/platform-protection.darwin.test.ts",
   "tests/fnd/process-repository-helpers.native.test.ts",
   "tests/state/recovery-file.win32.test.ts",
   "tests/tools/runtimes/runtime.darwin.test.ts",
