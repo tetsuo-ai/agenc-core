@@ -560,6 +560,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `mcp_servers.<server>.command`, `mcp_servers.<server>.args`, `mcp_servers.<server>.cwd` | Stdio process launch fields. |
 | `mcp_servers.<server>.env`, `mcp_servers.<server>.env.<name>`, `mcp_servers.<server>.env_vars` | Literal environment map and inherited variable-name array. |
 | `mcp_servers.<server>.endpoint`, `mcp_servers.<server>.headers`, `mcp_servers.<server>.headers.<name>` | Remote URL and header map. |
+| `mcp_servers.<server>.oauth` | Public OAuth metadata for HTTP/SSE connections: `clientId`, `scopes`, `authServerMetadataUrl`, `callbackPort`, and `xaa`. Metadata URLs require HTTPS; callback ports range from 1024 to 65535. Credentials stay in native storage, and this block cannot accompany an `Authorization` header. |
 | `mcp_servers.<server>.enabled`, `mcp_servers.<server>.required`, `mcp_servers.<server>.timeout` | Enablement, required-startup policy, and timeout. |
 | `mcp_servers.<server>.default_tools_approval_mode` | Server-wide approval default. |
 | `mcp_servers.<server>.enabled_tools`, `mcp_servers.<server>.disabled_tools` | Tool arrays. |

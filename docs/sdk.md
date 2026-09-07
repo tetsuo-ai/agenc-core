@@ -512,6 +512,8 @@ Changes covered by these guards fail the check until the mirrored or
 marker-checked content is updated. Refresh the public wire declarations with
 `npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types -- --write`,
 then run the same command without `--write` to verify the committed files.
+Write mode regenerates artifacts; default check mode compiles wire parity.
+Runtime builds use check mode.
 `SessionTranscriptV2Params` is included in the public wire generation.
 
 The generator follows the public declarations and their referenced types,

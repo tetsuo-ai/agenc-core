@@ -191,6 +191,26 @@ async function synchronizeGeneratedFile({ generatedPath, expected, write }) {
   return { changed: true, matches: true, expected };
 }
 
+function appendWireParityFailures(failures, parity) {
+  for (const [surface, methods] of Object.entries(parity.mismatches)) {
+    expectCondition(
+      failures,
+      methods.length === 0,
+      `${surface}: ${methods.join(", ")}`,
+    );
+  }
+  for (const diagnostic of parity.diagnostics) {
+    failures.push(`${diagnostic.file ?? "compiler"}: ${diagnostic.message}`);
+  }
+}
+
+function reportSdkGeneratedTypesSuccess(mode) {
+  const message = mode === "write"
+    ? `regenerated SDK artifacts; run ${checkCommand} to verify wire parity`
+    : "verified committed SDK types";
+  process.stdout.write(`[sdk generated types] ${message}\n`);
+}
+
 async function main() {
   const mode = parseSdkGeneratedTypesMode(process.argv.slice(2));
   const transcriptV2Path = path.join(
@@ -376,16 +396,8 @@ async function main() {
     `${paths.packageWire} is stale; run ${checkCommand} -- --write`,
   );
 
-  const parity = checkSdkWireParity();
-  for (const [surface, methods] of Object.entries(parity.mismatches)) {
-    expectCondition(
-      failures,
-      methods.length === 0,
-      `${surface}: ${methods.join(", ")}`,
-    );
-  }
-  for (const diagnostic of parity.diagnostics) {
-    failures.push(`${diagnostic.file ?? "compiler"}: ${diagnostic.message}`);
+  if (mode === "check") {
+    appendWireParityFailures(failures, checkSdkWireParity());
   }
 
   if (failures.length > 0) {
@@ -396,7 +408,7 @@ async function main() {
     return;
   }
 
-  process.stdout.write("[sdk generated types] verified committed SDK types\n");
+  reportSdkGeneratedTypesSuccess(mode);
 }
 
 if (

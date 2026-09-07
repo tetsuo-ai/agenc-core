@@ -36,30 +36,7 @@ export async function renderSdkWireTypes(
       ts.ScriptTarget.Latest,
       true,
     );
-    const local = new Map();
-    const imports = new Map();
-    for (const node of source.statements) {
-      if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) {
-        local.set(node.name.text, node);
-      } else if (ts.isVariableStatement(node)) {
-        for (const declaration of node.declarationList.declarations) {
-          if (ts.isIdentifier(declaration.name))
-            local.set(declaration.name.text, node);
-        }
-      } else if (
-        ts.isImportDeclaration(node) &&
-        node.importClause?.namedBindings !== undefined &&
-        ts.isNamedImports(node.importClause.namedBindings)
-      ) {
-        for (const binding of node.importClause.namedBindings.elements) {
-          imports.set(binding.name.text, {
-            specifier: node.moduleSpecifier.text,
-            name: binding.propertyName?.text ?? binding.name.text,
-          });
-        }
-      }
-    }
-    const module = { source, local, imports };
+    const module = indexModuleBindings(source);
     modules.set(filePath, module);
     return module;
   }
@@ -94,19 +71,7 @@ export async function renderSdkWireTypes(
     }
     names.set(name, key);
     included.set(key, node);
-    if (ts.isVariableStatement(node)) {
-      if (!(node.declarationList.flags & ts.NodeFlags.Const)) {
-        throw new Error(`Wire value ${name} must be const`);
-      }
-      for (const declaration of node.declarationList.declarations) {
-        if (
-          declaration.initializer === undefined ||
-          !isStaticWireValue(declaration.initializer)
-        ) {
-          throw new Error(`Wire value ${name} contains executable code`);
-        }
-      }
-    }
+    validateWireConstant(node, name);
     const dependencies = new Set();
     function visit(child) {
       if (
@@ -131,37 +96,81 @@ export async function renderSdkWireTypes(
     emitted.add(node);
     return [printer.printNode(ts.EmitHint.Unspecified, node, source)];
   });
-  return [
-    "// @generated from the daemon protocol and its referenced declarations. Do not edit.",
-    "// Regenerate: npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types -- --write",
-    "// Public wire types only; this module has no runtime-internal imports.",
-    "",
-    ...body,
-    "",
+  return (
     [
-      "type PublicRequestForMethod<Method, Request = AgenCDaemonRequest> =",
-      "  Request extends { readonly method: infer Names }",
-      "    ? Method extends Names",
-      '      ? { [Key in keyof Request]: Key extends "method" ? Method : Request[Key] }',
-      "      : never",
-      "    : never;",
+      "// @generated from the daemon protocol and its referenced declarations. Do not edit.",
+      "// Regenerate: npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types -- --write",
+      "// Public wire types only; this module has no runtime-internal imports.",
       "",
-      "export type AgenCDaemonRequestByMethod = {",
-      "  readonly [Method in AgenCDaemonMethod]: PublicRequestForMethod<Method>;",
-      "};",
-    ].join("\n"),
-    [
-      "export type AgenCDaemonParamsByMethod = {",
-      "  readonly [Method in AgenCDaemonMethod]: NonNullable<",
-      '    AgenCDaemonRequestByMethod[Method]["params"]',
-      "  >;",
-      "};",
-    ].join("\n"),
-    "",
-  ]
-    .join("\n\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/\n+$/, "\n");
+      ...body,
+      "",
+      [
+        "type PublicRequestForMethod<Method, Request = AgenCDaemonRequest> =",
+        "  Request extends { readonly method: infer Names }",
+        "    ? Method extends Names",
+        '      ? { [Key in keyof Request]: Key extends "method" ? Method : Request[Key] }',
+        "      : never",
+        "    : never;",
+        "",
+        "export type AgenCDaemonRequestByMethod = {",
+        "  readonly [Method in AgenCDaemonMethod]: PublicRequestForMethod<Method>;",
+        "};",
+      ].join("\n"),
+      [
+        "export type AgenCDaemonParamsByMethod = {",
+        "  readonly [Method in AgenCDaemonMethod]: NonNullable<",
+        '    AgenCDaemonRequestByMethod[Method]["params"]',
+        "  >;",
+        "};",
+      ].join("\n"),
+      "",
+    ]
+      .join("\n\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trimEnd() + "\n"
+  );
+}
+
+function indexModuleBindings(source) {
+  const local = new Map();
+  const imports = new Map();
+  for (const node of source.statements) {
+    if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) {
+      local.set(node.name.text, node);
+    } else if (ts.isVariableStatement(node)) {
+      for (const declaration of node.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name))
+          local.set(declaration.name.text, node);
+      }
+    } else if (
+      ts.isImportDeclaration(node) &&
+      node.importClause?.namedBindings !== undefined &&
+      ts.isNamedImports(node.importClause.namedBindings)
+    ) {
+      for (const binding of node.importClause.namedBindings.elements) {
+        imports.set(binding.name.text, {
+          specifier: node.moduleSpecifier.text,
+          name: binding.propertyName?.text ?? binding.name.text,
+        });
+      }
+    }
+  }
+  return { source, local, imports };
+}
+
+function validateWireConstant(node, name) {
+  if (!ts.isVariableStatement(node)) return;
+  if ((node.declarationList.flags & ts.NodeFlags.Const) === 0) {
+    throw new Error(`Wire value ${name} must be const`);
+  }
+  for (const declaration of node.declarationList.declarations) {
+    if (
+      declaration.initializer === undefined ||
+      !isStaticWireValue(declaration.initializer)
+    ) {
+      throw new Error(`Wire value ${name} contains executable code`);
+    }
+  }
 }
 
 function isStaticWireValue(node) {
