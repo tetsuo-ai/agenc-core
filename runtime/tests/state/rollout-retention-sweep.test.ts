@@ -655,6 +655,45 @@ describe("AgenCSessionSnapshotPolicy rollout sweep timer", () => {
     expect(mirrorRowCountForSource(activePath)).toBe(2);
   });
 
+  it("reports the sessions it deleted, and stays silent when it deleted nothing", () => {
+    // The sweep is irreversible and unattended, and every install that never
+    // set `rollout_days` is opted in by upgrading (#2235). What it removed has
+    // to be recoverable from the log, not only from the disk it just cleared.
+    const oldPath = seedSession("thread-old", 60);
+    seedSession("thread-active", 90);
+    const sessionsDir = join(driver.projectDir, "sessions");
+    const reports: { prunedSessions: number; prunedSessionIds: readonly string[] }[] = [];
+
+    let tick: (() => void) | undefined;
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: () => NOW,
+      rolloutRetention: { retention_days: 30 },
+      rolloutSessionsDir: sessionsDir,
+      activeSessionId: "thread-active",
+      onRolloutPruneReport: (report) => reports.push(report),
+      setInterval: (callback) => {
+        tick = callback;
+        return { unref: vi.fn() };
+      },
+      clearInterval: vi.fn(),
+    });
+
+    policy.startPeriodic();
+    tick?.();
+
+    expect(existsSync(oldPath)).toBe(false);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.prunedSessions).toBe(1);
+    // Named, not just counted: "which of my sessions went" is the question.
+    expect(reports[0]?.prunedSessionIds).toContain("thread-old");
+    expect(reports[0]?.prunedSessionIds).not.toContain("thread-active");
+
+    // A second sweep removes nothing, so it must not announce anything.
+    tick?.();
+    policy.stopPeriodic();
+    expect(reports).toHaveLength(1);
+  });
+
   it("never sweeps when no rollout retention window is configured", () => {
     const oldPath = seedSession("thread-old", 365);
     const sessionsDir = join(driver.projectDir, "sessions");

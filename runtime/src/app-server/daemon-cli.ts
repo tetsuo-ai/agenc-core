@@ -172,6 +172,7 @@ import {
   pruneSessionStateSnapshots,
   pruneTerminalAgentRuns,
   SESSION_SNAPSHOT_HARD_CAP,
+  type RolloutPruningReport,
   type RolloutRetentionPolicy,
 } from "../state/pruning.js";
 import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
@@ -4419,6 +4420,26 @@ function describeStateReclaim(
   return `daemon state reclaimed ${pages} free page(s) (${mib} MiB, ${how}) in ${stateDbPath}`;
 }
 
+/**
+ * A retention sweep deletes session directories permanently and unattended, so
+ * the ids it removed must survive in the log. Sessions are named, not counted:
+ * "which of my sessions went" is the only question this line has to answer.
+ */
+function describeRolloutRetentionPrune(
+  report: RolloutPruningReport,
+  projectDir: string,
+): string {
+  const NAMED = 20;
+  const ids = report.prunedSessionIds.slice(0, NAMED).join(", ");
+  const rest = report.prunedSessionIds.length - NAMED;
+  const named = ids.length > 0 ? `: ${ids}${rest > 0 ? `, and ${rest} more` : ""}` : "";
+  return (
+    `daemon rollout retention deleted ${report.prunedSessions} session(s) ` +
+    `(${report.prunedRolloutFiles} rollout file(s), ${report.prunedMirrorRows} mirror row(s)) ` +
+    `in ${projectDir}${named}`
+  );
+}
+
 function recoverAgenCDaemonStartupState(
   daemonHome: string,
   cwd: string,
@@ -4997,6 +5018,8 @@ class AgenCDaemonSnapshotPolicyRegistry {
         ),
       onReclaimReport: (report) =>
         this.#log(describeStateReclaim(report, paths.stateDbPath)),
+      onRolloutPruneReport: (report) =>
+        this.#log(describeRolloutRetentionPrune(report, paths.projectDir)),
     });
     const entry = { driver, policy };
     this.#policies.set(paths.stateDbPath, entry);
