@@ -4880,14 +4880,20 @@ backend = "local"
       { kind: "command", action: "run" },
       { host, io, signalProcess },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
-
-    expect(io.stdoutText()).toContain("AgenC daemon running");
-    signalProcess.emit("SIGTERM");
-    await expect(running).resolves.toBe(0);
-    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
-
-    await rm(agencHome, { recursive: true, force: true });
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      // PID publication precedes the asynchronous lifecycle-lock release.
+      await vi.waitFor(
+        () => expect(io.stdoutText()).toContain("AgenC daemon running"),
+        { timeout: DAEMON_MILESTONE_BUDGET_MS },
+      );
+      signalProcess.emit("SIGTERM");
+      await expect(running).resolves.toBe(0);
+      await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    } finally {
+      await stopRunningDaemons([{ signalProcess, running }]);
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("does not autostart MCP without an explicit workspace scope", async () => {
