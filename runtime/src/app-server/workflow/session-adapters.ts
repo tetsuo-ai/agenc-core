@@ -252,6 +252,31 @@ export function workflowChildFailureMessage(
 }
 
 /**
+ * The workflow reviewer seam turns a settled one-shot into text, or a
+ * typed invocation failure when the model never answered.
+ *
+ * Soak F76: a 403 on the reviewer's single call was rethrown as a plain
+ * error and the controller, knowing only `ReviewParseError`, recorded the
+ * run as `unknown_outcome`. `ReviewInvocationError` is what the
+ * controller already treats as a known, retryable failure.
+ */
+export function reviewOneShotTextOrThrow(outcome: {
+  readonly rawText: string | null;
+  readonly error?: unknown;
+  readonly verdict: string;
+}): string {
+  if (outcome.rawText !== null) {
+    return outcome.rawText;
+  }
+  throw new ReviewInvocationError(
+    outcome.error !== undefined
+      ? errorMessage(outcome.error)
+      : `verdict ${outcome.verdict}`,
+    outcome.error !== undefined ? { cause: outcome.error } : undefined,
+  );
+}
+
+/**
  * The agent name a workflow child is registered under.
  *
  * `assertValidAgentName` accepts lowercase letters, digits and underscores
@@ -979,17 +1004,7 @@ export function createWorkflowSessionSeams(
           reuseKey: false,
         },
       );
-      if (outcome.rawText === null) {
-        // The one-shot settled without a response. Typed so the controller
-        // treats it as a known, retryable failure (soak F76).
-        throw new ReviewInvocationError(
-          outcome.error !== undefined
-            ? errorMessage(outcome.error)
-            : `verdict ${outcome.verdict}`,
-          outcome.error !== undefined ? { cause: outcome.error } : undefined,
-        );
-      }
-      return outcome.rawText;
+      return reviewOneShotTextOrThrow(outcome);
     },
   };
 
