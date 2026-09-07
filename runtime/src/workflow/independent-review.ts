@@ -52,6 +52,21 @@ export class ReviewParseError extends Error {
 }
 
 /**
+ * The reviewer settled without producing any output: its one model call
+ * failed (provider error, authentication, timeout) before a response
+ * existed. Soak F76: a 403 on the reviewer's single call was rethrown as a
+ * plain error and the controller, knowing only `ReviewParseError`, recorded
+ * the run as `unknown_outcome`. A read-only reviewer that never answered is
+ * a KNOWN failure: nothing was committed, the attempt can be retried.
+ */
+export class ReviewInvocationError extends Error {
+  constructor(detail: string, options?: { readonly cause?: unknown }) {
+    super(`independent review produced no output: ${detail}`, options);
+    this.name = "ReviewInvocationError";
+  }
+}
+
+/**
  * A finding blocks completion when the reviewer marked it high priority
  * with real confidence. Priority follows the P0/P1 convention (lower is
  * more severe); the threshold and floor are pinned in the spec digest via

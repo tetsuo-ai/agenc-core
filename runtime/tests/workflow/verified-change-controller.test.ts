@@ -34,7 +34,10 @@ import {
   openStateDatabases,
   type StateSqliteDriver,
 } from "../../src/state/sqlite-driver.js";
-import type { ReviewerInvoker } from "../../src/workflow/independent-review.js";
+import {
+  ReviewInvocationError,
+  type ReviewerInvoker,
+} from "../../src/workflow/independent-review.js";
 import type {
   WorkflowCommandResult,
   WorkflowCommandRunner,
@@ -438,6 +441,8 @@ class FakeReviewer implements ReviewerInvoker {
   readonly responses: string[] = [];
   /** Simulate a daemon death mid-review (before the reviewer settled). */
   onInvoke?: () => void;
+  /** Errors to throw instead of answering, in order (soak F76). */
+  readonly errors: Error[] = [];
 
   async invoke(input: {
     reviewerModel: string;
@@ -448,6 +453,8 @@ class FakeReviewer implements ReviewerInvoker {
       userMessage: input.userMessage,
     });
     this.onInvoke?.();
+    const error = this.errors.shift();
+    if (error !== undefined) throw error;
     return this.responses.shift() ?? APPROVING_REVIEW;
   }
 }
@@ -1277,6 +1284,53 @@ describe("VerifiedChangeWorkflowController — review-child adoption (A1 for the
     );
     // Attempt 1: the reply and its repair turn. Attempt 2: one verdict.
     expect(harness.reviewer.invocations).toHaveLength(3);
+  });
+});
+
+describe("VerifiedChangeWorkflowController — reviewer that never answered", () => {
+  // Soak F76: the reviewer's single model call got a 403 on a stale OAuth
+  // bearer; the error was rethrown untyped and the run died as
+  // unknown_outcome with an operator review pending. A read-only reviewer
+  // that settled without output is a known failure with a bounded retry.
+  it("a failed review invocation is a known failure that retries once", async () => {
+    harness.reviewer.errors.push(
+      new ReviewInvocationError("grok authentication failed (HTTP 403)"),
+    );
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe(
+      "completed",
+    );
+    const first = harness.repo.getEffect(RUN_ID, "workflow.review");
+    expect(first?.outcome).toBe("failed");
+    expect(
+      harness.repo.getEffect(RUN_ID, "workflow.review#2")?.outcome,
+    ).toBe("committed");
+    // The failed attempt is durable as a FAILED review child terminal that
+    // names the cause, never as a pending unknown outcome.
+    expect(
+      harness.repo.getCurrentTerminalResult(`${RUN_ID}:review#1`),
+    ).toMatchObject({
+      status: "failed",
+      finalMessage: expect.stringContaining(
+        "grok authentication failed (HTTP 403)",
+      ),
+    });
+    expect(harness.reviewer.invocations).toHaveLength(2);
+  });
+
+  it("two failed invocations end the run failed, not unknown_outcome", async () => {
+    harness.reviewer.errors.push(
+      new ReviewInvocationError("grok authentication failed (HTTP 403)"),
+      new ReviewInvocationError("grok authentication failed (HTTP 403)"),
+    );
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed",
+      stopReason: "step_retries_exhausted",
+    });
+    expect(
+      harness.repo.listEffects(RUN_ID).filter((e) => e.outcome === "unknown_outcome"),
+    ).toHaveLength(0);
   });
 });
 

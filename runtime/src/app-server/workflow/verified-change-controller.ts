@@ -79,6 +79,7 @@ import {
 } from "../../workflow/evidence-record.js";
 import {
   extractBlockers,
+  ReviewInvocationError,
   ReviewParseError,
   runIndependentReview,
   type ReviewerInvoker,
@@ -1371,11 +1372,16 @@ export class VerifiedChangeWorkflowController {
                 review.artifact,
               );
             } catch (error) {
-              if (error instanceof ReviewParseError) {
-                // A settled-but-unparseable reviewer is a KNOWN failure —
-                // durable for adoption too, so a crash in the commit window
-                // resumes into the same failed outcome (and its bounded
-                // retry), never into unknown_outcome.
+              if (
+                error instanceof ReviewParseError ||
+                error instanceof ReviewInvocationError
+              ) {
+                // A settled-but-unparseable reviewer, or one whose single
+                // call failed before any output (soak F76: a 403 on the
+                // reviewer's token), is a KNOWN failure — durable for
+                // adoption too, so a crash in the commit window resumes
+                // into the same failed outcome (and its bounded retry),
+                // never into unknown_outcome.
                 this.#recordReviewChildTerminal(ctx, childRunId, {
                   status: "failed",
                   finalMessage: error.message,
@@ -1387,7 +1393,10 @@ export class VerifiedChangeWorkflowController {
                     stage: "workflow.review",
                     attempt,
                     failure: {
-                      reason: "review_unparseable",
+                      reason:
+                        error instanceof ReviewParseError
+                          ? "review_unparseable"
+                          : "review_invocation_failed",
                       message: error.message,
                     },
                   },
