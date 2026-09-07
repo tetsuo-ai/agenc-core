@@ -12,7 +12,6 @@ import type {
 import {
   buildStructuredSessionBootstrapArgv,
 } from "../session-bootstrap-argv.js";
-import { stableStringify } from "../../utils/stableStringify.js";
 import { runWithCurrentRuntimeSession } from "../../session/current-session.js";
 import {
   transitionPermissionMode,
@@ -55,6 +54,7 @@ import {
 } from "../../contracts/run-contracts.js";
 import {
   cloneFrozenRuntimeSettingsSnapshot,
+  runtimeSettingsEqual,
 } from "../../state/runtime-settings-snapshot.js";
 import {
   applySessionExecutionAuthority,
@@ -653,8 +653,7 @@ function installRuntimeSettingsPreCommit(
       });
       if (
         active.runtimeSettings !== undefined &&
-        stableStringify(active.runtimeSettings) ===
-          stableStringify(nextSettings)
+        runtimeSettingsEqual(active.runtimeSettings, nextSettings)
       ) {
         release();
         return undefined;
@@ -1148,8 +1147,10 @@ function prepareDurableRuntimeSettingsChange(
         rollbackOfSettingsEventId ||
       event.msg.payload.reason !== reason ||
       event.msg.payload.changedAt !== changedAt ||
-      stableStringify(runtimeSettingsSnapshotFromCanonicalEvent(event)) !==
-        stableStringify(canonicalSettings)
+      !runtimeSettingsEqual(
+        runtimeSettingsSnapshotFromCanonicalEvent(event),
+        canonicalSettings,
+      )
     ) {
       throw new Error(`runtime settings ${eventId} has conflicting evidence`);
     }

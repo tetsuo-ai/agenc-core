@@ -1,3 +1,4 @@
+import { runtimeSettingsEqual } from "./runtime-settings-snapshot.js";
 import { createHash, type Hash } from "node:crypto";
 import {
   parseRolloutLine,
@@ -1880,30 +1881,6 @@ function validBoundedSettingString(value: unknown, maxBytes: number): boolean {
     typeof value === "string" &&
     value.trim().length > 0 &&
     Buffer.byteLength(value, "utf8") <= maxBytes
-  );
-}
-
-function runtimeSettingsEqual(
-  left: RunRuntimeSettingsSnapshot,
-  right: RunRuntimeSettingsSnapshot,
-): boolean {
-  return (
-    left.permissionMode === right.permissionMode &&
-    left.prePlanMode === right.prePlanMode &&
-    left.autoModeActive === right.autoModeActive &&
-    left.autoModeAvailable === right.autoModeAvailable &&
-    left.bypassPermissionsModeAvailable ===
-      right.bypassPermissionsModeAvailable &&
-    left.bypassPermissionsWorkspace === right.bypassPermissionsWorkspace &&
-    left.bypassPermissionsConsentWorkspace ===
-      right.bypassPermissionsConsentWorkspace &&
-    left.model === right.model &&
-    left.provider === right.provider &&
-    left.profile === right.profile &&
-    left.reasoningEffort === right.reasoningEffort &&
-    left.modelVerbosity === right.modelVerbosity &&
-    left.serviceTier === right.serviceTier &&
-    left.hooksDisabled === right.hooksDisabled
   );
 }
 

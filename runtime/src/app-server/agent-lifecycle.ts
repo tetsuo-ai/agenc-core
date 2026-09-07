@@ -31,7 +31,10 @@ import {
   validateAndDedupeAdditionalWorkingDirectoryInputs,
 } from "../contracts/additional-working-directories.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
-import { cloneFrozenRuntimeSettingsSnapshot } from "../state/runtime-settings-snapshot.js";
+import {
+  cloneFrozenRuntimeSettingsSnapshot,
+  runtimeSettingsEqual,
+} from "../state/runtime-settings-snapshot.js";
 
 import { AsyncLock } from "../utils/async-lock.js";
 import { withTimeout } from "../utils/sleep.js";
@@ -4371,37 +4374,13 @@ export function assertCanonicalRuntimeSettingsProjection(
     proof.runtimeSettings === undefined ||
     proof.runtimeSettingsEventId === undefined ||
     projected.eventId !== proof.runtimeSettingsEventId ||
-    !runtimeSettingsSnapshotsEqual(projected, proof.runtimeSettings)
+    !runtimeSettingsEqual(projected, proof.runtimeSettings)
   ) {
     throw new AgenCDaemonAgentLifecycleError(
       "INVALID_ARGUMENT",
       `canonical session ${runId} runtime settings projection is ahead of or disagrees with the rollout`,
     );
   }
-}
-
-function runtimeSettingsSnapshotsEqual(
-  left: RunRuntimeSettingsSnapshot,
-  right: RunRuntimeSettingsSnapshot,
-): boolean {
-  return (
-    left.permissionMode === right.permissionMode &&
-    left.prePlanMode === right.prePlanMode &&
-    left.autoModeActive === right.autoModeActive &&
-    left.autoModeAvailable === right.autoModeAvailable &&
-    left.bypassPermissionsModeAvailable ===
-      right.bypassPermissionsModeAvailable &&
-    left.bypassPermissionsWorkspace === right.bypassPermissionsWorkspace &&
-    left.bypassPermissionsConsentWorkspace ===
-      right.bypassPermissionsConsentWorkspace &&
-    left.model === right.model &&
-    left.provider === right.provider &&
-    left.profile === right.profile &&
-    left.reasoningEffort === right.reasoningEffort &&
-    left.modelVerbosity === right.modelVerbosity &&
-    left.serviceTier === right.serviceTier &&
-    left.hooksDisabled === right.hooksDisabled
-  );
 }
 
 const MAX_RESUME_ROLLOUT_FILES_PER_SESSION = 256;

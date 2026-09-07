@@ -5499,6 +5499,34 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it.each([undefined, null])("normalizes absent optional runtime settings from %s", async (absent) => {
+    const agentId = `normalized-runtime-settings-${String(absent)}`;
+    const { runner, sessionState, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(sessionState.sessionConfiguration.collaborationMode, {
+      reasoningEffort: absent,
+    });
+    Object.assign(sessionState.sessionConfiguration, {
+      modelVerbosity: absent,
+      serviceTier: absent,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    const canonicalAbsent = {
+      prePlanMode: null,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
+      profile: null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+    };
+    expect((await runner.getAgentSnapshot(agentId))?.runtimeSettings).toMatchObject(canonicalAbsent);
+    expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload).toMatchObject(canonicalAbsent);
+  });
+
   it("keeps canonical runtime settings detached from mutable in-process snapshots", async () => {
     const agentId = "runtime-settings-snapshot-isolation";
     let hooksDisabled = false;

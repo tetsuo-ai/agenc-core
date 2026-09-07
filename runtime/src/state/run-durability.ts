@@ -1,3 +1,4 @@
+import { runtimeSettingsEqual } from "./runtime-settings-snapshot.js";
 import type {
   EffectBoundary,
   EffectNoEffectProof,
@@ -2371,30 +2372,6 @@ function runtimeSettingsFromRow(
     serviceTier: row.service_tier,
     hooksDisabled: row.hooks_disabled === 1,
   };
-}
-
-function runtimeSettingsEqual(
-  left: RunRuntimeSettingsSnapshot,
-  right: RunRuntimeSettingsSnapshot,
-): boolean {
-  return (
-    left.permissionMode === right.permissionMode &&
-    left.prePlanMode === right.prePlanMode &&
-    left.autoModeActive === right.autoModeActive &&
-    left.autoModeAvailable === right.autoModeAvailable &&
-    left.bypassPermissionsModeAvailable ===
-      right.bypassPermissionsModeAvailable &&
-    left.bypassPermissionsWorkspace === right.bypassPermissionsWorkspace &&
-    left.bypassPermissionsConsentWorkspace ===
-      right.bypassPermissionsConsentWorkspace &&
-    left.model === right.model &&
-    left.provider === right.provider &&
-    left.profile === right.profile &&
-    left.reasoningEffort === right.reasoningEffort &&
-    left.modelVerbosity === right.modelVerbosity &&
-    left.serviceTier === right.serviceTier &&
-    left.hooksDisabled === right.hooksDisabled
-  );
 }
 
 function effectFromRow(row: EffectRow): DurableRunEffect {
