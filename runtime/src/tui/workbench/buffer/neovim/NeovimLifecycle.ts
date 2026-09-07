@@ -49,6 +49,8 @@ export type StartEmbeddedNeovimOptions = {
   readonly startupTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
+  /** Bounded ack wait for abnormal `:preserve` (separate from exit/kill). */
+  readonly recoveryPreservationTimeoutMs?: number;
   /** Force the deterministic broker boundary in Linux containment tests. */
   readonly linuxContainment?: "auto" | "subreaper";
   readonly onSnapshot: (snapshot: NeovimRenderSnapshot) => void;
@@ -158,6 +160,8 @@ export type NeovimCloseResult =
     };
 
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1000;
+/** Real `:preserve` on slow hosted/user FS needs more headroom than force-exit. */
+const DEFAULT_RECOVERY_PRESERVATION_TIMEOUT_MS = 5_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 10_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const INPUT_BUFFER_RETRY_DELAY_MS = 1;
@@ -616,11 +620,17 @@ export class NeovimStartupCleanupError extends AggregateError {
   }
 }
 
+export type EmbeddedNeovimSessionHooks = {
+  readonly onFatalError?: (error: Error) => void;
+  readonly recoveryPreservationTimeoutMs?: number;
+};
+
 export class EmbeddedNeovimSession {
   readonly #handle: NeovimProcessHandle;
   readonly #rpc: NeovimRpcTransport;
   readonly #ui: NeovimUi;
   readonly #cleanupTimeoutMs: number;
+  readonly #recoveryPreservationTimeoutMs: number;
   readonly #operationTimeoutMs: number;
   readonly #recovery: EmbeddedNeovimRecoveryInfo | null;
   readonly #onFatalError: ((error: Error) => void) | undefined;
@@ -640,15 +650,18 @@ export class EmbeddedNeovimSession {
     cleanupTimeoutMs: number,
     operationTimeoutMs = DEFAULT_OPERATION_TIMEOUT_MS,
     recovery: EmbeddedNeovimRecoveryInfo | null = null,
-    onFatalError?: (error: Error) => void,
+    hooks: EmbeddedNeovimSessionHooks = {},
   ) {
     this.#handle = handle;
     this.#rpc = rpc;
     this.#ui = ui;
     this.#cleanupTimeoutMs = cleanupTimeoutMs;
+    this.#recoveryPreservationTimeoutMs =
+      hooks.recoveryPreservationTimeoutMs ??
+      DEFAULT_RECOVERY_PRESERVATION_TIMEOUT_MS;
     this.#operationTimeoutMs = operationTimeoutMs;
     this.#recovery = recovery;
-    this.#onFatalError = onFatalError;
+    this.#onFatalError = hooks.onFatalError;
   }
 
   get pid(): number {
@@ -1518,7 +1531,7 @@ export class EmbeddedNeovimSession {
           const manifest = await this.#rpc.request(
             "nvim_exec_lua",
             [PRESERVE_DIRTY_BUFFERS_FOR_ABNORMAL_EXIT, []],
-            { timeoutMs: this.#cleanupTimeoutMs },
+            { timeoutMs: this.#recoveryPreservationTimeoutMs },
           );
           assertAbnormalRecoveryManifest(manifest, this.#recovery?.swap);
           this.#recoveryPreservationProven = true;
@@ -1888,7 +1901,11 @@ export async function startEmbeddedNeovim(
         options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS,
         options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS,
         preparation?.recovery ?? null,
-        options.onFatalError,
+        {
+          onFatalError: options.onFatalError,
+          recoveryPreservationTimeoutMs:
+            options.recoveryPreservationTimeoutMs,
+        },
       );
     } finally {
       startupAbort.signal.removeEventListener("abort", abortStartup);
