@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import { afterEach, expect, it } from "vitest";
 
+import { selectPinnedRipgrepPath } from "../../src/tools/system/pinned-ripgrep.js";
 import {
   getRipgrepStatus,
   probeRipgrepAvailable,
@@ -58,6 +59,30 @@ it.skipIf(process.platform === "win32")(
       mode: "system",
       working: null,
     });
+    await expect(probeRipgrepAvailable(ingress)).resolves.toBe(true);
+  },
+);
+
+it.skipIf(selectPinnedRipgrepPath() === undefined)(
+  "uses the packaged @vscode/ripgrep binary when PATH has no rg",
+  async () => {
+    const pinned = selectPinnedRipgrepPath()!;
+    const root = mkdtempSync(join(tmpdir(), "agenc-ripgrep-packaged-"));
+    roots.push(root);
+    const emptyBin = join(root, "empty-bin");
+    mkdirSync(emptyBin);
+    process.env.PATH = emptyBin;
+
+    const ingress = {
+      environment: {
+        ...process.env,
+        PATH: emptyBin,
+      },
+      systemExecutablePath: "rg",
+    };
+    const status = getRipgrepStatus(ingress);
+    expect(status.mode).toBe("builtin");
+    expect(status.path).toBe(pinned);
     await expect(probeRipgrepAvailable(ingress)).resolves.toBe(true);
   },
 );

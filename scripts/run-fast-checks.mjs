@@ -9,6 +9,39 @@ import { fileURLToPath } from "node:url";
 const REPOSITORY_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
 
+/** Lexicographic path order (Sonar S2871: never rely on default Array#sort). */
+function sortPaths(items) {
+  return [...items].sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * Resolve `git` to an absolute path from the caller's ambient PATH.
+ * Prefer an absolute executable over rewriting PATH (keeps Nix/Homebrew/portable
+ * Git visible) while still avoiding bare `git` lookups for Sonar S4036.
+ */
+export function resolveGitExecutable(env = process.env) {
+  const pathValue = env.PATH ?? env.Path ?? "";
+  const dirs = pathValue.split(path.delimiter).filter(Boolean);
+  const names = process.platform === "win32" ? ["git.exe", "git.cmd", "git"] : ["git"];
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      try {
+        if (existsSync(candidate) && !statSync(candidate).isDirectory()) {
+          return candidate;
+        }
+      } catch {
+        // skip unreadable PATH entries
+      }
+    }
+  }
+  throw new Error("git executable not found on PATH (Nix/Homebrew/portable Git must remain on PATH)");
+}
+
+function gitExecutable() {
+  return resolveGitExecutable();
+}
+
 function isDocumentationPath(file) {
   return file === "README.md" ||
     file === "memory_todo.md" ||
@@ -42,11 +75,11 @@ export function mappedRuntimeTestTargets(files) {
       targets.add("tests/conversation/realtime/prompt.contract.test.ts");
     }
   }
-  return [...targets].sort();
+  return sortPaths(targets);
 }
 
 export function classifyChangedFiles(files) {
-  const changedFiles = [...new Set(files)].sort();
+  const changedFiles = sortPaths(new Set(files));
   const documentationOnly = changedFiles.length > 0 && changedFiles.every(isDocumentationPath);
   if (documentationOnly || changedFiles.length === 0) {
     return {
@@ -109,9 +142,10 @@ export function parseNulNames(buffer) {
 }
 
 function gitNames(args) {
-  const result = spawnSync("git", ["diff", "--name-only", "-z", ...args], {
+  const result = spawnSync(gitExecutable(), ["diff", "--name-only", "-z", ...args], {
     cwd: REPOSITORY_ROOT,
     encoding: "buffer",
+    env: process.env,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -122,9 +156,10 @@ function gitNames(args) {
 }
 
 function untrackedNames() {
-  const result = spawnSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
+  const result = spawnSync(gitExecutable(), ["ls-files", "--others", "--exclude-standard", "-z"], {
     cwd: REPOSITORY_ROOT,
     encoding: "buffer",
+    env: process.env,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -151,9 +186,9 @@ export function resolveBaseCommit(base) {
     throw new Error("base must be a non-option Git ref");
   }
   const result = spawnSync(
-    "git",
+    gitExecutable(),
     ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`],
-    { cwd: REPOSITORY_ROOT, encoding: "utf8" },
+    { cwd: REPOSITORY_ROOT, encoding: "utf8", env: process.env },
   );
   if (result.error) throw result.error;
   const commit = result.stdout.trim();
@@ -240,7 +275,7 @@ export function deletedRuntimeFallbackPlan(runtimeInputs, {
       uncovered.push(file);
     }
   }
-  return { targets: [...targets].sort(), uncovered: uncovered.sort() };
+  return { targets: sortPaths(targets), uncovered: sortPaths(uncovered) };
 }
 
 export function commandsForPlan(plan, {
@@ -249,7 +284,13 @@ export function commandsForPlan(plan, {
 } = {}) {
   if (!plan.typecheck) return [];
 
-  const commands = [{ executable: npmExecutable, args: ["run", "typecheck"] }];
+  const commands = [
+    {
+      executable: process.execPath,
+      args: ["runtime/scripts/check-ripgrep-available.mjs"],
+    },
+    { executable: npmExecutable, args: ["run", "typecheck"] },
+  ];
   const existingRuntimeNodeTests = plan.runtimeNodeTests.filter(fileExists);
   if (existingRuntimeNodeTests.length > 0) {
     commands.push({ executable: process.execPath, args: ["--test", ...existingRuntimeNodeTests] });
@@ -274,11 +315,11 @@ export function commandsForPlan(plan, {
       `mapped runtime tests do not exist: ${missingMappedRuntimeTests.join(", ")}`,
     );
   }
-  const runtimeTestTargets = [...new Set([
+  const runtimeTestTargets = sortPaths(new Set([
     ...plan.runtimeTests.filter(fileExists).map(runtimePath),
     ...plan.mappedRuntimeTests,
     ...deletedRuntime.targets,
-  ])].sort();
+  ]));
   if (runtimeTestTargets.length > 0) {
     commands.push({
       executable: process.execPath,
@@ -324,9 +365,10 @@ export function commandsForPlan(plan, {
 
 export function runFastChecks({ base = "origin/main" } = {}) {
   const baseCommit = resolveBaseCommit(base);
-  run("git", ["diff", "--check", `${baseCommit}...HEAD`]);
-  run("git", ["diff", "--check"]);
-  run("git", ["diff", "--cached", "--check"]);
+  const git = gitExecutable();
+  run(git, ["diff", "--check", `${baseCommit}...HEAD`]);
+  run(git, ["diff", "--check"]);
+  run(git, ["diff", "--cached", "--check"]);
 
   const plan = classifyChangedFiles(readChangedFiles(baseCommit));
   process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
