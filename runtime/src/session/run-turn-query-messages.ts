@@ -410,7 +410,63 @@ function toolResultContentLength(content: LLMMessage["content"]): number {
 function boundInMemoryToolResultContent(
   messages: LLMMessage[],
   boundUpToIndex: number,
+  outboundMessages: readonly LLMMessage[] | undefined,
 ): number {
+  // Soak F74 / #2244: this bound used to decide on its own which results to
+  // clear, using constants "kept in lockstep" with microcompact by hand. The
+  // two policies drifted, and worse, this one has no pressure gate: a result
+  // still being sent in FULL on the wire was cleared here the moment it fell
+  // out of a flat recent-N window, so the NEXT request sent a marker where the
+  // last one sent the body. That rewrites an already-cached prefix, and the
+  // provider re-reads every token after it (438,986 re-billed input tokens in
+  // one traced six-goal run, up to 51,725 per event).
+  //
+  // The decision now belongs to the OUTBOUND projection alone. This function
+  // may only:
+  //   - adopt, byte for byte, content the request that just went out already
+  //     carried in shrunken form (zero delta by construction), or
+  //   - clear results before the newest authenticated compaction boundary,
+  //     which no future request will ever carry again (free).
+  // Anything the wire still carries in full stays full here.
+  const outboundContentByCallId = new Map<string, LLMMessage["content"]>();
+  for (const message of outboundMessages ?? []) {
+    if (!isToolResultMessage(message)) continue;
+    const callId = message.toolCallId;
+    if (callId === undefined) continue;
+    outboundContentByCallId.set(callId, message.content);
+  }
+  // Messages at or after this index are still reachable by future requests.
+  let boundaryIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message !== undefined && isAuthenticatedCompactionBoundary(message)) {
+      boundaryIndex = index;
+      break;
+    }
+  }
+  let clearedBeforeBoundary = 0;
+  // Everything before the newest boundary is sliced away by
+  // `messagesAfterAgenCBoundary` on every future projection, so no request
+  // will ever carry it again. Clearing there is free, which is why it needs
+  // none of the eligibility rules below: no keep-recent window, no
+  // compactable-tool list, no path retention. The durable rollout still holds
+  // the full bytes for resume.
+  const preBoundaryLimit = Math.min(boundaryIndex, boundUpToIndex);
+  for (let index = 0; index < preBoundaryLimit; index += 1) {
+    const message = messages[index];
+    if (message === undefined || !isToolResultMessage(message)) continue;
+    if (message.content === IN_MEMORY_TOOL_RESULT_CLEARED_MARKER) continue;
+    if (
+      toolResultContentLength(message.content) < IN_MEMORY_TOOL_RESULT_MAX_CHARS
+    ) {
+      continue;
+    }
+    messages[index] = {
+      ...message,
+      content: IN_MEMORY_TOOL_RESULT_CLEARED_MARKER,
+    };
+    clearedBeforeBoundary += 1;
+  }
   // Compactability is keyed off the assistant `toolCalls` that requested each
   // tool, exactly like microcompact's `collectCompactableToolUseIds` — the
   // tool-result message itself does not reliably carry `toolName`. A result is
@@ -491,13 +547,29 @@ function boundInMemoryToolResultContent(
       continue;
     }
     if (message.content === IN_MEMORY_TOOL_RESULT_CLEARED_MARKER) continue;
-    messages[index] = {
-      ...message,
-      content: IN_MEMORY_TOOL_RESULT_CLEARED_MARKER,
-    };
-    cleared += 1;
+    const callId = message.toolCallId;
+    const outboundContent =
+      callId !== undefined ? outboundContentByCallId.get(callId) : undefined;
+    if (outboundContent !== undefined) {
+      // The wire still carries this result in full: clearing it here would
+      // change the next request's bytes and cost the whole cached suffix.
+      if (
+        toolResultContentLength(outboundContent) >=
+        toolResultContentLength(message.content)
+      ) {
+        continue;
+      }
+      // Adopt the outbound bytes verbatim, so the next request's projection
+      // reproduces exactly what the last one sent.
+      messages[index] = { ...message, content: outboundContent };
+      cleared += 1;
+      continue;
+    }
+    // Not carried by the request that just went out, and after the boundary:
+    // a future projection may still carry it, so it stays whole. (Anything
+    // before the boundary was already handled by the free pass above.)
   }
-  return cleared;
+  return cleared + clearedBeforeBoundary;
 }
 
 // Shared with run-turn.ts and its sibling modules.

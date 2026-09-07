@@ -162,8 +162,10 @@ function contentText(content: unknown): string {
  * Is this a tool-output message? Tool-output BODIES are the only content
  * that diverges between the write side and the read side: reconstruction
  * caps them at `DEFAULT_MAX_TOOL_RESULT_BYTES` on replay, while the live
- * in-memory copy is independently bounded (`boundInMemoryToolResultContent`
- * replaces older large bodies with a fixed marker). So the hash must NOT
+ * in-memory copy is bounded by `boundInMemoryToolResultContent`, which
+ * replaces older large bodies either with the bytes the outbound projection
+ * already carried or, before a compaction boundary, with a fixed marker. So
+ * the hash must NOT
  * depend on the variable tool-output body — only on its threading identity
  * and a bound-stable size class.
  */

@@ -1859,7 +1859,11 @@ async function* runTurnKernelInner(
     // most-recent-N tool results full and the disk rollout untouched.
     // See session-history-memory fix above.
     if (ctx.editorInteraction === undefined) {
-      boundInMemoryToolResultContent(state.messages, persistedMessageCount);
+      boundInMemoryToolResultContent(
+        state.messages,
+        persistedMessageCount,
+        state.messagesForQuery,
+      );
     }
     const durableHistory = state.messages
       .slice(durableHistoryStartIndex(state.messages))

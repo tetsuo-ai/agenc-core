@@ -73,6 +73,16 @@ import { createTestConfigStore } from "../fixtures.js";
 const LARGE_TOOL_OUTPUT_BYTES = 80_000; // > 64KB, well over the clear threshold.
 const KEEP_RECENT = 5; // mirrors microcompact's keep-recent window.
 const CLEARED_MARKER = "[Old tool result content cleared]";
+// Soak F74 / #2244: the in-memory bound no longer invents its own marker. It
+// adopts, byte for byte, whatever the request that just went out carried for
+// that tool result, so the next request reproduces the last one's prefix. Under
+// microcompact pressure that is microcompact's own marker; the bare marker
+// above is written only for results before a compaction boundary, which no
+// future request carries at all.
+const MICROCOMPACT_MARKER_RE =
+  /^\[microcompact:\d+\] Older tool output compressed; original length [\d,]+ characters\.$/;
+const isClearedToolResultMarker = (text: string): boolean =>
+  text === CLEARED_MARKER || MICROCOMPACT_MARKER_RE.test(text);
 const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
 
@@ -469,7 +479,7 @@ describe("runTurn — session-history-memory in-memory retention bound", () => {
       const clearedMarkers = history.filter(
         (m) =>
           (m.role === "tool" || m.toolCallId !== undefined) &&
-          messageText(m) === CLEARED_MARKER,
+          isClearedToolResultMarker(messageText(m)),
       );
       expect(clearedMarkers.length).toBeGreaterThan(0);
 
