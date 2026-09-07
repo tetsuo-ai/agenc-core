@@ -160,7 +160,8 @@ function indexModuleBindings(source) {
 
 function validateWireConstant(node, name) {
   if (!ts.isVariableStatement(node)) return;
-  if ((node.declarationList.flags & ts.NodeFlags.Const) === 0) {
+  const constFlag = node.declarationList.flags & ts.NodeFlags.Const;
+  if (constFlag === 0) {
     throw new Error(`Wire value ${name} must be const`);
   }
   for (const declaration of node.declarationList.declarations) {

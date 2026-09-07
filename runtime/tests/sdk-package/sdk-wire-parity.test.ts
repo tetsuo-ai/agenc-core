@@ -111,6 +111,23 @@ const valid: AgencDaemonRequest<"health.ping"> = { jsonrpc: "2.0", id: 1, method
     expect(rendered).toContain('"minimal"');
   });
 
+  it.each(["let", "var"])(
+    "rejects mutable wire declarations: %s",
+    async (keyword) => {
+      const original = await readFile(protocolPath, "utf8");
+      const mutated = original.replace(
+        "export const JSON_RPC_VERSION",
+        `export ${keyword} JSON_RPC_VERSION`,
+      );
+      expect(mutated).not.toBe(original);
+      await expect(
+        renderSdkWireTypes(protocolPath, {
+          sourceOverrides: new Map([[protocolPath, mutated]]),
+        }),
+      ).rejects.toThrow(/must be const/);
+    },
+  );
+
   it.each(['(() => "2.0")()', '{ [(() => "key")()]: "2.0" }', "++counter"])(
     "rejects executable wire constants: %s",
     async (initializer) => {
