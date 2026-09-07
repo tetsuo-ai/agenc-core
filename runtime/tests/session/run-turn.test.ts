@@ -91,6 +91,7 @@ import {
   SessionProviderService,
 } from "./provider-service.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import { createProvider } from "../llm/provider.js";
 import type {
   Config,
   ManagedFeatures,
@@ -5133,6 +5134,64 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
         },
       }),
     );
+  });
+
+  test("managed wire retries reuse the sampling UUID while tool rounds and new turns receive distinct UUIDs", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const model = "openrouter/openai/gpt-5";
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      const attempt = fetchImpl.mock.calls.length;
+      if (attempt === 1) {
+        throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+      }
+      if (attempt === 2) {
+        return Response.json({ error: { message: "Service Unavailable" } }, { status: 503 });
+      }
+      const toolRound = attempt === 3;
+      return new Response([
+        `data: ${JSON.stringify({ id: "synthetic-stream", model, choices: [{ index: 0, delta: toolRound
+          ? { tool_calls: [{ index: 0, id: "synthetic-read", type: "function", function: { name: "FileRead", arguments: "{}" } }] }
+          : { content: "Synthetic answer" } }] })}\n\n`,
+        `data: ${JSON.stringify({ id: "synthetic-stream", model, choices: [{ index: 0, delta: {}, finish_reason: toolRound ? "tool_calls" : "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\n`,
+        "data: [DONE]\n\n",
+      ].join(""), { headers: { "content-type": "text/event-stream" } });
+    });
+    const provider = createProvider("openrouter", {
+      apiKey: "synthetic-session",
+      baseURL: "https://id.agenc.ag/v1/auth/openrouter/v1",
+      model,
+      extra: { managedGateway: true, maxRetries: 0, maxTokens: 100, fetchImpl },
+    });
+    // Adapter retries are disabled: each failed fetch must re-enter through
+    // runSamplingRequest's outer reconnect loop using its saved snapshot.
+    const chatStream = vi.spyOn(provider, "chatStream");
+    const { registry, dispatch } = mkTrustedEditorReadRegistry();
+    const { session, events } = mkSession({ provider, registry, sessionConfiguration: {
+      provider: { slug: "openrouter" }, collaborationMode: { model },
+    } });
+    const ctx = { ...mkCtx(), modelProviderId: "openrouter", modelInfo: { ...mkCtx().modelInfo, slug: model }, collaborationMode: { model } };
+
+    await drain(session.runTurn("Read once and answer", { ctx }));
+    expect(chatStream).toHaveBeenCalledTimes(4);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(events).toContainEqual(expect.objectContaining({ msg: {
+      type: "turn_complete", payload: expect.objectContaining({ lastAgentMessage: "Synthetic answer" }),
+    } }));
+    await drain(session.runTurn("Another request", { ctx: { ...ctx, subId: "turn-next" } }));
+
+    expect(chatStream).toHaveBeenCalledTimes(5);
+    const ids = fetchImpl.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    for (const id of ids) expect(id).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);
+    expect(ids.slice(0, 3)).toEqual(Array(3).fill(ids[0]));
+    expect(new Set([ids[0], ids[3], ids[4]]).size).toBe(3);
+    const bodies = fetchImpl.mock.calls.map(([, init]) => String(init?.body));
+    expect(bodies.slice(0, 3)).toEqual(Array(3).fill(bodies[0]));
+    expect(JSON.parse(bodies[3]!).messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "synthetic-read" }));
+    for (const body of bodies) {
+      expect(body).not.toContain("managedRequestId");
+      for (const id of ids) expect(body).not.toContain(id!);
+    }
   });
 
   test("reconnects reuse one prompt snapshot across every transport attempt", async () => {

@@ -657,7 +657,7 @@ export class OpenAIProvider implements LLMProvider {
     messages: LLMMessage[],
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
-    const headers = this.managedRequestHeaders();
+    const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
     const model = options?.model?.trim() || this.config.model;
     const requestTools = options?.tools
@@ -786,7 +786,7 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
-    const headers = this.managedRequestHeaders();
+    const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
 
     try {
@@ -1051,12 +1051,14 @@ export class OpenAIProvider implements LLMProvider {
     return this.config.chatgptBackend === true;
   }
 
-  private managedRequestHeaders(): Readonly<Record<string, string>> | undefined {
-    // One UUID belongs to this logical provider call. Generate it outside
-    // authentication and stream fallback loops so a retry cannot buy twice.
-    // A fresh call (including the next tool round) always receives a fresh ID.
+  private managedRequestHeaders(
+    options: LLMChatOptions | undefined,
+  ): Readonly<Record<string, string>> | undefined {
+    // Session reconnects carry the immutable sampling snapshot's UUID. For
+    // standalone calls, mint one outside authentication and stream fallback
+    // loops so their transport retries keep the same remote charge identity.
     return this.config.managedRequestId === true
-      ? { "Idempotency-Key": randomUUID() }
+      ? { "Idempotency-Key": options?.managedRequestId ?? randomUUID() }
       : undefined;
   }
 

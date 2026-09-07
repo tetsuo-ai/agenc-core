@@ -632,6 +632,12 @@ export type LLMToolChoice =
  */
 export interface LLMChatOptions {
   /**
+   * @internal UUID of one immutable sampling request, preserved across
+   * session reconnects. Only AgenC-managed adapters use it, as a transport
+   * idempotency header; it is never part of the model request body.
+   */
+  readonly managedRequestId?: string;
+  /**
    * @internal Admission-grade complete input count. Adapters may use this for
    * final wire fitting, but must never synthesize or increase it themselves.
    */

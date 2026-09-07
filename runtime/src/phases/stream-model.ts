@@ -128,6 +128,8 @@ import type {
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
+  /** Internal managed transport UUID, stable for every retry of this snapshot. */
+  readonly managedRequestId?: string;
   readonly input: ReadonlyArray<LLMMessage>;
   readonly tools: ReadonlyArray<LLMTool>;
   readonly parallelToolCalls: boolean;
@@ -300,6 +302,9 @@ function buildProviderOptions(
   const traceSink = resolveProviderTraceSink(session);
   return {
     signal,
+    ...(request.managedRequestId !== undefined
+      ? { managedRequestId: request.managedRequestId }
+      : {}),
     tools: cloneProviderTools(request.tools),
     parallelToolCalls: request.parallelToolCalls,
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),

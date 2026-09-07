@@ -94,14 +94,15 @@ describe("managed paid request identity", () => {
 
   test("preserves direct BYOK headers and does not infer managed authority from a hostname", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => response());
+    const options = { managedRequestId: "40c87426-0d3a-4b8e-9eb7-a06a882d52a3" };
     for (const target of ["https://openrouter.ai/api/v1", baseURL]) {
       const provider = createProvider("openrouter", { apiKey: "synthetic-byok", baseURL: target, model, extra: { fetchImpl } });
-      await provider.chat(messages);
+      await provider.chat(messages, options);
       expect(requestId(fetchImpl.mock.lastCall![1])).toBeNull();
     }
     const explicit = createProvider("openrouter", { apiKey: "synthetic-byok", model,
       extra: { fetchImpl, defaultHeaders: { "Idempotency-Key": "synthetic-custom-direct-header" } } });
-    await explicit.chat(messages);
+    await explicit.chat(messages, options);
     expect(requestId(fetchImpl.mock.lastCall![1])).toBe("synthetic-custom-direct-header");
   });
 });

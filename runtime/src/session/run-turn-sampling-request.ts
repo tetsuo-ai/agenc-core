@@ -7,6 +7,7 @@
  * @module
  */
 
+import { randomUUID } from "node:crypto";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
 import {
@@ -243,6 +244,9 @@ function snapshotSamplingRequestContract(
 ): StreamModelRequestContract {
   return {
     ...request,
+    // Reconnects reuse this snapshot; a new sample or tool round snapshots
+    // again and receives its own identity, even when the prompt is identical.
+    managedRequestId: randomUUID(),
     input: request.input.map(cloneLlmMessageSnapshot),
     tools: request.tools.map((tool) => ({
       ...tool,
