@@ -65,6 +65,15 @@ const SHELL_WRAPPER_COMMANDS = new Set([
   "tcsh",
 ]);
 const SHELL_WRAPPER_INLINE_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
+const SHELL_INPUT_EVALUATORS = new Set([
+  ...SHELL_WRAPPER_COMMANDS,
+  ".",
+  "source",
+  "eval",
+  "busybox",
+  "powershell",
+  "pwsh",
+]);
 const SHELL_BUILTIN_COMMANDS = new Set([
   "set",
   "cd",
@@ -614,21 +623,6 @@ const DYNAMIC_SHELL_EXECUTABLE_REASON =
   "Command-substitution executables are not allowed in shell mode; " +
   "use an explicit command name/path.";
 
-function getDynamicShellExecutableReason(
-  token: string,
-  next: string | undefined,
-): string | null {
-  if ((token === "$" && next === "(") || token.startsWith("$(")) {
-    return DYNAMIC_SHELL_EXECUTABLE_REASON;
-  }
-
-  if (token === "`" || token.startsWith("`")) {
-    return DYNAMIC_SHELL_EXECUTABLE_REASON;
-  }
-
-  return null;
-}
-
 function getShellRedirectionSkipIndex(
   tokens: readonly ShellToken[],
   index: number,
@@ -641,8 +635,22 @@ function getShellRedirectionSkipIndex(
   return null;
 }
 
-function shouldSkipExecutableCandidate(token: string): boolean {
-  return ENV_ASSIGNMENT_RE.test(token) || token === "$";
+function hasShellEvaluatedHereInput(tokens: readonly ShellToken[]): boolean {
+  let hasHereInput = false;
+  let hasEvaluator = false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const redirect = getShellRedirectOperator(token);
+    if (redirect !== undefined) {
+      hasHereInput ||= redirect.startsWith("<<");
+      index += 1;
+      continue;
+    }
+    if (token.kind === "word" && SHELL_INPUT_EVALUATORS.has(basename(token.value).toLowerCase())) {
+      hasEvaluator = true;
+    }
+  }
+  return hasHereInput && hasEvaluator;
 }
 
 function consumeShellExecutable(token: string, executables: string[]): boolean {
@@ -672,23 +680,19 @@ function extractShellExecutables(command: string): {
     };
   }
   const tokens = parsed.tokens;
+  if (hasShellEvaluatedHereInput(tokens)) {
+    return {
+      executables: [],
+      dynamicExecutableReason:
+        "Shell-evaluated heredoc or here-string input is not allowed; use an explicit command instead.",
+    };
+  }
   const executables: string[] = [];
   let expectCommand = true;
   let index = 0;
 
   while (index < tokens.length) {
     const token = tokens[index]!;
-    const next = tokens[index + 1]?.value;
-
-    if (expectCommand) {
-      const dynamicExecutableReason = getDynamicShellExecutableReason(
-        token.value,
-        next,
-      );
-      if (dynamicExecutableReason) {
-        return { executables, dynamicExecutableReason };
-      }
-    }
 
     if (isShellCommandSeparator(token)) {
       expectCommand = true;
@@ -707,9 +711,17 @@ function extractShellExecutables(command: string): {
       continue;
     }
 
-    if (shouldSkipExecutableCandidate(token.value)) {
+    if (ENV_ASSIGNMENT_RE.test(token.value)) {
       index += 1;
       continue;
+    }
+
+    if (token.requiresExpansion) {
+      return {
+        executables,
+        dynamicExecutableReason:
+          "Variable-expanded executables are not allowed; use an explicit command name/path.",
+      };
     }
 
     expectCommand = !consumeShellExecutable(token.value, executables);

@@ -153,4 +153,12 @@ describe("shared shell lexer", () => {
     expect(parsed.malformed).toBe(false);
     expect(parsed.tokens.map((token) => token.value)).toEqual(["cat", "<<<", "text", ";", "pwd"]);
   });
+
+  it("scans long backslash runs without regex backtracking", () => {
+    const body = "\\".repeat(200_000) + "plain";
+    const parsed = lexShellCommand(`cat <<EOF\n${body}\nEOF\npwd`);
+    expect(parsed.malformed).toBe(false);
+    expect(parsed.hasCommandSubstitution).toBe(false);
+    expect(parsed.tokens.map((token) => token.value)).toEqual(["cat", "<<", "EOF", ";", "pwd"]);
+  });
 });

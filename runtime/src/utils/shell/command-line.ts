@@ -108,18 +108,11 @@ export function lexShellCommand(command: string): ShellCommandTokens {
     for (const heredoc of pendingHeredocs) {
       let terminated = false;
       while (index < command.length) {
-        let rawLine = "";
-        let continued: boolean;
-        do {
-          const newline = command.indexOf("\n", index);
-          const lineEnd = newline < 0 ? command.length : newline;
-          const physicalLine = command.slice(index, lineEnd);
-          const trailingBackslashes = physicalLine.match(/\\+$/u)?.[0].length ?? 0;
-          continued = !heredoc.quoted && newline >= 0 && trailingBackslashes % 2 === 1;
-          rawLine += continued ? physicalLine.slice(0, -1) : physicalLine;
-          index = newline < 0 ? command.length : newline + 1;
-        } while (continued && index < command.length);
-        const line = heredoc.stripTabs ? rawLine.replace(/^\t+/u, "") : rawLine;
+        const logicalLine = readHeredocLine(command, index, !heredoc.quoted);
+        index = logicalLine.end;
+        const line = heredoc.stripTabs
+          ? logicalLine.value.replace(/^\t+/u, "")
+          : logicalLine.value;
         if (line === heredoc.delimiter) {
           terminated = true;
           break;
@@ -133,73 +126,76 @@ export function lexShellCommand(command: string): ShellCommandTokens {
     pendingHeredocs.length = 0;
   };
 
-  while (index < command.length) {
-    const character = command[index]!;
+  const consumeEscape = (): void => {
     const next = command[index + 1];
-    const logicalNext = command[skipLineContinuations(command, index + 1)];
+    if (next === undefined) {
+      current += "\\";
+      wordStarted = true;
+      malformed = true;
+      index += 1;
+      return;
+    }
+    if (quote === '"' && !DOUBLE_QUOTE_ESCAPES.has(next)) {
+      current += "\\";
+      index += 1;
+      return;
+    }
+    if (next !== "\n") {
+      current += next;
+      wordStarted = true;
+      protectedWord = true;
+    }
+    index += 2;
+  };
+
+  const consumeQuotedCharacter = (character: string): void => {
     if (quote === "'") {
       if (character === "'") quote = null;
       else current += character;
-      index += 1;
-      continue;
+    } else if (character === '"') {
+      quote = null;
+    } else {
+      current += character;
+      if (character === "$") requiresExpansion = true;
+      const logicalNext = command[skipLineContinuations(command, index + 1)];
+      if (character === "`" || (character === "$" && logicalNext === "(")) {
+        hasCommandSubstitution = true;
+      }
     }
-    if (character === "\\") {
-      if (next === undefined) {
-        current += character;
-        wordStarted = true;
-        malformed = true;
-        index += 1;
-        continue;
-      }
-      if (quote === '"' && !DOUBLE_QUOTE_ESCAPES.has(next)) {
-        current += character;
-        index += 1;
-        continue;
-      }
-      if (next !== "\n") {
-        current += next;
-        wordStarted = true;
-        protectedWord = true;
-      }
-      index += 2;
-      continue;
-    }
-    if (quote === '"') {
-      if (character === '"') quote = null;
-      else {
-        current += character;
-        if (character === "$") requiresExpansion = true;
-        if (character === "`" || (character === "$" && logicalNext === "(")) {
-          hasCommandSubstitution = true;
-        }
-      }
-      index += 1;
-      continue;
-    }
+    index += 1;
+  };
+
+  const consumeWordBoundary = (character: string): boolean => {
     if (character === "'" || character === '"') {
       quote = character;
       wordStarted = true;
       protectedWord = true;
       index += 1;
-      continue;
+      return true;
     }
     if (character === "#" && !wordStarted) {
       hasComment = true;
       const newline = command.indexOf("\n", index);
       index = newline < 0 ? command.length : newline;
-      continue;
+      return true;
     }
     if (character === "\n") {
       pushOperator(";");
       index += 1;
       skipHeredocBodies();
-      continue;
+      return true;
     }
     if (character === " " || character === "\t") {
       pushCurrent();
       index += 1;
-      continue;
+      return true;
     }
+    return false;
+  };
+
+  const consumeUnquotedCharacter = (character: string): void => {
+    if (consumeWordBoundary(character)) return;
+    const logicalNext = command[skipLineContinuations(command, index + 1)];
     if (character === "`" ||
       ((character === "$" || character === "<" || character === ">") && logicalNext === "(")) {
       hasCommandSubstitution = true;
@@ -209,18 +205,56 @@ export function lexShellCommand(command: string): ShellCommandTokens {
     if (operator !== undefined) {
       pushOperator(operator.value);
       index = operator.end;
-      continue;
+      return;
     }
     current += character;
     wordStarted = true;
     if ("$*?[]{}~".includes(character)) requiresExpansion = true;
     index += 1;
+  };
+
+  while (index < command.length) {
+    const character = command[index]!;
+    if (quote === "'" || (quote === '"' && character !== "\\")) {
+      consumeQuotedCharacter(character);
+      continue;
+    }
+    if (character === "\\") {
+      consumeEscape();
+      continue;
+    }
+    consumeUnquotedCharacter(character);
   }
   pushCurrent();
   malformed ||=
     quote !== null || openBacktick ||
     awaitingHeredoc !== undefined || pendingHeredocs.length > 0;
   return { tokens, malformed, hasComment, hasCommandSubstitution };
+}
+
+function hasTrailingContinuation(line: string): boolean {
+  let start = line.length;
+  while (start > 0 && line[start - 1] === "\\") start -= 1;
+  return (line.length - start) % 2 === 1;
+}
+
+function readHeredocLine(
+  command: string,
+  start: number,
+  joinLines: boolean,
+): { readonly value: string; readonly end: number } {
+  const parts: string[] = [];
+  let index = start;
+  let continued: boolean;
+  do {
+    const newline = command.indexOf("\n", index);
+    const lineEnd = newline < 0 ? command.length : newline;
+    const physicalLine = command.slice(index, lineEnd);
+    continued = joinLines && newline >= 0 && hasTrailingContinuation(physicalLine);
+    parts.push(continued ? physicalLine.slice(0, -1) : physicalLine);
+    index = newline < 0 ? command.length : newline + 1;
+  } while (continued && index < command.length);
+  return { value: parts.join(""), end: index };
 }
 
 function skipLineContinuations(command: string, start: number): number {

@@ -2052,6 +2052,32 @@ describe("system.bash tool", () => {
       },
     );
 
+    it.each(["env socat$IFS-", "command {socat,-}", "env /usr/bin/so* -"])(
+      "rejects expansion-dependent executable names: %s",
+      async (command) => {
+        await expectShellModeExecutionError(command, "Variable-expanded executables are not allowed");
+      },
+    );
+
+    it.each([
+      "bash /dev/stdin <<'EOF'\nsocat -\nEOF",
+      "cat <<'EOF' | sh\nsocat -\nEOF",
+      "env -i bash /dev/stdin <<'EOF'\nsocat -\nEOF",
+      "busybox sh /dev/stdin <<'EOF'\nsocat -\nEOF",
+      ". /dev/stdin <<'EOF'\nsocat -\nEOF",
+      "bash /dev/stdin <<< 'socat -'",
+    ])("rejects shell-evaluated heredoc and here-string input: %s", async (command) => {
+      await expectShellModeExecutionError(command, "Shell-evaluated heredoc or here-string input is not allowed");
+    });
+
+    it.each(["EOF", "sh"])("allows a quoted heredoc consumed as data with delimiter %s", async (delimiter) => {
+      const tool = createBashTool();
+      mockSpawnSuccess("socat -\n");
+      const result = await tool.execute({ command: `cat <<'${delimiter}'\nsocat -\n${delimiter}` });
+      expect(result.isError).toBeUndefined();
+      expect(mockSpawn).toHaveBeenCalledOnce();
+    });
+
     // ---- Shell mode safe commands ----
 
     it("allows rm in shell mode (deny list pruned to real threats)", async () => {

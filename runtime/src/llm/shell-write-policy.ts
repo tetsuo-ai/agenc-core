@@ -503,8 +503,7 @@ function collectRedirectionTargets(
     }
     const next = tokens[index + 1];
     if (
-      next === undefined ||
-      next.kind !== "word" ||
+      next?.kind !== "word" ||
       next.value.length === 0
     ) {
       collection.indeterminate = true;
