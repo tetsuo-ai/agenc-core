@@ -199,27 +199,16 @@ export class BackgroundTaskLifecycle {
     Set<(snapshot: BackgroundTaskSnapshot) => void>
   >();
 
+  /**
+   * IDs and aliases share one namespace. Names owned by terminal tasks may be
+   * reclaimed; live owners remain reserved. Prepare and validate the complete
+   * registration before removing any terminal owner or publishing new state.
+   */
   register(input: RegisterBackgroundTaskInput): BackgroundTaskSnapshot {
     const id = input.id ?? generateBackgroundTaskId(input.type);
-    if (this.tasks.has(id)) {
-      throw new BackgroundTaskError(`task ${id} already exists`, "already_exists");
-    }
     const aliases = [...new Set(input.aliases ?? [])].filter(
       (alias) => alias.length > 0 && alias !== id,
     );
-    for (const alias of aliases) {
-      const existingId = this.resolveTaskId(alias);
-      const existing = this.tasks.get(existingId);
-      if (!existing) continue;
-      if (!isTerminalTaskStatus(existing.status)) {
-        throw new BackgroundTaskError(
-          `task ${alias} already exists`,
-          "already_exists",
-        );
-      }
-      this.deleteTaskRecord(existing.id);
-    }
-
     const record: MutableTaskRecord = {
       id,
       type: input.type,
@@ -239,6 +228,21 @@ export class BackgroundTaskLifecycle {
       ...(input.onStop !== undefined ? { onStop: input.onStop } : {}),
     };
 
+    // Input getters may run user code. Check ownership after all fields have
+    // been read, with no callbacks between validation and the map updates.
+    const terminalOwners = new Set<string>();
+    for (const name of [id, ...aliases]) {
+      const existing = this.tasks.get(this.resolveTaskId(name));
+      if (!existing) continue;
+      if (!isTerminalTaskStatus(existing.status)) {
+        throw new BackgroundTaskError(
+          `task ${name} already exists`,
+          "already_exists",
+        );
+      }
+      terminalOwners.add(existing.id);
+    }
+    for (const owner of terminalOwners) this.deleteTaskRecord(owner);
     this.tasks.set(id, record);
     this.outputs.set(id, { content: "", totalBytes: 0 });
     for (const alias of aliases) {
