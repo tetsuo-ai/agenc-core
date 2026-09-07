@@ -2052,7 +2052,10 @@ describe("system.bash tool", () => {
       },
     );
 
-    it.each(["env socat$IFS-", "command {socat,-}", "env /usr/bin/so* -"])(
+    it.each([
+      "env socat$IFS-", "/usr/bin/env socat$IFS-", "C:/tools/env.exe socat$IFS-",
+      "command {socat,-}", "env /usr/bin/so* -",
+    ])(
       "rejects expansion-dependent executable names: %s",
       async (command) => {
         await expectShellModeExecutionError(command, "Variable-expanded executables are not allowed");
@@ -2061,6 +2064,11 @@ describe("system.bash tool", () => {
 
     it.each([
       "bash /dev/stdin <<'EOF'\nsocat -\nEOF",
+      "bash.exe /dev/stdin <<'EOF'\nsocat -\nEOF",
+      "powershell.exe -Command - <<'EOF'\nsocat -\nEOF",
+      "'C:\\tools\\BASH.EXE' /dev/stdin <<'EOF'\nsocat -\nEOF",
+      "ash /dev/stdin <<'EOF'\nsocat -\nEOF",
+      "mksh /dev/stdin <<'EOF'\nsocat -\nEOF",
       "cat <<'EOF' | sh\nsocat -\nEOF",
       "env -i bash /dev/stdin <<'EOF'\nsocat -\nEOF",
       "busybox sh /dev/stdin <<'EOF'\nsocat -\nEOF",
@@ -2069,6 +2077,16 @@ describe("system.bash tool", () => {
     ])("rejects shell-evaluated heredoc and here-string input: %s", async (command) => {
       await expectShellModeExecutionError(command, "Shell-evaluated heredoc or here-string input is not allowed");
     });
+
+    it.each([
+      "env -i socat$IFS-", "/usr/bin/env -i socat -",
+      "'C:\\tools\\env.exe' -i socat -", "command -- {socat,-}", "nice -n 5 socat -",
+    ])(
+      "fails closed when prefix options obscure the executable: %s",
+      async (command) => {
+        await expectShellModeExecutionError(command, "Shell prefix options require explicit executable validation");
+      },
+    );
 
     it.each(["EOF", "sh"])("allows a quoted heredoc consumed as data with delimiter %s", async (delimiter) => {
       const tool = createBashTool();

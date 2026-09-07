@@ -67,6 +67,14 @@ const SHELL_WRAPPER_COMMANDS = new Set([
 const SHELL_WRAPPER_INLINE_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
 const SHELL_INPUT_EVALUATORS = new Set([
   ...SHELL_WRAPPER_COMMANDS,
+  "ash",
+  "mksh",
+  "lksh",
+  "posh",
+  "yash",
+  "rbash",
+  "rksh",
+  "ksh93",
   ".",
   "source",
   "eval",
@@ -635,6 +643,16 @@ function getShellRedirectionSkipIndex(
   return null;
 }
 
+function shellExecutableName(command: string): string {
+  return basename(command.replace(/\\/gu, "/"))
+    .toLowerCase()
+    .replace(/\.(?:exe|com|cmd|bat)$/u, "");
+}
+
+function isShellInputEvaluator(command: string): boolean {
+  return SHELL_INPUT_EVALUATORS.has(shellExecutableName(command));
+}
+
 function hasShellEvaluatedHereInput(tokens: readonly ShellToken[]): boolean {
   let hasHereInput = false;
   let hasEvaluator = false;
@@ -646,7 +664,7 @@ function hasShellEvaluatedHereInput(tokens: readonly ShellToken[]): boolean {
       index += 1;
       continue;
     }
-    if (token.kind === "word" && SHELL_INPUT_EVALUATORS.has(basename(token.value).toLowerCase())) {
+    if (token.kind === "word" && isShellInputEvaluator(token.value)) {
       hasEvaluator = true;
     }
   }
@@ -655,7 +673,7 @@ function hasShellEvaluatedHereInput(tokens: readonly ShellToken[]): boolean {
 
 function consumeShellExecutable(token: string, executables: string[]): boolean {
   executables.push(token);
-  return !SHELL_PREFIX_COMMANDS.has(token.toLowerCase());
+  return !SHELL_PREFIX_COMMANDS.has(shellExecutableName(token));
 }
 
 /**
@@ -721,6 +739,14 @@ function extractShellExecutables(command: string): {
         executables,
         dynamicExecutableReason:
           "Variable-expanded executables are not allowed; use an explicit command name/path.",
+      };
+    }
+
+    if (token.value.startsWith("-")) {
+      return {
+        executables,
+        dynamicExecutableReason:
+          "Shell prefix options require explicit executable validation; use a command without prefix options.",
       };
     }
 
