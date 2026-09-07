@@ -12,7 +12,7 @@ Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
 | `promptViaSubprocess()`                                                      | Same event-iterable interface over `agenc -p --output-format stream-json` with no daemon socket access from your process.                                                                                              |
 | `client.runStatus` / `runResult` / `replayRun` / `runEvidence` / `cancelRun` | Read durable run/admission state, replay or hash canonical journal evidence, or cancel a run tree.                                                                                                                     |
 | `client.reattachRun({ runId, afterSequence })`                               | Catch up from a durable cursor, suppress and report duplicate delivery, stop on any explicit replay gap, and fetch the durable terminal result after reconnect.                                                        |
-| `client.request(method, params)`                                             | Raw typed JSON-RPC for all **53** public daemon methods (mirrored in `./protocol`).                                                                                                                                    |
+| `client.request(method, params)`                                             | Raw typed JSON-RPC for all **89** public daemon methods, generated from the daemon protocol. Required wire payloads must be supplied.                                                                                   |
 | `client.listCsvJobReviews` / `showCsvJobReview` / `resolveCsvJobReview`      | Typed CSV unknown-outcome review helpers (`csvJob.review.*`).                                                                                                                                                          |
 
 Errors: `AgencRpcError`, `AgencMalformedResponseError`,
@@ -44,6 +44,12 @@ that root. Strict admission and scoped prompt cancellation fail closed when
 those guarantees are unavailable.
 Protocol 1.9 adds a Core-only admitted shell method; it is not exposed by the
 SDK request union.
+
+`createSession()`, `spawnAgent()`, and the CSV review helpers supply an omitted
+`cwd`. Direct `request()` calls require the daemon's complete payload, including
+`cwd` for those methods. The SDK generation check compiles exact request and
+result parity for every public method. See [protocol generation](../../docs/sdk.md#protocol-mirror--drift-guard)
+for regeneration and compatibility adapters.
 
 ```js
 import { connect, promptViaSubprocess } from "@tetsuo-ai/agenc-sdk";

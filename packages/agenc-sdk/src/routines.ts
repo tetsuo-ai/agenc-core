@@ -1,70 +1,20 @@
-import type { JsonObject } from "./protocol.js";
-
-/** Versioned local-daemon contract. No caller-supplied credentials or runtime authority. */
-export type RoutineSchedule =
-  | { readonly kind: "manual" }
-  | { readonly kind: "cron"; readonly expression: string };
-export type RoutineRunStatus = "starting" | "running" | "waiting_permission" | "completed" | "failed" | "cancelled" | "interrupted";
-export interface RoutineRun extends JsonObject {
-  readonly id: string;
-  readonly routineId: string;
-  readonly status: RoutineRunStatus;
-  readonly trigger: "manual" | "schedule";
-  readonly startedAt: string;
-  readonly finishedAt: string | null;
-  readonly agentId: string | null;
-  readonly sessionId: string | null;
-  readonly coreRunId: string | null;
-  readonly error: string | null;
-}
-export interface RoutineCreateParams extends JsonObject {
-  readonly name: string;
-  readonly description?: string;
-  readonly instructions: string;
-  readonly cwd: string;
-  readonly schedule: RoutineSchedule;
-  readonly provider?: string;
-  readonly model?: string;
-  readonly permissionMode?: "default" | "plan";
-  readonly enabled?: boolean;
-  readonly notifyOnCompletion?: boolean;
-}
-export interface Routine extends RoutineCreateParams {
-  readonly id: string;
-  readonly description: string;
-  readonly permissionMode: "default" | "plan";
-  readonly enabled: boolean;
-  readonly notifyOnCompletion: boolean;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly nextRunAt: string | null;
-  readonly lastRun: RoutineRun | null;
-}
-export interface RoutineIdParams extends JsonObject { readonly id: string }
-export interface RoutineUpdateParams extends RoutineIdParams {
-  readonly patch: Partial<RoutineCreateParams>;
-  readonly expectedUpdatedAt?: string;
-}
-export interface RoutineDeleteParams extends RoutineIdParams { readonly expectedUpdatedAt?: string }
-export interface RoutineRunsParams extends RoutineIdParams { readonly limit?: number }
-export interface RoutineCancelParams extends RoutineIdParams { readonly runId?: string }
-export interface RoutineCapabilities extends JsonObject {
-  readonly version: 1;
-  readonly available: true;
-  readonly scheduleKinds: readonly ["manual", "cron"];
-  readonly permissionModes: readonly ["default", "plan"];
-  readonly timezone: string;
-  readonly executionMode: "local";
-  readonly maxRoutines: number;
-  readonly maxRunsPerRoutine: number;
-}
-export interface RoutineResult extends JsonObject { readonly routine: Routine }
-export interface RoutineRunResult extends JsonObject { readonly run: RoutineRun }
-export interface RoutineListResult extends JsonObject { readonly routines: readonly Routine[] }
-export interface RoutineRunsResult extends JsonObject { readonly runs: readonly RoutineRun[] }
-export interface RoutineDeleteResult extends JsonObject { readonly deleted: true }
-/** Invalidation only: clients refresh list/detail; no instructions or results are broadcast. */
-export interface RoutineUpdatedEvent extends JsonObject {
-  readonly id: string;
-  readonly reason: "created" | "updated" | "deleted" | "run";
-}
+/** Standalone aliases of the daemon-owned routine wire contract. */
+export type {
+  RoutineSchedule,
+  RoutineRunStatus,
+  RoutineRun,
+  RoutineCreateParams,
+  Routine,
+  RoutineIdParams,
+  RoutineUpdateParams,
+  RoutineDeleteParams,
+  RoutineRunsParams,
+  RoutineCancelParams,
+  RoutineCapabilities,
+  RoutineResult,
+  RoutineRunResult,
+  RoutineListResult,
+  RoutineRunsResult,
+  RoutineDeleteResult,
+  RoutineUpdatedEvent,
+} from "./protocol-wire.generated.js";

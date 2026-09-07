@@ -2,27 +2,14 @@
  * Standalone subset of the AgenC daemon JSON-RPC protocol
  * (`runtime/src/app-server/protocol/index.ts`).
  *
- * This package deliberately does NOT import runtime internals; the shapes
- * here mirror the daemon's public control surface. Generated zero-dependency
- * slices are re-exported from this module and checked by
- * `runtime/scripts/check-sdk-generated-types.mjs`. Handwritten method-list
- * drift is guarded by `runtime/tests/sdk-package/protocol-drift.contract.test.ts`,
- * which compares {@link AGENC_SDK_DAEMON_METHODS} and
- * {@link AGENC_SDK_DAEMON_NOTIFICATION_METHODS} against the runtime's
- * `AGENC_DAEMON_METHODS` / `AGENC_DAEMON_NOTIFICATION_METHODS` arrays,
- * so any protocol change fails tests until this mirror is updated.
+ * Wire declarations are generated into a standalone module and re-exported
+ * under the SDK's established names. check:sdk-generated-types verifies the
+ * artifact and compiles exact request/result/envelope parity for every public
+ * method. Helpers may default cwd or adapt older replay results; those helper
+ * types do not change the generic request mappings.
  */
 
-import type {
-  CsvJobReviewListParams,
-  CsvJobReviewListResult,
-  CsvJobReviewResolveParams,
-  CsvJobReviewResolveResult,
-  CsvJobReviewShowParams,
-  CsvJobReviewShowResult,
-} from "./csv-jobs.js";
-import type { SessionTranscriptV2Result } from "./transcript-v2.generated.js";
-import type { RoutineCapabilities, RoutineListResult, RoutineResult, RoutineDeleteResult, RoutineRunResult, RoutineRunsResult, RoutineIdParams, RoutineCreateParams, RoutineUpdateParams, RoutineDeleteParams, RoutineRunsParams, RoutineCancelParams } from "./routines.js";
+import type * as Wire from "./protocol-wire.generated.js";
 export type * from "./routines.js";
 
 export type {
@@ -37,13 +24,26 @@ export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
 export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.10.0" as const;
 
-export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;
-export interface JsonObject {
-  readonly [key: string]: JsonValue | undefined;
-}
+/** Preserve named wire fields while allowing helpers to supply cwd. */
+export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
+  Omit<
+    {
+      [
+        Key in keyof Params as string extends Key
+          ? never
+          : number extends Key
+            ? never
+            : Key
+      ]: Params[Key];
+    },
+    "cwd"
+  > & { readonly cwd?: string } & JsonObject;
 
-export type RequestId = string | number;
+export type JsonPrimitive = Wire.JsonPrimitive;
+export type JsonValue = Wire.JsonValue;
+export type JsonObject = Wire.JsonObject;
+
+export type RequestId = Wire.RequestId;
 
 /**
  * Every public daemon request method, in the runtime's declaration order.
@@ -175,36 +175,16 @@ export type AgencDaemonNotificationMethod =
 
 // ── Shared params/result shapes ──────────────────────────────────────
 
-export interface DaemonProtocolInfo extends JsonObject {
-  readonly version: string;
-}
+export type DaemonProtocolInfo = Wire.DaemonProtocolInfo;
 
 /** Authenticated identity of the exact daemon process serving the connection. */
-export interface DaemonInstanceIdentity extends JsonObject {
-  readonly pid: number;
-  readonly instanceId: string;
-  readonly processStart: string;
-  readonly runtimeVersion: string;
-  readonly commit: string;
-  readonly buildTime: string;
-}
+export type DaemonInstanceIdentity = Wire.DaemonInstanceIdentity;
 
-export interface InitializeParams extends JsonObject {
-  readonly protocolVersion?: string;
-  readonly protocol?: DaemonProtocolInfo;
-  readonly clientName?: string;
-  readonly authCookie?: string;
-  readonly capabilities?: JsonObject;
-}
+export type InitializeParams = Wire.InitializeParams;
 
-export interface RequestCancelParams extends JsonObject {
-  readonly requestId: RequestId;
-  readonly reason?: string;
-}
+export type RequestCancelParams = Wire.RequestCancelParams;
 
-export interface DaemonShutdownParams extends JsonObject {
-  readonly instanceId: string;
-}
+export type DaemonShutdownParams = Wire.DaemonShutdownParams;
 
 export type PermissionMode =
   "default" | "plan" | "acceptEdits" | "bypassPermissions";
@@ -212,824 +192,213 @@ export type PermissionMode =
 /** Maximum raw `AgentCreateParams.addDirs` entries accepted by the daemon. */
 export const AGENC_MAX_AGENT_CREATE_ADD_DIRS = 32;
 
-export type MessageContentBlock =
-  | (JsonObject & { readonly type: "text"; readonly text: string })
-  | (JsonObject & {
-      readonly type: "image_url";
-      readonly image_url: JsonObject & { readonly url: string };
-    });
+export type MessageContentBlock = Wire.MessageContentBlock;
 
-export type MessageContent = string | readonly MessageContentBlock[];
+export type MessageContent = Wire.MessageContent;
 
-export interface AgentRuntimeOptionsParams extends JsonObject {
-  readonly simpleMode: boolean;
-  /** Omission by an older peer is normalized to false. */
-  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
-  readonly stdinDataMode: boolean;
-  readonly remoteMode: boolean;
-  readonly remoteMemoryRoot?: string;
-  readonly coworkMemoryPathOverride?: string;
-  readonly coworkMemoryExtraGuidelines?: string;
-  readonly posixShellPath?: string;
-  readonly commandWrapperArgv?: readonly string[];
-  readonly sessionTempRoot?: string;
-  readonly pluginStorageRoot: string;
-  /**
-   * Explicit capability for command hook effects in an untrusted workspace.
-   * The SDK safe default is false. This field never permits HTTP, prompt, or
-   * agent hook effects and cannot override simpleMode hook suppression.
-   */
-  readonly allowUntrustedHooks: boolean;
-}
+export type AgentRuntimeOptionsParams = Wire.AgentRuntimeOptionsParams;
 
-export interface AgentCreateParams extends JsonObject {
-  readonly objective?: string;
-  /**
-   * Absolute workspace directory. Required by the daemon (DAE-02).
-   * SDK `spawnAgent` / `createSession` will fill `process.cwd()` when omitted
-   * at the client boundary — never leave this unset on the wire.
-   */
-  readonly cwd?: string;
-  readonly model?: string;
-  readonly provider?: string;
-  readonly profile?: string;
-  /** Absolute explicit config layer selected by the invoking client. */
-  readonly configPath?: string;
-  /**
-   * Additional working directories selected for this runtime session.
-   * Raw entries are limited by {@link AGENC_MAX_AGENT_CREATE_ADD_DIRS}; exact
-   * duplicates are accepted and collapse in first-seen order.
-   */
-  readonly addDirs?: readonly string[];
-  readonly instructions?: string;
-  readonly initialContent?: MessageContent;
-  readonly unattendedAllow?: readonly string[];
-  readonly unattendedDeny?: readonly string[];
-  readonly metadata?: JsonObject;
-  readonly permissionMode?: PermissionMode;
-  /** Immutable operator policy resolved by the embedding client. */
-  readonly runtimeOptions: AgentRuntimeOptionsParams;
-  readonly envOverrides?: { readonly [key: string]: string };
-}
+/** Helper input; generic request() uses the required-cwd wire shape. */
+export type AgentCreateParams = AgencDefaultCwdParams<Wire.AgentCreateParams>;
 
-export interface AgentListParams extends JsonObject {
-  readonly cursor?: string;
-  readonly limit?: number;
-}
+export type AgentListParams = Wire.AgentListParams;
 
-export interface AgentAttachParams extends JsonObject {
-  readonly agentId: string;
-  readonly clientId?: string;
-}
+export type AgentAttachParams = Wire.AgentAttachParams;
 
-export interface AgentStopParams extends JsonObject {
-  readonly agentId: string;
-  readonly reason?: string;
-}
+export type AgentStopParams = Wire.AgentStopParams;
 
-export interface AgentLogsParams extends JsonObject {
-  readonly agentId: string;
-}
+export type AgentLogsParams = Wire.AgentLogsParams;
 
-export interface RunStatusParams extends JsonObject {
-  readonly runId: string;
-}
+export type RunStatusParams = Wire.RunStatusParams;
 
-export interface RunResultParams extends JsonObject {
-  readonly runId: string;
-}
+export type RunResultParams = Wire.RunResultParams;
 
-export interface RunReplayParams extends JsonObject {
-  readonly runId: string;
-  readonly afterSequence?: number;
-  readonly limit?: number;
-}
+export type RunReplayParams = Wire.RunReplayParams;
 
-export interface RunEvidenceParams extends JsonObject {
-  readonly runId: string;
-  readonly afterSequence?: number;
-  readonly limit?: number;
-}
+export type RunEvidenceParams = Wire.RunEvidenceParams;
 
-export interface RunCancelParams extends JsonObject {
-  readonly runId: string;
-  readonly reason?: string;
-}
+export type RunCancelParams = Wire.RunCancelParams;
 
 /** One required verification command for a verified-change workflow run. */
-export interface RunStartVerificationCommand extends JsonObject {
-  readonly label: string;
-  readonly script: string;
-}
+export type RunStartVerificationCommand = Wire.RunStartVerificationCommand;
 
-export interface RunStartParams extends JsonObject {
-  /** The engineering goal / issue text driving the change. */
-  readonly goal: string;
-  /** Absolute directory inside the target git repository (daemon cwd default). */
-  readonly cwd?: string;
-  readonly model?: string;
-  readonly provider?: string;
-  /** Reviewer configuration pinned into the frozen spec at intake. */
-  readonly reviewerModel?: string;
-  readonly maxCostUsd?: number;
-  readonly maxTokens?: number;
-  readonly deadlineAt?: string;
-  readonly permissionMode?: PermissionMode;
-  readonly unattendedAllow?: readonly string[];
-  readonly unattendedDeny?: readonly string[];
-  /** Required verification commands; the workflow demands at least one. */
-  readonly requiredVerification?: readonly RunStartVerificationCommand[];
-  readonly maxImplementAttempts?: number;
-}
+export type RunStartParams = Wire.RunStartParams;
 
-export interface SessionCreateParams extends JsonObject {
-  readonly agentId?: string;
-  readonly cwd?: string;
-  readonly initialPrompt?: string;
-  readonly metadata?: JsonObject;
-}
+/** Helper input; generic request() uses the required-cwd wire shape. */
+export type SessionCreateParams =
+  AgencDefaultCwdParams<Wire.SessionCreateParams>;
 
-export interface SessionListParams extends JsonObject {
-  readonly agentId?: string;
-  readonly cursor?: string;
-  readonly limit?: number;
-}
+export type SessionListParams = Wire.SessionListParams;
 
-export interface SessionAttachParams extends JsonObject {
-  readonly sessionId: string;
-  readonly clientId?: string;
-}
+export type SessionAttachParams = Wire.SessionAttachParams;
 
-export interface SessionDetachParams extends JsonObject {
-  readonly sessionId: string;
-  readonly attachmentId?: string;
-  readonly clientId?: string;
-}
+export type SessionDetachParams = Wire.SessionDetachParams;
 
-export interface SessionTerminateParams extends JsonObject {
-  readonly sessionId: string;
-  readonly reason?: string;
-}
+export type SessionTerminateParams = Wire.SessionTerminateParams;
 
-export interface SessionClearParams extends JsonObject {
-  readonly sessionId: string;
-}
+export type SessionClearParams = Wire.SessionClearParams;
 
-export interface SessionSnapshotParams extends JsonObject {
-  readonly sessionId: string;
-}
+export type SessionSnapshotParams = Wire.SessionSnapshotParams;
 
-export interface SessionTranscriptParams extends JsonObject {
-  readonly sessionId: string;
-}
+export type SessionTranscriptParams = Wire.SessionTranscriptParams;
 
-export interface SessionTranscriptV2Params extends JsonObject {
-  readonly sessionId: string;
-}
+export type SessionTranscriptV2Params = Wire.SessionTranscriptV2Params;
 
-export interface SessionCancelTurnParams extends JsonObject {
-  readonly sessionId: string;
-  readonly reason?: string;
-  readonly expectedTurnId?: string;
-}
+export type SessionCancelTurnParams = Wire.SessionCancelTurnParams;
 
 /** Protocol-1.0 request shape shipped with agenc-sdk 0.3.0. */
-export interface SessionResolveToolCallLegacyParams extends JsonObject {
-  readonly sessionId: string;
-  /** When omitted, every eligible legacy effect in the session is reviewed. */
-  readonly toolCallId?: string;
-  readonly reviewer?: string;
-  readonly disposition?: never;
-  readonly evidenceRef?: never;
-  readonly evidenceSha256?: never;
-}
+export type SessionResolveToolCallLegacyParams =
+  Wire.SessionResolveToolCallLegacyParams;
 
 /** Evidence-bearing request required for canonical durable effect records. */
-export interface SessionResolveToolCallEvidenceParams extends JsonObject {
-  readonly sessionId: string;
-  readonly toolCallId: string;
-  readonly disposition:
-    "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
-  readonly evidenceRef: string;
-  readonly evidenceSha256: string;
-  readonly reviewer?: string;
-}
+export type SessionResolveToolCallEvidenceParams =
+  Wire.SessionResolveToolCallEvidenceParams;
 
-export type SessionResolveToolCallParams =
-  SessionResolveToolCallLegacyParams | SessionResolveToolCallEvidenceParams;
+export type SessionResolveToolCallParams = Wire.SessionResolveToolCallParams;
 
-export interface SessionMcpStatusParams extends JsonObject {
-  readonly sessionId: string;
-}
+export type SessionMcpStatusParams = Wire.SessionMcpStatusParams;
 
-export interface SessionMcpServerConfig extends JsonObject {
-  readonly name: string;
-  readonly transport?: "stdio" | "sse" | "http" | "websocket";
-  readonly command?: string;
-  readonly args?: readonly string[];
-  readonly endpoint?: string;
-  readonly enabled?: boolean;
-  readonly required?: boolean;
-}
+export type SessionMcpServerConfig = Wire.SessionMcpServerConfig;
 
-export interface SessionMcpAddServerParams extends JsonObject {
-  readonly sessionId: string;
-  readonly config: SessionMcpServerConfig;
-}
+export type SessionMcpAddServerParams = Wire.SessionMcpAddServerParams;
 
-export interface MessageSendParams extends JsonObject {
-  readonly sessionId: string;
-  readonly content: MessageContent;
-  readonly clientMessageId?: string;
-  readonly ifBusy?: "reject";
-  readonly metadata?: JsonObject;
-}
+export type MessageSendParams = Wire.MessageSendParams;
 
-export interface MessageStreamParams extends MessageSendParams {
-  readonly streamId?: string;
-}
+export type MessageStreamParams = Wire.MessageStreamParams;
 
-export interface ThreadRealtimeStartParams extends JsonObject {
-  readonly threadId: string;
-  readonly transport?: JsonObject | null;
-  readonly realtimeSessionId?: string | null;
-  readonly prompt?: string | null;
-  readonly outputModality: "audio" | "text";
-  readonly voice?: string | null;
-}
+export type ThreadRealtimeStartParams = Wire.ThreadRealtimeStartParams;
 
-export interface ThreadRealtimeAudioChunk extends JsonObject {
-  readonly data: string;
-  readonly sampleRate: number;
-  readonly numChannels: number;
-  readonly samplesPerChannel?: number | null;
-  readonly itemId?: string | null;
-}
+export type ThreadRealtimeAudioChunk = Wire.ThreadRealtimeAudioChunk;
 
-export interface ThreadRealtimeAppendAudioParams extends JsonObject {
-  readonly threadId: string;
-  readonly audio: ThreadRealtimeAudioChunk;
-}
+export type ThreadRealtimeAppendAudioParams =
+  Wire.ThreadRealtimeAppendAudioParams;
 
-export interface ThreadRealtimeAppendTextParams extends JsonObject {
-  readonly threadId: string;
-  readonly text: string;
-}
+export type ThreadRealtimeAppendTextParams =
+  Wire.ThreadRealtimeAppendTextParams;
 
-export interface ThreadRealtimeStopParams extends JsonObject {
-  readonly threadId: string;
-}
+export type ThreadRealtimeStopParams = Wire.ThreadRealtimeStopParams;
 
-export interface ExitPlanApprovalPayload extends JsonObject {
-  readonly action: "approve" | "revise";
-  readonly mode?: "acceptEdits" | "default";
-  readonly applyAllowedPrompts?: boolean;
-  readonly clearContext?: boolean;
-  readonly feedback?: string;
-}
+export type ExitPlanApprovalPayload = Wire.ExitPlanApprovalPayload;
 
-export interface ToolApproveParams extends JsonObject {
-  readonly sessionId: string;
-  readonly requestId: string;
-  readonly scope?: "once" | "session" | "agent";
-  /**
-   * Promote this approval to bypass-permissions mode for the owning daemon
-   * session. This is intentionally opt-in: plain `scope: "session"` keeps its
-   * existing, narrower cache semantics for semantically-equivalent calls.
-   */
-  readonly allowAllToolsForSession?: boolean;
-  readonly exitPlan?: ExitPlanApprovalPayload;
-}
+export type ToolApproveParams = Wire.ToolApproveParams;
 
-export interface ToolDenyParams extends JsonObject {
-  readonly sessionId: string;
-  readonly requestId: string;
-  readonly reason?: string;
-}
+export type ToolDenyParams = Wire.ToolDenyParams;
 
-export interface ToolCancelParams extends JsonObject {
-  readonly sessionId: string;
-  readonly requestId: string;
-  readonly reason?: string;
-}
+export type ToolCancelParams = Wire.ToolCancelParams;
 
-export interface ElicitationRespondParams extends JsonObject {
-  readonly sessionId: string;
-  readonly requestId: RequestId;
-  readonly kind: "request_user_input" | "mcp";
-  readonly serverName?: string;
-  readonly response: JsonObject;
-}
+export type ElicitationRespondParams = Wire.ElicitationRespondParams;
 
-export interface PermissionListParams extends JsonObject {
-  readonly agentId?: string;
-  readonly sessionId?: string;
-}
+export type PermissionListParams = Wire.PermissionListParams;
 
-export interface FuzzyFileSearchParams extends JsonObject {
-  readonly query: string;
-  readonly roots: readonly string[];
-  readonly cancellationToken?: string | null;
-  /** Maximum number of results to return. The daemon accepts 1 through 1,000. */
-  readonly limit?: number;
-  /** Rebuild the persistent index before evaluating the query. */
-  readonly refresh?: boolean;
-}
+export type FuzzyFileSearchParams = Wire.FuzzyFileSearchParams;
 
-export interface CommandExecTerminalSize extends JsonObject {
-  readonly rows: number;
-  readonly cols: number;
-}
+export type CommandExecTerminalSize = Wire.CommandExecTerminalSize;
 
-interface CommandExecStartBase extends JsonObject {
-  readonly command: readonly string[];
-  readonly processId?: string | null;
-  readonly tty?: boolean;
-  readonly streamStdin?: boolean;
-  readonly streamStdoutStderr?: boolean;
-  readonly outputBytesCap?: number | null;
-  readonly disableOutputCap?: boolean;
-  readonly disableTimeout?: boolean;
-  readonly timeoutMs?: number | null;
-  readonly cwd?: string | null;
-  readonly env?: Readonly<Record<string, string | null>> | null;
-  readonly size?: CommandExecTerminalSize | null;
-}
+export type CommandExecStartParams = Wire.CommandExecStartParams;
 
-export type CommandExecStartParams = CommandExecStartBase &
-  (
-    | {
-        readonly permissionProfile: string;
-        readonly sandboxPolicy?: null;
-      }
-    | {
-        readonly sandboxPolicy: JsonObject;
-        readonly permissionProfile?: null;
-      }
-  );
+export type CommandExecWriteParams = Wire.CommandExecWriteParams;
 
-export interface CommandExecWriteParams extends JsonObject {
-  readonly processId: string;
-  readonly deltaBase64?: string | null;
-  readonly closeStdin?: boolean;
-}
+export type CommandExecResizeParams = Wire.CommandExecResizeParams;
 
-export interface CommandExecResizeParams extends JsonObject {
-  readonly processId: string;
-  readonly size: CommandExecTerminalSize;
-}
+export type CommandExecTerminateParams = Wire.CommandExecTerminateParams;
 
-export interface CommandExecTerminateParams extends JsonObject {
-  readonly processId: string;
-}
+export type EmptyParams = Wire.EmptyParams;
 
-export type EmptyParams = Record<string, never>;
+export type CsvJobReviewListWireParams = Wire.CsvJobReviewListParams;
 
-export type CsvJobReviewListWireParams = CsvJobReviewListParams & {
-  readonly cwd: string;
-};
-export type CsvJobReviewShowWireParams = CsvJobReviewShowParams & {
-  readonly cwd: string;
-};
-export type CsvJobReviewResolveWireParams = CsvJobReviewResolveParams & {
-  readonly cwd: string;
-};
+export type CsvJobReviewShowWireParams = Wire.CsvJobReviewShowParams;
 
-export interface AgencParamsByMethod {
-  readonly "remote.capabilities": JsonObject;
-  readonly "remote.status": JsonObject;
-  readonly "remote.start": JsonObject;
-  readonly "remote.stop": JsonObject;
-  readonly "remote.pair.begin": JsonObject;
-  readonly "remote.pair.refresh": JsonObject;
-  readonly "remote.pair.cancel": JsonObject;
-  readonly "remote.devices": JsonObject;
-  readonly "remote.pending": JsonObject;
-  readonly "remote.approve": JsonObject;
-  readonly "remote.revoke": JsonObject;
-  readonly "telegram.capabilities": JsonObject;
-  readonly "telegram.status": JsonObject;
-  readonly "telegram.configure": JsonObject;
-  readonly "telegram.start": JsonObject;
-  readonly "telegram.stop": JsonObject;
-  readonly "telegram.revoke": JsonObject;
-  readonly "telegram.agents.list": JsonObject;
-  readonly "telegram.agents.create": JsonObject;
-  readonly "telegram.agents.update": JsonObject;
-  readonly "telegram.agents.start": JsonObject;
-  readonly "telegram.agents.stop": JsonObject;
-  readonly "telegram.agents.remove": JsonObject;
-  readonly "telegram.agents.pair.begin": JsonObject;
-  readonly "telegram.agents.pair.confirm": JsonObject;
-  readonly "telegram.agents.pair.cancel": JsonObject;
-  readonly initialize: InitializeParams;
-  readonly "request.cancel": RequestCancelParams;
-  readonly "agent.create": AgentCreateParams;
-  readonly "agent.list": AgentListParams;
-  readonly "agent.attach": AgentAttachParams;
-  readonly "agent.stop": AgentStopParams;
-  readonly "agent.logs": AgentLogsParams;
-  readonly "run.status": RunStatusParams;
-  readonly "run.result": RunResultParams;
-  readonly "run.replay": RunReplayParams;
-  readonly "run.evidence": RunEvidenceParams;
-  readonly "run.cancel": RunCancelParams;
-  readonly "run.start": RunStartParams;
-  readonly "routine.capabilities": EmptyParams;
-  readonly "routine.list": EmptyParams;
-  readonly "routine.get": RoutineIdParams;
-  readonly "routine.create": RoutineCreateParams;
-  readonly "routine.update": RoutineUpdateParams;
-  readonly "routine.delete": RoutineDeleteParams;
-  readonly "routine.run": RoutineIdParams;
-  readonly "routine.runs": RoutineRunsParams;
-  readonly "routine.cancel": RoutineCancelParams;
-  readonly "csvJob.review.list": CsvJobReviewListWireParams;
-  readonly "csvJob.review.show": CsvJobReviewShowWireParams;
-  readonly "csvJob.review.resolve": CsvJobReviewResolveWireParams;
-  readonly "session.create": SessionCreateParams;
-  readonly "session.list": SessionListParams;
-  readonly "session.attach": SessionAttachParams;
-  readonly "session.detach": SessionDetachParams;
-  readonly "session.terminate": SessionTerminateParams;
-  readonly "session.clear": SessionClearParams;
-  readonly "session.snapshot": SessionSnapshotParams;
-  readonly "session.transcript": SessionTranscriptParams;
-  readonly "session.transcript.v2": SessionTranscriptV2Params;
-  readonly "session.cancelTurn": SessionCancelTurnParams;
-  readonly "session.resolveToolCall": SessionResolveToolCallParams;
-  readonly "session.mcp.status": SessionMcpStatusParams;
-  readonly "session.mcp.addServer": SessionMcpAddServerParams;
-  readonly "message.send": MessageSendParams;
-  readonly "message.stream": MessageStreamParams;
-  readonly "thread/realtime/start": ThreadRealtimeStartParams;
-  readonly "thread/realtime/appendAudio": ThreadRealtimeAppendAudioParams;
-  readonly "thread/realtime/appendText": ThreadRealtimeAppendTextParams;
-  readonly "thread/realtime/stop": ThreadRealtimeStopParams;
-  readonly "thread/realtime/listVoices": EmptyParams;
-  readonly "tool.approve": ToolApproveParams;
-  readonly "tool.deny": ToolDenyParams;
-  readonly "tool.cancel": ToolCancelParams;
-  readonly "elicitation.respond": ElicitationRespondParams;
-  readonly "permission.list": PermissionListParams;
-  readonly "fs.fuzzy_search": FuzzyFileSearchParams;
-  readonly "commandExec.start": CommandExecStartParams;
-  readonly "commandExec.write": CommandExecWriteParams;
-  readonly "commandExec.resize": CommandExecResizeParams;
-  readonly "commandExec.terminate": CommandExecTerminateParams;
-  readonly "health.ping": EmptyParams;
-  readonly "health.ready": EmptyParams;
-  readonly "health.stats": EmptyParams;
-  readonly "daemon.reload": EmptyParams;
-  readonly "daemon.shutdown": DaemonShutdownParams;
-  readonly "auth.login": EmptyParams;
-  readonly "auth.whoami": EmptyParams;
-  readonly "auth.logout": EmptyParams;
-}
+export type CsvJobReviewResolveWireParams = Wire.CsvJobReviewResolveParams;
+
+export type AgencParamsByMethod = Wire.AgenCDaemonParamsByMethod;
 
 // ── Result shapes ────────────────────────────────────────────────────
 
-export type AgentStatus = "idle" | "running" | "stopping" | "stopped" | "error";
-export type AgentRunStatus =
-  | "pending"
-  | "running"
-  | "working"
-  | "paused"
-  | "blocked"
-  | "suspended"
-  | "completed"
-  | "errored"
-  | "stopped";
-export type SessionStatus = "idle" | "running" | "waiting" | "closed" | "error";
+export type AgentStatus = Wire.AgentStatus;
+export type AgentRunStatus = Wire.AgentRunStatus;
+export type SessionStatus = Wire.SessionStatus;
 
-export interface AgentSummary extends JsonObject {
-  readonly agentId: string;
-  readonly agentPath?: string;
-  readonly objective?: string;
-  readonly status: AgentStatus;
-  readonly createdAt: string;
-  readonly startedAt?: string;
-  readonly lastActiveAt?: string;
-  readonly cwd?: string;
-  readonly activeSessionIds?: readonly string[];
-  readonly metadata?: JsonObject;
-}
+export type AgentSummary = Wire.AgentSummary;
 
-export interface SessionSummary extends JsonObject {
-  readonly sessionId: string;
-  readonly agentId: string;
-  readonly status: SessionStatus;
-  readonly createdAt: string;
-  readonly cwd?: string;
-  readonly metadata?: JsonObject;
-  readonly activeAttachmentIds?: readonly string[];
-  readonly closedAt?: string;
-}
+export type SessionSummary = Wire.SessionSummary;
 
-export interface InitializeResult extends JsonObject {
-  readonly type: "initialized";
-  readonly protocolVersion: string;
-  readonly protocol: DaemonProtocolInfo;
-  readonly capabilities: JsonObject;
-  readonly daemonIdentity?: DaemonInstanceIdentity;
-}
+export type InitializeResult = Wire.InitializeResult;
 
-export interface RequestCancelResult extends JsonObject {
-  readonly requestId: RequestId;
-  readonly cancelled: boolean;
-  readonly reason?: string;
-}
+export type RequestCancelResult = Wire.RequestCancelResult;
 
-export interface AgentCreateResult extends AgentSummary {
-  readonly sessionId?: string;
-}
+export type AgentCreateResult = Wire.AgentCreateResult;
 
-export interface AgentListResult extends JsonObject {
-  readonly agents: readonly AgentSummary[];
-  readonly nextCursor?: string;
-}
+export type AgentListResult = Wire.AgentListResult;
 
 /** Standalone wire mirror of the runtime's canonical run-settings snapshot. */
-export interface RunRuntimeSettingsSnapshot extends JsonObject {
-  readonly permissionMode:
-    | "default"
-    | "plan"
-    | "acceptEdits"
-    | "bypassPermissions"
-    | "dontAsk"
-    | "auto"
-    | "unattended";
-  readonly prePlanMode:
-    | "default"
-    | "plan"
-    | "acceptEdits"
-    | "bypassPermissions"
-    | "dontAsk"
-    | "auto"
-    | "unattended"
-    | null;
-  readonly autoModeActive: boolean;
-  readonly autoModeAvailable: boolean;
-  readonly bypassPermissionsModeAvailable: boolean;
-  readonly bypassPermissionsWorkspace: string | null;
-  readonly bypassPermissionsConsentWorkspace: string | null;
-  readonly model: string;
-  readonly provider: string;
-  readonly profile: string | null;
-  readonly reasoningEffort: "low" | "medium" | "high" | "xhigh" | "none" | null;
-  readonly modelVerbosity: "low" | "medium" | "high" | null;
-  readonly serviceTier: "priority" | "flex" | null;
-  readonly hooksDisabled: boolean;
-}
+export type RunRuntimeSettingsSnapshot = Wire.RunRuntimeSettingsSnapshot;
 
-export interface AgentAttachResult extends JsonObject {
-  readonly agentId: string;
-  readonly attachmentId: string;
-  readonly sessionIds: readonly string[];
-  /** Immutable operator authority owned by the attached daemon session. */
-  readonly runtimeOptions: AgentRuntimeOptionsParams;
-  /** Live daemon-owned settings; static session metadata is not authority. */
-  readonly runtimeSettings: RunRuntimeSettingsSnapshot;
-  /** Canonical settings event hydrated by this response. */
-  readonly runtimeSettingsEventId: string;
-  readonly runtimeSessionId?: string;
-  readonly sessions: readonly AgentAttachSessionSummary[];
-}
+export type AgentAttachResult = Wire.AgentAttachResult;
 
-export interface AgentAttachSessionSummary extends SessionSummary {
-  readonly cwd: string;
-}
+export type AgentAttachSessionSummary = Wire.AgentAttachSessionSummary;
 
-export interface AgentStopResult extends JsonObject {
-  readonly agentId: string;
-  readonly stopped: boolean;
-}
+export type AgentStopResult = Wire.AgentStopResult;
 
-export interface AgentLogSession extends JsonObject {
-  readonly sessionId: string;
-  readonly itemCount: number;
-  readonly transcript: string;
-  readonly rolloutPath?: string;
-  readonly source?: string;
-}
+export type AgentLogSession = Wire.AgentLogSession;
 
-export interface AgentLogsResult extends JsonObject {
-  readonly agentId: string;
-  readonly transcript: string;
-  readonly sessions: readonly AgentLogSession[];
-  readonly toolOutputs?: readonly JsonObject[];
-}
+export type AgentLogsResult = Wire.AgentLogsResult;
 
-export interface RunCancelResult extends JsonObject {
-  readonly runId: string;
-  readonly alreadyTerminal: boolean;
-  readonly cancelledRunIds: readonly string[];
-  readonly closedEdgeChildIds: readonly string[];
-  readonly interruptedLiveAgentIds: readonly string[];
-  readonly voidedHolds: number;
-}
+export type RunCancelResult = Wire.RunCancelResult;
 
 /** Dirty-state summary of the user's checkout captured at workflow intake. */
-export interface RunStartBaseDirty extends JsonObject {
-  readonly dirty: boolean;
-  readonly fileCount: number;
-}
+export type RunStartBaseDirty = Wire.RunStartBaseDirty;
 
-export interface RunStartResult extends JsonObject {
-  readonly runId: string;
-  /** Canonical digest of the frozen WorkflowSpec (the spec's durable identity). */
-  readonly specDigest: string;
-  /** Exact base commit recorded before any work began. */
-  readonly baseCommit: string;
-  readonly baseDirty: RunStartBaseDirty;
-}
+export type RunStartResult = Wire.RunStartResult;
 
 /** JSON-serializable mirror of a workflow step's content-addressed artifact. */
-export interface RunWorkflowArtifactPointer extends JsonObject {
-  readonly step: {
-    readonly runId: string;
-    readonly stepId: string;
-    readonly parentRunId?: string;
-  };
-  readonly role: string;
-  readonly digest: string;
-  readonly bytes: number;
-  readonly storagePath: string;
-  readonly recordedAt: string;
-}
+export type RunWorkflowArtifactPointer = Wire.RunWorkflowArtifactPointer;
 
-export type RunWorkflowStepStatus =
-  | "pending"
-  | "running"
-  | "committed"
-  | "failed"
-  | "cancelled"
-  | "unknown_outcome"
-  | "blocked";
+export type RunWorkflowStepStatus = Wire.RunWorkflowStepStatus;
 
-export interface RunWorkflowStatusStep extends JsonObject {
-  readonly stepId: string;
-  readonly stage: string;
-  readonly status: RunWorkflowStepStatus;
-  readonly attempts: number;
-  readonly verdict?: string;
-  readonly artifacts?: readonly RunWorkflowArtifactPointer[];
-}
+export type RunWorkflowStatusStep = Wire.RunWorkflowStatusStep;
 
 /**
  * M5 verified-change workflow projection, present on `run.status` only for
  * runs that recorded workflow steps.
  */
-export interface RunWorkflowStatus extends JsonObject {
-  readonly steps: readonly RunWorkflowStatusStep[];
-  readonly stopReason?: string;
-}
+export type RunWorkflowStatus = Wire.RunWorkflowStatus;
 
 /**
  * M5 evidence-bundle summary for `run.evidence`, present only when the run
  * has a per-run evidence ledger directory.
  */
-export interface RunEvidenceBundle extends JsonObject {
-  readonly recordDigest?: string;
-  readonly sealed: boolean;
-  readonly ledgerPath: string;
-  readonly artifacts: readonly RunWorkflowArtifactPointer[];
-}
+export type RunEvidenceBundle = Wire.RunEvidenceBundle;
 
-export interface RunDurableRecord extends JsonObject {
-  readonly objective: string;
-  readonly status: string;
-  readonly startedAt: string;
-  readonly lastActiveAt: string;
-  readonly currentSessionId?: string;
-  readonly createdByClient?: string;
-  readonly lastSnapshotAt?: string;
-  readonly metadata?: JsonObject;
-}
+export type RunDurableRecord = Wire.RunDurableRecord;
 
-export interface RunStateSource extends JsonObject {
-  readonly kind: "existing_state_database";
-  readonly projectDir: string;
-  readonly readonly: true;
-}
+export type RunStateSource = Wire.RunStateSource;
 
-export interface RunAdmissionSourceAvailability extends JsonObject {
-  readonly jobs: boolean;
-  readonly reservations: boolean;
-  readonly allocations: boolean;
-  readonly journal: boolean;
-}
+export type RunAdmissionSourceAvailability =
+  Wire.RunAdmissionSourceAvailability;
 
-export type RunAdmissionAggregateStatus =
-  | "none"
-  | "queued"
-  | "running"
-  | "approval_required"
-  | "reconciled"
-  | "voided"
-  | "held_unknown"
-  | "provider_overrun"
-  | "denied"
-  | "cancelled"
-  | "terminal_mixed";
+export type RunAdmissionAggregateStatus = Wire.RunAdmissionAggregateStatus;
 
-export interface RunAdmissionSummary extends JsonObject {
-  readonly present: boolean;
-  readonly currentStatus: RunAdmissionAggregateStatus;
-  readonly active: boolean;
-  readonly stepCount: number;
-  readonly stepStatusCounts: Readonly<Record<string, number>>;
-  readonly reservationCount: number;
-  readonly reservationStatusCounts: Readonly<Record<string, number>>;
-  readonly openReservationCount: number;
-  readonly reservedTokens: number;
-  readonly reservedCostUsd: number;
-  readonly actualTokens: number;
-  readonly actualCostUsd: number;
-  readonly unpricedActualReservationCount: number;
-  readonly allocationCount: number;
-  readonly usedTokens: number;
-  readonly heldTokens: number;
-  readonly usedCostUsd: number;
-  readonly heldCostUsd: number;
-  readonly providerOverrunBlockedAllocationCount: number;
-  readonly fallbackCount: number;
-  readonly sources: RunAdmissionSourceAvailability;
-  readonly updatedAt?: string;
-}
+export type RunAdmissionSummary = Wire.RunAdmissionSummary;
 
-export interface RunStatusResult extends JsonObject {
-  readonly runId: string;
-  readonly status: string;
-  readonly terminal: boolean;
-  readonly statusSource:
-    | "run_terminal_result"
-    | "run_lifecycle_epoch"
-    | "agent_run"
-    | "admission_state";
-  readonly durableRun?: RunDurableRecord;
-  readonly admission: RunAdmissionSummary;
-  readonly source: RunStateSource;
-  /** M5 workflow projection; present only for verified-change workflow runs. */
-  readonly workflow?: RunWorkflowStatus;
-}
+export type RunStatusResult = Wire.RunStatusResult;
 
-export type RunTerminalOutcome =
-  "completed" | "failed" | "cancelled" | "stopped" | "unknown_outcome";
+export type RunTerminalOutcome = Wire.RunTerminalOutcome;
 
-export interface RunTerminalOutputAvailability extends JsonObject {
-  readonly available: false;
-  readonly reason: "terminal_output_not_persisted_in_existing_state";
-}
+export type RunTerminalOutputAvailability = Wire.RunTerminalOutputAvailability;
 
-export interface RunUsageTotals extends JsonObject {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly totalTokens: number;
-  readonly costUsd: number;
-}
+export type RunUsageTotals = Wire.RunUsageTotals;
 
 /** Terminal output committed by M4 and readable after disconnect/restart. */
-export interface RunTerminalPersistedOutput extends JsonObject {
-  readonly available: true;
-  readonly exitCode: number | null;
-  readonly stopReason: string | null;
-  readonly finalMessage: string | null;
-  readonly usage: RunUsageTotals | null;
-  readonly lastSequence: number | null;
-}
+export type RunTerminalPersistedOutput = Wire.RunTerminalPersistedOutput;
 
 /** Compatibility alias for code that names the unavailable branch directly. */
 export type RunTerminalOutputUnavailable = RunTerminalOutputAvailability;
 export type RunTerminalOutput =
   RunTerminalPersistedOutput | RunTerminalOutputAvailability;
 
-export interface RunResultResult extends JsonObject {
-  readonly runId: string;
-  readonly status: string;
-  readonly terminal: true;
-  readonly terminalAt: string;
-  readonly outcome: RunTerminalOutcome;
-  readonly epoch?: number;
-  readonly durableRun?: RunDurableRecord;
-  readonly output: RunTerminalOutput;
-  readonly source: RunStateSource;
-}
+export type RunResultResult = Wire.RunResultResult;
 
-export type RunJournalCategory =
-  | "run"
-  | "step"
-  | "admission"
-  | "budget"
-  | "permission"
-  | "approval"
-  | "effect"
-  | "model"
-  | "artifact"
-  | "cancellation"
-  | "recovery"
-  | "terminal"
-  | "session";
+export type RunJournalCategory = Wire.RunJournalCategory;
 
 /**
  * One event from the canonical append-only run journal.
@@ -1038,48 +407,10 @@ export type RunJournalCategory =
  * add a canonical category/name/payload envelope without forcing consumers to
  * understand every future event payload before they can advance a cursor.
  */
-export interface RunJournalEvent extends JsonObject {
-  readonly sequence: number;
-  readonly eventId: string;
-  readonly timestamp?: string;
-  readonly runId: string;
-  readonly childRunId?: string;
-  readonly sessionId?: string;
-  readonly stepId?: string;
-  readonly category: RunJournalCategory;
-  readonly kind: string;
-  readonly event: string;
-  readonly payload?: JsonValue;
-  readonly reason?: string;
-  readonly reservationId?: string;
-  readonly model?: string;
-  readonly provider?: string;
-  readonly reservedTokens?: number;
-  readonly reservedCostUsd?: number;
-  readonly actualTokens?: number;
-  readonly actualCostUsd?: number;
-  readonly details?: JsonObject;
-}
+export type RunJournalEvent = Wire.RunJournalEvent;
 
 /** Source-compatible M3 admission event contract. */
-export interface RunAdmissionJournalEvent extends JsonObject {
-  readonly sequence: number;
-  readonly eventId: string;
-  readonly timestamp: string;
-  readonly runId: string;
-  readonly stepId: string;
-  readonly kind: string;
-  readonly event: string;
-  readonly reason?: string;
-  readonly reservationId?: string;
-  readonly model?: string;
-  readonly provider?: string;
-  readonly reservedTokens?: number;
-  readonly reservedCostUsd?: number;
-  readonly actualTokens?: number;
-  readonly actualCostUsd?: number;
-  readonly details?: JsonObject;
-}
+export type RunAdmissionJournalEvent = Wire.RunAdmissionJournalEvent;
 
 /**
  * Event returned by the pre-M4 admission-journal compatibility reader.
@@ -1097,52 +428,21 @@ export interface RunAdmissionReplayEvent extends RunAdmissionJournalEvent {
 /** One event from either the canonical M4 or compatibility M3 replay source. */
 export type RunReplayEvent = RunJournalEvent | RunAdmissionReplayEvent;
 
-export interface RunReplaySourceUnavailableGap extends JsonObject {
-  readonly kind: "source_unavailable";
-  readonly reason:
-    "execution_admission_journal_not_present" | "run_journal_not_present";
-}
+export type RunReplaySourceUnavailableGap = Wire.RunReplaySourceUnavailableGap;
 
 /** A cursor range was retired or could not be recovered contiguously. */
-export interface RunReplayRetentionGap extends JsonObject {
-  readonly kind: "event_gap";
-  readonly runId: string;
-  readonly afterSequence: number;
-  readonly firstAvailableSequence: number;
-  readonly reason: "retention" | "corruption_truncated" | "compaction";
-}
+export type RunReplayRetentionGap = Wire.RunReplayRetentionGap;
 
 /** The supplied cursor is beyond the canonical journal tail. */
-export interface RunReplayCursorAheadGap extends JsonObject {
-  readonly kind: "cursor_ahead";
-  readonly runId: string;
-  readonly afterSequence: number;
-  readonly lastAvailableSequence: number;
-  readonly reason: "cursor_ahead";
-}
+export type RunReplayCursorAheadGap = Wire.RunReplayCursorAheadGap;
 
-export type RunReplayGap =
-  | RunReplayRetentionGap
-  | RunReplayCursorAheadGap
-  | RunReplaySourceUnavailableGap;
+export type RunReplayGap = Wire.RunReplayGap;
 
-export interface RunJournalReplaySource extends JsonObject {
-  readonly kind: "run_journal";
-  readonly available: boolean;
-  readonly sequenceScope: "run";
-  readonly canonical: "rollout_jsonl";
-  readonly projection: "thread_rollout_items";
-  readonly projectDir: string;
-}
+export type RunJournalReplaySource = Wire.RunJournalReplaySource;
 
-export interface RunAdmissionReplaySource extends JsonObject {
-  readonly kind: "execution_admission_journal";
-  readonly available: boolean;
-  readonly sequenceScope: "project_state_database";
-  readonly projectDir: string;
-}
+export type RunAdmissionReplaySource = Wire.RunAdmissionReplaySource;
 
-export type RunReplaySource = RunJournalReplaySource | RunAdmissionReplaySource;
+export type RunReplaySource = Wire.RunReplaySource;
 
 export interface RunReplayPage extends JsonObject {
   readonly runId: string;
@@ -1183,85 +483,29 @@ export function isRunJournalReplayResult(
   return result.source.kind === "run_journal";
 }
 
-export type RunEvidenceCompleteness =
-  "complete" | "partial" | "admission_source_unavailable" | "journal_gap";
+export type RunEvidenceCompleteness = Wire.RunEvidenceCompleteness;
 
-export interface RunEvidenceSource extends JsonObject {
-  readonly kind: "canonical_run_journal" | "existing_m3_admission_state";
-  readonly projectDir: string;
-  readonly admissionJournal: boolean;
-  readonly workflowEvidenceIncluded: boolean;
-  readonly completeness: RunEvidenceCompleteness;
-}
+export type RunEvidenceSource = Wire.RunEvidenceSource;
 
-export interface RunEvidenceCursor extends JsonObject {
-  readonly afterSequence: number;
-  readonly nextAfterSequence: number;
-  readonly limit: number;
-}
+export type RunEvidenceCursor = Wire.RunEvidenceCursor;
 
-export interface RunEvidenceEventHash extends JsonObject {
-  readonly sequence: number;
-  readonly eventId: string;
-  readonly sha256: string;
-}
+export type RunEvidenceEventHash = Wire.RunEvidenceEventHash;
 
-export interface RunEvidenceHashes extends JsonObject {
-  readonly algorithm: "sha256";
-  readonly runStateSha256: string;
-  readonly admissionSummarySha256: string;
-  readonly gapSha256: string;
-  readonly eventHashes: readonly RunEvidenceEventHash[];
-  readonly bundleSha256: string;
-}
+export type RunEvidenceHashes = Wire.RunEvidenceHashes;
 
-export interface RunEvidenceResult extends JsonObject {
-  readonly runId: string;
-  readonly source: RunEvidenceSource;
-  readonly cursor: RunEvidenceCursor;
-  readonly hasMore: boolean;
-  readonly gap: RunReplayGap | null;
-  readonly events: readonly RunReplayEvent[];
-  readonly hashes: RunEvidenceHashes;
-  /** M5 evidence-ledger summary; present only when the run has a ledger dir. */
-  readonly bundle?: RunEvidenceBundle;
-}
+export type RunEvidenceResult = Wire.RunEvidenceResult;
 
-export interface SessionCreateResult extends SessionSummary {}
+export type SessionCreateResult = Wire.SessionCreateResult;
 
-export interface SessionListResult extends JsonObject {
-  readonly sessions: readonly SessionSummary[];
-  readonly nextCursor?: string;
-}
+export type SessionListResult = Wire.SessionListResult;
 
-export interface SessionAttachResult extends JsonObject {
-  readonly sessionId: string;
-  readonly attachmentId: string;
-  readonly attachedAt: string;
-  readonly clientId?: string;
-  readonly activeAttachmentIds: readonly string[];
-}
+export type SessionAttachResult = Wire.SessionAttachResult;
 
-export interface SessionDetachResult extends JsonObject {
-  readonly sessionId: string;
-  readonly detached: boolean;
-  readonly attachmentId?: string;
-  readonly remainingAttachmentIds: readonly string[];
-}
+export type SessionDetachResult = Wire.SessionDetachResult;
 
-export interface SessionTerminateResult extends JsonObject {
-  readonly sessionId: string;
-  readonly terminated: boolean;
-  readonly status: "closed";
-  readonly closedAt: string;
-  readonly reason?: string;
-}
+export type SessionTerminateResult = Wire.SessionTerminateResult;
 
-export interface SessionClearResult extends JsonObject {
-  readonly sessionId: string;
-  readonly cleared: true;
-  readonly clearedAt: string;
-}
+export type SessionClearResult = Wire.SessionClearResult;
 
 export interface TokenUsage extends JsonObject {
   readonly inputTokens: number;
@@ -1270,310 +514,67 @@ export interface TokenUsage extends JsonObject {
   readonly costUsd: number;
 }
 
-export interface SessionSnapshotResult extends JsonObject {
-  readonly sessionId: string;
-  readonly turnCount: number;
-  readonly tokenUsage: TokenUsage;
-}
+export type SessionSnapshotResult = Wire.SessionSnapshotResult;
 
-export interface SessionTranscriptMessage extends JsonObject {
-  readonly role: string;
-  readonly text: string;
-}
+export type SessionTranscriptMessage = Wire.SessionTranscriptMessage;
 
-export interface SessionTranscriptResult extends JsonObject {
-  readonly sessionId: string;
-  readonly messages: readonly SessionTranscriptMessage[];
-}
+export type SessionTranscriptResult = Wire.SessionTranscriptResult;
 
-export interface SessionCancelTurnResult extends JsonObject {
-  readonly sessionId: string;
-  readonly cancelled: boolean;
-  readonly reason?: string;
-  readonly activeTurnId?: string;
-  readonly stale?: boolean;
-}
+export type SessionCancelTurnResult = Wire.SessionCancelTurnResult;
 
-export interface SessionResolveToolCallResult extends JsonObject {
-  readonly sessionId: string;
-  readonly resolved: readonly {
-    readonly toolCallId: string;
-    readonly toolName: string;
-    readonly eventId?: string;
-  }[];
-  readonly remaining: number;
-}
+export type SessionResolveToolCallResult = Wire.SessionResolveToolCallResult;
 
-export interface SessionMcpStatusServer extends JsonObject {
-  readonly name: string;
-  readonly transport: "stdio" | "sse" | "http" | "websocket";
-  readonly enabled: boolean;
-  readonly required: boolean;
-  readonly state:
-    | "connected"
-    | "pending"
-    | "failed"
-    | "disabled"
-    | "needs-auth"
-    | "disconnected";
-  readonly displayTarget?: string;
-  readonly toolCount: number;
-}
+export type SessionMcpStatusServer = Wire.SessionMcpStatusServer;
 
-export interface SessionMcpStatusTool extends JsonObject {
-  readonly serverName: string;
-  readonly name: string;
-}
+export type SessionMcpStatusTool = Wire.SessionMcpStatusTool;
 
-export interface SessionMcpStatusResult extends JsonObject {
-  readonly sessionId: string;
-  readonly revision: number;
-  readonly servers: readonly SessionMcpStatusServer[];
-  readonly tools: readonly SessionMcpStatusTool[];
-}
+export type SessionMcpStatusResult = Wire.SessionMcpStatusResult;
 
-export interface SessionMcpAddServerResult extends JsonObject {
-  readonly sessionId: string;
-  readonly serverName: string;
-  readonly success: boolean;
-  readonly toolCount: number;
-  readonly error?: string;
-}
+export type SessionMcpAddServerResult = Wire.SessionMcpAddServerResult;
 
-export interface MessageSendResult extends JsonObject {
-  readonly messageId: string;
-  readonly acceptedAt: string;
-  readonly disposition?: "started" | "duplicate";
-  /** Present for duplicate submissions so callers never guess crash outcomes. */
-  readonly duplicateState?: "completed" | "incomplete";
-  readonly turnId?: string;
-  readonly terminal?: MessageSendTerminalResult;
-}
+export type MessageSendResult = Wire.MessageSendResult;
 
-export interface MessageSendTerminalResult extends JsonObject {
-  readonly code: 0 | 1 | 130;
-  readonly message?: string;
-}
+export type MessageSendTerminalResult = Wire.MessageSendTerminalResult;
 
-export interface MessageStreamResult extends MessageSendResult {
-  readonly streamId: string;
-}
+export type MessageStreamResult = Wire.MessageStreamResult;
 
-export interface ToolDecisionResult extends JsonObject {
-  readonly requestId: string;
-  readonly decision: "approved" | "denied" | "cancelled";
-}
+export type ToolDecisionResult = Wire.ToolDecisionResult;
 
-export interface ElicitationRespondResult extends JsonObject {
-  readonly requestId: RequestId;
-  readonly resolved: boolean;
-}
+export type ElicitationRespondResult = Wire.ElicitationRespondResult;
 
-export interface PermissionGrant extends JsonObject {
-  readonly permissionId: string;
-  readonly subject: string;
-  readonly action: string;
-  readonly scope?: string;
-  readonly grantedAt?: string;
-  readonly expiresAt?: string;
-}
+export type PermissionGrant = Wire.PermissionGrant;
 
-export interface PermissionListResult extends JsonObject {
-  readonly permissions: readonly PermissionGrant[];
-}
+export type PermissionListResult = Wire.PermissionListResult;
 
-export interface FuzzyFileSearchResult extends JsonObject {
-  readonly root: string;
-  readonly path: string;
-  readonly match_type: "file" | "directory";
-  readonly file_name: string;
-  readonly score: number;
-  readonly indices?: readonly number[];
-}
+export type FuzzyFileSearchResult = Wire.FuzzyFileSearchResult;
 
-export interface FuzzyFileIndexRootFreshness extends JsonObject {
-  readonly root: string;
-  readonly canonicalRoot: string;
-  readonly generationId: number | null;
-  readonly builtAt: string | null;
-  readonly ageMs: number | null;
-  readonly watcherStatus: "active" | "unsupported" | "failed" | "not_started";
-  readonly directoryCoverage: "complete" | "nonempty_only";
-  readonly lastAuditAt: string | null;
-  readonly building: boolean;
-  readonly stale: boolean;
-  readonly degraded: boolean;
-  readonly truncated: boolean;
-  readonly reason: string | null;
-}
+export type FuzzyFileIndexRootFreshness = Wire.FuzzyFileIndexRootFreshness;
 
-export interface FuzzyFileIndexFreshness extends JsonObject {
-  readonly schemaVersion: number;
-  readonly stale: boolean;
-  readonly degraded: boolean;
-  readonly truncated: boolean;
-  readonly roots: readonly FuzzyFileIndexRootFreshness[];
-}
+export type FuzzyFileIndexFreshness = Wire.FuzzyFileIndexFreshness;
 
-export interface FuzzyFileMatcherMetadata extends JsonObject {
-  readonly quality: "optimal" | "degraded";
-  readonly resourceLimited: boolean;
-  readonly evaluatedCandidates: number;
-  readonly totalCandidates: number;
-}
+export type FuzzyFileMatcherMetadata = Wire.FuzzyFileMatcherMetadata;
 
-export interface FuzzyFileSearchResponse extends JsonObject {
-  readonly files: readonly FuzzyFileSearchResult[];
-  /** Present for searches served by the persistent index. */
-  readonly freshness?: FuzzyFileIndexFreshness;
-  /** Present for searches served by the persistent index. */
-  readonly matcher?: FuzzyFileMatcherMetadata;
-}
+export type FuzzyFileSearchResponse = Wire.FuzzyFileSearchResponse;
 
-export interface CommandExecResponse extends JsonObject {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
+export type CommandExecResponse = Wire.CommandExecResponse;
 
-export interface HealthPingResult extends JsonObject {
-  readonly ok: true;
-  readonly now: string;
-}
+export type HealthPingResult = Wire.HealthPingResult;
 
-export interface HealthReadyResult extends JsonObject {
-  readonly ready: boolean;
-  readonly uptimeMs: number;
-  readonly now: string;
-}
+export type HealthReadyResult = Wire.HealthReadyResult;
 
-export interface HealthStatsResult extends JsonObject {
-  readonly uptimeMs: number;
-  readonly now: string;
-  readonly sessions: JsonObject;
-  readonly memory: JsonObject;
-  readonly state?: JsonObject;
-}
+export type HealthStatsResult = Wire.HealthStatsResult;
 
-export interface DaemonReloadResult extends JsonObject {
-  readonly reloaded: true;
-  readonly configReloadedAt: string;
-  readonly mcpServer: JsonObject;
-}
+export type DaemonReloadResult = Wire.DaemonReloadResult;
 
-export interface DaemonShutdownResult extends JsonObject {
-  readonly shuttingDown: true;
-  readonly instanceId: string;
-}
+export type DaemonShutdownResult = Wire.DaemonShutdownResult;
 
-export interface AuthWhoamiResult extends JsonObject {
-  readonly authenticated: boolean;
-  readonly provider?: string;
-  readonly identity?: JsonObject;
-  readonly subscriptionTier?: "free" | "pro" | "team" | "enterprise";
-}
+export type AuthWhoamiResult = Wire.AuthWhoamiResult;
 
-export interface AuthLoginResult extends JsonObject {
-  readonly authenticated: true;
-  readonly provider?: string;
-  readonly identity?: JsonObject;
-}
+export type AuthLoginResult = Wire.AuthLoginResult;
 
-export interface AuthLogoutResult extends JsonObject {
-  readonly authenticated: false;
-}
+export type AuthLogoutResult = Wire.AuthLogoutResult;
 
-export interface AgencResultByMethod {
-  readonly "remote.capabilities": JsonObject;
-  readonly "remote.status": JsonObject;
-  readonly "remote.start": JsonObject;
-  readonly "remote.stop": JsonObject;
-  readonly "remote.pair.begin": JsonObject;
-  readonly "remote.pair.refresh": JsonObject;
-  readonly "remote.pair.cancel": JsonObject;
-  readonly "remote.devices": JsonObject;
-  readonly "remote.pending": JsonObject;
-  readonly "remote.approve": JsonObject;
-  readonly "remote.revoke": JsonObject;
-  readonly "telegram.capabilities": JsonObject;
-  readonly "telegram.status": JsonObject;
-  readonly "telegram.configure": JsonObject;
-  readonly "telegram.start": JsonObject;
-  readonly "telegram.stop": JsonObject;
-  readonly "telegram.revoke": JsonObject;
-  readonly "telegram.agents.list": JsonObject;
-  readonly "telegram.agents.create": JsonObject;
-  readonly "telegram.agents.update": JsonObject;
-  readonly "telegram.agents.start": JsonObject;
-  readonly "telegram.agents.stop": JsonObject;
-  readonly "telegram.agents.remove": JsonObject;
-  readonly "telegram.agents.pair.begin": JsonObject;
-  readonly "telegram.agents.pair.confirm": JsonObject;
-  readonly "telegram.agents.pair.cancel": JsonObject;
-  readonly initialize: InitializeResult;
-  readonly "request.cancel": RequestCancelResult;
-  readonly "agent.create": AgentCreateResult;
-  readonly "agent.list": AgentListResult;
-  readonly "agent.attach": AgentAttachResult;
-  readonly "agent.stop": AgentStopResult;
-  readonly "agent.logs": AgentLogsResult;
-  readonly "run.status": RunStatusResult;
-  readonly "run.result": RunResultResult;
-  readonly "run.replay": RunReplayResult;
-  readonly "run.evidence": RunEvidenceResult;
-  readonly "run.cancel": RunCancelResult;
-  readonly "run.start": RunStartResult;
-  readonly "routine.capabilities": RoutineCapabilities;
-  readonly "routine.list": RoutineListResult;
-  readonly "routine.get": RoutineResult;
-  readonly "routine.create": RoutineResult;
-  readonly "routine.update": RoutineResult;
-  readonly "routine.delete": RoutineDeleteResult;
-  readonly "routine.run": RoutineRunResult;
-  readonly "routine.runs": RoutineRunsResult;
-  readonly "routine.cancel": RoutineRunResult;
-  readonly "csvJob.review.list": CsvJobReviewListResult;
-  readonly "csvJob.review.show": CsvJobReviewShowResult;
-  readonly "csvJob.review.resolve": CsvJobReviewResolveResult;
-  readonly "session.create": SessionCreateResult;
-  readonly "session.list": SessionListResult;
-  readonly "session.attach": SessionAttachResult;
-  readonly "session.detach": SessionDetachResult;
-  readonly "session.terminate": SessionTerminateResult;
-  readonly "session.clear": SessionClearResult;
-  readonly "session.snapshot": SessionSnapshotResult;
-  readonly "session.transcript": SessionTranscriptResult;
-  readonly "session.transcript.v2": SessionTranscriptV2Result;
-  readonly "session.cancelTurn": SessionCancelTurnResult;
-  readonly "session.resolveToolCall": SessionResolveToolCallResult;
-  readonly "session.mcp.status": SessionMcpStatusResult;
-  readonly "session.mcp.addServer": SessionMcpAddServerResult;
-  readonly "message.send": MessageSendResult;
-  readonly "message.stream": MessageStreamResult;
-  readonly "thread/realtime/start": JsonObject;
-  readonly "thread/realtime/appendAudio": JsonObject;
-  readonly "thread/realtime/appendText": JsonObject;
-  readonly "thread/realtime/stop": JsonObject;
-  readonly "thread/realtime/listVoices": JsonObject;
-  readonly "tool.approve": ToolDecisionResult;
-  readonly "tool.deny": ToolDecisionResult;
-  readonly "tool.cancel": ToolDecisionResult;
-  readonly "elicitation.respond": ElicitationRespondResult;
-  readonly "permission.list": PermissionListResult;
-  readonly "fs.fuzzy_search": FuzzyFileSearchResponse;
-  readonly "commandExec.start": CommandExecResponse;
-  readonly "commandExec.write": JsonObject;
-  readonly "commandExec.resize": JsonObject;
-  readonly "commandExec.terminate": JsonObject;
-  readonly "health.ping": HealthPingResult;
-  readonly "health.ready": HealthReadyResult;
-  readonly "health.stats": HealthStatsResult;
-  readonly "daemon.reload": DaemonReloadResult;
-  readonly "daemon.shutdown": DaemonShutdownResult;
-  readonly "auth.login": AuthLoginResult;
-  readonly "auth.whoami": AuthWhoamiResult;
-  readonly "auth.logout": AuthLogoutResult;
-}
+export type AgencResultByMethod = Wire.AgenCDaemonResultByMethod;
 
 // ── Notification params ──────────────────────────────────────────────
 
@@ -1591,90 +592,41 @@ export interface AgencEventBaseParams extends JsonObject {
   readonly metadata?: JsonObject;
 }
 
-export interface EventMessageChunkParams extends AgencEventBaseParams {
-  readonly streamId?: string;
-  readonly delta: string;
-}
+export type EventMessageChunkParams = Wire.EventMessageChunkParams;
 
-export interface EventToolRequestParams extends AgencEventBaseParams {
-  readonly requestId: string;
-  readonly toolName: string;
-  readonly turnId?: string;
-  readonly input?: JsonValue;
-  readonly recoveryCategory?: "idempotent" | "side-effecting" | "interactive";
-}
+export type EventToolRequestParams = Wire.EventToolRequestParams;
 
-export interface EventPermissionRequestParams extends AgencEventBaseParams {
-  readonly requestId: string;
-  readonly toolName?: string;
-  readonly turnId?: string;
-  readonly permissions: readonly string[];
-  readonly input?: JsonValue;
-  readonly reason?: string;
-}
+export type EventPermissionRequestParams = Wire.EventPermissionRequestParams;
 
-export interface EventUserInputRequestParams extends AgencEventBaseParams {
-  readonly requestId: string;
-  readonly callId: string;
-  readonly turnId: string;
-  readonly questions: readonly JsonObject[];
-  readonly clientAction?: JsonObject;
-}
+export type EventUserInputRequestParams = Wire.EventUserInputRequestParams;
 
-export interface EventMcpElicitationRequestParams extends AgencEventBaseParams {
-  readonly requestId: RequestId;
-  readonly serverName: string;
-  readonly turnId: string;
-  readonly request: JsonObject;
-}
+export type EventMcpElicitationRequestParams =
+  Wire.EventMcpElicitationRequestParams;
 
 /** Non-journal control-plane invalidation for the passive MCP projection. */
-export interface EventMcpStatusChangedParams extends JsonObject {
-  readonly sessionId: string;
-  readonly revision: number;
-}
+export type EventMcpStatusChangedParams = Wire.EventMcpStatusChangedParams;
 
-export interface EventAgentStatusParams extends AgencEventBaseParams {
-  readonly agentId: string;
-  readonly status: AgentStatus;
-  readonly runStatus?: AgentRunStatus;
-  readonly turnId?: string;
-  readonly message?: string;
-}
+export type EventAgentStatusParams = Wire.EventAgentStatusParams;
 
-export interface EventSessionEventParams extends AgencEventBaseParams {
-  readonly event: JsonObject;
-}
+export type EventSessionEventParams = Wire.EventSessionEventParams;
 
 /** Observable, non-journal sentinel emitted by bounded live-delivery buffers. */
-export interface EventGapParams extends JsonObject {
-  readonly type: "event_gap";
-  readonly kind: "event_gap";
-  readonly sessionId: string;
-  readonly runId: string;
-  readonly eventId?: string;
-  readonly agentId?: string;
-  readonly sequence?: number;
-  readonly reason: "retention";
-  readonly source: "background_runner_retention" | "multiplexer_retention";
-  readonly retiredCount: number;
-  /** False means replay is required but the loss count is unknown (zero). */
-  readonly retiredCountKnown?: boolean;
-  readonly coordinatesAvailable?: boolean;
-  readonly afterSequence?: number;
-  readonly firstAvailableSequence?: number;
-}
+export type EventGapParams = Wire.EventGapParams;
 
 // ── Envelopes ────────────────────────────────────────────────────────
 
-export interface AgencDaemonRequest<
+export type AgencDaemonRequest<
   Method extends AgencDaemonMethod = AgencDaemonMethod,
-> {
-  readonly jsonrpc: typeof AGENC_SDK_JSON_RPC_VERSION;
-  readonly id: RequestId;
-  readonly method: Method;
-  readonly params?: AgencParamsByMethod[Method];
-}
+> = Wire.AgenCDaemonRequestByMethod[Method];
+
+/** Only methods whose wire envelope permits omission may omit the payload. */
+export type AgencRequestParams<Method extends AgencDaemonMethod> =
+  Extract<
+    AgencDaemonRequest<Method>,
+    { readonly params: unknown }
+  > extends never
+    ? [params?: AgencParamsByMethod[Method]]
+    : [params: AgencParamsByMethod[Method]];
 
 export type AgencDaemonErrorCode =
   -32700 | -32600 | -32601 | -32602 | -32603 | -32000;

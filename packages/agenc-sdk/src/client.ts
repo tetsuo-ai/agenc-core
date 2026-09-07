@@ -18,8 +18,8 @@ import {
   type AgencDaemonErrorObject,
   type AgencDaemonMethod,
   type AgencDaemonRequest,
+  type AgencRequestParams,
   type AgencDaemonResponse,
-  type AgencParamsByMethod,
   type AgencResultByMethod,
   type AgentAttachResult,
   type AgentCreateParams,
@@ -891,7 +891,7 @@ export class AgencClient {
 
   async request<Method extends AgencDaemonMethod>(
     method: Method,
-    params?: AgencParamsByMethod[Method],
+    ...[params]: AgencRequestParams<NoInfer<Method>>
   ): Promise<AgencResultByMethod[Method]> {
     if (this.#closed) throw new Error("AgenC SDK client is closed");
     if (
@@ -907,10 +907,13 @@ export class AgencClient {
       );
     }
     const id = this.#createRequestId();
-    const request: AgencDaemonRequest<Method> =
+    // The public signature checks the method's payload and optionality. TS
+    // cannot carry that correlation through construction of this envelope.
+    const request = (
       params === undefined
         ? { jsonrpc: AGENC_SDK_JSON_RPC_VERSION, id, method }
-        : { jsonrpc: AGENC_SDK_JSON_RPC_VERSION, id, method, params };
+        : { jsonrpc: AGENC_SDK_JSON_RPC_VERSION, id, method, params }
+    ) as AgencDaemonRequest<Method>;
     const response = await this.#transport.request(request);
     return parseResponse(response, method, id);
   }
@@ -1093,7 +1096,13 @@ export class AgencClient {
 
   /** Replay a bounded page of the canonical run journal. */
   replayRun(params: RunReplayParams): Promise<RunReplayResult> {
-    return this.request("run.replay", params);
+    // Compatibility adapter: the generic wire result has a flat event array.
+    // This helper retains the source-specific M3/M4 event union, including
+    // admission events from older daemons without a category field. The
+    // replay attachment validates the page and events before consuming them.
+    return this.request("run.replay", params).then(
+      (result) => result as RunReplayResult,
+    );
   }
 
   /**

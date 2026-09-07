@@ -5,6 +5,9 @@
  * connected `csvJob.review.*` operator surface.
  */
 
+import type * as Wire from "./protocol-wire.generated.js";
+import type { AgencDefaultCwdParams } from "./protocol.js";
+
 export const AGENC_SDK_CSV_JOB_CONTRACT_VERSION = 1 as const;
 export const AGENC_SDK_CSV_OUTPUT_CONTRACT_VERSION = 1 as const;
 
@@ -143,31 +146,14 @@ export interface CsvOperatorEffectReviewResolution {
   readonly domainAction: CsvReviewDomainAction;
 }
 
-export interface CsvJobReviewListParams {
-  /** Absolute workspace root. The SDK fills the process cwd when omitted. */
-  readonly cwd?: string;
-  readonly jobId: string;
-  readonly cursor?: CsvJobItemCursor;
-  readonly limit?: number;
-}
+/** Helper input; the client fills cwd when omitted. */
+export type CsvJobReviewListParams = AgencDefaultCwdParams<Wire.CsvJobReviewListParams>;
 
-export interface CsvJobReviewShowParams {
-  readonly cwd?: string;
-  readonly jobId: string;
-  readonly itemId: string;
-}
+/** Helper input; the client fills cwd when omitted. */
+export type CsvJobReviewShowParams = AgencDefaultCwdParams<Wire.CsvJobReviewShowParams>;
 
-export interface CsvJobReviewResolveParams {
-  readonly cwd?: string;
-  readonly jobId: string;
-  readonly itemId: string;
-  readonly disposition: CsvReviewDisposition;
-  readonly evidenceRef: string;
-  readonly evidenceSha256: string;
-  readonly reviewer: string;
-  readonly reason: string;
-  readonly result?: Readonly<Record<string, unknown>>;
-}
+/** Helper input; the client fills cwd when omitted. */
+export type CsvJobReviewResolveParams = AgencDefaultCwdParams<Wire.CsvJobReviewResolveParams>;
 
 export interface CsvJobReviewEvidenceProjection {
   readonly bytes: number;

@@ -496,7 +496,7 @@ of the public surface:
 
 | Layer | Authority | Guard |
 | --- | --- | --- |
-| Method registry and handwritten params/result maps | `packages/agenc-sdk/src/protocol.ts` | `runtime/tests/sdk-package/protocol-drift.contract.test.ts` compares `AGENC_SDK_DAEMON_METHODS` / `AGENC_SDK_DAEMON_NOTIFICATION_METHODS` to the runtime arrays (names **and** order) and requires a params/result map entry for every method |
+| Public wire declarations and params/result maps | `runtime/src/app-server/protocol/index.ts` and referenced shared declarations | `check:sdk-generated-types` generates `protocol-wire.generated.ts`, checks the complete artifact and compiles exact request, result, envelope and client-argument types for every public method. The drift contract also checks registry names and order. |
 | `session.transcript.v2` result shapes | `runtime/src/app-server/protocol/index.ts` | `check:sdk-generated-types` renders `transcript-v2.generated.ts` and compares the complete committed file after newline normalization |
 | Workflow result contract markers | `runtime/src/agents/workflow-result.ts`, `coreSchemas.ts`, `coreTypes.generated.ts`, and `packages/agenc-sdk/src/workflow-result.generated.ts` | The same check requires selected version and outcome markers. It does not compare the complete file. Refresh and the extra contract-test lock: [Workflow result generated mirror](#workflow-result-generated-mirror) |
 | Workflow handoff contract markers | `runtime/src/entrypoints/sdk/coreSchemas.ts` and `coreTypes.generated.ts` | The same check requires selected runtime handoff markers. It does not read or structurally compare `packages/agenc-sdk/src/workflow-handoff.generated.ts` |
@@ -509,8 +509,26 @@ or export in the public workflow-handoff mirror. [#1941](https://github.com/tets
 tracks a generated structural parity check.
 
 Changes covered by these guards fail the check until the mirrored or
-marker-checked content is updated. `SessionTranscriptV2Params` stays
-handwritten (`{ sessionId }`); only the four result interfaces are generated.
+marker-checked content is updated. Refresh the public wire declarations with
+`npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types -- --write`,
+then run the same command without `--write` to verify the committed files.
+`SessionTranscriptV2Params` is included in the public wire generation.
+
+The generator follows the public declarations and their referenced types,
+including shared run settings, without copying runtime imports or internal
+RPC method mappings. It rejects unsupported imports, name collisions and
+executable constant initializers. Optional and nested field changes count as
+drift even when TypeScript would allow assignment in both directions.
+
+Helper adapters have separate types. `createSession()`, `spawnAgent()` and the
+CSV review helpers allow omitted `cwd` and fill it before dispatch. Their
+named fields come from the generated wire declarations. Generic `request()`
+and `AgencDaemonRequest` require every payload and field required by the daemon;
+use a helper when a default is needed. `replayRun()` preserves the existing
+source-specific M3/M4 result union, including admission events from older
+daemons without a category field. The generic `run.replay` result remains the
+canonical flat wire shape; the replay attachment validates pages and events
+before consuming them. No method is exempt from wire parity.
 
 ### Transcript v2 generated mirror
 

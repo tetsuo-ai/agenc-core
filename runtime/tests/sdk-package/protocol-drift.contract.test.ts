@@ -1,11 +1,8 @@
 /**
  * Drift guard for the in-repo embedding SDK (`packages/agenc-sdk`).
  *
- * The package hand-mirrors the daemon protocol so it can stand alone with
- * zero runtime-internal imports. This test pins that mirror to the runtime's
- * canonical method registry the same way the sibling-repo SDK is pinned by
- * `tests/app-server/sdk-client.contract.test.ts`: any protocol change fails
- * here until `packages/agenc-sdk/src/protocol.ts` is updated.
+ * The package generates standalone wire declarations. The compiler checks
+ * every method's params, results, envelope and generic client arguments.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
@@ -33,6 +30,7 @@ import {
   resolveDaemonSocketPath,
 } from "../../../packages/agenc-sdk/src/socket";
 import { resolveAgenCHome as resolveLauncherHome } from "../../../packages/agenc/lib/home-authority.mjs";
+import { checkSdkWireParity } from "../../scripts/check-sdk-wire-parity.mjs";
 
 // @ts-expect-error A partial evidence request must not match the legacy branch.
 const invalidPartialToolResolution: AgencParamsByMethod["session.resolveToolCall"] = {
@@ -76,19 +74,13 @@ describe("agenc-sdk protocol mirror", () => {
     expect(resolveOneLegacy.toolCallId).toBe("call_legacy");
   });
 
-  it("declares params and result mappings for every daemon method", () => {
-    const source = readFileSync(packageProtocolPath, "utf8");
-    expectOrderedKeys(
-      "AgencParamsByMethod",
-      AGENC_DAEMON_METHODS,
-      extractInterfaceMethodKeys(source, "AgencParamsByMethod"),
-    );
-    expectOrderedKeys(
-      "AgencResultByMethod",
-      AGENC_DAEMON_METHODS,
-      extractInterfaceMethodKeys(source, "AgencResultByMethod"),
-    );
-  });
+  it("exactly matches every wire request, result and client signature", () => {
+    expect(checkSdkWireParity()).toEqual({
+      matches: true,
+      mismatches: { RequestExact: [], ResultExact: [], EnvelopeExact: [], ClientArgumentsExact: [] },
+      diagnostics: [],
+    });
+  }, 30_000);
 
   it("does not import runtime internals", () => {
     const source = readFileSync(packageProtocolPath, "utf8");
@@ -166,28 +158,3 @@ describe("agenc-sdk protocol mirror", () => {
     );
   });
 });
-
-function extractInterfaceMethodKeys(
-  source: string,
-  interfaceName: string,
-): string[] {
-  const match = new RegExp(
-    `export\\s+interface\\s+${interfaceName}\\s*\\{([\\s\\S]*?)\\n\\}`,
-  ).exec(source);
-  if (!match) throw new Error(`missing interface: ${interfaceName}`);
-  const keys: string[] = [];
-  const keyRe = /readonly\s+(?:"([^"]+)"|'([^']+)'|([A-Za-z_$][\w$]*))\s*:/g;
-  let keyMatch;
-  while ((keyMatch = keyRe.exec(match[1]!)) !== null) {
-    keys.push((keyMatch[1] ?? keyMatch[2] ?? keyMatch[3])!);
-  }
-  return keys;
-}
-
-function expectOrderedKeys(
-  label: string,
-  expected: readonly string[],
-  actual: readonly string[],
-): void {
-  expect(actual, label).toEqual([...expected]);
-}
