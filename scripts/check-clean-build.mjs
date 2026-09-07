@@ -27,6 +27,7 @@ import { pipeline } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { list as listTar } from "tar";
+import { installedNativeModuleSmokeProgram } from "../packages/agenc/scripts/native-module-smoke.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const IS_WINDOWS = process.platform === "win32";
@@ -270,74 +271,7 @@ function smokeExtractedRuntime({ artifact, root, env }) {
   const extracted = join(root, "runtime-smoke");
   mkdirSync(extracted, { recursive: true });
   run("tar", ["-xzf", artifact, "-C", extracted], { env });
-  const script = String.raw`
-    const { createRequire } = require("node:module");
-    const { join } = require("node:path");
-    const requireFromArtifact = createRequire(join(process.cwd(), "smoke.cjs"));
-    const Database = requireFromArtifact("better-sqlite3");
-    const db = new Database(":memory:");
-    if (db.prepare("select 42 as value").get().value !== 42) process.exit(20);
-    db.close();
-    const pty = requireFromArtifact("node-pty");
-    const childEnvironment = {};
-    if (process.platform === "win32") {
-      const requiredNames = [
-        "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "PATH", "SYSTEMDRIVE",
-        "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME", "USERPROFILE", "WINDIR",
-      ];
-      const parentEnvironment = new Map(
-        Object.entries(process.env).map(([name, value]) => [name.toUpperCase(), value]),
-      );
-      for (const name of requiredNames) {
-        const value = parentEnvironment.get(name);
-        if (typeof value === "string" && value.length > 0) childEnvironment[name] = value;
-      }
-      if (childEnvironment.SYSTEMROOT === undefined) {
-        process.stderr.write("node-pty smoke requires SystemRoot on Windows\n");
-        process.exit(24);
-      }
-    } else {
-      childEnvironment.PATH = process.env.PATH || "";
-    }
-    const child = pty.spawn(process.execPath, ["-e", "process.stdout.write('pty-ok')"], {
-      cols: 80,
-      rows: 24,
-      cwd: process.cwd(),
-      env: childEnvironment,
-    });
-    let output = "";
-    let exitEvent;
-    const fail = () => {
-      process.stderr.write("node-pty smoke failed: " + JSON.stringify({
-        exitCode: exitEvent?.exitCode,
-        signal: exitEvent?.signal,
-        output,
-      }) + "\n");
-      process.exit(22);
-    };
-    const finish = () => {
-      if (exitEvent === undefined || !output.includes("pty-ok")) return;
-      clearTimeout(timeout);
-      if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
-      process.exit(0);
-    };
-    const timeout = setTimeout(() => {
-      if (exitEvent === undefined) {
-        child.kill();
-        process.exit(21);
-      }
-      fail();
-    }, 10000);
-    child.onData((chunk) => {
-      output += chunk;
-      finish();
-    });
-    child.onExit((event) => {
-      exitEvent = event;
-      if (event.exitCode !== 0 || (event.signal ?? 0) !== 0) fail();
-      finish();
-    });
-  `;
+  const script = installedNativeModuleSmokeProgram(process.platform);
   run(process.execPath, ["-e", script], { cwd: extracted, env });
 }
 
@@ -821,6 +755,39 @@ function compareOciLayouts(first, second) {
   );
 }
 
+export function hardenedContainerRuntimeSmokeProgram() {
+  const hardeningChecks = String.raw`const { readFileSync, statSync } = require("node:fs");
+       if (process.getuid?.() !== 10001 || process.getgid?.() !== 10001) throw new Error("container is not the dedicated non-root identity");
+       const runtimeRoot = statSync("/opt/agenc");
+       if (runtimeRoot.uid !== 0 || runtimeRoot.gid !== 0 || (runtimeRoot.mode & 0o022) !== 0) throw new Error("runtime tree is not root-owned and immutable");
+       const peerAddon = statSync("/usr/lib/agenc/agenc-peer-credentials.node");
+       if (peerAddon.uid !== 0 || peerAddon.gid !== 0 || (peerAddon.mode & 0o777) !== 0o555) throw new Error("peer credential addon is not root-owned and immutable");
+       if (readFileSync("/usr/lib/agenc/peer-credentials-required", "utf8") !== "required\n") throw new Error("peer credential system requirement marker is missing");
+       if (typeof require("/usr/lib/agenc/agenc-peer-credentials.node")?.getPeerUid !== "function") throw new Error("peer credential native smoke failed");
+       for (const compiler of ["/usr/bin/cc", "/usr/bin/c++", "/usr/bin/gcc", "/usr/bin/g++", "/usr/bin/clang", "/usr/bin/make", "/usr/local/bin/cc"]) {
+         try { statSync(compiler); throw new Error("runtime compiler unexpectedly present: " + compiler); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+       }
+       const inventory = new Set(readFileSync("/usr/share/agenc/debian-packages.txt", "utf8").trim().split("\n"));
+       for (const forbidden of ["gcc", "g++", "make", "libc6-dev", "linux-libc-dev"]) {
+         if ([...inventory].some((entry) => entry.startsWith(forbidden + "=") || entry.startsWith(forbidden + ":"))) throw new Error("runtime build package unexpectedly present: " + forbidden);
+       }
+       if (process.versions.modules !== process.env.AGENC_EXPECTED_ABI) throw new Error("container Node ABI mismatch");
+       for (const [name, version] of Object.entries(JSON.parse(process.env.AGENC_EXPECTED_PACKAGES))) {
+         const debArch = process.arch === "x64" ? "amd64" : process.arch;
+         if (![name + "=" + version, name + ":" + debArch + "=" + version].some((entry) => inventory.has(entry))) {
+           throw new Error("missing pinned Debian package: " + name + "=" + version);
+         }
+       }`;
+  const nativeSmoke = installedNativeModuleSmokeProgram("linux", {
+    modulePath: "/opt/agenc/node_modules/@tetsuo-ai/runtime/package.json",
+    cwd: "/data",
+  });
+  return checkedJavaScriptProgram(
+    `${hardeningChecks}\n{\n${nativeSmoke}\n}`,
+    "hardened container runtime smoke",
+  );
+}
+
 async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
   if (!Array.isArray(sources) || sources.length !== 2) {
     throw new Error("Docker reproducibility requires exactly two pristine source trees");
@@ -1066,73 +1033,7 @@ async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
       `AGENC_EXPECTED_PACKAGES=${JSON.stringify(toolchain.docker.runtimePackages)}`,
       tag,
       "-e",
-      checkedJavaScriptProgram(
-       String.raw`const { readFileSync, statSync } = require("node:fs");
-       const { createRequire } = require("node:module");
-       if (process.getuid?.() !== 10001 || process.getgid?.() !== 10001) throw new Error("container is not the dedicated non-root identity");
-       const runtimeRoot = statSync("/opt/agenc");
-       if (runtimeRoot.uid !== 0 || runtimeRoot.gid !== 0 || (runtimeRoot.mode & 0o022) !== 0) throw new Error("runtime tree is not root-owned and immutable");
-       const peerAddon = statSync("/usr/lib/agenc/agenc-peer-credentials.node");
-       if (peerAddon.uid !== 0 || peerAddon.gid !== 0 || (peerAddon.mode & 0o777) !== 0o555) throw new Error("peer credential addon is not root-owned and immutable");
-       if (readFileSync("/usr/lib/agenc/peer-credentials-required", "utf8") !== "required\n") throw new Error("peer credential system requirement marker is missing");
-       if (typeof require("/usr/lib/agenc/agenc-peer-credentials.node")?.getPeerUid !== "function") throw new Error("peer credential native smoke failed");
-       for (const compiler of ["/usr/bin/cc", "/usr/bin/c++", "/usr/bin/gcc", "/usr/bin/g++", "/usr/bin/clang", "/usr/bin/make", "/usr/local/bin/cc"]) {
-         try { statSync(compiler); throw new Error("runtime compiler unexpectedly present: " + compiler); } catch (error) { if (error?.code !== "ENOENT") throw error; }
-       }
-       const inventory = new Set(readFileSync("/usr/share/agenc/debian-packages.txt", "utf8").trim().split("\n"));
-       for (const forbidden of ["gcc", "g++", "make", "libc6-dev", "linux-libc-dev"]) {
-         if ([...inventory].some((entry) => entry.startsWith(forbidden + "=") || entry.startsWith(forbidden + ":"))) throw new Error("runtime build package unexpectedly present: " + forbidden);
-       }
-       if (process.versions.modules !== process.env.AGENC_EXPECTED_ABI) throw new Error("container Node ABI mismatch");
-       for (const [name, version] of Object.entries(JSON.parse(process.env.AGENC_EXPECTED_PACKAGES))) {
-         const debArch = process.arch === "x64" ? "amd64" : process.arch;
-         if (![name + "=" + version, name + ":" + debArch + "=" + version].some((entry) => inventory.has(entry))) {
-           throw new Error("missing pinned Debian package: " + name + "=" + version);
-         }
-       }
-       const runtimeRequire = createRequire("/opt/agenc/node_modules/@tetsuo-ai/runtime/package.json");
-       const Database = runtimeRequire("better-sqlite3");
-       const db = new Database(":memory:");
-       if (db.prepare("select 42 as value").get().value !== 42) throw new Error("SQLite native smoke failed");
-       db.close();
-       const pty = runtimeRequire("node-pty");
-       const child = pty.spawn(process.execPath, ["-e", "process.stdout.write('pty-ok')"], {
-         cols: 80, rows: 24, cwd: "/data", env: { PATH: process.env.PATH || "" },
-       });
-       let output = "";
-       let exitEvent;
-       const fail = () => {
-         process.stderr.write("node-pty smoke failed: " + JSON.stringify({
-           exitCode: exitEvent?.exitCode,
-           signal: exitEvent?.signal,
-           output,
-         }) + "\n");
-         process.exit(22);
-       };
-       const finish = () => {
-         if (exitEvent === undefined || !output.includes("pty-ok")) return;
-         clearTimeout(timeout);
-         if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
-         process.exit(0);
-       };
-       const timeout = setTimeout(() => {
-         if (exitEvent === undefined) {
-           child.kill();
-           process.exit(21);
-         }
-         fail();
-       }, 10000);
-       child.onData((chunk) => {
-         output += chunk;
-         finish();
-       });
-       child.onExit((event) => {
-         exitEvent = event;
-         if (event.exitCode !== 0 || (event.signal ?? 0) !== 0) fail();
-         finish();
-       });`,
-       "hardened container runtime smoke",
-      ),
+      hardenedContainerRuntimeSmokeProgram(),
     ], { env: dockerEnv });
 
     run("docker", [
