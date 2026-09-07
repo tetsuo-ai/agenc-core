@@ -57,11 +57,15 @@ export function installAgenCShutdownSignalHandlers(
         signal,
         exitCode: exitCodeForSignal(signal),
       };
-      Promise.resolve(onSignal(event))
-        .catch(() => {
+      void (async () => {
+        try {
+          await onSignal(event);
+        } catch {
           /* Cleanup errors are reported by the cleanup registry caller. */
-        })
-        .finally(() => resolveCompleted(event));
+        } finally {
+          resolveCompleted(event);
+        }
+      })();
     };
     listeners.set(signal, listener);
     // Keep ownership until the caller finishes cleanup. Removing our listener

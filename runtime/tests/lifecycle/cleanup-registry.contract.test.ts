@@ -128,6 +128,24 @@ describe("AgenC lifecycle cleanup registry", () => {
 });
 
 describe("AgenC lifecycle signal handlers", () => {
+  it.each(["throw", "reject"] as const)(
+    "completes the shutdown signal when its callback %ss",
+    async (mode) => {
+      const proc = new EventEmitter();
+      const handle = installAgenCShutdownSignalHandlers(() => {
+        const error = new Error("signal callback failed");
+        if (mode === "throw") throw error;
+        return Promise.reject(error);
+      }, proc);
+      try {
+        expect(() => proc.emit("SIGTERM")).not.toThrow();
+        await expect(handle.completed).resolves.toMatchObject({ signal: "SIGTERM" });
+      } finally {
+        handle.dispose();
+      }
+    },
+  );
+
   it("retains signal ownership until cleanup explicitly disposes the handle", async () => {
     const proc = new EventEmitter();
     const seen = vi.fn();
