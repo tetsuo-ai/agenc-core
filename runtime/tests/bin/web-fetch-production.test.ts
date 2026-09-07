@@ -20,42 +20,6 @@ const retiredModules = ["WebFetchTool", "UI", "preapproved", "utils"].map(
 );
 
 describe("WebFetch production authority", () => {
-  it("keeps only the shared prompt leaf and rejects retired imports in source and tests", () => {
-    expect(readdirSync(resolve(runtimeRoot, "src/tools/WebFetchTool"))).toEqual(
-      ["prompt.ts"],
-    );
-    const violations: string[] = [];
-    for (const tree of ["src", "tests"]) {
-      const root = resolve(runtimeRoot, tree);
-      for (const entry of readdirSync(root, {
-        recursive: true,
-        withFileTypes: true,
-      })) {
-        if (!entry.isFile() || !/\.[cm]?[jt]sx?$/u.test(entry.name)) continue;
-        const file = join(entry.parentPath, entry.name);
-        const source = readFileSync(file, "utf8");
-        for (const imported of ts.preProcessFile(source, true, true)
-          .importedFiles) {
-          const specifier = imported.fileName.replace(/[?#].*$/u, "");
-          const resolved = specifier.startsWith(".")
-            ? resolve(dirname(file), specifier)
-            : specifier.startsWith("src/")
-              ? resolve(runtimeRoot, specifier)
-              : undefined;
-          if (
-            resolved &&
-            retiredModules.includes(resolved.replace(/\.[cm]?[jt]sx?$/u, ""))
-          ) {
-            violations.push(
-              `${relative(runtimeRoot, file)} -> ${imported.fileName}`,
-            );
-          }
-        }
-      }
-    }
-    expect(violations).toEqual([]);
-  });
-
   let workspaceRoot: string;
   let tool: Tool;
 
@@ -99,6 +63,42 @@ describe("WebFetch production authority", () => {
     if (workspaceRoot && existsSync(workspaceRoot)) {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
+  });
+
+  it("keeps only the shared prompt leaf and rejects retired imports in source and tests", () => {
+    expect(readdirSync(resolve(runtimeRoot, "src/tools/WebFetchTool"))).toEqual(
+      ["prompt.ts"],
+    );
+    const violations: string[] = [];
+    for (const tree of ["src", "tests"]) {
+      const root = resolve(runtimeRoot, tree);
+      for (const entry of readdirSync(root, {
+        recursive: true,
+        withFileTypes: true,
+      })) {
+        if (!entry.isFile() || !/\.[cm]?[jt]sx?$/u.test(entry.name)) continue;
+        const file = join(entry.parentPath, entry.name);
+        const source = readFileSync(file, "utf8");
+        for (const imported of ts.preProcessFile(source, true, true)
+          .importedFiles) {
+          const specifier = imported.fileName.replace(/[?#].*$/u, "");
+          const resolved = specifier.startsWith(".")
+            ? resolve(dirname(file), specifier)
+            : specifier.startsWith("src/")
+              ? resolve(runtimeRoot, specifier)
+              : undefined;
+          if (
+            resolved &&
+            retiredModules.includes(resolved.replace(/\.[cm]?[jt]sx?$/u, ""))
+          ) {
+            violations.push(
+              `${relative(runtimeRoot, file)} -> ${imported.fileName}`,
+            );
+          }
+        }
+      }
+    }
+    expect(violations).toEqual([]);
   });
 
   it("reads a complete streamed UTF-8 body through the production registry", async () => {
