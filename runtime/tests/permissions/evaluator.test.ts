@@ -2,7 +2,16 @@
  * Tests for T11 Wave 2-A — permission evaluator (5-step tree).
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  clearAllPlanSlugs,
+  getPlanFilePath,
+  getPlansDirectory,
+  setPlanSlug,
+} from "../planning/plan-files.js";
 import {
   __resetClassifierStubSessionForTesting,
   __setAutoModeGateResolverForTesting,
@@ -73,6 +82,8 @@ type HarnessOverrides = {
   denialTracking?: DenialTrackingState;
   executionSurface?: "cli" | "headless";
   history?: readonly unknown[];
+  conversationId?: string;
+  agencHome?: string;
 };
 
 function buildHarness(overrides: HarnessOverrides = {}): {
@@ -141,8 +152,18 @@ function buildHarness(overrides: HarnessOverrides = {}): {
       return state;
     },
     session: {
+      conversationId: overrides.conversationId,
       providerService,
-      services: { providerService },
+      services: {
+        providerService,
+        ...(overrides.agencHome === undefined
+          ? {}
+          : {
+              configStore: {
+                homeContext: { path: overrides.agencHome },
+              },
+            }),
+      },
       state: {
         unsafePeek: () => ({ history: overrides.history ?? [] }),
       },
@@ -1129,5 +1150,80 @@ describe("hasPermissionsToUseTool — plan mode denies tools that change somethi
     const { context } = buildHarness({ mode: "default" });
     const result = await hasPermissionsToUseTool(makeTool({ name: "Write" }), {}, context);
     expect(result.behavior).not.toBe("deny");
+  });
+
+  describe("session plan-file writes", () => {
+    const sessionId = "session-plan-gate";
+    const slug = "clear-grove-deadbeef";
+    let agencHome: string;
+    let planPath: string;
+
+    beforeEach(() => {
+      agencHome = mkdtempSync(join(tmpdir(), "agenc-plan-gate-"));
+      clearAllPlanSlugs();
+      setPlanSlug({ sessionId, agencHome }, slug);
+      planPath = getPlanFilePath({ sessionId, agencHome });
+    });
+
+    afterEach(() => {
+      clearAllPlanSlugs();
+      try {
+        rmSync(agencHome, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    });
+
+    function planHarness() {
+      return buildHarness({
+        mode: "plan",
+        conversationId: sessionId,
+        agencHome,
+      });
+    }
+
+    it("lets Write and Edit target the session plan file", async () => {
+      const { context } = planHarness();
+      for (const [name, input] of [
+        ["Write", { file_path: planPath, content: "# plan" }],
+        ["Edit", { file_path: planPath, old_string: "a", new_string: "b" }],
+        ["MultiEdit", { file_path: planPath, edits: [] }],
+      ] as const) {
+        const result = await hasPermissionsToUseTool(
+          makeTool({ name }),
+          input,
+          context,
+        );
+        expect(result.behavior, name).not.toBe("deny");
+      }
+    });
+
+    it("still denies Write to any other path", async () => {
+      const { context } = planHarness();
+      const otherPlan = join(getPlansDirectory({ sessionId, agencHome }), "other.md");
+      for (const input of [
+        { file_path: "/tmp/notes.md", content: "x" },
+        { file_path: otherPlan, content: "x" },
+        { path: join(agencHome, "plans", slug, "..", "other.md"), content: "x" },
+        {},
+      ]) {
+        const result = await hasPermissionsToUseTool(
+          makeTool({ name: "Write" }),
+          input,
+          context,
+        );
+        expect(result.behavior).toBe("deny");
+      }
+    });
+
+    it("does not treat a missing session id as the default plan file", async () => {
+      const { context } = buildHarness({ mode: "plan", agencHome });
+      const result = await hasPermissionsToUseTool(
+        makeTool({ name: "Write" }),
+        { file_path: planPath, content: "# plan" },
+        context,
+      );
+      expect(result.behavior).toBe("deny");
+    });
   });
 });

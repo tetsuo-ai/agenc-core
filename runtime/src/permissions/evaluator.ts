@@ -41,6 +41,12 @@
  * @module
  */
 
+import { normalize, resolve as resolvePath } from "node:path";
+
+import {
+  isSessionPlanFile,
+  type PlanFileContext,
+} from "../planning/plan-files.js";
 import {
   handleDenialLimitExceeded,
   recordDenial,
@@ -280,7 +286,11 @@ export async function checkRuleBasedPermissions(
   // 1a2. Plan mode is read, ask, plan. Any tool that changes something is
   // denied until ExitPlanMode restores the mode the session came from, and
   // the message says so. Read-only tools and the plan-mode UI tools pass, and
-  // so does a shell command the read-only classifier accepts (#2205);
+  // so does a shell command the read-only classifier accepts (#2205).
+  // Write/Edit of the session plan file also pass: the plan-mode attachment
+  // tells the model that file is the only writable path, ExitPlanMode reads
+  // it from disk, and the filesystem carve-out already allows it — this gate
+  // has to let that call through or the advertised workflow deadlocks.
   // plan-with-auto keeps its classifier path below (the explicit exception).
   // Before this the mode gated nothing here, and a session in plan mode ran
   // whatever its underlying policy approved (#2169).
@@ -289,7 +299,8 @@ export async function checkRuleBasedPermissions(
     appState.autoModeActive !== true &&
     !toolDoesNotRequireApproval(tool) &&
     !SAFE_YOLO_ALLOWLISTED_TOOLS.has(tool.name) &&
-    !planModeReadOnlyShellCommand(tool, input)
+    !planModeReadOnlyShellCommand(tool, input) &&
+    !planModePlanFileWrite(tool, input, context)
   ) {
     const message = planModeDenyMessage(tool.name);
     return Object.freeze({
@@ -439,6 +450,12 @@ const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "Bash",
 ]);
 
+const PLAN_FILE_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  "Write",
+  "Edit",
+  "MultiEdit",
+]);
+
 /**
  * Planning is mostly reading, and the shell is how a model reads a
  * repository's history and layout. A shell command the read-only classifier
@@ -462,6 +479,67 @@ function planModeReadOnlyShellCommand(tool: ToolLike, input: unknown): boolean {
     commandHasAnyCd(command),
   );
   return verdict.behavior === "allow";
+}
+
+/**
+ * The plan-mode attachment advertises Write/Edit on the session plan file.
+ * ExitPlanMode then reads that file. The filesystem tools already carve it
+ * out of the workspace allowlist; this only lets that same target past the
+ * plan-mode mutating-tool deny so the carve-out can run.
+ */
+function planModePlanFileWrite(
+  tool: ToolLike,
+  input: unknown,
+  context: ToolEvaluatorContext,
+): boolean {
+  if (!PLAN_FILE_WRITE_TOOLS.has(tool.name)) return false;
+  const target = planFileWriteTarget(input);
+  if (target === undefined) return false;
+  const planContext = planFileContextFromEvaluator(context);
+  if (planContext === undefined) return false;
+  try {
+    return isSessionPlanFile(target, planContext);
+  } catch {
+    return false;
+  }
+}
+
+function planFileWriteTarget(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const fields = input as {
+    readonly file_path?: unknown;
+    readonly path?: unknown;
+  };
+  const raw =
+    typeof fields.file_path === "string"
+      ? fields.file_path
+      : typeof fields.path === "string"
+        ? fields.path
+        : undefined;
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  return normalize(resolvePath(raw));
+}
+
+function planFileContextFromEvaluator(
+  context: ToolEvaluatorContext,
+): PlanFileContext | undefined {
+  const session = context.session as {
+    readonly conversationId?: unknown;
+    readonly services?: {
+      readonly configStore?: {
+        readonly homeContext?: { readonly path?: unknown };
+      };
+    };
+  };
+  const sessionId = session.conversationId;
+  if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
+    return undefined;
+  }
+  const boundHome = session.services?.configStore?.homeContext?.path;
+  if (typeof boundHome === "string" && boundHome.trim().length > 0) {
+    return { sessionId, agencHome: boundHome };
+  }
+  return { sessionId };
 }
 
 function planModeDenyMessage(toolName: string): string {
