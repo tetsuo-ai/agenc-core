@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { AgenCCleanupRegistry } from "./cleanup-registry.js";
 import {
@@ -10,7 +11,7 @@ import { summarizeAgenCShutdown } from "./shutdown-message.js";
 function createSignalProcess() {
   const listeners = new Map<AgenCShutdownSignal, Set<() => void>>();
   return {
-    once: vi.fn((signal: AgenCShutdownSignal, listener: () => void) => {
+    on: vi.fn((signal: AgenCShutdownSignal, listener: () => void) => {
       let set = listeners.get(signal);
       if (set === undefined) {
         set = new Set();
@@ -127,6 +128,26 @@ describe("AgenC lifecycle cleanup registry", () => {
 });
 
 describe("AgenC lifecycle signal handlers", () => {
+  it("retains signal ownership until cleanup explicitly disposes the handle", async () => {
+    const proc = new EventEmitter();
+    const seen = vi.fn();
+    const handle = installAgenCShutdownSignalHandlers(seen, proc);
+    try {
+      proc.emit("SIGTERM");
+      await handle.completed;
+      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+        expect(proc.listenerCount(signal)).toBe(1);
+        proc.emit(signal);
+      }
+      expect(seen).toHaveBeenCalledOnce();
+    } finally {
+      handle.dispose();
+    }
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+      expect(proc.listenerCount(signal)).toBe(0);
+    }
+  });
+
   it("maps daemon shutdown signals to cleanup events and exit codes", async () => {
     const proc = createSignalProcess();
     const seen: unknown[] = [];
@@ -144,6 +165,7 @@ describe("AgenC lifecycle signal handlers", () => {
     expect(seen).toMatchObject([
       { reason: "signal", signal: "SIGTERM", exitCode: 0 },
     ]);
+    handle.dispose();
     expect(proc.listenerCount("SIGINT")).toBe(0);
     expect(proc.listenerCount("SIGTERM")).toBe(0);
     expect(proc.listenerCount("SIGHUP")).toBe(0);
@@ -163,6 +185,7 @@ describe("AgenC lifecycle signal handlers", () => {
     expect(seen).toMatchObject([
       { reason: "signal", signal: "SIGINT", exitCode: 130 },
     ]);
+    handle.dispose();
   });
 
   it("summarizes shutdown signals without UI dependencies", () => {

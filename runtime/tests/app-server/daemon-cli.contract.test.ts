@@ -533,7 +533,7 @@ function createReadyPublishedDaemonOptions(
 function createSignalProcess() {
   type TestDaemonSignal = AgenCShutdownSignal;
   const listeners = new Map<TestDaemonSignal, Set<() => void>>();
-  /** Signals emitted before any listener (startup race); flushed on once(). */
+  /** Signals emitted before any listener (startup race); flushed on registration. */
   const pending = new Set<TestDaemonSignal>();
   const deliver = (signal: TestDaemonSignal): void => {
     for (const listener of [...(listeners.get(signal) ?? [])]) {
@@ -552,6 +552,7 @@ function createSignalProcess() {
     }
   };
   return {
+    on: addListener,
     once: (signal: AgenCShutdownSignal, listener: () => void) => {
       addListener(signal, listener);
     },

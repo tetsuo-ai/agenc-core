@@ -143,7 +143,7 @@ function createSignalProcess(): AgenCSignalProcess & {
     listeners.set(signal, signalListeners);
   };
   return {
-    once: addListener,
+    on: addListener,
     removeListener: (signal, listener) => {
       listeners.get(signal)?.delete(listener);
     },

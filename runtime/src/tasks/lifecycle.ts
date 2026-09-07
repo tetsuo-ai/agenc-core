@@ -10,6 +10,7 @@
  * @module
  */
 
+import { logError } from "../utils/log.js";
 import {
   generateTaskId,
   isTerminalTaskStatus,
@@ -91,32 +92,25 @@ export interface RegisterBackgroundTaskInput {
   readonly onStop?: (reason: string) => Promise<void> | void;
 }
 
+interface TaskPromiseMapping {
+  readonly output?: string;
+  readonly error?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+interface TaskPromiseFulfillment extends TaskPromiseMapping {
+  readonly status?: Extract<BackgroundTaskStatus, "completed" | "failed">;
+}
+
 export interface BindTaskPromiseOptions<T> {
   readonly onFulfilled?: (value: T) =>
-    | {
-        readonly status?: Extract<BackgroundTaskStatus, "completed" | "failed">;
-        readonly output?: string;
-        readonly error?: string;
-        readonly metadata?: Readonly<Record<string, unknown>>;
-      }
+    | TaskPromiseFulfillment
     | void
-    | Promise<
-        | {
-            readonly status?: Extract<
-              BackgroundTaskStatus,
-              "completed" | "failed"
-            >;
-            readonly output?: string;
-            readonly error?: string;
-            readonly metadata?: Readonly<Record<string, unknown>>;
-          }
-        | void
-      >;
-  readonly onRejected?: (error: unknown) => {
-    readonly output?: string;
-    readonly error?: string;
-    readonly metadata?: Readonly<Record<string, unknown>>;
-  } | void;
+    | Promise<TaskPromiseFulfillment | void>;
+  readonly onRejected?: (error: unknown) =>
+    | TaskPromiseMapping
+    | void
+    | Promise<TaskPromiseMapping | void>;
   readonly onSnapshot?: (snapshot: BackgroundTaskSnapshot) => void;
 }
 
@@ -168,6 +162,19 @@ function generateBackgroundTaskId(type: BackgroundTaskType): string {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function boundedTaskPromiseError(error: unknown): string {
+  try {
+    const message = toErrorMessage(error);
+    const limit = 4096;
+    const suffix = message.length > limit ? "...[truncated]" : "";
+    // Copy the bounded prefix so it cannot retain a large backing string.
+    return Buffer.from(message.slice(0, limit - suffix.length), "utf8")
+      .toString("utf8") + suffix;
+  } catch {
+    return "Task failed with an unprintable error";
+  }
 }
 
 function defaultOutputUri(taskId: string): string {
@@ -412,43 +419,54 @@ export class BackgroundTaskLifecycle {
     promise: Promise<T>,
     options: BindTaskPromiseOptions<T> = {},
   ): void {
-    void promise
-      .then(
-        async (value) => {
-          // onFulfilled may be async (e.g. the agent-thread mapper
-          // dispatches SubagentStop hooks and appends their feedback
-          // to the completion output the parent reads).
-          const mapped = await options.onFulfilled?.(value);
-          const status = mapped?.status ?? "completed";
-          if (status === "failed") {
-            const snapshot = this.fail(
-              taskId,
-              mapped?.error ?? "task failed",
-              mapped?.output,
-              mapped?.metadata,
-            );
-            options.onSnapshot?.(snapshot);
-            return;
-          }
-          const snapshot = this.complete(taskId, mapped?.output, mapped?.metadata);
-          options.onSnapshot?.(snapshot);
-        },
-        (error) => {
-          const mapped = options.onRejected?.(error);
-          const snapshot = this.fail(
-            taskId,
-            mapped?.error ?? error,
+    const record = this.tasks.get(this.resolveTaskId(taskId));
+    // Keep identity without retaining an evicted record's metadata and handles
+    // for the remaining lifetime of its backing promise.
+    const binding = record === undefined
+      ? undefined
+      : { id: record.id, record: new WeakRef(record) };
+    const settle = async (): Promise<void> => {
+      let mapped: TaskPromiseFulfillment | void;
+      let status: "completed" | "failed";
+      let failure: unknown;
+      try {
+        const result = await promise.then(
+          (value) => ({ kind: "fulfilled" as const, value }),
+          (error: unknown) => ({ kind: "rejected" as const, error }),
+        );
+        if (result.kind === "fulfilled") {
+          mapped = await options.onFulfilled?.(result.value);
+          status = mapped?.status ?? "completed";
+          failure = mapped?.error ?? "task failed";
+        } else {
+          mapped = await options.onRejected?.(result.error);
+          status = "failed";
+          failure = mapped?.error ?? result.error;
+        }
+      } catch (error) {
+        mapped = undefined;
+        status = "failed";
+        failure = error;
+      }
+
+      if (binding === undefined) {
+        throw new BackgroundTaskError(`task ${taskId} not found`, "not_found");
+      }
+      const current = this.tasks.get(binding.id);
+      // Eviction is harmless, including replacement under the same ID or alias.
+      // Any exception from a live transition or its observers is unexpected.
+      if (current === undefined || current !== binding.record.deref()) return;
+      const snapshot = status === "failed"
+        ? this.fail(
+            binding.id,
+            boundedTaskPromiseError(failure),
             mapped?.output,
             mapped?.metadata,
-          );
-          options.onSnapshot?.(snapshot);
-        },
-      )
-      // A task can be evicted before its join promise settles; in that case the
-      // lifecycle transition throws BackgroundTaskError("not_found"). Swallow it
-      // so a late settle against an evicted task cannot escape as an unhandled
-      // rejection.
-      .catch(() => {});
+          )
+        : this.complete(binding.id, mapped?.output, mapped?.metadata);
+      await options.onSnapshot?.(snapshot);
+    };
+    void settle().catch(logError);
   }
 
   drainNotifications(): BackgroundTaskNotification[] {

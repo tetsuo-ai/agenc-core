@@ -4088,41 +4088,44 @@ async function runAgenCDaemonForegroundLocked(
       }
     } finally {
       shuttingDown = true;
-      shutdownSignal.dispose();
-      // Any reload admitted before the ingress fence must either finish or
-      // reject its prepared resources before MCP/socket cleanup begins.
-      await reloadChain.catch(() => null);
-      const results = await cleanup.run(
-        cleanupContext,
-        startupCancelled
-          ? {
-              taskTimeoutMs:
-                options.startupCancelCleanupTaskTimeoutMs ??
-                AGENC_DAEMON_STARTUP_CANCEL_CLEANUP_TASK_TIMEOUT_MS,
-            }
-          : {},
-      );
-      cleanupHandled = true;
-      const failed = results.filter((result) => !result.ok);
-      if (failed.length > 0) {
-        for (const failure of failed) {
-          io.stderr.write(
-            `agenc: cleanup[${failure.name}] failed: ${formatCleanupError(failure.error)}\n`,
-          );
-        }
-        if (exitCode === 0) exitCode = 1;
-      }
-      if (host.startupGuardReceiver?.wasRequested() === true) {
-        try {
-          await host.startupGuardReceiver.acknowledgeAfterCleanup(
-            failed.length === 0,
-          );
-        } catch (error) {
-          io.stderr.write(
-            `agenc: startup cancellation acknowledgement failed: ${formatCleanupError(error)}\n`,
-          );
+      try {
+        // Any reload admitted before the ingress fence must either finish or
+        // reject its prepared resources before MCP/socket cleanup begins.
+        await reloadChain.catch(() => null);
+        const results = await cleanup.run(
+          cleanupContext,
+          startupCancelled
+            ? {
+                taskTimeoutMs:
+                  options.startupCancelCleanupTaskTimeoutMs ??
+                  AGENC_DAEMON_STARTUP_CANCEL_CLEANUP_TASK_TIMEOUT_MS,
+              }
+            : {},
+        );
+        cleanupHandled = true;
+        const failed = results.filter((result) => !result.ok);
+        if (failed.length > 0) {
+          for (const failure of failed) {
+            io.stderr.write(
+              `agenc: cleanup[${failure.name}] failed: ${formatCleanupError(failure.error)}\n`,
+            );
+          }
           if (exitCode === 0) exitCode = 1;
         }
+        if (host.startupGuardReceiver?.wasRequested() === true) {
+          try {
+            await host.startupGuardReceiver.acknowledgeAfterCleanup(
+              failed.length === 0,
+            );
+          } catch (error) {
+            io.stderr.write(
+              `agenc: startup cancellation acknowledgement failed: ${formatCleanupError(error)}\n`,
+            );
+            if (exitCode === 0) exitCode = 1;
+          }
+        }
+      } finally {
+        shutdownSignal.dispose();
       }
     }
     return exitCode;
