@@ -1,19 +1,20 @@
 /** Descriptor-confined named workflow manifest loader. */
 
 import {
-  constants as fsConstants,
-  type BigIntStats,
-} from "node:fs";
-import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
-import {
   basename,
-  dirname,
   isAbsolute,
   join,
   normalize,
   resolve,
   win32,
 } from "node:path";
+import {
+  ConfinedIoError,
+  readConfinedFile,
+  withConfinedDirectory,
+  withRegularChild,
+  type ConfinedIoPolicy,
+} from "../fs/descriptor-confined-io.js";
 
 import {
   MAX_WORKFLOW_MANIFEST_BYTES,
@@ -218,54 +219,46 @@ export async function loadNamedWorkflowManifest(
   throw new WorkflowManifestNotFoundError(options.name, searchedPaths);
 }
 
+const MANIFEST_IO_POLICY = Object.freeze({
+  hardLinks: "allow",
+  privateDirectory: false,
+  privateFile: false,
+  unavailableAlias: "identity-checked-path",
+} satisfies ConfinedIoPolicy);
+
+const MANIFEST_IO_ERROR_CODES = {
+  ROOT_UNSAFE: "WORKFLOW_ROOT_UNSAFE",
+  ROOT_CHANGED: "WORKFLOW_ROOT_RACE",
+  DESCRIPTOR_UNSUPPORTED: "WORKFLOW_ROOT_OPEN",
+  CHILD_UNSAFE: "WORKFLOW_MANIFEST_UNSAFE",
+  CHILD_CHANGED: "WORKFLOW_MANIFEST_RACE",
+  CHILD_OUTSIDE_ROOT: "WORKFLOW_MANIFEST_ESCAPE",
+  CHILD_TOO_LARGE: "WORKFLOW_MANIFEST_BYTES",
+} as const satisfies Record<ConfinedIoError["code"], string>;
+
 async function readManifestFromRoot(
   root: string,
   manifestBasename: string,
   hooks: WorkflowManifestLoaderHooks | undefined,
 ): Promise<Buffer | undefined> {
-  let lexicalRoot: BigIntStats;
   try {
-    lexicalRoot = await lstat(root, { bigint: true });
-  } catch (error) {
-    if (isMissingPathError(error)) return undefined;
-    throw pathError(
-      "WORKFLOW_ROOT_OPEN",
-      `could not inspect workflow root ${root}`,
-      error,
-    );
-  }
-  if (!lexicalRoot.isDirectory() || lexicalRoot.isSymbolicLink()) {
-    throw pathError(
-      "WORKFLOW_ROOT_UNSAFE",
-      `workflow root must be a real non-symlink directory: ${root}`,
-    );
-  }
-  const canonicalRoot = await realpath(root);
-  let rootHandle: FileHandle | undefined;
-  try {
-    rootHandle = await open(root, directoryOpenFlags());
-    const openedRoot = await rootHandle.stat({ bigint: true });
-    if (!openedRoot.isDirectory() || !sameIdentity(lexicalRoot, openedRoot)) {
-      throw pathError(
-        "WORKFLOW_ROOT_RACE",
-        `workflow root changed while opening: ${root}`,
-      );
-    }
-    const operationRoot =
-      (await descriptorDirectoryPath(rootHandle, canonicalRoot)) ?? root;
-    await hooks?.afterRootOpen?.(root);
-    await assertRootCurrent(root, canonicalRoot, openedRoot, rootHandle);
-    return await readManifestCandidate(
+    return await withConfinedDirectory(
       root,
-      canonicalRoot,
-      operationRoot,
-      openedRoot,
-      rootHandle,
-      manifestBasename,
+      MANIFEST_IO_POLICY,
+      (directory) => withRegularChild(
+        directory,
+        manifestBasename,
+        { maximumBytes: MAX_WORKFLOW_MANIFEST_BYTES },
+        readConfinedFile,
+        hooks,
+      ),
       hooks,
     );
   } catch (error) {
-    if (error instanceof WorkflowManifestPathError) throw error;
+    if (isMissingPathError(error)) return undefined;
+    if (error instanceof ConfinedIoError) {
+      throw pathError(MANIFEST_IO_ERROR_CODES[error.code], error.message, error);
+    }
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENAMETOOLONG" || code === "EINVAL") {
       throw pathError(
@@ -279,185 +272,7 @@ async function readManifestFromRoot(
       `could not safely read workflow root ${root}: ${errorMessage(error)}`,
       error,
     );
-  } finally {
-    await rootHandle?.close().catch(() => {});
   }
-}
-
-async function readManifestCandidate(
-  lexicalRoot: string,
-  canonicalRoot: string,
-  operationRoot: string,
-  openedRoot: BigIntStats,
-  rootHandle: FileHandle,
-  manifestBasename: string,
-  hooks: WorkflowManifestLoaderHooks | undefined,
-): Promise<Buffer | undefined> {
-  const operationPath = join(operationRoot, manifestBasename);
-  const lexicalPath = join(lexicalRoot, manifestBasename);
-  let pathBefore: BigIntStats;
-  try {
-    pathBefore = await lstat(operationPath, { bigint: true });
-  } catch (error) {
-    if (isMissingPathError(error)) return undefined;
-    throw error;
-  }
-  if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) {
-    throw pathError(
-      "WORKFLOW_MANIFEST_UNSAFE",
-      `workflow manifest must be a regular non-symlink file: ${lexicalPath}`,
-    );
-  }
-  if (pathBefore.size > BigInt(MAX_WORKFLOW_MANIFEST_BYTES)) {
-    throw pathError(
-      "WORKFLOW_MANIFEST_BYTES",
-      `workflow manifest exceeds ${MAX_WORKFLOW_MANIFEST_BYTES} bytes: ${lexicalPath}`,
-    );
-  }
-
-  const candidateHandle = await open(operationPath, fileOpenFlags());
-  try {
-    const opened = await candidateHandle.stat({ bigint: true });
-    if (!opened.isFile() || !sameSnapshot(pathBefore, opened)) {
-      throw pathError(
-        "WORKFLOW_MANIFEST_RACE",
-        `workflow manifest changed while opening: ${lexicalPath}`,
-      );
-    }
-    const canonicalCandidate = await realpath(operationPath);
-    if (
-      dirname(canonicalCandidate) !== canonicalRoot ||
-      basename(canonicalCandidate) !== manifestBasename
-    ) {
-      throw pathError(
-        "WORKFLOW_MANIFEST_ESCAPE",
-        `workflow manifest resolves outside its trusted root: ${lexicalPath}`,
-      );
-    }
-    await hooks?.afterCandidateOpen?.(lexicalPath);
-    const buffer = Buffer.allocUnsafe(Number(opened.size));
-    let offset = 0;
-    while (offset < buffer.byteLength) {
-      const { bytesRead } = await candidateHandle.read(
-        buffer,
-        offset,
-        buffer.byteLength - offset,
-        offset,
-      );
-      if (bytesRead === 0) break;
-      offset += bytesRead;
-    }
-    const [after, pathAfter] = await Promise.all([
-      candidateHandle.stat({ bigint: true }),
-      lstat(operationPath, { bigint: true }),
-    ]);
-    if (
-      offset !== buffer.byteLength ||
-      !sameSnapshot(opened, after) ||
-      !sameSnapshot(opened, pathAfter) ||
-      pathAfter.isSymbolicLink()
-    ) {
-      throw pathError(
-        "WORKFLOW_MANIFEST_RACE",
-        `workflow manifest changed while reading: ${lexicalPath}`,
-      );
-    }
-    await assertRootCurrent(
-      lexicalRoot,
-      canonicalRoot,
-      openedRoot,
-      rootHandle,
-    );
-    return buffer;
-  } finally {
-    await candidateHandle.close();
-  }
-}
-
-async function assertRootCurrent(
-  lexicalRoot: string,
-  canonicalRoot: string,
-  openedRoot: BigIntStats,
-  rootHandle: FileHandle,
-): Promise<void> {
-  try {
-    const [lexical, canonical, opened] = await Promise.all([
-      lstat(lexicalRoot, { bigint: true }),
-      realpath(lexicalRoot),
-      rootHandle.stat({ bigint: true }),
-    ]);
-    if (
-      !lexical.isDirectory() ||
-      lexical.isSymbolicLink() ||
-      !opened.isDirectory() ||
-      !sameIdentity(lexical, openedRoot) ||
-      !sameIdentity(opened, openedRoot) ||
-      canonical !== canonicalRoot
-    ) {
-      throw pathError(
-        "WORKFLOW_ROOT_RACE",
-        `workflow root changed during manifest load: ${lexicalRoot}`,
-      );
-    }
-  } catch (error) {
-    if (error instanceof WorkflowManifestPathError) throw error;
-    throw pathError(
-      "WORKFLOW_ROOT_RACE",
-      `workflow root changed during manifest load: ${lexicalRoot}`,
-      error,
-    );
-  }
-}
-
-function directoryOpenFlags(): number {
-  const directory =
-    (fsConstants as typeof fsConstants & { readonly O_DIRECTORY?: number })
-      .O_DIRECTORY ?? 0;
-  return fsConstants.O_RDONLY | directory | noFollowFlag();
-}
-
-function fileOpenFlags(): number {
-  return fsConstants.O_RDONLY | noFollowFlag();
-}
-
-function noFollowFlag(): number {
-  return (
-    (fsConstants as typeof fsConstants & { readonly O_NOFOLLOW?: number })
-      .O_NOFOLLOW ?? 0
-  );
-}
-
-async function descriptorDirectoryPath(
-  handle: FileHandle,
-  canonicalRoot: string,
-): Promise<string | undefined> {
-  const candidates =
-    process.platform === "linux"
-      ? [`/proc/self/fd/${handle.fd}`, `/dev/fd/${handle.fd}`]
-      : process.platform === "win32"
-        ? []
-        : [`/dev/fd/${handle.fd}`];
-  for (const candidate of candidates) {
-    try {
-      if ((await realpath(candidate)) === canonicalRoot) return candidate;
-    } catch {
-      // Platforms without descriptor aliases use the identity-checked path.
-    }
-  }
-  return undefined;
-}
-
-function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function sameSnapshot(left: BigIntStats, right: BigIntStats): boolean {
-  return (
-    sameIdentity(left, right) &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs
-  );
 }
 
 function isMissingPathError(error: unknown): boolean {

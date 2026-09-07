@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import {
+  appendFile,
   chmod,
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -409,6 +411,89 @@ describe("workflow handoff publication and integrity", () => {
 
     await expect(publish(artifactStore, "root-race", "must-not-escape")).rejects.toThrow();
     expect((await readdir(artifactRoot)).filter((name) => name.endsWith(".handoff"))).toEqual([]);
+  });
+});
+
+describe("workflow handoff confined filesystem races", () => {
+  it.each(["read", "cleanup"])(
+    "rejects root replacement before %s touches a child",
+    async (operation) => {
+      let armed = false;
+      const artifactStore = store({
+        async afterRootOpen() {
+          if (!armed) return;
+          armed = false;
+          await rename(artifactRoot, `${artifactRoot}.old`);
+          await mkdir(artifactRoot, { mode: 0o700 });
+        },
+      });
+      const artifact = await publish(artifactStore, "root-race", "safe");
+      now += 101;
+      armed = true;
+      await expectStoreCode(
+        () => operation === "read"
+          ? artifactStore.read(artifact.artifact_id)
+          : artifactStore.cleanupExpired(),
+        "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+      );
+      expect(await readFile(join(
+        `${artifactRoot}.old`, `${artifact.artifact_id}.handoff`,
+      ), "utf8")).toBe("safe");
+      expect(await readdir(artifactRoot)).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["read", "replace"],
+    ["read", "grow"],
+    ["cleanup", "replace"],
+    ["cleanup", "grow"],
+  ])("preserves a child changed by %s/%s after opening", async (operation, mutation) => {
+    let armed = false;
+    const artifactStore = store({
+      async afterCandidateOpen(path) {
+        if (!armed) return;
+        armed = false;
+        if (mutation === "replace") {
+          await rename(path, `${path}.old`);
+          await writeFile(path, "evil", { mode: 0o600 });
+        } else {
+          await appendFile(path, "-oversized");
+        }
+      },
+    });
+    const artifact = await publish(artifactStore, "child-race", "safe");
+    now += 101;
+    armed = true;
+    if (operation === "read") {
+      await expectStoreCode(
+        () => artifactStore.read(artifact.artifact_id),
+        "WORKFLOW_HANDOFF_CORRUPT",
+      );
+    } else {
+      expect(await artifactStore.cleanupExpired()).toMatchObject({
+        removed: 0, conflicts: 1,
+      });
+    }
+    expect(await readFile(artifactPath(artifact.artifact_id), "utf8"))
+      .toBe(mutation === "replace" ? "evil" : "safe-oversized");
+  });
+
+  it("rejects hard-linked handoffs during reads and cleanup", async () => {
+    const artifactStore = store();
+    const artifact = await publish(artifactStore, "hard-link", "safe");
+    const alias = join(temporaryDirectory, "hard-link");
+    await link(artifactPath(artifact.artifact_id), alias);
+    await expectStoreCode(
+      () => artifactStore.read(artifact.artifact_id),
+      "WORKFLOW_HANDOFF_CORRUPT",
+    );
+    now += 101;
+    expect(await artifactStore.cleanupExpired()).toMatchObject({
+      removed: 0, conflicts: 1,
+    });
+    expect(await readFile(alias, "utf8")).toBe("safe");
+    expect(await readFile(artifactPath(artifact.artifact_id), "utf8")).toBe("safe");
   });
 });
 

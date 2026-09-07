@@ -8,17 +8,14 @@ import {
   mkdirSync,
   realpathSync,
   statSync,
-  type BigIntStats,
 } from "node:fs";
 import {
   link,
-  lstat,
   open,
-  realpath,
   unlink,
   type FileHandle,
 } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
 import {
@@ -50,6 +47,20 @@ import {
   type WorkflowHandoffOwner,
 } from "./workflow-handoff-schema.js";
 import { assertWindowsPrivatePathSecurity } from "./workflow-private-path.js";
+import {
+  ConfinedIoError,
+  noFollowFlag,
+  readConfinedFile,
+  safePrivateDirectory,
+  sameIdentity,
+  scanConfinedFile,
+  withConfinedDirectory,
+  withRegularChild,
+  type ConfinedDirectory,
+  type ConfinedFile,
+  type ConfinedIoHooks,
+  type ConfinedIoPolicy,
+} from "../fs/descriptor-confined-io.js";
 
 const ARTIFACT_ID_DIGEST_DOMAIN = "agenc.workflow-handoff.artifact-id.v2\0";
 const ARTIFACT_CONTENT_DIGEST_DOMAIN = "";
@@ -58,7 +69,17 @@ const ARTIFACT_FILE_MODE = 0o600;
 const ARTIFACT_ROOT_MODE = 0o700;
 const SHA256_PREFIX = "sha256:";
 const MAX_REFERENCE_FIELD_UTF8_BYTES = 1_024;
-const SOURCE_COPY_BYTES = 64 * 1_024;
+const HANDOFF_IO_POLICY = Object.freeze({
+  hardLinks: "reject",
+  privateDirectory: true,
+  privateFile: true,
+  unavailableAlias: "windows-private-path",
+  verifyWindowsPrivatePath: (path, role) => assertWindowsPrivatePath(path, role, false),
+} satisfies ConfinedIoPolicy);
+const HANDOFF_INSTALLATION_IO_POLICY = Object.freeze({
+  ...HANDOFF_IO_POLICY,
+  hardLinks: "allow",
+} satisfies ConfinedIoPolicy);
 
 export type WorkflowHandoffStatus =
   | "intent"
@@ -108,7 +129,7 @@ export interface WorkflowHandoffStoreOptions {
   readonly hooks?: WorkflowHandoffStoreHooks;
 }
 
-export interface WorkflowHandoffStoreHooks {
+export interface WorkflowHandoffStoreHooks extends ConfinedIoHooks {
   readonly afterIntentReserved?: (artifactId: string) => void | Promise<void>;
   readonly afterArtifactInstalled?: (artifactId: string) => void | Promise<void>;
   readonly afterCleanupReserved?: (
@@ -1043,81 +1064,26 @@ export class WorkflowHandoffArtifactStore {
     readonly observation: "missing" | "match" | "conflict";
     readonly bytes?: Buffer;
   }> {
-    return this.#withPinnedRoot(async (operationRoot) => {
-      const path = join(operationRoot, artifactFilename(row.artifact_id));
-      let pathBefore: BigIntStats;
+    return this.#withPinnedRoot(async (root) => {
       try {
-        pathBefore = await lstat(path, { bigint: true });
+        return await withRegularChild(
+          root,
+          artifactFilename(row.artifact_id),
+          {
+            maximumBytes: MAX_WORKFLOW_ARTIFACT_BYTES,
+            expectedBytes: row.byte_length,
+          },
+          async (file) => {
+            const bytes = await readConfinedFile(file);
+            return contentDigest(bytes) === row.digest
+              ? { observation: "match" as const, bytes }
+              : { observation: "conflict" as const };
+          },
+          this.#hooks,
+        ) ?? { observation: "missing" as const };
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          return { observation: "missing" as const };
-        }
+        if (isConfinedChildError(error)) return { observation: "conflict" as const };
         throw error;
-      }
-      if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) {
-        return { observation: "conflict" as const };
-      }
-      if (process.platform === "win32") {
-        try {
-          assertWindowsPrivatePath(path, "file", false);
-        } catch {
-          return { observation: "conflict" as const };
-        }
-      }
-      let handle: FileHandle;
-      try {
-        handle = await open(path, fsConstants.O_RDONLY | noFollowFlag());
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          return { observation: "missing" as const };
-        }
-        if ((error as NodeJS.ErrnoException).code === "ELOOP") {
-          return { observation: "conflict" as const };
-        }
-        throw error;
-      }
-      try {
-        const before = await handle.stat({ bigint: true });
-        if (
-          !before.isFile() ||
-          !sameSnapshot(pathBefore, before) ||
-          before.nlink !== 1n ||
-          before.size !== BigInt(row.byte_length) ||
-          !privateFileMode(before)
-        ) {
-          return { observation: "conflict" as const };
-        }
-        const bytes = Buffer.allocUnsafe(row.byte_length);
-        let offset = 0;
-        while (offset < bytes.byteLength) {
-          const read = await handle.read(
-            bytes,
-            offset,
-            bytes.byteLength - offset,
-            offset,
-          );
-          if (read.bytesRead === 0) break;
-          offset += read.bytesRead;
-        }
-        const [after, currentPath] = await Promise.all([
-          handle.stat({ bigint: true }),
-          lstat(path, { bigint: true }).catch(() => undefined),
-        ]);
-        if (
-          offset !== bytes.byteLength ||
-          currentPath === undefined ||
-          currentPath.isSymbolicLink() ||
-          !sameSnapshot(before, after) ||
-          !sameSnapshot(before, currentPath)
-        ) {
-          return { observation: "conflict" as const };
-        }
-        if (contentDigest(bytes) !== row.digest) {
-          return { observation: "conflict" as const };
-        }
-        return { observation: "match" as const, bytes };
-      } finally {
-        await handle.close();
       }
     });
   }
@@ -1125,141 +1091,41 @@ export class WorkflowHandoffArtifactStore {
   async #removeExpectedFile(
     row: WorkflowHandoffRow,
   ): Promise<"removed" | "missing" | "conflict"> {
-    return this.#withPinnedRoot(async (operationRoot, rootHandle) => {
-      const path = join(operationRoot, artifactFilename(row.artifact_id));
-      let pathBefore: BigIntStats;
+    return this.#withPinnedRoot(async (root) => {
       try {
-        pathBefore = await lstat(path, { bigint: true });
+        return await withRegularChild(
+          root,
+          artifactFilename(row.artifact_id),
+          {
+            maximumBytes: MAX_WORKFLOW_ARTIFACT_BYTES,
+            expectedBytes: row.byte_length,
+          },
+          async (file) => {
+            const bytes = await readConfinedFile(file);
+            if (contentDigest(bytes) !== row.digest) return "conflict" as const;
+            await file.verify();
+            await unlink(file.path);
+            await root.handle?.sync().catch((error: unknown) => {
+              const code = (error as NodeJS.ErrnoException).code;
+              if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EPERM") {
+                throw error;
+              }
+            });
+            return "removed" as const;
+          },
+          this.#hooks,
+        ) ?? "missing";
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+        if (isConfinedChildError(error)) return "conflict";
         throw error;
-      }
-      if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) return "conflict";
-      if (process.platform === "win32") {
-        try {
-          assertWindowsPrivatePath(path, "file", false);
-        } catch {
-          return "conflict";
-        }
-      }
-      let handle: FileHandle;
-      try {
-        handle = await open(path, fsConstants.O_RDONLY | noFollowFlag());
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
-        if ((error as NodeJS.ErrnoException).code === "ELOOP") return "conflict";
-        throw error;
-      }
-      try {
-        const before = await handle.stat({ bigint: true });
-        if (
-          !before.isFile() ||
-          !sameSnapshot(pathBefore, before) ||
-          before.nlink !== 1n ||
-          before.size !== BigInt(row.byte_length) ||
-          !privateFileMode(before)
-        ) {
-          return "conflict";
-        }
-        const bytes = await handle.readFile();
-        const currentPath = await lstat(path, { bigint: true }).catch(
-          () => undefined,
-        );
-        if (
-          currentPath === undefined ||
-          currentPath.isSymbolicLink() ||
-          !sameSnapshot(before, currentPath) ||
-          bytes.byteLength !== row.byte_length ||
-          contentDigest(bytes) !== row.digest
-        ) {
-          return "conflict";
-        }
-        await unlink(path);
-        await rootHandle?.sync().catch((error: unknown) => {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EPERM") {
-            throw error;
-          }
-        });
-        return "removed";
-      } finally {
-        await handle.close();
       }
     });
   }
 
-  async #withPinnedRoot<T>(
-    operation: (
-      operationRoot: string,
-      rootHandle: FileHandle | undefined,
-    ) => Promise<T>,
-  ): Promise<T> {
-    const lexical = await lstat(this.#trustedRoot, { bigint: true });
-    if (!safePrivateDirectory(lexical)) {
-      throw storeError(
-        "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-        `workflow handoff root is not a private real directory: ${this.#trustedRoot}`,
-      );
-    }
-    const canonical = await realpath(this.#trustedRoot);
-    if (process.platform === "win32") {
-      assertWindowsPrivatePath(canonical, "directory", false);
-      const result = await operation(canonical, undefined);
-      const [afterPath, afterCanonical] = await Promise.all([
-        lstat(this.#trustedRoot, { bigint: true }),
-        realpath(this.#trustedRoot),
-      ]);
-      assertWindowsPrivatePath(afterCanonical, "directory", false);
-      if (
-        afterCanonical !== canonical ||
-        !sameIdentity(lexical, afterPath) ||
-        !safePrivateDirectory(afterPath)
-      ) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-          "workflow handoff Windows root changed during I/O",
-        );
-      }
-      return result;
-    }
-    const rootHandle = await open(this.#trustedRoot, directoryOpenFlags());
-    try {
-      const opened = await rootHandle.stat({ bigint: true });
-      if (!safePrivateDirectory(opened) || !sameIdentity(lexical, opened)) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-          "workflow handoff root changed while opening",
-        );
-      }
-      const operationRoot = await descriptorOperationRoot(rootHandle, canonical);
-      if (operationRoot === undefined) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_SAFE_IO_UNSUPPORTED",
-          `descriptor-confined workflow handoff I/O is unsupported on ${process.platform}`,
-        );
-      }
-      const result = await operation(operationRoot, rootHandle);
-      const [afterPath, afterCanonical, afterHandle] = await Promise.all([
-        lstat(this.#trustedRoot, { bigint: true }),
-        realpath(this.#trustedRoot),
-        rootHandle.stat({ bigint: true }),
-      ]);
-      if (
-        afterCanonical !== canonical ||
-        !sameIdentity(lexical, afterPath) ||
-        !sameIdentity(lexical, afterHandle) ||
-        !safePrivateDirectory(afterPath) ||
-        !safePrivateDirectory(afterHandle)
-      ) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-          "workflow handoff root changed during I/O",
-        );
-      }
-      return result;
-    } finally {
-      await rootHandle.close();
-    }
+  async #withPinnedRoot<Result>(
+    operation: (root: ConfinedDirectory) => Promise<Result>,
+  ): Promise<Result> {
+    return withHandoffRoot(this.#trustedRoot, operation, HANDOFF_IO_POLICY, this.#hooks);
   }
 
   #markConflict(
@@ -1696,63 +1562,29 @@ function isWellFormedUnicode(value: string): boolean {
   return true;
 }
 
-function safePrivateDirectory(stats: BigIntStats): boolean {
-  return (
-    stats.isDirectory() &&
-    !stats.isSymbolicLink() &&
-    (process.platform === "win32" || (stats.mode & 0o077n) === 0n)
-  );
-}
-
-function privateFileMode(stats: BigIntStats): boolean {
-  return process.platform === "win32" || (stats.mode & 0o077n) === 0n;
-}
-
-function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function sameSnapshot(left: BigIntStats, right: BigIntStats): boolean {
-  return (
-    sameIdentity(left, right) &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs
-  );
-}
-
-function noFollowFlag(): number {
-  return (
-    (fsConstants as typeof fsConstants & { readonly O_NOFOLLOW?: number })
-      .O_NOFOLLOW ?? 0
-  );
-}
-
-function directoryOpenFlags(): number {
-  const directory =
-    (fsConstants as typeof fsConstants & { readonly O_DIRECTORY?: number })
-      .O_DIRECTORY ?? 0;
-  return fsConstants.O_RDONLY | directory | noFollowFlag();
-}
-
-async function descriptorOperationRoot(
-  handle: FileHandle,
-  canonicalRoot: string,
-): Promise<string | undefined> {
-  const candidates =
-    process.platform === "linux"
-      ? [`/proc/self/fd/${handle.fd}`, `/dev/fd/${handle.fd}`]
-      : process.platform === "win32"
-        ? []
-        : [`/dev/fd/${handle.fd}`];
-  for (const candidate of candidates) {
-    try {
-      if ((await realpath(candidate)) === canonicalRoot) return candidate;
-    } catch {
-      // An unavailable descriptor alias is not permission for lexical fallback.
+async function withHandoffRoot<Result>(
+  path: string,
+  operation: (root: ConfinedDirectory) => Promise<Result>,
+  policy: ConfinedIoPolicy = HANDOFF_IO_POLICY,
+  hooks: ConfinedIoHooks = {},
+): Promise<Result> {
+  try {
+    return await withConfinedDirectory(path, policy, operation, hooks);
+  } catch (error) {
+    if (error instanceof ConfinedIoError) {
+      if (error.code === "DESCRIPTOR_UNSUPPORTED") {
+        throw storeError("WORKFLOW_HANDOFF_SAFE_IO_UNSUPPORTED", error.message, error);
+      }
+      if (error.code === "ROOT_UNSAFE" || error.code === "ROOT_CHANGED") {
+        throw storeError("WORKFLOW_HANDOFF_UNSAFE_ROOT", error.message, error);
+      }
     }
+    throw error;
   }
-  return undefined;
+}
+
+function isConfinedChildError(error: unknown): error is ConfinedIoError {
+  return error instanceof ConfinedIoError && error.code.startsWith("CHILD_");
 }
 
 async function inspectWorkflowHandoffSource(
@@ -1823,93 +1655,74 @@ async function commitWindowsArtifactAtomically(
   trustedRoot: string,
   bytes: Uint8Array,
 ): Promise<void> {
-  const rootBefore = lstatSync(trustedRoot, { bigint: true });
-  const canonicalRoot = realpathSync(trustedRoot);
-  if (!safePrivateDirectory(rootBefore)) {
-    throw storeError(
-      "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-      "workflow handoff Windows root is not a real directory",
-    );
-  }
-  assertWindowsPrivatePath(canonicalRoot, "directory", false);
-  if (
-    resolve(join(canonicalRoot, basename(targetPath))) !== resolve(targetPath) ||
-    resolve(targetPath) === canonicalRoot
-  ) {
-    throw storeError(
-      "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-      "workflow handoff Windows target is outside its trusted root",
-    );
-  }
-
-  const expected = Buffer.from(bytes);
-  const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
-  let temporaryExists = false;
-  try {
-    const handle = await open(
-      temporaryPath,
-      fsConstants.O_WRONLY |
-        fsConstants.O_CREAT |
-        fsConstants.O_EXCL |
-        noFollowFlag(),
-      ARTIFACT_FILE_MODE,
-    );
-    temporaryExists = true;
-    try {
-      const before = await handle.stat({ bigint: true });
-      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-          "workflow handoff Windows temporary file is unsafe",
-        );
-      }
-      await handle.writeFile(expected);
-      await handle.sync();
-      const after = await handle.stat({ bigint: true });
-      if (!sameIdentity(before, after) || after.size !== BigInt(expected.byteLength)) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-          "workflow handoff Windows temporary file changed while writing",
-        );
-      }
-    } finally {
-      await handle.close();
-    }
-    assertWindowsPrivatePath(temporaryPath, "file", true);
-
-    try {
-      await link(temporaryPath, targetPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const existing = await readWindowsArtifactCandidate(targetPath);
-      if (existing === undefined || !existing.equals(expected)) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_CONFLICT",
-          "workflow handoff Windows target already contains different bytes",
-          error,
-        );
-      }
-    }
-    await unlink(temporaryPath);
-    temporaryExists = false;
-    assertWindowsPrivatePath(targetPath, "file", false);
-
-    const rootAfter = lstatSync(trustedRoot, { bigint: true });
-    const canonicalAfter = realpathSync(trustedRoot);
-    assertWindowsPrivatePath(canonicalAfter, "directory", false);
+  return withHandoffRoot(trustedRoot, async (root) => {
+    const canonicalRoot = root.canonicalPath;
     if (
-      canonicalAfter !== canonicalRoot ||
-      !sameIdentity(rootBefore, rootAfter) ||
-      !safePrivateDirectory(rootAfter)
+      resolve(join(canonicalRoot, basename(targetPath))) !== resolve(targetPath) ||
+      resolve(targetPath) === canonicalRoot
     ) {
       throw storeError(
         "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-        "workflow handoff Windows root changed during publication",
+        "workflow handoff Windows target is outside its trusted root",
       );
     }
-  } finally {
-    if (temporaryExists) await unlink(temporaryPath).catch(() => {});
-  }
+
+    const expected = Buffer.from(bytes);
+    const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+    let temporaryExists = false;
+    try {
+      const handle = await open(
+        temporaryPath,
+        fsConstants.O_WRONLY |
+          fsConstants.O_CREAT |
+          fsConstants.O_EXCL |
+          noFollowFlag(),
+        ARTIFACT_FILE_MODE,
+      );
+      temporaryExists = true;
+      try {
+        const before = await handle.stat({ bigint: true });
+        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+          throw storeError(
+            "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+            "workflow handoff Windows temporary file is unsafe",
+          );
+        }
+        await handle.writeFile(expected);
+        await handle.sync();
+        const after = await handle.stat({ bigint: true });
+        if (!sameIdentity(before, after) || after.size !== BigInt(expected.byteLength)) {
+          throw storeError(
+            "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+            "workflow handoff Windows temporary file changed while writing",
+          );
+        }
+      } finally {
+        await handle.close();
+      }
+      assertWindowsPrivatePath(temporaryPath, "file", true);
+
+      try {
+        await link(temporaryPath, targetPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const existing = await readWindowsArtifactCandidate(targetPath);
+        if (existing === undefined || !existing.equals(expected)) {
+          throw storeError(
+            "WORKFLOW_HANDOFF_CONFLICT",
+            "workflow handoff Windows target already contains different bytes",
+            error,
+          );
+        }
+      }
+      await unlink(temporaryPath);
+      temporaryExists = false;
+      assertWindowsPrivatePath(targetPath, "file", false);
+
+    } finally {
+      if (temporaryExists) await unlink(temporaryPath).catch(() => {});
+    }
+  });
 }
 
 async function commitWindowsArtifactSourceAtomically(
@@ -1917,99 +1730,80 @@ async function commitWindowsArtifactSourceAtomically(
   trustedRoot: string,
   source: AtomicArtifactByteSource,
 ): Promise<void> {
-  const rootBefore = lstatSync(trustedRoot, { bigint: true });
-  const canonicalRoot = realpathSync(trustedRoot);
-  if (!safePrivateDirectory(rootBefore)) {
-    throw storeError(
-      "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-      "workflow handoff Windows root is not a real directory",
-    );
-  }
-  assertWindowsPrivatePath(canonicalRoot, "directory", false);
-  if (
-    resolve(join(canonicalRoot, basename(targetPath))) !== resolve(targetPath) ||
-    resolve(targetPath) === canonicalRoot
-  ) {
-    throw storeError(
-      "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-      "workflow handoff Windows target is outside its trusted root",
-    );
-  }
-
-  const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
-  let temporaryExists = false;
-  try {
-    const handle = await open(
-      temporaryPath,
-      fsConstants.O_WRONLY |
-        fsConstants.O_CREAT |
-        fsConstants.O_EXCL |
-        noFollowFlag(),
-      ARTIFACT_FILE_MODE,
-    );
-    temporaryExists = true;
-    try {
-      const before = await handle.stat({ bigint: true });
-      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-          "workflow handoff Windows temporary file is unsafe",
-        );
-      }
-      await copyWorkflowHandoffSource(handle, source);
-      await handle.sync();
-      const after = await handle.stat({ bigint: true });
-      if (
-        !sameIdentity(before, after) ||
-        after.size !== BigInt(source.byteLength)
-      ) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-          "workflow handoff Windows temporary file changed while writing",
-        );
-      }
-    } finally {
-      await handle.close();
-    }
-    assertWindowsPrivatePath(temporaryPath, "file", true);
-
-    try {
-      await link(temporaryPath, targetPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const existing = await digestWindowsArtifactCandidate(targetPath);
-      if (
-        existing === undefined ||
-        existing.byteLength !== source.byteLength ||
-        existing.sha256 !== source.sha256
-      ) {
-        throw storeError(
-          "WORKFLOW_HANDOFF_CONFLICT",
-          "workflow handoff Windows target already contains different bytes",
-          error,
-        );
-      }
-    }
-    await unlink(temporaryPath);
-    temporaryExists = false;
-    assertWindowsPrivatePath(targetPath, "file", false);
-
-    const rootAfter = lstatSync(trustedRoot, { bigint: true });
-    const canonicalAfter = realpathSync(trustedRoot);
-    assertWindowsPrivatePath(canonicalAfter, "directory", false);
+  return withHandoffRoot(trustedRoot, async (root) => {
+    const canonicalRoot = root.canonicalPath;
     if (
-      canonicalAfter !== canonicalRoot ||
-      !sameIdentity(rootBefore, rootAfter) ||
-      !safePrivateDirectory(rootAfter)
+      resolve(join(canonicalRoot, basename(targetPath))) !== resolve(targetPath) ||
+      resolve(targetPath) === canonicalRoot
     ) {
       throw storeError(
         "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-        "workflow handoff Windows root changed during publication",
+        "workflow handoff Windows target is outside its trusted root",
       );
     }
-  } finally {
-    if (temporaryExists) await unlink(temporaryPath).catch(() => {});
-  }
+
+    const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+    let temporaryExists = false;
+    try {
+      const handle = await open(
+        temporaryPath,
+        fsConstants.O_WRONLY |
+          fsConstants.O_CREAT |
+          fsConstants.O_EXCL |
+          noFollowFlag(),
+        ARTIFACT_FILE_MODE,
+      );
+      temporaryExists = true;
+      try {
+        const before = await handle.stat({ bigint: true });
+        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+          throw storeError(
+            "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+            "workflow handoff Windows temporary file is unsafe",
+          );
+        }
+        await copyWorkflowHandoffSource(handle, source);
+        await handle.sync();
+        const after = await handle.stat({ bigint: true });
+        if (
+          !sameIdentity(before, after) ||
+          after.size !== BigInt(source.byteLength)
+        ) {
+          throw storeError(
+            "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+            "workflow handoff Windows temporary file changed while writing",
+          );
+        }
+      } finally {
+        await handle.close();
+      }
+      assertWindowsPrivatePath(temporaryPath, "file", true);
+
+      try {
+        await link(temporaryPath, targetPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const existing = await digestWindowsArtifactCandidate(targetPath);
+        if (
+          existing === undefined ||
+          existing.byteLength !== source.byteLength ||
+          existing.sha256 !== source.sha256
+        ) {
+          throw storeError(
+            "WORKFLOW_HANDOFF_CONFLICT",
+            "workflow handoff Windows target already contains different bytes",
+            error,
+          );
+        }
+      }
+      await unlink(temporaryPath);
+      temporaryExists = false;
+      assertWindowsPrivatePath(targetPath, "file", false);
+
+    } finally {
+      if (temporaryExists) await unlink(temporaryPath).catch(() => {});
+    }
+  });
 }
 
 async function copyWorkflowHandoffSource(
@@ -2054,79 +1848,38 @@ async function copyWorkflowHandoffSource(
 
 async function digestWindowsArtifactCandidate(
   path: string,
-): Promise<
-  { readonly byteLength: number; readonly sha256: string } | undefined
-> {
-  let pathBefore: BigIntStats;
-  try {
-    pathBefore = await lstat(path, { bigint: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) return undefined;
-  assertWindowsPrivatePath(path, "file", false);
-  const handle = await open(path, fsConstants.O_RDONLY | noFollowFlag());
-  try {
-    const opened = await handle.stat({ bigint: true });
-    if (!sameSnapshot(pathBefore, opened)) return undefined;
+): Promise<{ readonly byteLength: number; readonly sha256: string } | undefined> {
+  return withWindowsArtifactCandidate(path, async (file) => {
     const hash = createHash("sha256");
-    const buffer = Buffer.allocUnsafe(SOURCE_COPY_BYTES);
-    let byteLength = 0;
-    while (true) {
-      const read = await handle.read(
-        buffer,
-        0,
-        buffer.byteLength,
-        byteLength,
-      );
-      if (read.bytesRead === 0) break;
-      hash.update(buffer.subarray(0, read.bytesRead));
-      byteLength += read.bytesRead;
-    }
-    const [after, pathAfter] = await Promise.all([
-      handle.stat({ bigint: true }),
-      lstat(path, { bigint: true }),
-    ]);
-    if (
-      !sameSnapshot(opened, after) ||
-      !sameSnapshot(after, pathAfter) ||
-      after.size !== BigInt(byteLength)
-    ) {
-      return undefined;
-    }
-    return { byteLength, sha256: hash.digest("hex") };
-  } finally {
-    await handle.close();
-  }
+    await scanConfinedFile(file, (chunk) => {
+      hash.update(chunk);
+    });
+    return { byteLength: Number(file.snapshot.size), sha256: hash.digest("hex") };
+  });
 }
 
-async function readWindowsArtifactCandidate(
+async function readWindowsArtifactCandidate(path: string): Promise<Buffer | undefined> {
+  return withWindowsArtifactCandidate(path, readConfinedFile);
+}
+
+async function withWindowsArtifactCandidate<Result>(
   path: string,
-): Promise<Buffer | undefined> {
-  let pathBefore: BigIntStats;
+  operation: (file: ConfinedFile) => Promise<Result>,
+): Promise<Result | undefined> {
   try {
-    pathBefore = await lstat(path, { bigint: true });
+    return await withHandoffRoot(
+      dirname(path),
+      (root) => withRegularChild(
+        root,
+        basename(path),
+        { maximumBytes: MAX_WORKFLOW_ARTIFACT_BYTES },
+        operation,
+      ),
+      HANDOFF_INSTALLATION_IO_POLICY,
+    );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if (isConfinedChildError(error)) return undefined;
     throw error;
-  }
-  if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) return undefined;
-  assertWindowsPrivatePath(path, "file", false);
-  const handle = await open(path, fsConstants.O_RDONLY | noFollowFlag());
-  try {
-    const opened = await handle.stat({ bigint: true });
-    if (!sameSnapshot(pathBefore, opened)) return undefined;
-    const bytes = await handle.readFile();
-    const [after, pathAfter] = await Promise.all([
-      handle.stat({ bigint: true }),
-      lstat(path, { bigint: true }),
-    ]);
-    return sameSnapshot(opened, after) && sameSnapshot(opened, pathAfter)
-      ? bytes
-      : undefined;
-  } finally {
-    await handle.close();
   }
 }
 

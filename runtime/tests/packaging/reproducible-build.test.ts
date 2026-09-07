@@ -526,6 +526,7 @@ describe("reproducible install and release contract", () => {
       "tests/app-server/windows-named-pipe.win32.test.ts",
     );
     expect(windowsJob).toContain("tests/agents/jobs/csv-output.native.test.ts");
+    expect(windowsJob).toContain("tests/agents/workflow-filesystem.win32.test.ts");
     expect(windowsJob).toContain(
       "tests/durability/atomic-artifact.win32.test.ts",
     );
@@ -542,8 +543,8 @@ describe("reproducible install and release contract", () => {
       "tests/workspace/bound-helper-transport.win32.test.ts",
     );
     expect(windowsJob).toContain("--config vitest.native.config.ts");
-    expect(windowsJob).toContain("numTotalTestSuites: 18");
-    expect(windowsJob).toContain("numTotalTests: 104");
+    expect(windowsJob).toContain("numTotalTestSuites: 19");
+    expect(windowsJob).toContain("numTotalTests: 110");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
@@ -553,7 +554,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows FND/native capability lane passed 104 tests in 11 files with zero skipped",
+      "Windows FND/native capability lane passed 110 tests in 12 files with zero skipped",
     );
 
     // Six lanes: default-suite plus the five hosted capability lanes.

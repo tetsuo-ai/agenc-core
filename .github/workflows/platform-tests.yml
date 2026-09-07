@@ -1460,6 +1460,7 @@ jobs:
             --require-zero-skips `
             run `
             tests/agents/jobs/csv-output.native.test.ts `
+            tests/agents/workflow-filesystem.win32.test.ts `
             tests/app-server/windows-named-pipe.win32.test.ts `
             tests/durability/atomic-artifact.win32.test.ts `
             tests/fnd/benchmark-harness-faults.test.ts `
@@ -1485,6 +1486,7 @@ jobs:
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
           const expectedFiles = [
             "tests/agents/jobs/csv-output.native.test.ts",
+            "tests/agents/workflow-filesystem.win32.test.ts",
             "tests/app-server/windows-named-pipe.win32.test.ts",
             "tests/durability/atomic-artifact.win32.test.ts",
             "tests/fnd/benchmark-harness-faults.test.ts",
@@ -1497,12 +1499,12 @@ jobs:
             "tests/workspace/bound-helper-transport.win32.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 18,
-            numPassedTestSuites: 18,
+            numTotalTestSuites: 19,
+            numPassedTestSuites: 19,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 104,
-            numPassedTests: 104,
+            numTotalTests: 110,
+            numPassedTests: 110,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1525,7 +1527,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows FND/native capability lane passed 104 tests in 11 files with zero skipped");
+          console.log("Windows FND/native capability lane passed 110 tests in 12 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(

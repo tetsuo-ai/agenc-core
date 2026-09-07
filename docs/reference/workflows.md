@@ -57,6 +57,30 @@ data. They are never used directly as filesystem or agent-path components.
 Input aliases must start with a letter and then contain only letters, digits,
 `_`, or `-`.
 
+### Filesystem access
+
+Manifest loading and handoff storage share the descriptor, identity, and
+bounded-read operations in `runtime/src/fs/descriptor-confined-io.ts`.
+Both reject symlink roots and children and recheck file snapshots and root
+identity after reading. Child creation or removal elsewhere in the root does
+not invalidate an unchanged file.
+
+Manifest roots and files may be shared, and manifests may have hard links.
+When traversable descriptor aliases are unavailable, the manifest loader uses
+an explicitly selected path fallback with identity checks before and after I/O.
+
+Committed handoffs require private roots and files and reject hard links.
+POSIX handoff I/O fails closed without a traversable descriptor alias. Windows
+handoffs use the path fallback only with protected, current-user-only NTFS ACL
+checks on roots and files. During Windows installation, a candidate may still
+have the temporary publication hard link; committed reads retain the strict
+single-link rule. Reads, cleanup checks, and existing-candidate comparisons
+retain their byte caps even if a file grows.
+
+Path fallback checks can detect observed replacements but cannot provide an
+atomic namespace-confinement guarantee against an ancestor that another actor
+replaces and restores entirely between checks.
+
 ### Child identity
 
 The agent registry accepts only `[a-z0-9_]+` path segments
