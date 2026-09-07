@@ -2086,6 +2086,8 @@ export interface EventGapParams extends JsonObject {
   readonly reason: "retention";
   readonly source: "background_runner_retention" | "multiplexer_retention";
   readonly retiredCount: number;
+  /** False means replay is required but the loss count is unknown (zero). */
+  readonly retiredCountKnown?: boolean;
   readonly coordinatesAvailable?: boolean;
   readonly afterSequence?: number;
   readonly firstAvailableSequence?: number;

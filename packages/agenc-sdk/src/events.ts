@@ -88,6 +88,7 @@ export type AgencPromptEvent = AgencPromptEventIdentity &
         readonly afterSequence?: number;
         readonly firstAvailableSequence?: number;
         readonly retiredCount: number;
+        readonly retiredCountKnown?: boolean;
       }
     | {
         readonly type: "session_event";
@@ -247,7 +248,8 @@ export function promptEventFromNotification(
       params.reason !== "retention" ||
       typeof params.sessionId !== "string" ||
       !Number.isSafeInteger(params.retiredCount) ||
-      (params.retiredCount as number) < 1
+      (params.retiredCount as number) < 0 ||
+      (params.retiredCount === 0 && params.retiredCountKnown !== false)
     ) {
       return null;
     }
@@ -262,6 +264,7 @@ export function promptEventFromNotification(
       ...identity,
       sessionId: params.sessionId,
       retiredCount: params.retiredCount as number,
+      ...(params.retiredCountKnown === false ? { retiredCountKnown: false } : {}),
       ...(typeof params.runId === "string" ? { runId: params.runId } : {}),
       ...(afterSequence !== undefined ? { afterSequence } : {}),
       ...(firstAvailableSequence !== undefined

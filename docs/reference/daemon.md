@@ -573,6 +573,15 @@ All 18 names in `AGENC_DAEMON_NOTIFICATION_METHODS`:
 | Sync | `event.event_gap` (retention eviction or replay required; do not skip) |
 | Realtime (typed; start is advertised `false`) | `thread/realtime/started`, `itemAdded`, `transcript/delta`, `transcript/done`, `outputAudio/delta`, `sdp`, `error`, `closed` |
 
+Completed agents retain detached events for five minutes, with a global limit
+of 128 agents and 8 MiB of UTF-8 data, including agent IDs. An individual
+buffer over 1 MiB requires durable replay. Attaching after cache eviction or
+expiry emits `event.event_gap` with `retiredCount: 0`,
+`retiredCountKnown: false`, and `coordinatesAvailable: false`: the cache cannot
+prove how many events are missing. Use `run.replay` with the run ID and the
+client's last durable sequence (or zero for a full replay). Existing count
+gaps omit `retiredCountKnown` and carry a positive, known `retiredCount`.
+
 `event.mcp_status_changed` is an invalidation, not a state dump. Its strict
 payload is `{ sessionId, revision }`. Fetch `session.mcp.status` for the
 sanitized server/tool projection. A daemon replacement starts a new revision

@@ -3,6 +3,38 @@ import { describe, expect, it } from "vitest";
 import { promptEventFromNotification } from "../../../packages/agenc-sdk/src/events";
 
 describe("agenc-sdk prompt event mapping", () => {
+  it("preserves a replay-required gap when the retired count is no longer known", () => {
+    const notification = {
+      method: "event.event_gap",
+      params: {
+        kind: "event_gap",
+        reason: "retention",
+        sessionId: "session_1",
+        runId: "run_1",
+        retiredCount: 0,
+        retiredCountKnown: false,
+      },
+    };
+    expect(promptEventFromNotification(notification)).toMatchObject({
+      type: "gap",
+      runId: "run_1",
+      retiredCount: 0,
+      retiredCountKnown: false,
+    });
+    expect(
+      promptEventFromNotification({
+        ...notification,
+        params: { ...notification.params, retiredCountKnown: true },
+      }),
+    ).toBeNull();
+    expect(
+      promptEventFromNotification({
+        ...notification,
+        params: { ...notification.params, retiredCount: -1 },
+      }),
+    ).toBeNull();
+  });
+
   it("preserves a typed mobile client action on user-input requests", () => {
     const clientAction = {
       type: "ledger_solana_transfer_v1",

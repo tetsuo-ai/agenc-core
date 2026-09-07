@@ -440,7 +440,8 @@ export function notificationFromDaemonEvent(
     payload.source === BACKGROUND_RUNNER_GAP_SOURCE &&
     typeof payload.runId === "string" &&
     payload.runId.length > 0 &&
-    positiveInteger(payload.retiredCount) > 0
+    (positiveInteger(payload.retiredCount) > 0 ||
+      (payload.retiredCount === 0 && payload.retiredCountKnown === false))
   ) {
     const afterSequence = nonNegativeSequence(payload.afterSequence);
     const firstAvailableSequence = positiveSequence(
@@ -457,6 +458,7 @@ export function notificationFromDaemonEvent(
         reason: "retention",
         source: BACKGROUND_RUNNER_GAP_SOURCE,
         retiredCount: positiveInteger(payload.retiredCount),
+        ...(payload.retiredCountKnown === false ? { retiredCountKnown: false } : {}),
         ...(typeof payload.coordinatesAvailable === "boolean"
           ? { coordinatesAvailable: payload.coordinatesAvailable }
           : {}),

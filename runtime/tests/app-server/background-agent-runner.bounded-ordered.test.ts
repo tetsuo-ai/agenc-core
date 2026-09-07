@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -6,9 +6,7 @@ import {
   type AgenCEnsureAgentControlFunction,
 } from "./background-agent-runner.js";
 import type { AgentStatus } from "../agents/status.js";
-import {
-  createEmptyToolPermissionContext,
-} from "../permissions/types.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
@@ -74,11 +72,13 @@ function makeTopLevelRunner(opts: { readonly conversationId: string }) {
   const stub = makeStubConversationThreadManager({
     threadId: opts.conversationId,
   });
-  const configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
-    config: {},
-    workspaceRoot: process.cwd(),
-    projectTrust: "trusted",
-  });
+  const configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig(
+    {
+      config: {},
+      workspaceRoot: process.cwd(),
+      projectTrust: "trusted",
+    },
+  );
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     cwd: process.cwd(),
     ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
@@ -96,6 +96,7 @@ function makeTopLevelRunner(opts: { readonly conversationId: string }) {
     }),
   };
   let nextEventSequence = 0;
+  const phaseListeners: ((phase: never) => void)[] = [];
   const session = {
     conversationId: opts.conversationId,
     abortController: new AbortController(),
@@ -103,7 +104,10 @@ function makeTopLevelRunner(opts: { readonly conversationId: string }) {
     get sessionConfiguration() {
       return sessionState.sessionConfiguration;
     },
-    subscribeToEvents: () => () => {},
+    subscribeToEvents: (listener: (phase: never) => void) => {
+      phaseListeners.push(listener);
+      return () => {};
+    },
     emitPhaseEvent: () => {},
     prepareEmit: vi.fn((candidate: Record<string, unknown>) => {
       const event = { ...candidate, seq: ++nextEventSequence };
@@ -152,7 +156,7 @@ function makeTopLevelRunner(opts: { readonly conversationId: string }) {
     })) as unknown as AgenCEnsureAgentControlFunction,
     now: () => "2026-05-09T00:00:00.000Z",
   });
-  return { runner, stub, control };
+  return { runner, stub, control, bootstrap, phaseListeners };
 }
 
 function runningStatus(turnId: string, startedAtMs: number): AgentStatus {
@@ -160,6 +164,136 @@ function runningStatus(turnId: string, startedAtMs: number): AgentStatus {
 }
 
 describe("AgenC background-agent runner: bounded + ordered events", () => {
+  afterEach(() => vi.useRealTimers());
+
+  async function complete(
+    stub: ReturnType<typeof makeStubConversationThreadManager>,
+  ) {
+    stub.pushStatus({
+      status: "completed",
+      lastAgentMessage: "done",
+    } as AgentStatus);
+    for (let i = 0; i < 10; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+
+  async function attach(
+    runner: AgenCDelegateBackgroundAgentRunner,
+    agentId: string,
+  ) {
+    const events: unknown[] = [];
+    await runner.attachAgentSessionEvents(agentId, {
+      sessionId: "late-client",
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+    return events;
+  }
+
+  const startParams = {
+    objective: "retention",
+    unattendedAllow: [],
+    unattendedDeny: [],
+  };
+  const replayRequired = {
+    method: "event.event_gap",
+    params: expect.objectContaining({
+      retiredCount: 0,
+      retiredCountKnown: false,
+      coordinatesAvailable: false,
+      source: "background_runner_retention",
+    }),
+  };
+
+  it("expires completed buffers without a later attachment", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const { runner, stub } = makeTopLevelRunner({
+      conversationId: "expired-agent",
+    });
+    await runner.startAgent(startParams);
+    await complete(stub);
+    expect(await runner.getAgentSnapshot("expired-agent")).toBeNull();
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1);
+    expect(await attach(runner, "expired-agent")).toEqual([
+      expect.objectContaining(replayRequired),
+    ]);
+  });
+
+  it("does not replay a completed generation into a reused agent ID", async () => {
+    const first = makeTopLevelRunner({ conversationId: "reused-agent" });
+    await first.runner.startAgent(startParams);
+    first.stub.pushStatus(runningStatus("old-generation-only", 1));
+    await complete(first.stub);
+    const next = makeTopLevelRunner({ conversationId: "reused-agent" });
+    first.bootstrap.mockImplementation(() => next.bootstrap({} as never));
+    await first.runner.startAgent(startParams);
+    const events = await attach(first.runner, "reused-agent");
+    expect(JSON.stringify(events)).not.toContain("old-generation-only");
+    await complete(next.stub);
+  });
+
+  it("bounds replay across thousands of completed unattached agents", async () => {
+    const first = makeTopLevelRunner({ conversationId: "completed-0" });
+    for (let i = 0; i < 2_000; i++) {
+      const next =
+        i === 0
+          ? first
+          : makeTopLevelRunner({ conversationId: `completed-${i}` });
+      if (i !== 0)
+        first.bootstrap.mockImplementation(() => next.bootstrap({} as never));
+      await first.runner.startAgent(startParams);
+      await complete(next.stub);
+      expect(await first.runner.getAgentSnapshot(`completed-${i}`)).toBeNull();
+    }
+    expect(await attach(first.runner, "completed-0")).toEqual([
+      expect.objectContaining(replayRequired),
+    ]);
+    const newest = await attach(first.runner, "completed-1999");
+    expect(newest.length).toBeGreaterThan(0);
+    expect(newest).not.toContainEqual(expect.objectContaining(replayRequired));
+  }, 60_000);
+
+  it("ignores delayed phase callbacks after cleanup and after ID reuse", async () => {
+    const first = makeTopLevelRunner({ conversationId: "late-phase-agent" });
+    await first.runner.startAgent(startParams);
+    await complete(first.stub);
+    for (const listener of first.phaseListeners) {
+      listener({
+        type: "assistant_text",
+        content: "retired-before-reuse",
+      } as never);
+    }
+    const completedEvents = await attach(first.runner, "late-phase-agent");
+    expect(JSON.stringify(completedEvents)).not.toContain(
+      "retired-before-reuse",
+    );
+    const next = makeTopLevelRunner({ conversationId: "late-phase-agent" });
+    first.bootstrap.mockImplementation(() => next.bootstrap({} as never));
+    await first.runner.startAgent(startParams);
+    for (const listener of first.phaseListeners) {
+      listener({
+        type: "assistant_text",
+        content: "retired-after-reuse",
+      } as never);
+    }
+    for (const listener of next.phaseListeners) {
+      listener({
+        type: "assistant_text",
+        content: "current-generation",
+      } as never);
+    }
+    for (let i = 0; i < 5; i++)
+      await new Promise((resolve) => setImmediate(resolve));
+    const events = JSON.stringify(
+      await attach(first.runner, "late-phase-agent"),
+    );
+    expect(events).not.toContain("retired-after-reuse");
+    expect(events).toContain("current-generation");
+    await complete(next.stub);
+  });
+
   it("announces buffered-event eviction while retaining the newest events", async () => {
     const { runner, stub } = makeTopLevelRunner({
       conversationId: "session-bounded",
