@@ -646,6 +646,7 @@ describe("provider command access", () => {
         }),
       ),
     ).inspect(selection);
+    expect(signedOut.configurationError).toBeUndefined();
     expect(signedOut).toMatchObject({
       effect: "blocked",
       route: "unavailable",
