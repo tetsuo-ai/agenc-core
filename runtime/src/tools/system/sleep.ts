@@ -62,7 +62,7 @@ export function createSleepTool(): Tool {
       deferred: false,
     },
     requiresApproval: false,
-    recoveryCategory: "side-effecting",
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {

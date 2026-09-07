@@ -3333,7 +3333,7 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
     }),
     isReadOnly: true,
     concurrencyClass: { kind: "shared_read" },
-    recoveryCategory: "side-effecting",
+    recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
       properties: {
@@ -3742,7 +3742,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
       }),
       isReadOnly: true,
       concurrencyClass: { kind: "shared_read" },
-      recoveryCategory: "side-effecting",
+      recoveryCategory: "idempotent",
       admissionEstimate: () => ({
         maxInputTokens: 0,
         maxOutputTokens: 0,
@@ -3866,7 +3866,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
       }),
       isReadOnly: true,
       concurrencyClass: { kind: "shared_read" },
-      recoveryCategory: "side-effecting",
+      recoveryCategory: "idempotent",
       inputSchema: {
         type: "object",
         properties: {
