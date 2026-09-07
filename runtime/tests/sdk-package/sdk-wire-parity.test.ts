@@ -101,7 +101,9 @@ const valid: AgencDaemonRequest<"health.ping"> = { jsonrpc: "2.0", id: 1, method
 
   it("generates a deterministic standalone closure without internal RPC methods", async () => {
     const rendered = await renderSdkWireTypes(protocolPath);
-    expect(rendered).toBe(await readFile(generatedPath, "utf8"));
+    expect(rendered).toBe(
+      (await readFile(generatedPath, "utf8")).replace(/\r\n?/g, "\n"),
+    );
     expect(rendered).toBe(await renderSdkWireTypes(protocolPath));
     expect(rendered).not.toMatch(/^import /m);
     expect(rendered).not.toContain("AgenCDaemonInternalResultByMethod");
