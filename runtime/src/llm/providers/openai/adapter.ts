@@ -6,6 +6,7 @@
  * @module
  */
 
+import { randomUUID } from "node:crypto";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -656,6 +657,7 @@ export class OpenAIProvider implements LLMProvider {
     messages: LLMMessage[],
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    const headers = this.managedRequestHeaders();
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
     const model = options?.model?.trim() || this.config.model;
     const requestTools = options?.tools
@@ -686,6 +688,7 @@ export class OpenAIProvider implements LLMProvider {
           });
           const response = await session.requestJson<Record<string, unknown>>({
             api: "responses",
+            headers,
             path: this.resolvePath("/responses"),
             method: "POST",
             body: request,
@@ -731,6 +734,7 @@ export class OpenAIProvider implements LLMProvider {
           chatCompletionsCapabilityHintsForProvider(this.name, model);
         const response = await session.requestJson<Record<string, unknown>>({
           api: "chat_completions",
+          headers,
           path: this.resolvePath("/chat/completions"),
           method: "POST",
           body: request,
@@ -782,18 +786,20 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    const headers = this.managedRequestHeaders();
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
 
     try {
       return await this.auth.withAuthorizedOperation(async () => {
         if (this.config.useResponsesApi !== false) {
-          return await this.streamResponses(messages, onChunk, options, timeoutMs);
+          return await this.streamResponses(messages, onChunk, options, timeoutMs, headers);
         }
         return await this.streamChatCompletions(
           messages,
           onChunk,
           options,
           timeoutMs,
+          headers,
         );
       }, { singleWireAttempt: options?.singleWireAttempt });
     } catch (error) {
@@ -1045,11 +1051,21 @@ export class OpenAIProvider implements LLMProvider {
     return this.config.chatgptBackend === true;
   }
 
+  private managedRequestHeaders(): Readonly<Record<string, string>> | undefined {
+    // One UUID belongs to this logical provider call. Generate it outside
+    // authentication and stream fallback loops so a retry cannot buy twice.
+    // A fresh call (including the next tool round) always receives a fresh ID.
+    return this.config.managedRequestId === true
+      ? { "Idempotency-Key": randomUUID() }
+      : undefined;
+  }
+
   private async streamResponses(
     messages: LLMMessage[],
     onChunk: StreamProgressCallback,
     options: LLMChatOptions | undefined,
     timeoutMs: number | undefined,
+    headers: Readonly<Record<string, string>> | undefined,
   ): Promise<LLMResponse> {
     const model = options?.model?.trim() || this.config.model;
     const requestOptions = {
@@ -1078,6 +1094,7 @@ export class OpenAIProvider implements LLMProvider {
       try {
         response = await this.requestStream({
           api: "responses",
+          headers,
           path: this.resolvePath("/responses"),
           body: request,
           timeoutMs,
@@ -1300,6 +1317,7 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options: LLMChatOptions | undefined,
     timeoutMs: number | undefined,
+    headers: Readonly<Record<string, string>> | undefined,
   ): Promise<LLMResponse> {
     const requestModel = options?.model?.trim() || this.config.model;
     const streamCapabilityHints = chatCompletionsCapabilityHintsForProvider(
@@ -1352,6 +1370,7 @@ export class OpenAIProvider implements LLMProvider {
       try {
         response = await this.requestStream({
           api: "chat_completions",
+          headers,
           path: this.resolvePath("/chat/completions"),
           body: request,
           timeoutMs,
@@ -1752,6 +1771,7 @@ export class OpenAIProvider implements LLMProvider {
     readonly api: "responses" | "chat_completions";
     readonly path: string;
     readonly body: Record<string, unknown>;
+    readonly headers?: Readonly<Record<string, string>>;
     readonly timeoutMs?: number;
     readonly signal?: AbortSignal;
     readonly providerFallback?: OpenAIProviderConfig["providerFallback"];
@@ -1764,7 +1784,7 @@ export class OpenAIProvider implements LLMProvider {
       api: args.api,
       path: args.path,
       method: "POST",
-      headers: { accept: "text/event-stream" },
+      headers: { accept: "text/event-stream", ...args.headers },
       body: args.body,
       timeoutMs: normalizeTimeoutMs(args.timeoutMs),
       signal: args.signal,

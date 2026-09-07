@@ -1380,6 +1380,7 @@ function buildOpenAICompatibleProvider(
     tools: opts.tools ? [...opts.tools] : undefined,
     baseURL,
     useResponsesApi,
+    ...(extra.managedCredential === true ? { managedRequestId: true } : {}),
     ...(extra.store !== undefined ? { store: extra.store } : {}),
     ...(extra.contextWindowTokens !== undefined
       ? { contextWindowTokens: extra.contextWindowTokens }
@@ -1438,6 +1439,7 @@ function buildManagedGatewayProvider(
     model,
     providerName: provider,
     apiKeyEnvLabel: "AgenC subscription",
+    managedRequestId: true,
     tools: opts.tools ? [...opts.tools] : undefined,
     useResponsesApi: false,
     ...(extra.contextWindowTokens !== undefined

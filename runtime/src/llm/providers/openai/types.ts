@@ -35,4 +35,6 @@ export interface OpenAIProviderConfig extends LLMProviderConfig {
   readonly apiKeyEnvLabel?: string;
   readonly authStrategy?: OpenAIProviderAuthStrategy;
   readonly basePath?: string;
+  /** Internal managed transport marker; direct provider credentials omit it. */
+  readonly managedRequestId?: boolean;
 }
