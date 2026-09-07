@@ -82,6 +82,11 @@ import {
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ConfigStore } from "../config/store.js";
+import {
+  _resetErrorLogForTesting,
+  getErrorLogQueueStats,
+  logMCPError,
+} from "../../src/utils/log.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
   sandboxExecutionBrokerAuthorityFromSessionAuthority,
@@ -3400,6 +3405,41 @@ describe("AgenC daemon CLI", () => {
       }
     },
   );
+
+  it("drains diagnostic startup events and detaches the sink when the foreground daemon stops", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    _resetErrorLogForTesting();
+    logMCPError("server", "queued startup diagnostic");
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    try {
+      await waitForPid(pidPath);
+      logMCPError("server", "live diagnostic");
+      expect(io.stderrText()).toContain("queued startup diagnostic");
+      expect(io.stderrText()).toContain("live diagnostic");
+      expect(getErrorLogQueueStats()).toMatchObject({ errors: 0, retainedBytes: 0 });
+    } finally {
+      await stopRunningDaemons([{ signalProcess, running }]);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+    try {
+      expect(getErrorLogQueueStats()).toEqual({
+        errors: 0, debug: 0, retainedBytes: 0, droppedErrors: 0, droppedDebug: 0,
+      });
+      logMCPError("server", "after shutdown");
+      expect(io.stderrText()).not.toContain("after shutdown");
+      expect(getErrorLogQueueStats().errors).toBe(1);
+    } finally {
+      _resetErrorLogForTesting();
+    }
+  });
 
   it("reload command re-reads config and starts configured mcp.server without shutdown", async () => {
     const agencHome = await tempAgencHome();

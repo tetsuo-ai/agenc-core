@@ -210,6 +210,8 @@ import {
   type SizeCappedFileLogSink,
 } from "../utils/logger.js";
 import { isRecord } from "../utils/record.js";
+import { logForDebugging } from "../utils/debug.js";
+import { installAgenCDaemonErrorLogSink } from "./daemon-error-log.js";
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 import { workspaceMutationCoordinators } from "../workspace/mutation-coordinator.js";
 
@@ -3286,6 +3288,12 @@ async function runAgenCDaemonForegroundLocked(
       executionAdmissionKernel.close();
     });
     if (host.startupGuardReceiver?.wasRequested() === true) return 1;
+    let writeErrorLog = (line: string): void => {
+      io.stderr.write(line);
+    };
+    let writeErrorDebugLog = (line: string): void => {
+      logForDebugging(line);
+    };
     // Only the spawned, detached daemon (AGENC_DAEMON_RUN=1) redirects console
     // output into the size-capped rotating sink; a `--foreground` invocation run
     // directly by a user keeps writing to the inherited terminal.
@@ -3294,6 +3302,8 @@ async function runAgenCDaemonForegroundLocked(
         path: resolveAgenCDaemonLogPath(host.env, host.userHome),
       });
       if (logSink !== null) {
+        writeErrorLog = (line) => logSink.sink.write(line);
+        writeErrorDebugLog = writeErrorLog;
         const disposeExitDiagnostics = installAgenCDaemonExitDiagnostics({
           sink: logSink.sink,
         });
@@ -3316,6 +3326,11 @@ async function runAgenCDaemonForegroundLocked(
       });
       cleanup.register("daemon-heartbeat", disposeHeartbeat);
     }
+    cleanup.register("daemon-error-log-sink", installAgenCDaemonErrorLogSink({
+      path: resolveAgenCDaemonLogPath(host.env, host.userHome),
+      write: writeErrorLog,
+      writeDebug: writeErrorDebugLog,
+    }));
     let shuttingDown = false;
     let startupCancelled = false;
     let resolveRpcShutdown!: () => void;
