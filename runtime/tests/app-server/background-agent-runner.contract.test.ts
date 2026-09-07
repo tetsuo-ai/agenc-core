@@ -3101,6 +3101,77 @@ describe("AgenC delegate background-agent runner", () => {
     expect(harness.stateRepository.reload).toHaveBeenCalled();
   });
 
+  it("restores matching snapshot fields without comparing durable metadata", async () => {
+    const runId = "session-settings-comparison-metadata";
+    const baseline = canonicalRuntimeSettings();
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+    const projection = {
+      ...baseline,
+      eventId: `runtime-settings:${runId}:initial`,
+      epoch: 1,
+    };
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "compare canonical settings fields",
+        explicitColdResume: true,
+        runtimeSettings: projection,
+      }),
+    ).resolves.toBe(true);
+
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(1);
+    expect((await harness.runner.getAgentSnapshot(runId))?.runtimeSettings)
+      .toEqual(baseline);
+  });
+
+  it.each(["missing", "conflicting", "serialization-hook"])(
+    "rejects a %s canonical settings projection during restore",
+    async (scenario) => {
+      const runId = `session-settings-comparison-${scenario}`;
+      const baseline = canonicalRuntimeSettings();
+      const rolloutItems = scenario === "missing"
+        ? []
+        : [runtimeSettingsRolloutItem(runId, baseline)];
+      const harness = makeTopLevelRunner({
+        conversationId: runId,
+        rolloutItems,
+        canonicalRuntimeSettings: true,
+      });
+      const serialize = vi.fn(() => baseline);
+      const projection = {
+        ...baseline,
+        hooksDisabled: true,
+        ...(scenario === "serialization-hook" ? { toJSON: serialize } : {}),
+      };
+
+      await expect(
+        harness.runner.restoreAgent({
+          agentId: runId,
+          objective: "reject inconsistent settings evidence",
+          explicitColdResume: true,
+          runtimeSettings: projection,
+        }),
+      ).rejects.toThrow("runtime settings disagree with canonical run");
+
+      expect(serialize).not.toHaveBeenCalled();
+      expect(await harness.runner.getAgentSnapshot(runId)).toBeNull();
+      expect(recordedRuntimeSettingsEvents(rolloutItems))
+        .toHaveLength(scenario === "missing" ? 0 : 1);
+    },
+  );
+
+  it("uses field comparison throughout runner restore and configuration", () => {
+    const source = readFileSync(backgroundAgentRunnerSourcePath, "utf8");
+    expect(source.includes("stableStringify")).toBe(false);
+    expect(source).toContain("runtimeSettingsEqual");
+  });
+
   it("durably applies explicit restore overrides after the canonical settings baseline", async () => {
     const baseline = {
       permissionMode: "default" as const,

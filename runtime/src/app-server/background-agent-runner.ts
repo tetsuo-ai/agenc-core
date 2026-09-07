@@ -37,7 +37,6 @@ import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { routerFromRegistry } from "../tools/router.js";
 import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
-import { stableStringify } from "../utils/stableStringify.js";
 import { logForDebugging } from "../utils/debug.js";
 import {
   runWithBootstrapSessionScope,
@@ -161,6 +160,7 @@ import {
 } from "../contracts/run-contracts.js";
 import {
   cloneFrozenRuntimeSettingsSnapshot,
+  runtimeSettingsEqual,
 } from "../state/runtime-settings-snapshot.js";
 import { runWithAgentRuntimeOptions } from "../session/runtime-options.js";
 import { shutdownSessionLifecycle } from "../session/lifecycle.js";
@@ -1051,8 +1051,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         );
         if (
           params.runtimeSettings !== undefined &&
-          stableStringify(params.runtimeSettings) !==
-            stableStringify(canonicalRuntimeState.runtimeSettings)
+          (canonicalRuntimeState.runtimeSettings === undefined ||
+            !runtimeSettingsEqual(
+              params.runtimeSettings,
+              canonicalRuntimeState.runtimeSettings,
+            ))
         ) {
           throw new Error(
             `restoreAgent runtime settings disagree with canonical run ${params.agentId}`,
@@ -1196,8 +1199,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         if (
           canonicalRuntimeState.runtimeSettings !== undefined &&
           restoredRuntimeSettings !== undefined &&
-          stableStringify(restoredRuntimeSettings) !==
-            stableStringify(canonicalRuntimeState.runtimeSettings)
+          !runtimeSettingsEqual(
+            restoredRuntimeSettings,
+            canonicalRuntimeState.runtimeSettings,
+          )
         ) {
           commitDurableRuntimeSettingsChange(
             active,
@@ -1214,10 +1219,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             runtimeWorkspaceRoot(bootstrap),
             bootstrap.configStore.current(),
           );
-          if (
-            stableStringify(restoreOverrides) !==
-            stableStringify(restoredBaseline)
-          ) {
+          if (!runtimeSettingsEqual(restoreOverrides, restoredBaseline)) {
             const previousSettings = restoredBaseline;
             const reason: RunRuntimeSettingsChangeReason =
               restoreOverrides.permissionMode !==
@@ -3955,7 +3957,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(nextServiceTier !== null ? { serviceTier: nextServiceTier } : {}),
       };
       const settingsChanged =
-        stableStringify(nextSettings) !== stableStringify(previousSettings);
+        !runtimeSettingsEqual(nextSettings, previousSettings);
       let preparedSettingsChange: PreparedRuntimeSettingsChange | undefined;
       let stagedProviderSwitch: PreparedSessionProviderSwitch | undefined;
       if (settingsChanged) {
