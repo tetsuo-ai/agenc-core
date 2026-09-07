@@ -379,6 +379,7 @@ describe("SandboxExecutionBroker", () => {
       const broker = new SandboxExecutionBroker({
         mode: "workspace_write",
         cwd: root,
+        sessionTempRoot: root,
         platform: "linux",
         sandboxManager: fakeManager,
         probe: fallbackStatus,
