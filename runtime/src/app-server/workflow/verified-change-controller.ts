@@ -531,6 +531,14 @@ interface RunContext {
     readonly testResult: RunArtifactPointer;
   };
   verifyVerdict?: string;
+  /**
+   * The verification agent's final message from the latest verify attempt,
+   * read back from the committed child evidence so a resumed run carries it
+   * too. Soak F73: without it the re-implement prompt said only
+   * `Agent verdict: FAIL` and the implementer changed nothing, while the
+   * second verifier re-derived the same defects from scratch.
+   */
+  verifyReport?: string;
   review?: VerifiedChangeReviewRecord;
   reviewNonBlocking?: readonly string[];
   export?: ExportedPatchArtifacts;
@@ -1180,7 +1188,17 @@ export class VerifiedChangeWorkflowController {
         attempt,
         spawnKind: "verify_agent",
         childRunId: `${ctx.runId}:verify-agent#${attempt}`,
-        prompt: buildVerifyAgentPrompt(ctx.spec, records),
+        prompt: buildVerifyAgentPrompt(
+          ctx.spec,
+          records,
+          attempt > 1 && ctx.verifyReport !== undefined
+            ? {
+                attempt: attempt - 1,
+                verdict: ctx.verifyVerdict ?? "FAIL",
+                report: ctx.verifyReport,
+              }
+            : undefined,
+        ),
         decorate: (outcome) => {
           const verdict = parseVerificationVerdict(outcome.finalMessage ?? "");
           return {
@@ -1220,6 +1238,7 @@ export class VerifiedChangeWorkflowController {
     const verdict = agent.evidence.verdict ?? "FAIL";
     ctx.verification = { records, allPassed, testResult };
     ctx.verifyVerdict = verdict;
+    ctx.verifyReport = agent.evidence.child?.finalMessage;
     return allPassed && verdict === "PASS";
   }
 
@@ -2564,9 +2583,13 @@ function buildImplementPrompt(ctx: RunContext, attempt: number): string {
           `- ${record.label}: exit ${record.exitCode}` +
           (record.timedOut ? " (timed out)" : ""),
       ),
-      "",
-      "Fix the failures above, then stop.",
     );
+    // Soak F73: the verdict alone told the implementer nothing; the report
+    // names the failures it has to fix.
+    if (ctx.verifyReport !== undefined) {
+      lines.push("", "### Verifier's report", ctx.verifyReport);
+    }
+    lines.push("", "Fix every failure reported above, then stop.");
   }
   return lines.join("\n");
 }
@@ -2574,6 +2597,11 @@ function buildImplementPrompt(ctx: RunContext, attempt: number): string {
 function buildVerifyAgentPrompt(
   spec: WorkflowSpec,
   records: readonly VerifiedChangeCommandRecord[],
+  previous?: {
+    readonly attempt: number;
+    readonly verdict: string;
+    readonly report: string;
+  },
 ): string {
   return [
     "You are an ADVERSARIAL verification agent for a proposed code change.",
@@ -2594,6 +2622,19 @@ function buildVerifyAgentPrompt(
         `- ${record.label}: exit ${record.exitCode}` +
         (record.timedOut ? " (timed out)" : ""),
     ),
+    // Soak F73: a second verifier that starts blind re-derives the previous
+    // findings from scratch; hand it the report and have it re-check those
+    // first, then keep verifying independently.
+    ...(previous !== undefined
+      ? [
+          "",
+          `## Previous verification attempt ${previous.attempt} (verdict ${previous.verdict})`,
+          "The change was re-implemented after this report. Re-check every",
+          "failure it lists first, then continue your own independent verification.",
+          "",
+          previous.report,
+        ]
+      : []),
     "",
     "End your final message with exactly one line:",
     "VERDICT: PASS | FAIL | PARTIAL",

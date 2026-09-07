@@ -604,6 +604,50 @@ describe("verifier prompt", () => {
   });
 });
 
+describe("retry prompts", () => {
+  it("carry the verifier's report into the re-implement and re-verify prompts", async () => {
+    // Soak F73: the implementer saw only `Agent verdict: FAIL` and changed
+    // nothing, and the second verifier re-derived the same defects from
+    // scratch. Attempt 1 fails on the agent's verdict alone.
+    const report =
+      "### Check: undo after a merge with duplicate ids\n" +
+      "undo restored one of two rows\n" +
+      "VERDICT: FAIL";
+    harness.spawner.queue("verify_agent", {
+      status: "completed",
+      finalMessage: report,
+      usage: DEFAULT_USAGE,
+    });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe(
+      "completed",
+    );
+    const implementSpawns = harness.spawner.spawns.filter(
+      (spawn) => spawn.kind === "implement",
+    );
+    const verifySpawns = harness.spawner.spawns.filter(
+      (spawn) => spawn.kind === "verify_agent",
+    );
+    expect(implementSpawns).toHaveLength(2);
+    expect(verifySpawns).toHaveLength(2);
+    // A first attempt carries nothing: there is no report yet.
+    expect(implementSpawns[0].prompt).not.toContain("Verifier's report");
+    expect(verifySpawns[0].prompt).not.toContain("Previous verification attempt");
+    // The retry names the failures to fix.
+    expect(implementSpawns[1].prompt).toContain("Agent verdict: FAIL");
+    expect(implementSpawns[1].prompt).toContain("undo restored one of two rows");
+    expect(implementSpawns[1].prompt).toContain(
+      "Fix every failure reported above, then stop.",
+    );
+    // The second verifier re-checks the reported failures first.
+    expect(verifySpawns[1].prompt).toContain(
+      "## Previous verification attempt 1 (verdict FAIL)",
+    );
+    expect(verifySpawns[1].prompt).toContain("undo restored one of two rows");
+    expect(verifySpawns[1].prompt).toContain("Re-check every");
+  });
+});
+
 describe("permission mode at start", () => {
   // Desktop soak F63: a goal started from the app in default mode planned, then
   // both implement attempts died because no approver existed for the headless
@@ -774,6 +818,9 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     );
     expect(implementSpawns).toHaveLength(2);
     expect(implementSpawns[1].prompt).toContain("Previous verification failure");
+    // The verifier's own report travels too, whatever its verdict was.
+    expect(implementSpawns[1].prompt).toContain("### Verifier's report");
+    expect(implementSpawns[1].prompt).toContain("checked everything");
   });
 
   it("review_rejected on blocking findings, with the review durably committed", async () => {

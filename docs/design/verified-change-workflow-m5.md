@@ -103,6 +103,16 @@ A failed verification earns one bounded re-implement attempt
 `maxImplementAttempts` and remaining budget allow; otherwise the run
 terminates `failed/verification_failed`.
 
+Both retry prompts carry the previous verification forward: the
+re-implement prompt lists the verdict, the required-command results and the
+verification agent's report, and asks for every reported failure to be fixed;
+the second verification prompt carries the same report and asks the verifier
+to re-check every listed failure first, then continue its own independent
+pass. The report is read back from the committed `child.finalMessage`
+evidence, so a run resumed between the two attempts carries it too. (Soak
+F73: with only `Agent verdict: FAIL` in hand the implementer changed nothing,
+and the second verifier spent 22 minutes re-deriving the same two defects.)
+
 ## Session policy
 
 The frozen spec's `permissionMode`, unattended allow/deny lists, and the
