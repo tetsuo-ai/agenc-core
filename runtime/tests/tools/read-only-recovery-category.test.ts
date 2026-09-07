@@ -14,6 +14,8 @@ import type {
 } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
+import type { ToolEvaluatorContext } from "../../src/permissions/evaluator.js";
+import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
 import type { Session } from "../../src/session/session.js";
 import { buildToolRegistry, type ToolRegistry } from "../../src/tool-registry.js";
@@ -201,5 +203,43 @@ describe("production read-only tool recovery", () => {
     expect(written.isError).not.toBe(true);
     expect(await readFile(filePath, "utf8")).toBe("mutation after timeout");
     expect(events.some((event) => event.msg.type === "effect_unknown_outcome")).toBe(false);
+  });
+
+  it.each(["deny", "ask"] as const)("keeps web-fetch %s rules off the code-mode fallback", async (behavior) => {
+    const { session, acquire } = admissionHarness();
+    const web = registeredTool("web_fetch");
+    const args = { url: "https://agenc.tech/restricted" };
+    const toolPermissionContext = createEmptyToolPermissionContext({
+      [behavior === "deny" ? "alwaysDenyRules" : "alwaysAskRules"]: {
+        localSettings: ["web_fetch(domain:agenc.tech)"],
+      },
+    });
+    const permissionContext = {
+      getAppState: () => ({ toolPermissionContext }),
+    } as unknown as ToolEvaluatorContext;
+    expect(await web.checkPermissions?.(args, permissionContext)).toMatchObject({ behavior });
+
+    __setLiveWebFetchDnsAllLookupForTests((_hostname, callback) => {
+      callback(null, [{ address: "8.8.8.8", family: 4 }]);
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("must not be fetched", { headers: { "content-type": "text/plain" } }),
+    );
+    const liveRegistry = buildToolRegistry({
+      workspaceRoot,
+      agencHome: workspaceRoot,
+      getSession: () => session,
+      modelFacingTools: [web],
+    });
+    await expect(liveRegistry.dispatchCodeModeNestedTool?.({
+      id: `nested-web-${behavior}`,
+      name: "web_fetch",
+      input: args,
+    })).resolves.toMatchObject({
+      isError: true,
+      content: expect.stringContaining("requires permission-aware dispatch"),
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

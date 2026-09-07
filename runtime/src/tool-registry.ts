@@ -473,6 +473,8 @@ function parseCodeModeNestedToolArguments(
 function canDirectDispatchFromCodeMode(tool: Tool): boolean {
   return (
     tool.requiresApproval !== true &&
+    // The fallback has no evaluator context for tool-specific permissions.
+    tool.checkPermissions === undefined &&
     tool.isReadOnly === true &&
     tool.recoveryCategory === "idempotent"
   );
