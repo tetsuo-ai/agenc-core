@@ -1,8 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 
-import { logError } from "../../../utils/log.js";
-import { getTaskOutputPath } from "../../../utils/task/diskOutput.js";
-import { tailFile } from "../../../utils/fsOperations.js";
 import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
@@ -13,6 +10,7 @@ import { orderAgentTasks, resolveAgentSelection } from "../agents/AgentsRail.js"
 import { useWorkbenchState } from "../state.js";
 import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
+import { useTaskTail } from "./useTaskTail.js";
 
 export function AgentSurface({ focused }: { readonly focused: boolean }): React.ReactElement {
   const workbench = useWorkbenchState();
@@ -22,39 +20,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
     const taskList = orderAgentTasks(Object.values(tasks).filter((item: any) => item.type !== "local_bash"));
     return resolveAgentSelection(taskList, workbench.selectedAgentTaskId).selectedTask;
   }, [tasks, workbench.selectedAgentTaskId]);
-  const [tailState, setTailState] = useState<{ readonly taskId: string | null; readonly content: string }>({
-    taskId: null,
-    content: "",
-  });
-  const tail = tailState.taskId === task?.id ? tailState.content : "";
-
-  useEffect(() => {
-    if (!task?.id) {
-      setTailState({ taskId: null, content: "" });
-      return;
-    }
-    const taskId = task.id;
-    setTailState((current) => current.taskId === taskId ? current : { taskId, content: "" });
-    let mounted = true;
-    const readTail = () => {
-      tailFile(getTaskOutputPath(taskId), 16_000)
-        .then((result) => {
-          if (mounted) setTailState({ taskId, content: result.content });
-        })
-        .catch((error) => {
-          if (!mounted) return;
-          logError(error);
-          // Keep the last successful tail visible across transient read failures.
-        });
-    };
-    readTail();
-    const timer = task.status === "running" ? setInterval(readTail, 1_000) : null;
-    timer?.unref?.();
-    return () => {
-      mounted = false;
-      if (timer) clearInterval(timer);
-    };
-  }, [task?.id, task?.status]);
+  const tail = useTaskTail(task?.id, task?.status, 16_000);
 
   useRegisterKeybindingContext("Surface", focused);
   useKeybindings(

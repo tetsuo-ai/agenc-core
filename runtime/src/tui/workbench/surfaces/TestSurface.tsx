@@ -1,8 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-import { logError } from "../../../utils/log.js";
-import { getTaskOutputPath } from "../../../utils/task/diskOutput.js";
-import { tailFile } from "../../../utils/fsOperations.js";
 import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
@@ -11,6 +8,7 @@ import { attachTaskErrorCommand, openBufferCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { resolveWorkbenchShellTask } from "../tasks/shellTasks.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
+import { useTaskTail } from "./useTaskTail.js";
 import { parseVitestFailures } from "./outputParsers.js";
 import { clampSurfaceSelection } from "./selection.js";
 
@@ -23,43 +21,15 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
   const task = useMemo(() => {
     return resolveWorkbenchShellTask(tasks, workbench.selectedShellTaskId);
   }, [tasks, workbench.selectedShellTaskId]);
-  const [tailState, setTailState] = useState<{ readonly taskId: string | null; readonly content: string }>({
-    taskId: null,
-    content: "",
-  });
+  const tail = useTaskTail(task?.id, task?.status, TAIL_BYTES);
   const [selected, setSelected] = useState(0);
-  const tail = tailState.taskId === task?.id ? tailState.content : "";
   const failures = useMemo(() => parseVitestFailures(tail), [tail]);
   const selectedIndex = clampSurfaceSelection(selected, failures.length);
   const selectedFailure = failures[selectedIndex] ?? null;
 
   useEffect(() => {
-    if (!task?.id) {
-      setTailState({ taskId: null, content: "" });
-      return;
-    }
-    const taskId = task.id;
     setSelected(0);
-    setTailState({ taskId, content: "" });
-    let mounted = true;
-    const readTail = () => {
-      tailFile(getTaskOutputPath(taskId), TAIL_BYTES)
-        .then((result) => {
-          if (mounted) setTailState({ taskId, content: result.content });
-        })
-        .catch((error) => {
-          logError(error);
-          // Keep the last successful tail visible across transient read failures.
-        });
-    };
-    readTail();
-    const timer = task.status === "running" ? setInterval(readTail, 1_000) : null;
-    timer?.unref?.();
-    return () => {
-      mounted = false;
-      if (timer) clearInterval(timer);
-    };
-  }, [task?.id, task?.status]);
+  }, [task?.id]);
 
   useRegisterKeybindingContext("Surface", focused);
   const jumpToSelectedFailure = (focus = true) => {

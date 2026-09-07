@@ -1,8 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 
-import { logError } from "../../../utils/log.js";
-import { getTaskOutputPath } from "../../../utils/task/diskOutput.js";
-import { tailFile } from "../../../utils/fsOperations.js";
 import { Box, Text } from "../../ink.js";
 import { useAppState } from "../../state/AppState.js";
 import { useSetAppState } from "../../state/AppState.js";
@@ -13,23 +10,10 @@ import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { resolveWorkbenchShellTask } from "../tasks/shellTasks.js";
 import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
+import { useTaskTail } from "./useTaskTail.js";
 import { parseSourceLocations } from "./outputParsers.js";
 
 const TAIL_BYTES = 24_000;
-
-/**
- * The tail state to apply when the shell effect (re-)runs for `taskId`. Preserve
- * the current content when the task is unchanged — the effect also re-runs on a
- * `status` change (e.g. running -> completed), and blanking there flashed the
- * output empty for one cycle. Only blank when switching to a different task.
- * Mirrors AgentSurface's guard.
- */
-export function nextShellTailState(
-  current: { readonly taskId: string | null; readonly content: string },
-  taskId: string,
-): { readonly taskId: string | null; readonly content: string } {
-  return current.taskId === taskId ? current : { taskId, content: "" };
-}
 
 export function ShellSurface({ focused }: { readonly focused: boolean }): React.ReactElement {
   const workbench = useWorkbenchState();
@@ -39,38 +23,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
   const task = useMemo(() => {
     return resolveWorkbenchShellTask(tasks, workbench.selectedShellTaskId);
   }, [tasks, workbench.selectedShellTaskId]);
-  const [tailState, setTailState] = useState<{ readonly taskId: string | null; readonly content: string }>({
-    taskId: null,
-    content: "",
-  });
-  const tail = tailState.taskId === task?.id ? tailState.content : "";
-
-  useEffect(() => {
-    if (!task?.id) {
-      setTailState({ taskId: null, content: "" });
-      return;
-    }
-    const taskId = task.id;
-    setTailState((current) => nextShellTailState(current, taskId));
-    let mounted = true;
-    const readTail = () => {
-      tailFile(getTaskOutputPath(taskId), TAIL_BYTES)
-        .then((result) => {
-          if (mounted) setTailState({ taskId, content: result.content });
-        })
-        .catch((error) => {
-          logError(error);
-          // Keep the last successful tail visible across transient read failures.
-        });
-    };
-    readTail();
-    const timer = task.status === "running" ? setInterval(readTail, 1_000) : null;
-    timer?.unref?.();
-    return () => {
-      mounted = false;
-      if (timer) clearInterval(timer);
-    };
-  }, [task?.id, task?.status]);
+  const tail = useTaskTail(task?.id, task?.status, TAIL_BYTES);
 
   const locations = useMemo(() => parseSourceLocations(tail), [tail]);
 

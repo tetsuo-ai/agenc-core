@@ -381,6 +381,66 @@ describe("TestSurface", () => {
     }
   });
 
+  it.each(["pending", "failed"])("keeps failures and selection visible when the final read is %s", async (finalRead) => {
+    let completeTask: (() => void) | undefined;
+    const changes: AppState[] = [];
+    function TaskCompletion() {
+      const setAppState = useSetAppState();
+      React.useEffect(() => {
+        completeTask = () => setAppState((state) => ({
+          ...state,
+          tasks: { "shell-1": shellTask("shell-1", "current test", "completed") },
+        }));
+      }, [setAppState]);
+      return null;
+    }
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            tasks: { "shell-1": shellTask("shell-1", "current test", "running") },
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "test",
+              selectedShellTaskId: "shell-1",
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <TaskCompletion />
+          <TestSurface focused={true} />
+        </AppStateProvider>,
+      );
+      await sleep();
+      expect(compact(screenText(stdout))).toContain("firstfailure");
+      keybindingHarness.handlers["surface:down"]?.();
+      await sleep();
+      if (finalRead === "pending") {
+        keybindingHarness.deferredTaskIds.add("shell-1");
+      } else {
+        keybindingHarness.rejectOnRead["shell-1"] = 2;
+      }
+      completeTask?.();
+      await sleep();
+      expect(keybindingHarness.readCounts["shell-1"]).toBe(2);
+      expect(compact(screenText(stdout))).toContain("firstfailure");
+      expect(compact(screenText(stdout))).not.toContain("Noparsedtestfailures");
+      keybindingHarness.handlers["surface:open"]?.();
+      expect(changes.at(-1)?.workbench.activeFilePath).toBe("src/second.ts");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
   it("ignores tail reads that resolve after unmount", async () => {
     keybindingHarness.deferredTaskIds.add("shell-1");
     const { stdin, stdout } = createStreams();
