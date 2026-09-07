@@ -308,7 +308,7 @@ otherwise.
 | `agent.retention.snapshot_days` | `3` |
 | `agent.retention.snapshot_max_count` | `10000` |
 | `agent.retention.snapshot_max_bytes` | `67108864` |
-| `agent.retention.rollout_days` | `30` (0 keeps every session) |
+| `agent.retention.rollout_days` | `30` (0 keeps every session). Newest-rollout-mtime window; pending reviews and live locks keep the directory. Operator contract: [daemon.md](daemon.md#session-rollout-retention). |
 
 `max_turns` is unset by default; an unset turn cap does not impose a
 synthetic stop. `stream_watchdog_timeout_ms` defaults to `600000` (ten
@@ -404,7 +404,7 @@ from a late CLI layer is rejected.
 | --- | --- |
 | `autoUpdates`, `autoUpdatesChannel` | Update enablement and `latest`/`stable` channel. Absent enablement preserves the updater default. |
 | `respectGitignore`, `includeGitInstructions` | Git-aware discovery and instruction behavior. |
-| `transcriptPersistenceEnabled` | Persist session transcripts (default `true`). Retention: `agent.retention.rollout_days`, default 30 days; sessions untouched for longer are deleted with their rollout files; 0 keeps every session. |
+| `transcriptPersistenceEnabled` | Persist session transcripts (default `true`). Retention: `agent.retention.rollout_days`, default 30 days; sessions whose newest rollout file is older than the window are deleted with their rollout files; 0 keeps every session. See [session rollout retention](daemon.md#session-rollout-retention). |
 | `outputStyle` | Named assistant response style. |
 | `defaultShell` | `bash` or `powershell`. |
 | `language` | Preferred response language. |
@@ -670,7 +670,7 @@ keybinding file or watcher.
 | `autoMode`, `autoMode.allow`, `autoMode.soft_deny`, `autoMode.environment` | Classifier allow/soft-deny/environment arrays. |
 | `agent`, `agent.budget`, `agent.budget.token_cap`, `agent.budget.dollar_cap`, `agent.budget.wall_clock_seconds` | Per-run caps. |
 | `agent.retention`, `agent.retention.completed_days`, `agent.retention.failed_days`, `agent.retention.snapshot_days` | Retention days. |
-| `agent.retention.snapshot_max_count`, `agent.retention.snapshot_max_bytes`, `agent.retention.rollout_days` | Snapshot/rollout retention. |
+| `agent.retention.snapshot_max_count`, `agent.retention.snapshot_max_bytes`, `agent.retention.rollout_days` | Snapshot/rollout retention. `rollout_days` is the disk session-directory sweep (default 30; 0 disables). See [session rollout retention](daemon.md#session-rollout-retention). |
 | `durableTurns` | Durable-turn block. |
 | `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. `enabled` defaults to `true`. When false, restart reports `no-checkpoint` and opens a fresh turn. `minIntervalMs` throttles ordinary `iteration` and `postAssistant` writes. It does not defer the forced pre-admission checkpoint after `modelSampleOrdinal` advances. |
 | `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. When false, startup opens a fresh turn with reason `disabled`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |

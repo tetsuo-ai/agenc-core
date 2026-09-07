@@ -560,6 +560,7 @@ session model and the configured default when they differ.
 ```bash
 agenc config set approval_policy never
 agenc config set plugins.enabled true
+agenc config set agent.retention.rollout_days 0
 agenc config validate
 ```
 
@@ -741,7 +742,7 @@ agenc state recovery deferred abandon <block-id> --confirm-run-id <run-id> --con
 | `export <agent-id>` | Print a JSON state export for one agent |
 | `import` | Read a JSON state export from stdin and import it |
 | `resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` | Record a typed, evidence-bound operator disposition for one unresolved `unknown_outcome` tool call |
-| `recovery quarantine list/show` | Inspect bounded source-integrity evidence offline |
+| `recovery quarantine list/show` | Inspect bounded source-integrity evidence offline. A pending effect review whose journal was already removed (retention or loss) is quarantined here with `reasonCode: "source_changed"` and a 64-zero source digest instead of blocking daemon start. See [session rollout retention](daemon.md#session-rollout-retention). |
 | `recovery deferred list/show` | Inspect bounded operational blocks and retry metadata offline |
 | `recovery … rescan/retry/abandon` | Strict descriptor-pinned recovery actions; rescan and abandon require exact digest/run confirmations |
 
