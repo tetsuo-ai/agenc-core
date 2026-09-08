@@ -770,6 +770,9 @@ describe("real embedded Neovim lifecycle", () => {
       agencHome,
       beforeOpenFile,
       cleanupTimeoutMs: 250,
+      // Preservation is decoupled from cleanup exit; keep this short so the
+      // intentional 1000ms StageEditorProposal sleep still fails preserve.
+      recoveryPreservationTimeoutMs: 100,
       size: { rows: 4, columns: 32 },
       onSnapshot: () => {},
       onError: () => {},
