@@ -1407,7 +1407,7 @@ export class AgencClient {
           void respondToElicitation(event);
         }
       }
-      const terminal = terminalStatusFromNotification(message);
+      const terminal = terminalStatusFromNotification(message, reservation.turnId);
       if (terminal !== null) void finish(terminal);
     });
 

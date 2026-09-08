@@ -736,11 +736,12 @@ describe("agenc-sdk prompt race safety", () => {
     const send = await waitForSend(transport, 0);
     transport.emit(userMessage("failure-message"));
     transport.emit(turnStarted("turn-failure"));
-    const emit = (id: string, type: string, payload: JsonObject) => transport.emit({
+    const emit = (id: string, type: string, payload: JsonObject, turnId = "turn-failure") => transport.emit({
       jsonrpc: "2.0", method: "event.session_event",
-      params: { sessionId: "session_1", turnId: "turn-failure", eventId: id, event: { id, type, payload } },
+      params: { sessionId: "session_1", turnId, eventId: id, event: { id, type, payload } },
     });
     emit("stale", "turn_failed", { turnId: "old-turn", code: "provider_error", message: "stale failure" });
+    emit("consistent-stale", "turn_failed", { turnId: "old-turn", code: "provider_error", message: "stale failure" }, "old-turn");
     emit("diagnostic", "error", { turnId: "turn-failure", cause: "stop_hook_threw", message: "diagnostic" });
     transport.emit(text("turn-failure", "partial answer"));
     emit("failed", "turn_failed", { turnId: "turn-failure", code: "provider_error", message: "provider failed" });

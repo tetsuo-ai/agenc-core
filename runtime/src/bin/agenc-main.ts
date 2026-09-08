@@ -1670,11 +1670,27 @@ const ONE_SHOT_TOOL_DENIED_MARKER =
   "tool call and gave up. Re-run with --permission-mode or " +
   "--dangerously-bypass-approvals-and-sandbox to allow tools.";
 
+function daemonOneShotStartedTurnId(event: unknown): string | undefined {
+  if (!isJsonRecord(event)) return undefined;
+  const params = daemonEventParams(event);
+  if (
+    event.method === "event.agent_status" &&
+    (params?.status === "running" || params?.runStatus === "running") &&
+    typeof params.turnId === "string"
+  ) return params.turnId;
+  const transcriptEvent = daemonNestedTranscriptEvent(event);
+  if (transcriptEvent?.type !== "turn_started" || !isJsonRecord(transcriptEvent.payload)) return undefined;
+  return typeof transcriptEvent.payload.turnId === "string" ? transcriptEvent.payload.turnId : undefined;
+}
+
 function daemonOneShotFinalStatus(
   event: unknown,
+  expectedTurnId?: string,
 ): DaemonOneShotFinalStatus | null {
   if (!isJsonRecord(event)) return null;
   const params = daemonEventParams(event);
+  const notificationTurnId = typeof params?.turnId === "string" ? params.turnId : undefined;
+  if (expectedTurnId !== undefined && notificationTurnId !== undefined && notificationTurnId !== expectedTurnId) return null;
   if (event.method === "event.agent_status" && params !== null) {
     const runStatus =
       typeof params.runStatus === "string" ? params.runStatus : undefined;
@@ -1697,9 +1713,9 @@ function daemonOneShotFinalStatus(
   const terminal = classifyTurnTerminal({
     type: transcriptEvent.type,
     payload: transcriptEvent.payload,
-    turnId: transcriptEvent.turnId,
+    turnId: transcriptEvent.turnId ?? notificationTurnId,
   }, {
-    expectedTurnId: typeof params?.turnId === "string" ? params.turnId : undefined,
+    expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
   return terminal === undefined ? null : {
     code: terminal.code,
@@ -1740,6 +1756,7 @@ async function runDaemonOneShotPrompt(params: {
   let cancelled = false;
   let printedAssistantOutput = false;
   let assistantOutput = "";
+  let activeTurnId: string | undefined;
   let lastPrintedChar = "";
   const outputFormat = params.outputFormat ?? "text";
   const collectedEvents: unknown[] = [];
@@ -1928,7 +1945,8 @@ async function runDaemonOneShotPrompt(params: {
             lastPrintedChar = chunk.at(-1) ?? lastPrintedChar;
           }
 
-          const finalStatus = daemonOneShotFinalStatus(event);
+          activeTurnId = daemonOneShotStartedTurnId(event) ?? activeTurnId;
+          const finalStatus = daemonOneShotFinalStatus(event, activeTurnId);
           if (finalStatus === null) return;
           if (finalizing) return;
           finalizing = true;

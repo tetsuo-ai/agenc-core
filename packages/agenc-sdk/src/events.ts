@@ -171,8 +171,11 @@ export function messageChunkFromNotification(
  */
 export function terminalStatusFromNotification(
   message: JsonObject,
+  expectedTurnId?: string,
 ): AgencTerminalStatus | null {
   const params = eventParams(message);
+  const notificationTurnId = typeof params?.turnId === "string" ? params.turnId : undefined;
+  if (expectedTurnId !== undefined && notificationTurnId !== undefined && notificationTurnId !== expectedTurnId) return null;
   if (message.method === "event.agent_status" && params !== null) {
     const runStatus =
       typeof params.runStatus === "string" ? params.runStatus : undefined;
@@ -204,9 +207,9 @@ export function terminalStatusFromNotification(
   const terminal = classifyTurnTerminal({
     type: transcriptEvent.type,
     payload: transcriptEvent.payload,
-    turnId: transcriptEvent.turnId,
+    turnId: transcriptEvent.turnId ?? notificationTurnId,
   }, {
-    expectedTurnId: typeof params?.turnId === "string" ? params.turnId : undefined,
+    expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
   return terminal === undefined ? null : {
     code: terminal.code,

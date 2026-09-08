@@ -222,6 +222,24 @@ function reportSdkGeneratedTypesSuccess(mode) {
   process.stdout.write(`[sdk generated types] ${message}\n`);
 }
 
+function reportWrittenSdkArtifacts(transcriptV2Path, transcriptV2, wire, turnTerminal) {
+  const displayPath = path
+    .relative(path.dirname(runtimeRoot), transcriptV2Path)
+    .split(path.sep)
+    .join("/");
+  process.stdout.write(
+    transcriptV2.changed
+      ? `[sdk generated types] wrote ${displayPath}\n`
+      : `[sdk generated types] ${displayPath} is already current\n`,
+  );
+  process.stdout.write(
+    `[sdk generated types] ${wire.changed ? "wrote" : "current"} ${paths.packageWire}\n`,
+  );
+  process.stdout.write(
+    `[sdk generated types] ${turnTerminal.changed ? "wrote" : "current"} ${paths.packageTurnTerminal}\n`,
+  );
+}
+
 async function main() {
   const mode = parseSdkGeneratedTypesMode(process.argv.slice(2));
   const transcriptV2Path = path.join(
@@ -258,21 +276,7 @@ async function main() {
     }),
   ]);
   if (mode === "write") {
-    const displayPath = path
-      .relative(path.dirname(runtimeRoot), transcriptV2Path)
-      .split(path.sep)
-      .join("/");
-    process.stdout.write(
-      transcriptV2.changed
-        ? `[sdk generated types] wrote ${displayPath}\n`
-        : `[sdk generated types] ${displayPath} is already current\n`,
-    );
-    process.stdout.write(
-      `[sdk generated types] ${wire.changed ? "wrote" : "current"} ${paths.packageWire}\n`,
-    );
-    process.stdout.write(
-      `[sdk generated types] ${turnTerminal.changed ? "wrote" : "current"} ${paths.packageTurnTerminal}\n`,
-    );
+    reportWrittenSdkArtifacts(transcriptV2Path, transcriptV2, wire, turnTerminal);
   }
   const failures = [];
   const sources = [

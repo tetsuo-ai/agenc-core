@@ -1860,15 +1860,17 @@ describe("main() smoke", () => {
       AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, AGENC_PROVIDER: "openai",
       OPENAI_API_KEY: "stub-openai-key-for-test", AGENC_CLI_ENTRY_DISABLE: "1",
     });
-    const notification = (id: string, type: string, payload: Record<string, unknown>) => ({
+    const notification = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
       method: "event.session_event",
-      params: { sessionId: "session_terminal", turnId: "turn-1", eventId: id, event: { id, type, payload } },
+      params: { sessionId: "session_terminal", turnId, eventId: id, event: { id, type, payload } },
     });
     installDaemonCliDepsForTest({
       agentId: "agent_terminal", sessionId: "session_terminal", cwd: tmpCwd,
       oneShotEvents: [
+        notification("started", "turn_started", { turnId: "turn-1" }),
         notification("diagnostic", "error", { turnId: "turn-1", cause: "stop_hook_threw", message: "diagnostic" }),
         notification("stale", "turn_failed", { turnId: "old-turn", code: "provider_error", message: "stale failure" }),
+        notification("consistent-stale", "turn_failed", { turnId: "old-turn", code: "provider_error", message: "stale failure" }, "old-turn"),
         notification("terminal", terminalType, terminalType === "turn_failed"
           ? { turnId: "turn-1", code: "provider_error", message: "provider failed" }
           : { turnId: "turn-1", lastAgentMessage: "full answer" }),

@@ -6,6 +6,18 @@ import {
 } from "../../../packages/agenc-sdk/src/events";
 
 describe("agenc-sdk prompt event mapping", () => {
+  it("correlates consistent stale failures against the caller's active turn", () => {
+    const notification = {
+      method: "event.session_event",
+      params: {
+        turnId: "stale-turn",
+        event: { type: "turn_failed", payload: { turnId: "stale-turn", code: "provider_error", message: "stale" } },
+      },
+    };
+    expect(terminalStatusFromNotification(notification, "current-turn")).toBeNull();
+    expect(terminalStatusFromNotification(notification, "stale-turn")).toEqual({ code: 1, message: "stale" });
+  });
+
   it("rejects conflicting outer and failed-turn identities", () => {
     expect(terminalStatusFromNotification({
       method: "event.session_event",

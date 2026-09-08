@@ -2833,6 +2833,85 @@ function baseInitialTranscriptEvents(
   ];
 }
 
+function transcriptEventFromPermissionRequest(params: JsonObject): JsonObject | null {
+  if (typeof params.requestId !== "string") return null;
+  return {
+    id: daemonTranscriptEventId(
+      params,
+      `permission-request:${params.requestId}`,
+    ),
+    type: "request_permissions",
+    payload: {
+      callId: params.requestId,
+      ...(typeof params.toolName === "string"
+        ? { toolName: params.toolName }
+        : {}),
+      ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+      permissions: Array.isArray(params.permissions)
+        ? params.permissions.filter(
+            (item): item is string => typeof item === "string",
+          )
+        : [],
+      ...(params.input !== undefined ? { input: params.input } : {}),
+      ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+      ...(typeof params.planContent === "string"
+        ? { planContent: params.planContent }
+        : {}),
+      ...(typeof params.planFilePath === "string"
+        ? { planFilePath: params.planFilePath }
+        : {}),
+    },
+  };
+}
+
+function transcriptEventFromUserInputRequest(params: JsonObject): JsonObject | null {
+  if (
+    typeof params.requestId !== "string" ||
+    typeof params.callId !== "string" ||
+    typeof params.turnId !== "string" ||
+    !Array.isArray(params.questions)
+  ) return null;
+  return {
+    id: daemonTranscriptEventId(
+      params,
+      `user-input-request:${params.requestId}`,
+    ),
+    type: "request_user_input",
+    payload: {
+      requestId: params.requestId,
+      callId: params.callId,
+      turnId: params.turnId,
+      questions: jsonObjectArray(params.questions),
+      ...(isJsonObject(params.clientAction)
+        ? { clientAction: params.clientAction }
+        : {}),
+    },
+  };
+}
+
+function transcriptEventFromMcpElicitationRequest(params: JsonObject): JsonObject | null {
+  if (
+    (typeof params.requestId !== "string" &&
+      typeof params.requestId !== "number") ||
+    typeof params.serverName !== "string" ||
+    typeof params.turnId !== "string" ||
+    !isJsonObject(params.request)
+  ) return null;
+  return {
+    id: daemonTranscriptEventId(
+      params,
+      `mcp-elicitation:${String(params.requestId)}`,
+    ),
+    type: "mcp_elicitation_request",
+    payload: {
+      requestId: params.requestId,
+      serverName: params.serverName,
+      turnId: params.turnId,
+      request: params.request,
+    },
+  };
+}
+
 function toTranscriptEvent(event: JsonObject, activeTurnId?: string): JsonObject {
   const msg = event.msg;
   if (isJsonObject(msg)) {
@@ -2865,83 +2944,14 @@ function toTranscriptEvent(event: JsonObject, activeTurnId?: string): JsonObject
       },
     };
   }
-  if (
-    method === "event.permission_request" &&
-    typeof params.requestId === "string"
-  ) {
-    return {
-      id: daemonTranscriptEventId(
-        params,
-        `permission-request:${params.requestId}`,
-      ),
-      type: "request_permissions",
-      payload: {
-        callId: params.requestId,
-        ...(typeof params.toolName === "string"
-          ? { toolName: params.toolName }
-          : {}),
-        ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
-        permissions: Array.isArray(params.permissions)
-          ? params.permissions.filter(
-              (item): item is string => typeof item === "string",
-            )
-          : [],
-        ...(params.input !== undefined ? { input: params.input } : {}),
-        ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
-        ...(typeof params.planContent === "string"
-          ? { planContent: params.planContent }
-          : {}),
-        ...(typeof params.planFilePath === "string"
-          ? { planFilePath: params.planFilePath }
-          : {}),
-      },
-    };
+  if (method === "event.permission_request") {
+    return transcriptEventFromPermissionRequest(params) ?? event;
   }
-  if (
-    method === "event.user_input_request" &&
-    typeof params.requestId === "string" &&
-    typeof params.callId === "string" &&
-    typeof params.turnId === "string" &&
-    Array.isArray(params.questions)
-  ) {
-    return {
-      id: daemonTranscriptEventId(
-        params,
-        `user-input-request:${params.requestId}`,
-      ),
-      type: "request_user_input",
-      payload: {
-        requestId: params.requestId,
-        callId: params.callId,
-        turnId: params.turnId,
-        questions: jsonObjectArray(params.questions),
-        ...(isJsonObject(params.clientAction)
-          ? { clientAction: params.clientAction }
-          : {}),
-      },
-    };
+  if (method === "event.user_input_request") {
+    return transcriptEventFromUserInputRequest(params) ?? event;
   }
-  if (
-    method === "event.mcp_elicitation_request" &&
-    (typeof params.requestId === "string" ||
-      typeof params.requestId === "number") &&
-    typeof params.serverName === "string" &&
-    typeof params.turnId === "string" &&
-    isJsonObject(params.request)
-  ) {
-    return {
-      id: daemonTranscriptEventId(
-        params,
-        `mcp-elicitation:${String(params.requestId)}`,
-      ),
-      type: "mcp_elicitation_request",
-      payload: {
-        requestId: params.requestId,
-        serverName: params.serverName,
-        turnId: params.turnId,
-        request: params.request,
-      },
-    };
+  if (method === "event.mcp_elicitation_request") {
+    return transcriptEventFromMcpElicitationRequest(params) ?? event;
   }
   if (method === "event.agent_status") {
     return transcriptEventFromAgentStatus(params, activeTurnId);
