@@ -633,6 +633,15 @@ Its retry behavior is:
 - Session backoff base is **200 ms**.
 - After budget admission, model calls set `singleWireAttempt: true`: **no HTTP
   retry** on that lease. A retry needs a new reservation.
+
+Request deadlines and caller cancellation stay active through JSON, text,
+and non-2xx body consumption. A body-read failure after a successful HTTP
+status does not trigger a transport retry. An aborted or timed-out error body
+is not retried either.
+Body failures cancel the reader without waiting for a stalled cancellation
+callback. Completed reads release the reader, timers and abort listeners.
+Successful streams keep their separate streaming lifecycle and idle watchdog.
+
 Grok uses an SDK transport with a distinct retry contract: its default budget
 is **2**, `maxRetries` can override it, and the SDK owns retry eligibility and
 backoff. A `singleWireAttempt` still forces that SDK budget to **0**. Those are

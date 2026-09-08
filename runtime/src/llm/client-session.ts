@@ -389,19 +389,44 @@ function throwCaptivePortalError(args: {
   response: Response;
   expected: "json" | "sse";
 }): never {
-  throw new LLMCaptivePortalError(args.providerName, {
+  const error = new LLMCaptivePortalError(args.providerName, {
     contentType: args.response.headers.get("content-type") ?? undefined,
     statusCode: args.response.status,
     url: args.response.url,
     expected: args.expected,
   });
+  void args.response.body?.cancel(error).catch(() => {});
+  throw error;
 }
 
-async function readErrorBody(response: Response): Promise<unknown> {
+async function readResponseBodyText(response: Response, signal?: AbortSignal): Promise<string> {
+  if (!response.body) {
+    if (signal?.aborted) throw abortReasonToError(signal.reason);
+    return "";
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (;;) {
+      const next = await readWithAbort(reader, signal);
+      if (next.done) return text + decoder.decode();
+      text += decoder.decode(next.value, { stream: true });
+    }
+  } catch (error) {
+    void reader.cancel(error).catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function readErrorBody(response: Response, signal?: AbortSignal): Promise<unknown> {
   try {
     const contentType = response.headers.get("content-type") ?? "";
-    return readErrorBodyText(contentType, await response.text());
+    return readErrorBodyText(contentType, await readResponseBodyText(response, signal));
   } catch {
+    if (signal?.aborted) throw abortReasonToError(signal.reason);
     return undefined;
   }
 }
@@ -710,8 +735,9 @@ function normalizeHeaders(
 async function createProviderHttpError(
   providerName: string,
   response: Response,
+  signal?: AbortSignal,
 ): Promise<ProviderHttpError> {
-  const errorBody = await readErrorBody(response);
+  const errorBody = await readErrorBody(response, signal);
   const retryAfterDirective = parseProviderRetryAfterDirective(
     response.headers,
   );
@@ -742,10 +768,13 @@ function createMalformedProviderJsonError(args: {
   });
 }
 
-interface PreparedStreamAttempt {
-  readonly attempt: number;
+interface PreparedResponseAttempt {
   readonly response: Response;
   readonly attemptState: ReturnType<typeof createAttemptAbortState>;
+}
+
+interface PreparedStreamAttempt extends PreparedResponseAttempt {
+  readonly attempt: number;
 }
 
 interface PreparedProviderHttpRequest {
@@ -895,9 +924,9 @@ export class ProviderHttpClientSession {
     options: ProviderHttpRequestOptions,
   ): Promise<ProviderHttpJsonResponse<T>> {
     const prepared = this.prepareRequest(options);
-    let response: Response;
+    let attempt: PreparedResponseAttempt;
     try {
-      response = await this.requestWithRetry(prepared.options, "request");
+      attempt = await this.requestWithRetry(prepared.options);
     } catch (error) {
       if (
         prepared.options.singleWireAttempt === true ||
@@ -908,11 +937,21 @@ export class ProviderHttpClientSession {
       }
       warnContinuationExpiry(this.config);
       clearContinuationState(this.config.responsesContinuationState);
-      response = await this.requestWithRetry(
+      attempt = await this.requestWithRetry(
         buildContinuationFallbackOptions(prepared),
-        "request",
       );
     }
+    try {
+      return await this.readJsonResponse<T>(attempt, prepared);
+    } finally {
+      attempt.attemptState.cleanup();
+    }
+  }
+
+  private async readJsonResponse<T>(
+    { response, attemptState }: PreparedResponseAttempt,
+    prepared: PreparedProviderHttpRequest,
+  ): Promise<ProviderHttpJsonResponse<T>> {
     const contentType = response.headers.get("content-type") ?? "";
     if (isHtmlContentType(contentType)) {
       throwCaptivePortalError({
@@ -921,7 +960,7 @@ export class ProviderHttpClientSession {
         expected: "json",
       });
     }
-    const text = await response.text();
+    const text = await readResponseBodyText(response, attemptState.signal);
     let data: T;
     if (contentType.includes("application/json")) {
       if (text.length > 0) {
@@ -973,13 +1012,17 @@ export class ProviderHttpClientSession {
   async requestText(
     options: ProviderHttpRequestOptions,
   ): Promise<ProviderHttpTextResponse> {
-    const response = await this.requestWithRetry(options, "request");
-    return {
-      data: await response.text(),
-      status: response.status,
-      headers: response.headers,
-      url: response.url,
-    };
+    const { response, attemptState } = await this.requestWithRetry(options);
+    try {
+      return {
+        data: await readResponseBodyText(response, attemptState.signal),
+        status: response.status,
+        headers: response.headers,
+        url: response.url,
+      };
+    } finally {
+      attemptState.cleanup();
+    }
   }
 
   async requestStream(
@@ -1131,14 +1174,11 @@ export class ProviderHttpClientSession {
 
   private async requestWithRetry(
     options: ProviderHttpRequestOptions,
-    mode: "request" | "stream",
-  ): Promise<Response> {
+  ): Promise<PreparedResponseAttempt> {
     const retryBudget = normalizeRetryBudget(
-      mode === "stream" ? this.config.streamRetry : this.config.requestRetry,
+      this.config.requestRetry,
       options.retryBudget,
-      mode === "stream"
-        ? DEFAULT_STREAM_RETRY_POLICY
-        : DEFAULT_REQUEST_RETRY_POLICY,
+      DEFAULT_REQUEST_RETRY_POLICY,
     );
     const maxAttempts = options.singleWireAttempt
       ? 1
@@ -1152,18 +1192,21 @@ export class ProviderHttpClientSession {
       attempt += 1
     ) {
       const attemptState = createAttemptAbortState(options.signal, timeoutMs);
+      let responseReceived = false;
       try {
         const response = await this.fetchResponse(
           options,
           attempt,
           attemptState.signal,
         );
-        attemptState.cleanup();
+        responseReceived = true;
         if (!response.ok) {
           const error = await createProviderHttpError(
             this.config.providerName,
             response,
+            attemptState.signal,
           );
+          attemptState.cleanup();
           const fallbackDecision = evaluateConfiguredProviderFallback(
             options.providerFallback ?? this.config.providerFallback,
             error,
@@ -1198,7 +1241,7 @@ export class ProviderHttpClientSession {
           }
           throw error;
         }
-        return response;
+        return { response, attemptState };
       } catch (error) {
         attemptState.cleanup();
         if (isFallbackTriggeredError(error)) {
@@ -1211,10 +1254,10 @@ export class ProviderHttpClientSession {
         consecutiveFallbackFailures = 0;
         const transport = normalizeTransportError(error);
         if (
-          (!options.singleWireAttempt &&
-            attempt < retryBudget.maxRetries &&
+          !responseReceived &&
+          !options.singleWireAttempt &&
+          ((attempt < retryBudget.maxRetries &&
             shouldRetryTransportError(transport, retryBudget)) ||
-          (!options.singleWireAttempt &&
             shouldRetryTlsCertificateError(transport, attempt))
         ) {
           const retryDelay = resolveRetryDelayMs(
@@ -1254,16 +1297,19 @@ export class ProviderHttpClientSession {
       attempt += 1
     ) {
       const attemptState = createAttemptAbortState(options.signal, timeoutMs);
+      let responseReceived = false;
       try {
         const response = await this.fetchResponse(
           options,
           attempt,
           attemptState.signal,
         );
+        responseReceived = true;
         if (!response.ok) {
           const error = await createProviderHttpError(
             this.config.providerName,
             response,
+            attemptState.signal,
           );
           const fallbackDecision = evaluateConfiguredProviderFallback(
             options.providerFallback ?? this.config.providerFallback,
@@ -1320,10 +1366,10 @@ export class ProviderHttpClientSession {
         consecutiveFallbackFailures = 0;
         const transport = normalizeTransportError(error);
         if (
-          (!options.singleWireAttempt &&
-            attempt < retryBudget.maxRetries &&
+          !responseReceived &&
+          !options.singleWireAttempt &&
+          ((attempt < retryBudget.maxRetries &&
             shouldRetryTransportError(transport, retryBudget)) ||
-          (!options.singleWireAttempt &&
             shouldRetryTlsCertificateError(transport, attempt))
         ) {
           const retryDelay = resolveRetryDelayMs(
