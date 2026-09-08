@@ -9392,8 +9392,11 @@ describe("AgenC delegate background-agent runner", () => {
       const terminal = outcome === "errored"
         ? { code: 1, message: "provider failed" }
         : { code: 0, message: "full answer" };
-      await expect(runner.submitAgentMessage(conversationId, request)).resolves.toMatchObject({ terminal, turnId: "turn-1" });
-      await expect(runner.submitAgentMessage(conversationId, request)).resolves.toMatchObject({ disposition: "duplicate", duplicateState: "completed", terminal });
+      const live = await runner.submitAgentMessage(conversationId, request);
+      expect(live).toMatchObject({ terminal, turnId: "turn-1" });
+      const duplicate = await runner.submitAgentMessage(conversationId, request);
+      expect(duplicate).toMatchObject({ disposition: "duplicate", duplicateState: "completed", terminal });
+      expect(duplicate.terminal).toEqual(live.terminal);
       expect(control.sendInput).toHaveBeenCalledOnce();
       await expect(runner.getAgentSnapshot(conversationId)).resolves.toMatchObject({ status: "idle" });
       await expect(runner.getAgentSessionTranscriptV2(conversationId, { sessionId: "session_1" })).resolves.toMatchObject({
@@ -9408,7 +9411,9 @@ describe("AgenC delegate background-agent runner", () => {
       }
       const restored = makeTopLevelRunner({ conversationId, rolloutItems: [...rolloutItems] });
       await restored.runner.startAgent({ objective: "restored", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
-      await expect(restored.runner.submitAgentMessage(conversationId, request)).resolves.toMatchObject({ disposition: "duplicate", duplicateState: "completed", terminal });
+      const replayed = await restored.runner.submitAgentMessage(conversationId, request);
+      expect(replayed).toMatchObject({ disposition: "duplicate", duplicateState: "completed", terminal });
+      expect(replayed.terminal).toEqual(live.terminal);
       expect(restored.control.sendInput).not.toHaveBeenCalled();
       await expect(runner.submitAgentMessage(conversationId, { ...request, content: "next", originalContent: "next", messageId: "next-message", streamId: "next-message" })).resolves.toMatchObject({ disposition: "started" });
     },
