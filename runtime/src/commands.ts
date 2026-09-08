@@ -2,6 +2,11 @@ import type * as React from "react";
 import { resolve } from "node:path";
 
 import { buildDefaultRegistry } from "./commands/registry.js";
+import { BRIDGE_SAFE_COMMAND_NAMES } from "./commands/bridge-policy.js";
+export {
+  isBridgeSafeCommand,
+  isBridgeForwardablePromptCommand,
+} from "./commands/bridge-policy.js";
 import type {
   CommandRegistry as SlashCommandRegistry,
   SlashCommand,
@@ -604,16 +609,6 @@ const REMOTE_SAFE_COMMAND_NAMES = new Set([
   "provider",
 ]);
 
-const BRIDGE_SAFE_COMMAND_NAMES = new Set([
-  "clear",
-  "diff",
-  "help",
-  "hello",
-  "model",
-  "provider",
-  "status",
-]);
-
 function commandsForNames(names: ReadonlySet<string>): Set<Command> {
   return new Set(
     [...names]
@@ -669,7 +664,7 @@ export const REMOTE_SAFE_COMMANDS: Set<Command> = new LazyCommandSet(
 );
 
 export const BRIDGE_SAFE_COMMANDS: Set<Command> = new LazyCommandSet(
-  BRIDGE_SAFE_COMMAND_NAMES,
+  new Set(BRIDGE_SAFE_COMMAND_NAMES),
 );
 
 function commandMatchesNameSet(
@@ -687,12 +682,6 @@ export function filterCommandsForRemoteMode(commands: Command[]): Command[] {
   return commands.filter(command =>
     commandMatchesNameSet(command, REMOTE_SAFE_COMMAND_NAMES),
   );
-}
-
-export function isBridgeSafeCommand(cmd: Command): boolean {
-  if (cmd.type === "local-jsx") return false;
-  if (cmd.type === "prompt") return true;
-  return commandMatchesNameSet(cmd, BRIDGE_SAFE_COMMAND_NAMES);
 }
 
 export async function getSkillToolCommands(

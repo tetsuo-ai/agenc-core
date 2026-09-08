@@ -26,6 +26,8 @@
 import { stat } from "node:fs/promises";
 import * as path from "node:path";
 
+export { isBridgeSafeCommand } from "./bridge-policy.js";
+
 import type {
   CommandRegistry,
   SlashCommand,
@@ -286,39 +288,4 @@ async function buildMistypedPathHint(
   } catch {
     return null;
   }
-}
-
-/**
- * Bridge-safe allowlist for remote-origin / daemon-bridged CLI
- * invocations. A "bridge-safe" command is one the daemon can run on
- * behalf of a CLI client without requiring human confirmation: it does
- * not mutate shell state, rewrite config, fork the turn, or exit the
- * process.
- *
- * Commands NOT on this list MUST prompt the user before the bridge
- * forwards them (e.g. `/exit`, `/compact`, `/permissions`, `/config`).
- */
-const BRIDGE_SAFE: ReadonlySet<string> = new Set([
-  "status",
-  "help",
-  "hello",
-  "model",
-  "provider",
-  "clear",
-  "diff",
-]);
-
-/**
- * Bridge-unsafe commands (listed explicitly to make the contract
- * readable; not consulted at runtime — anything outside BRIDGE_SAFE is
- * treated as unsafe).
- */
-// Kept alongside BRIDGE_SAFE to document the contract. Do not export as
-// a negation — checks MUST go through `isBridgeSafeCommand`.
-// (status / help / hello / model / provider / clear / diff) are safe;
-// everything else in the minimal surface requires user confirmation at
-// the bridge.
-
-export function isBridgeSafeCommand(name: string): boolean {
-  return BRIDGE_SAFE.has(name);
 }

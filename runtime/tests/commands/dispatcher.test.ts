@@ -11,6 +11,7 @@ import {
   parseSlashCommand,
 } from "./dispatcher.js";
 import { CommandRegistry } from "./registry.js";
+import { BRIDGE_SAFE_COMMAND_NAMES } from "../../src/commands/bridge-policy.js";
 import type {
   SlashCommand,
   SlashCommandContext,
@@ -240,15 +241,7 @@ describe("maskSensitiveArgs", () => {
 
 describe("isBridgeSafeCommand", () => {
   it("allows known-safe commands", () => {
-    for (const name of [
-      "status",
-      "help",
-      "hello",
-      "model",
-      "provider",
-      "clear",
-      "diff",
-    ]) {
+    for (const name of BRIDGE_SAFE_COMMAND_NAMES) {
       expect(isBridgeSafeCommand(name)).toBe(true);
     }
   });

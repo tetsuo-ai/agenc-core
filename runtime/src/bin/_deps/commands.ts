@@ -21,7 +21,6 @@
 
 import {
   dispatchSlashCommand as realDispatch,
-  isBridgeSafeCommand as realIsBridgeSafe,
   type DispatchOutcome as RealDispatchOutcome,
   type ParsedSlashCommand as RealParsedSlashCommand,
 } from "../../commands/dispatcher.js";
@@ -109,9 +108,7 @@ export function parseSlashCommand(input: string): ParsedSlashLine | null {
 // Bridge-safe allowlist — delegated to the canonical dispatcher.
 // ---------------------------------------------------------------------------
 
-export function isBridgeSafeCommand(name: string): boolean {
-  return realIsBridgeSafe(name);
-}
+export { isBridgeSafeCommand } from "../../commands/dispatcher.js";
 
 // ---------------------------------------------------------------------------
 // Dispatch

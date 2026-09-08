@@ -80,6 +80,30 @@ Sources: `runtime/src/commands/*.ts(x)` modules imported by
 
 ---
 
+## Bridge command policy
+
+`runtime/src/commands/bridge-policy.ts` defines the fixed bridge allowlist
+and the shared `isBridgeSafeCommand` predicate. The CLI, dispatcher, and
+command-object exports use that same predicate. Commands outside the list
+require direct CLI confirmation when `runSlashCommand` receives
+`bridge: true`.
+
+The policy accepts exact canonical names. Raw aliases such as `/reset` for
+`/clear` remain blocked over the bridge. A resolved command object is checked
+by its canonical `name`; its aliases and displayed name cannot grant bridge
+access. Local JSX commands are rejected even when their name is allowlisted.
+Local dispatch without `bridge: true` retains normal alias handling.
+
+Prompt commands are not in the fixed allowlist.
+`isBridgeForwardablePromptCommand` identifies prompt objects for a separate
+prompt-forwarding path. That predicate does not authorize local command
+execution or bypass tool permissions. A parsed name alone never grants
+prompt-forwarding access.
+
+Change the allowlist in the policy module and update the expected names in
+`runtime/tests/commands/bridge-policy.test.ts` when approving another command.
+The adapters and command-object set derive their membership from that list.
+
 ## `/login`
 
 `/login` signs into the AgenC account. The PromptInput footer
