@@ -9,7 +9,8 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { realpathSync, type FSWatcher } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -20,6 +21,8 @@ import Database from "better-sqlite3";
 import {
   PersistentMemoryIndex,
   type MemoryIndexRootSpec,
+  type MemoryIndexRefreshResult,
+  type PersistentMemoryIndexOptions,
 } from "../../src/memory/full-corpus-index.js";
 import { MemoryQueryProcessPool } from "../../src/memory/memory-query-pool.js";
 import {
@@ -29,6 +32,9 @@ import {
   MAX_MEMORY_INDEX_ROOTS,
   MEMORY_INDEX_ROOT_IDLE_TTL_MS,
   MAX_MEMORY_QUERY_MS,
+  MAX_MEMORY_INDEX_BUILD_ENTRIES_PER_SLICE,
+  MAX_MEMORY_INDEX_BUILD_SLICE_MS,
+  MAX_MEMORY_EXPLICIT_REFRESH_WAIT_MS,
   MemoryIndexQueryResourceLimitedError,
 } from "../../src/memory/full-corpus-contract.js";
 
@@ -176,22 +182,31 @@ describe("C3b persistent full-corpus index", () => {
     await writeFile(racedPath, first);
     const fixedTime = new Date("2024-01-01T00:00:00.000Z");
     await utimes(racedPath, fixedTime, fixedTime);
-    for (let start = 1; start <= 10_000; start += 500) {
-      await Promise.all(
-        Array.from({ length: Math.min(500, 10_001 - start) }, (_, offset) => {
-          const ordinal = start + offset;
-          return writeMemory(
-            join(memoryRoot, `${ordinal.toString().padStart(5, "0")}.md`),
-            `Memory ${ordinal}`,
-            "ordinary build-race filler",
-          );
-        }),
-      );
-    }
+    let replacements = 0;
     index = new PersistentMemoryIndex({
       databasePath,
       backgroundRefresh: false,
       queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      buildPolicyForTesting: { now: () => 0 },
+      watcherFactoryForTesting: createSilentWatcher,
+      afterBuildEntryForTesting: async ({ relativePath }) => {
+        if (relativePath !== "00000-raced.md" || replacements > 0) return;
+        replacements += 1;
+        const inspection = new Database(databasePath, { readonly: true });
+        try {
+          expect(inspection.prepare("SELECT description FROM memory_fts").all())
+            .toEqual([{ description: "build_race_alpha" }]);
+        } finally {
+          inspection.close();
+        }
+        await writeFile(racedPath, second);
+        await utimes(racedPath, fixedTime, fixedTime);
+        index!.recordChange({
+          rootPath: memoryRoot,
+          relativePath,
+          kind: "update",
+        });
+      },
     });
 
     const refreshController = new AbortController();
@@ -201,31 +216,8 @@ describe("C3b persistent full-corpus index", () => {
       { explicit: true },
     );
     try {
-      const inspection = new Database(databasePath, {
-        readonly: true,
-        fileMustExist: true,
-      });
-      try {
-        await expectEventually(async () => {
-          const row = inspection
-            .prepare(
-              `SELECT f.description
-                 FROM memory_fts f
-                 JOIN memory_index_entries e
-                   ON e.root_id = f.root_id
-                  AND e.generation_id = f.generation_id
-                  AND e.memory_id = f.memory_id
-                WHERE e.canonical_path = ? AND f.description = ?`,
-            )
-            .get(racedPath, "build_race_alpha");
-          return row !== undefined;
-        }, 120_000);
-      } finally {
-        inspection.close();
-      }
-      await writeFile(racedPath, second);
-      await utimes(racedPath, fixedTime, fixedTime);
-      await expect(refreshPromise).resolves.toMatchObject({ kind: "complete" });
+      expectRefreshComplete(await refreshPromise, databasePath);
+      expect(replacements).toBe(1);
 
       const stale = await index.query(
         [{ path: memoryRoot, role: "project" }],
@@ -245,7 +237,7 @@ describe("C3b persistent full-corpus index", () => {
       );
       await refreshPromise.catch(() => undefined);
     }
-  }, 6 * 60_000);
+  });
 
   it("uses indexed pending order without repeated discovered-file counts", async () => {
     temporaryRoot = await mkdtemp(join(realpathSync(tmpdir()), "agenc-c3b-counts-"));
@@ -1948,6 +1940,7 @@ describe("C3b persistent full-corpus index", () => {
     const blocked = new Promise<void>((resolve) => {
       releaseQuery = resolve;
     });
+    const watcherFactory = vi.fn(createSilentWatcher);
     vi.spyOn(queryPool, "query").mockImplementation(
       async (request, signal) => {
         markStarted();
@@ -1960,18 +1953,23 @@ describe("C3b persistent full-corpus index", () => {
       backgroundRefresh: false,
       now: () => now,
       queryPool,
+      buildPolicyForTesting: { now: () => 0 },
+      watcherFactoryForTesting: watcherFactory,
     });
     const writer = new PersistentMemoryIndex({
       databasePath,
       backgroundRefresh: false,
       now: () => now,
       queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      buildPolicyForTesting: { now: () => 0 },
+      watcherFactoryForTesting: watcherFactory,
     });
     const roots = [{ path: memoryRoot, role: "project" as const }];
-    await index.refresh(roots, new AbortController().signal, {
+    expectRefreshComplete(await index.refresh(roots, new AbortController().signal, {
       explicit: true,
-    });
+    }), databasePath);
     const generationId = readCurrentGenerationId(databasePath);
+    const beforeChange = readGenerationChangeState(databasePath, generationId);
     const inFlight = index.query(
       roots,
       ["pinlossterm"],
@@ -1980,15 +1978,26 @@ describe("C3b persistent full-corpus index", () => {
     await started;
     try {
       now = readReaderPinExpiry(databasePath, generationId);
+      expect(readReaderPinState(databasePath, generationId).pinCount).toBe(1);
       await writeMemory(memoryPath, "Pin loss updated", "pinlossterm bravo");
       writer.recordChange({
         rootPath: memoryRoot,
         relativePath: "query.md",
         kind: "update",
       });
-      await expect(
-        writer.refresh(roots, new AbortController().signal),
-      ).resolves.toMatchObject({ kind: "complete" });
+      expect(readGenerationChangeState(databasePath, generationId)).toEqual({
+        changeCursor: beforeChange.changeCursor,
+        pendingChanges: 1,
+      });
+      expectRefreshComplete(
+        await writer.refresh(roots, new AbortController().signal),
+        databasePath,
+      );
+      expect(watcherFactory).toHaveBeenCalledTimes(2);
+      expect(readGenerationChangeState(databasePath, generationId)).toEqual({
+        changeCursor: beforeChange.changeCursor + 1,
+        pendingChanges: 0,
+      });
       expect(readCurrentGenerationId(databasePath)).toBe(generationId);
       expect(readReaderPinState(databasePath, generationId).pinCount).toBe(0);
       releaseQuery();
@@ -1999,6 +2008,7 @@ describe("C3b persistent full-corpus index", () => {
       });
     } finally {
       releaseQuery();
+      await inFlight.catch(() => undefined);
       writer.close();
     }
   });
@@ -2172,24 +2182,23 @@ describe("C3b persistent full-corpus index", () => {
     const databasePath = join(stateRoot, "memory.sqlite");
     await mkdir(memoryRoot, { recursive: true });
     await mkdir(stateRoot, { recursive: true });
-    for (let start = 0; start < 10_001; start += 500) {
-      await Promise.all(
-        Array.from({ length: Math.min(500, 10_001 - start) }, (_, offset) => {
-          const ordinal = start + offset;
-          return writeMemory(
-            join(memoryRoot, `${ordinal.toString().padStart(5, "0")}.md`),
-            `Memory ${ordinal}`,
-            ordinal === 10_000 ? "lastuniqueterm" : "ordinaryterm",
-          );
-        }),
-      );
-    }
+    const fileCount = 9;
+    await Promise.all(Array.from({ length: fileCount }, (_entry, ordinal) =>
+      writeMemory(
+        join(memoryRoot, `${ordinal.toString().padStart(5, "0")}.md`),
+        `Memory ${ordinal}`,
+        ordinal === fileCount - 1 ? "lastuniqueterm" : "ordinaryterm",
+      ),
+    ));
     const roots = [{ path: memoryRoot, role: "global" as const }];
-    index = new PersistentMemoryIndex({
+    const openIndex = () => new PersistentMemoryIndex({
       databasePath,
       backgroundRefresh: false,
       queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      buildPolicyForTesting: { now: () => 0, maxEntriesPerSlice: 3 },
+      watcherFactoryForTesting: createSilentWatcher,
     });
+    index = openIndex();
     const firstSlice = await index.refresh(roots, new AbortController().signal);
     expect(firstSlice.kind).toBe("refresh_pending");
     const generationToken = firstSlice.roots[0]?.generationToken;
@@ -2219,34 +2228,28 @@ describe("C3b persistent full-corpus index", () => {
     expect(invisiblePrefix.kind).toBe("unavailable");
     expect(invisiblePrefix.candidates).toEqual([]);
 
-    index.close();
-    index = new PersistentMemoryIndex({
-      databasePath,
-      backgroundRefresh: false,
-      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
-    });
-    let refresh = await index.refresh(roots, new AbortController().signal);
-    const discoveryAfterRestart = readGenerationDiscoveryState(
-      databasePath,
-      generationToken!,
-    );
-    expect(discoveryAfterRestart.persistedCount).toBe(
-      discoveryAfterRestart.rowCount,
-    );
+    let refresh = firstSlice;
+    let priorDiscovery = discoveryBeforeRestart;
+    const maximumSlices = 2 * (fileCount + 1) + 1;
     for (
       let slice = 0;
-      slice < 4 && refresh.kind === "refresh_pending";
+      slice < maximumSlices && refresh.kind === "refresh_pending";
       slice += 1
     ) {
       index.close();
-      index = new PersistentMemoryIndex({
-        databasePath,
-        backgroundRefresh: false,
-        queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
-      });
+      index = openIndex();
+      expect(readGenerationDiscoveryState(databasePath, generationToken!))
+        .toEqual(priorDiscovery);
       refresh = await index.refresh(roots, new AbortController().signal);
+      const progress = readGenerationDiscoveryState(databasePath, generationToken!);
+      expect(progress.persistedCount).toBe(progress.rowCount);
+      if (refresh.kind === "refresh_pending") {
+        expect(refresh.roots[0]?.generationToken).toBe(generationToken);
+        expect(progress.persistedCount).toBeGreaterThanOrEqual(priorDiscovery.persistedCount);
+      }
+      priorDiscovery = progress;
     }
-    expect(refresh.kind).toBe("complete");
+    expectRefreshComplete(refresh, databasePath);
     const complete = await index.query(
       roots,
       ["lastuniqueterm"],
@@ -2254,15 +2257,54 @@ describe("C3b persistent full-corpus index", () => {
     );
     expect(complete.candidates).toHaveLength(1);
     expect(complete.candidates[0]?.canonicalPath).toBe(
-      join(memoryRoot, "10000.md"),
+      join(memoryRoot, "00008.md"),
     );
     expect(readGenerationDiscoveryState(databasePath, generationToken!)).toEqual(
       { persistedCount: 0, rowCount: 0 },
     );
-  }, 5 * 60_000);
+  });
+
+  it.each([
+    { explicit: false, elapsedMs: 30_000 },
+    { explicit: true, elapsedMs: 300_000 },
+  ])("retains the $elapsedMs ms build wait boundary", async ({ explicit, elapsedMs }) => {
+    let clock = 0;
+    const fixture = await createFixture({
+      backgroundRefresh: false,
+      buildPolicyForTesting: { now: () => clock },
+      watcherFactoryForTesting: createSilentWatcher,
+      afterBuildEntryForTesting: () => {
+        clock = elapsedMs;
+      },
+    });
+    await writeMemory(join(fixture.globalRoot, "budget.md"), "Budget", "boundedterm");
+    const first = await index!.refresh(fixture.rootSpecs, new AbortController().signal, { explicit });
+    expect(first.kind).toBe("refresh_pending");
+    expect(first.roots[0]?.generationToken).toBeTypeOf("string");
+    expect(MAX_MEMORY_INDEX_BUILD_SLICE_MS).toBe(30_000);
+    expect(MAX_MEMORY_EXPLICIT_REFRESH_WAIT_MS).toBe(300_000);
+    expectRefreshComplete(
+      await index!.refresh(fixture.rootSpecs, new AbortController().signal),
+      index!.databasePath,
+    );
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, 10_001])("rejects the invalid test build quota %s", async (maxEntriesPerSlice) => {
+    await createFixture();
+    expect(() => {
+      const candidate = new PersistentMemoryIndex({
+        databasePath: index!.databasePath,
+        buildPolicyForTesting: { maxEntriesPerSlice },
+      });
+      candidate.close();
+    }).toThrow("memory index test build entry limit is invalid");
+    expect(MAX_MEMORY_INDEX_BUILD_ENTRIES_PER_SLICE).toBe(10_000);
+  });
 });
 
-async function createFixture(): Promise<{
+async function createFixture(
+  options: Omit<PersistentMemoryIndexOptions, "databasePath" | "queryPool"> = {},
+): Promise<{
   readonly globalRoot: string;
   readonly projectRoot: string;
   readonly rootSpecs: readonly MemoryIndexRootSpec[];
@@ -2275,6 +2317,7 @@ async function createFixture(): Promise<{
   await mkdir(globalRoot, { recursive: true });
   await mkdir(projectRoot, { recursive: true });
   index = new PersistentMemoryIndex({
+    ...options,
     databasePath: join(stateRoot, "memory.sqlite"),
     queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
   });
@@ -2286,6 +2329,28 @@ async function createFixture(): Promise<{
       { path: projectRoot, role: "project" },
     ],
   };
+}
+
+function createSilentWatcher(): FSWatcher {
+  const watcher = new EventEmitter() as FSWatcher;
+  watcher.close = vi.fn();
+  watcher.ref = () => watcher;
+  watcher.unref = () => watcher;
+  return watcher;
+}
+
+function expectRefreshComplete(
+  result: MemoryIndexRefreshResult,
+  databasePath: string,
+): void {
+  const evidence = result.roots.map((root) => ({
+    ...root,
+    reason: root.reason ?? null,
+    discovery: root.generationToken === null
+      ? null
+      : readGenerationDiscoveryState(databasePath, root.generationToken),
+  }));
+  expect(result.kind, JSON.stringify(evidence)).toBe("complete");
 }
 
 function writeMemory(

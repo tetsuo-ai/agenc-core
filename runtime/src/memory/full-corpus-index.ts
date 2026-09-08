@@ -144,6 +144,15 @@ export interface PersistentMemoryIndexOptions {
   readonly queryPool?: MemoryQueryProcessPool;
   readonly now?: () => number;
   readonly backgroundRefresh?: boolean;
+  readonly buildPolicyForTesting?: {
+    readonly now?: () => number;
+    readonly maxEntriesPerSlice?: number;
+  };
+  readonly watcherFactoryForTesting?: typeof watch;
+  readonly afterBuildEntryForTesting?: (entry: {
+    readonly rootPath: string;
+    readonly relativePath: string;
+  }) => void | Promise<void>;
   readonly resourceLimitsForTesting?: {
     readonly incrementalReaderDrainMs?: number;
     readonly maxDatabaseBytes?: number;
@@ -253,6 +262,8 @@ interface IndexedMemoryHeader {
 
 interface BuildSliceBudget {
   readonly startedAt: number;
+  readonly now: () => number;
+  readonly maxEntries: number;
   newEntries: number;
   operations: number;
 }
@@ -302,6 +313,10 @@ export class PersistentMemoryIndex {
   readonly #db: BetterSqlite3.Database;
   readonly #queryPool: MemoryQueryProcessPool;
   readonly #now: () => number;
+  readonly #buildNow: () => number;
+  readonly #maxBuildEntriesPerSlice: number;
+  readonly #watcherFactory: typeof watch;
+  readonly #afterBuildEntryForTesting: PersistentMemoryIndexOptions["afterBuildEntryForTesting"];
   readonly #openDirectories = new Map<string, OpenDirectoryState>();
   readonly #watchers = new Map<string, FSWatcher>();
   readonly #watchDebounceTimers = new Map<
@@ -331,6 +346,18 @@ export class PersistentMemoryIndex {
     this.#queryPool = options.queryPool ?? new MemoryQueryProcessPool();
     this.#now = options.now ?? Date.now;
     this.#backgroundRefreshEnabled = options.backgroundRefresh ?? true;
+    this.#buildNow = options.buildPolicyForTesting?.now ?? (() => performance.now());
+    this.#maxBuildEntriesPerSlice =
+      options.buildPolicyForTesting?.maxEntriesPerSlice ?? MAX_MEMORY_INDEX_BUILD_ENTRIES_PER_SLICE;
+    if (
+      !Number.isSafeInteger(this.#maxBuildEntriesPerSlice) ||
+      this.#maxBuildEntriesPerSlice < 1 ||
+      this.#maxBuildEntriesPerSlice > MAX_MEMORY_INDEX_BUILD_ENTRIES_PER_SLICE
+    ) {
+      throw new RangeError("memory index test build entry limit is invalid");
+    }
+    this.#watcherFactory = options.watcherFactoryForTesting ?? watch;
+    this.#afterBuildEntryForTesting = options.afterBuildEntryForTesting;
     if (
       options.resourceLimitsForTesting?.incrementalReaderDrainMs !==
         undefined &&
@@ -544,7 +571,7 @@ export class PersistentMemoryIndex {
       for (const root of roots) this.#upsertRoot(root);
       this.#ensureWatchers(roots);
       const deadline =
-        performance.now() +
+        this.#buildNow() +
         (options.explicit
           ? MAX_MEMORY_EXPLICIT_REFRESH_WAIT_MS
           : MAX_MEMORY_INDEX_BUILD_SLICE_MS);
@@ -560,7 +587,7 @@ export class PersistentMemoryIndex {
         while (
           options.explicit === true &&
           status.state === "refresh_pending" &&
-          performance.now() < deadline
+          this.#buildNow() < deadline
         ) {
           await yieldToEventLoop();
           throwIfAborted(refreshSignal);
@@ -1042,7 +1069,7 @@ export class PersistentMemoryIndex {
         continue;
       }
       try {
-        const watcher = watch(
+        const watcher = this.#watcherFactory(
           root.canonicalRoot,
           { persistent: false, recursive: true },
           (_eventType, filename) => {
@@ -1390,7 +1417,7 @@ export class PersistentMemoryIndex {
         reason: MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON,
       };
     }
-    const startedAt = performance.now();
+    const startedAt = this.#buildNow();
     const changes = this.#db
       .prepare<[string, number, number], IncrementalChangeRow>(
         `SELECT sequence, relative_path, change_kind
@@ -1432,7 +1459,7 @@ export class PersistentMemoryIndex {
     );
     for (const change of orderedChanges) {
       throwIfAborted(signal);
-      if (performance.now() - startedAt >= MAX_MEMORY_INDEX_BUILD_SLICE_MS)
+      if (this.#buildNow() - startedAt >= MAX_MEMORY_INDEX_BUILD_SLICE_MS)
         break;
       lastSequence = Math.max(lastSequence, change.sequence);
       if (change.change_kind === "delete") {
@@ -1676,7 +1703,9 @@ export class PersistentMemoryIndex {
     signal: AbortSignal,
   ): Promise<MemoryIndexGenerationStatus> {
     const budget: BuildSliceBudget = {
-      startedAt: performance.now(),
+      startedAt: this.#buildNow(),
+      now: this.#buildNow,
+      maxEntries: this.#maxBuildEntriesPerSlice,
       newEntries: 0,
       operations: 0,
     };
@@ -1699,6 +1728,13 @@ export class PersistentMemoryIndex {
       if (file !== null) {
         await this.#indexDiscoveredFile(root, generation, file, signal);
         throwIfAborted(signal);
+        if (this.#afterBuildEntryForTesting !== undefined) {
+          await this.#afterBuildEntryForTesting({
+            rootPath: root.canonicalRoot,
+            relativePath: file.relative_path,
+          });
+          throwIfAborted(signal);
+        }
         budget.newEntries += 1;
         budget.operations += 1;
         continue;
@@ -2278,7 +2314,7 @@ export class PersistentMemoryIndex {
     startedAt: number,
     operations: number,
   ): void {
-    const elapsed = Math.max(0, performance.now() - startedAt);
+    const elapsed = Math.max(0, this.#buildNow() - startedAt);
     this.#db
       .prepare(
         `UPDATE memory_index_generations
@@ -3500,8 +3536,8 @@ function platformRelativePathSegments(path: string): string[] {
 
 function sliceExhausted(budget: BuildSliceBudget): boolean {
   return (
-    budget.newEntries >= MAX_MEMORY_INDEX_BUILD_ENTRIES_PER_SLICE ||
-    performance.now() - budget.startedAt >= MAX_MEMORY_INDEX_BUILD_SLICE_MS
+    budget.newEntries >= budget.maxEntries ||
+    budget.now() - budget.startedAt >= MAX_MEMORY_INDEX_BUILD_SLICE_MS
   );
 }
 
