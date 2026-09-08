@@ -492,8 +492,6 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   gemini: providerDefinition({
     name: "Gemini",
-    // gemini-2.5-pro is retired for new keys (404 pointing at the 3.x
-    // line), so the default must live on the current family.
     defaultModel: "gemini-3.1-pro-preview",
     baseURL: GEMINI_DEVELOPER_NATIVE_BASE_URL,
     credentials: apiKeyCredentials(["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
