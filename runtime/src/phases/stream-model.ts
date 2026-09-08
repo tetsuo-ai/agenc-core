@@ -120,13 +120,8 @@ function resolveSessionReasoningEffort(
       selection.effortSource,
     );
   }
-  let requested: ReasoningEffort | undefined;
-  if (turnEffort === undefined) {
-    requested = getInitialEffortSetting();
-  } else if (turnEffort !== "none") {
-    requested = turnEffort;
-  }
-  if (requested === undefined) return undefined;
+  const requested = turnEffort ?? getInitialEffortSetting();
+  if (requested === undefined || requested === "none") return undefined;
   if (requested === "max" || requested === "xhigh") {
     if (supportedReasoningLevels === undefined) {
       return requested === "max" ? "xhigh" : requested;
