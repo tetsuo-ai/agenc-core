@@ -150,8 +150,8 @@ export const PLUGIN_ARCHIVE_FETCH_POLICY = Object.freeze({
   downloadTimeoutMs: 120_000,
   maxDownloadBytes: 50 * 1024 * 1024,
   maxRedirectHops: 5,
-  redirectStatuses: Object.freeze([301, 302, 303, 307, 308] as const),
-  allowedRedirectProtocols: Object.freeze(["http:", "https:"] as const),
+  redirectStatuses: Object.freeze([301, 302, 303, 307, 308]),
+  allowedRedirectProtocols: Object.freeze(["http:", "https:"]),
   requireSameOrigin: true,
   allowUrlCredentials: false,
 });
@@ -1457,14 +1457,14 @@ async function fetchBytesWithRedirectPolicy(
 }
 
 function isRedirectStatus(status: number): boolean {
-  return PLUGIN_ARCHIVE_FETCH_POLICY.redirectStatuses.some((allowed) => status === allowed);
+  return PLUGIN_ARCHIVE_FETCH_POLICY.redirectStatuses.includes(status);
 }
 
 function nextPluginArchiveRedirectUrl(current: URL, response: Response): URL {
   const location = response.headers.get("location");
   if (!location) throw new Error("plugin archive redirect is missing a location header");
   const next = new URL(location, current);
-  if (!PLUGIN_ARCHIVE_FETCH_POLICY.allowedRedirectProtocols.some((protocol) => next.protocol === protocol)) {
+  if (!PLUGIN_ARCHIVE_FETCH_POLICY.allowedRedirectProtocols.includes(next.protocol)) {
     throw new Error(`plugin archive redirect uses an unsupported protocol: ${next.protocol}`);
   }
   if (!PLUGIN_ARCHIVE_FETCH_POLICY.allowUrlCredentials && (next.username || next.password)) {
