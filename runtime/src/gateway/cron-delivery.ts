@@ -1,29 +1,18 @@
 /**
- * Gateway cron delivery (TODO task 16).
+ * Durable gateway delivery for scheduled prompts.
  *
- * Runs delivery-tagged cron tasks (`CronTask.deliver` set) in ISOLATED
- * gateway daemon sessions — heartbeat parity — and routes each result to a
- * channel adapter and/or a webhook POST. The in-session cron scheduler skips
- * these tasks (cronScheduler loadRunnableTasks), so the gateway is their
- * exclusive executor and a fire is never double-run.
- *
- * Scheduling: sleep-until-earliest-due with a scan cap. Every wake re-reads
- * `.agenc/scheduled_tasks.json` (cheap, non-model), fires the due tasks
- * (each past-due schedule coalesces to ONE fire), stamps `lastFiredAt` /
- * deletes one-shots, and re-arms. The scan cap bounds how stale the armed
- * timer can get when tasks are added by another process — the model is still
- * only invoked when a task is concretely due.
- *
- * Turns reuse the SessionRouter: one persistent daemon session per task
- * (`cron|<id>`), dead-agent retry, and channel streaming for free. Turns are
- * autonomous: permission requests are DENIED and the daemon-owned execution
- * admission kernel gates every model/tool boundary (refusal delivers a paused
- * notice, never silent).
+ * Delivery-tagged tasks use isolated daemon sessions. Completed model results
+ * and destination retry state are persisted before external delivery. The
+ * task advances or is removed only after every destination acknowledges it.
+ * Process locks prevent overlapping execution, and persisted leases and
+ * backoff allow recovery after a gateway restart. Tool permissions are denied;
+ * model and tool calls still pass through daemon-owned execution admission.
  */
 
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
+import { createHash } from "node:crypto";
 import type { AgenCConfig } from "../config/schema.js";
 import {
   BrowserSsrfError,
@@ -31,14 +20,19 @@ import {
   type HostLookup,
 } from "../browser/ssrf.js";
 import {
-  listAllCronTasks,
-  markCronTasksFired,
-  nextCronRunMs,
-  removeCronTasks,
-  type CronTask,
-} from "../utils/cronTasks.js";
+  MAX_CRON_PAYLOAD_BYTES,
+  type CronDeliveryPayload,
+} from "../utils/cron-delivery-state.js";
+import {
+  CronDeliveryOutboxStore,
+  type CronOccurrenceClaim,
+} from "./cron-outbox.js";
 import { SessionRouter } from "./session-router.js";
-import type { ChannelAdapter, GatewayDaemonClient } from "./types.js";
+import type {
+  ChannelAdapter,
+  GatewayDaemonClient,
+  GatewayPromptResult,
+} from "./types.js";
 import { frameChannelMessage } from "./untrusted.js";
 import {
   executionAdmissionErrorMessage,
@@ -52,7 +46,10 @@ export const CRON_WEBHOOK_MAX_REDIRECTS = 5;
 
 export interface CronDeliveryClock {
   now(): Date;
-  setTimer(fn: () => void, ms: number): ReturnType<typeof setTimeout>;
+  setTimer(
+    fn: () => void | Promise<void>,
+    ms: number,
+  ): ReturnType<typeof setTimeout>;
   clearTimer(handle: ReturnType<typeof setTimeout>): void;
 }
 
@@ -75,7 +72,11 @@ export interface StartCronDeliveryOptions {
   /** Test seam: real timers by default. */
   readonly clock?: CronDeliveryClock;
   /** Test seam: webhook transport (address-pinned HTTP client by default). */
-  readonly postWebhook?: (url: string, body: unknown) => Promise<void>;
+  readonly postWebhook?: (
+    url: string,
+    body: unknown,
+    deliveryKey?: string,
+  ) => Promise<void>;
 }
 
 export interface CronDeliveryHandle {
@@ -95,6 +96,7 @@ export interface CronWebhookRequest {
   readonly address: string;
   readonly method: "GET" | "POST";
   readonly body?: Uint8Array;
+  readonly idempotencyKey?: string;
   readonly signal: AbortSignal;
 }
 
@@ -114,6 +116,7 @@ export interface PostCronWebhookOptions {
   readonly request?: CronWebhookRequester;
   readonly timeoutMs?: number;
   readonly maxRedirects?: number;
+  readonly idempotencyKey?: string;
 }
 
 function stripHostBrackets(host: string): string {
@@ -211,6 +214,9 @@ export async function requestPinnedCronWebhook(
     host: input.url.host,
     connection: "close",
   };
+  if (input.idempotencyKey !== undefined) {
+    headers["idempotency-key"] = input.idempotencyKey;
+  }
   if (input.body !== undefined) {
     headers["content-type"] = "application/json";
     headers["content-length"] = input.body.byteLength;
@@ -281,6 +287,12 @@ export async function postCronWebhook(
   if (!Number.isSafeInteger(maxRedirects) || maxRedirects < 0) {
     throw new Error("cron webhook: max redirects must be a non-negative integer");
   }
+  if (
+    options.idempotencyKey !== undefined &&
+    !/^[a-zA-Z0-9:_-]{1,256}$/.test(options.idempotencyKey)
+  ) {
+    throw new Error("cron webhook: invalid idempotency key");
+  }
 
   const requester = options.request ?? requestPinnedCronWebhook;
   const serializedBody = JSON.stringify(body);
@@ -311,10 +323,20 @@ export async function postCronWebhook(
           method,
           ...(requestBody !== undefined ? { body: requestBody } : {}),
           signal: controller.signal,
+          ...(options.idempotencyKey !== undefined
+            ? { idempotencyKey: options.idempotencyKey }
+            : {}),
         }),
         controller.signal,
       );
-      if (!isRedirectStatus(response.statusCode)) return;
+      if (!isRedirectStatus(response.statusCode)) {
+        if (
+          Number.isInteger(response.statusCode) &&
+          response.statusCode >= 200 &&
+          response.statusCode < 300
+        ) return;
+        throw new Error("cron webhook: unsuccessful HTTP response");
+      }
       if (response.location === undefined) {
         throw new Error("cron webhook: redirect missing Location header");
       }
@@ -346,11 +368,17 @@ export async function postCronWebhook(
   }
 }
 
-async function defaultPostWebhook(url: string, body: unknown): Promise<void> {
-  await postCronWebhook(url, body);
+async function defaultPostWebhook(
+  url: string,
+  body: unknown,
+  deliveryKey?: string,
+): Promise<void> {
+  await postCronWebhook(url, body, {
+    ...(deliveryKey !== undefined ? { idempotencyKey: deliveryKey } : {}),
+  });
 }
 
-/** Adapter used when a task delivers to a webhook only — swallows channel output. */
+/** Suppresses streaming until the completed result is durably recorded. */
 const NULL_ADAPTER: ChannelAdapter = {
   id: "cron-webhook-null",
   supportsEdit: false,
@@ -367,8 +395,10 @@ export function startCronDelivery(
   const log = options.log ?? (() => {});
   const clock = options.clock ?? REAL_CLOCK;
   const postWebhook = options.postWebhook ?? defaultPostWebhook;
-  const adaptersById = new Map(options.adapters.map((a) => [a.id, a]));
-
+  const adaptersById = new Map(
+    options.adapters.map((adapter) => [adapter.id, adapter]),
+  );
+  const outbox = new CronDeliveryOutboxStore(options.workspaceDir);
   const router = new SessionRouter({
     agencHome: options.agencHome,
     client: options.client,
@@ -377,148 +407,206 @@ export function startCronDelivery(
   let stopped = false;
   let running = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let activeTick: Promise<void> | undefined;
+  let retryFloorAt = 0;
+  const now = (): number => clock.now().getTime();
 
-  const deliveredTasks = async (): Promise<CronTask[]> => {
-    const tasks = await listAllCronTasks(options.workspaceDir);
-    return tasks.filter((t) => t.deliver !== undefined);
-  };
-
-  const fireTask = async (task: CronTask): Promise<void> => {
+  const fireTask = async (claim: CronOccurrenceClaim): Promise<void> => {
+    const task = claim.task;
     const deliver = task.deliver;
     if (deliver === undefined) return;
-    const adapter =
-      deliver.channel !== undefined
-        ? adaptersById.get(deliver.channel)
-        : undefined;
-    if (deliver.channel !== undefined && adapter === undefined) {
-      log(
-        `cron: task ${task.id} targets unknown channel '${deliver.channel}' — skipping channel delivery this fire`,
-      );
-    }
-    const routeAdapter = adapter ?? NULL_ADAPTER;
-    const conversationId = adapter !== undefined ? deliver.to ?? "" : "cron";
-
-    // Admission/reservation/reconciliation belongs to the daemon session at
-    // the actual model/tool boundary. The gateway owns only scheduling and
-    // delivery, never a second outer-turn spend ledger.
-    try {
-      // Frame scheduled prompts as untrusted work data (parity with hooks/channels, todo-126).
-      const framedPrompt = frameChannelMessage({
-        channelId: "cron",
-        peerId: `cron:${task.id}`,
-        text: task.prompt,
-      });
-      const result = await router.runTurn({
-        key: SessionRouter.conversationKey({
-          channelId: "cron",
-          agent: "default",
-          conversationId: task.id,
-        }),
-        text: framedPrompt,
-        adapter: routeAdapter,
-        conversationId,
-        // Autonomous, no human watching → deny permission requests (fail safe).
-        onPermissionRequest: async () => ({
-          behavior: "deny",
-          reason: "cron delivery turns do not grant tool permissions",
-        }),
-      });
-
-      if (deliver.webhook !== undefined) {
-        await postWebhook(deliver.webhook, {
-          taskId: task.id,
-          cron: task.cron,
-          prompt: task.prompt,
-          finalMessage: result.finalMessage,
-          stopReason: result.stopReason,
-          firedAt: clock.now().toISOString(),
-        }).catch((error: unknown) =>
-          log(`cron: webhook POST failed for task ${task.id}: ${String(error)}`),
+    let payload = claim.occurrence.payload;
+    if (payload === undefined) {
+      if (
+        stopped ||
+        (await outbox.beginAttempt(claim, "model", now())) === undefined
+      ) return;
+      if (stopped) return;
+      let result: GatewayPromptResult;
+      try {
+        result = await router.runTurn({
+          key: SessionRouter.conversationKey({
+            channelId: "cron",
+            agent: "default",
+            conversationId: task.id,
+          }),
+          text: frameChannelMessage({
+            channelId: "cron",
+            peerId: "cron:" + task.id,
+            text: task.prompt,
+          }),
+          adapter: NULL_ADAPTER,
+          conversationId: "cron",
+          onPermissionRequest: async () => ({
+            behavior: "deny",
+            reason: "cron delivery turns do not grant tool permissions",
+          }),
+        });
+      } catch (error) {
+        const admission = isExecutionAdmissionDenied(error);
+        const errorClass = admission ? "admission_pause" : "turn_error";
+        const status = await outbox.failAttempt(claim, "model", errorClass);
+        const action = status === "terminal"
+          ? " requires operator action"
+          : " retry pending";
+        log("cron: task " + JSON.stringify(task.id) + action + " (" + errorClass + ")");
+        if (
+          admission && !stopped &&
+          deliver.channel !== undefined && deliver.to !== undefined
+        ) {
+          const adapter = adaptersById.get(deliver.channel);
+          const reason = executionAdmissionErrorMessage(error).includes("budget_exceeded")
+            ? "budget_exceeded"
+            : "admission_denied";
+          await adapter?.send({
+            conversationId: deliver.to,
+            text: "⏸ cron task " + task.id + " paused: " + reason,
+          }).catch(() => log("cron: admission pause notice failed"));
+        }
+        return;
+      }
+      if (result.stopReason !== "completed") {
+        const errorClass = result.stopReason === "errored"
+          ? "turn_errored"
+          : result.stopReason === "stopped"
+            ? "turn_stopped"
+            : "unsupported_result";
+        await outbox.failAttempt(
+          claim, "model", errorClass, errorClass === "unsupported_result",
         );
+        log("cron: task " + JSON.stringify(task.id) + " result not deliverable (" + errorClass + ")");
+        return;
       }
-      log(`cron: task ${task.id} delivered (${result.stopReason})`);
-    } catch (error) {
-      if (!isExecutionAdmissionDenied(error)) throw error;
-      const notice =
-        `⏸ cron task ${task.id} paused: ` +
-        executionAdmissionErrorMessage(error);
-      log(`cron: ${notice}`);
-      if (adapter !== undefined && deliver.to !== undefined) {
-        await adapter
-          .send({ conversationId: deliver.to, text: notice })
-          .catch((noticeError: unknown) =>
-            log(`cron: notice failed: ${String(noticeError)}`),
-          );
+      if (typeof result.finalMessage !== "string") {
+        await outbox.failAttempt(claim, "model", "unsupported_result", true);
+        return;
       }
+      const completedPayload: CronDeliveryPayload = {
+        taskId: task.id,
+        occurrenceId: claim.key,
+        cron: task.cron,
+        prompt: task.prompt,
+        finalMessage: result.finalMessage,
+        stopReason: "completed",
+        firedAt: clock.now().toISOString(),
+      };
+      if (
+        Buffer.byteLength(JSON.stringify(completedPayload), "utf8") >
+        MAX_CRON_PAYLOAD_BYTES
+      ) {
+        await outbox.failAttempt(claim, "model", "payload_too_large", true);
+        log("cron: task " + JSON.stringify(task.id) + " requires operator action (payload_too_large)");
+        return;
+      }
+      if (!(await outbox.persistResult(claim, completedPayload))) return;
+      payload = completedPayload;
     }
+
+    for (const phase of ["channel", "webhook"] as const) {
+      if (
+        stopped ||
+        (await outbox.beginAttempt(claim, phase, now())) === undefined
+      ) continue;
+      if (stopped) return;
+      const deliveryKey = createHash("sha256")
+        .update(claim.key + ":" + phase)
+        .digest("hex");
+      try {
+        if (phase === "channel") {
+          const adapter = deliver.channel === undefined
+            ? undefined
+            : adaptersById.get(deliver.channel);
+          if (adapter === undefined || deliver.to === undefined) {
+            const status = await outbox.failAttempt(
+              claim, phase, "missing_adapter",
+            );
+            const action = status === "terminal"
+              ? "requires operator action"
+              : "delivery retry pending";
+            log("cron: unknown channel for task " + JSON.stringify(task.id) + "; " + action);
+            continue;
+          }
+          await adapter.send({
+            conversationId: deliver.to,
+            text: payload.finalMessage,
+            idempotencyKey: deliveryKey,
+          });
+        } else {
+          if (deliver.webhook === undefined) continue;
+          await postWebhook(deliver.webhook, payload, deliveryKey);
+        }
+      } catch {
+        const status = await outbox.failAttempt(
+          claim, phase, phase === "channel" ? "channel_error" : "webhook_error",
+        );
+        const action = status === "terminal"
+          ? " requires operator action"
+          : " delivery retry pending";
+        log("cron: task " + JSON.stringify(task.id) + " " + phase + action);
+        continue;
+      }
+      await outbox.markDelivered(claim, phase);
+    }
+    if (await outbox.complete(claim, now())) {
+      log("cron: task " + JSON.stringify(task.id) + " delivered (completed)");
+    }
+  };
+
+  const arm = async (): Promise<void> => {
+    if (stopped) return;
+    if (timer !== null) clock.clearTimer(timer);
+    let sleep = CRON_DELIVERY_SCAN_CAP_MS;
+    try {
+      let earliest = Infinity;
+      for (const entry of await outbox.schedule()) {
+        earliest = Math.min(earliest, entry.at);
+      }
+      sleep = Math.min(
+        CRON_DELIVERY_SCAN_CAP_MS,
+        Math.max(0, Math.max(retryFloorAt, earliest) - now()),
+      );
+    } catch {
+      log("cron: delivery state unavailable; inspect the task file and directory permissions");
+    }
+    if (stopped) return;
+    timer = clock.setTimer(() => {
+      activeTick = tick();
+      return activeTick;
+    }, sleep);
   };
 
   const tick = async (): Promise<void> => {
     if (stopped || running) return;
     running = true;
     try {
-      const now = clock.now().getTime();
-      const tasks = await deliveredTasks();
-      const firedRecurring: CronTask[] = [];
-      const firedOneShots: string[] = [];
-      for (const task of tasks) {
-        // Anchor from the last fire (or creation) — a past-due schedule
-        // coalesces to ONE fire regardless of how many slots were missed.
-        const due = nextCronRunMs(task.cron, task.lastFiredAt ?? task.createdAt);
-        if (due === null || due > now) continue;
+      for (const entry of await outbox.schedule()) {
+        if (stopped) break;
+        if (entry.at > now()) continue;
         try {
-          await fireTask(task);
-        } catch (error) {
-          log(`cron: task ${task.id} failed: ${String(error)}`);
+          await outbox.withClaim(entry.taskId, now, fireTask);
+        } catch {
+          retryFloorAt = now() + 1_000;
+          log("cron: task " + JSON.stringify(entry.taskId) + " delivery deferred; inspect persisted state");
         }
-        if (task.recurring === true) firedRecurring.push(task);
-        else firedOneShots.push(task.id);
       }
-      if (firedRecurring.length > 0) {
-        await markCronTasksFired(
-          firedRecurring.map((t) => t.id),
-          now,
-          options.workspaceDir,
-        );
-      }
-      if (firedOneShots.length > 0) {
-        await removeCronTasks(firedOneShots, options.workspaceDir);
-      }
+    } catch {
+      log("cron: delivery state unavailable; inspect the task file and directory permissions");
     } finally {
       running = false;
+      await arm();
     }
-    arm();
   };
 
-  const arm = (): void => {
-    if (stopped) return;
-    if (timer !== null) clock.clearTimer(timer);
-    void (async () => {
-      const now = clock.now().getTime();
-      let earliest: number | null = null;
-      for (const task of await deliveredTasks()) {
-        const due = nextCronRunMs(task.cron, task.lastFiredAt ?? task.createdAt);
-        if (due === null) continue;
-        if (earliest === null || due < earliest) earliest = due;
-      }
-      if (stopped) return;
-      const sleep = Math.min(
-        earliest === null ? CRON_DELIVERY_SCAN_CAP_MS : Math.max(0, earliest - now),
-        CRON_DELIVERY_SCAN_CAP_MS,
-      );
-      timer = clock.setTimer(() => void tick(), sleep);
-    })();
-  };
-
-  arm();
+  const initialArm = arm();
   log("cron: gateway delivery armed");
-
   return {
     isRunning: () => running,
     async stop() {
       stopped = true;
       if (timer !== null) clock.clearTimer(timer);
       timer = null;
+      await initialArm;
+      await activeTick;
     },
   };
 }

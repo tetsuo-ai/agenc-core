@@ -6,7 +6,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   GATEWAY_DIRECT_PROVIDER_ADMISSION_DIAGNOSTIC,
@@ -583,7 +583,7 @@ describe("startGateway", () => {
   test("cron delivery: a deliver-tagged task fires through the run loop to a channel", async () => {
     writeConfig({ channels: { mem: { dmPolicy: "allowlist", allowlist: ["x"] } } });
     const ws = join(home, "ws");
-    mkdirSync(join(ws, ".agenc"), { recursive: true });
+    mkdirSync(join(ws, ".agenc"), { recursive: true, mode: 0o700 });
     const startMs = Date.parse("2026-07-09T10:00:30Z");
     writeFileSync(
       join(ws, ".agenc", "scheduled_tasks.json"),
@@ -599,6 +599,7 @@ describe("startGateway", () => {
           },
         ],
       }),
+      { mode: 0o600 },
     );
 
     const client = new FakeClient();
@@ -606,11 +607,11 @@ describe("startGateway", () => {
 
     // Manual cron clock: capture armed timers, fire the earliest by hand.
     let now = startMs;
-    const timers = new Map<number, { at: number; fn: () => void }>();
+    const timers = new Map<number, { at: number; fn: () => void | Promise<void> }>();
     let nextTimer = 1;
     const cronClock = {
       now: () => new Date(now),
-      setTimer: (fn: () => void, ms: number) => {
+      setTimer: (fn: () => void | Promise<void>, ms: number) => {
         const id = nextTimer++;
         timers.set(id, { at: now + ms, fn });
         return id as unknown as ReturnType<typeof setTimeout>;
@@ -629,13 +630,12 @@ describe("startGateway", () => {
     });
 
     // Let arm() finish its async file read, then fire the armed timer.
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(timers.size).toBeGreaterThan(0));
     const armed = [...timers.values()].sort((a, b) => a.at - b.at)[0];
     expect(armed).toBeDefined();
     now = armed.at;
     timers.delete([...timers.keys()][0]);
-    armed.fn();
-    await new Promise((r) => setTimeout(r, 30));
+    await armed.fn();
 
     // The cron turn ran in its own gateway session and delivered in-channel.
     expect(mem.sent.some((m) => m.conversationId === "c9")).toBe(true);

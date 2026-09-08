@@ -13,6 +13,7 @@ import {
   DISCORD_MESSAGE_LIMIT,
   DISCORD_OP,
   DiscordChannelAdapter,
+  FetchDiscordTransport,
   type DiscordGatewayPayload,
   type DiscordSocketHandlers,
   type DiscordTransport,
@@ -284,6 +285,46 @@ describe("discord run-loop wiring contract", () => {
 });
 
 describe("DiscordChannelAdapter outbound", () => {
+  test("reuses a distinct bounded nonce for each chunk of a retried delivery", async () => {
+    const createMessage = vi.fn<DiscordTransport["createMessage"]>(async () => ({ id: "sent" }));
+    const transport: DiscordTransport = {
+      getGatewayUrl: async () => "wss://unused.example",
+      connect: async () => ({ send: () => {}, close: () => {} }),
+      createMessage,
+      editMessage: async () => {},
+    };
+    const adapter = new DiscordChannelAdapter({ transport, token: "unused" });
+    const message = { conversationId: "ops", text: "x".repeat(4500), idempotencyKey: "stable-delivery" };
+    await adapter.send(message);
+    const firstNonces = createMessage.mock.calls.map((call) => call[2]);
+    expect(firstNonces).toHaveLength(3);
+    expect(new Set(firstNonces).size).toBe(3);
+    for (const nonce of firstNonces) expect(nonce).toMatch(/^[a-f0-9]{24}$/);
+    await adapter.send(message);
+    expect(createMessage.mock.calls.slice(3).map((call) => call[2])).toEqual(firstNonces);
+    await adapter.send({ ...message, idempotencyKey: "next-delivery" });
+    expect(createMessage.mock.calls[6]?.[2]).not.toBe(firstNonces[0]);
+  });
+
+  test("enforces nonce deduplication in the production Discord request", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ id: "sent" }), { status: 200 }),
+    );
+    try {
+      const transport = new FetchDiscordTransport({ token: "unused" });
+      await transport.createMessage("ops", "message", "bounded-nonce");
+      expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
+        content: "message", nonce: "bounded-nonce", enforce_nonce: true,
+      });
+      await transport.createMessage("ops", "ordinary");
+      expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toEqual({ content: "ordinary" });
+      await expect(transport.createMessage("ops", "message", "x".repeat(26))).rejects.toThrow("nonce");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   test("send creates a message and edit routes to the stored target", async () => {
     const h = await makeAdapter();
     const handle = await h.adapter.send({

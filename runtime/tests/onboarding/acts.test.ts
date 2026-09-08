@@ -265,7 +265,7 @@ describe("channel act (O-3)", () => {
 
 describe("autonomy act (O-5): guardrails before autonomy", () => {
   test("sets the budget cap, then heartbeat/cron/hooks configure", async () => {
-    mkdirSync(ws, { recursive: true });
+    mkdirSync(ws, { recursive: true, mode: 0o700 });
     markOnboardingActComplete(home, "identity", { workspace: ws });
     const { io, output } = createScriptedActIO([
       "2.5", // daily cap

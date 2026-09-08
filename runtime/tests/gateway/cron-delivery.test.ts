@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   startCronDelivery,
@@ -106,7 +106,7 @@ function manualClock(startMs: number): {
 } {
   let now = startMs;
   let nextId = 1;
-  const timers = new Map<number, { at: number; fn: () => void }>();
+  const timers = new Map<number, { at: number; fn: () => void | Promise<void> }>();
   // The runner's arm()/tick() await real fs I/O (readCronTasks), which
   // resolves on the macrotask queue — hop it, not just microtasks, or the
   // armed timer is invisible to advance().
@@ -129,7 +129,7 @@ function manualClock(startMs: number): {
     },
     async advance(ms: number) {
       const target = now + ms;
-      await flush();
+      await vi.waitFor(() => expect(timers.size).toBeGreaterThan(0));
       for (;;) {
         let dueId: number | null = null;
         let dueAt = Infinity;
@@ -143,7 +143,7 @@ function manualClock(startMs: number): {
         const t = timers.get(dueId)!;
         timers.delete(dueId);
         now = t.at;
-        t.fn();
+        await t.fn();
         await flush();
       }
       now = target;
@@ -160,7 +160,7 @@ describe("startCronDelivery", () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "agenc-cron-del-"));
     ws = join(home, "ws");
-    mkdirSync(join(ws, ".agenc"), { recursive: true });
+    mkdirSync(join(ws, ".agenc"), { recursive: true, mode: 0o700 });
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
@@ -168,6 +168,7 @@ describe("startCronDelivery", () => {
     writeFileSync(
       join(ws, ".agenc", "scheduled_tasks.json"),
       JSON.stringify({ tasks }, null, 2),
+      { mode: 0o600 },
     );
   }
 
@@ -388,6 +389,81 @@ describe("startCronDelivery", () => {
     await handle.stop();
   });
 
+  test.each([
+    "turn_error",
+    "admission_pause",
+    "webhook_error",
+    "missing_adapter",
+    "errored",
+    "stopped",
+  ])("retains a failed one-shot occurrence for %s", async (failure) => {
+    const startMs = Date.parse("2026-07-09T10:00:30Z");
+    writeTasks([
+      {
+        id: "retry-one-shot",
+        cron: "* * * * *",
+        prompt: "retain this occurrence",
+        createdAt: startMs - 1_000,
+        deliver:
+          failure === "webhook_error"
+            ? { webhook: "https://hooks.example/retry" }
+            : {
+                channel: failure === "missing_adapter" ? "missing" : "mem",
+                to: "ops",
+              },
+      },
+    ]);
+    let attempts = 0;
+    const client: GatewayDaemonClient = {
+      async createSession() {
+        return {
+          sessionId: "retry-session",
+          async prompt(_text, handlers) {
+            attempts += 1;
+            if (failure === "turn_error") throw new Error("turn failed");
+            if (failure === "admission_pause") {
+              throw new Error("execution admission deny: budget_exceeded");
+            }
+            await handlers.onEvent({ type: "text", delta: "partial output" });
+            return {
+              stopReason:
+                failure === "errored" || failure === "stopped"
+                  ? failure
+                  : "completed",
+              finalMessage: "result",
+            };
+          },
+        };
+      },
+      async attachSession() {
+        throw new Error("unexpected attach");
+      },
+      async close() {},
+    };
+    const adapter = new InMemoryChannelAdapter({ id: "mem" });
+    const { clock, advance } = manualClock(startMs);
+    const handle = startCronDelivery({
+      ...baseOptions(client, adapter),
+      clock,
+      postWebhook: async () => {
+        throw new Error("webhook failed");
+      },
+    });
+
+    try {
+      await advance(35_000);
+      expect(attempts).toBe(1);
+      expect(await readCronTasks(ws)).toMatchObject([
+        { id: "retry-one-shot" },
+      ]);
+      if (failure === "errored" || failure === "stopped") {
+        expect(adapter.sent).toHaveLength(0);
+      }
+    } finally {
+      await handle.stop();
+    }
+  });
+
   test("unknown channel: fire is skipped gracefully without crashing", async () => {
     const startMs = Date.parse("2026-07-09T10:00:30Z");
     writeTasks([
@@ -421,7 +497,7 @@ describe("cron task delivery persistence", () => {
   let ws: string;
   beforeEach(() => {
     ws = mkdtempSync(join(tmpdir(), "agenc-cron-tasks-"));
-    mkdirSync(join(ws, ".agenc"), { recursive: true });
+    mkdirSync(join(ws, ".agenc"), { recursive: true, mode: 0o700 });
   });
   afterEach(async () => {
     const { resetStateForTests } = await import("../../src/bootstrap/state.js");

@@ -24,6 +24,7 @@
  * allowlist gate, and message text is untrusted (framed upstream).
  */
 
+import { createHash } from "node:crypto";
 import type {
   ChannelAdapter,
   ChannelAdapterContext,
@@ -88,7 +89,11 @@ export interface DiscordTransport {
   getGatewayUrl(): Promise<string>;
   connect(url: string, handlers: DiscordSocketHandlers): Promise<DiscordSocket>;
   /** POST /channels/{id}/messages */
-  createMessage(channelId: string, text: string): Promise<{ id: string }>;
+  createMessage(
+    channelId: string,
+    text: string,
+    nonce?: string,
+  ): Promise<{ id: string }>;
   /** PATCH /channels/{id}/messages/{messageId} */
   editMessage(channelId: string, messageId: string, text: string): Promise<void>;
 }
@@ -161,10 +166,22 @@ export class FetchDiscordTransport implements DiscordTransport {
     };
   }
 
-  async createMessage(channelId: string, text: string): Promise<{ id: string }> {
+  async createMessage(
+    channelId: string,
+    text: string,
+    nonce?: string,
+  ): Promise<{ id: string }> {
+    if (nonce !== undefined && (nonce.length === 0 || nonce.length > 25)) {
+      throw new DiscordApiError(
+        "discord message nonce must contain 1 to 25 characters",
+      );
+    }
     const result = (await this.#rest(`/channels/${channelId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content: text }),
+      body: JSON.stringify({
+        content: text,
+        ...(nonce !== undefined ? { nonce, enforce_nonce: true } : {}),
+      }),
     })) as { id?: string };
     if (typeof result.id !== "string") {
       throw new DiscordApiError("discord createMessage returned no id");
@@ -457,11 +474,18 @@ export class DiscordChannelAdapter implements ChannelAdapter {
       }
     }
     let firstId: string | null = null;
-    for (const chunk of chunks) {
-      const sent = await this.#transport.createMessage(
-        message.conversationId,
-        chunk,
-      );
+    for (const [chunkIndex, chunk] of chunks.entries()) {
+      const nonce = message.idempotencyKey === undefined
+        ? undefined
+        : createHash("sha256")
+            .update(message.idempotencyKey + ":" + chunkIndex)
+            .digest("hex")
+            .slice(0, 24);
+      const sent = nonce === undefined
+        ? await this.#transport.createMessage(message.conversationId, chunk)
+        : await this.#transport.createMessage(
+            message.conversationId, chunk, nonce,
+          );
       if (firstId === null) firstId = sent.id;
     }
     const handle = `${this.id}-out-${++this.#outCounter}`;

@@ -11,8 +11,8 @@
 
 import { randomUUID } from "crypto";
 import { readFileSync } from "fs";
-import { mkdir, readFile, writeFile } from "fs/promises";
-import { join } from "path";
+import { mkdir, readFile, realpath, stat } from "fs/promises";
+import { dirname, join } from "path";
 import {
   addSessionCronTask,
   getProjectRoot,
@@ -22,6 +22,13 @@ import {
 import { computeNextCronRun, parseCronExpression } from "./cron.js";
 import { logForDebugging } from "./debug.js";
 import { isFsInaccessible } from "./errors.js";
+import { acquireLocalSqliteLock, assertLocalPrivateFile } from "./sqlite-lock.js";
+import { writeDurableAtomicFile } from "./durable-atomic-file.js";
+import {
+  MAX_CRON_FILE_BYTES,
+  parseCronDeliveryOutbox,
+  type CronDeliveryOutbox,
+} from "./cron-delivery-state.js";
 
 /**
  * Delivery routing for gateway-executed cron tasks (TODO task 16). A task
@@ -98,7 +105,10 @@ export type CronSessionQueueOwner = {
   readonly conversationId: string;
 };
 
-type CronFile = { tasks: CronTask[] };
+export type CronFile = {
+  tasks: CronTask[];
+  deliveryOutbox?: CronDeliveryOutbox;
+};
 
 const CRON_FILE_REL = join(".agenc", "scheduled_tasks.json");
 
@@ -134,7 +144,10 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
     return [];
   }
 
-  const parsed = parseCronJson(raw);
+  return parseCronTaskRecords(parseCronJson(raw));
+}
+
+function parseCronTaskRecords(parsed: unknown): CronTask[] {
   if (!parsed || typeof parsed !== "object") return [];
   const file = parsed as Partial<CronFile>;
   if (!Array.isArray(file.tasks)) return [];
@@ -203,26 +216,104 @@ export async function writeCronTasks(
   tasks: CronTask[],
   dir?: string,
 ): Promise<void> {
-  const root = dir ?? getProjectRoot();
-  await mkdir(join(root, ".agenc"), { recursive: true });
-  // Strip runtime-only routing fields. Everything on disk is durable by
-  // definition and binds to the scheduler activation that loads it. Persisting
-  // a conversation owner here would route a restarted task to a stale session.
-  const body: CronFile = {
-    tasks: tasks.map(
-      ({
-        durable: _durable,
-        queueOwner: _queueOwner,
-        agentId: _agentId,
-        ...rest
-      }) => rest,
-    ),
+  await mutateCronFile(dir, (state) => {
+    state.tasks = tasks;
+    if (state.deliveryOutbox !== undefined) {
+      const taskIds = new Set(tasks.map((task) => task.id));
+      state.deliveryOutbox.occurrences = state.deliveryOutbox.occurrences.filter(
+        (entry) => entry.completedAt !== undefined || taskIds.has(entry.taskId),
+      );
+    }
+  });
+}
+
+export async function readCronFile(dir?: string): Promise<CronFile> {
+  return readCronFileAtPath(getCronFilePath(dir));
+}
+
+async function readCronFileAtPath(path: string): Promise<CronFile> {
+  let raw: string;
+  try {
+    const metadata = await stat(path);
+    if (!metadata.isFile() || metadata.size > MAX_CRON_FILE_BYTES) {
+      throw new Error("Cron task file exceeds its storage limit or is not a file");
+    }
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { tasks: [] };
+    throw error;
+  }
+  if (Buffer.byteLength(raw, "utf8") > MAX_CRON_FILE_BYTES) {
+    throw new Error("Cron task file exceeds its storage limit");
+  }
+  const parsed = parseCronJson(raw);
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    !Array.isArray((parsed as CronFile).tasks)
+  ) {
+    throw new Error("Invalid cron task file; preserve it for recovery");
+  }
+  const outbox = (parsed as { deliveryOutbox?: unknown }).deliveryOutbox;
+  return {
+    tasks: parseCronTaskRecords(parsed),
+    ...(outbox !== undefined
+      ? { deliveryOutbox: parseCronDeliveryOutbox(outbox) }
+      : {}),
   };
-  await writeFile(
-    getCronFilePath(root),
-    JSON.stringify(body, null, 2) + "\n",
-    "utf-8",
-  );
+}
+
+export async function mutateCronFile<Result>(
+  dir: string | undefined,
+  mutate: (state: CronFile) => Result,
+): Promise<Result> {
+  const directory = dirname(getCronFilePath(dir));
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const canonicalDirectory = await realpath(directory);
+  const path = join(canonicalDirectory, "scheduled_tasks.json");
+  const release = await acquireLocalSqliteLock(`${path}.lock.sqlite`, {
+    timeoutMs: 5_000,
+    label: "cron task transaction",
+  });
+  try {
+    try {
+      await assertLocalPrivateFile(path, {
+        timeoutMs: 5_000,
+        label: "cron task file",
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const state = await readCronFileAtPath(path);
+    const result = mutate(state);
+    const body: CronFile = {
+      tasks: state.tasks.map(
+        ({
+          durable: _durable,
+          queueOwner: _queueOwner,
+          agentId: _agentId,
+          ...task
+        }) => task,
+      ),
+      ...(state.deliveryOutbox !== undefined
+        ? { deliveryOutbox: parseCronDeliveryOutbox(state.deliveryOutbox) }
+        : {}),
+    };
+    const serialized = `${JSON.stringify(body, null, 2)}\n`;
+    if (Buffer.byteLength(serialized, "utf8") > MAX_CRON_FILE_BYTES) {
+      throw new Error("Cron task file exceeds its storage limit");
+    }
+    await writeDurableAtomicFile(path, `${path}.${randomUUID()}.tmp`, serialized);
+    return result;
+  } finally {
+    release();
+  }
+}
+
+export async function appendCronTask(task: CronTask, dir?: string): Promise<void> {
+  await mutateCronFile(dir, (state) => {
+    state.tasks.push(task);
+  });
 }
 
 /**
@@ -275,9 +366,7 @@ export async function addCronTask(
     });
     return id;
   }
-  const tasks = await readCronTasks(dir);
-  tasks.push(task);
-  await writeCronTasks(tasks, dir);
+  await appendCronTask(task, dir);
   return id;
 }
 
@@ -338,10 +427,14 @@ export async function removeCronTasks(
     return;
   }
   const idSet = new Set(ids);
-  const tasks = await readCronTasks(dir);
-  const remaining = tasks.filter((t) => !idSet.has(t.id));
-  if (remaining.length === tasks.length) return;
-  await writeCronTasks(remaining, dir);
+  await mutateCronFile(dir, (state) => {
+    state.tasks = state.tasks.filter((task) => !idSet.has(task.id));
+    if (state.deliveryOutbox !== undefined) {
+      state.deliveryOutbox.occurrences = state.deliveryOutbox.occurrences.filter(
+        (entry) => !idSet.has(entry.taskId),
+      );
+    }
+  });
 }
 
 /**
@@ -362,16 +455,11 @@ export async function markCronTasksFired(
 ): Promise<void> {
   if (ids.length === 0) return;
   const idSet = new Set(ids);
-  const tasks = await readCronTasks(dir);
-  let changed = false;
-  for (const t of tasks) {
-    if (idSet.has(t.id)) {
-      t.lastFiredAt = firedAt;
-      changed = true;
+  await mutateCronFile(dir, (state) => {
+    for (const task of state.tasks) {
+      if (idSet.has(task.id)) task.lastFiredAt = firedAt;
     }
-  }
-  if (!changed) return;
-  await writeCronTasks(tasks, dir);
+  });
 }
 
 /**

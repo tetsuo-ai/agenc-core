@@ -75,6 +75,18 @@ describe("assertCronWebhookUrlSafe", () => {
 });
 
 describe("postCronWebhook", () => {
+  it.each([400, 404, 429, 500, 503])(
+    "rejects unsuccessful HTTP status %s",
+    async (statusCode) => {
+      await expect(
+        postCronWebhook("https://public.test/hook", { ok: true }, {
+          lookup: async () => [PUBLIC_ADDRESS_A],
+          request: async () => ({ statusCode }),
+        }),
+      ).rejects.toThrow(/HTTP/);
+    },
+  );
+
   it("passes only the approved address to the transport", async () => {
     const requests: CronWebhookRequest[] = [];
     let lookups = 0;
@@ -140,6 +152,7 @@ describe("postCronWebhook", () => {
     };
 
     await postCronWebhook("https://public.test/hook", { ok: true }, {
+      idempotencyKey: "stable-webhook-delivery",
       lookup: async (hostname) =>
         hostname === "public.test" ? [PUBLIC_ADDRESS_A] : [PUBLIC_ADDRESS_B],
       request,
@@ -148,6 +161,10 @@ describe("postCronWebhook", () => {
     expect(requests.map(({ address }) => address)).toEqual([
       PUBLIC_ADDRESS_A,
       PUBLIC_ADDRESS_B,
+    ]);
+    expect(requests.map((request) => request.idempotencyKey)).toEqual([
+      "stable-webhook-delivery",
+      "stable-webhook-delivery",
     ]);
     expect(requests.map(({ method }) => method)).toEqual(["POST", "POST"]);
     expect(Buffer.from(requests[1]!.body!).toString("utf8")).toBe(
@@ -216,9 +233,11 @@ describe("requestPinnedCronWebhook", () => {
 
   it("dials the approved IP without resolving the URL hostname", async () => {
     let receivedHost: string | undefined;
+    let receivedKey: string | string[] | undefined;
     let receivedBody = "";
     const server = createServer((request, response) => {
       receivedHost = request.headers.host;
+      receivedKey = request.headers["idempotency-key"];
       request.setEncoding("utf8");
       request.on("data", (chunk: string) => {
         receivedBody += chunk;
@@ -244,11 +263,13 @@ describe("requestPinnedCronWebhook", () => {
         address: "127.0.0.1",
         method: "POST",
         body: Buffer.from('{"pinned":true}', "utf8"),
+        idempotencyKey: "stable-webhook-delivery",
         signal: AbortSignal.timeout(1_000),
       }),
     ).resolves.toEqual({ statusCode: 204 });
 
     expect(receivedHost).toBe(`must-not-resolve.invalid:${port}`);
+    expect(receivedKey).toBe("stable-webhook-delivery");
     expect(receivedBody).toBe('{"pinned":true}');
   });
 });

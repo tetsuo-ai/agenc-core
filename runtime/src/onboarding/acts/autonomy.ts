@@ -29,8 +29,7 @@ import {
 import { resolveHooksToken } from "../../gateway/run.js";
 import { HOOKS_PATH } from "../../gateway/hooks.js";
 import {
-  readCronTasks,
-  writeCronTasks,
+  appendCronTask,
   nextCronRunMs,
   normalizeDelivery,
 } from "../../utils/cronTasks.js";
@@ -268,16 +267,14 @@ export async function runAutonomyAct(
       const to =
         channel.length > 0 ? await io.ask("Conversation id", "") : "";
       const deliver = normalizeDelivery({ channel, to });
-      const tasks = await readCronTasks(workspace);
-      tasks.push({
+      await appendCronTask({
         id: randomUUID().slice(0, 8),
         cron: schedule,
         prompt,
         createdAt: now(),
         recurring: true,
         ...(deliver !== undefined ? { deliver } : {}),
-      });
-      await writeCronTasks(tasks, workspace);
+      }, workspace);
       io.say(
         `Job saved (${schedule}). Delivery-routed jobs run under \`agenc gateway run\` from ${workspace}.`,
       );

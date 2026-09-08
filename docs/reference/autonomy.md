@@ -199,8 +199,8 @@ so a fire is never double-run.
 - Sleep until earliest due time, with scan cap **5 minutes**
   (`CRON_DELIVERY_SCAN_CAP_MS`) so tasks added by other processes are noticed.
 - Source file: workspace **`.agenc/scheduled_tasks.json`**.
-- Past-due schedules coalesce to **one** fire; stamps `lastFiredAt` / removes
-  one-shots.
+- Past-due schedules coalesce to one occurrence. The task advances or is
+  removed only after every configured destination acknowledges delivery.
 - Delivery-routed jobs (`announceChannel` / `announceTo` / `webhook` on
   CronCreate) are **always durable** and run only while
   **`agenc gateway run`** is up (`startCronDelivery`). A daemon restart
@@ -210,14 +210,75 @@ so a fire is never double-run.
 
 ### Per fire
 
-1. Resolve channel adapter and/or webhook from `task.deliver`.
-2. `SessionRouter.runTurn` on an unattended daemon session with permission
-   requests **denied**.
-3. Model/tool calls reserve and reconcile through daemon execution admission.
-   On denial: log + optional channel pause notice.
-4. On a successful turn, optionally POST the result JSON to
-   `deliver.webhook`. A webhook failure is **logged and does not retry**
-   the turn; the fire is still stamped.
+1. Claim the task ID and computed occurrence time under a local process lock.
+   A persisted 60-second lease delays recovery after a process crash. The
+   process lock prevents overlapping execution even if a live turn outlasts
+   its lease.
+2. Run `SessionRouter.runTurn` with permission requests denied and channel
+   streaming disabled. Model and tool calls still use daemon admission.
+3. Only a `completed` result with a string `finalMessage` is deliverable.
+   Persist its payload before sending to any destination. Admission refusal,
+   thrown errors, `errored`, and `stopped` results remain retryable. An
+   unsupported result or oversized payload requires operator action.
+4. Track channel and webhook attempts separately. Missing adapters and
+   webhook transport, HTTP, timeout, or redirect failures remain failures.
+   Retry only failed destinations, using the saved result without another
+   model turn. An admission refusal can also send a short pause notice.
+5. Persist each destination acknowledgment. Once all destinations are
+   delivered, remove the one-shot or update the recurring task's `lastFiredAt`
+   in the same atomic file replacement that completes the outbox record.
+
+Retries use persisted exponential backoff with deterministic jitter. The
+base delay is 30 seconds, jitter ranges from 75% to 125%, and the final delay
+is capped at five minutes. Each model or destination phase has at most ten
+attempts. Exhausted failures remain in the task file and do not advance the
+schedule. Completed recurring occurrences coalesce missed slots through the
+completion time.
+
+If the gateway dies before committing a model result, recovery may run that
+model phase again. The daemon interface does not provide an exactly-once
+turn key. Once the result is committed, delivery retries never rerun the model.
+
+The gateway sends a stable destination key in webhook `Idempotency-Key`
+headers and in channel messages. Discord converts that key into a distinct
+nonce for each text chunk and requests nonce deduplication. Discord's
+deduplication window lasts only a few minutes. Other adapters and webhook
+receivers may not support deduplication. Delivery remains at-least-once when
+a process crashes after an external acknowledgment but before recording it
+locally, or when the receiver's deduplication window expires.
+[Discord message API](https://docs.discord.com/developers/resources/message)
+documents that limitation.
+
+### Delivery state and recovery
+
+The versioned `deliveryOutbox` field shares `.agenc/scheduled_tasks.json`
+with the task list. Updates use the repository's local SQLite process lock
+and durable atomic file writer. The file is private (`0600` on POSIX), and
+its directory chain must not permit untrusted writes. Stop writers and fix
+directory permissions if the gateway reports that storage is unavailable.
+
+Payloads are limited to 64 KiB, the file to 16 MiB, and the outbox to 128
+records. Stored errors are fixed classifications, not raw exceptions.
+Completed records can be discarded to make space; unresolved records are
+never discarded automatically. Inspect status without printing saved prompts
+or results:
+
+```sh
+jq '.deliveryOutbox.occurrences[] | {taskId, key, model, channel, webhook, blockedReason, completedAt}' \
+  .agenc/scheduled_tasks.json
+```
+
+Fix a retryable destination and let its next attempt run. For a terminal
+failure, preserve the private file before canceling the task with `CronDelete`
+and creating a replacement. Recreate only the failed destination if another
+destination already received the result. Deleting a task cancels pending
+work; an external request already in flight cannot be recalled.
+Changing a task while its occurrence is pending blocks that occurrence with
+`task_changed`, preserving its existing delivery acknowledgments.
+
+Stop old gateways and cron writers before upgrading or rolling back. Older
+binaries can discard outbox fields when rewriting the task file. Preserve
+pending records during rollback rather than replaying successful destinations.
 
 `isRunning()` is exposed so heartbeat can defer while a cron delivery turn is
 in flight.

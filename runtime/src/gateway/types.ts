@@ -44,6 +44,7 @@ export interface InboundChannelMessage {
 export interface OutboundChannelMessage {
   readonly conversationId: string;
   readonly text: string;
+  readonly idempotencyKey?: string;
   /**
    * Optional public image URL to deliver as native media on channels that
    * support it. Adapters without media support may ignore it and send `text`.
