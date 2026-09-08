@@ -35,10 +35,6 @@ import {
   trySessionMemoryCompaction,
 } from "./sessionMemoryCompact.js";
 import { snipCompact } from "./snipCompact.js";
-import {
-  DEFAULT_MICROCOMPACT_CLEAR_AFTER_MS,
-  getTimeBasedMicrocompactClearAfterMs,
-} from "./timeBasedMCConfig.js";
 import type { CompactContext, RuntimeMessage } from "./types.js";
 import {
   createCsvAgentInvocationEnvelope,
@@ -430,16 +426,7 @@ describe("compact supporting surfaces", () => {
     ).toBe(true);
   });
 
-  test("keeps conservative time and snip compact fallbacks", () => {
-    expect(getTimeBasedMicrocompactClearAfterMs({})).toBe(
-      DEFAULT_MICROCOMPACT_CLEAR_AFTER_MS,
-    );
-    expect(
-      getTimeBasedMicrocompactClearAfterMs({
-        AGENC_MICROCOMPACT_CLEAR_AFTER_MS: "1200",
-      }),
-    ).toBe(1_200);
-
+  test("keeps a conservative snip compact fallback", () => {
     const messages = [message("unchanged")];
     expect(snipCompact(messages)).toEqual({ messages, tokensFreed: 0 });
 

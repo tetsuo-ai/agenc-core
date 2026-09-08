@@ -7,7 +7,6 @@
 
 import type { CompactContext, RuntimeMessage } from "./types.js";
 import { getAPIContextManagement } from "./apiMicrocompact.js";
-import { getTimeBasedMicrocompactClearAfterMs } from "./timeBasedMCConfig.js";
 import {
   messageText,
   stringifyContent,
@@ -63,8 +62,6 @@ interface CompactableResultPosition {
   readonly toolUseId: string;
   /** Length of the result text as the model would see it. */
   readonly chars: number;
-  /** Inside the time-based clear window: never a victim. */
-  readonly recent: boolean;
 }
 
 function pressureLimitChars(contextWindowTokens: number | undefined): number {
@@ -84,8 +81,8 @@ function pressureLimitChars(contextWindowTokens: number | undefined): number {
  * history so every projection of one history agrees byte for byte. Results
  * accumulate until their live text exceeds the pressure limit; the valve then
  * clears the oldest clearable ones down to half the limit, never the most
- * recent ones, never the latest read of a path, never a result inside the
- * time window. Between two firings nothing moves, so the provider's cached
+ * recent ones and never the latest read of a path. Between two firings
+ * nothing moves, so the provider's cached
  * prefix breaks once per batch instead of once per call, which is what a
  * recent-N window sliding with every tool result did (measured as mid-turn
  * cache misses of the whole tail).
@@ -116,7 +113,7 @@ function decideClearedResults(
       const victimPath = readPathByToolUseId.get(victim.toolUseId);
       const isLatestReadOfPath =
         victimPath !== undefined && latestReadByPath.get(victimPath) === victim.toolUseId;
-      if (victim.recent || isLatestReadOfPath) {
+      if (isLatestReadOfPath) {
         index += 1;
         continue;
       }
@@ -140,13 +137,9 @@ export async function microcompactMessages(
 }> {
   const compactableIds = collectCompactableToolUseIds(messages);
   const readPathByToolUseId = collectReadFilePaths(messages);
-  const clearAfterMs = getTimeBasedMicrocompactClearAfterMs();
-  const now = Date.now();
   const positions = collectCompactableToolResultPositions(
     messages,
     compactableIds,
-    now,
-    clearAfterMs,
   );
   const apiContextManagement = getAPIContextManagement(
     context?.options?.apiMicrocompact,
@@ -297,17 +290,13 @@ function readFilePathFromInput(input: unknown): string | undefined {
 function collectCompactableToolResultPositions(
   messages: readonly RuntimeMessage[],
   compactableIds: ReadonlySet<string>,
-  now: number,
-  clearAfterMs: number,
 ): CompactableResultPosition[] {
   const positions: CompactableResultPosition[] = [];
   for (const message of messages) {
-    const recent = isWithinTimeWindow(message, now, clearAfterMs);
     if (isStandaloneCompactableResult(message, compactableIds)) {
       positions.push({
         toolUseId: message.toolCallId!,
         chars: messageText(message).length,
-        recent,
       });
       continue;
     }
@@ -319,7 +308,6 @@ function collectCompactableToolResultPositions(
         positions.push({
           toolUseId: block.tool_use_id,
           chars: stringifyContent(block.content ?? "").length,
-          recent,
         });
       }
     }
@@ -373,12 +361,3 @@ function isCompactableTool(name: string): boolean {
   return COMPACTABLE_TOOLS.has(name) || name.startsWith(MCP_TOOL_PREFIX);
 }
 
-function isWithinTimeWindow(
-  message: RuntimeMessage,
-  now: number,
-  clearAfterMs: number,
-): boolean {
-  if (!message.timestamp) return false;
-  const timestamp = Date.parse(message.timestamp);
-  return Number.isFinite(timestamp) && now - timestamp < clearAfterMs;
-}

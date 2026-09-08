@@ -93,6 +93,9 @@ export function toAgenCRuntimeMessages(
         type: "system",
         content: runtimeContent,
         uuid: `agenc-system-${index}`,
+        // Constant on purpose: one history must project to the same bytes
+        // every time, so this carries no wall-clock reading. Nothing may
+        // derive recency from it.
         timestamp: new Date(0).toISOString(),
       };
     }
@@ -268,6 +271,8 @@ export function runtimeWireEnvelope(
     type: role,
     message: { role, content },
     uuid: `agenc-${role}-${index}`,
+    // Constant on purpose: see the note above. A real time here would make one
+    // history project differently on every call.
     timestamp: new Date(0).toISOString(),
   };
 }

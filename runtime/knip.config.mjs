@@ -46,7 +46,6 @@ const serviceTestContractExportFiles = [
   "src/services/compact/prompt.ts",
   "src/services/compact/sessionMemoryCompact.ts",
   "src/services/compact/snipCompact.ts",
-  "src/services/compact/timeBasedMCConfig.ts",
   "src/services/contextCollapse/index.ts",
   "src/services/extractMemories/extractMemories.ts",
   "src/services/extractMemories/memory-paths.ts",
