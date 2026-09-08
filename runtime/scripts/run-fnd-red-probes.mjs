@@ -1443,8 +1443,8 @@ function createProbeHandoff(sourceBytes, authenticationSecret) {
 }
 
 function expectedPhaseLine(entry, sequence, authenticationSecret) {
+  if (sequence < 1 || sequence > RED_PROBE_PHASES.length) return undefined;
   const phase = RED_PROBE_PHASES[sequence - 1];
-  if (phase === undefined) return undefined;
   const evidence = {
     protocolVersion: RED_PROBE_PROTOCOL_VERSION,
     id: entry.id,

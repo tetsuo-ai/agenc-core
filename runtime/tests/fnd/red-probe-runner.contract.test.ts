@@ -1441,6 +1441,12 @@ describe("FND red-probe supervisor", () => {
       recordsObserved: 5,
       partialRecordBytes: 0,
     });
+    monitor.observe(Buffer.from(protocolPhaseLine(1)));
+    expect(monitor.snapshot()).toMatchObject({
+      lastAuthenticatedPhase: "terminal-record",
+      protocolInvalid: true,
+      recordsObserved: 6,
+    });
   });
 
   it.each([
