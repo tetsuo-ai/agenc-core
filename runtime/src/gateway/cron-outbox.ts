@@ -259,6 +259,7 @@ export class CronDeliveryOutboxStore {
     claim: CronOccurrenceClaim,
     phase: CronDeliveryPhase,
     error: CronDeliveryErrorClass,
+    now: number,
     terminal = false,
   ): Promise<CronDeliveryAttempt["status"] | undefined> {
     const updated = await this.update(claim, (entry) => {
@@ -268,6 +269,8 @@ export class CronDeliveryOutboxStore {
       if (terminal || attempt.attempts >= MAX_CRON_DELIVERY_ATTEMPTS) {
         attempt.status = "terminal";
         delete attempt.nextAttemptAt;
+      } else {
+        attempt.nextAttemptAt = retryTime(claim.key, phase, attempt.attempts, now);
       }
     });
     return updated?.[phase]?.status;

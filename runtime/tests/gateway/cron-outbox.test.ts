@@ -94,6 +94,7 @@ function start(options: {
     postWebhook,
     lines,
     get scheduledAt() { return scheduledAt; },
+    setNow(at: number) { now = at; },
     async fire(at = DUE_AT) {
       await vi.waitFor(() => expect(callback).toBeDefined());
       now = at;
@@ -105,6 +106,30 @@ function start(options: {
 }
 
 describe("durable cron delivery", () => {
+  test.each(["model", "errored", "channel", "webhook"] as const)("backs off after a slow %s failure finishes", async (failure) => {
+    const finishedAt = DUE_AT + 120_000;
+    const fail = async () => {
+      runner.setNow(finishedAt);
+      throw new Error("delayed failure");
+    };
+    const runner = start({
+      ...(failure === "model" ? { prompt: fail } : {}),
+      ...(failure === "errored" ? { prompt: async () => {
+        runner.setNow(finishedAt);
+        return { stopReason: "errored" as const, finalMessage: "partial" };
+      } } : {}),
+      ...(failure === "channel" ? { send: fail } : {}),
+      ...(failure === "webhook" ? { postWebhook: fail } : {}),
+    });
+    await runner.fire();
+    const phase = failure === "errored" ? "model" : failure;
+    const entry = (await readCronFile(workspace)).deliveryOutbox!.occurrences[0]!;
+    const retryAt = entry[phase]!.nextAttemptAt!;
+    expect(retryAt).toBeGreaterThanOrEqual(finishedAt + 22_500);
+    expect(retryAt).toBeLessThanOrEqual(finishedAt + 37_500);
+    expect(runner.scheduledAt).toBe(retryAt);
+  });
+
   test.each(["channel", "webhook"] as const)("retries only the failed %s destination after restart", async (phase) => {
     const first = start({
       ...(phase === "channel" ? { send: async () => { throw new Error("private channel failure"); } } : {}),

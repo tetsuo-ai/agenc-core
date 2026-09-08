@@ -445,7 +445,7 @@ export function startCronDelivery(
       } catch (error) {
         const admission = isExecutionAdmissionDenied(error);
         const errorClass = admission ? "admission_pause" : "turn_error";
-        const status = await outbox.failAttempt(claim, "model", errorClass);
+        const status = await outbox.failAttempt(claim, "model", errorClass, now());
         const action = status === "terminal"
           ? " requires operator action"
           : " retry pending";
@@ -472,13 +472,13 @@ export function startCronDelivery(
             ? "turn_stopped"
             : "unsupported_result";
         await outbox.failAttempt(
-          claim, "model", errorClass, errorClass === "unsupported_result",
+          claim, "model", errorClass, now(), errorClass === "unsupported_result",
         );
         log("cron: task " + JSON.stringify(task.id) + " result not deliverable (" + errorClass + ")");
         return;
       }
       if (typeof result.finalMessage !== "string") {
-        await outbox.failAttempt(claim, "model", "unsupported_result", true);
+        await outbox.failAttempt(claim, "model", "unsupported_result", now(), true);
         return;
       }
       const completedPayload: CronDeliveryPayload = {
@@ -494,7 +494,7 @@ export function startCronDelivery(
         Buffer.byteLength(JSON.stringify(completedPayload), "utf8") >
         MAX_CRON_PAYLOAD_BYTES
       ) {
-        await outbox.failAttempt(claim, "model", "payload_too_large", true);
+        await outbox.failAttempt(claim, "model", "payload_too_large", now(), true);
         log("cron: task " + JSON.stringify(task.id) + " requires operator action (payload_too_large)");
         return;
       }
@@ -518,7 +518,7 @@ export function startCronDelivery(
             : adaptersById.get(deliver.channel);
           if (adapter === undefined || deliver.to === undefined) {
             const status = await outbox.failAttempt(
-              claim, phase, "missing_adapter",
+              claim, phase, "missing_adapter", now(),
             );
             const action = status === "terminal"
               ? "requires operator action"
@@ -537,7 +537,7 @@ export function startCronDelivery(
         }
       } catch {
         const status = await outbox.failAttempt(
-          claim, phase, phase === "channel" ? "channel_error" : "webhook_error",
+          claim, phase, phase === "channel" ? "channel_error" : "webhook_error", now(),
         );
         const action = status === "terminal"
           ? " requires operator action"

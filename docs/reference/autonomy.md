@@ -228,7 +228,9 @@ so a fire is never double-run.
    delivered, remove the one-shot or update the recurring task's `lastFiredAt`
    in the same atomic file replacement that completes the outbox record.
 
-Retries use persisted exponential backoff with deterministic jitter. The
+Retries use persisted exponential backoff with deterministic jitter, measured
+from when a failure finishes. An interrupted attempt also has a retry deadline
+recorded before execution so a process crash preserves its retry state. The
 base delay is 30 seconds, jitter ranges from 75% to 125%, and the final delay
 is capped at five minutes. Each model or destination phase has at most ten
 attempts. Exhausted failures remain in the task file and do not advance the
