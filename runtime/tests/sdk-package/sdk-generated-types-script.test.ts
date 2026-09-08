@@ -150,7 +150,8 @@ describe("SDK generated transcript v2 script", () => {
   it("keeps check mode as the default and requires an explicit write flag", () => {
     expect(parseSdkGeneratedTypesMode([])).toBe("check");
     expect(parseSdkGeneratedTypesMode(["--write"])).toBe("write");
-    expect(() => parseSdkGeneratedTypesMode(["--check"])).toThrow(/usage/);
+    expect(parseSdkGeneratedTypesMode(["--check"])).toBe("check");
+    expect(() => parseSdkGeneratedTypesMode(["--check", "--write"])).toThrow(/usage/);
     expect(() => parseSdkGeneratedTypesMode(["--write", "extra"])).toThrow(
       /usage/,
     );

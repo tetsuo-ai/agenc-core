@@ -25,9 +25,10 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node ../../scripts/canonicalize-package-modes.mjs .",
+    "check:generated": "node ../../runtime/scripts/check-sdk-generated-types.mjs --check",
+    "build": "npm run check:generated && tsc -p tsconfig.json && node ../../scripts/canonicalize-package-modes.mjs .",
     "prepack": "npm run build",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "npm run check:generated && tsc --noEmit -p tsconfig.json"
   },
   "keywords": [
     "agenc",

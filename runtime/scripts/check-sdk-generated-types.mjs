@@ -7,6 +7,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { renderSdkWireTypes } from "./sdk-wire-types.mjs";
 import { checkSdkWireParity } from "./check-sdk-wire-parity.mjs";
+import { readWorkflowHandoffGenerated } from "./sdk-workflow-handoff.mjs";
 import {
   createSourceFile,
   isInterfaceDeclaration,
@@ -28,6 +29,9 @@ const paths = {
   packageWire: "../packages/agenc-sdk/src/protocol-wire.generated.ts",
   packageWorkflowResult:
     "../packages/agenc-sdk/src/workflow-result.generated.ts",
+  handoffSchema: "src/agents/workflow-handoff-artifact.v1.schema.json",
+  handoffSource: "src/agents/workflow-handoff-schema.ts",
+  packageWorkflowHandoff: "../packages/agenc-sdk/src/workflow-handoff.generated.ts",
 };
 const checkCommand =
   "npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types";
@@ -51,10 +55,10 @@ function normalizeLineEndings(source) {
 }
 
 export function parseSdkGeneratedTypesMode(args) {
-  if (args.length === 0) return "check";
+  if (args.length === 0 || (args.length === 1 && args[0] === "--check")) return "check";
   if (args.length === 1 && args[0] === "--write") return "write";
   throw new Error(
-    "usage: check-sdk-generated-types.mjs [--write]",
+    "usage: check-sdk-generated-types.mjs [--check | --write]",
   );
 }
 
@@ -178,6 +182,11 @@ export async function synchronizeTurnTerminalGenerated({
   return synchronizeGeneratedFile({ generatedPath, expected, write });
 }
 
+export async function synchronizeWorkflowHandoffGenerated({ schemaPath, runtimeSourcePath, generatedPath, write = false }) {
+  const expected = await readWorkflowHandoffGenerated({ schemaPath, runtimeSourcePath });
+  return synchronizeGeneratedFile({ generatedPath, expected, write });
+}
+
 async function synchronizeGeneratedFile({ generatedPath, expected, write }) {
   let current;
   try {
@@ -222,7 +231,7 @@ function reportSdkGeneratedTypesSuccess(mode) {
   process.stdout.write(`[sdk generated types] ${message}\n`);
 }
 
-function reportWrittenSdkArtifacts(transcriptV2Path, transcriptV2, wire, turnTerminal) {
+function reportWrittenSdkArtifacts(transcriptV2Path, transcriptV2, wire, turnTerminal, workflowHandoff) {
   const displayPath = path
     .relative(path.dirname(runtimeRoot), transcriptV2Path)
     .split(path.sep)
@@ -237,6 +246,9 @@ function reportWrittenSdkArtifacts(transcriptV2Path, transcriptV2, wire, turnTer
   );
   process.stdout.write(
     `[sdk generated types] ${turnTerminal.changed ? "wrote" : "current"} ${paths.packageTurnTerminal}\n`,
+  );
+  process.stdout.write(
+    `[sdk generated types] ${workflowHandoff.changed ? "wrote" : "current"} ${paths.packageWorkflowHandoff}\n`,
   );
 }
 
@@ -254,6 +266,7 @@ async function main() {
     transcriptV2,
     wire,
     turnTerminal,
+    workflowHandoff,
   ] = await Promise.all([
     readRuntimeFile(paths.schemas),
     readRuntimeFile(paths.coreTypes),
@@ -274,9 +287,15 @@ async function main() {
       generatedPath: path.join(runtimeRoot, paths.packageTurnTerminal),
       write: mode === "write",
     }),
+    synchronizeWorkflowHandoffGenerated({
+      schemaPath: path.join(runtimeRoot, paths.handoffSchema),
+      runtimeSourcePath: path.join(runtimeRoot, paths.handoffSource),
+      generatedPath: path.join(runtimeRoot, paths.packageWorkflowHandoff),
+      write: mode === "write",
+    }),
   ]);
   if (mode === "write") {
-    reportWrittenSdkArtifacts(transcriptV2Path, transcriptV2, wire, turnTerminal);
+    reportWrittenSdkArtifacts(transcriptV2Path, transcriptV2, wire, turnTerminal, workflowHandoff);
   }
   const failures = [];
   const sources = [
@@ -423,6 +442,11 @@ async function main() {
     failures,
     turnTerminal.matches,
     `${paths.packageTurnTerminal} is stale; run ${checkCommand} -- --write`,
+  );
+  expectCondition(
+    failures,
+    workflowHandoff.matches,
+    `${paths.packageWorkflowHandoff} is stale; run ${checkCommand} -- --write`,
   );
 
   if (mode === "check") {

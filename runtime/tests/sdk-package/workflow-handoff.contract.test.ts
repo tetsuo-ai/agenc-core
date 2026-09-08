@@ -60,6 +60,53 @@ const artifact = Object.freeze({
 } as const satisfies SdkWorkflowHandoffArtifact);
 
 describe("public workflow handoff artifact contract", () => {
+  it("preserves strict public field validation and accepts null-prototype records", () => {
+    const candidates: readonly unknown[] = [
+      null,
+      [],
+      { ...artifact, extra: true },
+      { ...artifact, format_version: 2 },
+      { ...artifact, kind: "other" },
+      { ...artifact, compatibility_epoch: "future" },
+      { ...artifact, artifact_id: "bad" },
+      { ...artifact, digest: "sha256:bad" },
+      { ...artifact, owner: { ...artifact.owner, extra: "value" } },
+      { ...artifact, owner: { ...artifact.owner, run_id: "" } },
+      { ...artifact, byte_length: -1 },
+      { ...artifact, byte_length: MAX_WORKFLOW_ARTIFACT_BYTES + 1 },
+      { ...artifact, token_count: MAX_WORKFLOW_STEP_RESULT_TOKENS + 1 },
+      { ...artifact, token_count: 1.5 },
+      { ...artifact, created_at_ms: Number.NaN },
+      { ...artifact, commit_sequence: 0 },
+      { ...artifact, media_type: "application/json" },
+      { ...artifact, encoding: "utf-16" },
+      { ...artifact, preview_truncated: "false" },
+    ];
+    for (const candidate of candidates) {
+      expect(() => validateWorkflowHandoffArtifact(candidate)).toThrowError(expect.objectContaining({
+        name: "WorkflowHandoffArtifactValidationError", code: "WORKFLOW_HANDOFF_SCHEMA",
+      }));
+    }
+    for (const field of Object.keys(artifact)) {
+      const missing = { ...artifact } as Record<string, unknown>;
+      delete missing[field];
+      expect(() => validateWorkflowHandoffArtifact(missing)).toThrow();
+    }
+    expect(validateWorkflowHandoffArtifact(Object.assign(Object.create(null), artifact))).toEqual(artifact);
+  });
+
+  it("rejects accessor and non-data records without reading accessors", () => {
+    let reads = 0;
+    const accessor = { ...artifact };
+    Object.defineProperty(accessor, "preview", { enumerable: true, get() { reads += 1; return "data"; } });
+    expect(() => validateWorkflowHandoffArtifact(accessor)).toThrow(/data property/);
+    expect(reads).toBe(0);
+    expect(() => validateWorkflowHandoffArtifact(Object.assign(Object.create({}), artifact))).toThrow(/plain object/);
+    const hidden = { ...artifact };
+    Object.defineProperty(hidden, "preview", { enumerable: false, value: "data" });
+    expect(() => validateWorkflowHandoffArtifact(hidden)).toThrow(/data property/);
+  });
+
   it("keeps JSON schema, runtime validation, and SDK constants aligned", () => {
     const jsonSchema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
       readonly properties: {

@@ -2,7 +2,8 @@
 
 **0.3.0** — typed, zero-dependency embedding SDK for the AgenC daemon protocol.
 
-Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
+Node **>=26.5 <27**, ESM only, TypeScript build with generated-contract checks,
+and no external runtime dependencies.
 
 ## Surfaces
 
@@ -110,6 +111,13 @@ then check it with
 Workflow-result types in `src/workflow-result.generated.ts` are marker-checked
 by the same command, not an exact file compare
 (see [`docs/sdk.md`](../../docs/sdk.md#workflow-result-generated-mirror)).
+Workflow-handoff types, constants, and structural validator data in
+`src/workflow-handoff.generated.ts` are generated from the versioned runtime
+JSON schema and checked against the runtime schema and named constants.
+The same `--write` command refreshes the complete file. SDK build and typecheck
+run the read-only generated checks. Cross-field and UTF-8 validation stays in
+`src/workflow-handoff-validation.ts`, with no runtime package dependencies
+(see [`docs/sdk.md`](../../docs/sdk.md#workflow-handoff-generated-mirror)).
 
 ## Durable reconnect
 
