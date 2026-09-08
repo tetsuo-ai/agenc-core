@@ -653,125 +653,71 @@ describe("A3b atomic legacy publication", () => {
     });
   });
 
-  it("leaves schema v3 byte-identical on a pre-publish crash and publishes schema v5 once", () => {
-    const sessionId = "atomic-schema3-upgrade-session";
-    const meta = {
-      sessionId,
-      timestamp: "2026-08-31T00:00:00.000Z",
-      cwd,
-      originator: "a3b-test",
-      agencVersion: "0.17.0",
-    } as const;
-    const schema3Items: RolloutItem[] = [
-      {
-        type: "session_meta",
-        payload: { ...meta, rolloutSchemaVersion: 3 },
-      },
-      ...v2OrphanRollout("schema3-turn", []).map((item) =>
-        item.type === "event_msg"
-          ? {
-              ...item,
-              payload: {
-                ...item.payload,
-                eventId: `event:${item.payload.seq}`,
-              },
-            }
-          : item,
-      ),
-    ];
-    const schema3Bytes = schema3Items.map(serializeRolloutItem).join("");
-    expect(schema3Bytes).toContain('"rolloutSchemaVersion":3');
-    expect(schema3Bytes).toContain('"checkpointVersion":2');
-    const crash = new Error("simulated schema3 upgrade crash");
-    const { upgradedItems } = exerciseCheckpointUpgrade({
-      meta,
-      sourceBytes: schema3Bytes,
-      beforeCheckpointUpgradePublishForTestingOnly: () => {
-        throw crash;
-      },
-      expectedCrash: crash,
-    });
-    expect(upgradedItems).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
+  it.each([
+    { schemaVersion: 3, checkpointVersion: 2, orphanRollout: v2OrphanRollout },
+    { schemaVersion: 4, checkpointVersion: 3, orphanRollout: v3OrphanRollout },
+  ])(
+    "leaves schema v$schemaVersion byte-identical on a pre-publish crash and publishes schema v5 once",
+    ({ schemaVersion, checkpointVersion, orphanRollout }) => {
+      const sessionId = `atomic-schema${schemaVersion}-upgrade-session`;
+      const meta = {
+        sessionId,
+        timestamp: "2026-08-31T00:00:00.000Z",
+        cwd,
+        originator: "a3b-test",
+        agencVersion: "0.17.0",
+      } as const;
+      const sourceItems: RolloutItem[] = [
+        {
           type: "session_meta",
-          payload: expect.objectContaining({ rolloutSchemaVersion: 5 }),
-        }),
-        expect.objectContaining({
-          type: "event_msg",
-          payload: expect.objectContaining({
-            msg: expect.objectContaining({
-              type: "turn_checkpoint",
-              payload: expect.objectContaining({
-                checkpointVersion: 4,
-                prefixHashVersion: 3,
+          payload: { ...meta, rolloutSchemaVersion: schemaVersion },
+        },
+        ...orphanRollout(`schema${schemaVersion}-turn`, []).map((item) =>
+          item.type === "event_msg"
+            ? {
+                ...item,
+                payload: {
+                  ...item.payload,
+                  eventId: `event:${item.payload.seq}`,
+                },
+              }
+            : item,
+        ),
+      ];
+      const sourceBytes = sourceItems.map(serializeRolloutItem).join("");
+      expect(sourceBytes).toContain(`"rolloutSchemaVersion":${schemaVersion}`);
+      expect(sourceBytes).toContain(`"checkpointVersion":${checkpointVersion}`);
+      const crash = new Error(`simulated schema${schemaVersion} upgrade crash`);
+      const { upgradedItems } = exerciseCheckpointUpgrade({
+        meta,
+        sourceBytes,
+        beforeCheckpointUpgradePublishForTestingOnly: () => {
+          throw crash;
+        },
+        expectedCrash: crash,
+      });
+      expect(upgradedItems).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "session_meta",
+            payload: expect.objectContaining({ rolloutSchemaVersion: 5 }),
+          }),
+          expect.objectContaining({
+            type: "event_msg",
+            payload: expect.objectContaining({
+              msg: expect.objectContaining({
+                type: "turn_checkpoint",
+                payload: expect.objectContaining({
+                  checkpointVersion: 4,
+                  prefixHashVersion: 3,
+                }),
               }),
             }),
           }),
-        }),
-      ]),
-    );
-  });
-
-  it("keeps schema v4 checkpoint v3 readable and upgrades it atomically once", () => {
-    const sessionId = "atomic-schema4-upgrade-session";
-    const meta = {
-      sessionId,
-      timestamp: "2026-08-31T00:00:00.000Z",
-      cwd,
-      originator: "a3b-test",
-      agencVersion: "0.17.0",
-    } as const;
-    const schema4Items: RolloutItem[] = [
-      {
-        type: "session_meta",
-        payload: { ...meta, rolloutSchemaVersion: 4 },
-      },
-      ...v3OrphanRollout("schema4-turn", []).map((item) =>
-        item.type === "event_msg"
-          ? {
-              ...item,
-              payload: {
-                ...item.payload,
-                eventId: `event:${item.payload.seq}`,
-              },
-            }
-          : item,
-      ),
-    ];
-    const schema4Bytes = schema4Items.map(serializeRolloutItem).join("");
-    expect(schema4Bytes).toContain('"rolloutSchemaVersion":4');
-    expect(schema4Bytes).toContain('"checkpointVersion":3');
-    const crash = new Error("simulated schema4 upgrade crash");
-    const { upgradedItems } = exerciseCheckpointUpgrade({
-      meta,
-      sourceBytes: schema4Bytes,
-      beforeCheckpointUpgradePublishForTestingOnly: () => {
-        throw crash;
-      },
-      expectedCrash: crash,
-    });
-    expect(upgradedItems).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "session_meta",
-          payload: expect.objectContaining({ rolloutSchemaVersion: 5 }),
-        }),
-        expect.objectContaining({
-          type: "event_msg",
-          payload: expect.objectContaining({
-            msg: expect.objectContaining({
-              type: "turn_checkpoint",
-              payload: expect.objectContaining({
-                checkpointVersion: 4,
-                prefixHashVersion: 3,
-              }),
-            }),
-          }),
-        }),
-      ]),
-    );
-  });
+        ]),
+      );
+    },
+  );
 
   it("rejects checkpoint v2 inside rollout schema v4 without rewriting it", () => {
     const sessionId = "mixed-schema4-session";
