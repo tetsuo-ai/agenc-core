@@ -38,6 +38,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { expandPath } from '../path.js'
 import { getPlatform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
+import { getCanonicalSettingsAuthority } from '../settings/canonicalAuthority.js'
 import { SETTING_SOURCES, type SettingSource } from '../settings/constants.js'
 import {
   getExecutionAuthoritySettings,
@@ -58,7 +59,7 @@ import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
 import { errorMessage } from '../errors.js'
 import { getAgenCTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
-import { ripgrepCommand } from '../ripgrep.js'
+import { RipgrepUnavailableError, ripgrepCommand } from '../ripgrep.js'
 
 function sandboxNetwork(
   settings: AgenCConfig | null,
@@ -70,6 +71,19 @@ function sandboxFilesystem(
   settings: AgenCConfig | null,
 ): SandboxFilesystemConfig | undefined {
   return settings?.sandbox?.filesystem
+}
+
+function sandboxRipgrep(settings: AgenCConfig): NonNullable<SandboxRuntimeConfig['ripgrep']> {
+  const configured = settings.sandbox?.ripgrep
+  if (configured?.command !== undefined) {
+    return { command: configured.command, args: configured.args ? [...configured.args] : [] }
+  }
+  const { rgPath, rgArgs, argv0 } = ripgrepCommand()
+  return {
+    command: rgPath,
+    args: configured?.args ? [...configured.args] : rgArgs,
+    argv0,
+  }
 }
 
 // Local copies to avoid circular dependency
@@ -374,14 +388,11 @@ export function convertToSandboxRuntimeConfig(
   }
   // Ripgrep config for sandbox. User settings take priority; otherwise pass our rg.
   // In embedded mode (argv0='rg' dispatch), sandbox-runtime spawns with argv0 set.
-  const { rgPath, rgArgs, argv0 } = ripgrepCommand()
-  const configuredRipgrep = settings.sandbox?.ripgrep
-  const ripgrepConfig = {
-    command: configuredRipgrep?.command ?? rgPath,
-    args: configuredRipgrep?.args
-      ? [...configuredRipgrep.args]
-      : rgArgs,
-    argv0,
+  let ripgrepConfig: SandboxRuntimeConfig['ripgrep']
+  try {
+    ripgrepConfig = sandboxRipgrep(settings)
+  } catch (error) {
+    if (!(error instanceof RipgrepUnavailableError)) throw error
   }
 
   return {
@@ -486,12 +497,14 @@ async function detectWorktreeMainRepoPath(cwd: string): Promise<string | null> {
  * Returns { errors, warnings } - errors mean sandbox cannot run
  */
 const checkDependencies = memoize((): SandboxDependencyCheck => {
-  const { rgPath, rgArgs } = ripgrepCommand()
-  return BaseSandboxManager.checkDependencies({
-    command: rgPath,
-    args: rgArgs,
-  })
-})
+  try {
+    const settings = getCanonicalSettingsAuthority()?.current() ?? { configVersion: 2 }
+    return BaseSandboxManager.checkDependencies(sandboxRipgrep(settings))
+  } catch (error) {
+    if (!(error instanceof RipgrepUnavailableError)) throw error
+    return { errors: [error.message], warnings: [] }
+  }
+}, () => JSON.stringify(getCanonicalSettingsAuthority()?.current().sandbox?.ripgrep))
 
 /**
  * Read the single resolved canonical sandbox mode. Repository layers are
