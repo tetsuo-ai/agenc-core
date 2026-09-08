@@ -190,6 +190,40 @@ describe("durable cron delivery", () => {
     expect(runner.postWebhook).not.toHaveBeenCalled();
   });
 
+  test.each([false, true])("does not repeat an admission notice across retries and restart, notice failed=%s", async (noticeFails) => {
+    const prompt = async () => {
+      throw new Error("execution admission deny: budget_exceeded");
+    };
+    let recordedBeforeSend = false;
+    const notice = vi.fn(async () => {
+      const entry = (await readCronFile(workspace)).deliveryOutbox!.occurrences[0]!;
+      recordedBeforeSend = entry.admissionNoticeAttemptedAt === DUE_AT;
+      if (noticeFails) throw new Error("notice transport failed");
+      return "notice-id";
+    });
+    const first = start({ prompt, send: notice });
+    await first.fire();
+    const firstEntry = (await readCronFile(workspace)).deliveryOutbox!.occurrences[0]!;
+    await first.fire(firstEntry.model.nextAttemptAt!);
+    await first.handle.stop();
+    const retryAt = (await readCronFile(workspace)).deliveryOutbox!.occurrences[0]!.model.nextAttemptAt!;
+    const restarted = start({ now: retryAt, prompt, send: notice });
+    await restarted.fire(retryAt);
+
+    expect(first.model).toHaveBeenCalledTimes(2);
+    expect(restarted.model).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(recordedBeforeSend).toBe(true);
+    expect(first.send.mock.calls[0]?.[0].idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
+    const state = await readCronFile(workspace);
+    expect(state.tasks).toHaveLength(1);
+    expect(state.deliveryOutbox!.occurrences[0]!).toMatchObject({
+      admissionNoticeAttemptedAt: DUE_AT,
+      model: { status: "retryable", attempts: 3 },
+      channel: { status: "pending", attempts: 0 },
+    });
+  });
+
   test("uses the persisted model result when a missing adapter becomes available", async () => {
     const first = start({ missingAdapter: true });
     await first.fire();

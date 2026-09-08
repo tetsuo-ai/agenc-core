@@ -223,7 +223,10 @@ so a fire is never double-run.
 4. Track channel and webhook attempts separately. Missing adapters and
    webhook transport, HTTP, timeout, or redirect failures remain failures.
    Retry only failed destinations, using the saved result without another
-   model turn. An admission refusal can also send a short pause notice.
+   model turn. An admission refusal can also attempt one short pause notice
+   per occurrence, with its own stable idempotency key. The notice attempt
+   is recorded before sending and is not retried, including after a crash
+   or notice transport failure. Result delivery retries remain independent.
 5. Persist each destination acknowledgment. Once all destinations are
    delivered, remove the one-shot or update the recurring task's `lastFiredAt`
    in the same atomic file replacement that completes the outbox record.
@@ -266,7 +269,7 @@ never discarded automatically. Inspect status without printing saved prompts
 or results:
 
 ```sh
-jq '.deliveryOutbox.occurrences[] | {taskId, key, model, channel, webhook, blockedReason, completedAt}' \
+jq '.deliveryOutbox.occurrences[] | {taskId, key, model, channel, webhook, admissionNoticeAttemptedAt, blockedReason, completedAt}' \
   .agenc/scheduled_tasks.json
 ```
 

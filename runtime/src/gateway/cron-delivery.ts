@@ -455,12 +455,19 @@ export function startCronDelivery(
           deliver.channel !== undefined && deliver.to !== undefined
         ) {
           const adapter = adaptersById.get(deliver.channel);
+          if (
+            adapter === undefined ||
+            !(await outbox.beginAdmissionNotice(claim, now())) || stopped
+          ) return;
           const reason = executionAdmissionErrorMessage(error).includes("budget_exceeded")
             ? "budget_exceeded"
             : "admission_denied";
-          await adapter?.send({
+          await adapter.send({
             conversationId: deliver.to,
             text: "⏸ cron task " + task.id + " paused: " + reason,
+            idempotencyKey: createHash("sha256")
+              .update(claim.key + ":admission-notice")
+              .digest("hex"),
           }).catch(() => log("cron: admission pause notice failed"));
         }
         return;

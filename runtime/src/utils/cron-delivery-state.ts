@@ -62,6 +62,7 @@ const occurrenceSchema = z.strictObject({
   coalescedAt: timestamp,
   taskFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   blockedReason: z.literal("task_changed").optional(),
+  admissionNoticeAttemptedAt: timestamp.optional(),
   lease: z.strictObject({
     token: identifier,
     expiresAt: timestamp,

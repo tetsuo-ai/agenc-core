@@ -243,6 +243,19 @@ export class CronDeliveryOutboxStore {
     return started ? entry : undefined;
   }
 
+  async beginAdmissionNotice(
+    claim: CronOccurrenceClaim,
+    now: number,
+  ): Promise<boolean> {
+    let started = false;
+    await this.update(claim, (entry) => {
+      if (entry.admissionNoticeAttemptedAt !== undefined) return;
+      entry.admissionNoticeAttemptedAt = now;
+      started = true;
+    });
+    return started;
+  }
+
   async persistResult(
     claim: CronOccurrenceClaim,
     payload: CronDeliveryPayload,
