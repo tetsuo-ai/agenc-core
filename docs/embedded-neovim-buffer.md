@@ -651,6 +651,14 @@ Normal TUI teardown waits for a final exact workspace sync and daemon-lease
 release before destroying the Neovim provider. If either step cannot be
 confirmed, teardown fails visibly and leaves the provider available for
 recovery instead of claiming the editor was safely detached.
+
+Abnormal teardown gives Neovim up to 10 seconds to acknowledge exact recovery
+preservation before stopping the process. This fixed acknowledgement deadline
+is separate from `cleanup_timeout_ms`, which still bounds process exit after
+preservation succeeds. If the acknowledgement is missing or its recovery
+manifest is invalid, AgenC reports failure and retains the live process and
+its transport. Cleanup does not automatically retry preservation.
+
 Hosted Linux and Darwin PTY scenarios
 (`130-workbench-buffer-neovim-platform-gate.mjs` and
 `131-workbench-buffer-neovim-platform-kill-cleanup.mjs`) launch a detached,

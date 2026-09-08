@@ -158,6 +158,7 @@ export type NeovimCloseResult =
     };
 
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1000;
+const RECOVERY_PRESERVATION_TIMEOUT_MS = 10_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 10_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const INPUT_BUFFER_RETRY_DELAY_MS = 1;
@@ -1518,7 +1519,7 @@ export class EmbeddedNeovimSession {
           const manifest = await this.#rpc.request(
             "nvim_exec_lua",
             [PRESERVE_DIRTY_BUFFERS_FOR_ABNORMAL_EXIT, []],
-            { timeoutMs: this.#cleanupTimeoutMs },
+            { timeoutMs: RECOVERY_PRESERVATION_TIMEOUT_MS },
           );
           assertAbnormalRecoveryManifest(manifest, this.#recovery?.swap);
           this.#recoveryPreservationProven = true;
