@@ -18,8 +18,8 @@ function canonicalWindowsPath(path: string): string {
   }
   normalized = normalized.replace(/^[a-z]:/iu, drive => drive.toUpperCase())
   const root = win32.parse(normalized).root
-  return normalized.length > root.length
-    ? normalized.replace(/\\+$/u, '')
+  return normalized.length > root.length && normalized.endsWith('\\')
+    ? normalized.slice(0, -1)
     : normalized
 }
 
@@ -29,7 +29,9 @@ function canonicalForeignProjectPath(projectPath: string, platform: ProjectPathP
   }
   if (platform === 'posix' && posix.isAbsolute(projectPath)) {
     const normalized = posix.normalize(projectPath)
-    return normalized.length > 1 ? normalized.replace(/\/+$/u, '') : normalized
+    return normalized.length > 1 && normalized.endsWith('/')
+      ? normalized.slice(0, -1)
+      : normalized
   }
   throw new Error('Foreign project paths must be absolute')
 }
