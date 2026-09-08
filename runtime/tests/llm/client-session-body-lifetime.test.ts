@@ -57,6 +57,15 @@ function startRequest(
   return session.requestJson({ signal });
 }
 
+function expectCancelledBody(fixture: ReturnType<typeof createBodyFixture>, caller: AbortController): void {
+  expect(fixture.signals[0]?.aborted).toBe(true);
+  expect(fixture.cancel).toHaveBeenCalledTimes(1);
+  expect(fixture.body.locked).toBe(false);
+  expect(fixture.fetchImpl).toHaveBeenCalledTimes(1);
+  expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+  expect(vi.getTimerCount()).toBe(0);
+}
+
 const stalledCases: Array<{ mode: RequestMode; status: number }> = [
   { mode: "json", status: 200 },
   { mode: "text", status: 200 },
@@ -79,12 +88,7 @@ describe("provider response body lifetime", () => {
       expect(await settleWithinMicrotasks(observed)).toMatchObject({
         status: "fulfilled", value: { message: expect.stringContaining("timed out") },
       });
-      expect(fixture.signals[0]?.aborted).toBe(true);
-      expect(fixture.cancel).toHaveBeenCalledTimes(1);
-      expect(fixture.body.locked).toBe(false);
-      expect(fixture.fetchImpl).toHaveBeenCalledTimes(1);
-      expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
-      expect(vi.getTimerCount()).toBe(0);
+      expectCancelledBody(fixture, caller);
     } finally {
       caller.abort(new DOMException("fixture cleanup", "AbortError"));
       fixture.dispose();
@@ -101,12 +105,7 @@ describe("provider response body lifetime", () => {
       await drainMicrotasks(20);
       caller.abort(reason);
       expect(await settleWithinMicrotasks(observed)).toMatchObject({ status: "fulfilled", value: reason });
-      expect(fixture.signals[0]?.aborted).toBe(true);
-      expect(fixture.cancel).toHaveBeenCalledTimes(1);
-      expect(fixture.body.locked).toBe(false);
-      expect(fixture.fetchImpl).toHaveBeenCalledTimes(1);
-      expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
-      expect(vi.getTimerCount()).toBe(0);
+      expectCancelledBody(fixture, caller);
     } finally {
       caller.abort(new DOMException("fixture cleanup", "AbortError"));
       fixture.dispose();

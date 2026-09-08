@@ -961,33 +961,28 @@ export class ProviderHttpClientSession {
       });
     }
     const text = await readResponseBodyText(response, attemptState.signal);
-    let data: T;
-    if (contentType.includes("application/json")) {
-      if (text.length > 0) {
-        try {
-          data = JSON.parse(text) as T;
-        } catch (error) {
-          throw createMalformedProviderJsonError({
-            providerName: this.config.providerName,
-            response,
-            body: text,
-            message: `Invalid JSON response from ${this.config.providerName}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          });
-        }
-      } else {
-        data = undefined as T;
+    const isJson = contentType.includes("application/json");
+    let data = undefined as T;
+    if (isJson && text.length > 0) {
+      try {
+        data = JSON.parse(text) as T;
+      } catch (error) {
+        throw createMalformedProviderJsonError({
+          providerName: this.config.providerName,
+          response,
+          body: text,
+          message: `Invalid JSON response from ${this.config.providerName}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
       }
-    } else if (text.trim().length > 0) {
+    } else if (!isJson && text.trim().length > 0) {
       throw createMalformedProviderJsonError({
         providerName: this.config.providerName,
         response,
         body: text,
         message: `Non-JSON response from ${this.config.providerName}; content-type=${contentType || "missing"}`,
       });
-    } else {
-      data = undefined as T;
     }
     if (
       prepared.continuation &&
@@ -1244,35 +1239,8 @@ export class ProviderHttpClientSession {
         return { response, attemptState };
       } catch (error) {
         attemptState.cleanup();
-        if (isFallbackTriggeredError(error)) {
-          throw error;
-        }
-        if (error instanceof ProviderHttpError) {
-          maybeEmitCapabilityDriftWarning(this.config, error);
-          throw error;
-        }
+        await this.waitForTransportRetry(error, options, retryBudget, attempt, responseReceived);
         consecutiveFallbackFailures = 0;
-        const transport = normalizeTransportError(error);
-        if (
-          !responseReceived &&
-          !options.singleWireAttempt &&
-          ((attempt < retryBudget.maxRetries &&
-            shouldRetryTransportError(transport, retryBudget)) ||
-            shouldRetryTlsCertificateError(transport, attempt))
-        ) {
-          const retryDelay = resolveRetryDelayMs(
-            this.config.providerName,
-            retryBudget,
-            attempt + 1,
-            this.config.emitWarning,
-          );
-          await sleep(
-            retryDelay.delayMs,
-            options.signal,
-          );
-          continue;
-        }
-        throw materializeTransportError(this.config.providerName, transport);
       }
     }
 
@@ -1356,39 +1324,41 @@ export class ProviderHttpClientSession {
         return { attempt, response, attemptState };
       } catch (error) {
         attemptState.cleanup();
-        if (isFallbackTriggeredError(error)) {
-          throw error;
-        }
-        if (error instanceof ProviderHttpError) {
-          maybeEmitCapabilityDriftWarning(this.config, error);
-          throw error;
-        }
+        await this.waitForTransportRetry(error, options, retryBudget, attempt, responseReceived);
         consecutiveFallbackFailures = 0;
-        const transport = normalizeTransportError(error);
-        if (
-          !responseReceived &&
-          !options.singleWireAttempt &&
-          ((attempt < retryBudget.maxRetries &&
-            shouldRetryTransportError(transport, retryBudget)) ||
-            shouldRetryTlsCertificateError(transport, attempt))
-        ) {
-          const retryDelay = resolveRetryDelayMs(
-            this.config.providerName,
-            retryBudget,
-            attempt + 1,
-            this.config.emitWarning,
-          );
-          await sleep(
-            retryDelay.delayMs,
-            options.signal,
-          );
-          continue;
-        }
-        throw materializeTransportError(this.config.providerName, transport);
       }
     }
 
     throw new Error(`${this.config.providerName} stream retry budget exhausted`);
+  }
+
+  private async waitForTransportRetry(
+    error: unknown,
+    options: ProviderHttpRequestOptions,
+    retryBudget: NormalizedRetryBudget,
+    attempt: number,
+    responseReceived: boolean,
+  ): Promise<void> {
+    if (isFallbackTriggeredError(error)) throw error;
+    if (error instanceof ProviderHttpError) {
+      maybeEmitCapabilityDriftWarning(this.config, error);
+      throw error;
+    }
+    const transport = normalizeTransportError(error);
+    const retryable =
+      !responseReceived &&
+      !options.singleWireAttempt &&
+      ((attempt < retryBudget.maxRetries &&
+        shouldRetryTransportError(transport, retryBudget)) ||
+        shouldRetryTlsCertificateError(transport, attempt));
+    if (!retryable) throw materializeTransportError(this.config.providerName, transport);
+    const retryDelay = resolveRetryDelayMs(
+      this.config.providerName,
+      retryBudget,
+      attempt + 1,
+      this.config.emitWarning,
+    );
+    await sleep(retryDelay.delayMs, options.signal);
   }
 
   private async fetchResponse(
