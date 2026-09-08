@@ -443,3 +443,11 @@ inbound callback), `stop`, and `send` (return the channel-native message id;
 `StdioChannelAdapter`, `TelegramChannelAdapter`, `DiscordChannelAdapter`,
 `SlackChannelAdapter`, `WebChatChannelAdapter`. Register in `startGateway`
 (`runtime/src/gateway/run.ts`).
+
+The session router observes a rejected `send` immediately, including a failed
+streaming edit. It stops queued sends and ignores later text chunks for that
+turn. The first delivery error is returned after the active prompt settles,
+and the conversation lock is then released. `GatewaySession` has no prompt
+cancellation operation, so a delivery failure does not cancel model execution
+or allow another turn to overlap it. Adapter failures never trigger the
+missing-daemon-agent retry, even when their error fields resemble that error.

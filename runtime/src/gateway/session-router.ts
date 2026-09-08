@@ -26,6 +26,7 @@ import type {
   GatewayDaemonClient,
   GatewayPermissionDecision,
   GatewayPermissionRequest,
+  GatewayPromptHandlers,
   GatewayPromptResult,
   GatewaySession,
 } from "./types.js";
@@ -50,6 +51,77 @@ export interface SessionRouterOptions {
 interface RoutedSession {
   readonly session: GatewaySession;
   readonly created: boolean;
+}
+
+type StreamedTurnOutcome =
+  | { readonly kind: "completed"; readonly result: GatewayPromptResult }
+  | { readonly kind: "prompt_failed" | "delivery_failed"; readonly error: unknown };
+
+async function streamPromptToAdapter(options: {
+  readonly session: GatewaySession;
+  readonly promptText: string;
+  readonly adapter: ChannelAdapter;
+  readonly conversationId: string;
+  readonly flushIntervalMs: number;
+  readonly onPermissionRequest: GatewayPromptHandlers["onPermissionRequest"];
+}): Promise<StreamedTurnOutcome> {
+  let buffer = "";
+  let sentMessageId: string | null = null;
+  let lastFlush = 0;
+  let flushing = Promise.resolve();
+  const delivery: { failure?: { readonly error: unknown } } = {};
+
+  const flush = (force: boolean): Promise<void> => {
+    if (delivery.failure !== undefined || buffer.length === 0) return flushing;
+    if (!options.adapter.supportsEdit && !force) return flushing;
+    const now = Date.now();
+    if (!force && now - lastFlush < options.flushIntervalMs) return flushing;
+    lastFlush = now;
+    const text = buffer;
+    flushing = flushing.then(async () => {
+      if (delivery.failure !== undefined) return;
+      if (options.adapter.supportsEdit && sentMessageId !== null) {
+        await options.adapter.send({
+          conversationId: options.conversationId,
+          text,
+          editMessageId: sentMessageId,
+        });
+      } else {
+        sentMessageId = await options.adapter.send({
+          conversationId: options.conversationId,
+          text,
+        });
+      }
+    }).catch((error: unknown) => {
+      delivery.failure ??= { error };
+    });
+    return flushing;
+  };
+
+  const outcome = await Promise.resolve().then(() =>
+    options.session.prompt(options.promptText, {
+      onEvent: (event) => {
+        if (event.type === "text" && delivery.failure === undefined) {
+          buffer += event.delta;
+          void flush(false);
+        }
+      },
+      onPermissionRequest: options.onPermissionRequest,
+    }),
+  ).then(
+    (result): StreamedTurnOutcome => ({ kind: "completed", result }),
+    (error: unknown): StreamedTurnOutcome => ({ kind: "prompt_failed", error }),
+  );
+  if (outcome.kind === "completed") {
+    if (outcome.result.finalMessage.length > 0) {
+      buffer = outcome.result.finalMessage;
+    }
+    await flush(true);
+  }
+  await flushing;
+  return delivery.failure === undefined
+    ? outcome
+    : { kind: "delivery_failed", error: delivery.failure.error };
 }
 
 export class SessionRouter {
@@ -195,79 +267,41 @@ export class SessionRouter {
     this.#turnLocks.set(options.key, lock);
     await previous;
     try {
-      const attempt = async (
+      const attempt = (
         session: GatewaySession,
         promptText: string,
-      ): Promise<GatewayPromptResult> => {
-        let buffer = "";
-        let sentMessageId: string | null = null;
-        let lastFlush = 0;
-        let flushing = Promise.resolve();
-
-        const flush = (force: boolean): Promise<void> => {
-          if (buffer.length === 0) return flushing;
-          if (!options.adapter.supportsEdit && !force) return flushing;
-          const now = Date.now();
-          if (!force && now - lastFlush < this.#flushIntervalMs) {
-            return flushing;
-          }
-          lastFlush = now;
-          const text = buffer;
-          flushing = flushing.then(async () => {
-            if (options.adapter.supportsEdit && sentMessageId !== null) {
-              await options.adapter.send({
-                conversationId: options.conversationId,
-                text,
-                editMessageId: sentMessageId,
-              });
-            } else {
-              sentMessageId = await options.adapter.send({
-                conversationId: options.conversationId,
-                text,
-              });
-            }
-          });
-          return flushing;
-        };
-
-        const result = await session.prompt(promptText, {
-          onEvent: (event) => {
-            if (event.type === "text") {
-              buffer += event.delta;
-              void flush(false);
-            }
-          },
+      ): Promise<StreamedTurnOutcome> =>
+        streamPromptToAdapter({
+          session,
+          promptText,
+          adapter: options.adapter,
+          conversationId: options.conversationId,
+          flushIntervalMs: this.#flushIntervalMs,
           onPermissionRequest: options.onPermissionRequest,
         });
 
-        // Final state always lands, even for non-edit adapters.
-        if (result.finalMessage.length > 0) {
-          buffer = result.finalMessage;
-        }
-        await flush(true);
-        return result;
-      };
-
       const routed = await this.#sessionFor(options.key);
-      let result: GatewayPromptResult;
-      try {
-        result = await attempt(
-          routed.session,
-          this.#textForSession(options.key, options.text, routed.created),
-        );
-      } catch (error) {
+      let outcome = await attempt(
+        routed.session,
+        this.#textForSession(options.key, options.text, routed.created),
+      );
+      if (
+        outcome.kind === "prompt_failed" &&
+        isDaemonAgentGoneError(outcome.error)
+      ) {
         // The daemon lost this session's backing agent (daemon restart,
         // agent stopped). Provision fresh and retry ONCE; a second failure
         // propagates. The bounded recovery journal supplies recent context
         // to the fresh session without replaying server evidence or secrets.
-        if (!isDaemonAgentGoneError(error)) throw error;
         this.#evictSession(options.key);
         const fresh = await this.#sessionFor(options.key);
-        result = await attempt(
+        outcome = await attempt(
           fresh.session,
           this.#textForSession(options.key, options.text, fresh.created),
         );
       }
+      if (outcome.kind !== "completed") throw outcome.error;
+      const result = outcome.result;
       if (options.memoryText !== undefined) {
         try {
           this.#recovery.record(
