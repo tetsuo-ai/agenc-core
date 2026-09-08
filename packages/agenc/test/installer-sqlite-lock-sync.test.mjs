@@ -94,11 +94,15 @@ test("canonical installer uses explicit ASCII ordering for exact keys", () => {
   );
 });
 
-test("Sonar excludes only canonical installer and generated wire copies", () => {
+test("Sonar excludes only canonical installer and generated contract copies", () => {
   assert.equal(
     readFileSync(join(repoRoot, ".sonarcloud.properties"), "utf8"),
-    "# The public wire copy is generated and checked against its canonical declarations.\n" +
-      "sonar.cpd.exclusions=scripts/install/runtime-installer.cjs,packages/agenc-sdk/src/protocol-wire.generated.ts\n",
+    "# The generated public contracts are checked against their canonical sources.\n" +
+      "sonar.cpd.exclusions=scripts/install/runtime-installer.cjs,packages/agenc-sdk/src/protocol-wire.generated.ts,packages/agenc-sdk/src/turn-terminal.generated.ts\n",
+  );
+  assert.equal(
+    readFileSync(join(repoRoot, "packages/agenc-sdk/src/turn-terminal.generated.ts"), "utf8"),
+    readFileSync(join(repoRoot, "runtime/src/contracts/turn-terminal.ts"), "utf8"),
   );
 });
 
