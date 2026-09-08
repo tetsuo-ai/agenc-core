@@ -7,14 +7,15 @@
  * enough. State persists to `<agencHome>/gateway/pairing.json` (0600).
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
-  writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
+import { acquireLocalSqliteLock, assertLocalPrivateFile } from "../utils/sqlite-lock.js";
 
 import {
   DEFAULT_CHANNEL_POLICY,
@@ -125,11 +126,34 @@ export class PairingStore {
   }
 
   #save(): void {
-    mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
     // pairing.json holds paired peers + host-only pending codes (0600).
-    writeFileSync(this.#path, `${JSON.stringify(this.#state, null, 2)}\n`, {
-      mode: 0o600,
+    writeDurableAtomicFileSync(
+      this.#path,
+      `${this.#path}.${process.pid}.${randomUUID()}.tmp`,
+      `${JSON.stringify(this.#state, null, 2)}\n`,
+      0o600,
+    );
+  }
+
+  async #mutate<Value>(change: () => { value: Value; changed: boolean }): Promise<Value> {
+    mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
+    const release = await acquireLocalSqliteLock(`${this.#path}.lock.sqlite`, {
+      timeoutMs: 5_000,
+      label: "pairing store transaction",
     });
+    try {
+      try {
+        await assertLocalPrivateFile(this.#path, { label: "pairing state" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      this.#reloadFromDisk();
+      const result = change();
+      if (result.changed) this.#save();
+      return result.value;
+    } finally {
+      release();
+    }
   }
 
   /**
@@ -153,7 +177,7 @@ export class PairingStore {
     return this.#state.pending;
   }
 
-  #pruneExpiredPending(): void {
+  #pruneExpiredPending(): boolean {
     const now = this.#now();
     const pending = this.#pendingMap();
     let dirty = false;
@@ -163,7 +187,7 @@ export class PairingStore {
         dirty = true;
       }
     }
-    if (dirty) this.#save();
+    return dirty;
   }
 
   isPaired(channelId: string, peerId: string): boolean {
@@ -176,78 +200,80 @@ export class PairingStore {
     return this.#state.paired[channelId] ?? [];
   }
 
-  revoke(channelId: string, peerId: string): boolean {
-    this.#reloadFromDisk();
-    const peers = this.#state.paired[channelId] ?? [];
-    if (!peers.includes(peerId)) return false;
-    this.#state.paired[channelId] = peers.filter((p) => p !== peerId);
-    this.#save();
-    return true;
+  async revoke(channelId: string, peerId: string): Promise<boolean> {
+    return this.#mutate(() => {
+      const peers = this.#state.paired[channelId] ?? [];
+      if (!peers.includes(peerId)) return { value: false, changed: false };
+      this.#state.paired[channelId] = peers.filter((peer) => peer !== peerId);
+      return { value: true, changed: true };
+    });
   }
 
   /**
    * Host-only view of pending challenges (codes never DM'd — todo-103).
    * Durable so a separate CLI process can list/approve.
    */
-  listPending(): readonly {
+  async listPending(): Promise<readonly {
     readonly channelId: string;
     readonly peerId: string;
     readonly code: string;
     readonly expiresAt: number;
-  }[] {
-    this.#reloadFromDisk();
-    this.#pruneExpiredPending();
-    const out: {
-      channelId: string;
-      peerId: string;
-      code: string;
-      expiresAt: number;
-    }[] = [];
-    for (const [key, pending] of Object.entries(this.#pendingMap())) {
-      const sep = key.indexOf("\u0000");
-      if (sep < 0) continue;
-      out.push({
-        channelId: key.slice(0, sep),
-        peerId: key.slice(sep + 1),
-        code: pending.code,
-        expiresAt: pending.expiresAt,
-      });
-    }
-    return out;
+  }[]> {
+    return this.#mutate(() => {
+      const changed = this.#pruneExpiredPending();
+      const out: {
+        channelId: string;
+        peerId: string;
+        code: string;
+        expiresAt: number;
+      }[] = [];
+      for (const [key, pending] of Object.entries(this.#pendingMap())) {
+        const separator = key.indexOf("\u0000");
+        if (separator < 0) continue;
+        out.push({
+          channelId: key.slice(0, separator),
+          peerId: key.slice(separator + 1),
+          code: pending.code,
+          expiresAt: pending.expiresAt,
+        });
+      }
+      return { value: out, changed };
+    });
   }
 
   /**
    * Host-side approve: pair without the remote party seeing a code (todo-103).
    * Clears any pending challenge for the peer.
    */
-  approve(channelId: string, peerId: string): void {
-    this.#reloadFromDisk();
-    const pending = this.#pendingMap();
-    delete pending[this.#key(channelId, peerId)];
-    const peers = this.#state.paired[channelId] ?? [];
-    if (!peers.includes(peerId)) {
-      this.#state.paired[channelId] = [...peers, peerId];
-    }
-    this.#save();
+  async approve(channelId: string, peerId: string): Promise<void> {
+    return this.#mutate(() => {
+      const pending = this.#pendingMap();
+      delete pending[this.#key(channelId, peerId)];
+      const peers = this.#state.paired[channelId] ?? [];
+      if (!peers.includes(peerId)) {
+        this.#state.paired[channelId] = [...peers, peerId];
+      }
+      return { value: undefined, changed: true };
+    });
   }
 
   /**
    * Begin (or refresh) a pairing challenge for a sender. Reuses the live
    * code when one is pending so repeated messages don't rotate it.
    */
-  challenge(channelId: string, sender: ChannelSender): string {
-    this.#reloadFromDisk();
-    this.#pruneExpiredPending();
-    const key = this.#key(channelId, sender.peerId);
-    const pending = this.#pendingMap();
-    const existing = pending[key];
-    if (existing !== undefined && existing.expiresAt > this.#now()) {
-      return existing.code;
-    }
-    const code = this.#generateCode();
-    pending[key] = { code, expiresAt: this.#now() + this.#ttlMs };
-    this.#save();
-    return code;
+  async challenge(channelId: string, sender: ChannelSender): Promise<string> {
+    return this.#mutate(() => {
+      const changed = this.#pruneExpiredPending();
+      const key = this.#key(channelId, sender.peerId);
+      const pending = this.#pendingMap();
+      const existing = pending[key];
+      if (existing !== undefined && existing.expiresAt > this.#now()) {
+        return { value: existing.code, changed };
+      }
+      const code = this.#generateCode();
+      pending[key] = { code, expiresAt: this.#now() + this.#ttlMs };
+      return { value: code, changed: true };
+    });
   }
 
   /**
@@ -257,26 +283,25 @@ export class PairingStore {
    * Codes are disclosed only on the gateway host (`listPending` / logs), not
    * in the channel DM (todo-103).
    */
-  redeem(channelId: string, sender: ChannelSender, input: string): boolean {
-    this.#reloadFromDisk();
-    this.#pruneExpiredPending();
-    const key = this.#key(channelId, sender.peerId);
-    const pending = this.#pendingMap();
-    const entry = pending[key];
-    if (entry === undefined) return false;
-    if (entry.expiresAt <= this.#now()) {
+  async redeem(channelId: string, sender: ChannelSender, input: string): Promise<boolean> {
+    return this.#mutate(() => {
+      const changed = this.#pruneExpiredPending();
+      const key = this.#key(channelId, sender.peerId);
+      const pending = this.#pendingMap();
+      const entry = pending[key];
+      if (entry === undefined) return { value: false, changed };
+      if (entry.expiresAt <= this.#now()) {
+        delete pending[key];
+        return { value: false, changed: true };
+      }
+      if (input.trim().toUpperCase() !== entry.code) return { value: false, changed };
       delete pending[key];
-      this.#save();
-      return false;
-    }
-    if (input.trim().toUpperCase() !== entry.code) return false;
-    delete pending[key];
-    const peers = this.#state.paired[channelId] ?? [];
-    if (!peers.includes(sender.peerId)) {
-      this.#state.paired[channelId] = [...peers, sender.peerId];
-    }
-    this.#save();
-    return true;
+      const peers = this.#state.paired[channelId] ?? [];
+      if (!peers.includes(sender.peerId)) {
+        this.#state.paired[channelId] = [...peers, sender.peerId];
+      }
+      return { value: true, changed: true };
+    });
   }
 }
 
@@ -284,12 +309,12 @@ export class PairingStore {
  * Decide whether a DM sender may reach an agent right now. Pure policy
  * evaluation; the caller renders challenges/denials back to the channel.
  */
-export function evaluateDmAccess(options: {
+export async function evaluateDmAccess(options: {
   readonly policy?: GatewayChannelPolicy;
   readonly channelId: string;
   readonly sender: ChannelSender;
   readonly store: PairingStore;
-}): DmAccessDecision {
+}): Promise<DmAccessDecision> {
   const policy = options.policy ?? DEFAULT_CHANNEL_POLICY;
   switch (policy.dmPolicy) {
     case "disabled":
@@ -317,7 +342,7 @@ export function evaluateDmAccess(options: {
       }
       return {
         kind: "pairing_challenge",
-        code: options.store.challenge(options.channelId, options.sender),
+        code: await options.store.challenge(options.channelId, options.sender),
       };
     }
   }

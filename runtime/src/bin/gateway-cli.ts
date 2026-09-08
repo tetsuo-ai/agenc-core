@@ -329,7 +329,7 @@ export async function runAgenCGatewayCli(
       return 0;
     }
     case "pairing-pending": {
-      const pending = store.listPending();
+      const pending = await store.listPending();
       if (command.json) {
         stdout(JSON.stringify(pending, null, 2));
         return 0;
@@ -346,12 +346,12 @@ export async function runAgenCGatewayCli(
       return 0;
     }
     case "pairing-approve": {
-      store.approve(command.channelId, command.peerId);
+      await store.approve(command.channelId, command.peerId);
       stdout(`Approved ${command.peerId} on ${command.channelId}.`);
       return 0;
     }
     case "pairing-revoke": {
-      const removed = store.revoke(command.channelId, command.peerId);
+      const removed = await store.revoke(command.channelId, command.peerId);
       if (removed) {
         stdout(`Revoked ${command.peerId} on ${command.channelId}.`);
         return 0;

@@ -11,10 +11,10 @@ describe("PairingStore disk reload (GW-02)", () => {
     if (home) rmSync(home, { recursive: true, force: true });
   });
 
-  it("CLI approve is visible to a separate live store without restart", () => {
+  it("CLI approve is visible to a separate live store without restart", async () => {
     home = mkdtempSync(join(tmpdir(), "agenc-pair-"));
     const live = new PairingStore({ agencHome: home });
-    const code = live.challenge("telegram", {
+    const code = await live.challenge("telegram", {
       peerId: "42",
       displayName: "u",
     });
@@ -22,13 +22,13 @@ describe("PairingStore disk reload (GW-02)", () => {
 
     // Host CLI uses a second process/store instance.
     const cli = new PairingStore({ agencHome: home });
-    cli.approve("telegram", "42");
+    await cli.approve("telegram", "42");
 
     // Live gateway must see the pair without reconstructing.
     expect(live.isPaired("telegram", "42")).toBe(true);
 
     // Further live challenge must not wipe the CLI pairing on save.
-    live.challenge("discord", {
+    await live.challenge("discord", {
       peerId: "99",
       displayName: "other",
     });

@@ -25,7 +25,7 @@ describe("PairingStore", () => {
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  test("challenge → redeem persists (0600), survives reconstruction", () => {
+  test("challenge → redeem persists (0600), survives reconstruction", async () => {
     let t = 1000;
     const store = new PairingStore({
       agencHome: home,
@@ -33,8 +33,8 @@ describe("PairingStore", () => {
       generateCode: () => "ABC123",
     });
     const sender = { peerId: "alice" };
-    expect(store.challenge("tg", sender)).toBe("ABC123");
-    expect(store.redeem("tg", sender, "abc123")).toBe(true); // case-insensitive
+    expect(await store.challenge("tg", sender)).toBe("ABC123");
+    expect(await store.redeem("tg", sender, "abc123")).toBe(true);
     expect(store.isPaired("tg", "alice")).toBe(true);
 
     const perms = statSync(join(home, "gateway", "pairing.json")).mode & 0o777;
@@ -46,7 +46,7 @@ describe("PairingStore", () => {
     expect(store2.listPaired("tg")).toEqual(["alice"]);
   });
 
-  test("expired code cannot be redeemed", () => {
+  test("expired code cannot be redeemed", async () => {
     let t = 0;
     const store = new PairingStore({
       agencHome: home,
@@ -54,23 +54,23 @@ describe("PairingStore", () => {
       generateCode: () => "ABC123",
       codeTtlMs: 100,
     });
-    store.challenge("tg", { peerId: "alice" });
+    await store.challenge("tg", { peerId: "alice" });
     t = 200;
-    expect(store.redeem("tg", { peerId: "alice" }, "ABC123")).toBe(false);
+    expect(await store.redeem("tg", { peerId: "alice" }, "ABC123")).toBe(false);
     expect(store.isPaired("tg", "alice")).toBe(false);
   });
 
-  test("pending pairing codes are durable for host CLI (todo-103)", () => {
+  test("pending pairing codes are durable for host CLI (todo-103)", async () => {
     const store = new PairingStore({
       agencHome: home,
       generateCode: () => "SECRET7",
     });
-    store.challenge("tg", { peerId: "alice" });
+    await store.challenge("tg", { peerId: "alice" });
     // Host-only durable pending so `agenc gateway pairing pending` works
     // across processes; codes must never be DM'd (gateway message path).
     const raw = readFileSync(join(home, "gateway", "pairing.json"), "utf8");
     expect(raw).toContain("SECRET7");
-    const pending = store.listPending();
+    const pending = await store.listPending();
     expect(pending).toEqual([
       expect.objectContaining({
         channelId: "tg",
@@ -78,23 +78,23 @@ describe("PairingStore", () => {
         code: "SECRET7",
       }),
     ]);
-    store.approve("tg", "alice");
+    await store.approve("tg", "alice");
     expect(store.isPaired("tg", "alice")).toBe(true);
-    expect(store.listPending()).toHaveLength(0);
+    expect(await store.listPending()).toHaveLength(0);
   });
 
-  test("revoke removes a pairing", () => {
+  test("revoke removes a pairing", async () => {
     const store = new PairingStore({ agencHome: home, generateCode: () => "C" });
-    store.challenge("tg", { peerId: "alice" });
-    store.redeem("tg", { peerId: "alice" }, "C");
-    expect(store.revoke("tg", "alice")).toBe(true);
+    await store.challenge("tg", { peerId: "alice" });
+    await store.redeem("tg", { peerId: "alice" }, "C");
+    expect(await store.revoke("tg", "alice")).toBe(true);
     expect(store.isPaired("tg", "alice")).toBe(false);
   });
 
-  test("corrupt pairing file fails closed (nobody paired)", () => {
+  test("corrupt pairing file fails closed (nobody paired)", async () => {
     const store = new PairingStore({ agencHome: home, generateCode: () => "C" });
-    store.challenge("tg", { peerId: "alice" });
-    store.redeem("tg", { peerId: "alice" }, "C");
+    await store.challenge("tg", { peerId: "alice" });
+    await store.redeem("tg", { peerId: "alice" }, "C");
     // Corrupt it.
     rmSync(join(home, "gateway", "pairing.json"));
     require("node:fs").writeFileSync(
@@ -107,14 +107,14 @@ describe("PairingStore", () => {
 });
 
 describe("evaluateDmAccess default", () => {
-  test("no policy → pairing challenge (fail closed)", () => {
+  test("no policy → pairing challenge (fail closed)", async () => {
     const home = mkdtempSync(join(tmpdir(), "agenc-dm-"));
     try {
       const store = new PairingStore({
         agencHome: home,
         generateCode: () => "XYZ",
       });
-      const decision = evaluateDmAccess({
+      const decision = await evaluateDmAccess({
         channelId: "tg",
         sender: { peerId: "alice" },
         store,

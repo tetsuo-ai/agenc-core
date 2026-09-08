@@ -156,7 +156,7 @@ export class ChannelGateway {
     //    unpaired sender in a group cannot drive the agent either).
     if (!bypassAccess) {
       const policy = this.#config.channels[message.channelId];
-      const access = evaluateDmAccess({
+      const access = await evaluateDmAccess({
         ...(policy !== undefined ? { policy } : {}),
         channelId: message.channelId,
         sender: message.sender,
@@ -172,7 +172,7 @@ export class ChannelGateway {
         // Host-gated pairing (todo-103): never DM the secret code. Operator
         // reads it via gateway logs or `agenc gateway pairing pending`, then
         // either tells the user out-of-band or runs `pairing approve`.
-        if (this.#pairing.redeem(message.channelId, message.sender, message.text)) {
+        if (await this.#pairing.redeem(message.channelId, message.sender, message.text)) {
           await reply(
             "Paired. This conversation now reaches your AgenC agent — send a message to begin.",
           );

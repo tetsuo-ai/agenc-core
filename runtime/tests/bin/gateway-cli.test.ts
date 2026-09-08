@@ -120,8 +120,8 @@ describe("gateway CLI against a temp home", () => {
       agencHome: home,
       generateCode: () => "C",
     });
-    store.challenge("tg", { peerId: "alice" });
-    store.redeem("tg", { peerId: "alice" }, "C");
+    await store.challenge("tg", { peerId: "alice" });
+    await store.redeem("tg", { peerId: "alice" }, "C");
 
     const out: string[] = [];
     const code = await runAgenCGatewayCli(
@@ -144,8 +144,8 @@ describe("gateway CLI against a temp home", () => {
       agencHome: home,
       generateCode: () => "C",
     });
-    store.challenge("tg", { peerId: "alice" });
-    store.redeem("tg", { peerId: "alice" }, "C");
+    await store.challenge("tg", { peerId: "alice" });
+    await store.redeem("tg", { peerId: "alice" }, "C");
 
     const listOut: string[] = [];
     await runAgenCGatewayCli(

@@ -413,9 +413,20 @@ agenc gateway pairing revoke telegram 123456789
 | `config.toml` `[gateway]` | 0600 | policies, bindings, hooks flag |
 | Native secure storage | OS-managed | bot tokens and gateway bearer tokens |
 | `gateway/pairing.json` | 0600 | paired senders |
+| `gateway/pairing.json.lock.sqlite` | 0600 | cross-process pairing transaction lock |
 | `gateway/sessions.json` | 0600 | channel → daemon session map |
 | `gateway/control.json` | 0600 | Telegram owner/public state |
 | `gateway/conversation-recovery.json` | 0600 | bounded recovery journal |
+
+Pairing mutations hold a cross-process lock from reload through persistence.
+Writes use a unique temporary file, file sync, atomic rename, and directory sync
+where supported. Gateway and CLI processes therefore share one ordered sequence
+of approvals, revocations, and single-use challenges.
+
+Runtime callers must await `PairingStore.approve`, `revoke`, `challenge`, `redeem`,
+`listPending`, and `evaluateDmAccess`. Read-only `isPaired` and `listPaired`
+queries remain synchronous. The pairing JSON format stays at version 1.
+Restart existing gateway processes after upgrading so every writer uses the lock.
 
 Session mappings reattach conversations after gateway restart; the daemon
 session remains the source of truth for history. The recovery journal
