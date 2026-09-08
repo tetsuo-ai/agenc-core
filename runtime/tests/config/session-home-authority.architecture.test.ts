@@ -255,14 +255,10 @@ describe("session home authority architecture", () => {
     expect(agentLoader).toContain("agentDefinitionsByAuthority")
     expect(agentLoader).not.toContain("getAgenCHomeDir")
 
-    const expectedHomeKeys = [
-      ["utils/sessionStorage.ts", "${getAgenCHomeDir()}\\u0000${projectDir}"],
-      ["utils/plans.ts", "${getAgenCHomeDir()}\\u0000${getCwd()}"],
-    ] as const;
-
-    for (const [name, key] of expectedHomeKeys) {
-      expect(source(name), name).toContain(key);
-    }
+    expect(source("utils/plans.ts")).toContain("${getAgenCHomeDir()}\\u0000${getCwd()}");
+    expect(source("utils/sessionStorage.ts")).toMatch(
+      /export const getProjectDir = \(projectDir: string\): string =>\s+join\(getProjectsDir\(\), projectStorageKey\(projectDir\)\)/u,
+    );
 
     const memoryPaths = source("memory/paths.ts");
     expect(memoryPaths).toContain("CanonicalAuthorityCache")

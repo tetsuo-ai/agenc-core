@@ -58,6 +58,19 @@ describe('versioned project keys under Node and Bun', () => {
     expect(projectStorageKey(alias)).not.toBe(firstKey)
   })
 
+  test('resolves parent traversal using native filesystem semantics', () => {
+    const parent = join(root, 'parent')
+    const target = join(parent, 'child')
+    const alias = join(root, 'alias')
+    mkdirSync(target, { recursive: true })
+    symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    const expectedParent = process.platform === 'win32' ? root : parent
+    expect(projectStorageKey(`${alias}/..`)).toBe(projectStorageKey(expectedParent))
+    expect(projectStorageKey(`${alias}/../missing`)).toBe(
+      projectStorageKey(join(expectedParent, 'missing')),
+    )
+  })
+
   test('preserves distinct case and Unicode spellings on case-sensitive filesystems', () => {
     const names = ['cafe\u0301', 'caf\u00e9', 'Upper', 'upper']
     const identities = names.map(name => canonicalProjectPath(join(root, name)))
@@ -94,6 +107,11 @@ describe('versioned project keys under Node and Bun', () => {
     for (const input of ['', 'bad\0path', '\ud800', '\udfff']) {
       expect(() => projectStorageKey(input)).toThrow('Project path must be')
     }
+  })
+
+  test('requires absolute paths when the platform is explicitly foreign', () => {
+    const foreignPlatform = process.platform === 'win32' ? 'posix' : 'win32'
+    expect(() => projectStorageKey('relative', foreignPlatform)).toThrow('Foreign project paths must be absolute')
   })
 
   test('does not interpret native POSIX backslashes as Windows separators', () => {

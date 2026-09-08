@@ -25,7 +25,7 @@ import {
   getProjectMemoryEntrypoint,
   getProjectMemoryPath,
 } from "../../memory/paths.js";
-import { sanitizePath } from "../../utils/path.js";
+import { projectStorageKey } from "../../utils/project-storage-key.js";
 import {
   enterCanonicalSettingsAuthority,
   resetCanonicalSettingsAuthorityForTesting,
@@ -104,7 +104,7 @@ describe("durable memory roots in the file tools", () => {
     const projectMemory = getProjectMemoryPath();
     const globalMemory = getGlobalMemoryPath();
     expect(projectMemory).toBe(
-      join(home, "projects", sanitizePath(workspace), "memory") + sep,
+      join(home, "projects", projectStorageKey(workspace), "memory") + sep,
     );
 
     // The single allowed-roots sink folds in exactly the two memory roots.
@@ -130,9 +130,9 @@ describe("durable memory roots in the file tools", () => {
 
     // Sibling state under $AGENC_HOME is not memory and stays outside.
     for (const filePath of [
-      join(home, "projects", sanitizePath(workspace), "sessions", "rollout.jsonl"),
+      join(home, "projects", projectStorageKey(workspace), "sessions", "rollout.jsonl"),
       join(home, "memory-evil", "leak.md"),
-      join(home, "projects", `${sanitizePath(workspace)}-evil`, "memory", "leak.md"),
+      join(home, "projects", `${projectStorageKey(workspace)}-evil`, "memory", "leak.md"),
       join(home, "auth.json"),
     ]) {
       const denied = await write.execute({ file_path: filePath, content: "x\n" });
@@ -172,7 +172,7 @@ describe("durable memory roots in the file tools", () => {
     );
 
     const deniedRead = await read.execute({
-      file_path: join(home, "projects", sanitizePath(workspace), "sessions", "rollout.jsonl"),
+      file_path: join(home, "projects", projectStorageKey(workspace), "sessions", "rollout.jsonl"),
     });
     expect(deniedRead.isError).toBe(true);
     expect(text(deniedRead)).toContain("Access denied");

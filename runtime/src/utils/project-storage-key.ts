@@ -37,7 +37,7 @@ function canonicalForeignProjectPath(projectPath: string, platform: ProjectPathP
 function canonicalNativeProjectPath(projectPath: string): string {
   const absolutePath = resolve(projectPath)
   const missingSegments: string[] = []
-  let existingPath = absolutePath
+  let existingPath = nativePlatform === 'win32' ? absolutePath : projectPath
   while (true) {
     try {
       const canonical = join(realpathSync.native(existingPath), ...missingSegments)
@@ -58,6 +58,20 @@ function canonicalNativeProjectPath(projectPath: string): string {
   }
 }
 
+function canonicalPosixParentTraversal(projectPath: string): string {
+  let canonical = projectPath.startsWith('/')
+    ? '/'
+    : canonicalNativeProjectPath(process.cwd())
+  for (const segment of projectPath.split('/')) {
+    if (segment === '..') {
+      canonical = dirname(canonical)
+    } else if (segment && segment !== '.') {
+      canonical = canonicalNativeProjectPath(join(canonical, segment))
+    }
+  }
+  return canonical
+}
+
 export function canonicalProjectPath(
   projectPath: string,
   platform: ProjectPathPlatform = nativePlatform,
@@ -69,9 +83,12 @@ export function canonicalProjectPath(
   ) {
     throw new Error('Project path must be nonempty, well-formed text without NUL')
   }
-  return platform === nativePlatform
-    ? canonicalNativeProjectPath(projectPath)
-    : canonicalForeignProjectPath(projectPath, platform)
+  if (platform !== nativePlatform) {
+    return canonicalForeignProjectPath(projectPath, platform)
+  }
+  return platform === 'posix' && projectPath.split('/').includes('..')
+    ? canonicalPosixParentTraversal(projectPath)
+    : canonicalNativeProjectPath(projectPath)
 }
 
 export function projectStorageKey(
