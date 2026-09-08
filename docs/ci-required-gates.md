@@ -38,7 +38,10 @@ npm run test:fast
 
 `test:fast` is [`scripts/run-fast-checks.mjs`](../scripts/run-fast-checks.mjs).
 It prints a JSON classification plan, then runs only the commands that plan
-selects. Run the exact test file while developing a bug fix. Use a subsystem
+selects. Plans that run runtime Vitest first check that the shared resolver can
+start system ripgrep or the installed `@vscode/ripgrep` platform binary. A missing
+or unusable binary fails this preflight before typecheck and test discovery.
+Run the exact test file while developing a bug fix. Use a subsystem
 smoke only when the changed behavior needs it. Examples include the PTY startup
 check for startup or terminal work and a native platform job for
 platform-specific code.

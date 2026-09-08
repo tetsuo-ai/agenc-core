@@ -253,14 +253,17 @@ describe('AgentTool loadAgentsDir adapter', () => {
     vi.stubEnv('AGENC_HOME', agencHome)
     __setPluginAgentsLoaderForTesting(async () => [])
 
-    const catalog = await loadFreshAgentDefinitions(
-      workspace,
-      testPluginStorageRoot,
-    )
-
-    expect(
-      catalog.allAgents.map(definition => definition.agentType),
-    ).not.toContain('hardlinked-external')
+    for (const nativeSearch of ['1', '']) {
+      vi.stubEnv('AGENC_USE_NATIVE_FILE_SEARCH', nativeSearch)
+      clearAgentDefinitionsCache()
+      const catalog = await loadFreshAgentDefinitions(
+        workspace,
+        testPluginStorageRoot,
+      )
+      expect(
+        catalog.allAgents.map(definition => definition.agentType),
+      ).not.toContain('hardlinked-external')
+    }
   })
 
   test('applies source precedence when active agents collide by type', () => {

@@ -21,7 +21,7 @@ test('ripgrepCommand falls back to system rg when builtin binary is missing', ()
 
   expect(config).toMatchObject({
     mode: 'system',
-    command: 'rg',
+    command: '/usr/bin/rg',
     args: [],
   })
 })
@@ -41,6 +41,26 @@ test('ripgrepCommand keeps builtin mode when bundled binary exists', () => {
     command: MOCK_BUILTIN_PATH,
     args: [],
   })
+})
+
+test('ripgrepCommand keeps the embedded executable branch explicit', () => {
+  const config = resolveRipgrepConfig({
+    userWantsSystemRipgrep: false,
+    bundledMode: true,
+    builtinExists: false,
+    systemExecutablePath: 'rg',
+    processExecPath: '/installed/agenc',
+  })
+  expect(config).toEqual({ mode: 'embedded', command: '/installed/agenc', args: ['--no-config'], argv0: 'rg' })
+})
+
+test('ripgrepCommand reports unavailable only after neither candidate is usable', () => {
+  expect(() => resolveRipgrepConfig({
+    userWantsSystemRipgrep: true,
+    bundledMode: false,
+    builtinExists: false,
+    systemExecutablePath: 'rg',
+  })).toThrow('Neither system nor packaged ripgrep is an executable file.')
 })
 
 test('wrapRipgrepUnavailableError explains missing packaged fallback', () => {

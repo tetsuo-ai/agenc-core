@@ -72,6 +72,15 @@ test("runtime source and tests select separate Vitest modes", () => {
   assert.equal(related.args.includes("src/session/Session.ts"), true);
 });
 
+test("runtime Vitest plans check ripgrep before typecheck and test discovery", () => {
+  for (const file of ["runtime/src/utils/ripgrep.ts", "runtime/tests/utils/ripgrep.test.ts"]) {
+    const commands = commandsForPlan(classifyChangedFiles([file]), { fileExists: () => true });
+    assert.deepEqual(commands[0], { executable: process.execPath, args: ["runtime/scripts/check-ripgrep.mjs"] });
+    assert.deepEqual(commands[1].args, ["run", "typecheck"]);
+  }
+  assert.deepEqual(commandsForPlan(classifyChangedFiles(["docs/README.md"])), []);
+});
+
 test("deleted runtime source selects its subsystem tests", () => {
   const plan = deletedRuntimeFallbackPlan(
     ["runtime/src/session/removed.ts", "runtime/src/session/also-removed.ts"],

@@ -1,9 +1,9 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
-import { existsSync } from 'fs'
+import { accessSync, constants, statSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
-import * as path from 'path'
-import { fileURLToPath } from 'url'
+import { isAbsolute } from 'node:path'
+import { resolvePinnedRipgrepPath } from '../tools/system/pinned-ripgrep.js'
 import { isInBundledMode } from './bundledMode.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
@@ -11,13 +11,6 @@ import { execFileNoThrow } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
 import { getPlatform } from './platform.js'
-
-const __filename = fileURLToPath(import.meta.url)
-// we use node:path.join instead of node:url.resolve because the former doesn't encode spaces
-const __dirname = path.join(
-  __filename,
-  process.env.NODE_ENV === 'test' ? '../../../' : '../',
-)
 
 type RipgrepConfig = {
   mode: 'system' | 'builtin' | 'embedded'
@@ -35,7 +28,7 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
 type ResolveRipgrepConfigArgs = {
   userWantsSystemRipgrep: boolean
   bundledMode: boolean
-  builtinCommand: string
+  builtinCommand?: string
   builtinExists: boolean
   systemExecutablePath: string
   processExecPath?: string
@@ -50,8 +43,7 @@ export function resolveRipgrepConfig({
   processExecPath = process.execPath,
 }: ResolveRipgrepConfigArgs): RipgrepConfig {
   if (userWantsSystemRipgrep && systemExecutablePath !== 'rg') {
-    // SECURITY: Use command name 'rg' instead of systemExecutablePath to prevent PATH hijacking
-    return { mode: 'system', command: 'rg', args: [] }
+    return { mode: 'system', command: systemExecutablePath, args: [] }
   }
 
   if (bundledMode) {
@@ -63,20 +55,34 @@ export function resolveRipgrepConfig({
     }
   }
 
-  if (builtinExists) {
+  if (builtinExists && builtinCommand !== undefined) {
     return { mode: 'builtin', command: builtinCommand, args: [] }
   }
 
   if (systemExecutablePath !== 'rg') {
-    return { mode: 'system', command: 'rg', args: [] }
+    return { mode: 'system', command: systemExecutablePath, args: [] }
   }
 
-  return { mode: 'builtin', command: builtinCommand, args: [] }
+  throw wrapRipgrepUnavailableError(
+    { code: 'ENOENT', message: 'Neither system nor packaged ripgrep is an executable file.' },
+    { mode: 'builtin', command: builtinCommand ?? '@vscode/ripgrep', args: [] },
+  )
 }
 
 export type RipgrepIngressOptions = {
   readonly environment: NodeJS.ProcessEnv
   readonly systemExecutablePath: string
+}
+
+function isRipgrepExecutable(candidate: string | undefined): candidate is string {
+  if (candidate === undefined || !isAbsolute(candidate)) return false
+  try {
+    if (!statSync(candidate).isFile()) return false
+    accessSync(candidate, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function buildRipgrepConfig(
@@ -87,19 +93,15 @@ function buildRipgrepConfig(
     environment.USE_BUILTIN_RIPGREP,
   )
   const bundledMode = isInBundledMode()
-  const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
-  const builtinCommand =
-    process.platform === 'win32'
-      ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
-      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
-  const builtinExists = existsSync(builtinCommand)
+  const builtinCommand = bundledMode ? undefined : resolvePinnedRipgrepPath()
+  const builtinExists = isRipgrepExecutable(builtinCommand)
 
   return resolveRipgrepConfig({
     userWantsSystemRipgrep,
     bundledMode,
     builtinCommand,
     builtinExists,
-    systemExecutablePath,
+    systemExecutablePath: isRipgrepExecutable(systemExecutablePath) ? systemExecutablePath : 'rg',
   })
 }
 
@@ -541,11 +543,16 @@ export function getRipgrepStatus(options?: RipgrepIngressOptions): {
   path: string
   working: boolean | null // null if not yet tested
 } {
-  const config = getRipgrepConfigForIngress(options)
-  return {
-    mode: config.mode,
-    path: config.command,
-    working: options === undefined ? ripgrepStatus?.working ?? null : null,
+  try {
+    const config = getRipgrepConfigForIngress(options)
+    return {
+      mode: config.mode,
+      path: config.command,
+      working: options === undefined ? ripgrepStatus?.working ?? null : null,
+    }
+  } catch (error) {
+    if (!(error instanceof RipgrepUnavailableError)) throw error
+    return { mode: error.config.mode, path: error.config.command, working: false }
   }
 }
 
@@ -558,8 +565,8 @@ export function getRipgrepStatus(options?: RipgrepIngressOptions): {
 export async function probeRipgrepAvailable(
   options?: RipgrepIngressOptions,
 ): Promise<boolean> {
-  const config = getRipgrepConfigForIngress(options)
   try {
+    const config = getRipgrepConfigForIngress(options)
     if (config.argv0) {
       // Embedded ripgrep is only reachable under a Bun-compiled binary, which
       // always ships rg; treat it as available without spawning here.
