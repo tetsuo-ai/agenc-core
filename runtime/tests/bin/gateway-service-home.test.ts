@@ -89,7 +89,7 @@ describe("gateway service home persistence", () => {
     it(`${platform} records the physical parent of a home that does not exist yet`, async () => {
       const parent = join(home, "physical");
       const alias = join(home, "alias");
-      mkdirSync(parent);
+      mkdirSync(parent, { mode: 0o700 });
       symlinkSync(parent, alias, "junction");
       expect(await install(platform, join(alias, "future-home"))).toBe(0);
       expect(serviceEnvironment(platform)).toEqual({ AGENC_HOME: join(canonicalizeHomePath(parent), "future-home") });
@@ -97,11 +97,11 @@ describe("gateway service home persistence", () => {
 
     it(`${platform} launches a new process with the selected config, pairing store and socket identity`, async () => {
       const selected = join(home, "alternate");
-      mkdirSync(selected);
+      mkdirSync(selected, { mode: 0o700 });
       writeFileSync(join(selected, "config.toml"), serializeConfigToml({
         config_version: 2,
         gateway: { defaultAgent: "selected-home-agent", channels: { tg: { dmPolicy: "pairing", allowlist: [] } } },
-      }));
+      }), { mode: 0o600 });
       const pairing = new PairingStore({ agencHome: selected });
       await pairing.approve("tg", "selected-peer");
       expect(pairing.isPaired("tg", "selected-peer")).toBe(true);
