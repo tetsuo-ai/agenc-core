@@ -1071,6 +1071,7 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     );
 
     expect(thread.childSession.services.mcpManager).not.toBe(parentMcpManager);
+    expect(Object.isFrozen(thread.childSession.services.mcpManager)).toBe(true);
     expect(thread.childSession.services.mcpManager.getTools?.()).toEqual([]);
     expect(thread.childSession.services.registry.tools).toEqual([]);
     expect(

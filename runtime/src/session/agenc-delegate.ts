@@ -16,6 +16,7 @@
 
 import { createHash } from "node:crypto";
 
+import { createInertMcpManager } from "../mcp-client/inert-manager.js";
 import type { LLMChatOptions, LLMMessage, LLMProvider } from "../llm/types.js";
 import { STREAM_IDLE_ABORT_REASON } from "../llm/stream-watchdog.js";
 import {
@@ -497,18 +498,6 @@ function createDisabledToolRegistry(): ToolRegistry {
   } as unknown as ToolRegistry;
 }
 
-function createInertDelegateMcpManager(): SessionServices["mcpManager"] {
-  return {
-    effectiveServers: async () => new Map(),
-    toolPluginProvenance: async () => null,
-    getTools: () => [],
-    getToolsByServer: () => [],
-    getConfiguredServers: () => [],
-    getConnectedServers: () => [],
-    isConnected: () => false,
-  };
-}
-
 interface DelegateProviderLease {
   readonly provider: LLMProvider;
   readonly ownedProvider?: LLMProvider;
@@ -679,7 +668,7 @@ function buildChildServices(
     registry: createDisabledToolRegistry(),
     // Review delegates do not own an MCP transport. Keep their service
     // surface inert so refresh/resource operations cannot mutate the parent.
-    mcpManager: createInertDelegateMcpManager(),
+    mcpManager: createInertMcpManager(),
     permissionModeRegistry: new PermissionModeRegistry(
       createEmptyToolPermissionContext(),
     ),

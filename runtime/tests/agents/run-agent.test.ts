@@ -987,6 +987,7 @@ describe("runAgent", () => {
       expect(result).toMatchObject({ outcome: "completed" });
       expect(refreshFromAuthority).not.toHaveBeenCalled();
       expect(childServices?.mcpManager).not.toBe(parentMcpManager);
+      expect(Object.isFrozen(childServices?.mcpManager)).toBe(true);
       expect(childServices?.mcpManager.getConnectedServers?.()).toEqual([]);
       expect(childServices?.registry.tools.map((tool) => tool.name)).toEqual([
         "system.echo",

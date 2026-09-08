@@ -19,6 +19,7 @@
 
 import { normalize } from "node:path";
 import { LRUCache } from "lru-cache";
+import { createInertMcpManager } from "../mcp-client/inert-manager.js";
 import { createChildAbortController } from "../utils/abortController.js";
 import type {
   LLMChatOptions,
@@ -2877,18 +2878,6 @@ function terminalResultForLiveAgent(live: LiveAgent): ChildRunTerminalResult {
   }
 }
 
-function createInertChildMcpManager(): Session["services"]["mcpManager"] {
-  return {
-    effectiveServers: async () => new Map(),
-    toolPluginProvenance: async () => null,
-    getTools: () => [],
-    getToolsByServer: () => [],
-    getConfiguredServers: () => [],
-    getConnectedServers: () => [],
-    isConnected: () => false,
-  };
-}
-
 function prepareChildSessionAuthority(
   params: RunAgentParams,
 ): ChildSessionAuthority {
@@ -3011,7 +3000,7 @@ function buildChildSession(
       // A child has no independently owned MCP transport in this path. Never
       // retain the parent's manager or its live tool closures under a forked
       // sandbox authority; refresh is deliberately inert and local.
-      mcpManager: createInertChildMcpManager(),
+      mcpManager: createInertMcpManager(),
       lspManager: undefined,
       ...(sandboxExecutionBroker !== undefined
         ? { sandboxExecutionBroker }
