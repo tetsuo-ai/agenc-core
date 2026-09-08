@@ -4331,10 +4331,16 @@ async function createDeferredDaemonPromptTuiSession(params: {
       emitLocalTuiEvent(subscribers, event);
     },
     subscribeToEvents: (cb) => {
+      const alreadySubscribed = subscribers.has(cb);
       subscribers.add(cb);
-      if (liveSession !== null) {
-        const unsubscribe = liveSession.subscribeToEvents?.(cb);
-        if (unsubscribe !== undefined) liveUnsubscribers.set(cb, unsubscribe);
+      try {
+        if (liveSession !== null) {
+          const unsubscribe = liveSession.subscribeToEvents?.(cb);
+          if (unsubscribe !== undefined) liveUnsubscribers.set(cb, unsubscribe);
+        }
+      } catch (error) {
+        if (!alreadySubscribed) subscribers.delete(cb);
+        throw error;
       }
       return () => {
         subscribers.delete(cb);
@@ -4488,12 +4494,18 @@ function wrapDaemonTuiSessionWithPromptPreparation<
       await originalSubmit(prepared, opts);
     },
     subscribeToEvents: ((cb: (event: unknown) => void) => {
+      const alreadySubscribed = localSubscribers.has(cb);
       localSubscribers.add(cb);
-      const unsubscribeOriginal = originalSubscribe?.(cb);
-      return () => {
-        localSubscribers.delete(cb);
-        unsubscribeOriginal?.();
-      };
+      try {
+        const unsubscribeOriginal = originalSubscribe?.(cb);
+        return () => {
+          localSubscribers.delete(cb);
+          unsubscribeOriginal?.();
+        };
+      } catch (error) {
+        if (!alreadySubscribed) localSubscribers.delete(cb);
+        throw error;
+      }
     }) as Session["subscribeToEvents"],
     emit: ((event: unknown) => {
       originalEmit?.(event);

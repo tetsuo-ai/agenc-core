@@ -8,6 +8,7 @@ import {
 import { ConfigStore } from "../config/store.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { DaemonEventReplayGapError } from "../../src/tui/daemon-event-replay.js";
 import type {
   SessionEditorInteraction,
   SessionSubmitOptions,
@@ -476,6 +477,54 @@ function daemonHarness(
 }
 
 describe("deferred daemon input ownership", () => {
+  it.each(["emit", "slash"] as const)("rolls back failed subscriptions before local %s delivery", async delivery => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({
+      baseSession: harness.baseSession,
+      deps: harness.deps,
+    });
+    const healthy = vi.fn();
+    const unsubscribe = session.subscribeToEvents(healthy);
+    try {
+      await session.predictEditorCode({
+        requestId: "replay-subscription-cleanup",
+        editorInstanceId: "replay-editor",
+        bufferHandle: 1,
+        generation: 1,
+        changedtick: 1,
+        path: "src/replay.ts",
+        fileBytes: 4,
+        cursor: { line: 1, byteColumn: 2 },
+        prefix: "re",
+        suffix: "ad",
+      });
+      const emitDaemon = harness.client.subscribeToSessionEvents.mock.lastCall?.[1];
+      if (emitDaemon === undefined) throw new Error("Daemon event subscription is missing");
+      for (let index = 1; index <= 1_001; index += 1) {
+        emitDaemon({
+          type: "daemon.event",
+          msg: { id: `overflow-${index}`, type: "user_message", payload: { message: `prompt ${index}` } },
+        } as never);
+      }
+      const failed = vi.fn();
+      expect(() => session.subscribeToEvents(failed)).toThrow(DaemonEventReplayGapError);
+      expect(() => session.subscribeToEvents(healthy)).toThrow(DaemonEventReplayGapError);
+      expect(failed).not.toHaveBeenCalled();
+      healthy.mockClear();
+      if (delivery === "emit") {
+        (session as DeferredInputSession & { emit(event: unknown): void }).emit({
+          type: "agent_message_delta", payload: { delta: "local" },
+        });
+      } else {
+        await session.submit("/help");
+      }
+      expect(failed).not.toHaveBeenCalled();
+      expect(healthy).toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it.each([
     {
       decision: { kind: "approved" },
