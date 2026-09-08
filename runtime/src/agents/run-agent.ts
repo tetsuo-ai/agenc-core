@@ -2946,6 +2946,7 @@ function buildChildSession(
 
   childSession = new ChildSession({
     conversationId: params.live.agentId,
+    fileReadScope: params.parent.fileReadScope,
     roleWorkspace: params.parent.roleWorkspace,
     // A worktree changes execution cwd, never the role trust domain or its
     // canonical executable catalog. Clone the complete parent envelope so a

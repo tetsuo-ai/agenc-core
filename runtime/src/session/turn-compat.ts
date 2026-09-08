@@ -310,6 +310,7 @@ export async function createTurnCompatSession(
   let session: Session;
   try {
     session = new Session({
+      fileReadScope: parent.fileReadScope,
       conversationId:
         opts.conversationId ??
         params.toolUseContext.agentId ??

@@ -1627,6 +1627,7 @@ export type AbortReason =
 
 export interface SessionOpts {
   readonly conversationId: ThreadId;
+  readonly fileReadScope?: object;
   readonly initialState: SessionState;
   readonly features: ManagedFeatures;
   readonly services: SessionServices;
@@ -2411,6 +2412,8 @@ function activeAgentDefinitionsFromRoles(
 export class Session {
   /** agenc runtime: `conversation_id: ThreadId` */
   readonly conversationId: ThreadId;
+  readonly fileReadScope: object;
+  private readonly ownsFileReadScope: boolean;
 
   /** Immutable workspace used for all role discovery and role provenance. */
   readonly roleWorkspace: AgentRoleWorkspace;
@@ -2643,6 +2646,8 @@ export class Session {
    */
   constructor(opts: SessionOpts) {
     this.conversationId = opts.conversationId;
+    this.fileReadScope = opts.fileReadScope ?? Object.freeze({});
+    this.ownsFileReadScope = opts.fileReadScope === undefined;
     this.ownsMcpManager = opts.mcpManagerOwnership === "owned";
     // Keep legacy producers that were handed `session.eventLog` on the same
     // canonical persist-before-publish path as direct `session.emit` callers.
@@ -6091,14 +6096,16 @@ export class Session {
       }
     }
     try {
-      const { clearSessionReadCache, clearSessionReadState } =
-        await import("../tools/system/filesystem.js");
+      const {
+        clearSessionReadCache,
+        clearSessionReadState,
+        closeConversationReadScope,
+      } = await import("../tools/system/filesystem.js");
       const sessionTempRoot = this.services.runtimeOptions?.sessionTempRoot;
+      if (this.ownsFileReadScope) closeConversationReadScope(this.fileReadScope);
       if (sessionTempRoot !== undefined) {
         clearSessionReadState(this.conversationId, sessionTempRoot);
       } else {
-        // Test doubles may omit runtime options.
-        // Never guess a process-global temp root during session teardown.
         clearSessionReadCache(this.conversationId);
       }
     } catch {

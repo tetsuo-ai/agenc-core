@@ -206,27 +206,29 @@ export interface SessionReadSeedEntry {
 
 const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();
 
-/**
- * Workspace-scoped mirror of the per-session read state, keyed by
- * `workspaceRoot -> canonicalPath -> snapshot`.
- *
- * RATIONALE (cross-agent read-before-write): the per-session map above is
- * keyed by the `__agencSessionId` arg, but two dispatch paths inject
- * DIFFERENT ids for the same logical conversation — the canonical tool
- * surface injects the main-process session id, while spawned subagents
- * inject their own agent/conversation id (run-agent.ts
- * `injectChildToolArgs`). A FULL `FileRead` recorded under one id was
- * therefore invisible to an `Edit`/`Write` gate checking under the other,
- * surfacing as a spurious READ_BEFORE_WRITE_ERROR immediately after a
- * successful read.
- *
- * This mirror lets the gate fall back to "has ANY agent in this same
- * workspace performed a full read of this exact canonical path?". It does
- * NOT weaken the gate to "no read needed": a full read must still exist
- * somewhere, and only full (non-partial) snapshots are mirrored, so
- * partial offset/limit reads never authorize an edit via the fallback.
- */
-const workspaceReadState = new Map<string, Map<string, SessionReadSnapshot>>();
+const workspaceReadState = new WeakMap<
+  object,
+  Map<string, SessionReadSnapshot>
+>();
+const closedConversationReadScopes = new WeakSet<object>();
+const MAX_CONVERSATION_READ_ENTRIES = 4096;
+
+function resolveSessionReadId(
+  sessionId: string | undefined,
+): string | undefined {
+  if (!sessionId || sessionId.trim().length === 0) return undefined;
+  return getCurrentRuntimeSession()?.conversationId ?? sessionId;
+}
+
+function conversationReadScopeClosed(): boolean {
+  const scope = getCurrentRuntimeSession()?.fileReadScope;
+  return scope !== undefined && closedConversationReadScopes.has(scope);
+}
+
+export function closeConversationReadScope(scope: object): void {
+  closedConversationReadScopes.add(scope);
+  workspaceReadState.delete(scope);
+}
 
 const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
 
@@ -319,16 +321,27 @@ function mirrorWorkspaceRead(
   canonicalPath: string,
   snapshot: SessionReadSnapshot,
 ): void {
-  if (snapshot.isPartialView === true) {
+  const scope = getCurrentRuntimeSession()?.fileReadScope;
+  if (
+    scope === undefined ||
+    closedConversationReadScopes.has(scope) ||
+    snapshot.isPartialView === true
+  ) {
     return;
   }
-  const workspaceRoot = resolveWorkspaceReadScopeRoot();
-  let fileMap = workspaceReadState.get(workspaceRoot);
+  const key = JSON.stringify([resolveWorkspaceReadScopeRoot(), canonicalPath]);
+  let fileMap = workspaceReadState.get(scope);
   if (!fileMap) {
     fileMap = new Map();
-    workspaceReadState.set(workspaceRoot, fileMap);
+    workspaceReadState.set(scope, fileMap);
   }
-  fileMap.set(canonicalPath, snapshot);
+  fileMap.delete(key);
+  fileMap.set(key, snapshot);
+  while (fileMap.size > MAX_CONVERSATION_READ_ENTRIES) {
+    const oldestKey = fileMap.keys().next().value;
+    if (oldestKey === undefined) break;
+    fileMap.delete(oldestKey);
+  }
   boundSessionReadContent(fileMap);
 }
 
@@ -343,9 +356,13 @@ function getWorkspaceReadSnapshot(
   canonicalPath: string,
 ): SessionReadSnapshot | undefined {
   if (!canonicalPath || canonicalPath.trim().length === 0) return undefined;
+  const scope = getCurrentRuntimeSession()?.fileReadScope;
+  if (scope === undefined || closedConversationReadScopes.has(scope)) {
+    return undefined;
+  }
   const snapshot = workspaceReadState
-    .get(resolveWorkspaceReadScopeRoot())
-    ?.get(canonicalPath);
+    .get(scope)
+    ?.get(JSON.stringify([resolveWorkspaceReadScopeRoot(), canonicalPath]));
   if (!snapshot) return undefined;
   if (snapshot.isPartialView === true) {
     return undefined;
@@ -617,10 +634,9 @@ function rehydrateSessionReadSnapshot(
   sessionId: string | undefined,
   canonicalPath: string,
 ): SessionReadSnapshot | undefined {
+  if (conversationReadScopeClosed()) return undefined;
+  sessionId = resolveSessionReadId(sessionId);
   if (!sessionId || sessionId.trim().length === 0) {
-    // Even without a session id, a full read recorded by ANY agent in
-    // this workspace satisfies the read-before-write gate (cross-agent
-    // fallback). Partial reads are excluded by getWorkspaceReadSnapshot.
     return getWorkspaceReadSnapshot(canonicalPath);
   }
 
@@ -634,14 +650,6 @@ function rehydrateSessionReadSnapshot(
     canonicalPath,
   );
   if (!persistedSnapshot) {
-    // No agent-scoped snapshot for this (sessionId, path). Fall back to a
-    // workspace-scoped full read recorded by a sibling agent under a
-    // different `__agencSessionId` for the SAME canonical path. This is
-    // what makes a `FileRead` issued via one dispatch path (e.g. the
-    // canonical surface) authorize an `Edit` checked under another (e.g.
-    // a spawned subagent's conversation id). The gate stays closed when
-    // nobody has read the path: getWorkspaceReadSnapshot returns
-    // undefined in that case.
     return getWorkspaceReadSnapshot(canonicalPath);
   }
 
@@ -660,6 +668,8 @@ export function recordSessionRead(
   canonicalPath: string,
   snapshot?: SessionReadSnapshot,
 ): void {
+  if (conversationReadScopeClosed()) return;
+  sessionId = resolveSessionReadId(sessionId);
   if (!sessionId || sessionId.trim().length === 0) return;
   if (!canonicalPath || canonicalPath.trim().length === 0) return;
   let fileMap = sessionReadState.get(sessionId);
@@ -752,6 +762,8 @@ export function forEachSessionRead(
   sessionId: string | undefined,
   fn: (canonicalPath: string, snapshot: SessionReadSnapshot) => void,
 ): void {
+  if (conversationReadScopeClosed()) return;
+  sessionId = resolveSessionReadId(sessionId);
   if (!sessionId || sessionId.trim().length === 0) return;
   const fileMap = sessionReadState.get(sessionId);
   if (!fileMap) return;
@@ -765,10 +777,21 @@ export function dropSessionReadSnapshot(
   sessionId: string | undefined,
   canonicalPath: string,
 ): void {
+  sessionId = resolveSessionReadId(sessionId);
   if (!sessionId || sessionId.trim().length === 0) return;
-  const fileMap = sessionReadState.get(sessionId);
-  if (!fileMap) return;
-  fileMap.delete(canonicalPath);
+  sessionReadState.get(sessionId)?.delete(canonicalPath);
+  const scope = getCurrentRuntimeSession()?.fileReadScope;
+  if (scope !== undefined) {
+    workspaceReadState.get(scope)?.delete(
+      JSON.stringify([resolveWorkspaceReadScopeRoot(), canonicalPath]),
+    );
+  }
+  try {
+    rmSync(
+      resolveLocalHistoryFilePath(sessionId, canonicalPath, resolveSessionTempRoot()),
+      { force: true },
+    );
+  } catch {}
 }
 
 /**
@@ -822,7 +845,10 @@ export function snapshotTopRecentReads(params: {
   readonly perFileBudgetChars: number;
   readonly totalBudgetChars: number;
 }): readonly SessionReadSnapshotExport[] {
-  const { sessionId, maxFiles, perFileBudgetChars, totalBudgetChars } = params;
+  if (conversationReadScopeClosed()) return [];
+  const { maxFiles, perFileBudgetChars, totalBudgetChars } = params;
+  const sessionId = resolveSessionReadId(params.sessionId);
+  if (sessionId === undefined) return [];
   if (maxFiles <= 0 || perFileBudgetChars <= 0 || totalBudgetChars <= 0) {
     return [];
   }

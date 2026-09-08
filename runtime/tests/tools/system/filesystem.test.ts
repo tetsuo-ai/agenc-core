@@ -6,6 +6,7 @@ import {
   createFilesystemTools,
   clearSessionReadState,
   clearSessionReadCache,
+  closeConversationReadScope,
   hasSessionRead,
   recordSessionRead,
   seedSessionReadState,
@@ -14,6 +15,8 @@ import {
 } from "./filesystem.js";
 import type { Tool } from "../types.js";
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
+import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
+import type { Session } from "../../../src/session/session.js";
 
 // ============================================================================
 // Mock node:fs/promises
@@ -950,18 +953,23 @@ describe("workspace read path identity", () => {
     }
     const sessionId = "windows-workspace-read-source";
     const canonicalPath = "/workspace/source.ts";
+    const session = {
+      conversationId: sessionId,
+      fileReadScope: Object.freeze({}),
+      sessionConfiguration: { cwd: "/workspace/cafe\u0301" },
+    } as unknown as Session;
     Object.defineProperty(process, "platform", {
       ...platformDescriptor,
       value: "win32",
     });
     try {
-      runWithCwdOverride("/workspace/cafe\u0301", () => {
+      runWithCurrentRuntimeSession(session, () => {
         recordSessionRead(sessionId, canonicalPath, { viewKind: "full" });
-      });
-      runWithCwdOverride("/workspace/caf\u00e9", () => {
+        session.sessionConfiguration.cwd = "/workspace/caf\u00e9";
         expect(hasSessionRead(undefined, canonicalPath)).toBe(true);
       });
     } finally {
+      closeConversationReadScope(session.fileReadScope);
       clearSessionReadState(sessionId, tmpdir());
       Object.defineProperty(process, "platform", platformDescriptor);
     }

@@ -145,6 +145,7 @@ describe('turn compatibility catalog boundary', () => {
     })
 
     expect(turn.session.services.sandboxExecutionBroker?.cwd).toBe(worktree)
+    expect(turn.session.fileReadScope).toBe(parent.fileReadScope)
     expect(turn.session.services.sandboxExecutionBroker).not.toBe(parentBroker)
     expect(parentBroker.cwd).toBe(authority)
   })

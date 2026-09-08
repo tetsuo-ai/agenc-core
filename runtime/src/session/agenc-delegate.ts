@@ -936,6 +936,7 @@ export async function spawnAgenCDelegateThread(
 
     childSession = new Session({
       conversationId: childSessionId,
+      fileReadScope: parent.fileReadScope,
       roleWorkspace: parent.roleWorkspace,
       agentDefinitions: parent.agentDefinitions,
       initialState: {

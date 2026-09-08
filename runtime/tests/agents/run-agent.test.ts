@@ -2426,6 +2426,7 @@ describe("runAgent", () => {
     const parked = iter.next();
     await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
     expect(childSession).toBeDefined();
+    expect(childSession!.fileReadScope).toBe(session.fileReadScope);
     const originalEmit = childSession!.emit.bind(childSession);
     const emitSpy = vi
       .spyOn(childSession!, "emit")

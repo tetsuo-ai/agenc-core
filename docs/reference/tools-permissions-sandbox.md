@@ -57,6 +57,27 @@ Do **not** treat the TUI pool (`tools.ts`) as authoritative for this list.
 | `Orient` | Workspace orientation helper |
 | `apply_patch` | Multi-file transactional patch; **deferred** by default (not in `visibleByDefault`) |
 
+#### Shared reads
+
+Read-before-write proof belongs to a runtime conversation. The parent, spawned
+agents, review delegates, and compatibility turns share reads only within that
+conversation and workspace root. An unrelated conversation in the same
+workspace must read the file itself. Canonical tool session aliases resolve to
+the active runtime session, including for persisted local read history.
+
+Real full and offset/limit reads qualify. Synthetic partial views do not.
+Shared snapshots retain the same changed-file checks as direct reads. The
+shared cache holds at most 4,096 paths across the conversation's workspaces
+and uses the existing session content budget. Eviction may require a sibling
+to read an older file again.
+
+`clearSessionReadCache` preserves persisted history for compaction.
+`clearSessionReadState` removes that session's direct cache and local history;
+shared proof remains available to the rest of the conversation after a child
+finishes. Root shutdown releases and closes the shared scope, so late child
+work cannot recreate it. Dropping a path removes the requesting session's
+direct and persisted snapshot and the shared fallback for that path.
+
 #### Search execution and limits
 
 `Grep`, `Glob`, and `Orient` execute only the absolute ripgrep binary supplied by AgenC's
