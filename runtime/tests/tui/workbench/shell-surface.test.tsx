@@ -439,6 +439,7 @@ describe("ShellSurface", () => {
 
       expect(compact(screenText(stdout))).toContain("src/current-task.ts:7");
       expect(compact(screenText(stdout))).not.toContain("(nooutput)");
+      expect(compact(screenText(stdout))).toContain("Outputreadfailed:tailfailedforshell-1");
       expect(
         shellHarness.logError.mock.calls.some(
           ([error]) =>

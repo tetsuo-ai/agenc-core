@@ -15,7 +15,12 @@ vi.mock("../../../src/utils/task/diskOutput.js", () => ({
 import { createRoot } from "../../../src/tui/ink.js";
 import { useTaskTail } from "../../../src/tui/workbench/surfaces/useTaskTail.js";
 
-type Selection = { id?: string; status?: string; maxBytes?: number };
+type Selection = {
+  id?: string;
+  status?: string;
+  maxBytes?: number;
+  pollIntervalMs?: number;
+};
 
 function pendingRead() {
   return Promise.withResolvers<{ content: string }>();
@@ -38,8 +43,11 @@ async function renderTail(initial: Selection) {
     stdout: stdout as unknown as NodeJS.WriteStream,
   });
   const frames: string[] = [];
-  function Probe({ id, status, maxBytes = 48_000 }: Selection) {
-    frames.push(useTaskTail(id, status, maxBytes));
+  const errors: Array<string | null> = [];
+  function Probe({ id, status, maxBytes = 48_000, pollIntervalMs = 1_000 }: Selection) {
+    const tail = useTaskTail({ taskId: id, status, maxBytes, pollIntervalMs });
+    frames.push(tail.content);
+    errors.push(tail.error);
     return null;
   }
   const update = (selection: Selection) =>
@@ -47,6 +55,7 @@ async function renderTail(initial: Selection) {
   update(initial);
   return {
     frames,
+    errors,
     update,
     close() {
       root.unmount();
@@ -145,12 +154,14 @@ describe("useTaskTail", () => {
     expect(mocks.tailFile).toHaveBeenCalledTimes(2);
     slow.reject(error);
     await vi.waitFor(() => expect(mocks.logError).toHaveBeenCalledWith(error));
+    await vi.waitFor(() => expect(view!.errors.at(-1)).toBe(error.message));
     expect(view.frames.at(-1)).toBe("last output");
     vi.advanceTimersByTime(1_000);
     await vi.waitFor(() =>
       expect(view!.frames.at(-1)).toBe("recovered output"),
     );
     expect(mocks.tailFile).toHaveBeenCalledTimes(3);
+    expect(view.errors.at(-1)).toBeNull();
   });
 
   it("ignores failures after unmount and cancels polling", async () => {
@@ -183,4 +194,79 @@ describe("useTaskTail", () => {
       expect(mocks.tailFile).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each(["completed", "failed", "killed"])(
+    "stops custom polling after the final %s read fails",
+    async (status) => {
+      mocks.tailFile.mockResolvedValue({ content: "last good output" });
+      view = await renderTail({ id: "task", status: "running", pollIntervalMs: 250 });
+      await vi.waitFor(() => expect(view!.frames.at(-1)).toBe("last good output"), { interval: 0 });
+      const framesBeforePoll = view.frames.length;
+      vi.advanceTimersByTime(249);
+      expect(mocks.tailFile).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      expect(mocks.tailFile).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(view!.frames.length).toBeGreaterThan(framesBeforePoll), { interval: 0 });
+      mocks.tailFile.mockRejectedValueOnce(new Error("final read failed"));
+      view.update({ id: "task", status, pollIntervalMs: 250 });
+      await vi.waitFor(() => expect(view!.errors.at(-1)).toBe("final read failed"), { interval: 0 });
+      expect(view.frames.at(-1)).toBe("last good output");
+      vi.advanceTimersByTime(5_000);
+      expect(mocks.tailFile).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it("clears errors on task changes and ignores stale failures", async () => {
+    const stale = pendingRead();
+    const current = pendingRead();
+    mocks.tailFile
+      .mockRejectedValueOnce("initial read failed")
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(current.promise);
+    view = await renderTail({ id: "old", status: "running" });
+    await vi.waitFor(() => expect(view!.errors.at(-1)).toBe("initial read failed"));
+    expect(view.frames.at(-1)).toBe("");
+    vi.advanceTimersByTime(1_000);
+    const switchFrame = view.frames.length;
+    view.update({ id: "new", status: "completed" });
+    await vi.waitFor(() => expect(mocks.tailFile).toHaveBeenCalledTimes(3));
+    expect(view.errors[switchFrame]).toBeNull();
+    current.resolve({ content: "new output" });
+    await vi.waitFor(() => expect(view!.frames.at(-1)).toBe("new output"));
+    stale.reject(new Error("stale failure"));
+    await stale.promise.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(view.errors.at(-1)).toBeNull();
+    expect(view.frames.at(-1)).toBe("new output");
+    expect(mocks.logError).toHaveBeenCalledTimes(1);
+    mocks.tailFile.mockRejectedValueOnce(new Error("current failure"));
+    view.update({ id: "new", status: "failed" });
+    await vi.waitFor(() => expect(view!.errors.at(-1)).toBe("current failure"));
+    view.update({});
+    await vi.waitFor(() => expect(view!.errors.at(-1)).toBeNull());
+    expect(view.frames.at(-1)).toBe("");
+  });
+
+  it("restarts the read and interval when caller limits change", async () => {
+    const stale = pendingRead();
+    mocks.tailFile
+      .mockResolvedValueOnce({ content: "old limit output" })
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue({ content: "new limit output" });
+    view = await renderTail({ id: "task", status: "running", maxBytes: 16_000, pollIntervalMs: 500 });
+    await vi.waitFor(() => expect(view!.frames.at(-1)).toBe("old limit output"), { interval: 0 });
+    vi.advanceTimersByTime(500);
+    expect(mocks.tailFile).toHaveBeenCalledTimes(2);
+    view.update({ id: "task", status: "running", maxBytes: 24_000, pollIntervalMs: 250 });
+    await vi.waitFor(() => expect(view!.frames.at(-1)).toBe("new limit output"), { interval: 0 });
+    expect(mocks.tailFile).toHaveBeenLastCalledWith("/tmp/task.log", 24_000);
+    stale.resolve({ content: "stale limit output" });
+    await stale.promise;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(view.frames.at(-1)).toBe("new limit output");
+    vi.advanceTimersByTime(249);
+    expect(mocks.tailFile).toHaveBeenCalledTimes(3);
+    vi.advanceTimersByTime(1);
+    expect(mocks.tailFile).toHaveBeenCalledTimes(4);
+  });
 });

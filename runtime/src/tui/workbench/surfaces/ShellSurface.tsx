@@ -23,7 +23,12 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
   const task = useMemo(() => {
     return resolveWorkbenchShellTask(tasks, workbench.selectedShellTaskId);
   }, [tasks, workbench.selectedShellTaskId]);
-  const tail = useTaskTail(task?.id, task?.status, TAIL_BYTES);
+  const { content: tail, error } = useTaskTail({
+    taskId: task?.id,
+    status: task?.status,
+    maxBytes: TAIL_BYTES,
+    pollIntervalMs: 1_000,
+  });
 
   const locations = useMemo(() => parseSourceLocations(tail), [tail]);
 
@@ -62,6 +67,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
       <SurfaceHeader title="SHELL" detail={`${task.status} - ${task.description ?? task.id}`} focused={focused} />
+      {error !== null ? <Text color="error" wrap="truncate-end">Output read failed: {error}</Text> : null}
       <Text dimColor wrap="truncate-end">
         follow tail on running tasks{stopAction === "local-shell" ? " - x stop" : ""}
       </Text>

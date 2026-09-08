@@ -21,7 +21,12 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
   const task = useMemo(() => {
     return resolveWorkbenchShellTask(tasks, workbench.selectedShellTaskId);
   }, [tasks, workbench.selectedShellTaskId]);
-  const tail = useTaskTail(task?.id, task?.status, TAIL_BYTES);
+  const { content: tail, error } = useTaskTail({
+    taskId: task?.id,
+    status: task?.status,
+    maxBytes: TAIL_BYTES,
+    pollIntervalMs: 1_000,
+  });
   const [selected, setSelected] = useState(0);
   const failures = useMemo(() => parseVitestFailures(tail), [tail]);
   const selectedIndex = clampSurfaceSelection(selected, failures.length);
@@ -68,23 +73,26 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
 
   if (!task) return <EmptySurface title="TEST" message="No test task selected" />;
 
-  return <TestSurfaceView failures={failures} selected={selectedIndex} focused={focused} />;
+  return <TestSurfaceView failures={failures} selected={selectedIndex} focused={focused} outputError={error} />;
 }
 
 export function TestSurfaceView({
   failures,
   selected,
   focused,
+  outputError,
 }: {
   readonly failures: readonly ReturnType<typeof parseVitestFailures>[number][];
   readonly selected: number;
   readonly focused: boolean;
+  readonly outputError?: string | null;
 }): React.ReactElement {
   const selectedIndex = clampSurfaceSelection(selected, failures.length);
   const selectedFailure = failures[selectedIndex] ?? null;
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
       <SurfaceHeader title="TEST" detail={`${failures.length} failure${failures.length === 1 ? "" : "s"} - enter edit - o keep focus - @ attach`} focused={focused} />
+      {outputError != null ? <Text color="error" wrap="truncate-end">Output read failed: {outputError}</Text> : null}
       {failures.length === 0 ? (
         <Text dimColor wrap="truncate-end">No parsed test failures in the selected task output.</Text>
       ) : null}

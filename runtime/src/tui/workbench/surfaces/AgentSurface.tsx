@@ -12,6 +12,8 @@ import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActi
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 import { useTaskTail } from "./useTaskTail.js";
 
+const TAIL_BYTES = 16_000;
+
 export function AgentSurface({ focused }: { readonly focused: boolean }): React.ReactElement {
   const workbench = useWorkbenchState();
   const tasks = useAppState((state) => state.tasks);
@@ -20,7 +22,12 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
     const taskList = orderAgentTasks(Object.values(tasks).filter((item: any) => item.type !== "local_bash"));
     return resolveAgentSelection(taskList, workbench.selectedAgentTaskId).selectedTask;
   }, [tasks, workbench.selectedAgentTaskId]);
-  const tail = useTaskTail(task?.id, task?.status, 16_000);
+  const { content: tail, error } = useTaskTail({
+    taskId: task?.id,
+    status: task?.status,
+    maxBytes: TAIL_BYTES,
+    pollIntervalMs: 1_000,
+  });
 
   useRegisterKeybindingContext("Surface", focused);
   useKeybindings(
@@ -45,6 +52,7 @@ export function AgentSurface({ focused }: { readonly focused: boolean }): React.
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
       <SurfaceHeader title="AGENT" detail={`${task.status} - ${task.description}`} focused={focused} />
+      {error !== null ? <Text color="error" wrap="truncate-end">Output read failed: {error}</Text> : null}
       <Text wrap="truncate-end">id {task.id}</Text>
       <Text wrap="truncate-end">type {task.type}</Text>
       <Text wrap="truncate-end">elapsed {formatTaskElapsed(task)}</Text>

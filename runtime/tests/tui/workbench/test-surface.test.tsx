@@ -576,6 +576,7 @@ describe("TestSurface", () => {
 
       expect(compact(screenText(stdout))).toContain("firstfailure");
       expect(compact(screenText(stdout))).not.toContain("Noparsedtestfailures");
+      expect(compact(screenText(stdout))).toContain("Outputreadfailed:tailfailedforshell-1");
       expect(
         keybindingHarness.logError.mock.calls.some(
           ([error]) =>

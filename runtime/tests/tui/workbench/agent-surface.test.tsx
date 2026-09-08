@@ -388,6 +388,7 @@ describe("AgentSurface", () => {
             error.message === "tail failed for agent-1",
         ),
       ).toBe(true);
+      expect(compact(screenText(stdout))).toContain("Outputreadfailed:tailfailedforagent-1");
     } finally {
       root.unmount();
       stdin.end();
