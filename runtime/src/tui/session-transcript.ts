@@ -3322,16 +3322,27 @@ export function useSessionTranscript(
     const unsubscribeLog = session.eventLog?.subscribe((event) => {
       enqueue(event, !isCoalescableStreamingEvent(event));
     });
-    const unsubscribePhase = session.subscribeToEvents?.((event) => {
-      if (
-        event &&
-        typeof event === "object" &&
-        ("type" in event || "msg" in event)
-      ) {
-        const typed = event as SessionTranscriptEvent;
-        enqueue(typed, !isCoalescableStreamingEvent(typed));
+    let unsubscribePhase: (() => void) | undefined;
+    try {
+      unsubscribePhase = session.subscribeToEvents?.((event) => {
+        if (
+          event &&
+          typeof event === "object" &&
+          ("type" in event || "msg" in event)
+        ) {
+          const typed = event as SessionTranscriptEvent;
+          enqueue(typed, !isCoalescableStreamingEvent(typed));
+        }
+      });
+    } catch (error) {
+      try {
+        unsubscribeLog?.();
+      } finally {
+        if (timer !== null) clearTimeout(timer);
+        buffer.length = 0;
       }
-    });
+      throw error;
+    }
     return () => {
       unsubscribeLog?.();
       unsubscribePhase?.();

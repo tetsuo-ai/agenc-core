@@ -900,6 +900,55 @@ describe("AgenC TUI daemon session adapter", () => {
     unsubscribeLate();
   });
 
+  it.each([501, 1_000])("replays all %i attach events to a late transcript subscriber", async count => {
+    const client = createClient();
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const early: unknown[] = [];
+    const stopEarly = session.subscribeToEvents(event => early.push(event));
+    const late: unknown[] = [];
+    let stopLate: (() => void) | undefined;
+    try {
+      for (let index = 1; index <= count; index += 1) {
+        client.emit("session_1", {
+          type: "daemon.event", msg: { id: `replay-${index}`, seq: index, type: "user_message", payload: { message: `prompt ${index}` } },
+        });
+      }
+      stopLate = session.subscribeToEvents(event => late.push(event));
+      expect(late).toHaveLength(count);
+      expect(late).toEqual(early);
+      client.emit("session_1", { type: "daemon.event", msg: { id: "live", type: "turn_delta" } });
+      expect(late).toEqual(early);
+      expect(late).toHaveLength(count + 1);
+    } finally {
+      stopLate?.();
+      stopEarly();
+    }
+  });
+
+  it("rejects incomplete late replay without interrupting an existing live subscriber", async () => {
+    const client = createClient();
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const early: unknown[] = [];
+    const stopEarly = session.subscribeToEvents(event => early.push(event));
+    try {
+      for (let index = 1; index <= 1_001; index += 1) {
+        client.emit("session_1", { type: "daemon.event", msg: { id: `event-${index}`, type: "turn_delta" } });
+      }
+      const late = vi.fn();
+      expect(() => session.subscribeToEvents(late)).toThrow(/reopen.*conversation/i);
+      expect(late).not.toHaveBeenCalled();
+      client.emit("session_1", { type: "daemon.event", msg: { id: "still-live", type: "turn_delta" } });
+      expect(early).toHaveLength(1_002);
+      expect(late).not.toHaveBeenCalled();
+    } finally {
+      stopEarly();
+    }
+  });
+
   it("attaches the TUI client before returning a daemon-backed session", async () => {
     const client = createClient();
 

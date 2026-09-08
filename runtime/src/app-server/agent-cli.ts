@@ -174,7 +174,7 @@ const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
 // events) until the TUI calls subscribeToSessionEvents. The prior cap of 20
 // dropped the oldest events under a fast first turn — which is almost always
 // the user's first prompt — so the YOU bubble never rendered on cold open.
-const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 1000;
+export const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 1000;
 const overflowedBufferedSessionEventMaps = new WeakSet<
   Map<string, JsonObject[]>
 >();

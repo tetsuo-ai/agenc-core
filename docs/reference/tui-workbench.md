@@ -15,6 +15,26 @@ in-tree README:
 - All real work still flows through the **daemon**; the TUI is a client view
   onto daemon-owned sessions.
 
+## Daemon transcript replay
+
+The TUI retains the first 1,000 daemon events for local subscribers that mount
+after the shared daemon connection opens. This matches the transport's initial
+replay capacity. Each subscriber also has a pending queue capped at 1,000 events
+to preserve replay-to-live order, including events emitted from a callback.
+The transcript reducer deduplicates replay/live overlap by canonical event
+identity rather than message text.
+
+Existing live subscribers continue receiving events after the retained history
+fills. A later subscription fails before delivering any incomplete history or
+live events. A subscriber whose pending queue overflows is removed and reports
+the same `DAEMON_EVENT_REPLAY_GAP` error. Other live subscribers remain active.
+
+The transcript error remains visible with instructions to reopen the
+conversation and reload its durable history. Exit the TUI and reopen that
+conversation to create a fresh adapter. Retrying a subscription on the old
+adapter cannot repair its replay gap. Failed transcript subscriptions release
+their event-log listener and pending coalescing timer.
+
 ## Layouts
 
 | Layout                                          | When                                                   |

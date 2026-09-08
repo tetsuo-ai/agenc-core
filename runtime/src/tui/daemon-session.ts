@@ -7,7 +7,8 @@
 
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
-import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
+import { AgenCDaemonResponseError, MAX_BUFFERED_SESSION_EVENTS_PER_SESSION } from "../app-server/agent-cli.js";
+import { DaemonEventReplay } from "./daemon-event-replay.js";
 import { classifyTurnTerminal, createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import type {
   AgentAttachParams,
@@ -778,17 +779,7 @@ export function createDaemonTuiSession<
     readonly ownership?: IdleInputOwnership;
   };
   const queuedInputs: DaemonQueuedInput[] = [];
-  const eventSubscribers = new Set<(event: unknown) => void>();
-  // Backlog of received daemon events, replayed to subscribers that register
-  // LATE. The daemon replays the session's early events exactly once when the
-  // RPC subscription opens — a local subscriber that registers after that
-  // single replay (the transcript hook mounts after other subscriptions)
-  // would otherwise lose early events FOREVER: the user's first prompt
-  // (user_message) never reached the transcript hook and the message was
-  // invisible until ctrl+o. Replay from the same received stream — ids match,
-  // so the reducer's eventKey dedupe collapses any overlap with live events.
-  const receivedEvents: unknown[] = [];
-  const REPLAY_BACKLOG_LIMIT = 500;
+  const eventReplay = new DaemonEventReplay(MAX_BUFFERED_SESSION_EVENTS_PER_SESSION);
   let activeTurnSnapshot: { readonly turnId: string } | null = null;
   let lastObservedTurnId: string | undefined;
   let daemonTurnStartGeneration = 0;
@@ -907,12 +898,7 @@ export function createDaemonTuiSession<
   };
   const broadcastDaemonEvent = (event: unknown): void => {
     noteDaemonActivity(event);
-    if (receivedEvents.length < REPLAY_BACKLOG_LIMIT) {
-      receivedEvents.push(event);
-    }
-    for (const subscriber of [...eventSubscribers]) {
-      subscriber(event);
-    }
+    eventReplay.publish(event);
   };
   const realtime = createRealtimeTuiControls({
     threadId: realtimeThreadId,
@@ -1050,7 +1036,7 @@ export function createDaemonTuiSession<
   };
   const maybeStopDaemonEvents = (): void => {
     if (
-      eventSubscribers.size > 0 ||
+      eventReplay.size > 0 ||
       mcpProjection.hasSubscribers() ||
       runtimeSettingsReconciler !== undefined ||
       unsubscribeDaemonEvents === null
@@ -1723,16 +1709,16 @@ export function createDaemonTuiSession<
         sessionId,
       } satisfies WorkspaceEditorPredictionFeedbackParams),
     subscribeToEvents: (cb) => {
-      // Late registrants get the backlog first (see receivedEvents above) —
-      // without this, a subscriber mounting after the daemon's one-shot RPC
-      // replay permanently misses every event that preceded it.
-      for (const event of receivedEvents) {
-        cb(event);
+      const unsubscribe = eventReplay.subscribe(cb);
+      try {
+        ensureDaemonEventsSubscribed();
+      } catch (error) {
+        unsubscribe();
+        maybeStopDaemonEvents();
+        throw error;
       }
-      eventSubscribers.add(cb);
-      ensureDaemonEventsSubscribed();
       return () => {
-        eventSubscribers.delete(cb);
+        unsubscribe();
         maybeStopDaemonEvents();
       };
     },
