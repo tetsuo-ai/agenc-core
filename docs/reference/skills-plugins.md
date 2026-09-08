@@ -569,6 +569,10 @@ HTTP(S) tarball and remote mcpb installs fetch through
 | Redirects | Manual follow of 301 / 302 / 303 / 307 / 308, at most 5 hops |
 | Redirect URL | Same `origin` as the previous hop; `http:` / `https:` only; userinfo forbidden |
 
+These defaults come from `PLUGIN_ARCHIVE_FETCH_POLICY` in the plugin resolver.
+Resolver options can override `downloadTimeoutMs` and `maxDownloadBytes`.
+Redirect limits, protocols, origin checks, and credential rules are fixed.
+
 A cross-origin `Location` fails with
 `plugin archive redirects must stay on <origin>: <redacted-url>` and is not
 fetched. Extraction quotas (depth 32, 4096 files, 200 MiB) stay in

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  PLUGIN_ARCHIVE_FETCH_POLICY,
   classifyPluginSource,
   pluginInstallSourceNeedsRedaction,
   pluginSourceNeedsRedaction,
@@ -21,6 +22,13 @@ const PLUGIN_REFERENCE = resolve(
 );
 
 describe("plugin source documentation contract", () => {
+  test("normalizes equivalent time and byte units in the policy table", async () => {
+    const section = markdownSection(await readFile(PLUGIN_REFERENCE, "utf8"), "Remote archive fetch and recorded sources")
+      .replace(/\| Download timeout \|[^|]+\|/u, `| Download timeout | ${PLUGIN_ARCHIVE_FETCH_POLICY.downloadTimeoutMs} ms |`)
+      .replace(/\| Download size \|[^|]+\|/u, `| Download size | ${PLUGIN_ARCHIVE_FETCH_POLICY.maxDownloadBytes} B |`);
+    expect(parseArchiveFetchPolicyTable(section)).toEqual(PLUGIN_ARCHIVE_FETCH_POLICY);
+  });
+
   test("keeps local and npm examples in their matching shell fences", async () => {
     const markdown = await readFile(PLUGIN_REFERENCE, "utf8");
     const installSources = markdownSection(markdown, "Install sources");
@@ -90,9 +98,7 @@ describe("plugin source documentation contract", () => {
       "has no recorded source; rerun with --source <source>",
     );
     expect(section).toContain("sourceRedacted");
-    expect(section).toContain("50 MiB");
-    expect(section).toMatch(/at most 5 hops/u);
-    expect(section).toContain("120 s");
+    expect(parseArchiveFetchPolicyTable(section)).toEqual(PLUGIN_ARCHIVE_FETCH_POLICY);
 
     expect(bashSources).toEqual([
       "'https://github.com/acme/tool.mcpb?download=1'",
@@ -205,6 +211,48 @@ function markdownSection(markdown: string, title: string): string {
     .slice(headingIndex + 1)
     .find((match) => match[1]!.length <= headingLevel);
   return markdown.slice(sectionStart, nextHeading?.index ?? markdown.length);
+}
+
+function policyQuantity(value: string, units: Readonly<Record<string, number>>): number {
+  const match = /^(\d+(?:\.\d+)?)\s+([A-Za-z]+)(?:\s+\(.*\))?$/u.exec(value);
+  const multiplier = match === null ? undefined : units[match[2]!];
+  if (match === null || multiplier === undefined) throw new Error(`invalid policy quantity ${value}`);
+  const quantity = Number(match[1]) * multiplier;
+  if (!Number.isSafeInteger(quantity)) throw new Error(`invalid policy quantity ${value}`);
+  return quantity;
+}
+
+function policyBoolean(value: string, enabled: string, disabled: string): boolean {
+  if (value === enabled) return true;
+  if (value === disabled) return false;
+  throw new Error(`invalid policy rule ${value}`);
+}
+
+function parseArchiveFetchPolicyTable(section: string) {
+  const cells = section.split(/\r?\n/u)
+    .filter((line) => line.startsWith("|"))
+    .map((line) => line.slice(1, -1).split("|").map((cell) => cell.trim()));
+  expect(cells.slice(0, 2)).toEqual([["Constraint", "Default"], ["---", "---"]]);
+  expect(cells).toHaveLength(6);
+  const rows = new Map(cells.slice(2).map(([label, value]) => [label, value]));
+  expect(rows.size).toBe(4);
+  const redirects = /^Manual follow of (\d+(?:\s*\/\s*\d+)*), at most (\d+) hops$/u.exec(rows.get("Redirects") ?? "");
+  if (redirects === null) throw new Error("invalid redirect policy row");
+  const redirectRules = (rows.get("Redirect URL") ?? "").split(";").map((rule) => rule.trim());
+  expect(redirectRules).toHaveLength(3);
+  const protocolRule = redirectRules[1]!;
+  expect(protocolRule.endsWith(" only")).toBe(true);
+  const protocols = protocolRule.slice(0, -" only".length).replaceAll("`", "").split(/\s*\/\s*/u);
+  expect(protocols.every((protocol) => /^[a-z][a-z0-9+.-]*:$/u.test(protocol))).toBe(true);
+  return {
+    downloadTimeoutMs: policyQuantity(rows.get("Download timeout") ?? "", { ms: 1, s: 1000 }),
+    maxDownloadBytes: policyQuantity(rows.get("Download size") ?? "", { B: 1, KiB: 1024, MiB: 1024 * 1024 }),
+    maxRedirectHops: Number(redirects[2]),
+    redirectStatuses: redirects[1]!.split(/\s*\/\s*/u).map(Number),
+    allowedRedirectProtocols: protocols,
+    requireSameOrigin: policyBoolean(redirectRules[0]!, "Same `origin` as the previous hop", "Cross-origin allowed"),
+    allowUrlCredentials: policyBoolean(redirectRules[2]!, "userinfo allowed", "userinfo forbidden"),
+  };
 }
 
 function parseMarkdownFences(markdown: string): readonly MarkdownFence[] {

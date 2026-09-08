@@ -146,13 +146,19 @@ const MAX_PUBLISHER_PUBLIC_KEYS = 16;
 
 const DEFAULT_PROCESS_TIMEOUT_MS = 120_000;
 const DEFAULT_PROCESS_MAX_OUTPUT_BYTES = 1_048_576;
-const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+export const PLUGIN_ARCHIVE_FETCH_POLICY = Object.freeze({
+  downloadTimeoutMs: 120_000,
+  maxDownloadBytes: 50 * 1024 * 1024,
+  maxRedirectHops: 5,
+  redirectStatuses: Object.freeze([301, 302, 303, 307, 308] as const),
+  allowedRedirectProtocols: Object.freeze(["http:", "https:"] as const),
+  requireSameOrigin: true,
+  allowUrlCredentials: false,
+});
 const DEFAULT_MAX_EXTRACTED_BYTES = 200 * 1024 * 1024;
 const DEFAULT_MAX_EXTRACTED_FILES = 4096;
 const DEFAULT_MAX_EXTRACT_DEPTH = 32;
 const DEFAULT_CACHE_LOCK_TIMEOUT_MS = 60_000;
-const DEFAULT_MAX_ARCHIVE_REDIRECTS = 5;
 const PLUGIN_INSTALL_METADATA_RELATIVE_PATH = ".agenc-plugin/agenc-install.json";
 const KNOWN_GIT_HOSTS = new Set([
   "github.com",
@@ -1374,7 +1380,7 @@ async function fetchBytes(
   source: string,
   options: PluginResolverOptions,
 ): Promise<Uint8Array> {
-  const maxBytes = options.maxDownloadBytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
+  const maxBytes = options.maxDownloadBytes ?? PLUGIN_ARCHIVE_FETCH_POLICY.maxDownloadBytes;
   try {
     if (options.fetchBytes) {
       const data = await options.fetchBytes(source);
@@ -1395,7 +1401,7 @@ async function fetchBytesWithRedirectPolicy(
   maxBytes: number,
 ): Promise<Uint8Array> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), options.downloadTimeoutMs ?? PLUGIN_ARCHIVE_FETCH_POLICY.downloadTimeoutMs);
   timeout.unref();
   try {
     let current = new URL(source);
@@ -1405,8 +1411,8 @@ async function fetchBytesWithRedirectPolicy(
         redirect: "manual",
       });
       if (isRedirectStatus(response.status)) {
-        if (redirects >= DEFAULT_MAX_ARCHIVE_REDIRECTS) {
-          throw new Error(`plugin archive redirect limit exceeded: ${DEFAULT_MAX_ARCHIVE_REDIRECTS}`);
+        if (redirects >= PLUGIN_ARCHIVE_FETCH_POLICY.maxRedirectHops) {
+          throw new Error(`plugin archive redirect limit exceeded: ${PLUGIN_ARCHIVE_FETCH_POLICY.maxRedirectHops}`);
         }
         current = nextPluginArchiveRedirectUrl(current, response);
         continue;
@@ -1451,20 +1457,20 @@ async function fetchBytesWithRedirectPolicy(
 }
 
 function isRedirectStatus(status: number): boolean {
-  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+  return PLUGIN_ARCHIVE_FETCH_POLICY.redirectStatuses.some((allowed) => status === allowed);
 }
 
 function nextPluginArchiveRedirectUrl(current: URL, response: Response): URL {
   const location = response.headers.get("location");
   if (!location) throw new Error("plugin archive redirect is missing a location header");
   const next = new URL(location, current);
-  if (!["http:", "https:"].includes(next.protocol)) {
+  if (!PLUGIN_ARCHIVE_FETCH_POLICY.allowedRedirectProtocols.some((protocol) => next.protocol === protocol)) {
     throw new Error(`plugin archive redirect uses an unsupported protocol: ${next.protocol}`);
   }
-  if (next.username || next.password) {
+  if (!PLUGIN_ARCHIVE_FETCH_POLICY.allowUrlCredentials && (next.username || next.password)) {
     throw new Error("plugin archive redirects with URL credentials are not allowed");
   }
-  if (next.origin !== current.origin) {
+  if (PLUGIN_ARCHIVE_FETCH_POLICY.requireSameOrigin && next.origin !== current.origin) {
     throw new Error(
       `plugin archive redirects must stay on ${current.origin}: ${redactPluginSource(next.toString())}`,
     );
