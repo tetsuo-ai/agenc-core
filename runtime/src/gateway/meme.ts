@@ -6,13 +6,7 @@
  * agent so media credits are not spent by surprise.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
+import { reserveDailyMediaQuota } from "./media-quota.js";
 import type { ChannelReplyOptions } from "./types.js";
 
 export type GatewayMemeReplyOptions = ChannelReplyOptions;
@@ -37,11 +31,6 @@ export interface XaiMemeFeatureOptions {
 interface XaiImageGenerationResponse {
   readonly data?: readonly { readonly url?: string }[];
   readonly error?: { readonly message?: string };
-}
-
-interface MemeUsageState {
-  readonly day: string;
-  readonly count: number;
 }
 
 export function parseMemePrompt(text: string): string | null {
@@ -76,28 +65,6 @@ function cleanNaturalMediaPrompt(prompt: string): string {
     .replace(/\s+/g, " ")
     .replace(/^[\s:,-]+/u, "")
     .trim();
-}
-
-function readUsage(path: string, day: string): MemeUsageState {
-  if (!existsSync(path)) return { day, count: 0 };
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<MemeUsageState>;
-    if (raw.day === day && typeof raw.count === "number" && raw.count >= 0) {
-      return { day, count: Math.floor(raw.count) };
-    }
-  } catch {
-    // Corrupt usage file resets only the soft daily cap, not any xAI-side cap.
-  }
-  return { day, count: 0 };
-}
-
-function writeUsage(path: string, usage: MemeUsageState): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(usage, null, 2)}\n`, { mode: 0o600 });
-}
-
-function today(now: number): string {
-  return new Date(now).toISOString().slice(0, 10);
 }
 
 function trimPrompt(prompt: string): string {
@@ -136,9 +103,12 @@ export class XaiMemeFeature implements GatewayMemeFeature {
       return true;
     }
 
-    const day = today(this.#now());
-    const usage = readUsage(this.#usageFile, day);
-    if (usage.count >= this.#dailyLimit) {
+    const reserved = await reserveDailyMediaQuota({
+      usageFile: this.#usageFile,
+      dailyLimit: this.#dailyLimit,
+      now: this.#now,
+    });
+    if (!reserved) {
       await input.reply("Meme cap hit for today. The image wallet is not an infinite buffet.");
       return true;
     }
@@ -146,7 +116,6 @@ export class XaiMemeFeature implements GatewayMemeFeature {
     await input.reply("Building the image. Keep your tabs on.");
     try {
       const imageUrl = await this.#generate(prompt);
-      writeUsage(this.#usageFile, { day, count: usage.count + 1 });
       const caption = `AgenC image: ${prompt}`.slice(0, 1024);
       await input.reply(caption, { photoUrl: imageUrl, caption });
     } catch (error) {

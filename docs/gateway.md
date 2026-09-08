@@ -350,6 +350,32 @@ Use the coding-agent `ImagineImage` / `ImagineVideo` tools in a grok session
 instead ([imagine.md](imagine.md)). Helius on-chain reads still install when
 configured.
 
+#### Quotas for directly constructed media helpers
+
+Embedders that construct `XaiMemeFeature` or `XaiVoiceFeature` directly use a
+durable reservation ledger at `usageFile`. A slot is committed before the
+initial progress reply and provider call. Instances and processes using the
+same ledger share its limit, including image and voice helpers configured
+with the same path. Independent ledgers retain independent limits.
+
+The ledger keeps the existing `{day, count}` format. The UTC day is sampled
+under the runtime's Node.js SQLite lock, and publication uses a synced
+temporary file, atomic rename, and directory sync. Clock rollback does not
+reopen an earlier day's quota. Invalid limits and malformed or inaccessible
+ledgers block provider calls rather than resetting the count.
+
+Empty or unrecognized requests do not reserve quota. Once committed, a slot
+is never refunded, including after provider errors, timeouts, invalid media,
+reply failures, or a process crash. A crash before provider entry can consume
+an unused slot. Keeping that reservation prevents an uncertain paid outcome
+from being counted as free. A provider finishing after midnight cannot
+overwrite the new day's usage.
+
+Stop older gateway processes before adopting this reservation protocol;
+older writers do not take the quota lock. Existing counts are preserved,
+but historical undercounts cannot be reconstructed from this ledger. This
+change does not install media routes in `startGateway`.
+
 ### Read-only Solana (Helius)
 
 ```bash

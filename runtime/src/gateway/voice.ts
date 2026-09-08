@@ -7,9 +7,7 @@
  * surprise.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-
+import { reserveDailyMediaQuota } from "./media-quota.js";
 import type { ChannelReplyOptions } from "./types.js";
 
 export interface GatewayVoiceFeature {
@@ -36,11 +34,6 @@ export interface ParsedVoicePrompt {
   readonly text: string;
   readonly voiceId: string;
   readonly song: boolean;
-}
-
-interface VoiceUsageState {
-  readonly day: string;
-  readonly count: number;
 }
 
 interface VoiceConfig {
@@ -250,28 +243,6 @@ function normalizeVoiceText(prompt: string): string {
   return prompt.replace(/\s+/g, " ").trim().slice(0, 1_500);
 }
 
-function readUsage(path: string, day: string): VoiceUsageState {
-  if (!existsSync(path)) return { day, count: 0 };
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<VoiceUsageState>;
-    if (raw.day === day && typeof raw.count === "number" && raw.count >= 0) {
-      return { day, count: Math.floor(raw.count) };
-    }
-  } catch {
-    // Corrupt usage file resets only the soft daily cap, not any xAI-side cap.
-  }
-  return { day, count: 0 };
-}
-
-function writeUsage(path: string, usage: VoiceUsageState): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(usage, null, 2)}\n`, { mode: 0o600 });
-}
-
-function today(now: number): string {
-  return new Date(now).toISOString().slice(0, 10);
-}
-
 export class XaiVoiceFeature implements GatewayVoiceFeature {
   readonly #apiKey: string;
   readonly #usageFile: string;
@@ -314,9 +285,12 @@ export class XaiVoiceFeature implements GatewayVoiceFeature {
       return true;
     }
 
-    const day = today(this.#now());
-    const usage = readUsage(this.#usageFile, day);
-    if (usage.count >= this.#dailyLimit) {
+    const reserved = await reserveDailyMediaQuota({
+      usageFile: this.#usageFile,
+      dailyLimit: this.#dailyLimit,
+      now: this.#now,
+    });
+    if (!reserved) {
       await input.reply("Daily voice limit reached. Try again later.");
       return true;
     }
@@ -327,7 +301,6 @@ export class XaiVoiceFeature implements GatewayVoiceFeature {
         text: parsed.song ? wrapSinging(prompt) : prompt,
         voiceId: parsed.voiceId,
       });
-      writeUsage(this.#usageFile, { day, count: usage.count + 1 });
       const title = parsed.song ? "AgenC short song" : "AgenC voice";
       await input.reply(title, {
         audioBytes: audio.bytes,
