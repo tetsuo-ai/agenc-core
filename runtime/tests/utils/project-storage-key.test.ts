@@ -114,6 +114,16 @@ describe('versioned project keys under Node and Bun', () => {
     expect(() => projectStorageKey('relative', foreignPlatform)).toThrow('Foreign project paths must be absolute')
   })
 
+  test('explicit platform mode is lexical even when it matches the host', () => {
+    const target = join(root, 'target')
+    const alias = join(root, 'alias')
+    mkdirSync(target)
+    symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    const platform = process.platform === 'win32' ? 'win32' : 'posix'
+    expect(projectStorageKey(alias)).toBe(projectStorageKey(target))
+    expect(projectStorageKey(alias, platform)).not.toBe(projectStorageKey(target, platform))
+  })
+
   test('does not interpret native POSIX backslashes as Windows separators', () => {
     const first = '/workspace/C:\\work\\repo'
     const second = '/workspace/C:/work/repo'

@@ -26,9 +26,11 @@ not share retained context. Native Windows paths use Windows path rules.
 Drive letters and slash variants in drive-absolute Windows paths normalize
 consistently. Runtime callers always use native path rules: backslashes in a
 POSIX filename remain literal characters. The helper also accepts an explicit
-path platform for portable callers and contract tests; foreign absolute paths
-are normalized lexically without filesystem probes. Node and Bun use the same
-digest algorithm and key format.
+path platform for portable callers and contract tests. Explicit-platform mode
+requires absolute paths and normalizes them lexically without filesystem
+probes, even when the selected platform matches the host. Runtime storage
+callers omit that option so existing filesystem aliases share an identity.
+Node and Bun use the same digest algorithm and key format.
 
 ## Existing data and upgrades
 

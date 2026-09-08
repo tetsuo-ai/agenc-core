@@ -76,7 +76,7 @@ function canonicalPosixParentTraversal(projectPath: string): string {
 
 export function canonicalProjectPath(
   projectPath: string,
-  platform: ProjectPathPlatform = nativePlatform,
+  platform?: ProjectPathPlatform,
 ): string {
   if (
     !projectPath ||
@@ -85,21 +85,21 @@ export function canonicalProjectPath(
   ) {
     throw new Error('Project path must be nonempty, well-formed text without NUL')
   }
-  if (platform !== nativePlatform) {
+  if (platform !== undefined) {
     return canonicalForeignProjectPath(projectPath, platform)
   }
-  return platform === 'posix' && projectPath.split('/').includes('..')
+  return nativePlatform === 'posix' && projectPath.split('/').includes('..')
     ? canonicalPosixParentTraversal(projectPath)
     : canonicalNativeProjectPath(projectPath)
 }
 
 export function projectStorageKey(
   projectPath: string,
-  platform: ProjectPathPlatform = nativePlatform,
+  platform?: ProjectPathPlatform,
 ): string {
   const canonical = canonicalProjectPath(projectPath, platform)
   const digest = createHash('sha256')
-    .update(`${platform}\0${canonical}`)
+    .update(`${platform ?? nativePlatform}\0${canonical}`)
     .digest('hex')
   const prefix = canonical.replace(/[^a-zA-Z0-9_-]/gu, '-').slice(0, 64)
   return `v2-${prefix}-${digest}`
