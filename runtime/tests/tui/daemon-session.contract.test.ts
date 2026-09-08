@@ -3433,6 +3433,7 @@ describe("AgenC TUI daemon session adapter", () => {
             },
           ],
           metadata: { displayUserMessage: null },
+          clientMessageId: expect.any(String),
           streamId: expect.stringMatching(/^tui_1:/),
         },
       },

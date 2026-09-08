@@ -4109,6 +4109,96 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test.each(["inspect selection", "/reviewer audit this", "$reviewer audit this"])("retries the restored %s submission with its original identity and inputs", async (input) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const getPromptForCommand = vi.fn(async () => [{ type: "text", text: `expanded prompt ${getPromptForCommand.mock.calls.length}` }]);
+    mockTuiCommandList.push({ name: "reviewer", type: "prompt", loadedFrom: "skills", progressMessage: "Loading reviewer", contentLength: 1, getPromptForCommand });
+    const subscribers = new Set<(event: unknown) => void>();
+    const session = {
+      ...createSession(),
+      enqueueIdleInputBatchOwned: vi.fn(() => ({ token: "retry-owned", firstSequence: 1, lastSequence: 1, count: 1 })),
+      rollbackIdleInputAdmission: vi.fn(() => true),
+      commitIdleInputAdmission: vi.fn(() => true),
+      submit: vi.fn(async (_message: string, options?: { readonly clientMessageId?: string }) => {
+        if (session.submit.mock.calls.length === 1) throw new Error("response dropped after admission");
+        for (const subscriber of subscribers) subscriber({ type: "turn_complete", clientMessageId: options?.clientMessageId, payload: { turnId: `turn-${session.submit.mock.calls.length}`, lastAgentMessage: "Done" } });
+      }),
+      subscribeToEvents: (subscriber: (event: unknown) => void) => {
+        subscribers.add(subscriber);
+        return () => { subscribers.delete(subscriber); };
+      },
+    } satisfies AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    const acknowledge = vi.fn();
+    const pastedContents = { 0: { id: 0, type: "text", content: "owned context" } };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      const initial = providerProbe.promptProps.at(-1)!;
+      (initial.onInputChange as (value: string) => void)(input);
+      (initial.setPastedContents as (value: unknown) => void)(pastedContents);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.input).toBe(input));
+      const submitCurrent = () => (providerProbe.promptProps.at(-1)!.onSubmit as (
+        value: string, helpers: typeof helpers, speculation: undefined, options: { readonly onWorkbenchAttachmentsAdmitted: () => void },
+      ) => Promise<void>)(input, helpers, undefined, { onWorkbenchAttachmentsAdmitted: acknowledge });
+      await submitCurrent();
+      await new Promise(resolve => setTimeout(resolve, 25));
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input, isLoading: false }));
+      const original = session.submit.mock.calls[0]!;
+      const originalInputs = session.enqueueIdleInputBatchOwned.mock.calls[0];
+      expect(original[1]?.clientMessageId).toEqual(expect.any(String));
+      await submitCurrent();
+      expect(session.submit.mock.calls[1]).toEqual(original);
+      expect(session.enqueueIdleInputBatchOwned.mock.calls[1]).toEqual(originalInputs);
+      expect(session.commitIdleInputAdmission).toHaveBeenCalledOnce();
+      expect(acknowledge).toHaveBeenCalledOnce();
+      expect(getPromptForCommand).toHaveBeenCalledTimes(input.startsWith("inspect") ? 0 : 1);
+      await new Promise(resolve => setTimeout(resolve, 25));
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(false));
+      (providerProbe.promptProps.at(-1)!.onInputChange as (value: string) => void)(input);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.input).toBe(input));
+      await submitCurrent();
+      expect(session.submit.mock.calls[2]?.[1]?.clientMessageId).not.toBe(original[1]?.clientMessageId);
+    });
+  });
+
+  test("keeps a newer submission busy and preserves its retry identity when an old response fails late", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const first = Promise.withResolvers<void>();
+    const second = Promise.withResolvers<void>();
+    const subscribers = new Set<(event: unknown) => void>();
+    const session = {
+      ...createSession(),
+      submit: vi.fn((_message: string, _options?: { readonly clientMessageId?: string }) => session.submit.mock.calls.length === 1 ? first.promise : second.promise),
+      subscribeToEvents: (subscriber: (event: unknown) => void) => { subscribers.add(subscriber); return () => { subscribers.delete(subscriber); }; },
+    } satisfies AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      const send = (value: string) => (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, helpers: typeof helpers) => Promise<void>)(value, helpers);
+      const firstAttempt = send("first prompt");
+      await vi.waitFor(() => expect(session.submit).toHaveBeenCalledOnce());
+      const firstId = session.submit.mock.calls[0]?.[1]?.clientMessageId;
+      for (const subscriber of subscribers) subscriber({ type: "turn_started", clientMessageId: firstId, payload: { turnId: "first-turn" } });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      for (const subscriber of subscribers) subscriber({ type: "turn_complete", clientMessageId: firstId, payload: { turnId: "first-turn", lastAgentMessage: "Done" } });
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(false));
+      const secondAttempt = send("second prompt");
+      await vi.waitFor(() => expect(session.submit).toHaveBeenCalledTimes(2));
+      await new Promise(resolve => setTimeout(resolve, 25));
+      first.reject(new Error("old response dropped"));
+      await firstAttempt;
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "", isLoading: true });
+      second.reject(new Error("new response dropped"));
+      await secondAttempt;
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "second prompt", isLoading: false }));
+      session.submit.mockResolvedValueOnce();
+      await send("second prompt");
+      expect(session.submit.mock.calls[2]).toEqual(session.submit.mock.calls[1]);
+      expect(session.submit.mock.calls[1]?.[1]?.clientMessageId).not.toBe(firstId);
+    });
+  });
+
   test("rolls back an owned attachment when model submission rejects", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const { applyWorkbenchCommand } = await import("../workbench/state.js");
@@ -4747,6 +4837,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
               { workspaceView: "agent" },
             );
             expect(session.submit).toHaveBeenCalledWith("", {
+              clientMessageId: expect.any(String),
               displayUserMessage: input,
             });
           }
@@ -4950,6 +5041,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         }),
       );
       expect(session.submit).toHaveBeenCalledWith("", {
+        clientMessageId: expect.any(String),
         displayUserMessage: "$reviewer audit this",
       });
     } finally {
@@ -5096,6 +5188,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
 
         expect(session.submit).toHaveBeenCalledWith("inspect the project", {
+          clientMessageId: expect.any(String),
           displayUserMessage: "inspect the project",
         });
         expect(acknowledgeWorkbenchAttachments).not.toHaveBeenCalled();
@@ -5180,6 +5273,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           expect(rejectSubmit).toBeDefined();
         });
 
+        for (const subscriber of subscribers) {
+          subscriber({ type: "turn_started", clientMessageId: "unrelated-submission", payload: { turnId: "unrelated-turn" } });
+        }
+        expect(acknowledgeWorkbenchAttachments).not.toHaveBeenCalled();
         for (const subscriber of subscribers) {
           subscriber({
             type: "turn_started",
@@ -6353,6 +6450,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
         expect(submit).toHaveBeenCalledTimes(1);
         expect(submit).toHaveBeenCalledWith("ordinary message", {
+          clientMessageId: expect.any(String),
           displayUserMessage: "ordinary message",
         });
       },
@@ -6964,6 +7062,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           1,
           "Fix the selected value.",
           expect.objectContaining({
+            clientMessageId: expect.any(String),
             displayUserMessage: "Fix the selected value.",
             editorInteraction: expect.objectContaining({
               kind: "fix",
@@ -7023,6 +7122,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         await staleEditorRenderSubmit!("Inspect the repository.", helpers);
 
         expect(submit).toHaveBeenCalledWith("Inspect the repository.", {
+          clientMessageId: expect.any(String),
           displayUserMessage: "Inspect the repository.",
         });
       },
@@ -7103,6 +7203,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           { workspaceView: "agent" },
         );
         expect(session.submit).toHaveBeenCalledWith("inspect this attachment", {
+          clientMessageId: expect.any(String),
           displayUserMessage: "inspect this attachment",
         });
       },
@@ -7237,6 +7338,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             expect(submit).toHaveBeenCalledWith(
               `queued from ${scenario.queuedView}`,
               {
+                clientMessageId: expect.any(String),
                 displayUserMessage: `queued from ${scenario.queuedView}`,
                 ...(scenario.queuedInteraction !== undefined
                   ? { editorInteraction: scenario.queuedInteraction }
@@ -7568,6 +7670,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           expect(submit).toHaveBeenCalledWith(
             expect.any(String),
             expect.objectContaining({
+              clientMessageId: expect.any(String),
               displayUserMessage: "Explain the delayed selection.",
               editorInteraction: expect.objectContaining({
                 kind: "ask",

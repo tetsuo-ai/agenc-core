@@ -26,6 +26,8 @@ import {
   managedTokenUsage,
 } from "./background-agent-runner.js";
 import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
+import { createDaemonTuiSessionFixture } from "../helpers/daemon-tui-session.js";
+import type { AgenCDaemonTuiClient } from "../../src/tui/daemon-session.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
@@ -9035,6 +9037,121 @@ describe("AgenC delegate background-agent runner", () => {
       }
     },
   );
+
+  it("[managed-thread] recovers a TUI response dropped after execution without resubmitting owned input", async () => {
+    const agentId = "session-tui-retry";
+    const sessionId = "session-tui-retry-client";
+    const { runner, control, stub } = makeTopLevelRunner({ conversationId: agentId });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    const connection = dispatcher.createConnection();
+    const requests: JsonObject[] = [];
+    let dropResponse = true;
+    let requestSequence = 0;
+    const client = {
+      request: async (method: string, params: JsonObject) => {
+        expect(method).toBe("message.stream");
+        requests.push(params);
+        const response = await connection.dispatch({ jsonrpc: "2.0", id: ++requestSequence, method, params });
+        expect(response).not.toHaveProperty("error");
+        if (dropResponse) {
+          dropResponse = false;
+          throw new Error("response socket closed after execution");
+        }
+        return response.result;
+      },
+      subscribeToSessionEvents: () => () => {},
+    } as unknown as AgenCDaemonTuiClient;
+    try {
+      const started = await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+      await sessions.restoreSession({ sessionId, agentId, status: "waiting", createdAt: started.startedAt });
+      await manager.restoreAgent({ agentId, objective: "passive", startedAt: started.startedAt, lastActiveAt: started.startedAt, sessionIds: [sessionId], runtimeAvailable: true });
+      expect(await connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.2.0" } } })).toHaveProperty("result");
+      const adapter = createDaemonTuiSessionFixture({ baseSession: { conversationId: sessionId }, client, sessionId, clientId: "tui-retry-client" });
+      const events: unknown[] = [];
+      const unsubscribe = adapter.subscribeToEvents(event => events.push(event));
+      const admission = adapter.enqueueIdleInputBatchOwned!([{ role: "user", content: "owned attachment" }], { workspaceView: "agent" });
+      const options = { clientMessageId: "tui-logical-submission", displayUserMessage: "inspect attachment" };
+      await expect(adapter.submit("inspect attachment", options)).rejects.toThrow("response socket closed");
+      expect(stub.thread.submit).toHaveBeenCalledOnce();
+      await expect(adapter.submit("inspect attachment", options)).resolves.toBeUndefined();
+      expect(stub.thread.submit).toHaveBeenCalledOnce();
+      expect(requests.map(request => request.clientMessageId)).toEqual([options.clientMessageId, options.clientMessageId]);
+      expect(requests[0]?.streamId).not.toBe(requests[1]?.streamId);
+      expect(requests[1]?.content).toEqual(requests[0]?.content);
+      expect(adapter.rollbackIdleInputAdmission!(admission.token)).toBe(false);
+      expect(adapter.activeTurn.unsafePeek()).toBeNull();
+      expect(events).toContainEqual(expect.objectContaining({ type: "message_submission_recovered", payload: expect.objectContaining({ clientMessageId: options.clientMessageId, code: 0 }) }));
+      await adapter.submit("a different prompt");
+      await adapter.submit("a different prompt");
+      expect(control.sendInput).toHaveBeenCalledTimes(2);
+      expect(new Set(requests.slice(2).map(request => request.clientMessageId)).size).toBe(2);
+      expect(requests.slice(2).map(request => request.content)).toEqual(["a different prompt", "a different prompt"]);
+      unsubscribe();
+    } finally {
+      await connection.close();
+      await dispatcher.close();
+      await runner.stopAgent(agentId, "test_cleanup");
+    }
+  });
+
+  it.each(["incomplete", 0, 1, 130] as const)("[managed-thread] preserves the persisted TUI retry outcome %s and an unrelated active turn", async outcome => {
+    const agentId = `session-tui-persisted-${outcome}`;
+    const sessionId = `${agentId}-client`;
+    const clientMessageId = "persisted-tui-message";
+    const event = (sequence: number, msg: JsonObject) => ({ type: "event_msg", payload: { id: `event-${sequence}`, eventId: `event-${sequence}`, seq: sequence, msg } });
+    const terminal = outcome === 0
+      ? { type: "turn_complete", payload: { turnId: "persisted-turn", lastAgentMessage: "saved answer" } }
+      : outcome === 130
+        ? { type: "turn_aborted", payload: { turnId: "persisted-turn", reason: "user_cancelled" } }
+        : { type: "turn_failed", payload: { turnId: "persisted-turn", code: "provider_error", message: "saved failure" } };
+    const { runner, control, stub } = makeTopLevelRunner({ conversationId: agentId, rolloutItems: [
+      event(1, { type: "user_message", payload: { message: "retry me", messageId: clientMessageId, acceptedAt: "2026-09-08T00:00:00.000Z" } }),
+      event(2, { type: "turn_started", payload: { turnId: "persisted-turn" } }),
+      ...(outcome === "incomplete" ? [] : [event(3, terminal)]),
+    ] });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    const connection = dispatcher.createConnection();
+    let emit: ((event: JsonObject) => void) | undefined;
+    const client = {
+      request: async (method: string, params: JsonObject) => {
+        const response = await connection.dispatch({ jsonrpc: "2.0", id: "retry", method, params });
+        expect(response).not.toHaveProperty("error");
+        return response.result;
+      },
+      subscribeToSessionEvents: (_sessionId: string, callback: (event: JsonObject) => void) => { emit = callback; return () => {}; },
+    } as unknown as AgenCDaemonTuiClient;
+    try {
+      const started = await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+      await sessions.restoreSession({ sessionId, agentId, status: "waiting", createdAt: started.startedAt });
+      await manager.restoreAgent({ agentId, objective: "passive", startedAt: started.startedAt, lastActiveAt: started.startedAt, sessionIds: [sessionId], runtimeAvailable: true });
+      await connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.2.0" } } });
+      const adapter = createDaemonTuiSessionFixture({ baseSession: { conversationId: sessionId }, client, sessionId, clientId: "persisted-tui" });
+      const events: unknown[] = [];
+      const unsubscribe = adapter.subscribeToEvents(event => events.push(event));
+      emit!({ type: "turn_started", payload: { turnId: "unrelated-turn" } });
+      if (outcome === "incomplete") {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await expect(adapter.submit("retry me", { clientMessageId })).rejects.toThrow("already admitted, but its terminal outcome is unknown");
+        }
+        expect(events).not.toContainEqual(expect.objectContaining({ type: "message_submission_recovered" }));
+      } else {
+        await expect(adapter.submit("retry me", { clientMessageId })).resolves.toBeUndefined();
+        expect(events).toContainEqual(expect.objectContaining({ type: "message_submission_recovered", payload: expect.objectContaining({ clientMessageId, turnId: "persisted-turn", code: outcome }) }));
+      }
+      expect(adapter.activeTurn.unsafePeek()).toEqual({ turnId: "unrelated-turn" });
+      expect(control.sendInput).not.toHaveBeenCalled();
+      expect(stub.thread.submit).not.toHaveBeenCalled();
+      unsubscribe();
+    } finally {
+      await connection.close();
+      await dispatcher.close();
+      await runner.stopAgent(agentId, "test_cleanup");
+    }
+  });
 
   it("[managed-thread] joins a concurrent idempotent retry and rejects conflicting content", async () => {
     const { runner, control } = makeTopLevelRunner({

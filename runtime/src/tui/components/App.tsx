@@ -1,4 +1,5 @@
 import { logForDebugging } from "src/utils/debug.js";
+import { isRecord } from "../../utils/record.js";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { c as _c } from "react-compiler-runtime";
@@ -232,7 +233,10 @@ import type {
   QueuedCommandOwner,
   VimMode,
 } from "../../types/textInputTypes.js";
-import type { SessionEditorInteraction } from "../../session/autonomous-mode.js";
+import type {
+  SessionEditorInteraction,
+  SessionSubmitOptions,
+} from "../../session/autonomous-mode.js";
 import {
   validateEditorProposalPayload,
   type EditorProposalPayload,
@@ -338,13 +342,32 @@ type LiveSubmitOptions = {
 };
 
 type PendingWorkbenchAttachmentAdmission = {
+  readonly clientMessageId: string;
   readonly acknowledge: () => void;
 };
 
-function sessionEventStartsTurn(event: unknown): boolean {
+type ComposerSubmission = {
+  readonly clientMessageId: string;
+  readonly draftRestoreValue: string;
+  readonly pastedContents: Record<number, any>;
+  readonly attachmentIds: readonly string[];
+  readonly acknowledge: () => void;
+  value: string;
+  options: SessionSubmitOptions;
+  inputs: readonly LLMMessage[];
+  ready: boolean;
+};
+
+function sessionEventStartsTurn(
+  event: unknown,
+  clientMessageId?: string,
+  requireIdentity = false,
+): boolean {
   if (typeof event !== "object" || event === null) return false;
   const record = event as {
     readonly type?: unknown;
+    readonly clientMessageId?: unknown;
+    readonly payload?: { readonly clientMessageId?: unknown };
     readonly msg?: { readonly type?: unknown };
   };
   const type =
@@ -353,7 +376,15 @@ function sessionEventStartsTurn(event: unknown): boolean {
       : typeof record.msg?.type === "string"
         ? record.msg.type
         : null;
-  return type === "turn_start" || type === "turn_started";
+  const observedIdentity =
+    record.clientMessageId ?? record.payload?.clientMessageId;
+  return (
+    (type === "turn_start" || type === "turn_started" ||
+      type === "turn_complete" || type === "message_submission_recovered" ||
+      (type === "user_message" && observedIdentity !== undefined)) &&
+    ((observedIdentity === undefined && !requireIdentity) ||
+      observedIdentity === clientMessageId)
+  );
 }
 
 type TuiWorkspaceEditorAuthorityState =
@@ -2685,6 +2716,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // (catch wrapper for #61). Local slash commands skip this state so
   // immediate command errors don't flash a model-request spinner.
   const [pendingSubmission, setPendingSubmission] = useState(false);
+  const pendingSubmissionIdRef = useRef<string | null>(null);
+  const latestSubmissionIdsRef = useRef<
+    Record<"agent" | "editor", string | null>
+  >({ agent: null, editor: null });
+  const activeModelSubmissionTokensRef = useRef(new Set<symbol>());
   // `pendingSubmission` can clear as soon as the daemon acknowledges the
   // request. Keep a separate count for the actual submit promises so the
   // prompt remains busy/cancellable while message.stream is still running.
@@ -2701,6 +2737,19 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [],
   );
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
+  const retrySubmissionsRef = useRef<
+    Record<"agent" | "editor", ComposerSubmission | null>
+  >({ agent: null, editor: null });
+  const changeComposerInput = useCallback((nextInput: string) => {
+    retrySubmissionsRef.current[latestWorkbenchStateRef.current.activeWorkspaceView] = null;
+    setInput(nextInput);
+  }, []);
+  const changeComposerPastedContents = useCallback<
+    React.Dispatch<React.SetStateAction<Record<number, any>>>
+  >((nextContents) => {
+    retrySubmissionsRef.current[latestWorkbenchStateRef.current.activeWorkspaceView] = null;
+    setPastedContents(nextContents);
+  }, []);
   const [vimMode, setVimMode] = useState<VimMode>("INSERT");
   const workspaceComposerDraftsRef = useRef<
     Record<
@@ -2800,6 +2849,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       failedDraft: {
         readonly input: string;
         readonly pastedContents?: Record<number, any>;
+        readonly submission?: ComposerSubmission;
       },
     ): void => {
       const activeView = latestWorkbenchStateRef.current.activeWorkspaceView;
@@ -2812,6 +2862,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // either field contains newer content, preserve the whole newer draft
       // rather than splicing an old prompt and attachment into it.
       if (
+        (failedDraft.submission?.ready === true &&
+          latestSubmissionIdsRef.current[view] !== failedDraft.submission.clientMessageId) ||
         currentDraft.input.length > 0 ||
         Object.keys(currentDraft.pastedContents).length > 0
       ) {
@@ -2826,6 +2878,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             : currentDraft.pastedContents,
       };
       workspaceComposerDraftsRef.current[view] = restoredDraft;
+      retrySubmissionsRef.current[view] =
+        failedDraft.submission?.ready === true ? failedDraft.submission : null;
       if (activeView !== view) return;
       liveComposerDraftRef.current = restoredDraft;
       setInput(restoredDraft.input);
@@ -2922,13 +2976,31 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // React commits useSessionTranscript's state update. Consume attachments
       // here so a same-tick message.stream rejection cannot erase evidence that
       // the daemon already started the turn.
-      if (sessionEventStartsTurn(event)) {
+      const pendingAdmission = pendingWorkbenchAttachmentAdmissionRef.current;
+      if (sessionEventStartsTurn(
+        event,
+        pendingAdmission?.clientMessageId,
+        typeof props.session.getDaemonSessionSnapshot === "function",
+      )) {
         const admittedAttachments =
           pendingWorkbenchAttachmentAdmissionRef.current;
         if (admittedAttachments !== null) {
           pendingWorkbenchAttachmentAdmissionRef.current = null;
           admittedAttachments.acknowledge();
         }
+      }
+      if (isRecord(event) && event.type === "message_submission_recovered" && isRecord(event.payload)) {
+        const payload = event.payload;
+        if (payload.clientMessageId === pendingSubmissionIdRef.current) setPendingSubmission(false);
+        const outcome = payload.code === 0 ? "completed" : payload.code === 130 ? "cancelled" : "failed";
+        addNotification({
+          key: `submission-recovered:${String(payload.clientMessageId)}`,
+          text: `The previous submission ${outcome}; it was not run again.${typeof payload.message === "string" ? ` ${payload.message}` : " Reopen the session to inspect its recorded output."}`,
+          color: payload.code === 0 ? "info" : "warning",
+          priority: "immediate",
+          timeoutMs: 10_000,
+          wrap: true,
+        });
       }
       syncCollabAgentEventToAppState(event, setAppState);
       const workspaceMutation = workspaceMutationProposalFromTuiEvent(event);
@@ -4813,6 +4885,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     streamedThisTurnRef.current = false;
     if (!pendingSubmission && activeModelSubmissionCount === 0) return;
     setPendingSubmission(false);
+    activeModelSubmissionTokensRef.current.clear();
     setActiveModelSubmissionCount(0);
   }, [
     transcript.isStreaming,
@@ -5277,19 +5350,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const submitToSession = useCallback(
     async (
       value: string,
-      options?: {
-        readonly displayUserMessage?: string | null;
-        readonly editorInteraction?: SessionEditorInteraction;
-      },
+      options?: SessionSubmitOptions,
     ): Promise<void> => {
       const submitSession = props.session.submit;
       if (typeof submitSession !== "function") return;
-      setActiveModelSubmissionCount((count) => count + 1);
+      const token = Symbol("model-submission");
+      activeModelSubmissionTokensRef.current.add(token);
+      setActiveModelSubmissionCount(activeModelSubmissionTokensRef.current.size);
       effectiveInputBusyRef.current = true;
       try {
         await submitSession(value, options);
       } finally {
-        setActiveModelSubmissionCount((count) => Math.max(0, count - 1));
+        if (activeModelSubmissionTokensRef.current.delete(token)) {
+          setActiveModelSubmissionCount(activeModelSubmissionTokensRef.current.size);
+        }
       }
     },
     [props.session],
@@ -5310,17 +5384,35 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       const text_0 = value.trim();
       const historyDisplay = (options?.displayUserMessage ?? text_0).trim();
       const draftRestoreValue = options?.draftRestoreValue ?? value;
+      const submissionAttachmentIds =
+        submissionWorkspaceView === submissionWorkbenchState.activeWorkspaceView
+          ? submissionWorkbenchState.composerAttachmentIds
+          : submissionWorkspaceView === "editor"
+            ? submissionWorkbenchState.editorComposerAttachmentIds
+            : submissionWorkbenchState.agentComposerAttachmentIds;
+      const candidateRetry = retrySubmissionsRef.current[submissionWorkspaceView];
+      const retry =
+        !options?.fromQueue &&
+        candidateRetry?.draftRestoreValue === draftRestoreValue &&
+        submissionAttachmentIds.every(id => candidateRetry.attachmentIds.includes(id))
+          ? candidateRetry
+          : null;
+      const clientMessageId = retry?.clientMessageId ?? randomUUID();
       let workbenchAttachmentsAcknowledged = false;
       const acknowledgeWorkbenchAttachments = (): void => {
         if (workbenchAttachmentsAcknowledged) return;
         workbenchAttachmentsAcknowledged = true;
-        options?.onWorkbenchAttachmentsAdmitted?.();
+        if (retry !== null) retry.acknowledge();
+        else options?.onWorkbenchAttachmentsAdmitted?.();
       };
       const armWorkbenchAttachmentAdmission =
         (): PendingWorkbenchAttachmentAdmission | null => {
-          if (options?.onWorkbenchAttachmentsAdmitted === undefined)
+          if (options?.onWorkbenchAttachmentsAdmitted === undefined && retry === null)
             return null;
-          const pending = { acknowledge: acknowledgeWorkbenchAttachments };
+          const pending = {
+            clientMessageId,
+            acknowledge: acknowledgeWorkbenchAttachments,
+          };
           // Model submissions are serialized by effectiveInputBusyRef. Keep the
           // identity check below anyway so an unexpected concurrent caller can
           // only fall back to promise settlement, never steal another turn's ack.
@@ -5340,14 +5432,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         if (admitted) pending.acknowledge();
       };
       const activePastedContents =
-        options?.pastedContentsOverride ?? pastedContents;
+        retry?.pastedContents ?? options?.pastedContentsOverride ?? pastedContents;
       const hasAttachments = Object.keys(activePastedContents).length > 0;
-      const submissionAttachmentIds =
-        submissionWorkspaceView === submissionWorkbenchState.activeWorkspaceView
-          ? submissionWorkbenchState.composerAttachmentIds
-          : submissionWorkspaceView === "editor"
-            ? submissionWorkbenchState.editorComposerAttachmentIds
-            : submissionWorkbenchState.agentComposerAttachmentIds;
       const attachmentInteraction = submissionAttachmentIds
         .map((id) =>
           submissionWorkbenchState.attachments.find(
@@ -5361,7 +5447,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         )
         .at(-1);
       const editorInteraction =
-        options?.editorInteraction ??
+        retry?.options.editorInteraction ?? options?.editorInteraction ??
         (!options?.fromQueue &&
         submissionWorkspaceView === "editor" &&
         attachmentInteraction !== undefined
@@ -5473,13 +5559,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         });
       }
       const parsedSlashCommand =
-        editorInteraction === undefined &&
+        retry === null && editorInteraction === undefined &&
         text_0.startsWith("/") &&
         text_0.length > 1
           ? parseSlashCommand(text_0)
           : null;
       const parsedDollarSkill =
-        editorInteraction === undefined &&
+        retry === null && editorInteraction === undefined &&
         text_0.startsWith("$") &&
         text_0.length > 1
           ? parseDollarSkillCommand(text_0)
@@ -5511,6 +5597,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         return;
       }
       if (!options?.fromQueue && effectiveInputBusyRef.current) {
+        if (retry !== null) {
+          showTransientResult("Wait for the current request to settle before retrying the restored submission.", { display: "error" });
+          return;
+        }
         enqueue({
           value: text_0,
           preExpansionValue: text_0,
@@ -5550,6 +5640,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // user-input clear path.
       cancelTransientResult(true);
       const startPendingSubmission = () => {
+        latestSubmissionIdsRef.current[submissionWorkspaceView] = clientMessageId;
+        pendingSubmissionIdRef.current = clientMessageId;
         setPendingSubmission(true);
         effectiveInputBusyRef.current = true;
       };
@@ -5570,6 +5662,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         submissionScrollRef.current?.scrollToBottom();
       }
       setComposerInputForView(submissionWorkspaceView, "");
+      retrySubmissionsRef.current[submissionWorkspaceView] = null;
       // Persist the submitted prompt so Up-arrow / Ctrl+R history recall
       // can find it. The daemon-backed AgenCTuiApp dispatch path used to
       // skip this, so the picker said "No history yet" right after a
@@ -5589,6 +5682,21 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       const attachmentsMessage = hasAttachments
         ? pastedContentsToLLMMessage(activePastedContents)
         : null;
+      const submission: ComposerSubmission = retry ?? {
+        clientMessageId,
+        draftRestoreValue,
+        pastedContents: activePastedContents,
+        attachmentIds: [...submissionAttachmentIds],
+        acknowledge: acknowledgeWorkbenchAttachments,
+        value,
+        options: {
+          clientMessageId,
+          displayUserMessage: options?.displayUserMessage ?? value,
+          ...(editorInteraction === undefined ? {} : { editorInteraction }),
+        },
+        inputs: attachmentsMessage === null ? [] : [attachmentsMessage],
+        ready: false,
+      };
       const admitPendingInputs = (
         inputs: readonly LLMMessage[],
       ): string | null => {
@@ -5655,11 +5763,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                 new AbortController(),
               ) as PromptInputContext,
             );
-            const admissionToken = admitPendingInputs([
+            submission.inputs = [
               ...(attachmentsMessage !== null ? [attachmentsMessage] : []),
               loaded.metadata,
               { content: loaded.blocks },
-            ]);
+            ];
+            submission.value = "";
+            submission.options = { clientMessageId, displayUserMessage: displayText };
+            const admissionToken = admitPendingInputs(submission.inputs);
             admissionLease = {
               commit: () => {
                 if (admissionToken !== null) {
@@ -5677,7 +5788,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               settle: (admitted) =>
                 settleWorkbenchAttachmentAdmission(workbenchAdmission, admitted),
             };
-            await submitToSession("", { displayUserMessage: displayText });
+            submission.ready = true;
+            await submitToSession(submission.value, submission.options);
             submitted = true;
           } finally {
             try {
@@ -5687,6 +5799,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                 restoreComposerDraftForView(submissionWorkspaceView, {
                   input: draftRestoreValue,
                   pastedContents: activePastedContents,
+                  submission,
                 });
               }
             } finally {
@@ -5700,7 +5813,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             key: "prompt-submit-failed",
             text: submitted
               ? `Message sent, but cleanup failed: ${message}`
-              : `Message not sent: ${message}`,
+              : `Submission failed: ${message}`,
             color: "error",
             priority: "immediate",
             timeoutMs: 10_000,
@@ -5708,7 +5821,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           });
           if (options?.rethrowSubmitError) throw error;
         } finally {
-          if (!submitted) setPendingSubmission(false);
+          if (!submitted && pendingSubmissionIdRef.current === clientMessageId) setPendingSubmission(false);
         }
       };
       // Slash-command interception. The daemon-backed TUI does not have
@@ -5912,8 +6025,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       let attachmentAdmissionToken: string | null = null;
       let workbenchAdmission: PendingWorkbenchAttachmentAdmission | null = null;
       try {
-        if (attachmentsMessage !== null) {
-          attachmentAdmissionToken = admitPendingInputs([attachmentsMessage]);
+        if (submission.inputs.length > 0) {
+          attachmentAdmissionToken = admitPendingInputs(submission.inputs);
           attachmentAdmitted = true;
         }
         setComposerPastedContentsForView(submissionWorkspaceView, {});
@@ -5933,10 +6046,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           activeEditorProposalTurnIdsRef.current.add(proposalTurnId);
         }
         try {
-          await submitToSession(value, {
-            displayUserMessage: options?.displayUserMessage ?? value,
-            ...(editorInteraction !== undefined ? { editorInteraction } : {}),
-          });
+          submission.ready = true;
+          await submitToSession(submission.value, submission.options);
         } finally {
           if (proposalTurnId !== null) {
             activeEditorProposalTurnIdsRef.current.delete(proposalTurnId);
@@ -5946,6 +6057,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           props.session.commitIdleInputAdmission?.(attachmentAdmissionToken);
         }
         settleWorkbenchAttachmentAdmission(workbenchAdmission, true);
+        if (retry !== null && pendingSubmissionIdRef.current === clientMessageId) setPendingSubmission(false);
       } catch (err_1) {
         settleWorkbenchAttachmentAdmission(workbenchAdmission, false);
         // Same defense as submitPromptToModel above: a daemon JSON-RPC
@@ -5966,7 +6078,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // notification lane renders regardless of overlays.
         addNotification({
           key: "prompt-submit-failed",
-          text: `Message not sent: ${message_0}`,
+          text: `Submission failed: ${message_0}`,
           color: "error",
           priority: "immediate",
           timeoutMs: 10_000,
@@ -5975,10 +6087,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           // exactly the part the user needs.
           wrap: true,
         });
-        // Submit threw before turn_started arrived — clear the
-        // pending-submission spinner so the UI doesn't lie about
-        // waiting for a turn that will never start.
-        setPendingSubmission(false);
+        if (pendingSubmissionIdRef.current === clientMessageId) setPendingSubmission(false);
         const rolledBack =
           attachmentAdmissionToken !== null &&
           props.session.rollbackIdleInputAdmission?.(
@@ -5986,6 +6095,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           ) === true;
         restoreComposerDraftForView(submissionWorkspaceView, {
           input: draftRestoreValue,
+          submission,
           ...(!attachmentAdmitted || rolledBack
             ? { pastedContents: activePastedContents }
             : {}),
@@ -6094,15 +6204,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       assistantMessageCount > lastAssistantMessageCountRef.current ||
       hasActiveSessionTurn
     ) {
-      // message.stream can remain pending for the entire turn. A daemon turn
-      // signal is the durable admission boundary: consume the exact originating
-      // attachment snapshot now so a second queued prompt cannot resend it.
-      const admittedAttachments =
-        pendingWorkbenchAttachmentAdmissionRef.current;
-      if (admittedAttachments !== null) {
-        pendingWorkbenchAttachmentAdmissionRef.current = null;
-        admittedAttachments.acknowledge();
-      }
       lastAssistantMessageCountRef.current = assistantMessageCount;
       setPendingSubmission(false);
     }
@@ -6112,15 +6213,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     assistantMessageCount,
     hasActiveSessionTurn,
   ]);
-  // Submit-ack watchdog: the complementary failure — a turn whose events
-  // NEVER reach the client (the 403 flavor where the request dies before any
-  // turn_started is broadcast, a wedged daemon, or a dropped event
-  // subscription). Every other spinner-clearing path keys on daemon signals;
-  // with zero signals, pendingSubmission would latch true forever, Esc could
-  // not clear it (the transcript never saw a turn to abort), and prompts
-  // queued behind a phantom busy state. A cold daemon bootstrap can take
-  // ~15s to acknowledge, so the window is 20s — past that, the turn never
-  // started: clear the flag and tell the user instead of spinning forever.
   const pendingSubmissionSinceRef = useRef<number | null>(null);
   useEffect(() => {
     if (pendingSubmission && pendingSubmissionSinceRef.current === null) {
@@ -6135,16 +6227,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       if (since === null || Date.now() - since < SUBMIT_ACK_WATCHDOG_MS) return;
       pendingSubmissionSinceRef.current = null;
       setPendingSubmission(false);
-      // Also drop the model-submission count: a submit whose message.stream
-      // RPC never settles (known on error-terminated turns) holds the count
-      // at 1 forever, keeping isLoading true even after pendingSubmission
-      // clears — the daemon-silence watchdog would then fire "Turn aborted"
-      // every 60s while every new prompt queues behind the phantom busy
-      // state. A give-up path must reset every flag that composes isLoading.
-      setActiveModelSubmissionCount(0);
       addNotification({
         key: "submit-ack-watchdog",
-        text: "No response from the daemon — the turn never started. Resubmit, or run /login again if this was an auth failure.",
+        text: "The daemon has not acknowledged this submission. Its outcome is unknown. Wait for the request to settle or reconnect and inspect the session before sending it again.",
         priority: "immediate",
         timeoutMs: 8000,
       });
@@ -6347,6 +6432,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     // a no-op there.
     pendingSubmissionSinceRef.current = null;
     setPendingSubmission(false);
+    activeModelSubmissionTokensRef.current.clear();
     setActiveModelSubmissionCount(0);
   }, [isLoading, turnAbortController, props.session]);
   const handleAgentsKilled = useCallback(
@@ -6947,7 +7033,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             onAutoUpdaterResult={() => {}}
             autoUpdaterResult={null}
             input={input}
-            onInputChange={setInput}
+            onInputChange={changeComposerInput}
             mode={mode}
             onModeChange={setMode}
             stashedPrompt={stashedPrompt}
@@ -6957,7 +7043,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             onMessageActionsEnter={handleShowMessageSelector}
             mcpClients={mcpClients as never}
             pastedContents={pastedContents}
-            setPastedContents={setPastedContents}
+            setPastedContents={changeComposerPastedContents}
             vimMode={vimMode}
             setVimMode={setVimMode}
             showBashesDialog={showBashesDialog}
@@ -7156,7 +7242,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       onAutoUpdaterResult={() => {}}
       autoUpdaterResult={null}
       input={input}
-      onInputChange={setInput}
+      onInputChange={changeComposerInput}
       mode={mode}
       onModeChange={setMode}
       stashedPrompt={stashedPrompt}
@@ -7166,7 +7252,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       onMessageActionsEnter={handleShowMessageSelector}
       mcpClients={mcpClients as never}
       pastedContents={pastedContents}
-      setPastedContents={setPastedContents}
+      setPastedContents={changeComposerPastedContents}
       vimMode={vimMode}
       setVimMode={setVimMode}
       showBashesDialog={showBashesDialog}

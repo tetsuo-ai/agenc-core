@@ -44,6 +44,7 @@ export interface SessionEditorInteraction {
 }
 
 export interface SessionSubmitOptions {
+  readonly clientMessageId?: string;
   readonly source?: SessionSubmitSource;
   /**
    * Transcript-facing input for this submission. `undefined` means render the

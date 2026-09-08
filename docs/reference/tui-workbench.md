@@ -43,6 +43,27 @@ conversation to create a fresh adapter. Retrying a subscription on the old
 adapter cannot repair its replay gap. Failed transcript subscriptions release
 their event-log listener and pending coalescing timer.
 
+## Retrying daemon submissions
+
+Each model submission gets a client message ID. If a request fails and the TUI
+restores its draft, submitting that unchanged draft again reuses the ID, model
+input, skill expansion, and attachment snapshot. Editing the draft or attaching
+new work starts a new submission. Agent and Editor drafts retain separate retry
+records; a late failure cannot replace a newer draft.
+
+For an existing daemon session, a completed duplicate reports the recorded
+success, failure, or cancellation without executing again. The recovery notice
+does not recreate missed tool events. Reopen the conversation to inspect its
+durable history. An admitted submission without a recorded terminal result
+reports an unknown outcome and refuses to run again. Inspect the history and
+any tool effects before deliberately starting a new submission.
+
+Silence is not proof that the daemon rejected a request. The acknowledgement
+watchdog reports uncertainty and does not release an outstanding request's busy
+state. Retry records last for the current TUI mount. Initial conversation
+creation and moving to a different daemon session are separate operations, not
+idempotent retries of an existing session's message.
+
 ## Layouts
 
 | Layout                                          | When                                                   |

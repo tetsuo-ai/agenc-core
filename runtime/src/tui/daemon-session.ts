@@ -19,6 +19,7 @@ import type {
   JsonValue,
   MessageContentBlock,
   MessageStreamParams,
+  MessageStreamResult,
   RequestId,
   SessionMcpStatusResult,
   SessionMcpAddServerParams,
@@ -147,7 +148,7 @@ import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import {
   applyDaemonTuiRuntimeSettingsAuthority,
@@ -384,10 +385,7 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   } | null;
   submit?(
     message: string,
-    opts?: {
-      readonly displayUserMessage?: string | null;
-      readonly editorInteraction?: SessionEditorInteraction;
-    },
+    opts?: SessionSubmitOptions,
   ): Promise<void>;
   enqueueIdleInput?(input: unknown, ownership?: IdleInputOwnership): number;
   enqueueIdleInputBatch?(
@@ -430,10 +428,7 @@ export type AgenCDaemonBackedTuiSession<
   subscribeToEvents(cb: (event: unknown) => void): () => void;
   submit(
     message: string,
-    opts?: {
-      readonly displayUserMessage?: string | null;
-      readonly editorInteraction?: SessionEditorInteraction;
-    },
+    opts?: SessionSubmitOptions,
   ): Promise<void>;
   enqueueIdleInput(input: unknown, ownership?: IdleInputOwnership): number;
   enqueueIdleInputBatch(
@@ -1187,9 +1182,12 @@ export function createDaemonTuiSession<
       if (queued.length === 0 && message.length === 0) return;
       inFlightInputCount += submittedInputCount;
       inFlightInputBytes += submittedInputBytes;
-      const streamId = `${clientId}:${Date.now()}`;
-      terminalDaemonTurnObserved = false;
-      activeTurnSnapshot = { turnId: streamId };
+      const clientMessageId = opts?.clientMessageId ?? randomUUID();
+      const streamId = `${clientId}:${randomUUID()}`;
+      if (activeTurnSnapshot === null) {
+        terminalDaemonTurnObserved = false;
+        activeTurnSnapshot = { turnId: streamId };
+      }
       const content =
         queued.length === 0
           ? message
@@ -1199,6 +1197,7 @@ export function createDaemonTuiSession<
                 ? [{ type: "text", text: message } as MessageContentBlock]
                 : []),
             ];
+      let recovered: MessageStreamResult | undefined;
       try {
         const metadata: JsonObject = {
           ...(opts?.displayUserMessage !== undefined
@@ -1236,12 +1235,31 @@ export function createDaemonTuiSession<
               }
             : {}),
         };
-        await client.request("message.stream", {
+        const result = await client.request("message.stream", {
           sessionId,
           content,
           ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+          clientMessageId,
           streamId,
         } satisfies MessageStreamParams);
+        if (result.disposition === "duplicate") {
+          if (
+            result.duplicateState !== "completed" ||
+            result.terminal === undefined
+          ) {
+            throw new Error(
+              `Submission ${clientMessageId} was already admitted, but its terminal outcome is unknown. It was not run again. Inspect the session history and tool effects before starting a new submission.`,
+            );
+          }
+          recovered = result;
+          if (
+            activeTurnSnapshot?.turnId === streamId ||
+            activeTurnSnapshot?.turnId === result.turnId
+          ) {
+            activeTurnSnapshot = null;
+            terminalDaemonTurnObserved = true;
+          }
+        }
         const submitted = new Set(queuedEntries);
         for (const [token, admission] of idleInputAdmissions) {
           if (admission.entries.every((entry) => submitted.has(entry))) {
@@ -1255,7 +1273,7 @@ export function createDaemonTuiSession<
         // startup messages) were already drained out of `queuedInputs` above;
         // if we don't roll them back the user's content is lost permanently
         // with no transcript entry. Re-prepend the drained blocks so the next
-        // submit re-sends them, preserving at-least-once delivery.
+        // submit re-sends them.
         if (queuedEntries.length > 0) {
           const originalEntries = new Set(queuedInputsBeforeSubmission);
           const admittedAfterSubmission = queuedInputs.filter(
@@ -1270,7 +1288,7 @@ export function createDaemonTuiSession<
           queuedInputCount += submittedInputCount;
           queuedInputBytes += submittedInputBytes;
         }
-        activeTurnSnapshot = null;
+        if (activeTurnSnapshot?.turnId === streamId) activeTurnSnapshot = null;
         throw error;
       } finally {
         inFlightInputCount = Math.max(
@@ -1281,6 +1299,16 @@ export function createDaemonTuiSession<
           0,
           inFlightInputBytes - submittedInputBytes,
         );
+      }
+      if (recovered?.terminal !== undefined) {
+        broadcastDaemonEvent({
+          type: "message_submission_recovered",
+          payload: {
+            clientMessageId,
+            ...(recovered.turnId === undefined ? {} : { turnId: recovered.turnId }),
+            ...recovered.terminal,
+          },
+        });
       }
     },
     enqueueIdleInput: (input, ownership) => {
@@ -2902,6 +2930,9 @@ function transcriptEventFromSessionEvent(params: JsonObject): JsonObject | null 
   if (!isJsonObject(params.event)) return null;
   return {
     ...params.event,
+    ...(typeof params.clientMessageId === "string"
+      ? { clientMessageId: params.clientMessageId }
+      : {}),
     ...(typeof params.eventId === "string" && params.eventId.length > 0
       ? { eventId: params.eventId }
       : {}),
