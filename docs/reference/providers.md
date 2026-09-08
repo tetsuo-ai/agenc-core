@@ -192,6 +192,12 @@ stores credential values.
   retired native `agenc` credential field are explicit one-way migration
   inputs only. Reads, refreshes, and clears stay bound to the client's captured
   `HomeContext`, and refresh compare-and-swap preserves a newer login.
+  Within an OpenAI provider instance, concurrent 401 failures share one
+  refresh for the credentials used by those requests. Delayed failures from
+  older credentials cannot invalidate a refreshed session. Cancelling a chat
+  or stream stops that caller's wait without cancelling the shared refresh.
+  Genuine refresh exhaustion stays in effect until the provider is recreated
+  after login. Single-wire requests never refresh or mark refresh exhausted.
   List reachable models with `agenc openai-models --json`
   (`{ok, models, authMode}`; tokens never in the output). See
   [cli.md](cli.md#openai-models).

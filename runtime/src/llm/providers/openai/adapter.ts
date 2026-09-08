@@ -755,7 +755,7 @@ export class OpenAIProvider implements LLMProvider {
           maxTokenField: this.resolveChatCompletionsMaxTokenField(),
           providerCapabilityHints,
         });
-      }, { singleWireAttempt: options?.singleWireAttempt });
+      }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
     } catch (error) {
       if (isFallbackTriggeredError(error)) {
         throw error;
@@ -801,7 +801,7 @@ export class OpenAIProvider implements LLMProvider {
           timeoutMs,
           headers,
         );
-      }, { singleWireAttempt: options?.singleWireAttempt });
+      }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
     } catch (error) {
       if (isFallbackTriggeredError(error)) {
         throw error;
