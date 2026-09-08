@@ -30,6 +30,7 @@ import { createRoot } from "../../../src/tui/ink.js";
 import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
 import { DiffSurface, DiffSurfaceView } from "../../../src/tui/workbench/surfaces/DiffSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
+import { requestWorkbenchSurfaceClose } from "../../../src/tui/workbench/surfaces/closeSurface.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -279,7 +280,8 @@ describe("DiffSurface", () => {
       diffHarness.handlers["surface:attach"]?.();
       diffHarness.handlers["surface:open"]?.();
       diffHarness.handlers["surface:top"]?.();
-      diffHarness.handlers["workbench:closeSurface"]?.();
+      expect(diffHarness.handlers["workbench:closeSurface"]).toBeUndefined();
+      const closed = requestWorkbenchSurfaceClose(changes.at(-1)!);
       await sleep();
 
       expect(changes.some((state) =>
@@ -291,7 +293,8 @@ describe("DiffSurface", () => {
         state.workbench?.activeSurfaceMode === "buffer" &&
         state.workbench.activeFilePath === "src/file-00.ts"
       )).toBe(true);
-      expect(changes.at(-1)?.workbench).toMatchObject({
+      expect(closed.status).toBe("closed");
+      expect(closed.state.workbench).toMatchObject({
         activeSurfaceMode: "transcript",
         focusedPane: "composer",
       });

@@ -68,6 +68,7 @@ import {
   SearchSurfaceView,
 } from "../../../src/tui/workbench/surfaces/SearchSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
+import { requestWorkbenchSurfaceClose } from "../../../src/tui/workbench/surfaces/closeSurface.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -308,9 +309,14 @@ describe("SearchSurface", () => {
         "Openglobalsearchortypeaqueryfromthecomposer",
       );
 
-      searchHarness.handlers["workbench:closeSurface"]?.();
-
-      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+      expect(searchHarness.handlers["workbench:closeSurface"]).toBeUndefined();
+      const state = getDefaultAppState();
+      const closed = requestWorkbenchSurfaceClose({
+        ...state,
+        workbench: { ...state.workbench, activeSurfaceMode: "search" },
+      });
+      expect(closed.status).toBe("closed");
+      expect(closed.state.workbench.activeSurfaceMode).toBe("transcript");
     } finally {
       root.unmount();
       stdin.end();
@@ -530,9 +536,10 @@ describe("SearchSurface", () => {
         focusedPane: "surface",
       });
 
-      await press("workbench:closeSurface");
-
-      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("search");
+      expect(searchHarness.handlers["workbench:closeSurface"]).toBeUndefined();
+      const closed = requestWorkbenchSurfaceClose(changes.at(-1)!);
+      expect(closed.status).toBe("closed");
+      expect(closed.state.workbench.activeSurfaceMode).toBe("search");
     } finally {
       root.unmount();
       stdin.end();

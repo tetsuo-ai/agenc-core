@@ -6,7 +6,10 @@ import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContex
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import type { PendingRequest } from "../../permission-requests.js";
-import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
+import { useSetAppState } from "../../state/AppState.js";
+import { useWorkbenchState } from "../state.js";
+import { useBufferStore } from "../buffer/useBufferStore.js";
+import { bufferKeybindingContext } from "../buffer/keybindingContext.js";
 import { WorkbenchTranscriptLayoutProvider } from "../transcriptLayoutContext.js";
 import type { ActiveSurfaceMode, WorkbenchState } from "../types.js";
 import { AgentSurface } from "./AgentSurface.js";
@@ -23,6 +26,7 @@ import { ShellSurface } from "./ShellSurface.js";
 import { TestSurface } from "./TestSurface.js";
 import { TranscriptSurface } from "./TranscriptSurface.js";
 import type { BufferIntegrationIntent } from "../buffer/providers/types.js";
+import { requestWorkbenchSurfaceClose } from "./closeSurface.js";
 
 export type WorkbenchSurfaceRenderProps = {
   readonly focused: boolean;
@@ -181,17 +185,28 @@ export function ActiveWorkSurface({
   readonly editorStaleAuthorityRecovery?: BufferStaleAuthorityRecoveryUi;
 }): React.ReactElement {
   const workbench = useWorkbenchState();
-  const dispatch = useWorkbenchDispatch();
+  const setAppState = useSetAppState();
+  const buffer = useBufferStore();
   const descriptor = descriptorForSurface(workbench.activeSurfaceMode);
   const { columns } = useTerminalSize();
   const isTranscript = descriptor.mode === "transcript";
   const showSurfaceHeader = columns >= 100 && !isTranscript;
+  const requestClose = (): void => {
+    setAppState((state) => requestWorkbenchSurfaceClose(state).state);
+  };
   useRegisterKeybindingContext("Surface", focused);
   useKeybindings(
     {
-      "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
+      "workbench:closeSurface": requestClose,
     },
     { context: "Surface", isActive: focused && descriptor.mode !== "buffer" },
+  );
+  useKeybindings(
+    {
+      "buffer:close": requestClose,
+      "buffer:closeDiscard": requestClose,
+    },
+    { context: bufferKeybindingContext(buffer), isActive: focused && descriptor.mode === "buffer" },
   );
 
   return (

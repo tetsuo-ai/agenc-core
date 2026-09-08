@@ -147,7 +147,6 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
         disablePendingSelectedMatchRestore();
         setSelected((value) => groupStep(groups, matches, value, 1));
       },
-      "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
     { context: "Surface", isActive: focused },
   );

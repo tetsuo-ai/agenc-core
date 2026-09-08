@@ -66,7 +66,6 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
           }));
         }
       },
-      "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
     { context: "Surface", isActive: focused },
   );

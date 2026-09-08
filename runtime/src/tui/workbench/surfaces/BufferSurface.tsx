@@ -1618,14 +1618,6 @@ export function createBufferSurfaceKeyHandlers({
       if (snapshot.provider.capabilities.terminalUi) return false;
       void store.revert().catch(logError);
     },
-    "buffer:close": () => {
-      dispatch({ type: "closeSurface" });
-    },
-    "buffer:closeDiscard": () => {
-      // Deliberately route through the same reviewed leave transaction. A
-      // single shortcut must never bypass the double-confirmed Discard All.
-      dispatch({ type: "closeSurface" });
-    },
     "buffer:externalEditor": () => {
       if (mutationBlocked) return;
       void store.openExternalEditor().catch(logError);

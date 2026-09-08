@@ -20,6 +20,7 @@ import {
   type BufferTopologyRecoveryUi,
 } from "../../../src/tui/workbench/surfaces/BufferSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
+import { requestWorkbenchSurfaceClose } from "../../../src/tui/workbench/surfaces/closeSurface.js";
 
 type BufferSnapshot = BufferProviderSnapshot;
 type BufferStoreHarness = ReturnType<typeof createStoreHarness>;
@@ -140,10 +141,15 @@ describe("BufferSurface handlers", () => {
     expect(bufferHarness.store?.requestHover).toHaveBeenCalledTimes(1);
     expect(bufferHarness.store?.goToDefinition).toHaveBeenCalledTimes(1);
 
-    await bufferHarness.handlers["buffer:close"]?.();
-    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
-
-    await bufferHarness.handlers["buffer:closeDiscard"]?.();
+    expect(bufferHarness.handlers["buffer:close"]).toBeUndefined();
+    expect(bufferHarness.handlers["buffer:closeDiscard"]).toBeUndefined();
+    const state = getDefaultAppState();
+    const closed = requestWorkbenchSurfaceClose({
+      ...state,
+      workbench: { ...state.workbench, activeSurfaceMode: "buffer" },
+    });
+    expect(closed.status).toBe("closed");
+    expect(closed.state.workbench.activeSurfaceMode).toBe("transcript");
     expect(bufferHarness.store?.close).not.toHaveBeenCalled();
 
     bufferHarness.handlers["buffer:up"]?.();
@@ -255,8 +261,7 @@ describe("BufferSurface handlers", () => {
       expect.objectContaining({ message: "open cleanup failed" }),
     );
 
-    bufferHarness.handlers["buffer:closeDiscard"]?.();
-    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+    expect(bufferHarness.handlers["buffer:closeDiscard"]).toBeUndefined();
 
     for (const [action, method, message] of [
       ["buffer:save", "save", "save failed"],

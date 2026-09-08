@@ -298,8 +298,8 @@ describe("BufferSurface", () => {
     expect(handlers["workbench:focusRail"]?.()).toBe(false);
     handlers["workbench:toggleFileRail"]?.();
     await handlers["buffer:revert"]?.();
-    await handlers["buffer:close"]?.();
-    await handlers["buffer:closeDiscard"]?.();
+    expect(handlers["buffer:close"]).toBeUndefined();
+    expect(handlers["buffer:closeDiscard"]).toBeUndefined();
     handlers["buffer:externalEditor"]?.();
     handlers["buffer:undo"]?.();
     handlers["buffer:redo"]?.();
@@ -328,13 +328,11 @@ describe("BufferSurface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "focus", pane: "agents" });
     expect(dispatch).toHaveBeenCalledWith({ type: "focus", pane: "composer" });
     expect(store.close).not.toHaveBeenCalled();
-    expect(dispatch).toHaveBeenCalledTimes(6);
+    expect(dispatch).toHaveBeenCalledTimes(4);
     expect(dispatch).toHaveBeenNthCalledWith(4, {
       type: "moveFileToRail",
       path: "target.ts",
     });
-    expect(dispatch).toHaveBeenNthCalledWith(5, { type: "closeSurface" });
-    expect(dispatch).toHaveBeenNthCalledWith(6, { type: "closeSurface" });
     expect(store.move).toHaveBeenCalledWith("up");
     expect(store.move).toHaveBeenCalledWith("down");
     expect(store.move).toHaveBeenCalledWith("left");
@@ -387,11 +385,10 @@ describe("BufferSurface", () => {
       hasInFlightAgent: false,
       dispatch: blockedDispatch,
     });
-    await blockedHandlers["buffer:close"]?.();
-    await blockedHandlers["buffer:closeDiscard"]?.();
+    expect(blockedHandlers["buffer:close"]).toBeUndefined();
+    expect(blockedHandlers["buffer:closeDiscard"]).toBeUndefined();
     expect(blockedCloseStore.close).not.toHaveBeenCalled();
-    expect(blockedDispatch).toHaveBeenCalledTimes(2);
-    expect(blockedDispatch).toHaveBeenCalledWith({ type: "closeSurface" });
+    expect(blockedDispatch).not.toHaveBeenCalled();
 
     const panelDispatch = vi.fn();
     const panelHandlers = createBufferSurfaceKeyHandlers({

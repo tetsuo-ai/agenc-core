@@ -85,7 +85,6 @@ export function DiffSurface({
         }
         if (selectedFile) setDecisions((prev) => ({ ...prev, [selectedFile.path]: "skip" }));
       },
-      "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
     { context: "Surface", isActive: focused },
   );

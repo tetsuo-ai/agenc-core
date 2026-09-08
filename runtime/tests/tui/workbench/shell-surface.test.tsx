@@ -61,6 +61,7 @@ import {
 } from "../../../src/tui/state/AppState.js";
 import { ShellSurface } from "../../../src/tui/workbench/surfaces/ShellSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
+import { requestWorkbenchSurfaceClose } from "../../../src/tui/workbench/surfaces/closeSurface.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -259,8 +260,10 @@ describe("ShellSurface", () => {
     shellHarness.handlers["surface:stop"]?.();
     expect(changes.at(-1)?.tasks["shell-1"]?.status).toBe("killed");
 
-    shellHarness.handlers["workbench:closeSurface"]?.();
-    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("shell");
+    expect(shellHarness.handlers["workbench:closeSurface"]).toBeUndefined();
+    const closed = requestWorkbenchSurfaceClose(changes.at(-1)!);
+    expect(closed.status).toBe("closed");
+    expect(closed.state.workbench.activeSurfaceMode).toBe("shell");
   });
 
   it("does not dispatch location actions when no shell output location is parsed", async () => {

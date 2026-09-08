@@ -62,6 +62,7 @@ import {
   TestSurfaceView,
 } from "../../../src/tui/workbench/surfaces/TestSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
+import { requestWorkbenchSurfaceClose } from "../../../src/tui/workbench/surfaces/closeSurface.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -205,8 +206,10 @@ describe("TestSurface", () => {
       label: "first failure",
     });
 
-    keybindingHarness.handlers["workbench:closeSurface"]?.();
-    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("test");
+    expect(keybindingHarness.handlers["workbench:closeSurface"]).toBeUndefined();
+    const closed = requestWorkbenchSurfaceClose(changes.at(-1)!);
+    expect(closed.status).toBe("closed");
+    expect(closed.state.workbench.activeSurfaceMode).toBe("test");
   });
 
   it("normalizes test failure paths when opening buffers", async () => {

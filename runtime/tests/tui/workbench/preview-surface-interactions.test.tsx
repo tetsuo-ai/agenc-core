@@ -81,6 +81,7 @@ import {
   useSetAppState,
 } from "../../../src/tui/state/AppState.js";
 import { PreviewSurface } from "../../../src/tui/workbench/surfaces/PreviewSurface.js";
+import { requestWorkbenchSurfaceClose } from "../../../src/tui/workbench/surfaces/closeSurface.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -439,9 +440,10 @@ describe("PreviewSurface interactions", () => {
         activeFileLine: 2,
       });
 
-      previewHarness.handlers["workbench:closeSurface"]?.();
-      await sleep();
-      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("preview");
+      expect(previewHarness.handlers["workbench:closeSurface"]).toBeUndefined();
+      const closed = requestWorkbenchSurfaceClose(changes.at(-1)!);
+      expect(closed.status).toBe("closed");
+      expect(closed.state.workbench.activeSurfaceMode).toBe("preview");
     } finally {
       root.unmount();
       stdin.end();

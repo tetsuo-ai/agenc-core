@@ -56,7 +56,6 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
       "surface:stop": () => {
         if (task) stopWorkbenchTask(task, setAppState);
       },
-      "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
     { context: "Surface", isActive: focused },
   );

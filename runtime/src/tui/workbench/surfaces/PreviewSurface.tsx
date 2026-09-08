@@ -238,7 +238,6 @@ export function PreviewSurface({
       "surface:edit": () => {
         if (activePath) dispatch(openBufferCommand(activePath, startLine + 1, true));
       },
-      "workbench:closeSurface": () => dispatch({ type: "closeSurface" }),
     },
     { context: "Surface", isActive: focused },
   );

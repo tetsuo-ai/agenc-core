@@ -1,7 +1,9 @@
 import React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const activeSurfaceHarness = vi.hoisted(() => ({
+  terminalUi: false,
+  dirty: false,
   keybindingCalls: [] as Array<{
     handlers: Record<string, () => void>;
     options?: Record<string, unknown>;
@@ -10,6 +12,19 @@ const activeSurfaceHarness = vi.hoisted(() => ({
     name: string;
     props: Record<string, unknown>;
   }>,
+}));
+
+vi.mock("../../../src/tui/workbench/buffer/providers/BufferProviderController.js", () => ({
+  getWorkbenchBufferProviderController: () => ({
+    getSnapshot: () => ({ dirty: activeSurfaceHarness.dirty }),
+  }),
+}));
+
+vi.mock("../../../src/tui/workbench/buffer/useBufferStore.js", () => ({
+  useBufferStore: () => ({
+    filePath: "target.ts",
+    provider: { capabilities: { terminalUi: activeSurfaceHarness.terminalUi } },
+  }),
 }));
 
 function surfaceMock(
@@ -90,6 +105,13 @@ import {
 import type { ActiveSurfaceMode } from "../../../src/tui/workbench/types.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
+beforeEach(() => {
+  activeSurfaceHarness.terminalUi = false;
+  activeSurfaceHarness.dirty = false;
+  activeSurfaceHarness.keybindingCalls = [];
+  activeSurfaceHarness.renderCalls = [];
+});
+
 describe("ActiveWorkSurface", () => {
   it.each([
     "transcript",
@@ -144,7 +166,7 @@ describe("ActiveWorkSurface", () => {
     }
   });
 
-  it("closes non-buffer surfaces through the surface close keybinding", async () => {
+  it.each(["transcript", "preview", "diff", "shell", "test", "search", "task-detail"] as const)("closes %s through the parent surface close keybinding", async (mode) => {
     activeSurfaceHarness.keybindingCalls = [];
     const changes: AppState[] = [];
 
@@ -154,7 +176,7 @@ describe("ActiveWorkSurface", () => {
           ...getDefaultAppState(),
           workbench: {
             ...getDefaultAppState().workbench,
-            activeSurfaceMode: "preview",
+            activeSurfaceMode: mode,
             focusedPane: "surface",
           },
         }}
@@ -183,6 +205,68 @@ describe("ActiveWorkSurface", () => {
       activeSurfaceMode: "transcript",
       focusedPane: "composer",
     });
+  });
+
+  it.each([
+    [false, "Buffer", "buffer:close", false],
+    [false, "Buffer", "buffer:closeDiscard", false],
+    [true, "BufferHost", "buffer:close", false],
+    [true, "BufferHost", "buffer:closeDiscard", false],
+    [false, "Buffer", "buffer:close", true],
+    [false, "Buffer", "buffer:closeDiscard", true],
+    [true, "BufferHost", "buffer:close", true],
+    [true, "BufferHost", "buffer:closeDiscard", true],
+  ] as const)("owns buffer close with terminalUi=%s in %s for %s and dirty=%s", async (terminalUi, context, action, dirty) => {
+    activeSurfaceHarness.keybindingCalls = [];
+    activeSurfaceHarness.terminalUi = terminalUi;
+    activeSurfaceHarness.dirty = dirty;
+    const changes: AppState[] = [];
+    await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          workbench: {
+            ...getDefaultAppState().workbench,
+            activeSurfaceMode: "buffer",
+            focusedPane: "surface",
+          },
+        }}
+        onChangeAppState={({ newState }) => changes.push(newState)}
+      >
+        <ActiveWorkSurface focused transcript={<Text>transcript</Text>} />
+      </AppStateProvider>,
+      100,
+    );
+    const owners = activeSurfaceHarness.keybindingCalls.filter(
+      (call) => call.options?.isActive && call.handlers[action] !== undefined,
+    );
+    expect(owners).toHaveLength(1);
+    expect(owners[0]?.options?.context).toBe(context);
+    owners[0]?.handlers[action]?.();
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.workbench.activeSurfaceMode).toBe(dirty ? "buffer" : "transcript");
+    if (dirty) {
+      expect(changes[0]?.workbench.pendingBlockedOverlay?.deferredCommand).toEqual({
+        type: "closeSurface",
+      });
+    } else {
+      expect(changes[0]?.workbench.pendingBlockedOverlay).toBeNull();
+    }
+  });
+
+  it.each(["preview", "buffer"] as const)("does not register active close handlers for unfocused %s", async (mode) => {
+    await renderToString(
+      <AppStateProvider initialState={{
+        ...getDefaultAppState(),
+        workbench: { ...getDefaultAppState().workbench, activeSurfaceMode: mode },
+      }}>
+        <ActiveWorkSurface focused={false} transcript={<Text>transcript</Text>} />
+      </AppStateProvider>,
+      100,
+    );
+    expect(activeSurfaceHarness.keybindingCalls.every(
+      (call) => call.options?.isActive === false,
+    )).toBe(true);
   });
 
   it("leaves parent surface close keybindings inactive for buffer mode", async () => {
