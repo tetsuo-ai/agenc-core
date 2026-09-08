@@ -794,9 +794,12 @@ describe("real embedded Neovim lifecycle", () => {
       await startupExecLua(String.raw`
         _G.AgenCTestOriginalStageEditorProposal =
           _G.AgenCStageEditorProposal
+        _G.AgenCTestOriginalGetfsize = vim.fn.getfsize
         _G.AgenCStageEditorProposal = function(...)
           vim.uv.sleep(1000)
-          return _G.AgenCTestOriginalStageEditorProposal(...)
+          local result = _G.AgenCTestOriginalStageEditorProposal(...)
+          vim.fn.getfsize = function() return -1 end
+          return result
         end
         return true
       `);
@@ -833,12 +836,16 @@ describe("real embedded Neovim lifecycle", () => {
       expect(preservationFailure.message).toContain(
         "exact Neovim recovery preservation failed",
       );
+      expect(preservationFailure).toBeInstanceOf(AggregateError);
+      expect((preservationFailure as AggregateError).errors[1].message).toContain(
+        "Neovim did not durably write the recovery swap",
+      );
 
-      // The timed-out mutation eventually leaves Neovim's serial RPC queue.
-      // A cleanup retry can then obtain the preservation acknowledgement. Only
-      // that proven retry may stop the process.
       await withTestTimeout(
-        startupExecLua("return true"),
+        startupExecLua(String.raw`
+          vim.fn.getfsize = _G.AgenCTestOriginalGetfsize
+          return true
+        `),
         5_000,
         "timed out waiting for the poisoned Neovim RPC queue to drain",
       );

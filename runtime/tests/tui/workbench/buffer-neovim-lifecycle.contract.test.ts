@@ -1125,23 +1125,8 @@ describe("embedded Neovim lifecycle", () => {
     vi.useFakeTimers();
     const context = createRecoveryTransportSession();
     try {
-      let settled = false;
-      const cleanup = context.session.cleanup({ preserveRecovery: true }).then(
-        () => {
-          settled = true;
-          return null;
-        },
-        (error: unknown) => {
-          settled = true;
-          return error;
-        },
-      );
-      expect(decode(context.input.read())).toEqual([
-        0, 1, "nvim_exec_lua", [expect.stringContaining("silent preserve"), []],
-      ]);
-
       await vi.advanceTimersByTimeAsync(1_500);
-      expect(settled).toBe(false);
+      expect(context.settled).toBe(false);
       expect(context.handle.kill).not.toHaveBeenCalled();
       expect(context.child.kill).not.toHaveBeenCalled();
       expect(context.endInput).not.toHaveBeenCalled();
@@ -1152,11 +1137,11 @@ describe("embedded Neovim lifecycle", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(context.session.recoveryPreservationProven).toBe(true);
       expect(context.handle.kill).toHaveBeenCalledWith("SIGKILL");
-      expect(settled).toBe(false);
+      expect(context.settled).toBe(false);
       await vi.advanceTimersByTimeAsync(999);
       expect(context.child.kill).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      expect(await cleanup).toBeNull();
+      expect(await context.cleanup).toBeNull();
       expect(context.child.kill).toHaveBeenCalledWith("SIGTERM");
       expect(context.closeRpc).toHaveBeenCalledWith("abnormal session cleanup");
       expect(context.endInput).not.toHaveBeenCalled();
@@ -1171,24 +1156,10 @@ describe("embedded Neovim lifecycle", () => {
     vi.useFakeTimers();
     const context = createRecoveryTransportSession();
     try {
-      let settled = false;
-      const cleanup = context.session.cleanup({ preserveRecovery: true }).then(
-        () => {
-          settled = true;
-          return null;
-        },
-        (error: unknown) => {
-          settled = true;
-          return error;
-        },
-      );
-      expect(decode(context.input.read())).toEqual([
-        0, 1, "nvim_exec_lua", [expect.stringContaining("silent preserve"), []],
-      ]);
       await vi.advanceTimersByTimeAsync(9_999);
-      expect(settled).toBe(false);
+      expect(context.settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
-      expect(await cleanup).toMatchObject({
+      expect(await context.cleanup).toMatchObject({
         message: expect.stringContaining("exact recovery preservation was not confirmed"),
         cause: expect.objectContaining({
           name: "NeovimRpcRequestTimeoutError",
@@ -1219,12 +1190,9 @@ describe("embedded Neovim lifecycle", () => {
     vi.useFakeTimers();
     const context = createRecoveryTransportSession();
     try {
-      const cleanup = context.session.cleanup({ preserveRecovery: true })
-        .catch((error: unknown) => error);
-      context.input.read();
       await vi.advanceTimersByTimeAsync(1_500);
       context.output.write(encode([1, 1, null, [{ ...context.manifest[0], size: 0 }]]));
-      expect(await cleanup).toMatchObject({
+      expect(await context.cleanup).toMatchObject({
         message: expect.stringContaining("invalid abnormal-exit recovery manifest"),
       });
       expect(context.session.recoveryPreservationProven).toBe(false);
@@ -2014,8 +1982,25 @@ function createRecoveryTransportSession() {
     swap: join(dir, "recovery.swp"),
     size: 4096,
   }];
+  let settled = false;
+  const cleanup = session.cleanup({ preserveRecovery: true }).then(
+    () => {
+      settled = true;
+      return null;
+    },
+    (error: unknown) => {
+      settled = true;
+      return error;
+    },
+  );
+  expect(decode(input.read())).toEqual([
+    0, 1, "nvim_exec_lua", [expect.stringContaining("silent preserve"), []],
+  ]);
   return {
-    child, input, output, endInput, handle, rpc, closeRpc, session, manifest,
+    child, input, output, endInput, handle, rpc, closeRpc, session, manifest, cleanup,
+    get settled() {
+      return settled;
+    },
     dispose() {
       rpc.close("test cleanup");
       output.end();
