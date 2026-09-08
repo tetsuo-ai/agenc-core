@@ -439,11 +439,19 @@ describe("reproducible install and release contract", () => {
     expect(macosJob).toContain("runs-on: macos-15");
     expect(macosJob).toContain("Run the exact macOS red-probe runner contract");
     expect(macosJob).toContain("tests/fnd/red-probe-runner.contract.test.ts");
-    expect(macosJob).toContain("numTotalTests: 66");
-    expect(macosJob).toContain("numPassedTests: 66");
-    expect(macosJob).toContain("testResult.assertionResults.length !== 66");
+    expect(macosJob).toContain("numTotalTests: 79");
+    expect(macosJob).toContain("numPassedTests: 79");
+    expect(macosJob).toContain("testResult.assertionResults.length !== 79");
+    expect(macosJob).toMatch(
+      /red-probe-runner\.contract\.test\.ts\s*\\\s*--allowOnly=false\s*\\\s*--maxWorkers=1/u,
+    );
+    expect(macosJob).toContain('2>&1 | tee "$RUNNER_TEMP/macos-red-probe-runner.log"');
+    expect(macosJob).toContain("failure() && steps.macos-red-probe-runner.outcome == 'failure'");
+    expect(macosJob).toContain("${{ runner.temp }}/macos-red-probe-runner.json");
+    expect(macosJob).toContain("${{ runner.temp }}/macos-red-probe-runner.log");
+    expect(macosJob).toContain("retention-days: 1");
     expect(macosJob).toContain(
-      "macOS red-probe runner passed 66 tests in 1 file with zero skipped",
+      "macOS red-probe runner passed 79 tests in 1 file with zero skipped",
     );
     expect(macosJob).toContain(
       "Run the exact macOS FND/native capability lane",

@@ -1166,6 +1166,7 @@ jobs:
             --reporter=dot
 
       - name: Run the exact macOS red-probe runner contract
+        id: macos-red-probe-runner
         shell: bash
         run: |
           set -euo pipefail
@@ -1175,9 +1176,10 @@ jobs:
             run \
             tests/fnd/red-probe-runner.contract.test.ts \
             --allowOnly=false \
+            --maxWorkers=1 \
             --reporter=verbose \
             --reporter=json \
-            --outputFile.json "$results"
+            --outputFile.json "$results" 2>&1 | tee "$RUNNER_TEMP/macos-red-probe-runner.log"
           node --input-type=module - "$results" <<'NODE'
           import { readFileSync } from "node:fs";
           import { relative, resolve } from "node:path";
@@ -1186,8 +1188,8 @@ jobs:
           if (!resultsPath) throw new Error("missing macOS red-probe results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
           const exactCounts = {
-            numTotalTests: 66,
-            numPassedTests: 66,
+            numTotalTests: 79,
+            numPassedTests: 79,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1215,14 +1217,25 @@ jobs:
           if (
             testResult.status !== "passed" ||
             !Array.isArray(testResult.assertionResults) ||
-            testResult.assertionResults.length !== 66 ||
+            testResult.assertionResults.length !== 79 ||
             testResult.assertionResults.some(({ status }) => status !== "passed")
           ) {
-            throw new Error("macOS red-probe assertions were not exactly 66 passes");
+            throw new Error("macOS red-probe assertions were not exactly 79 passes");
           }
-          console.log("macOS red-probe runner passed 66 tests in 1 file with zero skipped");
+          console.log("macOS red-probe runner passed 79 tests in 1 file with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Preserve failed macOS red-probe diagnostics
+        if: failure() && steps.macos-red-probe-runner.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-red-probe-diagnostics
+          path: |
+            ${{ runner.temp }}/macos-red-probe-runner.json
+            ${{ runner.temp }}/macos-red-probe-runner.log
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Run the exact macOS FND/native capability lane
         shell: bash

@@ -1,5 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import { readSync } from "node:fs";
+import { readSync, writeSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { brotliDecompressSync } from "node:zlib";
 
@@ -14,6 +14,8 @@ const HEARTBEAT_INTERVAL_MS = 1_000;
 const AUTHENTICATION_SECRET_BYTES = 32;
 const HANDOFF_MAGIC = Buffer.from("AGENC_RED_PROBE_HANDOFF_V1\0", "ascii");
 const FINAL_AUTHENTICATION_DOMAIN = "AGENC_RED_PROBE_FINAL_V1\0";
+const PHASE_AUTHENTICATION_DOMAIN = "AGENC_RED_PROBE_PHASE_V1\0";
+const PHASE_PROTOCOL_PREFIX = "AGENC_RED_PROBE_PHASE_V1 ";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const MAXIMUM_HELPER_BYTES = 65_536;
 const MAXIMUM_COMPRESSED_HELPER_BYTES = MAXIMUM_HELPER_BYTES + 1_024;
@@ -58,6 +60,7 @@ const exitProcess = process.exit.bind(process);
 const scheduleInterval = setInterval;
 const stringifyJson = JSON.stringify;
 const writeStandardOutput = process.stdout.write.bind(process.stdout);
+const writePhaseBytes = writeSync;
 
 function hasExactKeys(value, expectedKeys) {
   if (value === null || typeof value !== "object" || isArray(value)) {
@@ -338,6 +341,23 @@ const configuration = loadConfiguration();
 // only in this closure.
 const { authenticationSecret, probeSource } =
   consumeBootstrapHandoff(configuration);
+let phaseSequence = 0;
+function writePhase(phase) {
+  const evidence = createObject(null);
+  evidence.protocolVersion = PROTOCOL_VERSION;
+  evidence.id = configuration.id;
+  evidence.task = configuration.task;
+  evidence.fingerprint = configuration.fingerprint;
+  evidence.sequence = ++phaseSequence;
+  evidence.phase = phase;
+  const authenticationTag = createHmacSha256("sha256", authenticationSecret)
+    .update(PHASE_AUTHENTICATION_DOMAIN, "utf8")
+    .update(stringifyJson(evidence), "utf8")
+    .digest("hex");
+  evidence.authenticationTag = authenticationTag;
+  writePhaseBytes(2, `${PHASE_PROTOCOL_PREFIX}${stringifyJson(evidence)}\n`);
+}
+writePhase("handoff-accepted");
 await import(configuration.networkTripwireUrl);
 await import(configuration.tsxLoaderUrl);
 let expectedFailureReported = false;
@@ -526,6 +546,7 @@ if (typeof helperModule[HELPER_FACTORY] !== "function") {
   throw new Error("red-probe helper does not export its canonical factory");
 }
 const probeAssertion = helperModule[HELPER_FACTORY](reportExpectedFailure);
+writePhase("bootstrap-initialized");
 
 let heartbeatSequence = 0;
 function writeHeartbeat() {
@@ -548,6 +569,7 @@ function writeHeartbeat() {
 // can synchronously occupy the event loop, while the independent hard deadline
 // still bounds this phase from process spawn.
 writeHeartbeat();
+writePhase("dependency-import-begun");
 const probeModule = await import(configuration.probeSourceUrl);
 if (
   keys(probeModule).length !== 1 ||
@@ -560,6 +582,7 @@ if (
 // Sequence 2 authenticates the ready boundary. The supervisor arms its shorter
 // silence deadline on this record and on every later periodic heartbeat.
 writeHeartbeat();
+writePhase("ready");
 const heartbeatTimer = scheduleInterval(
   writeHeartbeat,
   configuration.heartbeatIntervalMs,
@@ -597,6 +620,7 @@ function emitAuthenticatedExpectedRedResult() {
   writeStandardOutput(
     `${PROTOCOL_PREFIX}${stringifyJson(authenticatedEvidence)}\n`,
   );
+  writePhase("terminal-record");
   process.exitCode = EXPECTED_EXIT_CODE;
 }
 

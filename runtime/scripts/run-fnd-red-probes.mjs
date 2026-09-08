@@ -52,6 +52,15 @@ export const RED_PROBE_PROTOCOL_VERSION = 1;
 export const RED_PROBE_EXPECTED_EXIT_CODE = 86;
 export const RED_PROBE_PROTOCOL_PREFIX = "AGENC_RED_PROBE_V1 ";
 export const RED_PROBE_HEARTBEAT_PREFIX = "AGENC_RED_PROBE_HEARTBEAT_V1 ";
+export const RED_PROBE_PHASE_PREFIX = "AGENC_RED_PROBE_PHASE_V1 ";
+export const RED_PROBE_PHASES = Object.freeze([
+  "handoff-accepted",
+  "bootstrap-initialized",
+  "dependency-import-begun",
+  "ready",
+  "terminal-record",
+]);
+const PHASE_AUTHENTICATION_DOMAIN = "AGENC_RED_PROBE_PHASE_V1\0";
 
 const MANIFEST_SCHEMA_VERSION = 1;
 const AUDIT_SHA = "d2b228e87ea63bd6a5d93e6f599f36bce88d672b";
@@ -197,7 +206,7 @@ const RED_PROBE_HELPER_FUNCTION = "expectDeepStrictEqualRedProbe";
 const RED_PROBE_HELPER_TYPE = "RedProbeAssertion";
 const RED_PROBE_RUNNER_FUNCTION = "runRedProbe";
 const RED_PROBE_BOOTSTRAP_SHA256 =
-  "11666129eb16783a5514477f4706073bb4ed5d245bd379c87645feee2a62492d";
+  "52e0a1b24b995a892cfdb23c592ae65054ecb273c66dfb9d91418da461d817ee";
 const RED_PROBE_HELPER_SHA256 =
   "289471c65f3852d56e5c40ed95883697f8145b2e471b3eb0aab06660d1c1232a";
 const RED_PROBE_MARKDOWN_LOADER_SHA256 =
@@ -1433,6 +1442,91 @@ function createProbeHandoff(sourceBytes, authenticationSecret) {
   return handoff;
 }
 
+function expectedPhaseLine(entry, sequence, authenticationSecret) {
+  const phase = RED_PROBE_PHASES[sequence - 1];
+  if (phase === undefined) return undefined;
+  const evidence = {
+    protocolVersion: RED_PROBE_PROTOCOL_VERSION,
+    id: entry.id,
+    task: entry.task,
+    fingerprint: entry.fingerprint,
+    sequence,
+    phase,
+  };
+  const authenticationTag = createHmac("sha256", authenticationSecret)
+    .update(PHASE_AUTHENTICATION_DOMAIN, "utf8")
+    .update(JSON.stringify(evidence), "utf8")
+    .digest("hex");
+  return `${RED_PROBE_PHASE_PREFIX}${JSON.stringify({ ...evidence, authenticationTag })}\n`;
+}
+
+export function createRedProbePhaseMonitor(entry, authenticationSecret) {
+  const phases = [];
+  let bufferedOutput = Buffer.alloc(0);
+  let protocolInvalid = false;
+  let recordsObserved = 0;
+  let receivedBytes = 0;
+  return Object.freeze({
+    observe(chunk) {
+      if (protocolInvalid) return;
+      receivedBytes += chunk.byteLength;
+      if (receivedBytes > MAXIMUM_CHILD_OUTPUT_BYTES) {
+        protocolInvalid = true;
+        bufferedOutput = Buffer.alloc(0);
+        return;
+      }
+      bufferedOutput = Buffer.concat([bufferedOutput, chunk]);
+      let newline = bufferedOutput.indexOf(0x0a);
+      while (newline >= 0) {
+        const line = bufferedOutput.subarray(0, newline + 1);
+        bufferedOutput = bufferedOutput.subarray(newline + 1);
+        recordsObserved += 1;
+        const expected = expectedPhaseLine(entry, recordsObserved, authenticationSecret);
+        if (
+          expected === undefined ||
+          line.byteLength !== Buffer.byteLength(expected) ||
+          !timingSafeEqual(line, Buffer.from(expected))
+        ) {
+          protocolInvalid = true;
+          return;
+        }
+        phases.push(RED_PROBE_PHASES[recordsObserved - 1]);
+        newline = bufferedOutput.indexOf(0x0a);
+      }
+    },
+    snapshot() {
+      return Object.freeze({
+        lastAuthenticatedPhase: phases.at(-1) ?? "none",
+        phases: Object.freeze([...phases]),
+        protocolInvalid,
+        recordsObserved,
+        partialRecordBytes: bufferedOutput.byteLength,
+      });
+    },
+  });
+}
+
+function redProbePhaseFailure(error, execution) {
+  const { result, heartbeat, phases } = execution;
+  const diagnostics = Object.freeze({
+    lastAuthenticatedPhase: phases.lastAuthenticatedPhase,
+    authenticatedPhases: phases.phases,
+    phaseProtocolInvalid: phases.protocolInvalid,
+    processStarted: result.processStarted ?? null,
+    readyHeartbeatObserved: heartbeat.observedHeartbeats >= MINIMUM_READY_HEARTBEATS,
+    terminalRecordObserved: heartbeat.finalRecordObserved,
+    processTreeSettled: result.processTreeCleanupProven === true,
+    settlementBackstopExpired: result.backstopExpired,
+  });
+  const message = error instanceof Error ? error.message : String(error);
+  return Object.assign(
+    new Error(`${message}; phase diagnostics: ${JSON.stringify(diagnostics)}`, {
+      cause: error,
+    }),
+    { redProbeDiagnostics: diagnostics },
+  );
+}
+
 function spawnProbe(
   handoffBytes,
   path,
@@ -1443,7 +1537,9 @@ function spawnProbe(
   authenticationSecret,
   heartbeatSilenceMs,
   markdownPolicy,
+  superviseProbe = runSupervisedProcess,
 ) {
+  const phaseMonitor = createRedProbePhaseMonitor(entry, authenticationSecret);
   const heartbeat = createHeartbeatMonitor(
     entry,
     authenticationSecret,
@@ -1454,7 +1550,7 @@ function spawnProbe(
   assertPortableWindowsLaunch(process.execPath, args, env);
   let supervised;
   try {
-    supervised = runSupervisedProcess(
+    supervised = superviseProbe(
       {
         program: process.execPath,
         args,
@@ -1469,6 +1565,7 @@ function spawnProbe(
         terminateGraceMs: TERMINATE_GRACE_MS,
         settleBackstopMs: SETTLE_BACKSTOP_MS,
         onStdout: heartbeat.observe,
+        onStderr: phaseMonitor.observe,
       },
     );
   } catch (error) {
@@ -1491,7 +1588,11 @@ function spawnProbe(
     (result) => {
       const heartbeatEvidence = heartbeat.snapshot();
       heartbeat.close();
-      return Object.freeze({ heartbeat: heartbeatEvidence, result });
+      return Object.freeze({
+        heartbeat: heartbeatEvidence,
+        result,
+        phases: phaseMonitor.snapshot(),
+      });
     },
     (error) => {
       heartbeat.close();
@@ -1515,6 +1616,7 @@ function assertExpectedRedResult(
   heartbeat,
   authenticationSecret,
   markdownPolicy,
+  phases,
 ) {
   if (heartbeat.expired && result.stopReason === "aborted") {
     throw new Error(
@@ -1553,7 +1655,9 @@ function assertExpectedRedResult(
       authenticationSecret,
       markdownPolicy,
     ) ||
-    result.stderr.byteLength !== 0
+    phases.protocolInvalid ||
+    phases.partialRecordBytes !== 0 ||
+    phases.lastAuthenticatedPhase !== "terminal-record"
   ) {
     throw new Error(
       `${entry.id} emitted unrelated or noncanonical output: ${formatChildEvidence(result)}`,
@@ -1655,15 +1759,21 @@ export async function auditRedProbes(options = {}) {
         authenticationSecret,
         heartbeatSilenceMs,
         markdownPolicy,
+        options.testing?.superviseProbe,
       );
       assertNoNetworkAttempts(attemptLedger);
-      assertExpectedRedResult(
-        entry,
-        execution.result,
-        execution.heartbeat,
-        authenticationSecret,
-        markdownPolicy,
-      );
+      try {
+        assertExpectedRedResult(
+          entry,
+          execution.result,
+          execution.heartbeat,
+          authenticationSecret,
+          markdownPolicy,
+          execution.phases,
+        );
+      } catch (error) {
+        throw redProbePhaseFailure(error, execution);
+      }
     }
     return Object.freeze({
       files: manifest.probeCount,

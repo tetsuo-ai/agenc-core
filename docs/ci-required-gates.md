@@ -385,6 +385,23 @@ source. Contract tests remove each member in turn and require the policy-closure
 check to fail, so containment or handoff code cannot silently fall outside the
 approved digest.
 
+Red-probe failures include the last authenticated startup phase and separate
+spawn, heartbeat, terminal-record, and physical-settlement observations. The
+bootstrap signs an ordered stderr transcript for handoff acceptance, bootstrap
+initialization, dependency import, readiness, and the terminal record. The
+parent verifies each record's identity, sequence, and domain-separated HMAC
+before advancing the reported phase. Partial, forged, replayed, or unrelated
+records cannot advance that phase. Heartbeat observations remain separate from
+authenticated phase evidence.
+
+The assertion reporter stays in the bootstrap closure. One real child checks
+both direct and Function-constructor global lookups, records both observations
+for the parent, and must exit without expected-red evidence. Controlled-clock
+tests simulate stalls at the supervisor boundary. A separate real pre-ready
+stall verifies that the supervisor kills a resistant descendant and settles
+the process tree. Probe deadlines, heartbeat silence bounds, termination grace,
+and settlement backstops are unchanged.
+
 ## Inactive optional worker and publisher trust boundaries
 
 The trusted repository mirror is installed root-owned beneath
@@ -1050,7 +1067,10 @@ PTY set remains
 Windows still runs the 18-test lifecycle suite, the 68-test
 provider/observed-descendant set (including Job Object tree cleanup), and
 post-job leak assertions.
-The `macos-native` job first runs the 66-test red-probe runner contract.
+The `macos-native` job first runs the 79-test red-probe runner contract in a
+separate invocation capped at one worker. A failed invocation preserves its
+console log and JSON report, including phase diagnostics, for one day. This
+workflow remains disabled until an operator explicitly enables it.
 Never add deadline-only descendant-marker coverage back to that contract. Its
 hard deadline begins before probe readiness, so it races cold bootstrap on
 hosted runners. The native process test covers descendant timeout containment

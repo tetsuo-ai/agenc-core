@@ -18,7 +18,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, matchesGlob, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  SupervisedProcessCommand,
+  SupervisedProcessOptions,
+  SupervisedProcessResult,
+} from "../../src/utils/supervisedProcess.js";
 
 import {
   createRedProbeAssertion,
@@ -31,11 +36,14 @@ import {
   assertPortableWindowsLaunch,
   auditRedProbes,
   createRedProbeProtocolState,
+  createRedProbePhaseMonitor,
   loadRedProbeManifest,
   measurePortableWindowsLaunch,
   observeRedProbeProtocolLine,
   RED_PROBE_EXPECTED_EXIT_CODE as RUNNER_EXPECTED_EXIT_CODE,
   RED_PROBE_HEARTBEAT_PREFIX as RUNNER_HEARTBEAT_PREFIX,
+  RED_PROBE_PHASE_PREFIX,
+  RED_PROBE_PHASES,
   RED_PROBE_PROTOCOL_PREFIX as RUNNER_PROTOCOL_PREFIX,
   RED_PROBE_PROTOCOL_VERSION as RUNNER_PROTOCOL_VERSION,
   RED_PROBE_TASK_IDS as RUNNER_TASK_IDS,
@@ -223,6 +231,26 @@ function protocolHeartbeatLine(sequence: number): string {
     fingerprint: testFingerprint,
     sequence,
   })}\n`;
+}
+
+function protocolPhaseLine(
+  sequence: number,
+  authenticationSecret: Buffer = protocolAuthenticationSecret,
+  domain = "AGENC_RED_PROBE_PHASE_V1\0",
+): string {
+  const evidence = {
+    protocolVersion: RUNNER_PROTOCOL_VERSION,
+    id: testId,
+    task: testTask,
+    fingerprint: testFingerprint,
+    sequence,
+    phase: RED_PROBE_PHASES[sequence - 1],
+  };
+  const authenticationTag = createHmac("sha256", authenticationSecret)
+    .update(domain, "utf8")
+    .update(JSON.stringify(evidence), "utf8")
+    .digest("hex");
+  return `${RED_PROBE_PHASE_PREFIX}${JSON.stringify({ ...evidence, authenticationTag })}\n`;
 }
 
 function protocolFinalLine(
@@ -477,11 +505,19 @@ describe("FND red-probe supervisor", () => {
       ].join("\n"),
     );
 
-    await expect(
-      auditRedProbes({ runtimeRoot: fixtureRoot }),
-    ).rejects.toThrow(
-      `timed out after ${preReadyHardDeadlineMilliseconds}ms`,
-    );
+    const outcome = await auditRedProbes({ runtimeRoot: fixtureRoot })
+      .then(() => null, (error: unknown) => error);
+    expect(outcome).toMatchObject({
+      message: expect.stringContaining(`timed out after ${preReadyHardDeadlineMilliseconds}ms`),
+      redProbeDiagnostics: {
+        lastAuthenticatedPhase: "dependency-import-begun",
+        processStarted: true,
+        readyHeartbeatObserved: false,
+        terminalRecordObserved: false,
+        processTreeSettled: true,
+        settlementBackstopExpired: false,
+      },
+    });
     const descendantPid = Number.parseInt(readFileSync(marker, "utf8"), 10);
     expect(Number.isSafeInteger(descendantPid)).toBe(true);
     expect(() => process.kill(descendantPid, 0)).toThrow();
@@ -1346,44 +1382,162 @@ describe("FND red-probe supervisor", () => {
     expect(readFileSync(marker, "utf8")).toBe("absent");
   });
 
+  it("checks both imported-dependency reporter lookups in one supervised child", async () => {
+    const fixtureRoot = createFixture({
+      source: probeSource({
+        actual: "1",
+        expected: "1",
+        imports: ['import "../../helpers/reporter-forger.js";'],
+      }),
+    });
+    const marker = join(fixtureRoot, "reporter-lookups.json");
+    writeFixtureHelperModule(
+      fixtureRoot,
+      "reporter-forger.ts",
+      [
+        'import { writeFileSync } from "node:fs";',
+        `const key = Symbol.for(${JSON.stringify(reporterHandoffSymbolKey)});`,
+        'const roots = [globalThis, Function("return globalThis")()];',
+        "const reporters = roots.map((root) => root[key]);",
+        `writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ direct: typeof reporters[0] === "function", indirect: typeof reporters[1] === "function" }), "utf8");`,
+        'const reporter = reporters.find((candidate) => typeof candidate === "function");',
+        `if (typeof reporter === "function") reporter(${JSON.stringify({
+          fingerprint: testFingerprint,
+          id: testId,
+          task: testTask,
+        })});`,
+        "",
+      ].join("\n"),
+    );
+    const outcome = await auditRedProbes({ runtimeRoot: fixtureRoot })
+      .then(() => null, (error: unknown) => error);
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({ direct: false, indirect: false });
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toContain("did not exit expected-red: exit=0 signal=null");
+    expect(outcome).toMatchObject({
+      redProbeDiagnostics: {
+        lastAuthenticatedPhase: "ready",
+        processStarted: true,
+        readyHeartbeatObserved: true,
+        terminalRecordObserved: false,
+        processTreeSettled: true,
+      },
+    });
+  });
+
+  it("authenticates all startup phases in order across split pipe records", () => {
+    const monitor = createRedProbePhaseMonitor(protocolEntry, protocolAuthenticationSecret);
+    for (let sequence = 1; sequence <= RED_PROBE_PHASES.length; sequence += 1) {
+      const bytes = Buffer.from(protocolPhaseLine(sequence));
+      monitor.observe(bytes.subarray(0, 7));
+      expect(monitor.snapshot().recordsObserved).toBe(sequence - 1);
+      expect(monitor.snapshot().lastAuthenticatedPhase).toBe(RED_PROBE_PHASES[sequence - 2] ?? "none");
+      monitor.observe(bytes.subarray(7));
+    }
+    expect(monitor.snapshot()).toEqual({
+      lastAuthenticatedPhase: "terminal-record",
+      phases: RED_PROBE_PHASES,
+      protocolInvalid: false,
+      recordsObserved: 5,
+      partialRecordBytes: 0,
+    });
+  });
+
   it.each([
-    {
-      name: "direct global lookup",
-      expression: "globalThis",
-    },
-    {
-      name: "Function-constructor lookup",
-      expression: 'Function("return globalThis")()',
-    },
-  ])(
-    "does not let an imported dependency forge through $name",
-    async ({ expression }) => {
-      const fixtureRoot = createFixture({
-        source: probeSource({
-          actual: "1",
-          expected: "1",
-          imports: ['import "../../helpers/reporter-forger.js";'],
-        }),
+    { name: "wrong secret", records: () => protocolPhaseLine(1, Buffer.alloc(32, 9)) },
+    { name: "wrong authentication domain", records: () => protocolPhaseLine(1, protocolAuthenticationSecret, finalAuthenticationDomain) },
+    { name: "wrong probe identity", records: () => protocolPhaseLine(1).replace(testId, "different-fixture") },
+    { name: "out-of-order phase", records: () => protocolPhaseLine(2) },
+    { name: "replayed phase", records: () => protocolPhaseLine(1) + protocolPhaseLine(1) },
+    { name: "forged phase name", records: () => protocolPhaseLine(1).replace("handoff-accepted", "ready") },
+    { name: "unrelated stderr", records: () => "unrelated\n" },
+    { name: "oversized partial record", records: () => "x".repeat(16_385) },
+  ])("rejects $name without promoting an unauthenticated phase", ({ name, records }) => {
+    const monitor = createRedProbePhaseMonitor(protocolEntry, protocolAuthenticationSecret);
+    monitor.observe(Buffer.from(records()));
+    expect(monitor.snapshot()).toMatchObject({
+      protocolInvalid: true,
+      lastAuthenticatedPhase: name === "replayed phase" ? "handoff-accepted" : "none",
+    });
+  });
+
+  it.each([0, 1, 2, 3, 4])("classifies deterministic starvation after %i authenticated phases and awaits settlement", async (phaseCount) => {
+    vi.useFakeTimers();
+    try {
+      const fixtureRoot = createFixture();
+      let signalSpawned: () => void = () => {};
+      const spawned = new Promise<void>((resolve) => {
+        signalSpawned = resolve;
       });
-      writeFixtureHelperModule(
-        fixtureRoot,
-        "reporter-forger.ts",
-        [
-          `const root = ${expression};`,
-          `const reporter = root[Symbol.for(${JSON.stringify(reporterHandoffSymbolKey)})];`,
-          `if (typeof reporter === "function") reporter(${JSON.stringify({
-            fingerprint: testFingerprint,
-            id: testId,
-            task: testTask,
-          })});`,
-          "",
-        ].join("\n"),
-      );
-      await expect(
-        auditRedProbes({ runtimeRoot: fixtureRoot }),
-      ).rejects.toThrow("did not exit expected-red");
-    },
-  );
+      const settled = vi.fn();
+      const superviseProbe = vi.fn((_command: SupervisedProcessCommand, options: SupervisedProcessOptions) => new Promise<SupervisedProcessResult>((resolve) => {
+        if (!Buffer.isBuffer(options.stdin)) throw new TypeError("missing fixture handoff bytes");
+        const secretOffset = Buffer.byteLength("AGENC_RED_PROBE_HANDOFF_V1\0");
+        const secret = options.stdin.subarray(secretOffset, secretOffset + 32);
+        const stderr = Buffer.from(
+          Array.from({ length: phaseCount }, (_, index) =>
+            protocolPhaseLine(index + 1, secret),
+          ).join(""),
+        );
+        const stdout = phaseCount === 4
+          ? Buffer.from(protocolHeartbeatLine(1) + protocolHeartbeatLine(2))
+          : Buffer.alloc(0);
+        const control = { stop: vi.fn() };
+        options.onStderr?.(stderr, control);
+        options.onStdout?.(stdout, control);
+        const finish = (stopReason: "timeout" | "aborted") => {
+          clearTimeout(timer);
+          options.signal?.removeEventListener("abort", abort);
+          settled();
+          resolve({
+            stdout,
+            stderr,
+            exitCode: null,
+            signal: "SIGTERM",
+            stopReason,
+            forced: true,
+            backstopExpired: false,
+            processStarted: true,
+            processTreeCleanupProven: true,
+          });
+        };
+        const abort = () => finish("aborted");
+        const timer = setTimeout(() => finish("timeout"), options.timeoutMs);
+        options.signal?.addEventListener("abort", abort, { once: true });
+        signalSpawned();
+      }));
+      const outcome = auditRedProbes({ runtimeRoot: fixtureRoot, testing: { superviseProbe } })
+        .then(() => null, (error: unknown) => error);
+      await Promise.race([
+        spawned,
+        outcome.then((error) => {
+          throw error ?? new Error("probe settled before supervision");
+        }),
+      ]);
+      expect(settled).not.toHaveBeenCalled();
+      const elapsed = phaseCount === 4 ? 5_000 : defaultFixtureTimeoutMs;
+      await vi.advanceTimersByTimeAsync(elapsed);
+      expect(await outcome).toMatchObject({
+        message: expect.stringContaining(phaseCount === 4
+          ? "missed a trusted heartbeat for 5000ms"
+          : `timed out after ${defaultFixtureTimeoutMs}ms`),
+        redProbeDiagnostics: {
+          lastAuthenticatedPhase: RED_PROBE_PHASES[phaseCount - 1] ?? "none",
+          processStarted: true,
+          readyHeartbeatObserved: phaseCount === 4,
+          processTreeSettled: true,
+          settlementBackstopExpired: false,
+        },
+      });
+      expect(settled).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(defaultFixtureTimeoutMs);
+      expect(settled).toHaveBeenCalledOnce();
+      expect(superviseProbe).toHaveBeenCalledOnce();
+      expect(superviseProbe.mock.calls[0]?.[1].timeoutMs).toBe(defaultFixtureTimeoutMs);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("pins the deep-equality predicate before dependencies can replace builtin exports", async () => {
     const fixtureRoot = createFixture({
