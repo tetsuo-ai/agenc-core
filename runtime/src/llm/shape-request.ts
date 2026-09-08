@@ -1,11 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ProviderModelCapabilities } from "./capabilities.js";
+import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
 
 export interface SessionHistoryRequirements {
   readonly hasImageHistory: boolean;
   readonly hasAudioHistory: boolean;
   readonly hasThinkingHistory: boolean;
   readonly reasoningEffortRequested: boolean;
+  readonly reasoningEffort?: string;
 }
 
 export interface HistoryCompatibilityCheck {
@@ -112,6 +114,7 @@ export function analyzeSessionHistoryRequirements(
   const reasoningEffort = state.sessionConfiguration?.collaborationMode?.reasoningEffort;
   return {
     ...requirements,
+    ...(typeof reasoningEffort === "string" ? { reasoningEffort } : {}),
     reasoningEffortRequested:
       typeof reasoningEffort === "string" &&
       reasoningEffort.length > 0 &&
@@ -134,7 +137,15 @@ export function validateHistoryCompatibility(
   if (requirements.hasThinkingHistory && !caps.acceptsThinkingHistory) {
     missing.push("thinking history");
   }
-  if (requirements.reasoningEffortRequested && !caps.acceptsReasoningEffort) {
+  const levels = resolveRegisteredModelCatalogEntry(caps)
+    ?.supportedReasoningLevels;
+  const unsupportedEffort = requirements.reasoningEffort !== undefined &&
+    levels !== undefined &&
+    !levels.some((level) => level === requirements.reasoningEffort);
+  if (
+    requirements.reasoningEffortRequested &&
+    (!caps.acceptsReasoningEffort || unsupportedEffort)
+  ) {
     missing.push("reasoning effort");
   }
 

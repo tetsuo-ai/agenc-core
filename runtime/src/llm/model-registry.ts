@@ -74,6 +74,7 @@ function inferDefaultReasoningLevel(
   entry: ModelRegistryEntry,
   supportedReasoningLevels: readonly ReasoningEffort[],
 ): ReasoningEffort | undefined {
+  if (entry.provider === "gemini") return undefined;
   const catalog = resolveRegisteredModelCatalogEntry({
     provider: entry.provider,
     model: entry.model,

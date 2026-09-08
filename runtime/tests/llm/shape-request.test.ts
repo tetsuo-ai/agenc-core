@@ -51,6 +51,7 @@ describe("analyzeSessionHistoryRequirements", () => {
       hasAudioHistory: true,
       hasThinkingHistory: true,
       reasoningEffortRequested: true,
+      reasoningEffort: "high",
     });
   });
 });

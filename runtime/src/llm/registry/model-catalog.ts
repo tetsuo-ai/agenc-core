@@ -16,6 +16,10 @@ import {
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
+import {
+  GEMINI_THINKING_MODELS,
+  resolveGeminiThinkingModel,
+} from "./gemini-thinking-models.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -454,6 +458,25 @@ const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
 
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
+    ...GEMINI_THINKING_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
+      provider: "gemini",
+      model: entry.model,
+      displayName: entry.model,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: false,
+      supportsStructuredOutput: false,
+      supportsStructuredOutputWithTools: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: entry.levels,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: index,
+      visibility: entry.curated ? "list" : "none",
+    })),
     ...OPENAI_REASONING_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "openai",
       model: entry.model,
@@ -1027,6 +1050,12 @@ export function resolveRegisteredModelCatalogEntry(input: {
   const candidates = REGISTERED_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );
+  if (provider === "gemini") {
+    return findExactModel(
+      resolveGeminiThinkingModel(model)?.model ?? "",
+      candidates,
+    );
+  }
   const exact = findExactModel(model, candidates) ??
     findNamespacedSuffix(model, candidates, true);
   if (exact !== undefined) return exact;

@@ -73,6 +73,7 @@ import {
   getInitialEffortSetting,
 } from "../utils/effort.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
+import { resolveGeminiReasoningEffort } from "../llm/registry/gemini-thinking-models.js";
 
 type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
 
@@ -94,14 +95,26 @@ type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
 function resolveSessionReasoningEffort(
   turnEffort: ReasoningEffort | undefined,
   supportedReasoningLevels?: ReadonlyArray<ReasoningEffort>,
+  selection?: {
+    readonly provider: string;
+    readonly model: string;
+    readonly effortSource?: string;
+  },
 ): WireReasoningEffort | undefined {
   let requested: ReasoningEffort | undefined;
   if (turnEffort === undefined) {
+    if (
+      selection?.provider === "gemini" &&
+      selection.effortSource === "default"
+    ) return undefined;
     requested = getInitialEffortSetting();
   } else if (turnEffort !== "none") {
     requested = turnEffort;
   }
   if (requested === undefined) return undefined;
+  if (selection?.provider === "gemini") {
+    return resolveGeminiReasoningEffort(selection.model, requested);
+  }
   if (requested === "max" || requested === "xhigh") {
     if (supportedReasoningLevels === undefined) {
       return requested === "max" ? "xhigh" : requested;
@@ -325,6 +338,12 @@ function buildProviderOptions(
     reasoningEffort: resolveSessionReasoningEffort(
       ctx.reasoningEffort,
       ctx.modelInfo.supportedReasoningLevels,
+      {
+        provider: ctx.provider.name,
+        model: ctx.modelInfo.slug,
+        effortSource: session.services.configStore
+          ?.provenance?.("reasoning_effort")?.scope,
+      },
     ),
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,

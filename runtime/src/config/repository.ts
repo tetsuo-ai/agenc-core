@@ -1500,6 +1500,15 @@ async function loadLayeredConfigInternal(
     sources.push(merged.source);
   }
 
+  if (
+    config.model_provider === "gemini" &&
+    provenance.reasoning_effort?.scope === "default"
+  ) {
+    const { reasoning_effort: _defaultEffort, ...providerDefaults } = config;
+    config = providerDefaults;
+    delete provenance.reasoning_effort;
+  }
+
   config = mergeConfigs(config, {
     configVersion: CANONICAL_CONFIG_VERSION,
   });

@@ -258,7 +258,7 @@ otherwise.
 | `model_provider` | `grok` |
 | `approval_policy` | `on-request` |
 | `sandbox_mode` | `workspace-write` |
-| `reasoning_effort` | `medium` |
+| `reasoning_effort` | `medium`; omitted for Gemini unless explicitly configured |
 | `approvals_reviewer` | `user` |
 | `agent_max_depth` | `1` |
 | `auth.backend` | `remote` |

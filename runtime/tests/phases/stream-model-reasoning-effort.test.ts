@@ -94,6 +94,37 @@ describe("resolveSessionReasoningEffort", () => {
   });
 });
 
+describe("Gemini session reasoning effort", () => {
+  const selection = { provider: "gemini", model: "gemini-3.1-pro-preview" };
+
+  beforeEach(() => { settingsEffort.current = undefined; });
+
+  test.each(["low", "medium", "high"] as const)("preserves configured and stamped %s", (effort) => {
+    settingsEffort.current = effort;
+    expect(resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, selection)).toBe(effort);
+    expect(resolveSessionReasoningEffort(effort, GROK_4_5_LEVELS, selection)).toBe(effort);
+    expect(resolveSessionReasoningEffort("none", GROK_4_5_LEVELS, selection)).toBeUndefined();
+  });
+
+  test("leaves an unconfigured Gemini effort absent", () => {
+    expect(resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, selection)).toBeUndefined();
+  });
+
+  test("does not apply the daemon's built-in Grok default after a Gemini switch", () => {
+    settingsEffort.current = "medium";
+    const defaultSelection = { ...selection, effortSource: "default" };
+    expect(resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, defaultSelection)).toBeUndefined();
+    expect(resolveSessionReasoningEffort("medium", GROK_4_5_LEVELS, defaultSelection)).toBe("medium");
+    expect(resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, { ...selection, effortSource: "user" })).toBe("medium");
+  });
+
+  test.each(["max", "xhigh"] as const)("never folds unsupported %s to high", (effort) => {
+    expect(() => resolveSessionReasoningEffort(effort, GROK_4_5_LEVELS, selection)).toThrow(/reasoning effort/iu);
+    settingsEffort.current = effort;
+    expect(() => resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, selection)).toThrow(/reasoning effort/iu);
+  });
+});
+
 describe("sessionConfigurationFromAgenCConfig reasoning effort seeding", () => {
   test.each(["max", "xhigh"] as const)("retains configured Spark 1.3 %s", (effort) => {
     const configured = sessionConfigurationFromAgenCConfig({

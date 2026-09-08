@@ -11,6 +11,8 @@ import type { Session } from "../../session/session.js";
 import { createAgentRoleWorkspace } from "../role.js";
 import { AgentRoleCatalog } from "../role-catalog.js";
 import { signSessionId } from "../_deps/filesystem-args.js";
+import { StaticModelsManager } from "../../../src/llm/models-manager.js";
+import { defaultConfig } from "../../../src/config/schema.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
 const ROLE_CATALOG = new AgentRoleCatalog(ROLE_WORKSPACE);
@@ -105,6 +107,45 @@ function makeOptions(
 describe("spawn_agent isolation", () => {
   beforeEach(() => {
     mockDelegate.mockReset();
+  });
+
+  it.each(["override", "role"] as const)("validates Gemini %s effort against real model metadata", async (source) => {
+    const modelsManager = new StaticModelsManager({
+      config: { ...defaultConfig(), model_provider: "gemini", model: "gemini-3.1-pro-preview" },
+    });
+    const base = makeSession();
+    const session = {
+      ...base,
+      modelInfo: await modelsManager.getModelInfo("gemini-3.1-pro-preview"),
+      sessionConfiguration: { ...base.sessionConfiguration, collaborationMode: { model: "gemini-3.1-pro-preview" } },
+      services: { ...base.services, modelsManager },
+    } as Session;
+    for (const effort of ["low", "medium", "high", "none", "minimal", "xhigh", "max"] as const) {
+      mockDelegate.mockReset();
+      mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) } as never);
+      const options = makeOptions(session);
+      const roleOptions = source === "role" ? {
+        ...options,
+        ensureAgentControl: () => {
+          const original = options.ensureAgentControl(session);
+          return { ...original, control: { ...original.control, roleCatalog: { require: () => ({ name: "gemini-review", config: { reasoningEffort: effort } }) } } };
+        },
+      } as unknown as MultiAgentV2Options : options;
+      const result = await createSpawnAgentTool(roleOptions).execute({
+        message: "review fixture",
+        task_name: "gemini_review",
+        ...(source === "role" ? { agent_type: "gemini-review" } : { reasoning_effort: effort }),
+        __callId: `gemini-${source}-${effort}`,
+      });
+      if (["low", "medium", "high", "none"].includes(effort)) {
+        expect(result.isError).not.toBe(true);
+        expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({ reasoningEffort: effort }));
+      } else {
+        expect(result.isError).toBe(true);
+        expect(String(result.content)).toMatch(/is not supported for model|invalid reasoning_effort/u);
+        expect(mockDelegate).not.toHaveBeenCalled();
+      }
+    }
   });
 
   it("refuses an unknown model as a confirmed no-effect failure before anything is spawned", async () => {

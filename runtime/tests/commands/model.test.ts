@@ -229,6 +229,22 @@ describe("checkModelHistoryCompat", () => {
   });
 });
 
+describe("Gemini effort switch compatibility", () => {
+  it.each([
+    ["grok", "grok-4.6", "high", "gemini", "gemini-3.1-pro-preview", true],
+    ["grok", "grok-4.6", "xhigh", "gemini", "gemini-3.1-pro-preview", false],
+    ["gemini", "gemini-3.5-flash", "minimal", "gemini", "gemini-3.1-pro-preview", false],
+    ["gemini", "gemini-3.1-pro-preview", "medium", "gemini", "gemini-3-pro-preview", false],
+    ["gemini", "gemini-3.1-pro-preview", "low", "grok", "grok-4.6", true],
+    ["gemini", "gemini-3.5-flash", "minimal", "grok", "grok-4.6", false],
+    ["gemini", "gemini-3.1-pro-preview", "none", "gemini", "gemini-2.5-flash", true],
+    ["gemini", "gemini-3.1-pro-preview", "high", "gemini", "gemini-2.5-flash", false],
+  ] as const)("checks %s/%s %s against %s/%s", (provider, model, reasoningEffort, targetProvider, targetModel, compatible) => {
+    const session = stubSession({ provider, model, reasoningEffort });
+    expect(checkModelHistoryCompat(session, targetModel, targetProvider).compatible).toBe(compatible);
+  });
+});
+
 describe("modelCommand", () => {
   it("is userInvocable and immediate", () => {
     expect(modelCommand.userInvocable).toBe(true);

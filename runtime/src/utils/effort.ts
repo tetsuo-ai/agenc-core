@@ -14,6 +14,7 @@ import {
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { resolveRegisteredModelCatalogEntry } from '../llm/registry/model-catalog.js'
 import { isVerifiedOpenAiReasoningModel } from '../llm/registry/openai-reasoning-models.js'
+import { resolveGeminiThinkingModel } from '../llm/registry/gemini-thinking-models.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 import { resolveSecureStorageHome } from './secureStorage/home.js'
 
@@ -62,6 +63,9 @@ function inferCatalogProvider(
   }
   const normalizedModel = model.trim().toLowerCase()
   if (normalizedModel.startsWith('grok-')) return 'grok'
+  if (
+    normalizedModel.startsWith('gemini-') || resolveGeminiThinkingModel(model)
+  ) return 'gemini'
   if (normalizedModel.startsWith('muse-spark-')) return 'meta'
   if (isVerifiedOpenAiReasoningModel(normalizedModel)) return 'openai'
   return undefined
@@ -578,6 +582,9 @@ function getDefaultEffortForModelForOptionalContext(
   }
 
   const registeredProvider = inferCatalogProvider(model, context)
+  if (registeredProvider === 'gemini') {
+    return resolveGeminiThinkingModel(model)?.defaultLevel
+  }
   const registeredEntry =
     registeredProvider === 'meta' ||
       registeredProvider === 'zai' ||

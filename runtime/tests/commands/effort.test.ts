@@ -65,6 +65,52 @@ function commandContext(
   };
 }
 
+describe("/effort Gemini catalog levels", () => {
+  beforeEach(() => settings.update.mockReset());
+
+  test("displays the exact Pro levels and provider default", async () => {
+    const { context } = commandContext("gemini-3.1-pro-preview", "", { provider: "gemini" });
+    const result = await effortCommand.execute(context);
+    expect(result).toMatchObject({ kind: "text" });
+    if (result.kind === "text") {
+      expect(result.text).toContain("high effort (model default)");
+      expect(result.text).toContain("low/medium/high");
+    }
+  });
+
+  test.each(["low", "medium", "high"])("sets Pro %s without translation", async (level) => {
+    const { context, getAppState } = commandContext("gemini-3.1-pro-preview", level, { provider: "gemini" });
+    expect(await effortCommand.execute(context)).toMatchObject({ kind: "text" });
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: level });
+    expect(getAppState()).toMatchObject({ effortValue: level });
+  });
+
+  test.each(["minimal", "xhigh", "max"])("rejects unsupported Pro %s", async (level) => {
+    const { context } = commandContext("gemini-3.1-pro-preview", level, { provider: "gemini" });
+    const result = await effortCommand.execute(context);
+    expect(result).toMatchObject({ kind: "error" });
+    if (result.kind === "error") expect(result.message).toContain("Available: low, medium, high");
+    expect(settings.update).not.toHaveBeenCalled();
+  });
+
+  test("allows minimal on Flash and resets to its documented default", async () => {
+    const { context } = commandContext("gemini-3.5-flash", "minimal", { provider: "gemini" });
+    expect(await effortCommand.execute(context)).toMatchObject({ kind: "text" });
+    expect(settings.update).toHaveBeenLastCalledWith("userSettings", { reasoning_effort: "minimal" });
+    const reset = commandContext("gemini-3.5-flash", "default", { provider: "gemini" });
+    const result = await effortCommand.execute(reset.context);
+    expect(result).toMatchObject({ kind: "text" });
+    if (result.kind === "text") expect(result.text).toContain("default (medium)");
+    expect(settings.update).toHaveBeenLastCalledWith("userSettings", { reasoning_effort: undefined });
+  });
+
+  test.each(["gemini-2.5-flash", "gemini-3.1-pro-preview-unverified"])("does not offer level controls for %s", async (model) => {
+    const { context } = commandContext(model, "low", { provider: "gemini" });
+    expect(await effortCommand.execute(context)).toMatchObject({ kind: "error" });
+    expect(settings.update).not.toHaveBeenCalled();
+  });
+});
+
 describe("/effort Grok catalog levels", () => {
   beforeEach(() => {
     settings.update.mockReset();

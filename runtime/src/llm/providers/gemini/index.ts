@@ -12,6 +12,7 @@ import {
 } from "../../client-session.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import { LLMProviderError } from "../../errors.js";
+import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -2491,6 +2492,7 @@ function geminiToolConfig(
 }
 
 function geminiGenerationConfig(
+  model: string,
   options: LLMChatOptions | undefined,
   defaultMaxTokens: number | undefined,
   schemaCapabilities: GeminiResponseJsonSchemaCapabilities,
@@ -2512,22 +2514,8 @@ function geminiGenerationConfig(
   ) {
     config.stopSequences = [...options.stopSequences];
   }
-  // Thinking depth here is `thinking_level`, not a token budget: the
-  // documented rungs are minimal/low/medium/high depending on the model.
-  // Mapping the app's ladder onto them is what makes an effort choice
-  // reach this provider at all — without it the setting was inert.
-  const effort = options?.reasoningEffort;
-  if (effort !== undefined) {
-    // gemini-3.1-pro-preview, the curated model here, documents low/medium/high
-    // only: minimal folds down, and xhigh/max fold up to its ceiling.
-    const level =
-      effort === "minimal" || effort === "low"
-        ? "low"
-        : effort === "medium"
-          ? "medium"
-          : "high";
-    // Nested under thinkingConfig, camelCase: the flat snake_case field
-    // is not part of this API's generation config and 400s the request.
+  const level = resolveGeminiReasoningEffort(model, options?.reasoningEffort);
+  if (level !== undefined) {
     config.thinkingConfig = { thinkingLevel: level };
   }
   const structuredSchema = options?.structuredOutput?.schema;
@@ -2583,6 +2571,7 @@ function buildGeminiRequest(args: {
       ? { systemInstruction: contents.systemInstruction }
       : {}),
     generationConfig: geminiGenerationConfig(
+      args.model,
       args.options,
       args.config.maxTokens,
       schemaCapabilities,

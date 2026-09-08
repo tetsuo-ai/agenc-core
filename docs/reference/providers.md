@@ -26,6 +26,41 @@ Bare interactive startup with a fresh install uses the **config** default
 explicit model, the registry also uses **`grok-4.6`**. Managed OpenRouter is a
 separate provider route and its paid default remains **`x-ai/grok-4.5`**.
 
+## Gemini reasoning effort
+
+The native Gemini adapter sends an explicit effort as
+`generationConfig.thinkingConfig.thinkingLevel`. The model catalog, `/effort`,
+child-agent and role overrides, and provider/model switch checks use the same
+supported-level metadata.
+
+| Model | Explicit levels | Provider default when omitted |
+| --- | --- | --- |
+| `gemini-3.1-pro-preview` | `low`, `medium`, `high` | `high` |
+| `gemini-3.7-flash` | `low`, `medium`, `high` | `medium` |
+| `gemini-3.5-flash` | `minimal`, `low`, `medium`, `high` | `medium` |
+| `gemini-3-flash-preview` | `minimal`, `low`, `medium`, `high` | `high` |
+| `gemini-3-pro-preview` | `low`, `high` | `high` |
+
+An unconfigured Gemini session leaves thinking controls out of the request.
+An explicit `reasoning_effort = "none"` also omits the control, even when
+another configured effort would otherwise apply. Neither case disables the
+model's thinking. `/effort default` removes the saved override. A compatible
+effort already stamped on a session remains in effect after a provider switch.
+
+Unsupported explicit levels fail before a request is sent. AgenC does not
+translate `minimal`, `xhigh`, or `max` into a different Gemini level. Unknown
+model variants do not inherit levels from a name prefix. Gemini 2.5 Pro,
+Flash, and Flash-Lite use `thinkingBudget` on the native `generateContent`
+API, so AgenC does not accept named effort levels for those models or invent
+a token-budget conversion.
+
+Sources checked on 2026-09-08: Google's
+[native ThinkingConfig reference](https://ai.google.dev/api/generate-content#ThinkingConfig),
+[thinking guide](https://ai.google.dev/gemini-api/docs/thinking), and
+[Gemini 3 guide](https://ai.google.dev/gemini-api/docs/gemini-3).
+The Interactions API's level abstraction for Gemini 2.5 does not apply to
+AgenC's native `generateContent` requests.
+
 ## Single provider authority
 
 Startup provider selection is explicit and layered. Before managed policy is
