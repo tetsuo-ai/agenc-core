@@ -247,6 +247,65 @@ describe("useTaskTail", () => {
     expect(view.frames.at(-1)).toBe("");
   });
 
+  it.each(["running", "completed"])(
+    "treats a missing initial output file as empty for a %s task",
+    async (status) => {
+      const missing = Object.assign(new Error("output is not created"), { code: "ENOENT" });
+      mocks.tailFile.mockRejectedValue(missing);
+      view = await renderTail({ id: "starting", status });
+      await vi.waitFor(() => expect(mocks.logError).toHaveBeenCalledWith(missing));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(view.frames.at(-1)).toBe("");
+      expect(view.errors.at(-1)).toBeNull();
+      if (status === "running") {
+        mocks.tailFile.mockResolvedValue({ content: "first output" });
+        vi.advanceTimersByTime(1_000);
+        await vi.waitFor(() => expect(view!.frames.at(-1)).toBe("first output"));
+        expect(view.errors.at(-1)).toBeNull();
+      } else {
+        vi.advanceTimersByTime(5_000);
+        expect(mocks.tailFile).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  it.each(["", "retained output"])(
+    "reports a disappeared file after successfully reading %j",
+    async (content) => {
+      const missing = Object.assign(new Error("output disappeared"), { code: "ENOENT" });
+      mocks.tailFile
+        .mockResolvedValueOnce({ content })
+        .mockRejectedValueOnce(missing);
+      view = await renderTail({ id: "task", status: "running" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(mocks.tailFile).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(1_000);
+      await vi.waitFor(() => expect(view!.errors.at(-1)).toBe(missing.message));
+      expect(view.frames.at(-1)).toBe(content);
+      mocks.tailFile.mockRejectedValueOnce(missing);
+      view.update({ id: "task", status: "completed" });
+      await vi.waitFor(() => expect(mocks.tailFile).toHaveBeenCalledTimes(3));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(view.errors.at(-1)).toBe(missing.message);
+      mocks.tailFile.mockRejectedValueOnce(missing);
+      view.update({ id: "new", status: "completed" });
+      await vi.waitFor(() => expect(mocks.tailFile).toHaveBeenCalledTimes(4));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(view.errors.at(-1)).toBeNull();
+    },
+  );
+
+  it.each(["EACCES", "EPERM", "EIO"])(
+    "reports an initial %s read error",
+    async (code) => {
+      const error = Object.assign(new Error("output cannot be read"), { code });
+      mocks.tailFile.mockRejectedValue(error);
+      view = await renderTail({ id: "task", status: "running" });
+      await vi.waitFor(() => expect(view!.errors.at(-1)).toBe(error.message));
+      expect(view.frames.at(-1)).toBe("");
+    },
+  );
+
   it("restarts the read and interval when caller limits change", async () => {
     const stale = pendingRead();
     mocks.tailFile

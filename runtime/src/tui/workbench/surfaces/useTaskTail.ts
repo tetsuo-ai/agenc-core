@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { isENOENT } from "../../../utils/errors.js";
 import { tailFile } from "../../../utils/fsOperations.js";
 import { logError } from "../../../utils/log.js";
 import { getTaskOutputPath } from "../../../utils/task/diskOutput.js";
@@ -23,12 +24,15 @@ export function useTaskTail({
 }): TaskTail {
   const [tail, setTail] = useState<{
     readonly taskId: string | null;
-  } & TaskTail>({ taskId: null, content: "", error: null });
+    readonly hasRead: boolean;
+  } & TaskTail>({ taskId: null, content: "", error: null, hasRead: false });
 
   useEffect(() => {
     const id = taskId || null;
     setTail((current) =>
-      current.taskId === id ? current : { taskId: id, content: "", error: null },
+      current.taskId === id
+        ? current
+        : { taskId: id, content: "", error: null, hasRead: false },
     );
     if (!id) return;
 
@@ -41,16 +45,22 @@ export function useTaskTail({
       try {
         const result = await tailFile(getTaskOutputPath(id), maxBytes);
         if (active) {
-          setTail({ taskId: id, content: result.content, error: null });
+          setTail({ taskId: id, content: result.content, error: null, hasRead: true });
         }
       } catch (error) {
         // Retain the last successful tail after a transient disk failure.
         if (active) {
-          setTail((current) => ({
-            taskId: id,
-            content: current.taskId === id ? current.content : "",
-            error: error instanceof Error ? error.message : String(error),
-          }));
+          setTail((current) => {
+            const hasRead = current.taskId === id && current.hasRead;
+            return {
+              taskId: id,
+              content: current.taskId === id ? current.content : "",
+              hasRead,
+              error: isENOENT(error) && !hasRead
+                ? null
+                : error instanceof Error ? error.message : String(error),
+            };
+          });
           logError(error);
         }
       } finally {
