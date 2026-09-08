@@ -718,7 +718,7 @@ export class EmbeddedNeovimSession {
             typeof value?.mode !== "string" ||
             typeof value.blocking !== "boolean"
           ) {
-            throw new Error("Embedded Neovim returned an invalid input mode.");
+            throw new TypeError("Embedded Neovim returned an invalid input mode.");
           }
           onMode(value.mode);
           if (

@@ -2499,10 +2499,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     inputKind?: NeovimInputTraceToken["kind"],
   ): Promise<void> {
     const ownership = this.#captureOperationOwnership(session);
-    const sessionId = NEOVIM_EDITOR_SESSION_IDS.get(session);
-    const traceToken = inputKind && sessionId
-      ? this.#inputTrace?.begin(sessionId, inputKind)
-      : undefined;
+    const traceToken = this.#beginInputTrace(session, inputKind);
     let traceSettled = false;
     const pendingTransitionGeneration = this.#pendingTransitionGeneration;
     const sessionActionGate = this.#sessionActionGate;
@@ -2528,12 +2525,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       const result = await action();
       if (traceToken) {
         traceSettled = true;
-        if (result === false) {
-          this.#inputTrace?.progress(traceToken, "skipped");
-        } else {
-          this.#inputTrace?.progress(traceToken, "rpc-complete");
-          await this.#traceInputMode(ownership, traceToken);
-        }
+        await this.#traceCompletedInput(ownership, traceToken, result);
       }
     } catch (error) {
       if (traceToken) {
@@ -2547,6 +2539,28 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       }
       releaseAction();
     }
+  }
+
+  #beginInputTrace(
+    session: EmbeddedNeovimSession,
+    kind: NeovimInputTraceToken["kind"] | undefined,
+  ): NeovimInputTraceToken | undefined {
+    const sessionId = NEOVIM_EDITOR_SESSION_IDS.get(session);
+    if (!kind || !sessionId) return undefined;
+    return this.#inputTrace?.begin(sessionId, kind);
+  }
+
+  async #traceCompletedInput(
+    ownership: NeovimOperationOwnership,
+    token: NeovimInputTraceToken,
+    result: unknown,
+  ): Promise<void> {
+    if (result === false) {
+      this.#inputTrace?.progress(token, "skipped");
+      return;
+    }
+    this.#inputTrace?.progress(token, "rpc-complete");
+    await this.#traceInputMode(ownership, token);
   }
 
   async #traceInputMode(

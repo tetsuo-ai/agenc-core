@@ -118,31 +118,17 @@ export async function runEmbeddedNeovimCommand(
     while (Date.now() < deadline) {
       session.throwIfAborted?.();
       const records = await readTrace();
-      const state = records.findLast((record) => record.type === "state");
-      const inputs = new Map();
-      for (const record of records) {
-        if (record.type === "input" && record.sessionId === (owner ?? state?.sessionId)) {
-          inputs.set(record.sequence, record);
-        }
-      }
-      const lastSequence = Math.max(0, ...inputs.keys());
-      const input = inputs.get(sequence);
-      latest = { owner, state, expectedSequence: sequence, expectedKind: kind, lastInput: inputs.get(lastSequence), input };
+      latest = summarizeNeovimInputTrace(records, owner, sequence, kind);
       if (session.exited === true) throw fail("failed because the TUI exited");
-      if (owner && (state?.sessionId !== owner || state.focusOwner !== "buffer")) {
-        throw fail("lost its owning session or BUFFER focus");
-      }
+      assertNeovimInputOwner(latest, fail);
       if (!kind) {
-        const pending = [...inputs.values()].some((record) => !["complete", "failed", "retired", "skipped"].includes(record.phase));
-        if (state?.sessionId && state.providerStatus === "ready" && state.focusOwner === "buffer" && !pending) {
-          owner = state.sessionId;
-          sequence = lastSequence;
+        if (neovimInputTraceReady(latest)) {
+          owner = latest.state.sessionId;
+          sequence = latest.lastSequence;
           return;
         }
-      } else if (input) {
-        if (input.kind !== kind || lastSequence !== sequence) throw fail("received an unexpected input sequence");
-        if (["failed", "retired", "skipped"].includes(input.phase)) throw fail(`failed in ${input.phase}`);
-        if (input.phase === "complete" && input.rpcCompleted === true && input.mode === expectedMode) return;
+      } else if (neovimInputTraceComplete(latest, expectedMode, fail)) {
+        return;
       }
       await wait(10);
     }
@@ -160,6 +146,52 @@ export async function runEmbeddedNeovimCommand(
   }
   session.send("\r");
   await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
+}
+
+function summarizeNeovimInputTrace(records, owner, sequence, kind) {
+  const state = records.findLast((record) => record.type === "state");
+  const inputs = new Map();
+  for (const record of records) {
+    if (
+      record.type === "input" &&
+      record.sessionId === (owner ?? state?.sessionId)
+    ) inputs.set(record.sequence, record);
+  }
+  const lastSequence = Math.max(0, ...inputs.keys());
+  const pending = [...inputs.values()].some(
+    (record) => !["complete", "failed", "retired", "skipped"].includes(record.phase),
+  );
+  return {
+    owner, state, lastSequence, pending,
+    expectedSequence: sequence,
+    expectedKind: kind,
+    lastInput: inputs.get(lastSequence),
+    input: inputs.get(sequence),
+  };
+}
+
+function assertNeovimInputOwner({ owner, state }, fail) {
+  if (owner && (state?.sessionId !== owner || state.focusOwner !== "buffer")) {
+    throw fail("lost its owning session or BUFFER focus");
+  }
+}
+
+function neovimInputTraceReady({ state, pending }) {
+  return state?.sessionId && state.providerStatus === "ready" &&
+    state.focusOwner === "buffer" && !pending;
+}
+
+function neovimInputTraceComplete(latest, expectedMode, fail) {
+  const { input, lastSequence, expectedSequence, expectedKind } = latest;
+  if (!input) return false;
+  if (input.kind !== expectedKind || lastSequence !== expectedSequence) {
+    throw fail("received an unexpected input sequence");
+  }
+  if (["failed", "retired", "skipped"].includes(input.phase)) {
+    throw fail(`failed in ${input.phase}`);
+  }
+  return input.phase === "complete" && input.rpcCompleted === true &&
+    input.mode === expectedMode;
 }
 
 export async function listNeovimPids() {

@@ -124,7 +124,7 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
       await vi.advanceTimersByTimeAsync(200);
       session.raw = "CMDLINE_NORMAL";
       await vi.advanceTimersByTimeAsync(100);
-      await painting;
+      await expect(painting).resolves.toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
