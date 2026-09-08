@@ -23,9 +23,10 @@ const store = new PairingStore({ agencHome: home, generateCode: () => options.co
 const pairingPath = join(home, "gateway", "pairing.json");
 const readFile = filesystem.readFileSync;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
-filesystem.readFileSync = (path, ...args) => {
-  const content = readFile(path, ...args);
-  if (String(path) === pairingPath) Atomics.wait(sleeper, 0, 0, delayMs);
+filesystem.readFileSync = (path) => {
+  if (path !== pairingPath) throw new Error("pairing fixture read outside its state file");
+  const content = readFile(pairingPath, "utf8");
+  Atomics.wait(sleeper, 0, 0, delayMs);
   return content;
 };
 syncBuiltinESMExports();
@@ -38,6 +39,7 @@ process.once("message", async () => {
       case "revoke": result = await store.revoke("tg", options.peer); break;
       case "challenge": result = await store.challenge("tg", { peerId: options.peer }); break;
       case "redeem": result = await store.redeem("tg", { peerId: options.peer }, options.code); break;
+      case "unexpected-read": result = filesystem.readFileSync(runtimePath, "utf8"); break;
       default: throw new Error("unknown pairing worker operation");
     }
     process.send({ result: result ?? null });

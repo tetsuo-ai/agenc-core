@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { PairingStore } from "../../src/gateway/pairing.js";
 
 interface WorkerOperation {
-  operation: "approve" | "revoke" | "challenge" | "redeem";
+  operation: "approve" | "revoke" | "challenge" | "redeem" | "unexpected-read";
   peer: string;
   code?: string;
   delayMs?: number;
@@ -90,6 +90,10 @@ async function runWorkers(operations: readonly WorkerOperation[]): Promise<unkno
 }
 
 describe("PairingStore transactions", () => {
+  test("the instrumented worker refuses reads outside its pairing state file", async () => {
+    await expect(runWorkers([{ operation: "unexpected-read", peer: "unused" }])).rejects.toThrow("pairing fixture read outside its state file");
+  });
+
   test("the worker rejects execution outside its private fixture directory", () => {
     const result = spawnSync(process.execPath, [join(import.meta.dirname, "fixtures/pairing-worker.mjs"), JSON.stringify({ operation: "approve", peer: "outside", home })], {
       cwd: bundleRoot,
