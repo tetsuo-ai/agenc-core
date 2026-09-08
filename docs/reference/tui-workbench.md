@@ -24,6 +24,11 @@ to preserve replay-to-live order, including events emitted from a callback.
 The transcript reducer deduplicates replay/live overlap by canonical event
 identity rather than message text.
 
+Identical assistant replies remain separate across turn starts and visible user
+messages, including queued human prompts and realtime replies. Within a turn,
+matching assistant and terminal-fallback text produces one row. Canonical event
+deduplication still prevents repeated delivery from creating extra rows.
+
 Existing live subscribers continue receiving events after the retained history
 fills. A later subscription fails before delivering any incomplete history or
 live events. A subscriber whose pending queue overflows is removed and reports

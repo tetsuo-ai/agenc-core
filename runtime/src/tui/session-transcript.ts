@@ -1993,6 +1993,7 @@ export function adaptTranscriptEvents(
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
         currentTurnTimestamp = timestampFromUnixMillis(payload.startedAt);
         currentTurnAssistantMessageIndexes = [];
+        lastAssistantText = "";
         // Clear streaming tool state when a new turn boundary arrives. Any
         // partially-streamed tool inputs from the previous turn are abandoned
         // because they will never receive a matching completion event in this
@@ -2139,6 +2140,7 @@ export function adaptTranscriptEvents(
         // so close any live assistant text here before accumulating the next
         // response.
         flushStreamingText(nextUuid);
+        lastAssistantText = "";
         if (typeof payload.queuedCommandUuid === "string") {
           durableQueuedPromptUuids.add(payload.queuedCommandUuid);
         }
@@ -2163,6 +2165,7 @@ export function adaptTranscriptEvents(
                 ? payload.content
                 : "";
           flushStreamingText(nextUuid);
+          lastAssistantText = "";
           out.push(makeUserMessage(displayText, nextUuid()));
         }
         break;
@@ -2257,6 +2260,7 @@ export function adaptTranscriptEvents(
         if (typeof payload.text === "string") {
           if (isUserRealtimeRole(payload.role)) {
             out.push(makeUserMessage(payload.text, nextUuid()));
+            lastAssistantText = "";
           } else if (payload.text !== lastAssistantText) {
             out.push(makeAssistantTextMessage(payload.text, nextUuid()));
             lastAssistantText = payload.text;
