@@ -39,6 +39,10 @@ describe("Gemini reasoning metadata", () => {
     const info = await manager.getModelInfo(model);
     expect(info.supportedReasoningLevels).toEqual(levels);
     expect(info.defaultReasoningLevel).toBeUndefined();
+    expect(info.visibility).toBe("list");
+    expect(info.showInPicker).toBe(true);
+    expect(info.defaultReasoningSummary).toBe("auto");
+    expect((await manager.listModels()).some((entry) => entry.slug === model)).toBe(true);
   });
 
   test.each(["gemini-3.1-pro-preview-unverified", "gemini-3.5-flash-unverified"])("does not grant levels to %s", (model) => {

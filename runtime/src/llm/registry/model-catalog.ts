@@ -456,9 +456,9 @@ const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
   }),
 });
 
-export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
-  Object.freeze([
-    ...GEMINI_THINKING_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
+const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
+  Object.freeze(
+    GEMINI_THINKING_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "gemini",
       model: entry.model,
       displayName: entry.model,
@@ -471,12 +471,19 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsVerbosity: false,
       webSearchToolType: "none",
       supportsReasoningSummaries: false,
-      defaultReasoningSummary: "none",
+      defaultReasoningSummary: "auto",
       supportedReasoningLevels: entry.levels,
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: index,
-      visibility: entry.curated ? "list" : "none",
+      visibility: "list",
     })),
+  );
+
+export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
+  Object.freeze([
+    ...GEMINI_MODEL_CATALOG.filter((entry) =>
+      GEMINI_THINKING_MODELS.some((model) => model.curated && model.model === entry.model)
+    ),
     ...OPENAI_REASONING_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "openai",
       model: entry.model,
@@ -1047,15 +1054,15 @@ export function resolveRegisteredModelCatalogEntry(input: {
   const provider = modelCatalogProviderIdentity(input.provider);
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
-  const candidates = REGISTERED_MODEL_CATALOG.filter(
-    (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
-  );
   if (provider === "gemini") {
     return findExactModel(
       resolveGeminiThinkingModel(model)?.model ?? "",
-      candidates,
+      GEMINI_MODEL_CATALOG,
     );
   }
+  const candidates = REGISTERED_MODEL_CATALOG.filter(
+    (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
+  );
   const exact = findExactModel(model, candidates) ??
     findNamespacedSuffix(model, candidates, true);
   if (exact !== undefined) return exact;
