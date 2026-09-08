@@ -1,5 +1,5 @@
-import { fork, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { fork, spawnSync, type ChildProcess } from "node:child_process";
+import { copyFileSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build } from "esbuild";
@@ -34,6 +34,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), "agenc-pairing-transaction-"));
+  copyFileSync(bundlePath, join(home, "pairing-runtime.mjs"));
   await new PairingStore({ agencHome: home }).approve("tg", "seed");
 });
 
@@ -51,7 +52,8 @@ afterAll(() => rmSync(bundleRoot, { recursive: true, force: true }));
 
 async function runWorkers(operations: readonly WorkerOperation[]): Promise<unknown[]> {
   const workers = operations.map(operation => {
-    const child = fork(join(import.meta.dirname, "fixtures/pairing-worker.mjs"), [bundlePath, JSON.stringify({ ...operation, home })], {
+    const child = fork(join(import.meta.dirname, "fixtures/pairing-worker.mjs"), [JSON.stringify(operation)], {
+      cwd: home,
       stdio: ["ignore", "ignore", "pipe", "ipc"],
     });
     children.add(child);
@@ -88,6 +90,17 @@ async function runWorkers(operations: readonly WorkerOperation[]): Promise<unkno
 }
 
 describe("PairingStore transactions", () => {
+  test("the worker rejects execution outside its private fixture directory", () => {
+    const result = spawnSync(process.execPath, [join(import.meta.dirname, "fixtures/pairing-worker.mjs"), JSON.stringify({ operation: "approve", peer: "outside", home })], {
+      cwd: bundleRoot,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("pairing worker requires its private fixture directory");
+    expect(new PairingStore({ agencHome: home }).isPaired("tg", "outside")).toBe(false);
+  });
+
   test("retains approvals from separate store instances", async () => {
     const peers = Array.from({ length: 20 }, (_, index) => `peer-${index}`);
     await Promise.all(peers.map(peer => new PairingStore({ agencHome: home }).approve("tg", peer)));

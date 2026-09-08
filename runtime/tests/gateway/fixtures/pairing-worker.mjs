@@ -1,17 +1,31 @@
 import filesystem from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { PairingStore } = await import(pathToFileURL(process.argv[2]).href);
-const options = JSON.parse(process.argv[3]);
-const store = new PairingStore({ agencHome: options.home, generateCode: () => options.code });
-const pairingPath = join(options.home, "gateway", "pairing.json");
+const home = filesystem.realpathSync(process.cwd());
+const homeInfo = filesystem.lstatSync(home);
+if (dirname(home) !== filesystem.realpathSync(tmpdir()) || !basename(home).startsWith("agenc-pairing-transaction-") || !homeInfo.isDirectory()) {
+  throw new Error("pairing worker requires its private fixture directory");
+}
+if (process.platform !== "win32" && ((homeInfo.mode & 0o077) !== 0 || homeInfo.uid !== process.getuid())) {
+  throw new Error("pairing worker directory is not private and owned");
+}
+const runtimePath = join(home, "pairing-runtime.mjs");
+const runtimeInfo = filesystem.lstatSync(runtimePath);
+if (!runtimeInfo.isFile() || runtimeInfo.nlink !== 1) throw new Error("pairing worker requires a regular fixture runtime");
+const { PairingStore } = await import(pathToFileURL(runtimePath).href);
+const options = JSON.parse(process.argv[2]);
+const delayMs = options.delayMs ?? 120;
+if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 500) throw new Error("invalid pairing worker delay");
+const store = new PairingStore({ agencHome: home, generateCode: () => options.code });
+const pairingPath = join(home, "gateway", "pairing.json");
 const readFile = filesystem.readFileSync;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 filesystem.readFileSync = (path, ...args) => {
   const content = readFile(path, ...args);
-  if (String(path) === pairingPath) Atomics.wait(sleeper, 0, 0, options.delayMs ?? 120);
+  if (String(path) === pairingPath) Atomics.wait(sleeper, 0, 0, delayMs);
   return content;
 };
 syncBuiltinESMExports();
