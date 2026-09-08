@@ -25,6 +25,7 @@
 
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import { monotonicMs } from "./_deps/monotonic.js";
+import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 
 export type AgentStatus =
   | { readonly status: "pending_init" }
@@ -101,7 +102,7 @@ export function isFinal(status: AgentStatus): boolean {
  *   - TurnAborted(Interrupted   -> Interrupted
  *                |BudgetLimited)
  *   - TurnAborted(other)        -> Errored(reason)
- *   - Error                     -> Errored(message)
+ *   - TurnFailed                -> Errored(message)
  *   - ShutdownComplete          -> Shutdown
  *   - else                      -> None
  *
@@ -113,76 +114,43 @@ export function agentStatusFromEvent(event: {
   readonly type: string;
   readonly payload?: unknown;
 }): AgentStatus | undefined {
-  switch (event.type) {
-    case "turn_started": {
-      const payload =
-        (event.payload as {
-          turnId?: string;
-          startedAt?: number;
-        }) ?? {};
-      return {
-        status: "running",
-        turnId: payload.turnId ?? "",
-        startedAtMs: payload.startedAt ?? Date.now(),
-      };
-    }
-    case "turn_complete": {
-      const payload =
-        (event.payload as {
-          turnId?: string;
-          lastAgentMessage?: string;
-          completedAt?: number;
-        }) ?? {};
-      return {
-        status: "completed",
-        turnId: payload.turnId ?? "",
-        endedAtMs: payload.completedAt ?? Date.now(),
-        ...(payload.lastAgentMessage !== undefined
-          ? { lastMessage: payload.lastAgentMessage }
-          : {}),
-      };
-    }
-    case "turn_aborted": {
-      const payload =
-        (event.payload as {
-          turnId?: string;
-          reason?: string;
-        }) ?? {};
-      const reason = (payload.reason ?? "").toLowerCase();
-      const isInterruptClass =
-        reason.includes("interrupt") || reason.includes("budget");
-      const endedAtMs = Date.now();
-      if (isInterruptClass) {
-        return {
-          status: "interrupted",
-          turnId: payload.turnId ?? "",
-          endedAtMs,
-          reason: payload.reason ?? "interrupted",
-        };
-      }
-      return {
-        status: "errored",
-        turnId: payload.turnId ?? "",
-        endedAtMs,
-        error: payload.reason ?? "errored",
-      };
-    }
-    case "error": {
-      const payload =
-        (event.payload as {
-          turnId?: string;
-          message?: string;
-        }) ?? {};
-      return {
-        status: "errored",
-        turnId: payload.turnId ?? "",
-        endedAtMs: Date.now(),
-        error: payload.message ?? "error",
-      };
-    }
-    default:
-      return undefined;
+  if (event.type === "turn_started") {
+    const payload = (event.payload as { turnId?: string; startedAt?: number }) ?? {};
+    return {
+      status: "running",
+      turnId: payload.turnId ?? "",
+      startedAtMs: payload.startedAt ?? Date.now(),
+    };
   }
+  const terminal = classifyTurnTerminal(event);
+  if (terminal === undefined) return undefined;
+  const turnId = terminal.turnId ?? "";
+  const endedAtMs = terminal.completedAt ?? Date.now();
+  if (terminal.outcome === "completed") {
+    return {
+      status: "completed",
+      turnId,
+      endedAtMs,
+      ...(terminal.message !== undefined ? { lastMessage: terminal.message } : {}),
+    };
+  }
+  if (terminal.outcome === "aborted") {
+    const reason = (terminal.message ?? "").toLowerCase();
+    if (reason.includes("interrupt") || reason.includes("budget")) {
+      return {
+        status: "interrupted",
+        turnId,
+        endedAtMs,
+        reason: terminal.message ?? "interrupted",
+      };
+    }
+  }
+  return {
+    status: "errored",
+    turnId,
+    endedAtMs,
+    error: terminal.message ?? "errored",
+  };
 }
 
 export function toAgentStatusJson(status: AgentStatus): AgentStatusJson {

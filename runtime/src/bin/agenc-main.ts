@@ -36,6 +36,7 @@ import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { isDeepStrictEqual } from "node:util";
 import { VERSION } from "../index.js";
+import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
 import {
   classifyCLI,
@@ -1692,25 +1693,18 @@ function daemonOneShotFinalStatus(
     }
   }
   const transcriptEvent = daemonNestedTranscriptEvent(event);
-  if (transcriptEvent === null) return null;
-  const payload = isJsonRecord(transcriptEvent.payload)
-    ? transcriptEvent.payload
-    : null;
-  if (transcriptEvent.type === "turn_complete") {
-    const message =
-      payload !== null && typeof payload.lastAgentMessage === "string"
-        ? payload.lastAgentMessage
-        : undefined;
-    return { code: 0, ...(message !== undefined ? { message } : {}) };
-  }
-  if (transcriptEvent.type === "error") {
-    const message =
-      payload !== null && typeof payload.message === "string"
-        ? payload.message
-        : undefined;
-    return { code: 1, ...(message !== undefined ? { message } : {}) };
-  }
-  return null;
+  if (transcriptEvent === null || typeof transcriptEvent.type !== "string") return null;
+  const terminal = classifyTurnTerminal({
+    type: transcriptEvent.type,
+    payload: transcriptEvent.payload,
+    turnId: transcriptEvent.turnId,
+  }, {
+    expectedTurnId: typeof params?.turnId === "string" ? params.turnId : undefined,
+  });
+  return terminal === undefined ? null : {
+    code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
+  };
 }
 
 async function runDaemonOneShotPrompt(params: {

@@ -1,8 +1,46 @@
 import { describe, expect, it } from "vitest";
 
-import { promptEventFromNotification } from "../../../packages/agenc-sdk/src/events";
+import {
+  promptEventFromNotification,
+  terminalStatusFromNotification,
+} from "../../../packages/agenc-sdk/src/events";
 
 describe("agenc-sdk prompt event mapping", () => {
+  it("rejects conflicting outer and failed-turn identities", () => {
+    expect(terminalStatusFromNotification({
+      method: "event.session_event",
+      params: {
+        turnId: "current-turn",
+        event: { type: "turn_failed", payload: { turnId: "stale-turn", code: "provider_error", message: "stale" } },
+      },
+    })).toBeNull();
+  });
+
+  it("keeps diagnostics non-terminal and recognizes explicit failed turns", () => {
+    const notification = {
+      method: "event.session_event",
+      params: { event: {
+        type: "error",
+        payload: { turnId: "turn-1", cause: "stop_hook_threw", message: "diagnostic" },
+      } },
+    };
+    expect(terminalStatusFromNotification(notification)).toBeNull();
+    expect(terminalStatusFromNotification({
+      ...notification,
+      params: { event: {
+        type: "turn_failed",
+        payload: { turnId: "turn-1", code: "provider_error", message: "failed" },
+      } },
+    })).toEqual({ code: 1, message: "failed" });
+    expect(terminalStatusFromNotification({
+      ...notification,
+      params: { event: {
+        type: "turn_complete",
+        payload: { turnId: "turn-1", lastAgentMessage: "full answer" },
+      } },
+    })).toEqual({ code: 0, message: "full answer" });
+  });
+
   it("preserves a replay-required gap when the retired count is no longer known", () => {
     const notification = {
       method: "event.event_gap",

@@ -81,6 +81,7 @@ import type {
   ExitReviewModePayload,
 } from "./agenc-delegate.js";
 import type { ReviewDelegateCompletionReason } from "./event-log.js";
+import { createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { LLMMessage } from "../llm/types.js";
 
@@ -1048,6 +1049,18 @@ async function runSpawnedReviewTask(
   manager: ReviewManager | undefined,
 ): Promise<AgenCReviewOneShotOutcome | null> {
   const startedAt = Date.now();
+  let failureAttempted = false;
+  const emitFailure = (message: string, completedAt: number): void => {
+    if (failureAttempted) return;
+    failureAttempted = true;
+    session.sendEvent(subId, createTurnFailedEvent({
+      turnId: subId,
+      code: "review_task_failed",
+      message,
+      completedAt,
+      durationMs: completedAt - startedAt,
+    }));
+  };
   const modelUsed = req.reviewerModel ?? req.parentContext.modelInfo.slug;
   const explicitReuseKey = explicitReviewReuseKey(req);
   const priorFindingCount = priorFindingCountFromHistory(req.initialHistory);
@@ -1085,9 +1098,13 @@ async function runSpawnedReviewTask(
         ...(outcome.error !== null ? { error: outcome.error.message } : {}),
       },
     });
+    if (outcome.verdict === "fail" && outcome.error !== null) {
+      emitFailure(outcome.error.message, completedAt);
+    }
     return outcome;
   } catch (err) {
     const completedAt = Date.now();
+    emitFailure(err instanceof Error ? err.message : String(err), completedAt);
     session.sendEvent(subId, {
       type: "review_delegate_completed",
       payload: {
@@ -1118,17 +1135,6 @@ async function runSpawnedReviewTask(
     session.sendEvent(subId, {
       type: "exit_review_mode",
       payload: exitPayload,
-    });
-    session.sendEvent(subId, {
-      type: "error",
-      payload: {
-        cause: "review_task_failed",
-        message: err instanceof Error ? err.message : String(err),
-        turnId: subId,
-        ...(err instanceof Error && err.stack !== undefined
-          ? { stack: err.stack }
-          : {}),
-      },
     });
     return null;
   } finally {

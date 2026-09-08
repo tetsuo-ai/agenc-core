@@ -6,6 +6,7 @@
 
 import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { Event } from "../../session/event-log.js";
+import { classifyTurnTerminal, type TurnTerminal } from "../../contracts/turn-terminal.js";
 import type { RolloutItem } from "../../session/rollout-item.js";
 import {
   reconstructFromRollout,
@@ -142,35 +143,11 @@ function messageTerminalFromEvent(
   event: Event["msg"],
   expectedTurnId: string | undefined,
 ): AgenCBackgroundAgentMessageTerminal | undefined {
-  if (event.type === "turn_complete") {
-    if (
-      expectedTurnId !== undefined &&
-      event.payload.turnId !== expectedTurnId
-    ) {
-      return undefined;
-    }
-    return {
-      code: 0,
-      ...(event.payload.lastAgentMessage !== undefined
-        ? { message: event.payload.lastAgentMessage }
-        : {}),
-    };
-  }
-  if (event.type === "turn_aborted") {
-    if (
-      expectedTurnId !== undefined &&
-      event.payload.turnId !== undefined &&
-      event.payload.turnId !== expectedTurnId
-    ) {
-      return undefined;
-    }
-    return { code: 130, message: event.payload.reason };
-  }
-  // Same contract as the live bridge: only turn_complete / turn_aborted
-  // close a submission. A mid-turn `error` must not make an idempotent
-  // retry report completed-with-failure while turn_complete is still
-  // ahead in the journal.
-  return undefined;
+  const terminal = classifyTurnTerminal(event, { expectedTurnId, legacyJournal: true });
+  return terminal === undefined ? undefined : {
+    code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
+  };
 }
 
 interface MutableTranscriptV2Message extends JsonObject {
@@ -202,31 +179,17 @@ interface OpenTurnAccumulator {
 function closedTurnResult(
   turnId: string,
   sequence: number,
-  msg: {
-    readonly type: string;
-    readonly payload: {
-      readonly turnId?: string;
-      readonly durationMs?: number;
-      readonly completedAt?: number;
-    };
-  },
+  terminal: TurnTerminal,
   open: OpenTurnAccumulator,
 ): SessionTranscriptV2TurnResult {
-  const outcome = msg.type === "turn_aborted" ? "aborted" : "completed";
-  let durationMs: number | undefined;
-  if (msg.type === "turn_complete") {
-    durationMs = nonNegativeFinite(msg.payload.durationMs);
-    if (durationMs === undefined) {
-      const completedAt = nonNegativeFinite(msg.payload.completedAt);
-      if (completedAt !== undefined && open.startedAt !== undefined) {
-        durationMs = nonNegativeFinite(completedAt - open.startedAt);
-      }
-    }
+  let durationMs = terminal.durationMs;
+  if (durationMs === undefined && terminal.completedAt !== undefined && open.startedAt !== undefined) {
+    durationMs = nonNegativeFinite(terminal.completedAt - open.startedAt);
   }
   return {
     turnId,
     committedSequence: sequence,
-    outcome,
+    outcome: terminal.outcome,
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(open.sawUsage
       ? {
@@ -427,26 +390,17 @@ export function sessionTranscriptV2FromRollout(
       });
       continue;
     }
-    if (
-      event.msg.type === "turn_complete" ||
-      event.msg.type === "turn_aborted"
-    ) {
-      const terminalTurnId =
-        "turnId" in event.msg.payload &&
-        typeof event.msg.payload.turnId === "string"
-          ? event.msg.payload.turnId
-          : undefined;
-      if (
-        (currentTurnId === undefined && pendingUserIndex !== undefined) ||
-        (currentTurnId !== undefined &&
-          terminalTurnId !== undefined &&
-          terminalTurnId !== currentTurnId)
-      ) {
+    const terminal = classifyTurnTerminal(event.msg, {
+      expectedTurnId: currentTurnId,
+      legacyJournal: true,
+    });
+    if (terminal !== undefined) {
+      if (currentTurnId === undefined && pendingUserIndex !== undefined) {
         continue;
       }
       if (currentTurnId !== undefined && openTurn !== undefined) {
         turnResults.push(
-          closedTurnResult(currentTurnId, sequence, event.msg, openTurn),
+          closedTurnResult(currentTurnId, sequence, terminal, openTurn),
         );
       }
       currentTurnId = undefined;

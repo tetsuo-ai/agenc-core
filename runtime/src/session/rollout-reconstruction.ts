@@ -41,6 +41,7 @@ import type {
   TurnContextItem,
 } from "./rollout-item.js";
 import { isAgentInvocationTurnBoundary } from "../contracts/agent-invocation-envelope.js";
+import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import {
   reduce,
   type ReducedSessionState,
@@ -719,32 +720,21 @@ export function reconstructFromRollout(
       case "event_msg": {
         const inner = item.payload.msg;
         const innerType = (inner as { type?: string }).type;
+        const terminal = classifyTurnTerminal(inner, { legacyJournal: true });
+        if (terminal !== undefined) {
+          if (!active) active = emptySegment();
+          if (active.turnId === undefined && terminal.turnId !== undefined) {
+            active.turnId = terminal.turnId;
+          }
+          if (terminal.turnId !== undefined) seenTerminated.add(terminal.turnId);
+          break;
+        }
         switch (innerType) {
           case "thread_rolled_back": {
             const payload = (
               inner as unknown as { payload: { numTurns: number } }
             ).payload;
             pending.pendingRollbackTurns += payload?.numTurns ?? 0;
-            break;
-          }
-          case "turn_complete": {
-            if (!active) active = emptySegment();
-            const payload = (
-              inner as unknown as { payload: { turnId: string } }
-            ).payload;
-            if (active.turnId === undefined) active.turnId = payload.turnId;
-            seenTerminated.add(payload.turnId);
-            break;
-          }
-          case "turn_aborted": {
-            if (!active) active = emptySegment();
-            const payload = (
-              inner as unknown as { payload: { turnId?: string } }
-            ).payload;
-            if (active.turnId === undefined && payload.turnId) {
-              active.turnId = payload.turnId;
-            }
-            if (payload.turnId) seenTerminated.add(payload.turnId);
             break;
           }
           case "user_message": {
@@ -822,11 +812,11 @@ export function reconstructFromRollout(
       }
       continue;
     }
-    if (inner.type === "turn_complete" || inner.type === "turn_aborted") {
-      const payload = inner.payload as { turnId?: string };
-      if (typeof payload?.turnId === "string") {
-        seenTerminated.add(payload.turnId);
-      }
+    const terminal = typeof inner.type === "string"
+      ? classifyTurnTerminal({ ...inner, type: inner.type }, { legacyJournal: true })
+      : undefined;
+    if (terminal?.turnId !== undefined) {
+      seenTerminated.add(terminal.turnId);
       continue;
     }
     if (inner.type !== "turn_checkpoint") continue;

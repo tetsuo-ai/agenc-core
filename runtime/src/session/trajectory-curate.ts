@@ -12,11 +12,11 @@
  *
  * Curation is pure local file processing:
  *   - **Filter** — keep only trajectories that finished at least one
- *     turn (`turn_complete`), hit no terminal `error` event, were never
+ *     turn (`turn_complete`), hit no `error` or `turn_failed` event, were never
  *     aborted/interrupted (`turn_aborted` covers Esc/cancel), and carry
  *     no user tool-use rejection markers. Transient `stream_error`
  *     events do NOT exclude a trajectory: when the provider hiccup is
- *     fatal the runtime follows up with `error`/`turn_aborted`, which
+ *     fatal the runtime follows up with `turn_failed`/`turn_aborted`, which
  *     do.
  *   - **Redact** — every emitted row is passed through the same
  *     `redactSecretsInValue` the export sink already applies at write
@@ -246,6 +246,7 @@ export function classifyTrajectory(
         hasTurnComplete = true;
         break;
       case "error":
+      case "turn_failed":
         hasErrorEvent = true;
         break;
       case "turn_aborted":

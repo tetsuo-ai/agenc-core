@@ -5467,6 +5467,7 @@ function formatEventMessageForLog(
       delta.flushAssistantDelta();
       return formatTranscriptLine("warning", msg.payload.message);
     case "error":
+    case "turn_failed":
     case "stream_error":
       delta.flushAssistantDelta();
       return formatTranscriptLine("error", msg.payload.message);

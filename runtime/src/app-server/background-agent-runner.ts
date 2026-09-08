@@ -23,6 +23,7 @@ import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { AgentControl } from "../agents/control.js";
 import { clearSession } from "../commands/clear.js";
 import { runTurn } from "../session/run-turn.js";
+import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import {
   prepareUserPromptForTurn,
   userPromptDisplayText,
@@ -4349,6 +4350,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   ): void {
     if (event.statusProjection === "session_only") return;
     const payload = event.payload;
+    const terminal = classifyTurnTerminal(event, {
+      expectedTurnId: active.messageSubmission?.turnId,
+    });
+    if (terminal !== undefined) {
+      active.status = "idle";
+      active.activeToolCallIds.clear();
+      return;
+    }
     switch (event.type) {
       case "agent_message_delta":
         if (typeof payload?.delta === "string") {
@@ -4372,17 +4381,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         return;
       case "turn_started":
         active.status = "running";
-        return;
-      case "turn_complete":
-        active.status = "idle";
-        return;
-      case "turn_aborted":
-        active.status = "idle";
-        active.activeToolCallIds.clear();
-        return;
-      case "error":
-        active.status = "error";
-        active.activeToolCallIds.clear();
         return;
       case "run_reopened": {
         const epoch = positiveSequence(payload?.epoch);

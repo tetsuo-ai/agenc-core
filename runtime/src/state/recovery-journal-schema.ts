@@ -1,4 +1,8 @@
 import type { EventMsg } from "../session/event-log.js";
+import {
+  MAX_TURN_FAILURE_MESSAGE_LENGTH,
+  validFailureCode,
+} from "../contracts/turn-terminal.js";
 import type {
   RunResumeReason,
   RunRuntimeModelVerbosity,
@@ -105,6 +109,12 @@ const LEGACY_EVENT_TYPES = Object.freeze({
 
 const isString: Validator<string> = (value): value is string =>
   typeof value === "string";
+const isTurnFailureId: Validator<string> = (value): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+const isTurnFailureMessage: Validator<string> = (value): value is string =>
+  typeof value === "string" && value.length <= MAX_TURN_FAILURE_MESSAGE_LENGTH;
+const isTurnFailureTime: Validator<number> = (value): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
 const isRunSuspensionReason: Validator<RunSuspensionReason> = (
   value,
 ): value is RunSuspensionReason => value === "daemon_shutdown_idle";
@@ -941,6 +951,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     },
   ),
   turn_aborted: objectShape({ reason: isString }, { turnId: isString }),
+  turn_failed: objectShape(
+    { turnId: isTurnFailureId, code: validFailureCode, message: isTurnFailureMessage },
+    { completedAt: isTurnFailureTime, durationMs: isTurnFailureTime },
+  ),
   turn_checkpoint: isTurnCheckpoint,
   turn_resumed: objectShape(
     {

@@ -25,7 +25,8 @@
  * across the session-kernel test suites.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as reviewDelegate from "./agenc-delegate.js";
 
 import { AsyncQueue } from "../utils/async-queue.js";
 import { createTestConfigStore } from "../fixtures.js";
@@ -326,6 +327,28 @@ describe("isTaskKindSteerable — Item 6 gate classification", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("spawnReviewTask registry lifecycle", () => {
+  it.each(["throw", "outcome"])("writes one explicit failed review terminal (%s)", async (failurePath) => {
+    const session = mkSession();
+    const store = mountTestRollout(session);
+    const delegate = vi.spyOn(reviewDelegate, "runAgenCReviewOneShot");
+    const failure = new Error("review failed");
+    if (failurePath === "throw") delegate.mockRejectedValue(failure);
+    else delegate.mockResolvedValue({ verdict: "fail", output: emptyReviewOutput(), rawText: null, modelUsed: "test-model", error: failure });
+    try {
+      const review = await spawnReviewTask(session, { subId: "failed-review", request: mkReviewRequest() });
+      expect(await review.outcome === null).toBe(failurePath === "throw");
+      await review.done;
+      const terminals = store.readAll().flatMap((item) => item.type === "event_msg" && item.payload.msg.type === "turn_failed" ? [item.payload.msg] : []);
+      expect(terminals).toEqual([{
+        type: "turn_failed",
+        payload: { turnId: "failed-review", code: "review_task_failed", message: "review failed", completedAt: expect.any(Number), durationMs: expect.any(Number) },
+      }]);
+      expect(session.activeTurn.unsafePeek()).toBeNull();
+    } finally {
+      delegate.mockRestore();
+    }
+  });
+
   it("registers a task with kind === 'review' in the session's activeTurn", async () => {
     const session = mkSession();
     const spawned = await spawnReviewTask(session, {

@@ -15,6 +15,8 @@
  */
 
 import { isJsonObject, type JsonObject, type JsonValue } from "./protocol.js";
+import { classifyTurnTerminal } from "./turn-terminal.generated.js";
+export type { TurnFailedEvent, TurnTerminal } from "./turn-terminal.generated.js";
 
 export type AgencStopReason = "completed" | "errored" | "stopped";
 
@@ -165,7 +167,7 @@ export function messageChunkFromNotification(
 /**
  * Detect the terminal status of a turn from a daemon notification. Mirrors
  * the CLI's `daemonOneShotFinalStatus`: `event.agent_status` with a terminal
- * run status, or a nested transcript `turn_complete`/`error` event.
+ * run status, or a nested explicit turn-terminal event.
  */
 export function terminalStatusFromNotification(
   message: JsonObject,
@@ -198,31 +200,18 @@ export function terminalStatusFromNotification(
     }
   }
   const transcriptEvent = nestedTranscriptEvent(message);
-  if (transcriptEvent === null) return null;
-  const payload = isJsonObject(transcriptEvent.payload)
-    ? transcriptEvent.payload
-    : null;
-  if (transcriptEvent.type === "turn_complete") {
-    const finalMessage =
-      payload !== null && typeof payload.lastAgentMessage === "string"
-        ? payload.lastAgentMessage
-        : undefined;
-    return {
-      code: 0,
-      ...(finalMessage !== undefined ? { message: finalMessage } : {}),
-    };
-  }
-  if (transcriptEvent.type === "error") {
-    const errorMessage =
-      payload !== null && typeof payload.message === "string"
-        ? payload.message
-        : undefined;
-    return {
-      code: 1,
-      ...(errorMessage !== undefined ? { message: errorMessage } : {}),
-    };
-  }
-  return null;
+  if (transcriptEvent === null || typeof transcriptEvent.type !== "string") return null;
+  const terminal = classifyTurnTerminal({
+    type: transcriptEvent.type,
+    payload: transcriptEvent.payload,
+    turnId: transcriptEvent.turnId,
+  }, {
+    expectedTurnId: typeof params?.turnId === "string" ? params.turnId : undefined,
+  });
+  return terminal === undefined ? null : {
+    code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
+  };
 }
 
 export function stopReasonFromExitCode(code: number): AgencStopReason {

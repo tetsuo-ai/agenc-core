@@ -274,8 +274,8 @@ part of the public SDK method set.
 `clientMessageId`. Reusing it with the same content is idempotent; reusing it
 with different content is rejected. A retry response reports
 `duplicateState: "completed" | "incomplete"` and never invents success for a
-crash tail without a durable terminal event. Only `turn_complete` (code 0)
-and `turn_aborted` (code 130) are those terminals. A mid-turn `error` is
+crash tail without a durable terminal event. The terminals are `turn_complete`
+(code 0), `turn_aborted` (code 130), and `turn_failed` (code 1). A mid-turn `error` is
 session telemetry, not a closer; see [Mid-turn error events](#mid-turn-error-events).
 Callers that require strict
 single-turn admission pass `ifBusy: "reject"`. That flag refuses only an
@@ -322,8 +322,8 @@ Older 1.2 clients ignore the additive field.
 | --- | --- |
 | `turnId` | The open `turn_started` |
 | `committedSequence` | Durable sequence of that turn's terminal event (placement anchor) |
-| `outcome` | `completed` (`turn_complete`) or `aborted` (`turn_aborted`) |
-| `durationMs` | Completed turns only: `turn_complete.durationMs`, else `completedAt - startedAt` when both stamps are finite and ≥ 0 |
+| `outcome` | `completed` (`turn_complete`), `aborted` (`turn_aborted`), or `errored` (`turn_failed`) |
+| `durationMs` | Terminal `durationMs`, else `completedAt - startedAt` when both stamps are finite and non-negative |
 | `inputTokens` / `outputTokens` / `totalTokens` | Sum of enclosed `token_count.promptTokens` / `completionTokens` / `totalTokens` |
 | `model` / `provider` | Last nonempty strings on those same `token_count` events |
 
@@ -338,8 +338,8 @@ Constraints:
   the same mismatched-terminal guard the message scan already applies.
 - `error` events are telemetry, not terminals. A stop-hook throw or similar
   mid-turn failure does not close the accumulator; later `token_count` and
-  the real `turn_complete` / `turn_aborted` still belong to that turn.
-- `durationMs` is not emitted for aborted turns.
+  the matching terminal still belong to that turn.
+- Timing is omitted when the terminal has no usable duration or completion stamp.
 - A `token_count` with no finite non-negative token field is ignored,
   including its model/provider. Cache, reasoning, and search counters
   on that event are not copied.
@@ -386,7 +386,7 @@ history.
 | Markers missing after compact or rewind | Expected. Rows exist only for turns that closed after the current `historyEpoch`. |
 | Duration missing on a completed turn | The terminal lacked `durationMs` and a usable `completedAt - startedAt` pair. |
 | Tokens or model missing | No enclosed `token_count` carried a finite non-negative token field. |
-| `outcome: "errored"` or tokens cut off at a mid-turn `error` | The connected daemon closed the accumulator on the first `error`. Current main keeps the turn open until `turn_complete` / `turn_aborted`. See [Mid-turn error events](#mid-turn-error-events). |
+| Tokens cut off at a mid-turn diagnostic `error` | The connected daemon closed the accumulator too early. Current readers wait for an explicit terminal. See [Mid-turn error events](#mid-turn-error-events). |
 
 #### Mid-turn error events
 
@@ -395,7 +395,7 @@ Raw session `error` events are diagnostic telemetry. Stop-hook throws
 cause) emit them while the ladder continues
 (`runtime/src/phases/stop-hooks.ts`). The recursion cap emits
 `stop_hook_loop` and then allows the turn to terminate. In every case
-the submission closer is still `turn_complete` or `turn_aborted`. A real
+the submission closer is an explicit turn terminal. A real
 run failure is reported separately as `RunAgentProgressEvent.run_error` or a
 canonical `run_terminal` failure.
 
@@ -417,19 +417,16 @@ Constraints:
   SDK throws `AgencDuplicateSubmissionIncompleteError`.
 - A later turn's terminal is never attributed to an earlier crash tail.
   The next `user_message` or `message_submission` ends the persisted scan.
-- Current writers never emit `turnResults.outcome: "errored"`. The
-  protocol union in `runtime/src/app-server/protocol/index.ts` (and the
-  generated SDK mirror) still lists it so type-sync stays exact and older
-  daemons that closed on the first `error` remain representable.
+- Failed turns emit `turnResults.outcome: "errored"`. A settled duplicate
+  retry returns `terminal.code === 1` without rerunning the prompt.
 - The live event-log bridge passes every raw session `error` through
   `projectTelemetryErrorAsSessionOnly`. The resulting
   `statusProjection: "session_only"` keeps the diagnostic visible without
   changing agent or run status.
 - Terminal run failures use an explicit path. `run_error` and failed
   `run_terminal` records produce `event.agent_status` with `status: "error"`.
-  The TUI adapter converts that notification to an `error` transcript event
-  with `payload.terminal: true`. Runtime-settings authority failures carry
-  the same marker.
+  The TUI adapter converts a turn-scoped failure notification to `turn_failed`.
+  Runtime-settings authority failures use the same explicit event locally.
 - An unmarked raw session error remains visible in the transcript, but it does
   not clear the TUI's active turn or stop the streaming reducer.
 
@@ -450,9 +447,38 @@ when `turn_complete` was still ahead in the journal.
 | Symptom | What to check |
 | --- | --- |
 | Retry reports `completed` with `terminal.code === 1` after a hook throw | Connected daemon predates the mid-turn error closer. |
-| `AgencDuplicateSubmissionIncompleteError` after an `error` event | Expected until a matching `turn_complete` or `turn_aborted`. |
+| `AgencDuplicateSubmissionIncompleteError` after a diagnostic `error` event | Expected until a matching explicit turn terminal. |
 | A raw session `error` also emits `event.agent_status: error` | The connected daemon predates the diagnostic-error projection or bypassed the live event bridge. Current writers reserve that status notification for a terminal run failure. |
-| The TUI spinner stops on a diagnostic error | Check that the transcript event lacks `payload.terminal: true`. Only explicit terminal errors clear the active turn. |
+| The TUI spinner stops on a diagnostic error | Check for a matching `turn_failed`, `turn_complete`, or `turn_aborted`. A raw `error` must not clear the active turn. |
+
+#### Failed-turn events
+
+`turn_failed` is an additive durable event. Its payload requires a nonempty
+`turnId`, a stable `code` matching `[a-z][a-z0-9_]{0,63}`, and a `message`
+bounded to 2,000 UTF-16 code units. Optional `completedAt` and `durationMs`
+are finite, non-negative milliseconds. The event closes only the matching
+turn and returns exit code 1 through live submission tracking, persisted
+retries, the SDK, and the one-shot CLI.
+
+`runtime/src/contracts/turn-terminal.ts` defines the classifier. The SDK uses
+an exact generated copy checked by `check:sdk-generated-types`. A failed
+turn does not by itself kill a reusable daemon run. The daemon sends its
+canonical `turn_failed` as `event.session_event` and returns to idle.
+Fatal thread cleanup closes an open turn before writing `run_terminal`;
+it does not write a second terminal if the kernel already closed that turn.
+
+Journal reads alone recognize two old terminal representations, `error`
+with cause `background_agent_error` or `review_task_failed`, a nonempty
+matching turn ID, and a string message. No other cause is terminal, and
+live `error` events never use this compatibility rule. The audit found
+these old writers in thread-status projection and the spawned review-task
+catch path. Stop hooks, compaction, editor diagnostics, and stream retries
+remain non-terminal.
+
+No journal rewrite or schema-version change is required. Deploy reader
+support before enabling new writers. If writers are rolled back after a
+journal contains `turn_failed`, retain the additive reader support so the
+failed turn is not reconstructed as an unfinished turn.
 
 `session.resolveToolCall` accepts two strict protocol-1.0 request shapes. The
 earlier `{ sessionId, toolCallId?, reviewer? }` shape can settle only a legacy

@@ -349,6 +349,17 @@ describe("reconstruction durable resume descriptors", () => {
     expect(synthTypes).toContain("warning");
   });
 
+  test("failed turns are not recovered as process-killed orphans", () => {
+    const items: RolloutItem[] = [
+      { type: "event_msg", payload: { id: "start", seq: 1, msg: { type: "turn_started", payload: { turnId: "failed-turn" } } } },
+      { type: "event_msg", payload: { id: "failure", seq: 2, msg: { type: "turn_failed", payload: { turnId: "failed-turn", code: "provider_error", message: "failed" } } } },
+    ];
+    const result = reconstruct(items);
+    expect(result.orphanedTurnIds).toEqual([]);
+    expect(result.resumableTurns).toEqual([]);
+    expect(result.synthesizedEvents).toEqual([]);
+  });
+
   test("dangling tool_use in the checkpoint prefix is surfaced", () => {
     const buildId = pinBuild("build-A");
     const prefix: ResponseItem[] = [

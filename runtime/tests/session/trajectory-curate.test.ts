@@ -143,6 +143,15 @@ describe("parseTrajectoryExportContents", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("classifyTrajectory filtering", () => {
+  test("rejects explicit failed turns even when an earlier turn completed", () => {
+    const result = classifyTrajectory([
+      turnComplete("completed-turn"),
+      eventItem({ type: "turn_failed", payload: { turnId: "failed-turn", code: "provider_error", message: "failed" } }),
+    ]);
+    expect(result.hasErrorEvent).toBe(true);
+    expect(isSftEligible(result)).toBe(false);
+  });
+
   test("a clean completed session is SFT eligible", () => {
     const c = classifyTrajectory(cleanSessionItems());
     expect(c.hasTurnComplete).toBe(true);

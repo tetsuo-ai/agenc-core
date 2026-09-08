@@ -6,6 +6,7 @@
 import type { LLMContentPart } from "../../llm/types.js";
 import type { AgentStatus as ThreadAgentStatus } from "../../agents/status.js";
 import type { Event } from "../../session/event-log.js";
+import { classifyTurnTerminal, createTurnFailedEvent } from "../../contracts/turn-terminal.js";
 import type {
   AgenCDaemonSessionNotification,
   AgentRunStatus,
@@ -120,10 +121,10 @@ function correlateDaemonEvent(
   }
 
   const turnId =
-    submission?.turnId ??
+    event.turnId ??
     (typeof event.payload?.turnId === "string"
       ? event.payload.turnId
-      : undefined);
+      : submission?.turnId);
   let messageId = event.messageId;
   if (
     submission !== undefined &&
@@ -147,7 +148,7 @@ function correlateDaemonEvent(
   ) {
     messageId = `assistant:${event.eventId ?? event.id}`;
   }
-  if (submission !== undefined) {
+  if (submission !== undefined && submission.terminal === undefined) {
     const terminal = messageTerminalFromDaemonEvent(event, submission.turnId);
     if (terminal !== undefined) submission.terminal = terminal;
   }
@@ -168,38 +169,11 @@ function messageTerminalFromDaemonEvent(
   event: BackgroundAgentDaemonEvent,
   expectedTurnId: string | undefined,
 ): AgenCBackgroundAgentMessageTerminal | undefined {
-  const eventTurnId =
-    event.turnId ??
-    (typeof event.payload?.turnId === "string"
-      ? event.payload.turnId
-      : undefined);
-  if (
-    expectedTurnId !== undefined &&
-    eventTurnId !== undefined &&
-    eventTurnId !== expectedTurnId
-  ) {
-    return undefined;
-  }
-  if (event.type === "turn_complete") {
-    return {
-      code: 0,
-      ...(typeof event.payload?.lastAgentMessage === "string"
-        ? { message: event.payload.lastAgentMessage }
-        : {}),
-    };
-  }
-  if (event.type === "turn_aborted") {
-    return {
-      code: 130,
-      ...(typeof event.payload?.reason === "string"
-        ? { message: event.payload.reason }
-        : {}),
-    };
-  }
-  // `error` is session telemetry, not a turn closer. Stop-hook throws and
-  // similar sites emit it while the turn continues and later writes
-  // turn_complete / turn_aborted.
-  return undefined;
+  const terminal = classifyTurnTerminal(event, { expectedTurnId });
+  return terminal === undefined ? undefined : {
+    code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
+  };
 }
 
 /**
@@ -469,11 +443,10 @@ export function notificationFromDaemonEvent(
       },
     };
   }
+  const terminal = classifyTurnTerminal(event);
   if (
     (event.type === "turn_started" ||
-      event.type === "turn_complete" ||
-      event.type === "turn_aborted" ||
-      event.type === "error") &&
+      (terminal !== undefined && terminal.outcome !== "errored")) &&
     event.statusProjection !== "session_only" &&
     isJsonObject(payload)
   ) {
@@ -483,8 +456,8 @@ export function notificationFromDaemonEvent(
       params: {
         ...base,
         agentId: base.agentId ?? sessionId,
-        status: agentStatusFromEventType(event.type),
-        runStatus: agentRunStatusFromEventType(event.type),
+        status: event.type === "turn_started" ? "running" : "idle",
+        runStatus: event.type === "turn_started" ? "running" : "completed",
         ...(typeof payload.turnId === "string"
           ? { turnId: payload.turnId }
           : {}),
@@ -559,20 +532,6 @@ function eventBaseParams(
   };
 }
 
-function agentStatusFromEventType(type: string): DaemonAgentStatus {
-  switch (type) {
-    case "turn_started":
-      return "running";
-    case "error":
-      return "error";
-    case "turn_aborted":
-      return "idle";
-    case "turn_complete":
-    default:
-      return "idle";
-  }
-}
-
 function daemonStatusFromRunTerminal(status: unknown): DaemonAgentStatus {
   switch (status) {
     case "completed":
@@ -596,20 +555,6 @@ function agentRunStatusFromRunTerminal(status: unknown): AgentRunStatus {
     case "cancelled":
     default:
       return "stopped";
-  }
-}
-
-function agentRunStatusFromEventType(type: string): AgentRunStatus {
-  switch (type) {
-    case "turn_started":
-      return "running";
-    case "error":
-      return "errored";
-    case "turn_aborted":
-      return "completed";
-    case "turn_complete":
-    default:
-      return "completed";
   }
 }
 
@@ -692,6 +637,7 @@ const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "turn_started",
   "turn_complete",
   "turn_aborted",
+  "turn_failed",
   "warning",
   "error",
   "stream_error",
@@ -1102,16 +1048,19 @@ function eventFromThreadStatus(
           completedAt: status.endedAtMs,
         },
       };
-    case "errored":
+    case "errored": {
+      const failed = createTurnFailedEvent({
+        turnId: status.turnId,
+        code: "background_agent_error",
+        message: status.error,
+        completedAt: status.endedAtMs,
+      });
       return {
         id: status.turnId,
-        type: "error",
-        payload: {
-          cause: "background_agent_error",
-          message: status.error,
-          turnId: status.turnId,
-        },
+        type: failed.type,
+        payload: { ...failed.payload },
       };
+    }
     case "interrupted":
       return {
         id: `interrupted-${status.turnId}`,

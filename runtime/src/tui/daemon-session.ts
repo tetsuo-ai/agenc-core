@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
-import { isTerminalDaemonErrorPayload } from "./daemon-terminal-error.js";
+import { classifyTurnTerminal, createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import type {
   AgentAttachParams,
   AgenCDaemonMethod,
@@ -223,12 +223,6 @@ const ACTIVE_DAEMON_TRANSCRIPT_EVENTS = new Set([
   "request_permissions",
   "request_user_input",
   "mcp_elicitation_request",
-]);
-
-const TERMINAL_DAEMON_TRANSCRIPT_EVENTS = new Set([
-  "turn_complete",
-  "turn_aborted",
-  "error",
 ]);
 
 export type AgenCDaemonConnectionStatus =
@@ -796,6 +790,7 @@ export function createDaemonTuiSession<
   const receivedEvents: unknown[] = [];
   const REPLAY_BACKLOG_LIMIT = 500;
   let activeTurnSnapshot: { readonly turnId: string } | null = null;
+  let lastObservedTurnId: string | undefined;
   let daemonTurnStartGeneration = 0;
   let inFlightShellExecutionCount = 0;
   const inFlightShellCommandIds = new Set<string>();
@@ -830,26 +825,24 @@ export function createDaemonTuiSession<
         ? payload.turnId
         : (activeTurnSnapshot?.turnId ?? "daemon-turn");
     activeTurnSnapshot = { turnId };
+    if (turnId !== "daemon-turn") lastObservedTurnId = turnId;
   };
   const noteDaemonActivity = (event: unknown): void => {
     if (typeof event !== "object" || event === null) {
       return;
     }
     const eventType = (event as { readonly type?: unknown }).type;
-    // Raw session errors are diagnostic events. A terminal agent-status error
-    // carries an explicit marker added by transcriptEventFromAgentStatus.
-    if (
-      typeof eventType === "string" &&
-      TERMINAL_DAEMON_TRANSCRIPT_EVENTS.has(eventType)
-    ) {
-      if (
-        eventType === "error" &&
-        !isTerminalDaemonErrorPayload(
-          (event as { readonly payload?: unknown }).payload,
-        )
-      ) {
-        return;
-      }
+    const terminal = typeof eventType === "string"
+      ? classifyTurnTerminal({
+          type: eventType,
+          payload: (event as { readonly payload?: unknown }).payload,
+        }, {
+          expectedTurnId: activeTurnSnapshot?.turnId === "daemon-turn"
+            ? lastObservedTurnId
+            : activeTurnSnapshot?.turnId,
+        })
+      : undefined;
+    if (terminal !== undefined) {
       activeTurnSnapshot = null;
       terminalDaemonTurnObserved = true;
       return;
@@ -902,6 +895,9 @@ export function createDaemonTuiSession<
       return;
     }
     if (terminalDaemonTurnObserved) return;
+    if (typeof turnId === "string" && turnId.length > 0) {
+      lastObservedTurnId = turnId;
+    }
     activeTurnSnapshot = {
       turnId:
         typeof turnId === "string" && turnId.length > 0
@@ -948,13 +944,12 @@ export function createDaemonTuiSession<
       runtimeSettingsAuthorityError = error;
       broadcastDaemonEvent({
         id: `daemon-runtime-settings-authority-failed-${Date.now()}`,
-        type: "error",
-        payload: {
-          cause: "runtime_settings_authority_gap",
+        ...createTurnFailedEvent({
+          turnId: activeTurnSnapshot?.turnId ?? "daemon-turn",
+          code: "runtime_settings_authority_gap",
           message: error.message,
-          terminal: true,
-          terminalSource: "runtime_settings_authority",
-        },
+          completedAt: Date.now(),
+        }),
       });
       const abortTerminal = (
         baseSession as AgenCTuiBridgeSession & {
@@ -984,13 +979,12 @@ export function createDaemonTuiSession<
     try {
       broadcastDaemonEvent({
         id: `daemon-runtime-settings-authority-failed-${Date.now()}`,
-        type: "error",
-        payload: {
-          cause: failureCause,
+        ...createTurnFailedEvent({
+          turnId: activeTurnSnapshot?.turnId ?? "daemon-turn",
+          code: failureCause,
           message: error.message,
-          terminal: true,
-          terminalSource: "runtime_settings_authority",
-        },
+          completedAt: Date.now(),
+        }),
       });
     } catch {
       // The authority fence and terminal abort below must survive UI listeners.
@@ -1036,6 +1030,9 @@ export function createDaemonTuiSession<
       mcpProjection,
       broadcastDaemonEvent,
       runtimeSettingsReconciler,
+      () => activeTurnSnapshot?.turnId === "daemon-turn"
+        ? lastObservedTurnId
+        : activeTurnSnapshot?.turnId ?? lastObservedTurnId,
     );
     const currentConnectionState = client.getConnectionState?.();
     if (
@@ -2515,6 +2512,7 @@ function subscribeToDaemonEvents(
   mcpProjection: DaemonMcpProjection,
   cb: (event: unknown) => void,
   runtimeSettingsReconciler?: RuntimeSettingsReconciler,
+  activeTurnId?: () => string | undefined,
 ): () => void {
   let replayingInitialEvents = true;
   const deliver = (event: JsonObject): void => {
@@ -2546,7 +2544,7 @@ function subscribeToDaemonEvents(
         mcpProjection.invalidate(event.params.revision);
         return;
       }
-      const transcriptEvent = toTranscriptEvent(event);
+      const transcriptEvent = toTranscriptEvent(event, activeTurnId?.());
       if (runtimeSettingsReconciler === undefined) {
         deliver(transcriptEvent);
       } else if (replayingInitialEvents) {
@@ -2835,7 +2833,7 @@ function baseInitialTranscriptEvents(
   ];
 }
 
-function toTranscriptEvent(event: JsonObject): JsonObject {
+function toTranscriptEvent(event: JsonObject, activeTurnId?: string): JsonObject {
   const msg = event.msg;
   if (isJsonObject(msg)) {
     return msg;
@@ -2946,7 +2944,7 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     };
   }
   if (method === "event.agent_status") {
-    return transcriptEventFromAgentStatus(params);
+    return transcriptEventFromAgentStatus(params, activeTurnId);
   }
   if (method === "event.session_event" && isJsonObject(params.event)) {
     return {
@@ -3073,26 +3071,22 @@ function nextRealtimeEventId(
   return `realtime:${method}:${String(threadId ?? "thread")}:${nextRealtimeTranscriptEventSequence}`;
 }
 
-function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
+function transcriptEventFromAgentStatus(params: JsonObject, activeTurnId?: string): JsonObject {
   const status = params.status;
   const turnId = stringParam(
     params.turnId,
-    stringParam(params.eventId, "status"),
+    activeTurnId ?? stringParam(params.eventId, "status"),
   );
   if (status === "error") {
+    const failed = createTurnFailedEvent({
+      turnId,
+      code: "background_agent_error",
+      message: typeof params.message === "string" ? params.message : "agent error",
+    });
     return {
       id: daemonTranscriptEventId(params, turnId),
-      type: "error",
-      payload: {
-        turnId,
-        message:
-          typeof params.message === "string" ? params.message : "agent error",
-        terminal: true,
-        terminalSource: "agent_status",
-        ...(typeof params.runStatus === "string"
-          ? { runStatus: params.runStatus }
-          : {}),
-      },
+      type: failed.type,
+      payload: { ...failed.payload },
     };
   }
   return {

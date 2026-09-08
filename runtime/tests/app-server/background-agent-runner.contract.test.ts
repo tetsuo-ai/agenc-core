@@ -9276,6 +9276,77 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).not.toHaveBeenCalled();
   });
 
+  it.each(["completed", "errored"] as const)(
+    "[managed-thread] agrees on live and replayed %s turns after diagnostics",
+    async (outcome) => {
+      const conversationId = `session-explicit-${outcome}`;
+      const { runner, session, control, rolloutItems } = makeTopLevelRunner({ conversationId });
+      const notifications: unknown[] = [];
+      await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+      await runner.attachAgentSessionEvents(conversationId, {
+        sessionId: "session_1",
+        emit: (notification) => { notifications.push(notification); },
+      });
+      control.sendInput.mockImplementationOnce(async () => {
+        session.emit({ id: "start", msg: { type: "turn_started", payload: { turnId: "turn-1" } } });
+        session.emit({ id: "diagnostic", msg: { type: "error", payload: { turnId: "turn-1", cause: "stop_hook_threw", message: "hook failed" } } });
+        session.emit({ id: "stale", msg: { type: "turn_failed", payload: { turnId: "old-turn", code: "provider_error", message: "stale failure" } } });
+        session.emit({ id: "answer", msg: { type: "agent_message", payload: { message: "full answer" } } });
+        session.emit({ id: "tokens", msg: { type: "token_count", payload: { promptTokens: 4, completionTokens: 3, totalTokens: 7 } } });
+        session.emit({ id: "terminal", msg: outcome === "errored"
+          ? { type: "turn_failed", payload: { turnId: "turn-1", code: "provider_error", message: "provider failed" } }
+          : { type: "turn_complete", payload: { turnId: "turn-1", lastAgentMessage: "full answer" } },
+        });
+      });
+      const request = {
+        sessionId: "session_1", content: "retry me", originalContent: "retry me",
+        messageId: "explicit-message", streamId: "explicit-message",
+        acceptedAt: "2026-08-17T00:00:00.000Z",
+      };
+      const terminal = outcome === "errored"
+        ? { code: 1, message: "provider failed" }
+        : { code: 0, message: "full answer" };
+      await expect(runner.submitAgentMessage(conversationId, request)).resolves.toMatchObject({ terminal, turnId: "turn-1" });
+      await expect(runner.submitAgentMessage(conversationId, request)).resolves.toMatchObject({ disposition: "duplicate", duplicateState: "completed", terminal });
+      expect(control.sendInput).toHaveBeenCalledOnce();
+      await expect(runner.getAgentSnapshot(conversationId)).resolves.toMatchObject({ status: "idle" });
+      await expect(runner.getAgentSessionTranscriptV2(conversationId, { sessionId: "session_1" })).resolves.toMatchObject({
+        turnResults: [{ turnId: "turn-1", outcome, inputTokens: 4, outputTokens: 3, totalTokens: 7 }],
+        messages: [expect.objectContaining({ text: "retry me" }), expect.objectContaining({ text: "full answer" })],
+      });
+      if (outcome === "errored") {
+        expect(notifications).toContainEqual(expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({ event: expect.objectContaining({ type: "turn_failed", payload: expect.objectContaining({ turnId: "turn-1" }) }) }),
+        }));
+      }
+      const restored = makeTopLevelRunner({ conversationId, rolloutItems: [...rolloutItems] });
+      await restored.runner.startAgent({ objective: "restored", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+      await expect(restored.runner.submitAgentMessage(conversationId, request)).resolves.toMatchObject({ disposition: "duplicate", duplicateState: "completed", terminal });
+      expect(restored.control.sendInput).not.toHaveBeenCalled();
+      await expect(runner.submitAgentMessage(conversationId, { ...request, content: "next", originalContent: "next", messageId: "next-message", streamId: "next-message" })).resolves.toMatchObject({ disposition: "started" });
+    },
+  );
+
+  it.each([false, true])("[managed-thread] journals one failed terminal before run failure (already closed: %s)", async (alreadyClosed) => {
+    const conversationId = `session-terminal-once-${alreadyClosed}`;
+    const { runner, session, stub, rolloutItems, shutdown } = makeTopLevelRunner({ conversationId });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    session.emit({ id: "started", msg: { type: "turn_started", payload: { turnId: "failed-turn" } } });
+    if (alreadyClosed) {
+      session.emit({ id: "failed", msg: { type: "turn_failed", payload: { turnId: "failed-turn", code: "turn_execution_failed", message: "failed" } } });
+    }
+    stub.pushStatus({ status: "errored", turnId: "failed-turn", error: "failed", endedAtMs: 1_500 });
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(rolloutItems).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ msg: expect.objectContaining({ type: "run_terminal" }) }) })));
+    const events = rolloutItems.flatMap((item) => {
+      const candidate = item as { type: string; payload: { msg: { type: string } } };
+      return candidate.type === "event_msg" ? [candidate.payload.msg] : [];
+    });
+    expect(events.filter((event) => event.type === "turn_failed")).toHaveLength(1);
+    expect(events.findIndex((event) => event.type === "turn_failed")).toBeLessThan(events.findIndex((event) => event.type === "run_terminal"));
+  });
+
   it("[managed-thread] never attributes a later completed turn to a crashed submission", async () => {
     const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
       type: "event_msg",

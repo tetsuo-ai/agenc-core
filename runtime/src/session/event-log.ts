@@ -3,7 +3,7 @@
  * AgenC flows through.
  *
  * Hand-port of agenc runtime `protocol/src/protocol.rs` EventMsg (78 variants)
- * reduced to AgenC's 82-variant runtime surface.
+ * reduced to AgenC's 83-variant runtime surface.
  *
  * Invariants wired here:
  *   I-8  (every error site emits a typed event) — `emitError()` helper
@@ -35,6 +35,8 @@ import type {
   RunUsageTotals,
 } from "../contracts/run-contracts.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
+import type { TurnFailedEvent } from "../contracts/turn-terminal.js";
+export type { TurnFailedEvent } from "../contracts/turn-terminal.js";
 import type {
   CollaborationMode,
   FileSystemSandboxPolicy,
@@ -101,7 +103,7 @@ export interface Event {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Event payloads — 82 variants
+// Event payloads — 83 variants
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SessionMetaLine {
@@ -965,7 +967,7 @@ export interface TurnContextItem {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// EventMsg discriminated union (82 variants)
+// EventMsg discriminated union (83 variants)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -1163,6 +1165,7 @@ export type EventMsg =
     }
   | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
   | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
+  | { readonly type: "turn_failed"; readonly payload: TurnFailedEvent }
   | {
       readonly type: "turn_checkpoint";
       readonly payload: TurnCheckpointEvent;
@@ -1421,6 +1424,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "subagent_turn_outcome",
     "turn_complete",
     "turn_aborted",
+    "turn_failed",
     "turn_checkpoint",
     "turn_resumed",
     "thread_rolled_back",
@@ -1489,6 +1493,7 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "message_submission",
     "turn_complete",
     "turn_aborted",
+    "turn_failed",
     "error",
     "context_compacted",
     "subagent_turn_outcome",

@@ -1852,6 +1852,48 @@ describe("main() smoke", () => {
     }
   });
 
+  it.each(["turn_complete", "turn_failed"])("oneShotCLI ignores diagnostics and settles on %s", async (terminalType) => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-terminal-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-terminal-cwd-"));
+    const previousEnv = { ...process.env };
+    Object.assign(process.env, {
+      AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, AGENC_PROVIDER: "openai",
+      OPENAI_API_KEY: "stub-openai-key-for-test", AGENC_CLI_ENTRY_DISABLE: "1",
+    });
+    const notification = (id: string, type: string, payload: Record<string, unknown>) => ({
+      method: "event.session_event",
+      params: { sessionId: "session_terminal", turnId: "turn-1", eventId: id, event: { id, type, payload } },
+    });
+    installDaemonCliDepsForTest({
+      agentId: "agent_terminal", sessionId: "session_terminal", cwd: tmpCwd,
+      oneShotEvents: [
+        notification("diagnostic", "error", { turnId: "turn-1", cause: "stop_hook_threw", message: "diagnostic" }),
+        notification("stale", "turn_failed", { turnId: "old-turn", code: "provider_error", message: "stale failure" }),
+        notification("terminal", terminalType, terminalType === "turn_failed"
+          ? { turnId: "turn-1", code: "provider_error", message: "provider failed" }
+          : { turnId: "turn-1", lastAgentMessage: "full answer" }),
+      ],
+    });
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      expect(await oneShotCLI("work")).toBe(terminalType === "turn_failed" ? 1 : 0);
+      const output = [...stdoutSpy.mock.calls, ...stderrSpy.mock.calls].map(([chunk]) => String(chunk)).join("");
+      expect(output).toContain(terminalType === "turn_failed" ? "provider failed" : "full answer");
+      expect(output).not.toContain("stale failure");
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in previousEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, previousEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("oneShotCLI DENIES an unanswerable permission request and terminates instead of hanging", async () => {
     // Regression for the non-interactive one-shot deadlock: the daemon forces
     // --autonomous, so any tool the model invokes that is not on the (empty by

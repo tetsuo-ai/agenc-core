@@ -21,7 +21,7 @@ import {
   isPermissionDeniedToolResult,
   PERMISSION_DENIED_TOOL_RESULT_MESSAGE,
 } from "./tool-result-denial.js";
-import { isTerminalDaemonErrorPayload } from "./daemon-terminal-error.js";
+import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import { escapeXml } from "../utils/xml.js";
 
 /**
@@ -2008,6 +2008,9 @@ export function adaptTranscriptEvents(
         lastThinkingText = "";
         break;
       case "turn_complete": {
+        if (classifyTurnTerminal(event, {
+          expectedTurnId: currentTurnId ?? undefined,
+        }) === undefined) break;
         const completionTimestamp =
           timestampFromUnixMillis(payload.completedAt) ?? currentTurnTimestamp ?? "";
         // `turn_complete` is the authoritative end of every provider stream.
@@ -2059,16 +2062,14 @@ export function adaptTranscriptEvents(
         suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
         isStreaming = false;
-        if (
-          typeof payload.turnId !== "string" ||
-          currentTurnId === null ||
-          payload.turnId === currentTurnId
-        ) {
-          currentTurnId = null;
-        }
+        currentTurnId = null;
         break;
       }
       case "turn_aborted":
+      case "turn_failed":
+        if (classifyTurnTerminal(event, {
+          expectedTurnId: currentTurnId ?? undefined,
+        }) === undefined) break;
         // Phase 5 #56: previously this case cleared `streamingText`
         // unconditionally, so any text the model had already
         // produced before the user pressed ESC was silently dropped
@@ -2096,13 +2097,7 @@ export function adaptTranscriptEvents(
         isStreaming = false;
         currentTurnTimestamp = undefined;
         currentTurnAssistantMessageIndexes = [];
-        if (
-          typeof payload.turnId !== "string" ||
-          currentTurnId === null ||
-          payload.turnId === currentTurnId
-        ) {
-          currentTurnId = null;
-        }
+        currentTurnId = null;
         // Clear streaming tool state on cancellation.
         // stream cancellation — any partially-streamed tool inputs are
         // abandoned because their completion events will never arrive
@@ -2111,7 +2106,9 @@ export function adaptTranscriptEvents(
         suppressedStreamingToolCallIds.clear();
         suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
-        out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
+        out.push(event.type === "turn_failed"
+          ? makeSystemMessage(stringResult(payload.message), "error", nextUuid())
+          : makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
         break;
       case "execution_admission":
         // A denied model turn is the ONLY admission outcome a person must see:
@@ -2657,23 +2654,6 @@ export function adaptTranscriptEvents(
       case "error":
       case "stream_error":
         out.push(makeSystemMessage(stringResult(payload.message), "error", nextUuid()));
-        // Raw session errors are diagnostic events. Agent-status run failures
-        // carry an explicit terminal marker from the daemon adapter.
-        if (
-          event.type === "error" &&
-          !isTerminalDaemonErrorPayload(payload)
-        ) {
-          break;
-        }
-        persistAssistantText(streamingText, nextUuid);
-        streamingText = "";
-        streamingThinking = null;
-        streamingToolUses.length = 0;
-        suppressedStreamingToolCallIds.clear();
-        suppressedStreamingToolInputIndexes.clear();
-        pendingToolInputDeltas.clear();
-        isStreaming = false;
-        currentTurnId = null;
         break;
       case "slash_result": {
         // Format SlashCommandResult based on its kind instead of

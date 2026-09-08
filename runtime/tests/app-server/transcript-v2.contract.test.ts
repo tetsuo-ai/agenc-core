@@ -10,6 +10,29 @@ function event(seq: number, eventId: string, msg: EventMsg): RolloutItem {
 }
 
 describe("session.transcript.v2 durable projection", () => {
+  it.each(["turn_failed", "background_agent_error", "review_task_failed"])(
+    "closes %s failures without a later completion and ignores stale identities",
+    (failureType) => {
+      const failure: EventMsg = failureType === "turn_failed"
+        ? { type: "turn_failed", payload: { turnId: "turn-1", code: "provider_error", message: "failed", completedAt: 1_500 } }
+        : { type: "error", payload: { turnId: "turn-1", cause: failureType, message: "failed" } };
+      const items = [
+        event(1, "user", { type: "user_message", payload: { message: "question", messageId: "client-1" } }),
+        event(2, "start", { type: "turn_started", payload: { turnId: "turn-1", startedAt: 1_000 } }),
+        event(3, "stale", { type: "turn_failed", payload: { turnId: "turn-old", code: "provider_error", message: "stale" } }),
+        event(4, "answer", { type: "agent_message", payload: { message: "partial answer" } }),
+        event(5, "usage", { type: "token_count", payload: { promptTokens: 5, completionTokens: 2, totalTokens: 7 } }),
+        event(6, "failure", failure),
+      ];
+      const snapshot = sessionTranscriptV2FromRollout(items, "session-1", "run-1");
+      expect(snapshot.turnResults).toEqual([expect.objectContaining({
+        turnId: "turn-1", outcome: "errored", committedSequence: 6,
+        inputTokens: 5, outputTokens: 2, totalTokens: 7,
+      })]);
+      expect(snapshot.messages.at(-1)).toMatchObject({ text: "partial answer", turnId: "turn-1" });
+    },
+  );
+
   it("keeps a migrated response_item prefix when canonical events are appended", () => {
     const prefix: RolloutItem[] = [
       {

@@ -59,6 +59,7 @@ import {
   LEDGER_WALLET_CLI_ROUTING_GUIDANCE,
 } from "../elicitation/ledger-wallet-cli.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
+import { createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import { commit } from "../phases/commit.js";
 import {
   continuationNudge,
@@ -1406,11 +1407,13 @@ export async function* runTurnKernel(
   // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
   // invocation must flank its work with a `turn_started` +
   // `turn_context` pair and either a matching `turn_complete` (happy
-  // path) or `turn_aborted` (cancel/error path) so durable rollouts
+  // path), `turn_aborted` (cancel), or `turn_failed` so durable rollouts
   // see closed turn boundaries. Without these, I-48 orphan-TurnStarted
   // recovery in rollout-reconstruction would treat every clean turn
   // as a `process_killed` abort.
   const turnStartedAt = Date.now();
+  let turnStarted = false;
+  let terminalAttempted = false;
   const emitTurnStarted = (turnContextItem: TurnContextItem): void => {
     session.emit({
       id: session.nextInternalSubId(),
@@ -1430,6 +1433,7 @@ export async function* runTurnKernel(
         },
       },
     });
+    turnStarted = true;
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -1439,6 +1443,8 @@ export async function* runTurnKernel(
     });
   };
   const emitTurnComplete = (content: string): void => {
+    if (terminalAttempted) return;
+    terminalAttempted = true;
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -1453,7 +1459,24 @@ export async function* runTurnKernel(
     });
   };
   const emitTurnAborted = (reason: string): void => {
+    if (terminalAttempted) return;
+    terminalAttempted = true;
     session.emitTurnAbortedOnce(ctx.subId, reason);
+  };
+  const emitTurnFailed = (message: string): void => {
+    if (terminalAttempted) return;
+    terminalAttempted = true;
+    const completedAt = Date.now();
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: createTurnFailedEvent({
+        turnId: ctx.subId,
+        code: "turn_execution_failed",
+        message,
+        completedAt,
+        durationMs: completedAt - turnStartedAt,
+      }),
+    });
   };
   const referenceContextItem = toTurnContextItem(ctx);
 
@@ -1555,6 +1578,7 @@ export async function* runTurnKernel(
         emitTurnStarted,
         emitTurnComplete,
         emitTurnAborted,
+        emitTurnFailed,
         referenceContextItem,
         sessionOwner,
         ...(ledgerRootTurnGuidance !== undefined
@@ -1563,6 +1587,11 @@ export async function* runTurnKernel(
         signalCleanups,
       },
     );
+  } catch (error) {
+    if (turnStarted) {
+      emitTurnFailed(error instanceof Error ? error.message : String(error));
+    }
+    throw error;
   } finally {
     for (const cleanup of signalCleanups) cleanup();
     codeModeTurnWorker.dispose();
@@ -1585,6 +1614,7 @@ interface RunTurnKernelCommons {
   readonly emitTurnStarted: (turnContextItem: TurnContextItem) => void;
   readonly emitTurnComplete: (content: string) => void;
   readonly emitTurnAborted: (reason: string) => void;
+  readonly emitTurnFailed: (message: string) => void;
   readonly referenceContextItem: TurnContextItem;
   readonly sessionOwner: Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
@@ -1609,6 +1639,7 @@ async function* runTurnKernelInner(
     emitTurnStarted,
     emitTurnComplete,
     emitTurnAborted,
+    emitTurnFailed,
     referenceContextItem,
     sessionOwner,
     turnStartedAt,
@@ -2483,19 +2514,8 @@ async function* runTurnKernelInner(
         yield editorRequestFailedTurnComplete(content, usage, underlying);
         return terminal;
       }
-      /*
-       * T6 gap #119: an error-terminated turn still closes the turn
-       * boundary for rollout reducers — but it must close it as what it
-       * is. Writing the success-shaped `turn_complete` made the durable
-       * record indistinguishable from a turn that finished, so a run
-       * killed by, say, `execution admission deny: context_window_exceeded`
-       * was replayed to clients as a completed turn whose final answer was
-       * the model's previous intent sentence. `turn_aborted` is the same
-       * boundary for every reducer that consumes one and carries the
-       * reason with it.
-       */
       await syncSessionState();
-      emitTurnAborted(
+      emitTurnFailed(
         underlying instanceof Error && underlying.message.trim().length > 0
           ? underlying.message
           : "turn failed",

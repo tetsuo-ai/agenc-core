@@ -159,7 +159,33 @@ function createClient(): AgenCDaemonTuiClient & {
 }
 
 describe("daemon session activeTurn error handling (ihunt)", () => {
-  it("clears activeTurn when the daemon agent/turn reports an error status", async () => {
+  it("closes only the matching explicit failed turn and permits the next turn", () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+    const emit = (id: string, type: string, payload: JsonObject) => client.emit("session_1", {
+      method: "event.session_event", params: { eventId: id, event: { id, type, payload } },
+    });
+    emit("start", "turn_started", { turnId: "turn-1" });
+    emit("diagnostic", "error", { turnId: "turn-1", cause: "stop_hook_threw", message: "diagnostic" });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "turn-1" });
+    emit("stale", "turn_failed", { turnId: "turn-old", code: "provider_error", message: "stale" });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "turn-1" });
+    emit("failure", "turn_failed", { turnId: "turn-1", code: "provider_error", message: "failed" });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+    emit("next", "turn_started", { turnId: "turn-2" });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "turn-2" });
+    client.emit("session_1", { method: "event.agent_status", params: { eventId: "idle-step", turnId: "turn-2", status: "idle" } });
+    const observed: unknown[] = [];
+    const unsubscribeObserved = session.subscribeToEvents((event) => observed.push(event));
+    client.emit("session_1", { method: "event.agent_status", params: { eventId: "run-failure", status: "error", message: "run failed" } });
+    expect(observed).toContainEqual(expect.objectContaining({ type: "turn_failed", payload: expect.objectContaining({ turnId: "turn-2" }) }));
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+    unsubscribeObserved();
+    unsubscribe();
+  });
+
+  it.each([false, true])("clears activeTurn on an agent failure (turn-scoped: %s)", async (turnScoped) => {
     const client = createClient();
     const session = createDaemonTuiSession({
       baseSession: createBaseSession(),
@@ -185,16 +211,11 @@ describe("daemon session activeTurn error handling (ihunt)", () => {
     });
     expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "turn_1" });
 
-    // A mid-turn failure arrives as event.agent_status { status: "error" },
-    // which the bridge rewrites into a transcript event with type "error"
-    // (NOT background_agent_status). Before the fix, noteDaemonActivity ignored
-    // this event and left activeTurnSnapshot set forever, permanently blocking
-    // /rewind and /compact-from-message.
     client.emit("session_1", {
       method: "event.agent_status",
       params: {
         eventId: "status_2",
-        turnId: "turn_1",
+        ...(turnScoped ? { turnId: "turn_1" } : {}),
         status: "error",
         message: "provider API error",
       },

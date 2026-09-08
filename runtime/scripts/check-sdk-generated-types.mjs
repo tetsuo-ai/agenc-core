@@ -22,6 +22,8 @@ const paths = {
   coreTypes: "src/entrypoints/sdk/coreTypes.ts",
   generated: "src/entrypoints/sdk/coreTypes.generated.ts",
   runtimeProtocol: "src/app-server/protocol/index.ts",
+  turnTerminal: "src/contracts/turn-terminal.ts",
+  packageTurnTerminal: "../packages/agenc-sdk/src/turn-terminal.generated.ts",
   packageTranscriptV2: "../packages/agenc-sdk/src/transcript-v2.generated.ts",
   packageWire: "../packages/agenc-sdk/src/protocol-wire.generated.ts",
   packageWorkflowResult:
@@ -167,6 +169,15 @@ export async function synchronizeSdkWireGenerated({
   return synchronizeGeneratedFile({ generatedPath, expected, write });
 }
 
+export async function synchronizeTurnTerminalGenerated({
+  canonicalPath,
+  generatedPath,
+  write = false,
+}) {
+  const expected = normalizeLineEndings(await readFile(canonicalPath, "utf8"));
+  return synchronizeGeneratedFile({ generatedPath, expected, write });
+}
+
 async function synchronizeGeneratedFile({ generatedPath, expected, write }) {
   let current;
   try {
@@ -224,6 +235,7 @@ async function main() {
     packageWorkflowResult,
     transcriptV2,
     wire,
+    turnTerminal,
   ] = await Promise.all([
     readRuntimeFile(paths.schemas),
     readRuntimeFile(paths.coreTypes),
@@ -239,6 +251,11 @@ async function main() {
       generatedPath: path.join(runtimeRoot, paths.packageWire),
       write: mode === "write",
     }),
+    synchronizeTurnTerminalGenerated({
+      canonicalPath: path.join(runtimeRoot, paths.turnTerminal),
+      generatedPath: path.join(runtimeRoot, paths.packageTurnTerminal),
+      write: mode === "write",
+    }),
   ]);
   if (mode === "write") {
     const displayPath = path
@@ -252,6 +269,9 @@ async function main() {
     );
     process.stdout.write(
       `[sdk generated types] ${wire.changed ? "wrote" : "current"} ${paths.packageWire}\n`,
+    );
+    process.stdout.write(
+      `[sdk generated types] ${turnTerminal.changed ? "wrote" : "current"} ${paths.packageTurnTerminal}\n`,
     );
   }
   const failures = [];
@@ -394,6 +414,11 @@ async function main() {
     failures,
     wire.matches,
     `${paths.packageWire} is stale; run ${checkCommand} -- --write`,
+  );
+  expectCondition(
+    failures,
+    turnTerminal.matches,
+    `${paths.packageTurnTerminal} is stale; run ${checkCommand} -- --write`,
   );
 
   if (mode === "check") {

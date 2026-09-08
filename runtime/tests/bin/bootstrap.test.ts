@@ -840,6 +840,18 @@ describe("bootstrapLocalRuntimeSession", () => {
           { turnId: "turn-1", lastAgentMessage: "done" },
           firstEventSequence + 5,
         ),
+        rolloutEvent(
+          "failed-turn-start",
+          "turn_started",
+          { turnId: "turn-2" },
+          firstEventSequence + 6,
+        ),
+        rolloutEvent(
+          "failed-turn-end",
+          "turn_failed",
+          { turnId: "turn-2", code: "provider_error", message: "provider failed" },
+          firstEventSequence + 7,
+        ),
       ]) {
         first.rolloutStore.appendRollout(event);
       }
@@ -880,11 +892,14 @@ describe("bootstrapLocalRuntimeSession", () => {
           "assistant_thinking_block_stop",
           "agent_thinking",
           "turn_complete",
+          "turn_failed",
         ]),
       );
       const transcript = adaptTranscriptEvents(
         initialTranscriptEvents as Parameters<typeof adaptTranscriptEvents>[0],
       );
+      expect(transcript.isStreaming).toBe(false);
+      expect(JSON.stringify(transcript.messages)).toContain("provider failed");
       expect(
         transcript.messages.some(
           (message) =>

@@ -55,6 +55,16 @@ const rollback = (numTurns: number): RolloutItem => ({
 });
 
 describe("thread rollout truncation", () => {
+  it("preserves a failed-turn snapshot without adding a false interruption", () => {
+    const failure: RolloutItem = {
+      type: "event_msg",
+      payload: { id: "failure", msg: { type: "turn_failed", payload: { turnId: "failed-turn", code: "provider_error", message: "failed" } } },
+    };
+    const items = [response("user", "question"), turnStarted("failed-turn"), failure];
+    expect(forkSnapshotRollout(items, { kind: "interrupted" })).toEqual(items);
+    expect(forkSnapshotRollout(items, { kind: "truncate_before_nth_user_message", n: 1 })).toEqual(items);
+  });
+
   it("counts real user messages and trigger-turn assistant messages as fork turns", () => {
     const items: RolloutItem[] = [
       response("system", "system"),

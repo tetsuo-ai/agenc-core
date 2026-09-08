@@ -20,6 +20,7 @@ import type {
 } from "../protocol/index.js";
 import { MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES } from "../protocol/index.js";
 import type { RunTerminalResult } from "../../contracts/run-contracts.js";
+import { classifyTurnTerminal, createTurnFailedEvent } from "../../contracts/turn-terminal.js";
 
 import {
   AgenCBackgroundAgentMessageError,
@@ -443,12 +444,45 @@ function commitDurableRunCancellationRequest(
   }
 }
 
+function closeFailedRunTurn(
+  active: ActiveBackgroundAgent,
+  result: RunTerminalResult,
+): void {
+  if (result.status !== "failed") return;
+  let openTurnId: string | undefined;
+  for (const item of active.bootstrap.rolloutStore.readAll()) {
+    if (item.type !== "event_msg") continue;
+    const event = item.payload.msg;
+    if (event.type === "turn_started") {
+      openTurnId = event.payload.turnId;
+    } else if (classifyTurnTerminal(event, {
+      expectedTurnId: openTurnId,
+      legacyJournal: true,
+    }) !== undefined) {
+      openTurnId = undefined;
+    }
+  }
+  if (openTurnId === undefined) return;
+  const eventId = `turn-failed:${openTurnId}`;
+  active.bootstrap.session.emit({
+    id: eventId,
+    eventId,
+    msg: createTurnFailedEvent({
+      turnId: openTurnId,
+      code: "background_agent_error",
+      message: result.finalMessage ?? result.stopReason ?? "background agent failed",
+      completedAt: Date.parse(result.finishedAt),
+    }),
+  });
+}
+
 function commitDurableRunTerminal(
   active: ActiveBackgroundAgent,
   runId: string,
   result: RunTerminalResult,
 ): AgenCBackgroundAgentTerminalSnapshot {
   if (active.terminal !== undefined) return active.terminal;
+  closeFailedRunTurn(active, result);
   const epoch = active.runEpoch;
   const session = active.bootstrap.session;
   const lastSequenceBeforeTerminal =

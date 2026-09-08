@@ -1,4 +1,5 @@
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
+import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import {
   agentInvocationGroupStartIndex,
   isAgentInvocationTurnBoundary,
@@ -137,8 +138,10 @@ function snapshotTurnState(
       return;
     }
     if (
-      (msg.type === "turn_complete" || msg.type === "turn_aborted") &&
-      (activeTurnId === undefined || msg.payload.turnId === activeTurnId)
+      classifyTurnTerminal(msg, {
+        expectedTurnId: activeTurnId,
+        legacyJournal: true,
+      }) !== undefined
     ) {
       activeTurnClosed = true;
     }
@@ -158,8 +161,7 @@ function snapshotTurnState(
   }
   const hasTerminalBoundary = items.slice(lastUserPosition + 1).some((item) => {
     if (item.type !== "event_msg") return false;
-    const type = item.payload.msg.type;
-    return type === "turn_complete" || type === "turn_aborted";
+    return classifyTurnTerminal(item.payload.msg, { legacyJournal: true }) !== undefined;
   });
   return { endsMidTurn: !hasTerminalBoundary };
 }

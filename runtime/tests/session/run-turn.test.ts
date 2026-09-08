@@ -5534,15 +5534,20 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
         },
       }),
     );
-    // The turn still closes its boundary, but as what it is: an errored
-    // turn emits `turn_aborted` with the reason instead of the
-    // success-shaped `turn_complete`, which used to make a failed turn
-    // replay to clients as a completed one with an empty answer.
-    expect(events).toContainEqual(
+    expect(events.filter((event) => event.msg.type === "turn_failed")).toEqual([
       expect.objectContaining({
-        msg: expect.objectContaining({ type: "turn_aborted" }),
+        msg: {
+          type: "turn_failed",
+          payload: expect.objectContaining({
+            turnId: mkCtx().subId,
+            code: "turn_execution_failed",
+            message: expect.any(String),
+            completedAt: expect.any(Number),
+          }),
+        },
       }),
-    );
+    ]);
+    expect(events.some((event) => event.msg.type === "turn_aborted")).toBe(false);
     expect(events).not.toContainEqual(
       expect.objectContaining({
         msg: expect.objectContaining({ type: "turn_complete" }),

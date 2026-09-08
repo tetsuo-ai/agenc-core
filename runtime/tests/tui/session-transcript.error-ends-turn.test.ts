@@ -2,16 +2,13 @@ import { describe, expect, test } from "vitest";
 
 import { adaptTranscriptEvents } from "./session-transcript.js";
 
-// Audit finding #13: agent_status:error is translated into a terminal-marked
-// transcript error. The reducer must clear streaming for that event while
-// leaving unmarked session diagnostics inside the active turn.
-describe("error events end the streaming turn", () => {
+describe("explicit failures end the streaming turn", () => {
   const turnStart = {
     type: "turn_started",
     payload: { turnId: "turn-1" },
   } as never;
 
-  test("`error` clears isStreaming and preserves partial text", () => {
+  test("`turn_failed` clears isStreaming and preserves partial text", () => {
     const transcript = adaptTranscriptEvents([
       turnStart,
       {
@@ -19,12 +16,12 @@ describe("error events end the streaming turn", () => {
         payload: { content: "partial answ" },
       } as never,
       {
-        type: "error",
+        type: "turn_failed",
         payload: {
+          turnId: "turn-1",
+          code: "background_agent_error",
           message:
             "openai-compatible error: fetch failed [openai_category=connection_refused]",
-          terminal: true,
-          terminalSource: "agent_status",
         },
       } as never,
     ]);
@@ -35,7 +32,7 @@ describe("error events end the streaming turn", () => {
     expect(rendered).toContain("partial answ");
   });
 
-  test("`stream_error` clears isStreaming", () => {
+  test("`stream_error` keeps a retrying stream active", () => {
     const transcript = adaptTranscriptEvents([
       turnStart,
       {
@@ -44,7 +41,7 @@ describe("error events end the streaming turn", () => {
       } as never,
     ]);
 
-    expect(transcript.isStreaming).toBe(false);
+    expect(transcript.isStreaming).toBe(true);
   });
 
   test("`error` with stream_disconnected cause keeps the turn streaming", () => {

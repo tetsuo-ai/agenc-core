@@ -179,16 +179,23 @@ describe("agentStatusFromEvent (reference parity)", () => {
     expect(status?.status).toBe("errored");
   });
 
-  it("error event maps to errored with payload message", () => {
+  it("failed turns map to errored with their failure message", () => {
     const status = agentStatusFromEvent({
-      type: "error",
-      payload: { turnId: "t1", message: "boom" },
+      type: "turn_failed",
+      payload: { turnId: "t1", code: "provider_error", message: "boom" },
     });
     expect(status).toMatchObject({
       status: "errored",
       turnId: "t1",
       error: "boom",
     });
+  });
+
+  it("does not transition agent status on diagnostic errors", () => {
+    expect(agentStatusFromEvent({
+      type: "error",
+      payload: { turnId: "t1", cause: "stop_hook_threw", message: "boom" },
+    })).toBeUndefined();
   });
 
   it("unrelated event types return undefined (no transition)", () => {
