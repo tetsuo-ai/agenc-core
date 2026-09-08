@@ -83,6 +83,56 @@ describe.each<InputMode>(["replay", "live", "batch"])("assistant output correlat
     ]);
   });
 
+  it.each([
+    { type: "user_message", payload: { message: "again" } },
+    { type: "queued_command", payload: { uuid: "queued-next", commandMode: "prompt", content: "again" } },
+    { type: "realtime_transcript_done", payload: { role: "user", text: "again" } },
+  ])("does not repeat the active turn's late terminal answer after $type", boundary => {
+    const events = [
+      event("start-first", "turn_started", { turnId: "first" }),
+      event("agent-first", "agent_message", { message: "Done." }),
+      event("boundary", boundary.type, boundary.payload),
+      event("complete-first", "turn_complete", { turnId: "first", lastAgentMessage: "Done." }),
+    ];
+    expect(assistantRows(project(events, mode))).toEqual([
+      { uuid: "id:agent-first:0", content: answer },
+    ]);
+    expect(assistantRows(project([
+      ...events,
+      event("start-next", "turn_started", { turnId: "next" }),
+      event("agent-next", "agent_message", { message: "Done." }),
+      event("complete-next", "turn_complete", { turnId: "next", lastAgentMessage: "Done." }),
+    ], mode))).toEqual([
+      { uuid: "id:agent-first:0", content: answer },
+      { uuid: "id:agent-next:0", content: answer },
+    ]);
+  });
+
+  it.each(["turn_start", "turn_started"])("keeps fallback correlation when %s repeats the active turn ID", startType => {
+    const events = [
+      event("start", startType, { turnId: "same" }),
+      event("agent", "agent_message", { message: "Done." }),
+      event("repeated-start", startType, { turnId: "same" }),
+      event("complete", "turn_complete", { turnId: "same", lastAgentMessage: "Done." }),
+    ];
+    expect(assistantRows(project(events, mode))).toEqual([
+      { uuid: "id:agent:0", content: answer },
+    ]);
+  });
+
+  it.each([
+    { type: "agent_message_delta", payload: { delta: "Done." }, uuid: "id:user:0" },
+    { type: "realtime_transcript_done", payload: { role: "assistant", text: "Done." }, uuid: "id:output:0" },
+  ])("retains active-turn correlation for $type across a user boundary", output => {
+    const events = [
+      event("start", "turn_started", { turnId: "active" }),
+      event("output", output.type, output.payload),
+      event("user", "user_message", { message: "next" }),
+      event("complete", "turn_complete", { turnId: "active", lastAgentMessage: "Done." }),
+    ];
+    expect(assistantRows(project(events, mode))).toEqual([{ uuid: output.uuid, content: answer }]);
+  });
+
   it.each(["agent-first", "terminal-first"])("keeps one row for a same-turn answer and terminal fallback in %s order", order => {
     const agent = event("agent", "agent_message", { message: "Done." });
     const terminal = event("terminal", "turn_complete", { turnId: "turn", lastAgentMessage: "Done." });

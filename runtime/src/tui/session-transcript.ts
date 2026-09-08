@@ -1854,6 +1854,7 @@ export function adaptTranscriptEvents(
   let currentTurnTimestamp: string | undefined;
   let currentTurnAssistantMessageIndexes: number[] = [];
   let lastAssistantText = "";
+  let lastAssistantTextForActiveTurn = "";
   let isStreaming = false;
 
   const persistAssistantText = (
@@ -1867,6 +1868,7 @@ export function adaptTranscriptEvents(
     currentTurnAssistantMessageIndexes.push(out.length);
     out.push(makeAssistantTextMessage(content, nextUuid(), messageTimestamp));
     lastAssistantText = content;
+    lastAssistantTextForActiveTurn = content;
   };
 
   const flushStreamingText = (nextUuid: () => string): void => {
@@ -1931,6 +1933,7 @@ export function adaptTranscriptEvents(
         currentTurnTimestamp = undefined;
         currentTurnAssistantMessageIndexes = [];
         lastAssistantText = "";
+        lastAssistantTextForActiveTurn = "";
         isStreaming = false;
         break;
       case "history_replaced": {
@@ -1955,6 +1958,7 @@ export function adaptTranscriptEvents(
         currentTurnTimestamp = undefined;
         currentTurnAssistantMessageIndexes = [];
         lastAssistantText = "";
+        lastAssistantTextForActiveTurn = "";
         isStreaming = false;
         const replacement = (payload as HistoryReplacedEvent["payload"]).messages;
         if (Array.isArray(replacement)) {
@@ -1986,6 +1990,10 @@ export function adaptTranscriptEvents(
       }
       case "turn_start":
       case "turn_started":
+        if (typeof payload.turnId !== "string" || payload.turnId !== currentTurnId) {
+          lastAssistantText = "";
+          lastAssistantTextForActiveTurn = "";
+        }
         isStreaming = true;
         streamingText = "";
         turnStreamedChars = 0;
@@ -1993,7 +2001,6 @@ export function adaptTranscriptEvents(
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
         currentTurnTimestamp = timestampFromUnixMillis(payload.startedAt);
         currentTurnAssistantMessageIndexes = [];
-        lastAssistantText = "";
         // Clear streaming tool state when a new turn boundary arrives. Any
         // partially-streamed tool inputs from the previous turn are abandoned
         // because they will never receive a matching completion event in this
@@ -2043,7 +2050,9 @@ export function adaptTranscriptEvents(
             : typeof payload.content === "string"
               ? payload.content
               : streamingText;
-        persistAssistantText(content, nextUuid, completionTimestamp);
+        if (currentTurnId === null || content !== lastAssistantTextForActiveTurn) {
+          persistAssistantText(content, nextUuid, completionTimestamp);
+        }
         if (completionTimestamp.length > 0) {
           for (const messageIndex of currentTurnAssistantMessageIndexes) {
             const assistantMessage = out[messageIndex];
@@ -2064,6 +2073,7 @@ export function adaptTranscriptEvents(
         pendingToolInputDeltas.clear();
         isStreaming = false;
         currentTurnId = null;
+        lastAssistantTextForActiveTurn = "";
         break;
       }
       case "turn_aborted":
@@ -2099,6 +2109,7 @@ export function adaptTranscriptEvents(
         currentTurnTimestamp = undefined;
         currentTurnAssistantMessageIndexes = [];
         currentTurnId = null;
+        lastAssistantTextForActiveTurn = "";
         // Clear streaming tool state on cancellation.
         // stream cancellation — any partially-streamed tool inputs are
         // abandoned because their completion events will never arrive
@@ -2264,6 +2275,7 @@ export function adaptTranscriptEvents(
           } else if (payload.text !== lastAssistantText) {
             out.push(makeAssistantTextMessage(payload.text, nextUuid()));
             lastAssistantText = payload.text;
+            lastAssistantTextForActiveTurn = payload.text;
           }
           realtimeStreamingText = "";
         }

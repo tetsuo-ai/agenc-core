@@ -28,6 +28,9 @@ Identical assistant replies remain separate across turn starts and visible user
 messages, including queued human prompts and realtime replies. Within a turn,
 matching assistant and terminal-fallback text produces one row. Canonical event
 deduplication still prevents repeated delivery from creating extra rows.
+The active turn retains its fallback correlation when another user prompt is
+shown, so a late completion does not repeat the prior answer. Repeated start
+events for that same active turn also preserve the correlation.
 
 Existing live subscribers continue receiving events after the retained history
 fills. A later subscription fails before delivering any incomplete history or
