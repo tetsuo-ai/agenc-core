@@ -77,6 +77,18 @@ import { resolveGeminiReasoningEffort } from "../llm/registry/gemini-thinking-mo
 
 type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
 
+function resolveGeminiSessionReasoningEffort(
+  turnEffort: ReasoningEffort | undefined,
+  model: string,
+  effortSource: string | undefined,
+): WireReasoningEffort | undefined {
+  if (turnEffort !== undefined) return resolveGeminiReasoningEffort(model, turnEffort);
+  const configuredEffort = effortSource === "default"
+    ? undefined
+    : getInitialEffortSetting();
+  return resolveGeminiReasoningEffort(model, configuredEffort);
+}
+
 /**
  * Sessions created without an explicit reasoning effort — every
  * daemon-spawned interactive session today — must still honor the
@@ -101,20 +113,20 @@ function resolveSessionReasoningEffort(
     readonly effortSource?: string;
   },
 ): WireReasoningEffort | undefined {
+  if (selection?.provider === "gemini") {
+    return resolveGeminiSessionReasoningEffort(
+      turnEffort,
+      selection.model,
+      selection.effortSource,
+    );
+  }
   let requested: ReasoningEffort | undefined;
   if (turnEffort === undefined) {
-    if (
-      selection?.provider === "gemini" &&
-      selection.effortSource === "default"
-    ) return undefined;
     requested = getInitialEffortSetting();
   } else if (turnEffort !== "none") {
     requested = turnEffort;
   }
   if (requested === undefined) return undefined;
-  if (selection?.provider === "gemini") {
-    return resolveGeminiReasoningEffort(selection.model, requested);
-  }
   if (requested === "max" || requested === "xhigh") {
     if (supportedReasoningLevels === undefined) {
       return requested === "max" ? "xhigh" : requested;
@@ -339,8 +351,8 @@ function buildProviderOptions(
       ctx.reasoningEffort,
       ctx.modelInfo.supportedReasoningLevels,
       {
-        provider: ctx.provider.name,
-        model: ctx.modelInfo.slug,
+        provider: session.services.provider.name,
+        model: session.config?.model ?? ctx.modelInfo.slug,
         effortSource: session.services.configStore
           ?.provenance?.("reasoning_effort")?.scope,
       },

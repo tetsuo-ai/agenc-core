@@ -137,11 +137,11 @@ export function validateHistoryCompatibility(
   if (requirements.hasThinkingHistory && !caps.acceptsThinkingHistory) {
     missing.push("thinking history");
   }
-  const levels = resolveRegisteredModelCatalogEntry(caps)
+  const levels: readonly string[] | undefined = resolveRegisteredModelCatalogEntry(caps)
     ?.supportedReasoningLevels;
   const unsupportedEffort = requirements.reasoningEffort !== undefined &&
     levels !== undefined &&
-    !levels.some((level) => level === requirements.reasoningEffort);
+    !levels.includes(requirements.reasoningEffort);
   if (
     requirements.reasoningEffortRequested &&
     (!caps.acceptsReasoningEffort || unsupportedEffort)

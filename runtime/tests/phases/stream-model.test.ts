@@ -278,6 +278,37 @@ function mkRegistry(tools: Tool[]): ToolRegistry {
 }
 
 describe("streamModel — live assistant text sanitization", () => {
+  test.each([
+    ["gemini-3.1-pro-preview", "high", true],
+    ["gemini-3.1-pro-preview", "xhigh", false],
+    ["gemini-3.5-flash", "minimal", true],
+  ] as const)("uses the live Gemini selection for %s %s", async (model, effort, accepted) => {
+    const baseContext = mkCtx();
+    const context = {
+      ...baseContext,
+      provider: { name: "grok" },
+      modelInfo: { ...baseContext.modelInfo, slug: "gemini-3.1-pro-preview" },
+      reasoningEffort: effort,
+    } as TurnContext;
+    const dispatch = vi.fn(async () => ({
+      content: "ok",
+      toolCalls: [],
+      model,
+      finishReason: "stop" as const,
+    }));
+    const provider = { ...mkProvider(dispatch), name: "gemini" };
+    const { session: baseSession } = mkSession(provider);
+    const session = { ...baseSession, config: { model } } as Session;
+    const result = streamModel(mkState(context), context, session, mkRequest([{ role: "user", content: "fixture" }]));
+    if (accepted) {
+      await result;
+      expect(dispatch).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ reasoningEffort: effort }));
+    } else {
+      await expect(result).rejects.toThrow(/reasoning effort/iu);
+      expect(dispatch).not.toHaveBeenCalled();
+    }
+  });
+
   test("writes provider text deltas to the assistant output sink", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);
