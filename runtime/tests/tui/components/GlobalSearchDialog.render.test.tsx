@@ -85,6 +85,7 @@ vi.mock('./design-system/FuzzyPicker', () => ({
 import { createRoot } from '../ink/root.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { GlobalSearchDialog } from './GlobalSearchDialog.js'
+import { parseWorkbenchRipgrepJsonLine } from '../../../src/tui/workbench/search/model.js'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -244,6 +245,60 @@ async function searchFor(query: string, lines: readonly string[]) {
 describe('GlobalSearchDialog render and interactions', () => {
   beforeEach(() => {
     resetHarness()
+  })
+
+  it.each([
+    { cwd: '/repo', rawFile: 'src/app.ts', file: 'src/app.ts' },
+    { cwd: '/repo', rawFile: '/repo/src/../app.ts', file: 'app.ts' },
+    { cwd: '/repo', rawFile: '/repo/..config', file: '..config' },
+    { cwd: '/repo', rawFile: '/outside/app.ts', file: '/outside/app.ts' },
+    { cwd: '/repo', rawFile: '../outside/app.ts', file: '../outside/app.ts' },
+    { cwd: '/repo', rawFile: '/repo', file: '/repo' },
+    { cwd: 'C:/repo', rawFile: 'C:/repo/src/app.ts', file: 'src/app.ts' },
+    { cwd: 'C:\\repo', rawFile: 'C:\\repo\\src\\app.ts', file: 'src/app.ts' },
+    { cwd: 'C:\\repo', rawFile: 'D:\\shared\\app.ts', file: 'D:/shared/app.ts' },
+    { cwd: 'C:/repo', rawFile: 'C:/outside/app.ts', file: 'C:/outside/app.ts' },
+  ])('matches the workbench path policy for $rawFile from $cwd', async ({ cwd, rawFile, file }) => {
+    const previousCwd = harness.cwd
+    harness.cwd = cwd
+    const rendered = await renderDialog()
+    try {
+      const line = jsonMatchLine(rawFile, 9, 'needle\r')
+      await searchFor('needle', [line])
+      await waitFor(() => pickerProps().items.length === 1, 'Search match did not render')
+      expect(pickerProps().items).toEqual([{ file, line: 9, text: 'needle' }])
+      expect(parseWorkbenchRipgrepJsonLine(line, cwd)).toEqual({
+        id: `${file}:9:needle`,
+        file,
+        line: 9,
+        text: 'needle',
+      })
+    } finally {
+      await rendered.dispose()
+      harness.cwd = previousCwd
+    }
+  })
+
+  it('ignores invalid JSON line numbers without losing valid matches', async () => {
+    const rendered = await renderDialog()
+    try {
+      const invalidLines = [true, '12', [12], { toString: 0, valueOf: 0 }].map((lineNumber, index) =>
+        JSON.stringify({
+          type: 'match',
+          data: {
+            path: { text: `invalid-${index}.ts` },
+            line_number: lineNumber,
+            lines: { text: 'needle' },
+          },
+        }),
+      )
+      await searchFor('needle', [jsonMatchLine('valid.ts', 9, 'needle'), ...invalidLines])
+      await waitFor(() => pickerProps().matchLabel === '1 matches', 'Valid match was not retained')
+      expect(pickerProps().items).toEqual([{ file: 'valid.ts', line: 9, text: 'needle' }])
+      expect(harness.logError).not.toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
   })
 
   it('renders the initial picker state and cancel wiring', async () => {

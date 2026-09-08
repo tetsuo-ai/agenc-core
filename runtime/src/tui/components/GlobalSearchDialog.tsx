@@ -6,7 +6,11 @@ import { useRegisterOverlay } from '../context/overlayContext';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { useOptionalSetAppState } from '../state/AppState.js';
 import { openPreviewCommand } from '../workbench/commands.js';
-import { normalizeWorkspacePathForReferences } from '../workbench/pathReferences.js';
+import {
+  normalizeRipgrepMatchPath,
+  parseRipgrepJsonLine,
+  type RipgrepMatch as Match,
+} from '../search/ripgrep-match.js';
 import { applyWorkbenchCommand, isWorkbenchEnabled } from '../workbench/state.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Text } from '../ink.js';
@@ -17,18 +21,14 @@ import { highlightMatch } from '../../utils/highlightMatch';
 import { readFileInRange } from '../../utils/readFileInRange';
 import { ripGrepStream } from '../../utils/ripgrep';
 import { logError } from '../../utils/log';
-import { displayPathRelativeToBase } from '../pathDisplay.js';
+
 import { FuzzyPicker } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
 type Props = {
   onDone: () => void;
   onInsert: (text: string) => void;
 };
-type Match = {
-  file: string;
-  line: number;
-  text: string;
-};
+
 const VISIBLE_RESULTS = 12;
 const DEBOUNCE_MS = 100;
 const PREVIEW_CONTEXT_LINES = 4;
@@ -318,7 +318,7 @@ function _temp4(query_0, controller_1, setMatches_0, setTruncated_0, setIsSearch
       }
       parsed.push({
         ...m_1,
-        file: normalizeWorkspacePathForReferences(displayPathRelativeToBase(cwd, m_1.file))
+        file: normalizeRipgrepMatchPath(m_1.file, cwd)
       });
     }
     if (!parsed.length) {
@@ -370,45 +370,7 @@ function matchKey(m: Match): string {
   return `${m.file}:${m.line}`;
 }
 
-function stripJsonLineTerminator(text: string): string {
-  if (text.endsWith('\r\n')) return text.slice(0, -2);
-  if (text.endsWith('\n') || text.endsWith('\r')) return text.slice(0, -1);
-  return text;
-}
 
-function parseRipgrepJsonLine(line: string): Match | null {
-  let message: unknown;
-  try {
-    message = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!message || typeof message !== 'object') return null;
-  const typedMessage = message as {
-    type?: unknown;
-    data?: {
-      path?: {
-        text?: unknown;
-      };
-      line_number?: unknown;
-      lines?: {
-        text?: unknown;
-      };
-    };
-  };
-  if (typedMessage.type !== 'match') return null;
-  const file = typedMessage.data?.path?.text;
-  const lineNum = Number(typedMessage.data?.line_number);
-  const text = typedMessage.data?.lines?.text;
-  if (typeof file !== 'string' || !file || !Number.isSafeInteger(lineNum) || lineNum < 1 || typeof text !== 'string') {
-    return null;
-  }
-  return {
-    file,
-    line: lineNum,
-    text: stripJsonLineTerminator(text)
-  };
-}
 
 /**
  * Parse a ripgrep -n --no-heading output line: "path:line:text".

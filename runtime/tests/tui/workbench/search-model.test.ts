@@ -83,6 +83,35 @@ describe("workbench search model", () => {
       "match:b:2:z",
     ]);
   });
+
+  it.each([
+    { name: "boolean", value: true },
+    { name: "numeric string", value: "12" },
+    { name: "array", value: [12] },
+    { name: "object", value: { valueOf: 0, toString: 0 } },
+  ])("rejects a $name line number without coercion", ({ value }) => {
+    const line = JSON.stringify({
+      type: "match",
+      data: {
+        path: { text: "src/app.ts" },
+        line_number: value,
+        lines: { text: "needle" },
+      },
+    });
+    expect(parseWorkbenchRipgrepJsonLine(line, "/repo")).toBeNull();
+  });
+
+  it("normalizes Windows separators before making paths workspace-relative", () => {
+    expect(parseWorkbenchRipgrepJsonLine(
+      jsonMatchLine("C:\\repo\\src\\app.ts", 7, "needle"),
+      "C:\\repo",
+    )).toEqual({
+      id: "src/app.ts:7:needle",
+      file: "src/app.ts",
+      line: 7,
+      text: "needle",
+    });
+  });
 });
 
 function jsonMatchLine(file: string, line: number, text: string): string {
