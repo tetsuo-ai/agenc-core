@@ -6,6 +6,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { isExecutableFile } from "./executable-file.mjs";
+
 const REPOSITORY_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
 
@@ -26,13 +28,7 @@ export function resolveGitExecutable(env = process.env) {
   for (const dir of dirs) {
     for (const name of names) {
       const candidate = path.join(dir, name);
-      try {
-        if (existsSync(candidate) && !statSync(candidate).isDirectory()) {
-          return candidate;
-        }
-      } catch {
-        // skip unreadable PATH entries
-      }
+      if (isExecutableFile(candidate)) return candidate;
     }
   }
   throw new Error("git executable not found on PATH (Nix/Homebrew/portable Git must remain on PATH)");

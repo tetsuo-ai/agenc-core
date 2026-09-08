@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -297,5 +306,64 @@ test("resolveGitExecutable keeps Nix-style PATH entries (no short PATH rewrite)"
     assert.equal(resolved, nixGit);
   } finally {
     rmSync(nixGitDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveGitExecutable skips a non-executable candidate earlier on PATH", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agenc-fast-check-git-"));
+  const blockedDir = path.join(root, "blocked");
+  const executableDir = path.join(root, "executable");
+  const gitName = process.platform === "win32" ? "git.exe" : "git";
+  const blockedGit = path.join(blockedDir, gitName);
+  const executableGit = path.join(executableDir, gitName);
+  mkdirSync(blockedDir);
+  mkdirSync(executableDir);
+  try {
+    if (process.platform === "win32") {
+      writeFileSync(blockedGit, "not a Windows executable\n");
+    } else {
+      copyFileSync(resolveGitExecutable(), blockedGit);
+      chmodSync(blockedGit, 0o644);
+    }
+    copyFileSync(resolveGitExecutable(), executableGit);
+    if (process.platform !== "win32") chmodSync(executableGit, 0o755);
+
+    const resolved = resolveGitExecutable({
+      ...process.env,
+      PATH: [blockedDir, executableDir].join(path.delimiter),
+    });
+    assert.equal(resolved, executableGit);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ripgrep preflight skips a non-executable candidate earlier on PATH", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agenc-fast-check-rg-"));
+  const rgName = process.platform === "win32" ? "rg.EXE" : "rg";
+  const blockedRg = path.join(root, rgName);
+  try {
+    if (process.platform === "win32") {
+      writeFileSync(blockedRg, "not a Windows executable\n");
+    } else {
+      writeFileSync(blockedRg, "#!/bin/sh\nexit 0\n");
+      chmodSync(blockedRg, 0o644);
+    }
+    const result = spawnSync(
+      process.execPath,
+      ["runtime/scripts/check-ripgrep-available.mjs"],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: [root, process.env.PATH ?? ""].join(path.delimiter),
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.includes(`system=${blockedRg}`), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

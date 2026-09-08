@@ -3,11 +3,12 @@
  * Cheap pr-fast preflight: system `rg` or the packaged @vscode/ripgrep binary
  * must be present. Packaging drift fails here instead of as an empty agent catalog.
  */
-import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+import { isExecutableFile } from "../../scripts/executable-file.mjs";
 
 const require = createRequire(import.meta.url);
 const runtimeRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -23,7 +24,7 @@ function systemRgOnPath() {
     for (const extension of extensions) {
       const name = process.platform === "win32" ? `rg${extension}` : "rg";
       const candidate = join(directory, name);
-      if (existsSync(candidate)) return candidate;
+      if (isExecutableFile(candidate)) return candidate;
     }
   }
   return undefined;
@@ -32,7 +33,7 @@ function systemRgOnPath() {
 function packagedRgPath() {
   try {
     const { rgPath } = require("@vscode/ripgrep");
-    if (typeof rgPath === "string" && existsSync(rgPath)) return rgPath;
+    if (typeof rgPath === "string" && isExecutableFile(rgPath)) return rgPath;
   } catch {
     // optional platform package may be absent
   }
