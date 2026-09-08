@@ -64,7 +64,11 @@ function constantObject(node, resolve) {
 function orderedValue(value) {
   if (Array.isArray(value)) return value.map(orderedValue);
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, orderedValue(value[key])]));
+    const keys = Object.keys(value).sort((left, right) => {
+      if (left === right) return 0;
+      return left < right ? -1 : 1;
+    });
+    return Object.fromEntries(keys.map((key) => [key, orderedValue(value[key])]));
   }
   return value;
 }
@@ -88,7 +92,7 @@ function validateStringSchema(schema) {
   assertKeys(schema, ["type", "pattern", "minLength", "maxLength"], "string");
   if (schema.pattern !== undefined) {
     if (typeof schema.pattern !== "string") throw new Error("string pattern must be a string");
-    new RegExp(schema.pattern, "u");
+    RegExp(schema.pattern, "u");
   }
   for (const key of ["minLength", "maxLength"]) {
     if (schema[key] !== undefined) safeInteger(schema[key], key);
@@ -107,7 +111,7 @@ function validateObjectSchema(schema, depth) {
     if (typeof name !== "string" || !Object.hasOwn(properties, name)) throw new Error("unknown required handoff field");
   }
   for (const [name, field] of Object.entries(properties)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || name === "__proto__") throw new Error(`unsupported handoff field ${name}`);
+    if (!/^[A-Za-z_]\w*$/u.test(name) || name === "__proto__") throw new Error(`unsupported handoff field ${name}`);
     validateSchema(field, depth + 1);
   }
 }

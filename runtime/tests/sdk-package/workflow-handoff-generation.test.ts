@@ -219,6 +219,16 @@ describe("exact public workflow handoff generation", () => {
     expect(() => renderWorkflowHandoffGenerated(schema, source)).toThrow(/unsupported handoff authority expression/);
   });
 
+  it("rejects invalid regex syntax before writing a generated validator", async () => {
+    const { schema, options } = await createFixture();
+    const original = await readFile(options.generatedPath, "utf8");
+    schema.properties.preview.pattern = "[";
+    await writeFile(options.schemaPath, JSON.stringify(schema));
+    await writeFile(options.runtimeSourcePath, fixtureRuntimeSource(schema));
+    await expect(synchronizeWorkflowHandoffGenerated({ ...options, write: true })).rejects.toThrow(SyntaxError);
+    expect(await readFile(options.generatedPath, "utf8")).toBe(original);
+  });
+
   it.each(["optional owner", "owner value type", "storage prefix"])("rejects unsupported handwritten relationship changes to %s", async (kind) => {
     const { schema, options } = await createFixture();
     if (kind === "optional owner") schema.required = schema.required.filter((name) => name !== "owner");
