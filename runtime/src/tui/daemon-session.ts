@@ -2912,6 +2912,20 @@ function transcriptEventFromMcpElicitationRequest(params: JsonObject): JsonObjec
   };
 }
 
+function transcriptEventFromSessionEvent(params: JsonObject): JsonObject | null {
+  if (!isJsonObject(params.event)) return null;
+  return {
+    ...params.event,
+    ...(typeof params.eventId === "string" && params.eventId.length > 0
+      ? { eventId: params.eventId }
+      : {}),
+    id: daemonTranscriptEventId(
+      params,
+      typeof params.event.id === "string" ? params.event.id : "session-event",
+    ),
+  };
+}
+
 function toTranscriptEvent(event: JsonObject, activeTurnId?: string): JsonObject {
   const msg = event.msg;
   if (isJsonObject(msg)) {
@@ -2956,17 +2970,8 @@ function toTranscriptEvent(event: JsonObject, activeTurnId?: string): JsonObject
   if (method === "event.agent_status") {
     return transcriptEventFromAgentStatus(params, activeTurnId);
   }
-  if (method === "event.session_event" && isJsonObject(params.event)) {
-    return {
-      ...params.event,
-      ...(typeof params.eventId === "string" && params.eventId.length > 0
-        ? { eventId: params.eventId }
-        : {}),
-      id: daemonTranscriptEventId(
-        params,
-        typeof params.event.id === "string" ? params.event.id : "session-event",
-      ),
-    };
+  if (method === "event.session_event") {
+    return transcriptEventFromSessionEvent(params) ?? event;
   }
   return event;
 }

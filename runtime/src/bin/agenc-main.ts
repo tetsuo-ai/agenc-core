@@ -1945,7 +1945,7 @@ async function runDaemonOneShotPrompt(params: {
             lastPrintedChar = chunk.at(-1) ?? lastPrintedChar;
           }
 
-          activeTurnId = daemonOneShotStartedTurnId(event) ?? activeTurnId;
+          activeTurnId ??= daemonOneShotStartedTurnId(event);
           const finalStatus = daemonOneShotFinalStatus(event, activeTurnId);
           if (finalStatus === null) return;
           if (finalizing) return;

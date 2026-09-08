@@ -1852,7 +1852,12 @@ describe("main() smoke", () => {
     }
   });
 
-  it.each(["turn_complete", "turn_failed"])("oneShotCLI ignores diagnostics and settles on %s", async (terminalType) => {
+  it.each([
+    ["turn_complete", "turn_started"],
+    ["turn_failed", "turn_started"],
+    ["turn_complete", "agent_status"],
+    ["turn_failed", "agent_status"],
+  ])("oneShotCLI ignores diagnostics and settles on %s after stale %s", async (terminalType, staleStartType) => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-terminal-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-terminal-cwd-"));
     const previousEnv = { ...process.env };
@@ -1868,6 +1873,9 @@ describe("main() smoke", () => {
       agentId: "agent_terminal", sessionId: "session_terminal", cwd: tmpCwd,
       oneShotEvents: [
         notification("started", "turn_started", { turnId: "turn-1" }),
+        staleStartType === "turn_started"
+          ? notification("stale-start", "turn_started", { turnId: "old-turn" }, "old-turn")
+          : { method: "event.agent_status", params: { sessionId: "session_terminal", turnId: "old-turn", status: "running" } },
         notification("diagnostic", "error", { turnId: "turn-1", cause: "stop_hook_threw", message: "diagnostic" }),
         notification("stale", "turn_failed", { turnId: "old-turn", code: "provider_error", message: "stale failure" }),
         notification("consistent-stale", "turn_failed", { turnId: "old-turn", code: "provider_error", message: "stale failure" }, "old-turn"),
