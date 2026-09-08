@@ -505,7 +505,7 @@ describe("gateway install-service (O-4)", () => {
       join(home, ".config", "systemd", "user", "agenc-gateway.service"),
       "utf8",
     );
-    expect(unit).toContain("ExecStart=/usr/bin/node /opt/agenc/bin/agenc.js gateway run");
+    expect(unit).toContain('ExecStart=:/usr/bin/env "--" "/usr/bin/node" "/opt/agenc/bin/agenc.js" "gateway" "run"');
     expect(unit).not.toContain("EnvironmentFile=");
     expect(commands).toEqual([
       ["systemctl", "--user", "daemon-reload"],
