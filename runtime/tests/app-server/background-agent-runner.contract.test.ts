@@ -26,6 +26,9 @@ import {
   managedTokenUsage,
 } from "./background-agent-runner.js";
 import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
+import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
+import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type {
@@ -8954,6 +8957,84 @@ describe("AgenC delegate background-agent runner", () => {
     releaseFirst();
     await acceptedThenCrashed;
   });
+
+  it.each(["same prompt", "different prompt"])(
+    "[managed-thread] keeps concurrent dispatcher fallback submissions distinct (%s)", async secondContent => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      const agentId = "session-dispatcher-fallback";
+      const sessionId = "session-dispatcher-client";
+      const { runner, control } = makeTopLevelRunner({ conversationId: agentId });
+      const sessions = new AgenCDaemonSessionManager();
+      const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+      const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+      const connection = dispatcher.createConnection();
+      const emitted: JsonObject[] = [];
+      const pending: Promise<unknown>[] = [];
+      let releaseSend: (() => void) | undefined;
+      const submit = vi.spyOn(runner, "submitAgentMessage");
+      const dispatchMessage = (id: string, method: string, content: string, clientMessageId?: string) =>
+        connection.dispatch({
+          jsonrpc: "2.0", id, method,
+          params: { sessionId, content, ...(clientMessageId === undefined ? {} : { clientMessageId }) },
+        });
+      try {
+        const started = await runner.startAgent({
+          objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [],
+        });
+        await sessions.restoreSession({ sessionId, agentId, status: "waiting", createdAt: started.startedAt });
+        await manager.restoreAgent({
+          agentId, objective: "passive", startedAt: started.startedAt, lastActiveAt: started.startedAt,
+          sessionIds: [sessionId], runtimeAvailable: true,
+        });
+        await runner.attachAgentSessionEvents(agentId, { sessionId, emit: notification => emitted.push(notification) });
+        expect(await connection.dispatch({
+          jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.2.0" } },
+        })).toHaveProperty("result");
+        expect(control.sendInput).not.toHaveBeenCalled();
+        control.sendInput.mockImplementationOnce(() => new Promise<void>(resolve => { releaseSend = resolve; }));
+        const first = dispatchMessage("first", "message.send", "same prompt");
+        pending.push(first);
+        await vi.waitFor(() => expect(control.sendInput).toHaveBeenCalledOnce());
+        const second = dispatchMessage("second", "message.stream", secondContent);
+        pending.push(second);
+        await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+        const identities = submit.mock.calls.map(([, params]) => params.messageId);
+        expect(new Set(identities).size).toBe(2);
+        releaseSend!();
+        const responses = await Promise.all([first, second]);
+        for (const [index, response] of responses.entries()) {
+          expect(response).toMatchObject({ result: { messageId: identities[index], disposition: "started" } });
+        }
+        expect(responses[1]).toMatchObject({ result: { streamId: identities[1] } });
+        expect(control.sendInput).toHaveBeenCalledTimes(2);
+        const userIdentities = emitted.flatMap(notification => {
+          const params = notification.params as JsonObject | undefined;
+          const event = params?.event as JsonObject | undefined;
+          return event?.type === "user_message" ? [params?.clientMessageId] : [];
+        });
+        expect(userIdentities).toEqual(identities);
+        const transcript = await runner.getAgentSessionTranscriptV2(agentId, { sessionId });
+        expect(transcript.messages.filter(message => message.role === "user").map(message => message.clientMessageId)).toEqual(identities);
+        expect(await dispatchMessage("explicit", "message.send", "explicit prompt", "caller-message")).toMatchObject({
+          result: { messageId: "caller-message", disposition: "started" },
+        });
+        expect(await dispatchMessage("retry", "message.stream", "explicit prompt", "caller-message")).toMatchObject({
+          result: { messageId: "caller-message", disposition: "duplicate" },
+        });
+        expect(await dispatchMessage("conflict", "message.send", "changed prompt", "caller-message")).toMatchObject({
+          error: { data: { code: "CLIENT_MESSAGE_ID_CONFLICT" } },
+        });
+        expect(control.sendInput).toHaveBeenCalledTimes(3);
+      } finally {
+        releaseSend?.();
+        await Promise.allSettled(pending);
+        await connection.close();
+        await dispatcher.close();
+        await runner.stopAgent(agentId, "test_cleanup");
+        clock.mockRestore();
+      }
+    },
+  );
 
   it("[managed-thread] joins a concurrent idempotent retry and rejects conflicting content", async () => {
     const { runner, control } = makeTopLevelRunner({

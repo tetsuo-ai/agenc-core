@@ -292,6 +292,12 @@ Hidden-user submissions persist a non-rendering `message_submission` marker
 with a SHA-256 content fingerprint, so their idempotency identity also survives
 a process crash without duplicating the hidden prompt in that marker.
 
+When `clientMessageId` is omitted, the daemon assigns a collision-resistant
+ID with a random UUID suffix. Concurrent requests remain separate submissions
+even if they have identical content or arrive in the same millisecond. Treat
+the generated ID as opaque. Clients that need retry deduplication must provide
+their own stable `clientMessageId` before the first attempt.
+
 `session.transcript.v2` returns `schemaVersion: 2`, `runId`, `historyEpoch`,
 `asOfSequence`, and stable identity-bearing messages. Canonical messages carry
 `messageId`, `commitEventId`, `turnId`/`clientMessageId` when known, and

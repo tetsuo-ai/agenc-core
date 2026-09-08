@@ -7,6 +7,7 @@
  * land.
  */
 
+import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { RemoteError, REMOTE_METHODS, type RemoteMethod } from "../remote/types.js";
 import type { RemoteAccessBoundary } from "../remote/access.js";
@@ -739,7 +740,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#clientMultiplexer = options.clientMultiplexer;
     this.#sessionManager = options.sessionManager;
     this.#createMessageId =
-      options.createMessageId ?? (() => `message_${Date.now().toString(36)}`);
+      options.createMessageId ?? (() => `message_${randomUUID()}`);
     this.#fuzzyFileSearch =
       options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
     this.#ownsFuzzyFileSearch = options.fuzzyFileSearch === undefined;
