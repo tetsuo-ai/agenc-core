@@ -21,6 +21,8 @@ services:
     image: agenc:local
     restart: unless-stopped
     read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=268435456,mode=700,uid=10001,gid=10001
     cap_drop:
       - ALL
     security_opt:

@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as loadYaml } from "js-yaml";
 import { describe, expect, test } from "vitest";
+import { hardenedContainerMountArgs, hardenedContainerRuntimeSmokeProgram } from "../../../scripts/check-clean-build.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..", "..", "..");
@@ -65,6 +66,39 @@ describe("docker packaging", () => {
     expect(ignore).toContain("node_modules");
     expect(ignore).toContain("**/dist");
     expect(ignore).not.toMatch(/^!\.git(?:\/|$)/m);
+  });
+
+  test("compose gives the non-root daemon bounded temporary storage without a writable root", () => {
+    const compose = loadYaml(readFileSync(join(DOCKER_DIR, "docker-compose.yml"), "utf8")) as {
+      services: Record<string, {
+        read_only: boolean;
+        tmpfs: string[];
+        cap_drop: string[];
+        security_opt: string[];
+      }>;
+    };
+    const service = compose.services["agenc-daemon"];
+    expect(service.read_only).toBe(true);
+    expect(service.cap_drop).toEqual(["ALL"]);
+    expect(service.security_opt).toContain("no-new-privileges:true");
+    expect(service.tmpfs).toEqual([
+      "/tmp:rw,nosuid,nodev,size=268435456,mode=700,uid=10001,gid=10001",
+    ]);
+    const mounts = hardenedContainerMountArgs();
+    expect(mounts).toEqual([
+      "--tmpfs", "/data:rw,nosuid,nodev,noexec,mode=700,uid=10001,gid=10001",
+      "--tmpfs", service.tmpfs[0],
+    ]);
+    const smoke = hardenedContainerRuntimeSmokeProgram();
+    expect(() => new Function(smoke)).not.toThrow();
+    expect(smoke).toContain("statfsSync(tempRoot)");
+    expect(smoke).toContain('mkdtempSync(tempRoot + "/agenc-session-smoke-")');
+    expect(smoke).toContain("rmSync(scratch, { recursive: true })");
+    expect(smoke).toContain('error?.code !== "EROFS"');
+    const cleanBuild = readFileSync(join(REPO_ROOT, "scripts/check-clean-build.mjs"), "utf8");
+    expect(cleanBuild.match(/\.\.\.hardenedContainerMountArgs\(\)/g)).toHaveLength(3);
+    const installDocs = readFileSync(join(REPO_ROOT, "docs/install.md"), "utf8");
+    expect(installDocs).toContain(`--tmpfs ${service.tmpfs[0]}`);
   });
 });
 

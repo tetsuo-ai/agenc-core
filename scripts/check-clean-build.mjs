@@ -755,9 +755,37 @@ function compareOciLayouts(first, second) {
   );
 }
 
+export function hardenedContainerMountArgs() {
+  return [
+    "--tmpfs",
+    "/data:rw,nosuid,nodev,noexec,mode=700,uid=10001,gid=10001",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=268435456,mode=700,uid=10001,gid=10001",
+  ];
+}
+
 export function hardenedContainerRuntimeSmokeProgram() {
-  const hardeningChecks = String.raw`const { readFileSync, statSync } = require("node:fs");
+  const hardeningChecks = String.raw`const { mkdtempSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } = require("node:fs");
        if (process.getuid?.() !== 10001 || process.getgid?.() !== 10001) throw new Error("container is not the dedicated non-root identity");
+       const tempRoot = require("node:os").tmpdir();
+       if (tempRoot !== "/tmp") throw new Error("platform temp directory does not use the Compose mount");
+       const tempStat = statSync(tempRoot);
+       if (tempStat.uid !== 10001 || tempStat.gid !== 10001 || (tempStat.mode & 0o777) !== 0o700) throw new Error("temporary directory must be private to the daemon identity");
+       const tempFilesystem = statfsSync(tempRoot);
+       if (tempFilesystem.type !== 0x01021994 || tempFilesystem.bsize * tempFilesystem.blocks !== 268435456) throw new Error("temporary directory must be a 256 MiB tmpfs");
+       const scratch = mkdtempSync(tempRoot + "/agenc-session-smoke-");
+       try {
+         writeFileSync(scratch + "/probe", "temporary session data", { mode: 0o600 });
+         if (readFileSync(scratch + "/probe", "utf8") !== "temporary session data") throw new Error("temporary file readback failed");
+       } finally {
+         rmSync(scratch, { recursive: true });
+       }
+       try {
+         writeFileSync("/home/agenc/agenc-readonly-probe", "must not be written", { flag: "wx", mode: 0o600 });
+         throw new Error("container root filesystem is writable");
+       } catch (error) {
+         if (error?.code !== "EROFS") throw error;
+       }
        const runtimeRoot = statSync("/opt/agenc");
        if (runtimeRoot.uid !== 0 || runtimeRoot.gid !== 0 || (runtimeRoot.mode & 0o022) !== 0) throw new Error("runtime tree is not root-owned and immutable");
        const peerAddon = statSync("/usr/lib/agenc/agenc-peer-credentials.node");
@@ -1008,8 +1036,7 @@ async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
       "ALL",
       "--security-opt",
       "no-new-privileges:true",
-      "--tmpfs",
-      "/data:rw,nosuid,nodev,noexec,mode=700,uid=10001,gid=10001",
+      ...hardenedContainerMountArgs(),
       tag,
       "--version",
     ], { env: dockerEnv });
@@ -1023,8 +1050,7 @@ async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
       "ALL",
       "--security-opt",
       "no-new-privileges:true",
-      "--tmpfs",
-      "/data:rw,nosuid,nodev,noexec,mode=700,uid=10001,gid=10001",
+      ...hardenedContainerMountArgs(),
       "--entrypoint",
       "node",
       "--env",
@@ -1084,8 +1110,7 @@ async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
       "AGENC_NATIVE_PEER_CREDENTIAL_ADDON=/data/evil.node",
       "--env",
       "AGENC_AUTH_BACKEND=local",
-      "--tmpfs",
-      "/data:rw,nosuid,nodev,noexec,mode=700,uid=10001,gid=10001",
+      ...hardenedContainerMountArgs(),
       tag,
     ], { env: dockerEnv });
     const daemonProbe = `

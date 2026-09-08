@@ -105,6 +105,13 @@ as env (or secrets), never bake them into the image. The peer-credential addon
 is prebuilt and root-owned in the image; the daemon never compiles or loads
 native code from `/data`, and the release smoke starts it with `/data:noexec`.
 
+Compose also mounts a 256 MiB `/tmp` tmpfs for daemon startup and session
+scratch files. The mount is owned by UID/GID `10001:10001`, mode `0700`, with
+`nosuid,nodev`; it permits tool execution and is discarded when the container
+stops. The root filesystem remains read-only. Recreate existing containers
+with Compose to apply this mount. See the [Docker install notes](../install.md#docker)
+for the equivalent `docker run` command and packaging smoke checks.
+
 ## Provider credentials
 
 Set BYOK keys in the service environment, never in files inside the image or

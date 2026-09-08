@@ -305,6 +305,7 @@ git archive --format=tar HEAD | \
   --build-arg AGENC_VERSION="$version" -
 docker run -it --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true \
+  --tmpfs /tmp:rw,nosuid,nodev,size=268435456,mode=700,uid=10001,gid=10001 \
   -v agenc-data:/data -e XAI_API_KEY agenc:local
 ```
 
@@ -319,6 +320,21 @@ addon is prebuilt and root-owned under `/usr/lib/agenc`; startup fails closed if
 that configured addon cannot load, and `/data` can be `noexec` without weakening
 socket authentication. No GHCR image is authorized. Build locally as above.
 VPS deployment shapes: [docs/deploy/vps.md](deploy/vps.md).
+
+The read-only container needs writable temporary storage during daemon startup.
+Compose and the command above mount `/tmp` as a 256 MiB tmpfs owned by
+UID/GID `10001:10001`, mode `0700`, with `nosuid,nodev`. Files disappear when
+the container stops and count against available container memory. Tools may
+execute scratch files there; the peer-credential addon still loads only from
+its root-owned image path. Persistent state stays in `/data`, and the rest of
+the root filesystem remains read-only. Recreate existing Compose containers
+to apply the mount change.
+
+The `npm run check:clean-build` image smoke uses the same temp mount, creates
+and removes temporary session files as the daemon user, rejects writes to the
+read-only home directory, and starts the real daemon. Its separate `/data`
+tmpfs retains `noexec` to check that native addons do not depend on writable
+state.
 
 ## Homebrew
 
