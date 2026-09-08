@@ -28,6 +28,8 @@ import {
   MAX_MEMORY_FILES_PER_ROOT,
   MAX_MEMORY_INDEX_ROOTS,
   MEMORY_INDEX_ROOT_IDLE_TTL_MS,
+  MAX_MEMORY_QUERY_MS,
+  MemoryIndexQueryResourceLimitedError,
 } from "../../src/memory/full-corpus-contract.js";
 
 const helperEntrypoint = fileURLToPath(
@@ -813,34 +815,143 @@ describe("C3b persistent full-corpus index", () => {
 
   it("marks a missed create stale when the bounded directory audit sees mutation", async () => {
     const fixture = await createFixture();
+    const missedPath = join(fixture.globalRoot, "missed-create.md");
     await writeMemory(
       join(fixture.globalRoot, "existing.md"),
       "Existing",
       "existingterm",
     );
-    await index!.refresh(fixture.rootSpecs, new AbortController().signal, {
-      explicit: true,
-    });
-    await writeMemory(
-      join(fixture.globalRoot, "missed-create.md"),
-      "Missed create",
-      "missedcreateterm",
-    );
-
-    const status = await index!.auditSlice(
-      { path: fixture.globalRoot, role: "global" },
-      new AbortController().signal,
-    );
-    expect(status.watcherHealth).toBe("degraded");
-    await index!.refresh(fixture.rootSpecs, new AbortController().signal, {
-      explicit: true,
-    });
-    const repaired = await index!.query(
+    const initialTime = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(fixture.globalRoot, initialTime, initialTime);
+    const initial = await index!.refresh(
       fixture.rootSpecs,
-      ["missedcreateterm"],
       new AbortController().signal,
+      { explicit: true },
     );
-    expect(repaired.candidates).toHaveLength(1);
+    expect(initial.kind).toBe("complete");
+    const initialRoot = initial.roots.find(
+      (root) => root.canonicalRoot === fixture.globalRoot,
+    )!;
+    expect(initialRoot).toMatchObject({
+      state: "complete",
+      watcherHealth: "healthy",
+    });
+    const databasePath = index!.databasePath;
+    index!.close();
+    await writeMemory(missedPath, "Missed create", "missedcreateterm");
+    const queryPool = new MemoryQueryProcessPool({ helperEntrypoint });
+    const helperQuery = vi.spyOn(queryPool, "query").mockRejectedValue(
+      new MemoryIndexQueryResourceLimitedError(
+        "memory query helper crossed timeout limit",
+      ),
+    );
+    index = new PersistentMemoryIndex({
+      databasePath,
+      queryPool,
+      backgroundRefresh: false,
+    });
+    const inspection = new Database(databasePath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      const entries = inspection.prepare<
+        [number, string],
+        { canonical_path: string }
+      >(
+        `SELECT canonical_path FROM memory_index_entries
+          WHERE generation_id = ? AND canonical_path = ?`,
+      );
+      const matches = inspection.prepare<
+        [number, string, string],
+        { canonical_path: string }
+      >(
+        `SELECT entry.canonical_path
+           FROM memory_fts AS fts
+           JOIN memory_index_entries AS entry
+             ON entry.root_id = fts.root_id
+            AND entry.generation_id = fts.generation_id
+            AND entry.memory_id = fts.memory_id
+          WHERE fts.generation_id = ?
+            AND fts.description MATCH ? AND entry.canonical_path = ?`,
+      );
+      expect(index.pollRefresh(initialRoot.generationToken!)).toMatchObject({
+        generationId: initialRoot.generationId,
+        state: "complete",
+        watcherHealth: "healthy",
+      });
+      expect(entries.get(initialRoot.generationId!, missedPath)).toBeUndefined();
+      expect(matches.get(
+        initialRoot.generationId!, "missedcreateterm", missedPath,
+      )).toBeUndefined();
+
+      const status = await index.auditSlice(
+        { path: fixture.globalRoot, role: "global" },
+        new AbortController().signal,
+      );
+      expect(status.watcherHealth).toBe("degraded");
+      expect(entries.get(initialRoot.generationId!, missedPath)).toBeUndefined();
+      const repaired = await index.refresh(
+        fixture.rootSpecs,
+        new AbortController().signal,
+        { explicit: true },
+      );
+      expect(repaired.kind).toBe("degraded");
+      const repairedRoot = repaired.roots.find(
+        (root) => root.canonicalRoot === fixture.globalRoot,
+      )!;
+      expect(repairedRoot).toMatchObject({
+        state: "complete",
+        watcherHealth: "degraded",
+      });
+      expect(repairedRoot.generationId).not.toBe(initialRoot.generationId);
+      expect(readGenerationIdForRoot(databasePath, fixture.globalRoot)).toBe(
+        repairedRoot.generationId,
+      );
+      expect(entries.get(repairedRoot.generationId!, missedPath)).toEqual({
+        canonical_path: missedPath,
+      });
+      expect(matches.get(
+        repairedRoot.generationId!, "missedcreateterm", missedPath,
+      )).toEqual({ canonical_path: missedPath });
+      expect(helperQuery).not.toHaveBeenCalled();
+    } finally {
+      inspection.close();
+      helperQuery.mockRestore();
+    }
+  });
+
+  it("reports the production query-helper timeout independently of audit repair", async () => {
+    const fixture = await createFixture();
+    const roots = [{ path: fixture.globalRoot, role: "global" as const }];
+    await writeMemory(
+      join(fixture.globalRoot, "timeout.md"), "Timeout", "timeoutterm",
+    );
+    await expect(index!.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    })).resolves.toMatchObject({ kind: "complete" });
+    const stalledHelper = join(temporaryRoot, "stalled-query-helper.mjs");
+    await writeFile(
+      stalledHelper,
+      "process.stdin.resume();\nsetInterval(() => {}, 1000);\n",
+    );
+    const databasePath = index!.databasePath;
+    index!.close();
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint: stalledHelper }),
+    });
+    expect(MAX_MEMORY_QUERY_MS).toBe(500);
+    await expect(index.query(
+      roots,
+      ["timeoutterm"],
+      new AbortController().signal,
+    )).resolves.toMatchObject({
+      kind: "query_resource_limited",
+      candidates: [],
+      reason: "memory query helper crossed timeout limit",
+    });
   });
 
   it("serializes two daemon writers through the bounded SQLite lease", async () => {
