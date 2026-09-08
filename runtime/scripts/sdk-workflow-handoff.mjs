@@ -90,13 +90,12 @@ function safeInteger(value, label) {
 
 function validateStringSchema(schema) {
   assertKeys(schema, ["type", "pattern", "minLength", "maxLength"], "string");
-  if (schema.pattern !== undefined) {
-    if (typeof schema.pattern !== "string") throw new Error("string pattern must be a string");
-    RegExp(schema.pattern, "u");
-  }
   for (const key of ["minLength", "maxLength"]) {
     if (schema[key] !== undefined) safeInteger(schema[key], key);
   }
+  if (schema.pattern === undefined) return undefined;
+  if (typeof schema.pattern !== "string") throw new Error("string pattern must be a string");
+  return new RegExp(schema.pattern, "u");
 }
 
 function validateObjectSchema(schema, depth) {
