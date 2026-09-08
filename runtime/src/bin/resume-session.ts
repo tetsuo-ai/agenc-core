@@ -27,7 +27,7 @@ import {
   readAndValidateSchemaVersionFd,
   resolveCanonicalSessionCwd,
 } from "../session/session-store.js";
-import { sanitizePath } from "../utils/sessionStoragePortable.js";
+import { projectStorageKey } from "../utils/project-storage-key.js";
 import {
   DEFAULT_MAX_STARTUP_RECOVERY_MS,
   MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
@@ -481,7 +481,7 @@ function candidatesUnderProjectDir(
 }
 
 function legacyProjectDirFor(cwd: string, agencHome: string): string {
-  return join(getAgencHomeDir(agencHome), "projects", sanitizePath(cwd));
+  return join(getAgencHomeDir(agencHome), "projects", projectStorageKey(cwd));
 }
 
 function localProjectDirs(cwd: string, agencHome: string): readonly string[] {

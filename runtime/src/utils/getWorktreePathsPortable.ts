@@ -20,7 +20,7 @@ export async function getWorktreePathsPortable(cwd: string): Promise<string[]> {
     return stdout
       .split('\n')
       .filter(line => line.startsWith('worktree '))
-      .map(line => line.slice('worktree '.length).normalize('NFC'))
+      .map(line => line.slice('worktree '.length))
   } catch {
     return []
   }

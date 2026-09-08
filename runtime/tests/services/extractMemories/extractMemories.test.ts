@@ -126,13 +126,9 @@ describe("auto memory path resolution", () => {
     const longPath = `/${"deep/".repeat(50)}project`;
     const longKey = sanitizePathForProjectKey(longPath);
 
-    expect(sanitizePathForProjectKey("/tmp/foo")).toBe("-tmp-foo");
-    expect(
-      longKey.startsWith(
-        longPath.replace(/[^a-zA-Z0-9]/gu, "-").slice(0, 200),
-      ),
-    ).toBe(true);
-    expect(longKey).toMatch(/-[a-z0-9]+$/u);
+    expect(sanitizePathForProjectKey("/tmp/foo")).toMatch(/^v2-.*-[a-f0-9]{64}$/u);
+    expect(longKey).toMatch(/^v2-.*-[a-f0-9]{64}$/u);
+    expect(longKey.length).toBeLessThanOrEqual(132);
     await expect(
       resolveAutoMemoryDirectory({
         env: {},
@@ -142,7 +138,7 @@ describe("auto memory path resolution", () => {
       }),
     ).resolves.toEqual({
       enabled: true,
-      path: `${join(configHome, "projects", "-tmp-foo", "memory")}${sep}`,
+      path: `${join(configHome, "projects", sanitizePathForProjectKey("/tmp/foo"), "memory")}${sep}`,
     });
   });
 

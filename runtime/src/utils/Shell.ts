@@ -549,10 +549,7 @@ export async function exec(
           if (getPlatform() === "windows") {
             newCwd = posixPathToWindowsPath(newCwd);
           }
-          // cwd is NFC-normalized (setCwdState); newCwd from `pwd -P` may be
-          // NFD on macOS APFS. Normalize before comparing so Unicode paths
-          // don't false-positive as "changed" on every command.
-          if (newCwd.normalize("NFC") !== cwd) {
+          if (newCwd !== cwd) {
             setCwd(newCwd, cwd);
             invalidateSessionEnvCache();
             void onCwdChangedForHooks(cwd, newCwd);

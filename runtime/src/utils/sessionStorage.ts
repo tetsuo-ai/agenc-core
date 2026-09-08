@@ -79,7 +79,7 @@ import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
 import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
-import { sanitizePath } from './path.js'
+import { projectStorageKey } from './project-storage-key.js'
 import { unescapeXml } from './xml.js'
 import {
   extractJsonStringField,
@@ -525,13 +525,8 @@ export function isCustomTitleEnabled(): boolean {
   return true
 }
 
-// Memoized per canonical home + cwd: a daemon can host the same checkout in
-// multiple isolated session homes.
-export const getProjectDir = memoize(
-  (projectDir: string): string =>
-    join(getProjectsDir(), sanitizePath(projectDir)),
-  (projectDir: string) => `${getAgenCHomeDir()}\u0000${projectDir}`,
-)
+export const getProjectDir = (projectDir: string): string =>
+  join(getProjectsDir(), projectStorageKey(projectDir))
 
 let project: Project | null = null
 let cleanupRegistered = false
@@ -4463,23 +4458,10 @@ async function getStatOnlyLogsForWorktrees(
     return getSessionFilesLite(projectDir, undefined, cwd)
   }
 
-  // On Windows, drive letter case can differ between git worktree list
-  // output (e.g. C:/Users/...) and how paths were stored in project
-  // directories (e.g. c:/Users/...). Use case-insensitive comparison.
-  const caseInsensitive = process.platform === 'win32'
-
-  // Sort worktree paths by sanitized prefix length (longest first) so
-  // more specific matches take priority over shorter ones. Without this,
-  // a short prefix like -code-myrepo could match -code-myrepo-worktree1
-  // before the longer, more specific prefix gets a chance.
-  const indexed = worktreePaths.map(wt => {
-    const sanitized = sanitizePath(wt)
-    return {
-      path: wt,
-      prefix: caseInsensitive ? sanitized.toLowerCase() : sanitized,
-    }
-  })
-  indexed.sort((a, b) => b.prefix.length - a.prefix.length)
+  const indexed = [getOriginalCwd(), ...worktreePaths].map(worktree => ({
+    path: worktree,
+    key: projectStorageKey(worktree),
+  }))
 
   const allLogs: LogOption[] = []
   const seenDirs = new Set<string>()
@@ -4498,11 +4480,11 @@ async function getStatOnlyLogsForWorktrees(
 
   for (const dirent of allDirents) {
     if (!dirent.isDirectory()) continue
-    const dirName = caseInsensitive ? dirent.name.toLowerCase() : dirent.name
+    const dirName = dirent.name
     if (seenDirs.has(dirName)) continue
 
-    for (const { path: wtPath, prefix } of indexed) {
-      if (dirName === prefix || dirName.startsWith(prefix + '-')) {
+    for (const { path: wtPath, key } of indexed) {
+      if (dirName === key) {
         seenDirs.add(dirName)
         allLogs.push(
           ...(await getSessionFilesLite(

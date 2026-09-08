@@ -16,7 +16,7 @@ import {
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
 } from "../session/runtime-options.js";
-import { sanitizePath } from "../utils/path.js";
+import { projectStorageKey } from "../utils/project-storage-key.js";
 import {
   buildProjectMemoryDirectory,
   getAutoMemEntrypoint,
@@ -83,7 +83,7 @@ describe("memory paths", () => {
     // never inside the repository, so the prompt, recall and the extraction
     // child share one directory.
     const projectMemoryDir =
-      join(tempRoot, "home", "projects", sanitizePath(join(tempRoot, "repo")), "memory") + sep;
+      join(tempRoot, "home", "projects", projectStorageKey(join(tempRoot, "repo")), "memory") + sep;
     expect(getProjectMemoryPath()).toBe(projectMemoryDir);
     expect(getProjectMemoryPath()).toBe(
       buildProjectMemoryDirectory(join(tempRoot, "home"), join(tempRoot, "repo")),

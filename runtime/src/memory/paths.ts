@@ -28,7 +28,7 @@ import {
   isSessionRemoteMode,
 } from '../session/runtime-options.js'
 import { findCanonicalGitRoot } from '../utils/git.js'
-import { sanitizePath } from '../utils/path.js'
+import { projectStorageKey } from '../utils/project-storage-key.js'
 import {
   CanonicalAuthorityCache,
   getCanonicalSettingsAuthority,
@@ -229,7 +229,7 @@ export function buildProjectMemoryDirectory(
   projectRoot: string,
 ): string {
   return (
-    join(baseDir, 'projects', sanitizePath(projectRoot), MEMORY_DIRNAME) + sep
+    join(baseDir, 'projects', projectStorageKey(projectRoot), MEMORY_DIRNAME) + sep
   ).normalize('NFC')
 }
 

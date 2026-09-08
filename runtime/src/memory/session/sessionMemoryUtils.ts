@@ -20,6 +20,7 @@ import {
   isEnvTruthy,
 } from "../../utils/envUtils.js";
 import { sanitizePathForProjectKey } from "../../services/extractMemories/memory-paths.js";
+import { djb2Hash } from "../../utils/hash.js";
 import { getActiveAgentRuntimeOptions } from "../../session/runtime-options.js";
 
 export type SessionMemoryEnv = Readonly<Record<string, string | undefined>>;
@@ -76,7 +77,11 @@ function projectRootForSession(cwd: string): string {
 
 function safeSessionId(sessionId: string): string {
   const trimmed = sessionId.trim();
-  return sanitizePathForProjectKey(trimmed.length > 0 ? trimmed : "default");
+  const value = trimmed.length > 0 ? trimmed : "default";
+  const sanitized = value.replace(/[^a-zA-Z0-9]/gu, "-");
+  return sanitized.length <= 200
+    ? sanitized
+    : `${sanitized.slice(0, 200)}-${Math.abs(djb2Hash(value)).toString(36)}`;
 }
 
 export function createSessionMemoryState(

@@ -11,6 +11,7 @@ import type { Dirent } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
 import { getWorktreePathsPortable } from './getWorktreePathsPortable.js'
+import { projectStorageKey } from './project-storage-key.js'
 import type { LiteSessionFile } from './sessionStoragePortable.js'
 import {
   canonicalizePath,
@@ -19,9 +20,7 @@ import {
   extractLastJsonStringField,
   findProjectDir,
   getProjectsDir,
-  MAX_SANITIZED_LENGTH,
   readSessionLite,
-  sanitizePath,
   validateUuid,
 } from './sessionStoragePortable.js'
 
@@ -333,18 +332,10 @@ async function gatherProjectCandidates(
 
   // Worktree-aware scanning: find all project dirs matching any worktree
   const projectsDir = getProjectsDir()
-  const caseInsensitive = process.platform === 'win32'
-
-  // Sort worktree paths by sanitized prefix length (longest first) so
-  // more specific matches take priority over shorter ones
-  const indexed = worktreePaths.map(wt => {
-    const sanitized = sanitizePath(wt)
-    return {
-      path: wt,
-      prefix: caseInsensitive ? sanitized.toLowerCase() : sanitized,
-    }
-  })
-  indexed.sort((a, b) => b.prefix.length - a.prefix.length)
+  const indexed = worktreePaths.map(worktree => ({
+    path: worktree,
+    key: projectStorageKey(worktree),
+  }))
 
   let allDirents: Dirent[]
   try {
@@ -364,7 +355,7 @@ async function gatherProjectCandidates(
   const canonicalProjectDir = await findProjectDir(canonicalDir)
   if (canonicalProjectDir) {
     const dirBase = basename(canonicalProjectDir)
-    seenDirs.add(caseInsensitive ? dirBase.toLowerCase() : dirBase)
+    seenDirs.add(dirBase)
     all.push(
       ...(await listCandidates(canonicalProjectDir, doStat, canonicalDir)),
     )
@@ -372,18 +363,11 @@ async function gatherProjectCandidates(
 
   for (const dirent of allDirents) {
     if (!dirent.isDirectory()) continue
-    const dirName = caseInsensitive ? dirent.name.toLowerCase() : dirent.name
+    const dirName = dirent.name
     if (seenDirs.has(dirName)) continue
 
-    for (const { path: wtPath, prefix } of indexed) {
-      // Only use startsWith for truncated paths (>MAX_SANITIZED_LENGTH) where
-      // a hash suffix follows. For short paths, require exact match to avoid
-      // /root/project matching /root/project-foo.
-      const isMatch =
-        dirName === prefix ||
-        (prefix.length >= MAX_SANITIZED_LENGTH &&
-          dirName.startsWith(prefix + '-'))
-      if (isMatch) {
+    for (const { path: wtPath, key } of indexed) {
+      if (dirName === key) {
         seenDirs.add(dirName)
         all.push(
           ...(await listCandidates(

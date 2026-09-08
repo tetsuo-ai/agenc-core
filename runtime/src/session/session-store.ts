@@ -79,6 +79,7 @@ import {
   sep,
 } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { projectStorageKey } from "../utils/project-storage-key.js";
 import {
   MAX_RECOVERY_CANONICAL_LINE_BYTES,
   RECOVERY_SCAN_CHUNK_BYTES,
@@ -242,9 +243,7 @@ class AppendRollbackError extends Error {
 // ─────────────────────────────────────────────────────────────────────
 
 export function slugifyCwd(cwd: string): string {
-  const base = cwd.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-  const hash = createHash("sha256").update(cwd).digest("hex").slice(0, 8);
-  return `${base.slice(0, 40) || "root"}-${hash}`;
+  return projectStorageKey(cwd);
 }
 
 export function getAgencHomeDir(agencHome?: string): string {

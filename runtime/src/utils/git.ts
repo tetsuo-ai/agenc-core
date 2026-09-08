@@ -47,7 +47,7 @@ const findGitRootImpl = memoizeWithLRU(
             stat_count: statCount,
             found: true,
           })
-          return current.normalize('NFC')
+          return current
         }
       } catch {
         // .git doesn't exist at this level, continue up
@@ -70,7 +70,7 @@ const findGitRootImpl = memoizeWithLRU(
           stat_count: statCount,
           found: true,
         })
-        return root.normalize('NFC')
+        return root
       }
     } catch {
       // .git doesn't exist at root
@@ -173,9 +173,9 @@ const resolveCanonicalRoot = memoizeWithLRU(
       // Bare-repo worktrees: the common dir isn't inside a working directory.
       // Use the common dir itself as the stable identity (tetsuo-ai/agenc-core#27994).
       if (basename(commonDir) !== '.git') {
-        return commonDir.normalize('NFC')
+        return commonDir
       }
-      return dirname(commonDir).normalize('NFC')
+      return dirname(commonDir)
     } catch {
       return gitRoot
     }

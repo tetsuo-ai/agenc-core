@@ -39,7 +39,7 @@ export async function getWorktreePaths(cwd: string): Promise<string[]> {
   const worktreePaths = stdout
     .split('\n')
     .filter(line => line.startsWith('worktree '))
-    .map(line => line.slice('worktree '.length).normalize('NFC'))
+    .map(line => line.slice('worktree '.length))
 
   // Sort worktrees: current worktree first, then alphabetically
   const currentWorktree = worktreePaths.find(

@@ -39,11 +39,11 @@ import {
   containsPathTraversal,
   expandPath,
   getDirectoryForPath,
-  sanitizePath,
 } from '../path.js'
 import { getPlanSlug, getPlansDirectory } from '../plans.js'
 import { getPlatform } from '../platform.js'
 import { getProjectDir } from '../sessionStorage.js'
+import { projectStorageKey } from '../project-storage-key.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
 import {
   getSettingsFilePathForSource,
@@ -364,7 +364,7 @@ export function getAgenCTempDir(): string {
  * Path format: /tmp/agenc-{uid}/{sanitized-cwd}/
  */
 export function getProjectTempDir(): string {
-  return join(getAgenCTempDir(), sanitizePath(getOriginalCwd())) + sep
+  return join(getAgenCTempDir(), projectStorageKey(getOriginalCwd())) + sep
 }
 
 /**

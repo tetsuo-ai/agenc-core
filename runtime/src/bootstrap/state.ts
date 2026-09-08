@@ -186,10 +186,10 @@ function getInitialState(): State {
   ) {
     const rawCwd = cwd();
     try {
-      resolvedCwd = realpathSync(rawCwd).normalize("NFC");
+      resolvedCwd = realpathSync(rawCwd);
     } catch {
       // File Provider EPERM on CloudStorage mounts (lstat per path component).
-      resolvedCwd = rawCwd.normalize("NFC");
+      resolvedCwd = rawCwd;
     }
   }
   const state: State = {
@@ -385,7 +385,7 @@ export function getProjectRoot(): string {
 }
 
 export function setOriginalCwd(cwd: string): void {
-  STATE.originalCwd = cwd.normalize("NFC");
+  STATE.originalCwd = cwd;
 }
 
 /**
@@ -393,7 +393,7 @@ export function setOriginalCwd(cwd: string): void {
  * call this — skills/history should stay anchored to where the session started.
  */
 export function setProjectRoot(cwd: string): void {
-  STATE.projectRoot = cwd.normalize("NFC");
+  STATE.projectRoot = cwd;
 }
 
 export function getCwdState(): string {
@@ -401,7 +401,7 @@ export function getCwdState(): string {
 }
 
 export function setCwdState(cwd: string): void {
-  STATE.cwd = cwd.normalize("NFC");
+  STATE.cwd = cwd;
 }
 
 export function getDirectConnectServerUrl(): string | undefined {

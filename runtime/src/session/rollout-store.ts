@@ -74,7 +74,7 @@ import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
 import { resolveUnknownOutcomeEffect } from "../state/unknown-outcome-gate.js";
-import { sanitizePath } from "../utils/path.js";
+import { projectStorageKey } from "../utils/project-storage-key.js";
 import { isRecord } from "../utils/record.js";
 import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
@@ -4364,7 +4364,7 @@ export class RolloutStore {
         resolve(
           this.store.agencHome,
           "projects",
-          sanitizePath(this.store.cwd),
+          projectStorageKey(this.store.cwd),
           this.sessionId,
           "tool-results",
         ),

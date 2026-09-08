@@ -292,27 +292,39 @@ describe("resume-session CLI lookup", () => {
     });
   });
 
-  it("fails ambiguous when divergent copies share an id across slug layouts", () => {
+  it("prefers the versioned project record over an ambiguous legacy directory", () => {
     const canonicalPath = writeRollout(
       workHome,
       "conv-shared01",
       "2026-01-02T10-00-00-000Z",
       2,
     );
-    const legacyPath = writeLegacyRollout(
+    writeLegacyRollout(
       workHome,
       "conv-shared01",
       "2026-01-01T10-00-00-000Z",
       1,
     );
 
-    expect(resolveResumeSessionId(workHome, "conv-shared01")).toEqual({
-      kind: "ambiguous",
-      input: "conv-shared01",
-      matches: [
-        `conv-shared01 @ ${canonicalPath}`,
-        `conv-shared01 @ ${legacyPath}`,
-      ],
+    expect(resolveResumeSessionId(workHome, "conv-shared01")).toMatchObject({
+      kind: "ok",
+      sessionId: "conv-shared01",
+      rolloutPath: canonicalPath,
+    });
+  });
+
+  it("does not automatically continue from an ambiguous legacy project key", () => {
+    const legacyPath = writeLegacyRollout(
+      workHome,
+      "conv-oldkey01",
+      "2026-01-01T10-00-00-000Z",
+      1,
+    );
+    expect(resolveLatestSessionId(workHome)).toEqual({ kind: "none" });
+    expect(resolveResumeSessionId(workHome, "conv-oldkey01")).toMatchObject({
+      kind: "ok",
+      rolloutPath: legacyPath,
+      cwd: workHome,
     });
   });
 

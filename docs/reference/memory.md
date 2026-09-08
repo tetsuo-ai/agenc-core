@@ -28,7 +28,7 @@ The sole home authority is `AGENC_HOME`, defaulting to `$HOME/.agenc`
 | --- | --- | --- |
 | Config home / memory base | `$AGENC_HOME` | Override base with `AGENC_REMOTE_MEMORY_DIR` |
 | Global durable memory | `$AGENC_HOME/memory/` | Entrypoint `MEMORY.md` |
-| Project auto-memory | `$AGENC_HOME/projects/<sanitized-git-root>/memory/` | Entrypoint `MEMORY.md`; shared by the prompt, recall and extraction |
+| Project auto-memory | `$AGENC_HOME/projects/<v2-project-key>/memory/` | Entrypoint `MEMORY.md`; shared by the prompt, recall and extraction |
 | Project instructions | `<projectRoot>/AGENC.md` | Preferred root instruction file |
 | User instructions | `$AGENC_HOME/AGENC.md` | Private global |
 | Daily auto-mem logs | `<autoMemPath>/logs/YYYY/MM/YYYY-MM-DD.md` | Distilled later by dream/extract flows when enabled |
@@ -39,12 +39,16 @@ The sole home authority is `AGENC_HOME`, defaulting to `$HOME/.agenc`
 
 1. `AGENC_COWORK_MEMORY_PATH_OVERRIDE` (absolute full-path override)
 2. The trusted canonical auto-memory directory preference (managed/user; never a committed project value)
-3. `$base/projects/<sanitized-git-root>/memory/`, where `$base` is
+3. `$base/projects/<v2-project-key>/memory/`, where `$base` is
    `AGENC_REMOTE_MEMORY_DIR` when set and `$AGENC_HOME` otherwise
    (`buildProjectMemoryDirectory`). Memory never lands inside the repository.
 
 Git worktrees of the same repo share one auto-memory directory when a
 canonical git root is found.
+
+Project directories use [versioned storage keys](project-storage.md). Old
+memory directories remain untouched and are not imported by their ambiguous
+names; the storage guide describes recovery and rollback.
 
 ---
 

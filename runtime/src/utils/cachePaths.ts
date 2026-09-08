@@ -2,13 +2,10 @@ import envPaths from 'env-paths'
 import { join } from 'path'
 import { getFsImplementation } from './fsOperations.js'
 import { djb2Hash } from './hash.js'
+import { projectStorageKey } from './project-storage-key.js'
 
 const paths = envPaths('agenc-cli')
 
-// Local sanitizePath using djb2Hash — NOT the shared version from
-// sessionStoragePortable.ts which uses Bun.hash (wyhash) when available.
-// Cache directory names must remain stable across upgrades so existing cache
-// data (error logs, MCP logs) is not orphaned.
 const MAX_SANITIZED_LENGTH = 200
 function sanitizePath(name: string): string {
   const sanitized = name.replace(/[^a-zA-Z0-9]/g, '-')
@@ -19,7 +16,7 @@ function sanitizePath(name: string): string {
 }
 
 function getProjectDir(cwd: string): string {
-  return sanitizePath(cwd)
+  return projectStorageKey(cwd)
 }
 
 export const CACHE_PATHS = {
