@@ -42,6 +42,38 @@ afterEach(async () => {
 });
 
 describe("embedded Neovim lifecycle", () => {
+  it("probes actual mode until buffered input is consumed without sending more input", async () => {
+    const responses = [{ mode: "n", blocking: false }, { mode: "c", blocking: true }, { mode: "c", blocking: false }];
+    const { session, rpc } = createInputModeProbeSession(async () => responses.shift());
+    const modes: string[] = [];
+    await expect(session.inspectInputModeForTesting("c", (mode) => modes.push(mode))).resolves.toBe("c");
+    expect(modes).toEqual(["n", "c", "c"]);
+    expect(rpc.request).toHaveBeenCalledTimes(3);
+    for (const args of rpc.request.mock.calls) expect(args.slice(0, 2)).toEqual(["nvim_get_mode", []]);
+    await session.cleanup();
+  });
+
+  it("bounds an ambiguous mode probe without poisoning or replaying input", async () => {
+    vi.useFakeTimers();
+    try {
+      const { session, rpc } = createInputModeProbeSession(async () => ({ mode: "n", blocking: false }));
+      const outcome = expect(session.inspectInputModeForTesting("c", () => {})).rejects.toThrow(/5000ms/u);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await outcome;
+      expect(rpc.close).not.toHaveBeenCalled();
+      for (const args of rpc.request.mock.calls) expect(args[0]).toBe("nvim_get_mode");
+      await session.cleanup();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([null, { mode: 1, blocking: false }, { mode: "c" }])("rejects malformed mode-probe results: %j", async (value) => {
+    const { session } = createInputModeProbeSession(async () => value);
+    await expect(session.inspectInputModeForTesting(null, () => {})).rejects.toThrow("invalid input mode");
+    await session.cleanup();
+  });
+
   it("covers process cleanup branches without spawning real Neovim", async () => {
     mockMissingProcessGroups();
     const killedChild = fakeChild({
@@ -2112,6 +2144,21 @@ async function waitForPidFile(path: string): Promise<number> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`timed out waiting for pid file ${path}`);
+}
+
+function createInputModeProbeSession(response: () => Promise<unknown>) {
+  const child = fakeChild({ exitCode: 0, pid: syntheticNeovimPid(779) });
+  const rpc = {
+    request: vi.fn(async (_method: string, _params: readonly unknown[]) => response()),
+    close: vi.fn(),
+  };
+  const session = new EmbeddedNeovimSession(
+    { child, pid: child.pid, kill: vi.fn() } as any,
+    rpc as any,
+    { dispose: vi.fn() } as any,
+    5,
+  );
+  return { session, rpc };
 }
 
 function mockMissingProcessGroups(): void {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   anchorWorkbenchProjectRoot,
+  enableNeovimInputTrace,
   runEmbeddedNeovimCommand,
   sendEmbeddedNeovimInput,
   waitForExactFileText,
@@ -74,7 +75,6 @@ export default async function (session) {
         `Neovim platform edit proof was not exact: ${JSON.stringify(editProof)}`,
       );
     }
-    session.send("\x1b");
     // Exercise Neovim's real write path in the hosted PTY. The host-owned
     // Ctrl+S boundary is covered separately through the terminal parser and
     // rendered BufferSurface integration test; emitting Ctrl+S from node-pty
@@ -117,6 +117,7 @@ export default async function (session) {
 }
 
 async function openEmbeddedNeovim(session) {
+  enableNeovimInputTrace(session);
   await session.start();
   await session.waitForPrompt({ timeout: 20_000 });
   await waitForFrameText(

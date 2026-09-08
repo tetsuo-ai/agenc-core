@@ -14,6 +14,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createNeovimRenderSnapshot } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
 import { canonicalNeovimPath } from "../../../src/tui/workbench/buffer/neovim/NeovimPath.js";
+import {
+  NeovimInputTrace,
+  type NeovimInputTraceRecord,
+} from "../../../src/tui/workbench/buffer/neovim/NeovimInputTrace.js";
 import { bufferIntegrationIntentCommand } from "../../../src/tui/workbench/commands.js";
 import { BufferProviderController } from "../../../src/tui/workbench/buffer/providers/BufferProviderController.js";
 import {
@@ -65,6 +69,60 @@ function normalizedTestPath(pathValue: string): string {
 }
 
 describe("embedded Neovim BUFFER provider", () => {
+  it("binds input RPC and mode acknowledgements to an exact queued sequence without rendering", async () => {
+    const { fixture, records, provider } = createTracedProviderFixture();
+    const input = controlled<boolean>();
+    const mode = controlled<string>();
+    vi.mocked(fixture.session.input).mockReturnValueOnce(input.promise);
+    vi.mocked(fixture.session.inspectInputModeForTesting).mockReturnValueOnce(mode.promise);
+    await provider.open({ filePath: "target.txt" });
+    provider.focus(true);
+    provider.handleInput({ input: ":", key: baseKey(), context: { rows: 20, columns: 80 } });
+    await flush();
+    expect(records.at(-1)).toMatchObject({ type: "input", sequence: 1, kind: "colon", phase: "running", rpcCompleted: false });
+    expect(fixture.session.inspectInputModeForTesting).not.toHaveBeenCalled();
+    input.resolve(true);
+    await flush();
+    expect(records.at(-1)).toMatchObject({ sequence: 1, phase: "rpc-complete", rpcCompleted: true });
+    mode.resolve("c");
+    await flush();
+    expect(records.at(-1)).toMatchObject({ sequence: 1, phase: "complete", mode: "c", rpcCompleted: true });
+    const owner = records.find((record) => record.type === "state" && record.sessionId !== null)?.sessionId;
+    expect(owner).toEqual(expect.any(String));
+    expect(records.filter((record) => record.type === "input").every((record) => record.sessionId === owner)).toBe(true);
+    expect(provider.getSnapshot().terminal?.mode).toBe("normal");
+    await provider.cleanup();
+  });
+
+  it("retires a late input-mode acknowledgement when a replacement session takes ownership", async () => {
+    const { fixture, records, provider } = createTracedProviderFixture();
+    const mode = controlled<string>();
+    vi.mocked(fixture.session.inspectInputModeForTesting).mockReturnValueOnce(mode.promise);
+    await provider.open({ filePath: "target.txt" });
+    provider.handleInput({ input: ":", key: baseKey(), context: { rows: 20, columns: 80 } });
+    await flush();
+    const firstOwner = records.at(-1)?.sessionId;
+    await provider.cleanup();
+    await provider.open({ filePath: "replacement.txt" });
+    const replacementOwner = records.findLast((record) => record.type === "state")?.sessionId;
+    expect(replacementOwner).not.toBe(firstOwner);
+    mode.resolve("c");
+    await flush();
+    expect(records.at(-1)).toMatchObject({ sessionId: firstOwner, sequence: 1, phase: "retired" });
+    await provider.cleanup();
+  });
+
+  it("does not probe input mode when test tracing is disabled", async () => {
+    const fixture = createHarness();
+    const provider = new NeovimBufferProvider(fixture.options);
+    await provider.open({ filePath: "target.txt" });
+    provider.handleInput({ input: ":", key: baseKey(), context: { rows: 20, columns: 80 } });
+    await flush();
+    expect(fixture.session.input).toHaveBeenCalledWith(":");
+    expect(fixture.session.inspectInputModeForTesting).not.toHaveBeenCalled();
+    await provider.cleanup();
+  });
+
   it("opens through the injected embedded session and publishes bounded terminal snapshots", async () => {
     const harness = createHarness();
     const provider = new NeovimBufferProvider(harness.options);
@@ -2580,6 +2638,16 @@ describe("embedded Neovim BUFFER provider", () => {
   });
 });
 
+function createTracedProviderFixture() {
+  const fixture = createHarness();
+  const records: NeovimInputTraceRecord[] = [];
+  const provider = new NeovimBufferProvider({
+    ...fixture.options,
+    inputTraceForTesting: new NeovimInputTrace((record) => records.push(record)),
+  });
+  return { fixture, records, provider };
+}
+
 function createHarness(
   overrides: {
     readonly launch?: (filePath: string, line: number) => boolean;
@@ -2646,6 +2714,10 @@ function createHarness(
   const session = {
     pid: 12345,
     recovery: overrides.recovery ?? null,
+    inspectInputModeForTesting: vi.fn(async (expectedMode: string, onMode: (mode: string) => void) => {
+      onMode(expectedMode);
+      return expectedMode;
+    }),
     input: vi.fn(async (keys: string) => {
       if (keys.includes(":edit!")) currentBuffer().dirty = false;
       else if (keys.length > 0) {

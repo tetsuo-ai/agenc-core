@@ -26,6 +26,11 @@ import {
 import type { NeovimDiscoveryResult } from "../../neovim/NeovimDiscovery.js";
 import { translateKeyToNeovimInput } from "../../neovim/NeovimInput.js";
 import {
+  neovimInputTraceForTesting,
+  type NeovimInputTrace,
+  type NeovimInputTraceToken,
+} from "../../neovim/NeovimInputTrace.js";
+import {
   createNeovimRenderSnapshot,
   type NeovimRenderSnapshot,
 } from "../../neovim/NeovimGrid.js";
@@ -90,6 +95,7 @@ export type NeovimBufferProviderOptions = {
   readonly startupTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
+  readonly inputTraceForTesting?: NeovimInputTrace;
   /** One-release rollback switch for the legacy per-file process lifecycle. */
   readonly sessionMode?: "workspace" | "file";
   readonly workspaceRoot?: string;
@@ -362,8 +368,12 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     null;
   #recoveryPreservationRequired = false;
   #unconfirmedRecoveryExit: Error | null = null;
+  readonly #inputTrace: NeovimInputTrace | null;
+  #focused = false;
 
   constructor(options: NeovimBufferProviderOptions) {
+    this.#inputTrace =
+      options.inputTraceForTesting ?? neovimInputTraceForTesting();
     this.#discovery = options.discovery;
     this.#startupTimeoutMs = options.startupTimeoutMs;
     this.#operationTimeoutMs = options.operationTimeoutMs;
@@ -2248,7 +2258,11 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     const session = this.#session;
     if (!session) return false;
     if (event.isPaste === true) {
-      void this.#runSessionAction(session, () => session.paste(event.input));
+      void this.#runSessionAction(
+        session,
+        () => session.paste(event.input),
+        "paste",
+      );
       return true;
     }
     const keys = translateKeyToNeovimInput(event.input, event.key);
@@ -2276,6 +2290,8 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   }
 
   focus(focused: boolean): void {
+    this.#focused = focused;
+    this.#traceInputState();
     const session = this.#session;
     if (session)
       void this.#runSessionAction(session, () => session.focus(focused));
@@ -2470,14 +2486,24 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     session: EmbeddedNeovimSession,
     keys: string,
   ): Promise<void> {
-    await this.#runSessionAction(session, () => session.input(keys));
+    let kind: NeovimInputTraceToken["kind"] = "other";
+    if (keys === "<Esc>") kind = "escape";
+    else if (keys === ":") kind = "colon";
+    else if (keys === "<CR>") kind = "enter";
+    await this.#runSessionAction(session, () => session.input(keys), kind);
   }
 
   async #runSessionAction(
     session: EmbeddedNeovimSession,
     action: () => Promise<unknown>,
+    inputKind?: NeovimInputTraceToken["kind"],
   ): Promise<void> {
     const ownership = this.#captureOperationOwnership(session);
+    const sessionId = NEOVIM_EDITOR_SESSION_IDS.get(session);
+    const traceToken = inputKind && sessionId
+      ? this.#inputTrace?.begin(sessionId, inputKind)
+      : undefined;
+    let traceSettled = false;
     const pendingTransitionGeneration = this.#pendingTransitionGeneration;
     const sessionActionGate = this.#sessionActionGate;
     const previousAction = this.#sessionActionTail;
@@ -2498,12 +2524,72 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         if (!sessionActionGate.allowActions) return;
       }
       if (!this.#ownsOperation(ownership)) return;
-      await action();
+      if (traceToken) this.#inputTrace?.progress(traceToken, "running");
+      const result = await action();
+      if (traceToken) {
+        traceSettled = true;
+        if (result === false) {
+          this.#inputTrace?.progress(traceToken, "skipped");
+        } else {
+          this.#inputTrace?.progress(traceToken, "rpc-complete");
+          await this.#traceInputMode(ownership, traceToken);
+        }
+      }
     } catch (error) {
+      if (traceToken) {
+        traceSettled = true;
+        this.#inputTrace?.progress(traceToken, "failed");
+      }
       if (this.#ownsOperation(ownership)) this.#setInputError(error);
     } finally {
+      if (traceToken && !traceSettled) {
+        this.#inputTrace?.progress(traceToken, "skipped");
+      }
       releaseAction();
     }
+  }
+
+  async #traceInputMode(
+    ownership: NeovimOperationOwnership,
+    token: NeovimInputTraceToken,
+  ): Promise<void> {
+    if (!this.#ownsOperation(ownership)) {
+      this.#inputTrace?.progress(token, "retired");
+      return;
+    }
+    let expectedMode: string | null = null;
+    if (token.kind === "escape") expectedMode = "n";
+    else if (token.kind === "colon") expectedMode = "c";
+    let observedMode: string | null = null;
+    try {
+      const mode = expectedMode === null && token.kind !== "paste"
+        ? null
+        : await ownership.session.inspectInputModeForTesting(
+            expectedMode,
+            (mode) => {
+              observedMode = mode;
+              this.#inputTrace?.progress(token, "mode", mode);
+            },
+          );
+      this.#inputTrace?.progress(
+        token,
+        this.#ownsOperation(ownership) ? "complete" : "retired",
+        mode,
+      );
+    } catch {
+      this.#inputTrace?.progress(token, "failed", observedMode);
+    }
+  }
+
+  #traceInputState(): void {
+    this.#inputTrace?.state({
+      sessionId: this.#session
+        ? NEOVIM_EDITOR_SESSION_IDS.get(this.#session) ?? null
+        : null,
+      focusOwner: this.#focused ? "buffer" : "other",
+      providerStatus: this.#snapshot.providerStatus,
+      providerMode: this.#terminal.mode,
+    });
   }
 
   #beginSessionActionGate(generation: number): NeovimSessionActionGate {
@@ -2602,6 +2688,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     if (this.#session !== session) return;
     this.#session = null;
     this.#ownershipGeneration += 1;
+    this.#traceInputState();
   }
 
   #scheduleWorkspaceRefresh(ownership: NeovimProviderOwnership): void {
@@ -3138,6 +3225,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   }
 
   #emit(): void {
+    this.#traceInputState();
     for (const listener of this.#listeners) listener();
   }
 }

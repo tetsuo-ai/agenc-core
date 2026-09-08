@@ -154,10 +154,10 @@ describe("hosted Neovim platform gate contract", () => {
     expect(source).toContain(
       "platform-tests/neovim-process-tree.real.test.ts",
     );
-    expect(source).toContain("numTotalTests: 65");
-    expect(source).toContain("numPassedTests: 65");
+    expect(source).toContain("numTotalTests: 68");
+    expect(source).toContain("numPassedTests: 68");
     expect(source).toContain(
-      "Neovim provider/observed-descendant platform lane passed 65 tests in 3 files with zero skipped",
+      "Neovim provider/observed-descendant platform lane passed 68 tests in 3 files with zero skipped",
     );
     expect(source).toContain(
       "scripts/check-tui-e2e/runner.mjs --platform",
@@ -234,7 +234,7 @@ describe("hosted Neovim platform gate contract", () => {
       "const editProof = await waitForExactFileText(",
     );
     const editEscapeIndex = saveScenario.indexOf(
-      'session.send("\\x1b")',
+      'runEmbeddedNeovimCommand(session, "write"',
       editInputIndex,
     );
     expect(editInputIndex).toBeGreaterThan(-1);
@@ -243,6 +243,7 @@ describe("hosted Neovim platform gate contract", () => {
     expect(saveScenario).not.toContain("\\x1b[201~");
     expect(editProofWaitIndex).toBeGreaterThan(editInputIndex);
     expect(editEscapeIndex).toBeGreaterThan(editProofWaitIndex);
+    expect(saveScenario).not.toContain('session.send("\\x1b")');
     expect(saveScenario).toContain("nvim-platform-exit.intent");
     expect(saveScenario).toContain("| qa!");
     expect(saveScenario).toContain(
@@ -255,7 +256,8 @@ describe("hosted Neovim platform gate contract", () => {
       ),
       "utf8",
     );
-    expect(helperSource).toContain("/CMDLINE_NORMAL/u");
+    expect(helperSource).toContain("readNeovimInputTrace");
+    expect(helperSource).toContain("input.rpcCompleted === true");
     expect(helperSource).toContain("export function sendEmbeddedNeovimInput");
     expect(helperSource).toContain("\\x1b[200~");
     expect(helperSource).toContain("\\x1b[201~");

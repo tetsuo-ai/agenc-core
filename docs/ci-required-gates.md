@@ -1047,7 +1047,7 @@ with `--platform linux-x64` (or `linux-arm64` / `darwin-x64` /
 `darwin-arm64`). `--platform win-x64` fails closed. The full local BUFFER
 PTY set remains
 `npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim`.
-Windows still runs the 18-test lifecycle suite, the 65-test
+Windows still runs the 18-test lifecycle suite, the 68-test
 provider/observed-descendant set (including Job Object tree cleanup), and
 post-job leak assertions.
 The `macos-native` job first runs the 66-test red-probe runner contract.

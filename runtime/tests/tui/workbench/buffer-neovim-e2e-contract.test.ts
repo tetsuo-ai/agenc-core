@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   INITIAL_STATE,
@@ -11,6 +11,13 @@ import {
   runEmbeddedNeovimCommand,
   waitForFrameText,
 } from "../../../scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs";
+import {
+  NeovimInputTrace,
+  type NeovimInputTraceRecord,
+  type NeovimInputTraceToken,
+} from "../../../src/tui/workbench/buffer/neovim/NeovimInputTrace.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 // NOTE: This is a STATIC contract check that the PTY gate scripts exist and
 // declare the expected lifecycle assertions — it does NOT spawn nvim or run a
@@ -51,53 +58,17 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
   });
 
   it("enters command mode with an unambiguous Escape before provider-state acknowledgements", async () => {
-    const events: string[] = [];
-    const sentInputs: string[] = [];
-    const session = {
-      cols: 80,
-      rows: 24,
-      raw: "target.txt [embedded Neovim NVIM v0.11.4, normal, ready]",
-      send(input: string) {
-        events.push(`send:${JSON.stringify(input)}`);
-        sentInputs.push(input);
-        if (input === ":") {
-          this.raw =
-            "target.txt [embedded Neovim NVIM v0.11.4, normal, ready] CMDLINE_NORMAL";
-        }
-      },
-      async type() {
-        throw new Error(
-          "embedded Neovim commands must not fan out into unacknowledged character inputs",
-        );
-      },
-      async waitForIdle(options: { idleWindow: number }) {
-        events.push(`idle:${options.idleWindow}`);
-      },
-    };
-
-    await runEmbeddedNeovimCommand(session, "write");
-    session.raw = "";
-    await runEmbeddedNeovimCommand(session, "q!", {
-      readySession: true,
-    });
-
-    expect(events).toEqual([
-      "idle:200",
-      'send:"\\u001b[27u"',
-      'send:":"',
-      'send:"\\u001b[200~write\\u001b[201~"',
-      'send:"\\r"',
-      "idle:500",
-      "idle:200",
-      'send:"\\u001b[27u"',
-      'send:":"',
-      'send:"\\u001b[200~q!\\u001b[201~"',
-      'send:"\\r"',
-      "idle:500",
+    const fixture = createInputAcknowledgementFixture();
+    await runEmbeddedNeovimCommand(fixture.session, "write", fixture.options);
+    await runEmbeddedNeovimCommand(fixture.session, "q!", fixture.options);
+    expect(fixture.sentInputs).toEqual([
+      "\x1b[27u", ":", "\x1b[200~write\x1b[201~", "\r",
+      "\x1b[27u", ":", "\x1b[200~q!\x1b[201~", "\r",
     ]);
+    expect(fixture.session.raw).toBe("");
     const [parsedCommandModeInputs] = parseMultipleKeypresses(
       INITIAL_STATE,
-      sentInputs.slice(0, 2).join(""),
+      fixture.sentInputs.slice(0, 2).join(""),
     );
     expect(
       parsedCommandModeInputs.map((input) =>
@@ -109,6 +80,54 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
       { kind: "key", name: "escape", sequence: "\x1b[27u" },
       { kind: "key", name: "", sequence: ":" },
     ]);
+  });
+
+  it.each([["escape", 1], ["colon", 2], ["paste", 3]] as const)("does not send the next input before a delayed %s acknowledgement", async (delayedKind, expectedCount) => {
+    const fixture = createInputAcknowledgementFixture();
+    fixture.session.raw = "CMDLINE_NORMAL";
+    const pending = fixture.delay(delayedKind);
+    let waitCalls = 0;
+    fixture.options.wait = async () => {
+      waitCalls += 1;
+      expect(fixture.sentInputs).toHaveLength(expectedCount);
+      pending();
+    };
+    await runEmbeddedNeovimCommand(fixture.session, "write", fixture.options);
+    expect(waitCalls).toBe(1);
+    expect(fixture.sentInputs).toHaveLength(4);
+  });
+
+  it.each(["running", "rpc-complete"])("never resends an ambiguous colon in %s state", async (phase) => {
+    const fixture = createInputAcknowledgementFixture();
+    fixture.delay("colon", phase);
+    fixture.session.raw = "CMDLINE_NORMAL";
+    await expect(runEmbeddedNeovimCommand(fixture.session, "write", fixture.options)).rejects.toThrow(/timed out without resending.*session-one.*buffer.*colon.*CMDLINE_NORMAL/su);
+    expect(fixture.sentInputs).toEqual(["\x1b[27u", ":"]);
+  });
+
+  it("rejects a completed acknowledgement after the owner is replaced", async () => {
+    const fixture = createInputAcknowledgementFixture();
+    const acknowledge = fixture.delay("colon");
+    fixture.options.wait = async () => {
+      fixture.trace.state({ sessionId: "session-two", focusOwner: "buffer", providerStatus: "ready", providerMode: "normal" });
+      acknowledge();
+    };
+    await expect(runEmbeddedNeovimCommand(fixture.session, "write", fixture.options)).rejects.toThrow("lost its owning session");
+    expect(fixture.sentInputs).toEqual(["\x1b[27u", ":"]);
+  });
+
+  it("keeps delayed command-mode painting as a separate presentation assertion", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = { raw: "NORMAL", cols: 80, rows: 24 };
+      const painting = waitForFrameText(session, /CMDLINE_NORMAL/u, "command mode", 500);
+      await vi.advanceTimersByTimeAsync(200);
+      session.raw = "CMDLINE_NORMAL";
+      await vi.advanceTimersByTimeAsync(100);
+      await painting;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("defines the workbench Neovim scenarios and wrapper command", async () => {
@@ -283,7 +302,8 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(helpers).toContain("waitForFrameText");
     expect(helpers).toContain("workspaceSnapshot");
     expect(helpers).toContain("anchorWorkbenchProjectRoot");
-    expect(helpers).toContain("/CMDLINE_NORMAL/u");
+    expect(helpers).toContain("readNeovimInputTrace");
+    expect(helpers).not.toContain("await sleep(80)");
     expect(helpers).toContain("\\x1b[200~");
     expect(helpers).toContain("\\x1b[201~");
     expect(helpers).not.toContain("session.type(`:${command}`");
@@ -303,3 +323,50 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(visualSmoke).toContain("WORKSPA");
   });
 });
+
+function createInputAcknowledgementFixture() {
+  const records: NeovimInputTraceRecord[] = [];
+  const trace = new NeovimInputTrace((record) => records.push(record));
+  trace.state({ sessionId: "session-one", focusOwner: "buffer", providerStatus: "ready", providerMode: "normal" });
+  const sentInputs: string[] = [];
+  let delayedKind: string | null = null;
+  let delayedPhase: "running" | "rpc-complete" = "running";
+  let acknowledge = () => {};
+  let now = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const session = {
+    cols: 80,
+    rows: 24,
+    raw: "",
+    send(input: string) {
+      sentInputs.push(input);
+      let kind: NeovimInputTraceToken["kind"] = "paste";
+      if (input === "\x1b[27u") kind = "escape";
+      else if (input === ":") kind = "colon";
+      else if (input === "\r") kind = "enter";
+      const token = trace.begin("session-one", kind);
+      trace.progress(token, "running");
+      const complete = () => {
+        trace.progress(token, "rpc-complete");
+        let mode: string | null = "c";
+        if (kind === "escape") mode = "n";
+        else if (kind === "enter") mode = null;
+        trace.progress(token, "complete", mode);
+      };
+      if (kind === delayedKind) {
+        if (delayedPhase === "rpc-complete") trace.progress(token, "rpc-complete");
+        acknowledge = complete;
+      } else complete();
+    },
+    waitForIdle: vi.fn(async () => {}),
+  };
+  return {
+    session, records, trace, sentInputs,
+    options: { readTrace: async () => records, wait: async () => { now += 10; }, timeoutMs: 100 },
+    delay(kind: string, phase: "running" | "rpc-complete" = "running") {
+      delayedKind = kind;
+      delayedPhase = phase;
+      return () => acknowledge();
+    },
+  };
+}

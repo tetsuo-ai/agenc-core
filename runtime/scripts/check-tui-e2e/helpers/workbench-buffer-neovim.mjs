@@ -88,54 +88,76 @@ export function sendEmbeddedNeovimInput(session, text) {
   session.send(text);
 }
 
+export function enableNeovimInputTrace(session) {
+  session.neovimInputTracePath = join(session.cwd, ".agenc-neovim-input-trace.jsonl");
+  session.envOverrides.AGENC_TEST_NEOVIM_INPUT_TRACE = session.neovimInputTracePath;
+}
+
+export async function readNeovimInputTrace(session) {
+  if (!session.neovimInputTracePath) throw new Error("Neovim input trace was not enabled before TUI startup");
+  const text = await readFile(session.neovimInputTracePath, "utf8").catch((error) => {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  });
+  return text.split("\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line));
+}
+
 export async function runEmbeddedNeovimCommand(
   session,
   command,
-  { readySession = false } = {},
+  { readTrace = () => readNeovimInputTrace(session), wait = sleep, timeoutMs = 5_000 } = {},
 ) {
-  // The terminal grid can paint NORMAL before the provider commits the session
-  // that receives input. The provider header binds ready state to that
-  // committed session, but its coarse "normal" label also covers transient
-  // native modes. Normalize the owned session with Escape before entering Ex.
-  // The callers prove command delivery through concrete process/file effects;
-  // do not make that contract depend on a ConPTY-rendered presentation footer.
-  // A caller may bypass the presentation gate only after concrete evidence
-  // proves that this same Neovim process is live and already received input.
-  if (!readySession) {
-    await waitForFrameText(
-      session,
-      /\[embedded Neovim [^,\n]+,\s*normal,\s*ready(?:,|\])/iu,
-      `committed embedded Neovim session before :${command}`,
-      5_000,
-    );
-  }
-  await session.waitForIdle({ idleWindow: 200, timeout: 5_000 });
-  // A lone ESC is intentionally buffered by the TUI parser so a following
-  // byte can complete an Alt/meta sequence. A parent-side delay cannot prove
-  // that a render-stalled child flushed that byte first: ESC and ':' can be
-  // read together, dropping the Escape normalization that transient native
-  // modes require. CSI-u encodes Escape as one complete key, so it remains
-  // distinct from the colon even when both writes reach the same stdin read.
-  session.send(CSI_U_ESCAPE);
-  await sleep(80);
-  session.send(":");
-  // Neovim's provider footer remains in CMDLINE_NORMAL for the lifetime of
-  // command mode. Do not paste the command body until that real editor-state
-  // acknowledgement proves the normalized Escape and colon were consumed.
-  await waitForFrameText(
-    session,
-    /CMDLINE_NORMAL/u,
-    `embedded Neovim command mode before :${command}`,
-    5_000,
+  const deadline = Date.now() + timeoutMs;
+  let owner = null;
+  let sequence = 0;
+  let latest = {};
+  const fail = (reason) => new Error(
+    `Embedded Neovim input acknowledgement ${reason}: ${JSON.stringify(latest)}; latest frame: ${frameText(session).slice(-1200)}`,
   );
-  // Deliver the command body through the terminal's real bracketed-paste
-  // protocol. BufferSurface routes that one paste event to one acknowledged
-  // nvim_paste RPC instead of launching an unobserved nvim_input request for
-  // every character. Escape, colon, the command-mode acknowledgement, and
-  // Enter remain real editor interactions, so this still exercises the
-  // complete PTY input path.
-  session.send(`\x1b[200~${command}\x1b[201~`);
-  await sleep(80);
+  const poll = async (kind = null, expectedMode = null) => {
+    while (Date.now() < deadline) {
+      session.throwIfAborted?.();
+      const records = await readTrace();
+      const state = records.findLast((record) => record.type === "state");
+      const inputs = new Map();
+      for (const record of records) {
+        if (record.type === "input" && record.sessionId === (owner ?? state?.sessionId)) {
+          inputs.set(record.sequence, record);
+        }
+      }
+      const lastSequence = Math.max(0, ...inputs.keys());
+      const input = inputs.get(sequence);
+      latest = { owner, state, expectedSequence: sequence, expectedKind: kind, lastInput: inputs.get(lastSequence), input };
+      if (session.exited === true) throw fail("failed because the TUI exited");
+      if (owner && (state?.sessionId !== owner || state.focusOwner !== "buffer")) {
+        throw fail("lost its owning session or BUFFER focus");
+      }
+      if (!kind) {
+        const pending = [...inputs.values()].some((record) => !["complete", "failed", "retired", "skipped"].includes(record.phase));
+        if (state?.sessionId && state.providerStatus === "ready" && state.focusOwner === "buffer" && !pending) {
+          owner = state.sessionId;
+          sequence = lastSequence;
+          return;
+        }
+      } else if (input) {
+        if (input.kind !== kind || lastSequence !== sequence) throw fail("received an unexpected input sequence");
+        if (["failed", "retired", "skipped"].includes(input.phase)) throw fail(`failed in ${input.phase}`);
+        if (input.phase === "complete" && input.rpcCompleted === true && input.mode === expectedMode) return;
+      }
+      await wait(10);
+    }
+    throw fail("timed out without resending input");
+  };
+  await poll();
+  for (const [bytes, kind, mode] of [
+    [CSI_U_ESCAPE, "escape", "n"],
+    [":", "colon", "c"],
+    [`\x1b[200~${command}\x1b[201~`, "paste", "c"],
+  ]) {
+    sequence += 1;
+    session.send(bytes);
+    await poll(kind, mode);
+  }
   session.send("\r");
   await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
 }

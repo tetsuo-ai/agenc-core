@@ -702,6 +702,36 @@ export class EmbeddedNeovimSession {
     );
   }
 
+  async inspectInputModeForTesting(
+    expectedMode: string | null,
+    onMode: (mode: string) => void,
+  ): Promise<string> {
+    return this.#runRpcOperation(
+      "Embedded Neovim input mode probe",
+      false,
+      async (signal, timeoutMs) => {
+        while (true) {
+          const value = rpcRecord(
+            await this.#request("nvim_get_mode", [], signal, timeoutMs),
+          );
+          if (
+            typeof value?.mode !== "string" ||
+            typeof value.blocking !== "boolean"
+          ) {
+            throw new Error("Embedded Neovim returned an invalid input mode.");
+          }
+          onMode(value.mode);
+          if (
+            (expectedMode === null || value.mode === expectedMode) &&
+            !value.blocking
+          ) return value.mode;
+          await waitForNeovimInputBuffer(signal);
+        }
+      },
+      5_000,
+    );
+  }
+
   async paste(text: string): Promise<void> {
     if (this.#closed || text.length === 0) return;
     await this.#runRpcOperation(

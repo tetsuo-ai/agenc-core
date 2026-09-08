@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   anchorWorkbenchProjectRoot,
+  enableNeovimInputTrace,
   runEmbeddedNeovimCommand,
   sendEmbeddedNeovimInput,
   waitForExactFileText,
@@ -156,6 +157,7 @@ function vimLiteral(value) {
 }
 
 async function openEmbeddedNeovim(session) {
+  enableNeovimInputTrace(session);
   await session.start();
   await session.waitForPrompt({ timeout: 20_000 });
   await waitForFrameText(

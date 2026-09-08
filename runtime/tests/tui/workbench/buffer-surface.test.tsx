@@ -1366,7 +1366,7 @@ describe("BufferSurface", () => {
             "",
             nativeCommandLine === null ? "" : `:${nativeCommandLine}`,
           ],
-          mode: "insert",
+          mode: nativeCommandLine === null ? "insert" : "cmdline_normal",
           cursor: { grid: 1, row: 1, column: 2 },
         },
         vimMode: "INSERT",
@@ -1451,10 +1451,12 @@ describe("BufferSurface", () => {
       );
 
       nativeCommandLine = "set number relativenumber wrapscan";
+      expect(output()).not.toContain("CMDLINE_NORMAL");
       providerListener?.();
       await sleep();
 
       expect(output()).toContain(":setnumber");
+      expect(output()).toContain("CMDLINE_NORMAL");
       expect(provider.resize).toHaveBeenCalledWith({ rows: 4, columns: 80 });
     } finally {
       root.unmount();

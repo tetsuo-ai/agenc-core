@@ -743,12 +743,27 @@ node scripts/check-embedded-neovim-buffer.mjs
 ```
 
 Hosted Neovim coverage is split. All five runners still run the 18-test
-lifecycle suite and the 65-test provider/observed-descendant set. Only Linux
+lifecycle suite and the 68-test provider/observed-descendant set. Only Linux
 and Darwin then run the two hosted PTY scenarios and expect `2/2 passed`.
 `--platform win-x64` fails closed (`unsupported TUI E2E platform`). Local
 full BUFFER PTY coverage is `check:tui-workbench-buffer-neovim`, not the
 hosted `--platform` filter. Inventory and the ConPTY constraint:
 [`ci-required-gates.md`](ci-required-gates.md).
+
+The two platform PTY scenarios enable a private input trace through
+`AGENC_TEST_NEOVIM_INPUT_TRACE` before starting the TUI. The trace records the
+owning editor session, BUFFER focus, input sequence, input RPC completion, and
+native mode probes. It does not record input text. Normal runs leave tracing
+off and make no additional mode requests.
+
+Command entry sends CSI-u Escape, waits for that sequence to acknowledge
+normal mode, sends one colon, waits for command-line mode, and then pastes the
+body. Enter follows the paste acknowledgement. The input steps share a
+five-second deadline and never resend an ambiguous input. Retired-session
+acknowledgements cannot authorize a replacement session. Timeout diagnostics
+include the owner, focus, provider state, last sequence, RPC phase, and latest
+frame. A separate presentation test checks delayed `CMDLINE_NORMAL` painting;
+command delivery does not wait for that frame.
 
 The TUI talks to the daemon over `AGENC_DAEMON_INTERNAL_METHODS`
 (`workspace.editor.acquire` / `sync` / `heartbeat` / `release`, topology,
