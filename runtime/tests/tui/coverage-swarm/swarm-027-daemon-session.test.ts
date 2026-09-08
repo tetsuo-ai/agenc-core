@@ -261,6 +261,7 @@ describe("coverage swarm daemon session adapter", () => {
             { type: "text", text: "typed text" },
           ],
           streamId: expect.stringMatching(/^tui_1:/u),
+          clientMessageId: expect.any(String),
         },
       },
     ]);

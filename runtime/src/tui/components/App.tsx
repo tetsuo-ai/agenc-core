@@ -252,7 +252,7 @@ import {
 import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStatus.js";
 import { useCostSummary } from "../../cost/hook.js";
 import { getTotalCost } from "../../cost/tracker.js";
-import { useNotifications } from "../context/notifications.js";
+import { useNotifications, type Notification } from "../context/notifications.js";
 import { hasConsoleBillingAccess } from "../../utils/billing.js";
 import { updateRuntimeState } from "../../utils/config.js";
 import { registerCleanup } from "../../utils/cleanupRegistry.js";
@@ -347,6 +347,7 @@ type PendingWorkbenchAttachmentAdmission = {
 };
 
 type ComposerSubmission = {
+  readonly conversationId: string;
   readonly clientMessageId: string;
   readonly draftRestoreValue: string;
   readonly pastedContents: Record<number, any>;
@@ -357,6 +358,32 @@ type ComposerSubmission = {
   inputs: readonly LLMMessage[];
   ready: boolean;
 };
+
+function submissionRecoveryNotification(event: unknown): {
+  readonly clientMessageId: string;
+  readonly notification: Notification;
+} | null {
+  if (!isRecord(event) || event.type !== "message_submission_recovered" || !isRecord(event.payload)) return null;
+  const payload = event.payload;
+  if (typeof payload.clientMessageId !== "string" ||
+    (payload.code !== 0 && payload.code !== 1 && payload.code !== 130)) return null;
+  const outcomes = { 0: "completed", 1: "failed", 130: "cancelled" };
+  const outcome = outcomes[payload.code];
+  const detail = typeof payload.message === "string"
+    ? ` ${payload.message}`
+    : " Reopen the session to inspect its recorded output.";
+  return {
+    clientMessageId: payload.clientMessageId,
+    notification: {
+      key: `submission-recovered:${payload.clientMessageId}`,
+      text: `The previous submission ${outcome}. It was not run again.${detail}`,
+      color: payload.code === 0 ? "info" : "warning",
+      priority: "immediate",
+      timeoutMs: 10_000,
+      wrap: true,
+    },
+  };
+}
 
 function sessionEventStartsTurn(
   event: unknown,
@@ -2989,18 +3016,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           admittedAttachments.acknowledge();
         }
       }
-      if (isRecord(event) && event.type === "message_submission_recovered" && isRecord(event.payload)) {
-        const payload = event.payload;
-        if (payload.clientMessageId === pendingSubmissionIdRef.current) setPendingSubmission(false);
-        const outcome = payload.code === 0 ? "completed" : payload.code === 130 ? "cancelled" : "failed";
-        addNotification({
-          key: `submission-recovered:${String(payload.clientMessageId)}`,
-          text: `The previous submission ${outcome}; it was not run again.${typeof payload.message === "string" ? ` ${payload.message}` : " Reopen the session to inspect its recorded output."}`,
-          color: payload.code === 0 ? "info" : "warning",
-          priority: "immediate",
-          timeoutMs: 10_000,
-          wrap: true,
-        });
+      const recovered = submissionRecoveryNotification(event);
+      if (recovered !== null) {
+        if (recovered.clientMessageId === pendingSubmissionIdRef.current) setPendingSubmission(false);
+        addNotification(recovered.notification);
       }
       syncCollabAgentEventToAppState(event, setAppState);
       const workspaceMutation = workspaceMutationProposalFromTuiEvent(event);
@@ -5394,6 +5413,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       const retry =
         !options?.fromQueue &&
         candidateRetry?.draftRestoreValue === draftRestoreValue &&
+        candidateRetry.conversationId === props.session.conversationId &&
+        (options?.editorInteraction === undefined ||
+          candidateRetry.options.editorInteraction?.interactionId === options.editorInteraction.interactionId) &&
         submissionAttachmentIds.every(id => candidateRetry.attachmentIds.includes(id))
           ? candidateRetry
           : null;
@@ -5639,9 +5661,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // The 3s auto-clear timer is a safety net; this is the immediate
       // user-input clear path.
       cancelTransientResult(true);
+      latestSubmissionIdsRef.current[submissionWorkspaceView] = clientMessageId;
+      pendingSubmissionIdRef.current = clientMessageId;
       const startPendingSubmission = () => {
-        latestSubmissionIdsRef.current[submissionWorkspaceView] = clientMessageId;
-        pendingSubmissionIdRef.current = clientMessageId;
         setPendingSubmission(true);
         effectiveInputBusyRef.current = true;
       };
@@ -5683,6 +5705,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         ? pastedContentsToLLMMessage(activePastedContents)
         : null;
       const submission: ComposerSubmission = retry ?? {
+        conversationId: props.session.conversationId,
         clientMessageId,
         draftRestoreValue,
         pastedContents: activePastedContents,
@@ -5753,6 +5776,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         let submitted = false;
         try {
           try {
+            startPendingSubmission();
             setComposerPastedContentsForView(submissionWorkspaceView, {});
             const loaded = await loadDollarSkillCommandForTurn(
               parsedCommand,
@@ -5782,7 +5806,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                 props.session.rollbackIdleInputAdmission?.(admissionToken) ===
                   true,
             };
-            startPendingSubmission();
             const workbenchAdmission = armWorkbenchAttachmentAdmission();
             workbenchLease = {
               settle: (admitted) =>

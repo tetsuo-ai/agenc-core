@@ -4122,7 +4122,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       commitIdleInputAdmission: vi.fn(() => true),
       submit: vi.fn(async (_message: string, options?: { readonly clientMessageId?: string }) => {
         if (session.submit.mock.calls.length === 1) throw new Error("response dropped after admission");
-        for (const subscriber of subscribers) subscriber({ type: "turn_complete", clientMessageId: options?.clientMessageId, payload: { turnId: `turn-${session.submit.mock.calls.length}`, lastAgentMessage: "Done" } });
+        for (const subscriber of subscribers) subscriber(session.submit.mock.calls.length === 2
+          ? { type: "message_submission_recovered", payload: { clientMessageId: options?.clientMessageId, code: 0, message: "Saved answer" } }
+          : { type: "turn_complete", clientMessageId: options?.clientMessageId, payload: { turnId: `turn-${session.submit.mock.calls.length}`, lastAgentMessage: "Done" } });
       }),
       subscribeToEvents: (subscriber: (event: unknown) => void) => {
         subscribers.add(subscriber);
@@ -4151,6 +4153,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect(session.enqueueIdleInputBatchOwned.mock.calls[1]).toEqual(originalInputs);
       expect(session.commitIdleInputAdmission).toHaveBeenCalledOnce();
       expect(acknowledge).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(JSON.stringify(providerProbe.currentAppState?.notifications)).toContain("The previous submission completed. It was not run again. Saved answer"));
       expect(getPromptForCommand).toHaveBeenCalledTimes(input.startsWith("inspect") ? 0 : 1);
       await new Promise(resolve => setTimeout(resolve, 25));
       await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(false));
@@ -4161,14 +4164,48 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     });
   });
 
-  test("keeps a newer submission busy and preserves its retry identity when an old response fails late", async () => {
+  test.each(["edit", "session"])("does not reuse a failed submission after a composer %s change", async change => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const session = {
+      ...createSession(),
+      submit: vi.fn(async (_message: string, _options?: { readonly clientMessageId?: string }) => {
+        if (session.submit.mock.calls.length === 1) throw new Error("response dropped");
+      }),
+    } satisfies AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      const send = () => (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, helpers: typeof helpers) => Promise<void>)("same text", helpers);
+      await send();
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "same text", isLoading: false }));
+      if (change === "edit") {
+        const edit = providerProbe.promptProps.at(-1)!.onInputChange as (value: string) => void;
+        edit("edited");
+        edit("same text");
+      } else {
+        session.conversationId = "different-conversation";
+      }
+      await new Promise(resolve => setTimeout(resolve, 25));
+      await send();
+      expect(session.submit).toHaveBeenCalledTimes(2);
+      expect(session.submit.mock.calls[1]?.[1]?.clientMessageId).not.toBe(session.submit.mock.calls[0]?.[1]?.clientMessageId);
+    });
+  });
+
+  test.each(["second prompt", "/reviewer audit this", "$reviewer audit this"])("keeps the newer %s submission and its retry identity when an old response fails late", async secondInput => {
     const { AgenCTuiApp } = await import("./App.js");
     resetShellSurfaceProbe();
     const first = Promise.withResolvers<void>();
     const second = Promise.withResolvers<void>();
+    const loaded = Promise.withResolvers<Array<{ type: string; text: string }>>();
+    const getPromptForCommand = vi.fn(() => loaded.promise);
+    mockTuiCommandList.push({ name: "reviewer", type: "prompt", loadedFrom: "skills", progressMessage: "Loading reviewer", contentLength: 1, getPromptForCommand });
     const subscribers = new Set<(event: unknown) => void>();
     const session = {
       ...createSession(),
+      enqueueIdleInputBatchOwned: vi.fn(() => ({ token: "late-owned", firstSequence: 1, lastSequence: 1, count: 1 })),
+      rollbackIdleInputAdmission: vi.fn(() => true),
+      commitIdleInputAdmission: vi.fn(() => true),
       submit: vi.fn((_message: string, _options?: { readonly clientMessageId?: string }) => session.submit.mock.calls.length === 1 ? first.promise : second.promise),
       subscribeToEvents: (subscriber: (event: unknown) => void) => { subscribers.add(subscriber); return () => { subscribers.delete(subscriber); }; },
     } satisfies AgenCBridgeSession;
@@ -4182,18 +4219,24 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await new Promise(resolve => setTimeout(resolve, 25));
       for (const subscriber of subscribers) subscriber({ type: "turn_complete", clientMessageId: firstId, payload: { turnId: "first-turn", lastAgentMessage: "Done" } });
       await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(false));
-      const secondAttempt = send("second prompt");
-      await vi.waitFor(() => expect(session.submit).toHaveBeenCalledTimes(2));
+      const secondAttempt = send(secondInput);
+      if (secondInput === "second prompt") {
+        await vi.waitFor(() => expect(session.submit).toHaveBeenCalledTimes(2));
+      } else {
+        await vi.waitFor(() => expect(getPromptForCommand).toHaveBeenCalledOnce());
+      }
       await new Promise(resolve => setTimeout(resolve, 25));
       first.reject(new Error("old response dropped"));
       await firstAttempt;
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "", isLoading: true });
+      loaded.resolve([{ type: "text", text: "expanded delayed skill" }]);
+      await vi.waitFor(() => expect(session.submit).toHaveBeenCalledTimes(2));
       second.reject(new Error("new response dropped"));
       await secondAttempt;
-      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "second prompt", isLoading: false }));
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: secondInput, isLoading: false }));
       session.submit.mockResolvedValueOnce();
-      await send("second prompt");
+      await send(secondInput);
       expect(session.submit.mock.calls[2]).toEqual(session.submit.mock.calls[1]);
       expect(session.submit.mock.calls[1]?.[1]?.clientMessageId).not.toBe(firstId);
     });
