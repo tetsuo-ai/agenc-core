@@ -73,6 +73,14 @@ persistence, cancellation, and 10,000-candidate checks remain in
   `.com` before `.exe`; the checkout directory is never an implicit executable
   source. npm metadata resolves only from fixed layouts beneath the canonical
   current Node installation and ignores ambient `npm_execpath` injection.
+- Metadata failures distinguish the child command deadline, outer worker
+  deadline, and unproven process-tree settlement. Their `metadataCommand`
+  fields retain the stop reason, cleanup result, limits, total elapsed time,
+  and execution/settlement time without copying command paths or arguments.
+  Helper startup happens before the child command timer starts. The production
+  command limit remains 5 seconds, with separate 2-second settlement and
+  worker-overhead allowances. The macOS native slice runs one test file at a
+  time so provenance helpers do not compete with its other native fixtures.
 - Setup and index construction happen before warmup and timed samples. Completed
   cases report five or more measured samples.
 - Elapsed time uses `performance.now()`. Operation counts are exact where the

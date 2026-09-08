@@ -1523,7 +1523,8 @@ describe("FND benchmark harness fault contracts", () => {
     ].join("\n");
     const startedAt = Date.now();
     try {
-      expect(() =>
+      let failure: unknown;
+      try {
         runBoundedCommandText(
           process.execPath,
           ["-e", source, descendantPath],
@@ -1533,8 +1534,20 @@ describe("FND benchmark harness fault contracts", () => {
             maxOutputBytes: 4_096,
             timeoutMs,
           },
-        ),
-      ).toThrow(new RegExp(`${timeoutMs} ms deadline`, "u"));
+        );
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        message: expect.stringContaining(`${timeoutMs} ms deadline`),
+        metadataCommand: {
+          phase: "command_timeout",
+          stopReason: "timeout",
+          backstopExpired: false,
+          commandTimeoutMs: timeoutMs,
+          workerElapsedMs: expect.any(Number),
+        },
+      });
       expect(Date.now() - startedAt).toBeLessThan(
         timeoutMs +
           METADATA_COMMAND_SETTLEMENT_TIMEOUT_MS +

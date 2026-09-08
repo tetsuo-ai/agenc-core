@@ -27,6 +27,9 @@ const METADATA_COMMAND_WORKER_PATH = join(
 export const METADATA_COMMAND_SETTLEMENT_TIMEOUT_MS = 2_000;
 export const METADATA_COMMAND_WORKER_OVERHEAD_MS = 2_000;
 const METADATA_COMMAND_RESPONSE_OVERHEAD_BYTES = 65_536;
+const METADATA_COMMAND_STOP_REASONS = new Set([
+  "timeout", "aborted", "output_limit", "consumer_limit", "spawn_error", "residual_process",
+]);
 const MAX_WINDOWS_GIT_SEARCH_PATH_BYTES = 131_072;
 const MAX_WINDOWS_GIT_SEARCH_PATH_ENTRIES = 512;
 const MAX_WINDOWS_GIT_SEARCH_PATH_ENTRY_BYTES = 32_768;
@@ -260,12 +263,7 @@ export function runBoundedCommandText(
     }
     return result.stdout.toString("utf8").trim();
   } catch (error) {
-    throw new Error(
-      `${label} failed or exceeded its ${timeoutMs} ms deadline`,
-      {
-        cause: error,
-      },
-    );
+    throw boundedCommandFailure(label, timeoutMs, error);
   }
 }
 
@@ -469,47 +467,76 @@ function runBoundedCommandResult(
   const maximumResponseBytes =
     Math.ceil((maxOutputBytes * 4) / 3) +
     METADATA_COMMAND_RESPONSE_OVERHEAD_BYTES;
-  const responseText = execFileSync(
-    process.execPath,
-    [METADATA_COMMAND_WORKER_PATH],
-    {
-      cwd,
-      encoding: "utf8",
-      env: helperEnvironment,
-      input: request,
-      killSignal: "SIGKILL",
-      maxBuffer: maximumResponseBytes,
-      timeout:
-        timeoutMs +
-        METADATA_COMMAND_SETTLEMENT_TIMEOUT_MS +
-        METADATA_COMMAND_WORKER_OVERHEAD_MS,
-      windowsHide: true,
-    },
-  );
-  let response;
+  const startedAt = performance.now();
+  let responseText;
   try {
-    response = JSON.parse(responseText);
+    responseText = execFileSync(
+      process.execPath,
+      [METADATA_COMMAND_WORKER_PATH],
+      {
+        cwd,
+        encoding: "utf8",
+        env: helperEnvironment,
+        input: request,
+        stdio: "pipe",
+        killSignal: "SIGKILL",
+        maxBuffer: maximumResponseBytes,
+        timeout:
+          timeoutMs +
+          METADATA_COMMAND_SETTLEMENT_TIMEOUT_MS +
+          METADATA_COMMAND_WORKER_OVERHEAD_MS,
+        windowsHide: true,
+      },
+    );
   } catch (error) {
-    throw new Error("bounded metadata command returned malformed JSON", {
-      cause: error,
-    });
-  }
-  validateMetadataCommandResponse(response);
-  if (response.backstopExpired) {
-    throw new Error("bounded metadata command containment was not proven");
-  }
-  if (typeof response.error === "string" && response.error.length > 0) {
-    throw new Error(`bounded metadata command failed: ${response.error}`);
-  }
-  if (response.stopReason !== undefined) {
-    throw new Error(
-      `bounded metadata command stopped for ${String(response.stopReason)}`,
+    throw metadataCommandFailure(
+      error?.code === "ETIMEDOUT" ? "worker_timeout" : "worker_failed",
+      timeoutMs,
+      startedAt,
     );
   }
-  const stdout = decodeCanonicalBase64(response.stdoutBase64, "stdout");
-  const stderr = decodeCanonicalBase64(response.stderrBase64, "stderr");
-  if (stdout.length + stderr.length > maxOutputBytes) {
-    throw new Error("bounded metadata command exceeded its output ceiling");
+  return readMetadataCommandResult(responseText, {
+    maxOutputBytes,
+    startedAt,
+    timeoutMs,
+  });
+}
+
+function readMetadataCommandResult(
+  responseText,
+  { maxOutputBytes, startedAt, timeoutMs },
+) {
+  let response;
+  let stdout;
+  let stderr;
+  try {
+    response = JSON.parse(responseText);
+    validateMetadataCommandResponse(response);
+    stdout = decodeCanonicalBase64(response.stdoutBase64, "stdout");
+    stderr = decodeCanonicalBase64(response.stderrBase64, "stderr");
+    if (stdout.length + stderr.length > maxOutputBytes) {
+      throw new Error("bounded metadata command exceeded its output ceiling");
+    }
+  } catch {
+    throw metadataCommandFailure("protocol_error", timeoutMs, startedAt);
+  }
+  if (response.backstopExpired) {
+    throw metadataCommandFailure(
+      "settlement_failed", timeoutMs, startedAt, response,
+    );
+  }
+  if (response.stopReason !== undefined) {
+    throw metadataCommandFailure(
+      response.stopReason === "timeout" ? "command_timeout" : "command_stopped",
+      timeoutMs,
+      startedAt,
+      response,
+    );
+  }
+  if (typeof response.error === "string" && response.error.length > 0) {
+    throw metadataCommandFailure(
+      "command_failed", timeoutMs, startedAt, response,
+    );
   }
   return {
     exitCode: response.exitCode,
@@ -517,6 +544,48 @@ function runBoundedCommandResult(
     stderr,
     stdout,
   };
+}
+
+function metadataCommandFailure(phase, timeoutMs, startedAt, response = null) {
+  const elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+  const workerElapsedMs = response?.workerElapsedMs ?? null;
+  const metadataCommand = Object.freeze({
+    phase,
+    commandTimeoutMs: timeoutMs,
+    workerTimeoutMs:
+      timeoutMs +
+      METADATA_COMMAND_SETTLEMENT_TIMEOUT_MS +
+      METADATA_COMMAND_WORKER_OVERHEAD_MS,
+    elapsedMs,
+    workerElapsedMs,
+    overheadElapsedMs: workerElapsedMs === null
+      ? null
+      : Math.max(0, elapsedMs - workerElapsedMs),
+    backstopExpired: response?.backstopExpired ?? null,
+    stopReason: response?.stopReason ?? null,
+    exitCode: response?.exitCode ?? null,
+    signal: response?.signal ?? null,
+  });
+  return Object.assign(
+    new Error(`bounded metadata command ${phase} after ${elapsedMs} ms`),
+    { metadataCommand },
+  );
+}
+
+function boundedCommandFailure(label, timeoutMs, cause) {
+  const metadataCommand = cause?.metadataCommand;
+  const detail = metadataCommand === undefined
+    ? ""
+    : ` (${metadataCommand.phase}, ${metadataCommand.elapsedMs} ms elapsed, ` +
+      `${metadataCommand.workerTimeoutMs} ms worker limit, ` +
+      `${metadataCommand.workerElapsedMs ?? "unreported"} ms execution/settlement)`;
+  return Object.assign(
+    new Error(
+      `${label} failed or exceeded its ${timeoutMs} ms deadline${detail}`,
+      { cause },
+    ),
+    metadataCommand === undefined ? {} : { metadataCommand },
+  );
 }
 
 function validateMetadataCommandResponse(response) {
@@ -535,19 +604,23 @@ function validateMetadataCommandResponse(response) {
     "stderrBase64",
     "stdoutBase64",
     "stopReason",
+    "workerElapsedMs",
   ]);
   if (Object.keys(response).some((name) => !allowedNames.has(name))) {
     throw new Error("bounded metadata command result keys differ");
   }
   if (
     typeof response.backstopExpired !== "boolean" ||
-    (!Number.isInteger(response.exitCode) && response.exitCode !== null) ||
-    (response.signal !== null && typeof response.signal !== "string") ||
+    (!Number.isSafeInteger(response.exitCode) && response.exitCode !== null) ||
+    (response.signal !== null &&
+      (typeof response.signal !== "string" || !/^SIG[A-Z0-9]{1,28}$/u.test(response.signal))) ||
     typeof response.stdoutBase64 !== "string" ||
     typeof response.stderrBase64 !== "string" ||
+    !Number.isSafeInteger(response.workerElapsedMs) ||
+    response.workerElapsedMs < 0 ||
     (response.error !== undefined && typeof response.error !== "string") ||
     (response.stopReason !== undefined &&
-      typeof response.stopReason !== "string")
+      !METADATA_COMMAND_STOP_REASONS.has(response.stopReason))
   ) {
     throw new Error("bounded metadata command returned an invalid result");
   }
@@ -859,10 +932,7 @@ function gitBuffer(repositoryRoot, args, label) {
     }
     return result.stdout;
   } catch (error) {
-    throw new Error(
-      `${label} failed or exceeded its ${BOUNDED_COMMAND_TIMEOUT_MS} ms deadline`,
-      { cause: error },
-    );
+    throw boundedCommandFailure(label, BOUNDED_COMMAND_TIMEOUT_MS, error);
   }
 }
 

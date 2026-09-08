@@ -14,6 +14,7 @@ try {
   }
   const request = JSON.parse(requestBytes.toString("utf8"));
   const keepAlive = setInterval(() => {}, SETTLEMENT_KEEPALIVE_INTERVAL_MS);
+  const startedAt = performance.now();
   let result;
   try {
     result = await runSupervisedProcess(
@@ -42,6 +43,7 @@ try {
       stderrBase64: result.stderr.toString("base64"),
       stdoutBase64: result.stdout.toString("base64"),
       stopReason: result.stopReason,
+      workerElapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
     }),
   );
 } catch (error) {
