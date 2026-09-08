@@ -14,6 +14,7 @@
  */
 
 import { resolveAgencHome } from "../config/env.js";
+import { canonicalizeHomePath } from "../config/home.js";
 import { loadCanonicalConfig } from "../config/repository.js";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -23,6 +24,7 @@ import { gatewayConfigFromCanonical } from "../gateway/config.js";
 import { PairingStore } from "../gateway/pairing.js";
 import { startGateway } from "../gateway/run.js";
 import type { GatewayConfig } from "../gateway/types.js";
+import { escapeXml } from "../utils/xml.js";
 
 export type AgenCGatewayCliCommand =
   | {
@@ -364,6 +366,21 @@ export async function runAgenCGatewayCli(
   }
 }
 
+function assertServiceHomeText(home: string): void {
+  for (const character of home) {
+    const codePoint = character.codePointAt(0)!;
+    if (
+      codePoint < 0x20 ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+      (codePoint >= 0xfdd0 && codePoint <= 0xfdef) ||
+      (codePoint & 0xfffe) === 0xfffe
+    ) {
+      throw new Error("Cannot install gateway service: AGENC_HOME contains control characters or invalid Unicode");
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Always-on gateway service (onboarding-plan-2026-07 O-4)
 // ---------------------------------------------------------------------------
@@ -387,6 +404,9 @@ export async function installGatewayService(options: {
 }): Promise<number> {
   const platform = options.platform ?? process.platform;
   const home = options.home ?? homedir();
+  assertServiceHomeText(options.agencHome);
+  const agencHome = canonicalizeHomePath(options.agencHome);
+  assertServiceHomeText(agencHome);
   const nodeBin = options.execPath ?? process.execPath;
   const entry = options.entryPath ?? process.argv[1];
   const run =
@@ -408,6 +428,7 @@ export async function installGatewayService(options: {
         "",
         "[Service]",
         "Type=simple",
+        `Environment=${JSON.stringify(`AGENC_HOME=${agencHome}`).replaceAll("%", "%%")}`,
         `ExecStart=${nodeBin} ${entry} gateway run`,
         "Restart=on-failure",
         "RestartSec=5",
@@ -449,6 +470,11 @@ export async function installGatewayService(options: {
         "<dict>",
         "  <key>Label</key>",
         "  <string>dev.agenc.gateway</string>",
+        "  <key>EnvironmentVariables</key>",
+        "  <dict>",
+        "    <key>AGENC_HOME</key>",
+        `    <string>${escapeXml(agencHome)}</string>`,
+        "  </dict>",
         "  <key>ProgramArguments</key>",
         "  <array>",
         `    <string>${nodeBin}</string>`,
