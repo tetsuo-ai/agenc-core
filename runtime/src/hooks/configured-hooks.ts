@@ -910,47 +910,12 @@ export class ConfiguredHooksRuntime {
     };
   }
 
-  /**
-   * Lifecycle-hook wrapper for events whose matcher key is not the
-   * PreCompact/PostCompact `trigger` (SubagentStop matches
-   * agent_type/task_name, SessionEnd matches reason, Notification
-   * matches notification_type). Same run/parse semantics as
-   * `createLifecycleHook`.
-   */
-  private createGenericLifecycleHook<I extends HookInput>(
+  private createGenericLifecycleHook<Input extends HookInput>(
     hook: IndividualHookConfig,
-    matchKey: (input: I) => string,
-  ): (input: I, signal?: AbortSignal) => Promise<HookResult> {
-    return async (input, signal) => {
-      if (
-        this.isExecutionSuppressed() ||
-        !matchesPattern(matchKey(input), hook.matcher)
-      ) {
-        return { succeeded: true, output: "", command: hook.command.command };
-      }
-      const run = await this.runCommandHook(
-        hook,
-        input as unknown as Record<string, unknown>,
-        signal,
-      );
-      const parsed = this.readStructuredOutput(run);
-      const specific = parsed.output;
-      const output =
-        specific?.suppressOutput === true
-          ? ""
-          : run.status === "success"
-            ? run.stdout
-            : run.stderr || run.stdout;
-      return {
-        succeeded:
-          run.status === "success" && specific?.continueProcessing !== false,
-        output,
-        command: hookCommandLabel(hook),
-        ...(specific?.additionalContext !== undefined
-          ? { additionalContexts: [redactSecrets(specific.additionalContext)] }
-          : {}),
-      };
-    };
+    matchKey: (input: Input) => string,
+  ): (input: Input, signal?: AbortSignal) => Promise<HookResult> {
+    return (input, signal) =>
+      this.runLifecycleHook(hook, input, () => matchKey(input), signal);
   }
 
   private createLifecycleHook(
@@ -959,72 +924,47 @@ export class ConfiguredHooksRuntime {
     input: PreCompactHookInput | PostCompactHookInput | SessionStartHookInput,
     signal?: AbortSignal,
   ) => Promise<HookResult> {
-    if (hook.event === "SessionStart") {
-      return this.createSessionStartHook(hook) as (
-        input:
-          PreCompactHookInput | PostCompactHookInput | SessionStartHookInput,
-        signal?: AbortSignal,
-      ) => Promise<HookResult>;
-    }
-    return async (input, signal) => {
-      const matchQuery =
-        input.hook_event_name === "SessionStart" ? input.source : input.trigger;
-      if (
-        this.isExecutionSuppressed() ||
-        !matchesPattern(matchQuery, hook.matcher)
-      ) {
-        return { succeeded: true, output: "", command: hook.command.command };
-      }
-      const run = await this.runCommandHook(
-        hook,
-        input as unknown as Record<string, unknown>,
-        signal,
-      );
-      const parsed = this.readStructuredOutput(run);
-      const specific = parsed.output;
-      const output =
-        specific?.suppressOutput === true
-          ? ""
-          : run.status === "success"
-            ? run.stdout
-            : run.stderr || run.stdout;
-      return {
-        succeeded:
-          run.status === "success" && specific?.continueProcessing !== false,
-        output,
-        command: hookCommandLabel(hook),
-        ...(specific?.additionalContext !== undefined
-          ? { additionalContexts: [redactSecrets(specific.additionalContext)] }
-          : {}),
-      };
-    };
+    return this.createGenericLifecycleHook<
+      PreCompactHookInput | PostCompactHookInput | SessionStartHookInput
+    >(hook, (input) =>
+      input.hook_event_name === "SessionStart" ? input.source : input.trigger,
+    );
   }
 
-  private createSessionStartHook(
+  private async runLifecycleHook(
     hook: IndividualHookConfig,
-  ): (
-    input: SessionStartHookInput,
+    input: HookInput,
+    matchQuery: () => string,
     signal?: AbortSignal,
-  ) => Promise<HookResult> {
-    return async (input, signal) => {
-      if (
-        this.isExecutionSuppressed() ||
-        !matchesPattern(input.source, hook.matcher)
-      ) {
-        return { succeeded: true, output: "", command: hook.command.command };
-      }
-      const run = await this.runCommandHook(
-        hook,
-        sessionStartInput(input, this.opts.cwd),
-        signal,
-      );
-      const parsed =
-        run.status === "success" ? this.readStructuredOutput(run) : undefined;
-      const specific = parsed?.output;
-      const additionalContexts = sessionStartAdditionalContexts(
-        parsed,
-        run.rawStdout,
-      );
+  ): Promise<HookResult> {
+    const command = hookCommandLabel(hook);
+    if (
+      this.isExecutionSuppressed() ||
+      !matchesPattern(matchQuery(), hook.matcher)
+    ) {
+      return { succeeded: true, output: "", command };
+    }
+
+    const isSessionStart = input.hook_event_name === "SessionStart";
+    const run = await this.runCommandHook(
+      hook,
+      isSessionStart ? sessionStartInput(input, this.opts.cwd) : { ...input },
+      signal,
+    );
+    const parsed =
+      isSessionStart && run.status !== "success"
+        ? undefined
+        : this.readStructuredOutput(run);
+    const specific = parsed?.output;
+    const additionalContexts = isSessionStart
+      ? sessionStartAdditionalContexts(parsed, run.rawStdout)
+      : specific?.additionalContext !== undefined
+        ? [redactSecrets(specific.additionalContext)]
+        : [];
+    const contextFields =
+      additionalContexts.length > 0 ? { additionalContexts } : {};
+
+    if (isSessionStart) {
       if (
         run.status === "success" &&
         run.rawStdout.trim().length > 0 &&
@@ -1043,29 +983,38 @@ export class ConfiguredHooksRuntime {
         return {
           succeeded: false,
           output: message,
-          command: hookCommandLabel(hook),
+          command,
           message: {
             type: "hook_stopped_continuation",
             hookEvent: "SessionStart",
-            hookName: hookCommandLabel(hook),
+            hookName: command,
             message,
           },
-          ...(additionalContexts.length > 0 ? { additionalContexts } : {}),
-        };
-      }
-      if (run.status === "success") {
-        return {
-          succeeded: true,
-          output: "",
-          command: hookCommandLabel(hook),
-          ...(additionalContexts.length > 0 ? { additionalContexts } : {}),
+          ...contextFields,
         };
       }
       return {
-        succeeded: false,
-        output: redactSecrets(run.rawStderr.trim() || run.rawStdout.trim()),
-        command: hookCommandLabel(hook),
+        succeeded: run.status === "success",
+        output:
+          run.status === "success"
+            ? ""
+            : redactSecrets(run.rawStderr.trim() || run.rawStdout.trim()),
+        command,
+        ...contextFields,
       };
+    }
+
+    return {
+      succeeded:
+        run.status === "success" && specific?.continueProcessing !== false,
+      output:
+        specific?.suppressOutput === true
+          ? ""
+          : run.status === "success"
+            ? run.stdout
+            : run.stderr || run.stdout,
+      command,
+      ...contextFields,
     };
   }
 

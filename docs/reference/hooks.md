@@ -119,7 +119,9 @@ runtime options, project trust, and hook effect before anything runs.
 - SDK embedders pass the typed capability explicitly after vetting the
   workspace.
 - AgenC redacts secrets from configured-hook diagnostics where that path is
-  wired (`configured-hooks.ts`).
+  wired (`configured-hooks.ts`). Lifecycle results use the redacted
+  `statusMessage`, or the redacted command when no label is configured.
+  Disabled, bare-mode, and matcher-skipped hooks use the same display label.
 - Outbound skill/session **HTTP hooks** resolve through `ssrfGuardedLookup`
   (`runtime/src/utils/hooks/ssrfGuard.ts`). Private, link-local, CGNAT,
   reserved/docs/benchmark/multicast, and cloud-metadata addresses are
