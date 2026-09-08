@@ -10,7 +10,7 @@ import { hardenedContainerRuntimeSmokeProgram } from "../../../scripts/check-cle
 
 function executeSmoke(
   program,
-  { sqliteValue = 42, environment = {}, container = false } = {},
+  { sqliteValue = 42, environment = {}, container = false, temporary = {}, scratchEvents = [] } = {},
 ) {
   const exited = Symbol("process exit");
   const state = {
@@ -20,7 +20,9 @@ function executeSmoke(
     timerCleared: false,
     queries: [],
     closed: false,
+    scratchEvents,
   };
+  const scratchFiles = new Map();
   const child = {
     kill() {
       state.killed = true;
@@ -83,6 +85,8 @@ function executeSmoke(
       process,
       require(name) {
         if (name === "node:path") return { join };
+        if (container && name === "node:os")
+          return { tmpdir: () => temporary.root ?? "/tmp" };
         if (name === "node:module")
           return {
             createRequire(path) {
@@ -95,13 +99,54 @@ function executeSmoke(
           };
         if (container && name === "node:fs")
           return {
+            mkdtempSync(prefix) {
+              assert.equal(prefix, "/tmp/agenc-session-smoke-");
+              scratchEvents.push("create");
+              return `${prefix}fixture`;
+            },
+            writeFileSync(path, contents, options) {
+              assert.equal(options.mode, 0o600);
+              if (path === "/home/agenc/agenc-readonly-probe") {
+                assert.equal(options.flag, "wx");
+                if (!temporary.writableRoot)
+                  throw Object.assign(new Error(path), { code: "EROFS" });
+                return;
+              }
+              assert.equal(path, "/tmp/agenc-session-smoke-fixture/probe");
+              scratchEvents.push("write");
+              if (temporary.writeError) throw temporary.writeError;
+              scratchFiles.set(path, contents);
+            },
+            rmSync(path, options) {
+              assert.equal(path, "/tmp/agenc-session-smoke-fixture");
+              assert.equal(options.recursive, true);
+              scratchEvents.push("remove");
+              scratchFiles.clear();
+            },
+            statfsSync(path) {
+              assert.equal(path, "/tmp");
+              return {
+                type: temporary.filesystem ?? 0x01021994,
+                bsize: 4096,
+                blocks: (temporary.bytes ?? 268435456) / 4096,
+              };
+            },
             statSync(path) {
+              if (path === "/tmp") return {
+                uid: temporary.uid ?? 10001,
+                gid: temporary.gid ?? 10001,
+                mode: temporary.mode ?? 0o700,
+              };
               if (path === "/opt/agenc") return { uid: 0, gid: 0, mode: 0o755 };
               if (path === "/usr/lib/agenc/agenc-peer-credentials.node")
                 return { uid: 0, gid: 0, mode: 0o555 };
               throw Object.assign(new Error(path), { code: "ENOENT" });
             },
             readFileSync(path) {
+              if (path === "/tmp/agenc-session-smoke-fixture/probe") {
+                scratchEvents.push("read");
+                return temporary.readback ?? scratchFiles.get(path);
+              }
               if (path === "/usr/lib/agenc/peer-credentials-required")
                 return "required\n";
               assert.equal(path, "/usr/share/agenc/debian-packages.txt");
@@ -253,7 +298,39 @@ test("Docker hardening composes with the same native checks and container paths"
     "/opt/agenc/node_modules/@tetsuo-ai/runtime/package.json",
   );
   assert.equal(probe.state.spawn.options.cwd, "/data");
+  assert.deepEqual(probe.state.scratchEvents, ["create", "write", "read", "remove"]);
   probe.exit({ exitCode: 0 });
   probe.data("pty-ok");
   assert.deepEqual(probe.state.exits, [0]);
 });
+
+for (const [temporary, message] of [
+  [{ root: "/data" }, /platform temp directory/],
+  [{ uid: 0 }, /private to the daemon identity/],
+  [{ gid: 0 }, /private to the daemon identity/],
+  [{ mode: 0o777 }, /private to the daemon identity/],
+  [{ filesystem: 0xef53 }, /256 MiB tmpfs/],
+  [{ bytes: 536870912 }, /256 MiB tmpfs/],
+  [{ writableRoot: true }, /root filesystem is writable/],
+]) {
+  test(`Docker smoke rejects unsafe temporary storage ${JSON.stringify(temporary)}`, () => {
+    assert.throws(
+      () => executeSmoke(hardenedContainerRuntimeSmokeProgram(), { container: true, temporary }),
+      message,
+    );
+  });
+}
+
+for (const temporary of [
+  { writeError: Object.assign(new Error("scratch storage full"), { code: "ENOSPC" }) },
+  { readback: "incorrect contents" },
+]) {
+  test(`Docker smoke cleans scratch files after ${temporary.writeError ? "write failure" : "readback mismatch"}`, () => {
+    const scratchEvents = [];
+    assert.throws(
+      () => executeSmoke(hardenedContainerRuntimeSmokeProgram(), { container: true, temporary, scratchEvents }),
+      /scratch storage full|temporary file readback failed/,
+    );
+    assert.equal(scratchEvents.at(-1), "remove");
+  });
+}
