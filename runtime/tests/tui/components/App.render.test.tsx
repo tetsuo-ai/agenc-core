@@ -4598,6 +4598,284 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  describe.each(["/", "$"])("%s prompt submission transaction", (prefix) => {
+    test.each([
+      "success",
+      "load rejection",
+      "admission rejection",
+      "submit rejection",
+      "cancellation",
+      "late failure",
+      "rollback failure",
+      "commit failure",
+      "acknowledgement failure",
+    ])("settles %s", async (outcome) => {
+      const { AgenCTuiApp } = await import("./App.js");
+      resetShellSurfaceProbe();
+      const input = `${prefix}reviewer audit this`;
+      const events: string[] = [];
+      const subscribers = new Set<(event: unknown) => void>();
+      const failure = new Error(outcome);
+      if (outcome === "cancellation") failure.name = "AbortError";
+      const emitCompletion = () => {
+        for (const subscriber of subscribers) {
+          subscriber({
+            type: "turn_started",
+            payload: { turnId: "prompt-turn" },
+          });
+          subscriber({
+            type: "turn_complete",
+            payload: { turnId: "prompt-turn", lastAgentMessage: "Done" },
+          });
+        }
+      };
+      const getPromptForCommand = vi.fn(async () => {
+        events.push("load");
+        if (outcome === "load rejection") throw failure;
+        return [{ type: "text", text: "expanded reviewer prompt" }];
+      });
+      mockTuiCommandList.push({
+        name: "reviewer",
+        type: "prompt",
+        loadedFrom: "skills",
+        progressMessage: "Loading reviewer",
+        contentLength: 1,
+        getPromptForCommand,
+      });
+      const session = {
+        ...createSession(),
+        enqueueIdleInputBatchOwned: vi.fn(() => {
+          events.push("admit");
+          if (outcome === "admission rejection") throw failure;
+          return {
+            token: "prompt-admission",
+            firstSequence: 1,
+            lastSequence: 3,
+            count: 3,
+          };
+        }),
+        commitIdleInputAdmission: vi.fn(() => {
+          events.push("commit");
+          if (outcome === "commit failure") throw failure;
+          return true;
+        }),
+        rollbackIdleInputAdmission: vi.fn(() => {
+          events.push("rollback");
+          if (outcome === "rollback failure") throw failure;
+          return outcome !== "late failure";
+        }),
+        submit: vi.fn(async () => {
+          events.push("submit");
+          if (outcome === "late failure") emitCompletion();
+          if (
+            outcome === "submit rejection" ||
+            outcome === "cancellation" ||
+            outcome === "late failure" ||
+            outcome === "rollback failure"
+          ) {
+            throw failure;
+          }
+        }),
+        subscribeToEvents: (subscriber: (event: unknown) => void) => {
+          subscribers.add(subscriber);
+          return () => {
+            subscribers.delete(subscriber);
+          };
+        },
+      } satisfies AgenCBridgeSession;
+      const acknowledgeWorkbenchAttachments = vi.fn(() => {
+        events.push("acknowledge");
+        if (outcome === "acknowledgement failure") throw failure;
+      });
+      const helpers = {
+        clearBuffer: vi.fn(),
+        resetHistory: vi.fn(),
+        setCursorOffset: vi.fn(),
+      };
+      const pastedContents = {
+        0: {
+          id: 0,
+          type: "image",
+          content: "base64-image",
+          mediaType: "image/png",
+          filename: "prompt.png",
+        },
+      };
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async () => {
+          const promptProps = providerProbe.promptProps.at(-1)!;
+          (promptProps.onInputChange as (value: string) => void)(input);
+          (promptProps.setPastedContents as (value: unknown) => void)(
+            pastedContents,
+          );
+          await vi.waitFor(() => {
+            expect(providerProbe.promptProps.at(-1)?.input).toBe(input);
+          });
+          const onSubmit = providerProbe.promptProps.at(-1)?.onSubmit as (
+            input: string,
+            helpers: typeof helpers,
+            speculation: undefined,
+            options: { readonly onWorkbenchAttachmentsAdmitted: () => void },
+          ) => Promise<void>;
+          await expect(
+            onSubmit(input, helpers, undefined, {
+              onWorkbenchAttachmentsAdmitted: acknowledgeWorkbenchAttachments,
+            }),
+          ).resolves.toBeUndefined();
+
+          const accepted = [
+            "success",
+            "commit failure",
+            "acknowledgement failure",
+          ].includes(outcome);
+          const admitted =
+            outcome !== "load rejection" && outcome !== "admission rejection";
+          const restored =
+            !accepted &&
+            outcome !== "late failure" &&
+            outcome !== "rollback failure";
+          expect(getPromptForCommand).toHaveBeenCalledOnce();
+          expect(session.submit).toHaveBeenCalledTimes(admitted ? 1 : 0);
+          if (admitted) {
+            expect(session.enqueueIdleInputBatchOwned).toHaveBeenCalledWith(
+              [
+                expect.objectContaining({ content: expect.any(Array) }),
+                expect.stringContaining("<command-name>$reviewer</command-name>"),
+                { content: [{ type: "text", text: "expanded reviewer prompt" }] },
+              ],
+              { workspaceView: "agent" },
+            );
+            expect(session.submit).toHaveBeenCalledWith("", {
+              displayUserMessage: input,
+            });
+          }
+          expect(session.commitIdleInputAdmission).toHaveBeenCalledTimes(
+            accepted ? 1 : 0,
+          );
+          expect(session.rollbackIdleInputAdmission).toHaveBeenCalledTimes(
+            admitted && !accepted ? 1 : 0,
+          );
+          expect(acknowledgeWorkbenchAttachments).toHaveBeenCalledTimes(
+            accepted || outcome === "late failure" ? 1 : 0,
+          );
+          if (accepted) {
+            expect(events.indexOf("commit")).toBeGreaterThan(
+              events.indexOf("submit"),
+            );
+            expect(events.indexOf("acknowledge")).toBeGreaterThan(
+              events.indexOf("commit"),
+            );
+          }
+          if (outcome !== "success") {
+            await vi.waitFor(() => {
+              expect(
+                JSON.stringify(providerProbe.currentAppState?.notifications),
+              ).toContain(outcome);
+              expect(providerProbe.promptProps.at(-1)).toMatchObject({
+                input: restored ? input : "",
+                pastedContents: restored ? pastedContents : {},
+                ...(!accepted ? { isLoading: false } : {}),
+              });
+            });
+          }
+          emitCompletion();
+          await vi.waitFor(() => {
+            expect(providerProbe.promptProps.at(-1)).toMatchObject({
+              input: restored ? input : "",
+              pastedContents: restored ? pastedContents : {},
+              isLoading: false,
+            });
+          });
+          expect(acknowledgeWorkbenchAttachments).toHaveBeenCalledTimes(
+            accepted || outcome === "late failure" ? 1 : 0,
+          );
+        },
+      );
+    });
+
+    test.each(["success", "failure"])(
+      "preserves a newer draft across delayed load %s",
+      async (outcome) => {
+        const { AgenCTuiApp } = await import("./App.js");
+        resetShellSurfaceProbe();
+        const loaded = Promise.withResolvers<unknown[]>();
+        const getPromptForCommand = vi.fn(() => loaded.promise);
+        mockTuiCommandList.push({
+          name: "reviewer",
+          type: "prompt",
+          loadedFrom: "skills",
+          progressMessage: "Loading reviewer",
+          contentLength: 1,
+          getPromptForCommand,
+        });
+        const session = {
+          ...createSession(),
+          enqueueIdleInput: vi.fn(() => 1),
+          submit: vi.fn(async () => {}),
+        } satisfies AgenCBridgeSession;
+        const helpers = {
+          clearBuffer: vi.fn(),
+          resetHistory: vi.fn(),
+          setCursorOffset: vi.fn(),
+        };
+        const originalAttachment = {
+          0: { id: 0, type: "text", content: "original attachment" },
+        };
+        const nextAttachment = {
+          1: { id: 1, type: "text", content: "new attachment" },
+        };
+        await withRenderedApp(
+          <AgenCTuiApp session={session} isInteractive={false} />,
+          async () => {
+            (providerProbe.promptProps.at(-1)?.setPastedContents as (
+              value: unknown,
+            ) => void)(originalAttachment);
+            await vi.waitFor(() => {
+              expect(providerProbe.promptProps.at(-1)?.pastedContents).toEqual(
+                originalAttachment,
+              );
+            });
+            const pending = providerProbe.promptSubmits.at(-1)!(
+              `${prefix}reviewer audit this`,
+              helpers,
+            );
+            await vi.waitFor(() => {
+              expect(getPromptForCommand).toHaveBeenCalledOnce();
+              expect(providerProbe.promptProps.at(-1)).toMatchObject({
+                input: "",
+                pastedContents: {},
+              });
+            });
+            (providerProbe.promptProps.at(-1)?.onInputChange as (
+              value: string,
+            ) => void)("new draft");
+            (providerProbe.promptProps.at(-1)?.setPastedContents as (
+              value: unknown,
+            ) => void)(nextAttachment);
+            await vi.waitFor(() => {
+              expect(providerProbe.promptProps.at(-1)?.input).toBe("new draft");
+            });
+            if (outcome === "success") {
+              loaded.resolve([{ type: "text", text: "expanded prompt" }]);
+            } else {
+              loaded.reject(new Error("prompt load rejected"));
+            }
+            await pending;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            expect(providerProbe.promptProps.at(-1)).toMatchObject({
+              input: "new draft",
+              pastedContents: nextAttachment,
+            });
+            expect(session.submit).toHaveBeenCalledTimes(
+              outcome === "success" ? 1 : 0,
+            );
+          },
+        );
+      },
+    );
+  });
+
   test("passes current transcript messages to dollar skill commands", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     resetShellSurfaceProbe();

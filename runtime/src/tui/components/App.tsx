@@ -5632,6 +5632,85 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         }
         return null;
       };
+      const submitPromptCommand = async (
+        parsedCommand: NonNullable<ReturnType<typeof parseDollarSkillCommand>>,
+        command: Extract<Command, { type: "prompt" }>,
+        displayText: string,
+      ): Promise<void> => {
+        let admissionLease: {
+          commit(): void;
+          rollback(): boolean;
+        } | null = null;
+        let workbenchLease: { settle(admitted: boolean): void } | null = null;
+        let submitted = false;
+        try {
+          try {
+            setComposerPastedContentsForView(submissionWorkspaceView, {});
+            const loaded = await loadDollarSkillCommandForTurn(
+              parsedCommand,
+              command,
+              getToolUseContext(
+                transcriptMessagesRef.current as any[],
+                [],
+                new AbortController(),
+              ) as PromptInputContext,
+            );
+            const admissionToken = admitPendingInputs([
+              ...(attachmentsMessage !== null ? [attachmentsMessage] : []),
+              loaded.metadata,
+              { content: loaded.blocks },
+            ]);
+            admissionLease = {
+              commit: () => {
+                if (admissionToken !== null) {
+                  props.session.commitIdleInputAdmission?.(admissionToken);
+                }
+              },
+              rollback: () =>
+                admissionToken !== null &&
+                props.session.rollbackIdleInputAdmission?.(admissionToken) ===
+                  true,
+            };
+            startPendingSubmission();
+            const workbenchAdmission = armWorkbenchAttachmentAdmission();
+            workbenchLease = {
+              settle: (admitted) =>
+                settleWorkbenchAttachmentAdmission(workbenchAdmission, admitted),
+            };
+            await submitToSession("", { displayUserMessage: displayText });
+            submitted = true;
+          } finally {
+            try {
+              if (submitted) {
+                admissionLease?.commit();
+              } else if (admissionLease === null || admissionLease.rollback()) {
+                restoreComposerDraftForView(submissionWorkspaceView, {
+                  input: draftRestoreValue,
+                  pastedContents: activePastedContents,
+                });
+              }
+            } finally {
+              workbenchLease?.settle(submitted);
+            }
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          showTransientResult(message, { display: "error" });
+          addNotification({
+            key: "prompt-submit-failed",
+            text: submitted
+              ? `Message sent, but cleanup failed: ${message}`
+              : `Message not sent: ${message}`,
+            color: "error",
+            priority: "immediate",
+            timeoutMs: 10_000,
+            wrap: true,
+          });
+          if (options?.rethrowSubmitError) throw error;
+        } finally {
+          if (!submitted) setPendingSubmission(false);
+        }
+      };
       // Slash-command interception. The daemon-backed TUI does not have
       // any server-side slash-command dispatch — every / input would
       // otherwise be forwarded to the model as plain text and the model
@@ -5659,69 +5738,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           slashPromptCommand.userInvocable !== false &&
           isCommandEnabled(slashPromptCommand)
         ) {
-          let inputsAdmitted = false;
-          let admissionToken: string | null = null;
-          let workbenchAdmission: PendingWorkbenchAttachmentAdmission | null =
-            null;
-          try {
-            const loaded = await loadDollarSkillCommandForTurn(
-              {
-                commandName: parsedSlashCommand.name,
-                args: parsedSlashCommand.argsRaw,
-              },
-              slashPromptCommand,
-              getToolUseContext(
-                transcriptMessagesRef.current as any[],
-                [],
-                new AbortController(),
-              ) as PromptInputContext,
-            );
-            const pendingInputs = [
-              ...(attachmentsMessage !== null ? [attachmentsMessage] : []),
-              loaded.metadata,
-              { content: loaded.blocks },
-            ];
-            admissionToken = admitPendingInputs(pendingInputs);
-            inputsAdmitted = true;
-            setComposerPastedContentsForView(submissionWorkspaceView, {});
-            startPendingSubmission();
-            workbenchAdmission = armWorkbenchAttachmentAdmission();
-            await submitToSession("", { displayUserMessage: text_0 });
-            if (admissionToken !== null) {
-              props.session.commitIdleInputAdmission?.(admissionToken);
-            }
-            settleWorkbenchAttachmentAdmission(workbenchAdmission, true);
-          } catch (err_slash_prompt) {
-            settleWorkbenchAttachmentAdmission(workbenchAdmission, false);
-            const message_slash_prompt =
-              err_slash_prompt instanceof Error
-                ? err_slash_prompt.message
-                : String(err_slash_prompt);
-            showTransientResult(message_slash_prompt, { display: "error" });
-            addNotification({
-              key: "prompt-submit-failed",
-              text: `Message not sent: ${message_slash_prompt}`,
-              color: "error",
-              priority: "immediate",
-              timeoutMs: 10_000,
-              // The remediation lives at the tail of these messages
-              // (sandbox setup commands, failing paths); truncating to one
-              // line hides exactly the part the user needs.
-              wrap: true,
-            });
-            setPendingSubmission(false);
-            const rolledBack =
-              admissionToken !== null &&
-              props.session.rollbackIdleInputAdmission?.(admissionToken) ===
-                true;
-            if (!inputsAdmitted || rolledBack) {
-              restoreComposerDraftForView(submissionWorkspaceView, {
-                input: draftRestoreValue,
-                pastedContents: activePastedContents,
-              });
-            }
-            if (options?.rethrowSubmitError) throw err_slash_prompt;
-          }
+          await submitPromptCommand(
+            {
+              commandName: parsedSlashCommand.name,
+              args: parsedSlashCommand.argsRaw,
+            },
+            slashPromptCommand,
+            text_0,
+          );
           return;
         }
         try {
@@ -5857,66 +5881,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           commands as unknown as Command[],
         );
         if (isDollarSkillCommand(command)) {
-          let inputsAdmitted = false;
-          let admissionToken: string | null = null;
-          let workbenchAdmission: PendingWorkbenchAttachmentAdmission | null =
-            null;
-          try {
-            const loaded = await loadDollarSkillCommandForTurn(
-              parsedDollarSkill,
-              command,
-              getToolUseContext(
-                transcriptMessagesRef.current as any[],
-                [],
-                new AbortController(),
-              ) as PromptInputContext,
-            );
-            const pendingInputs = [
-              ...(attachmentsMessage !== null ? [attachmentsMessage] : []),
-              loaded.metadata,
-              { content: loaded.blocks },
-            ];
-            admissionToken = admitPendingInputs(pendingInputs);
-            inputsAdmitted = true;
-            setComposerPastedContentsForView(submissionWorkspaceView, {});
-            startPendingSubmission();
-            workbenchAdmission = armWorkbenchAttachmentAdmission();
-            await submitToSession("", { displayUserMessage: text_0 });
-            if (admissionToken !== null) {
-              props.session.commitIdleInputAdmission?.(admissionToken);
-            }
-            settleWorkbenchAttachmentAdmission(workbenchAdmission, true);
-          } catch (err_1) {
-            settleWorkbenchAttachmentAdmission(workbenchAdmission, false);
-            const message_0 =
-              err_1 instanceof Error ? err_1.message : String(err_1);
-            showTransientResult(message_0, {
-              display: "error",
-            });
-            addNotification({
-              key: "prompt-submit-failed",
-              text: `Message not sent: ${message_0}`,
-              color: "error",
-              priority: "immediate",
-              timeoutMs: 10_000,
-              // The remediation lives at the tail of these messages
-              // (sandbox setup commands, failing paths); truncating to one
-              // line hides exactly the part the user needs.
-              wrap: true,
-            });
-            setPendingSubmission(false);
-            const rolledBack =
-              admissionToken !== null &&
-              props.session.rollbackIdleInputAdmission?.(admissionToken) ===
-                true;
-            if (!inputsAdmitted || rolledBack) {
-              restoreComposerDraftForView(submissionWorkspaceView, {
-                input: draftRestoreValue,
-                pastedContents: activePastedContents,
-              });
-            }
-            if (options?.rethrowSubmitError) throw err_1;
-          }
+          await submitPromptCommand(parsedDollarSkill, command, text_0);
           return;
         }
         if (command?.type === "local") {
