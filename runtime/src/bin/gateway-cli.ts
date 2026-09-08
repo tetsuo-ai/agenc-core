@@ -428,7 +428,7 @@ export async function installGatewayService(options: {
         "",
         "[Service]",
         "Type=simple",
-        `Environment=${JSON.stringify(`AGENC_HOME=${agencHome}`).replaceAll("%", "%%")}`,
+        `Environment=${JSON.stringify("AGENC_HOME=" + agencHome).replaceAll("%", "%%")}`,
         `ExecStart=${nodeBin} ${entry} gateway run`,
         "Restart=on-failure",
         "RestartSec=5",

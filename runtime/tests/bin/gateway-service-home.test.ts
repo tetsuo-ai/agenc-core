@@ -64,7 +64,7 @@ describe("gateway service home persistence", () => {
     const dictionary = document("plist > dict > key").filter((_, key) =>
       document(key).text() === "EnvironmentVariables",
     ).next("dict");
-    expect(dictionary.length).toBe(1);
+    expect(dictionary).toHaveLength(1);
     const keys = dictionary.children("key");
     expect(keys.map((_, key) => document(key).text()).get()).toEqual(["AGENC_HOME"]);
     return { AGENC_HOME: keys.next("string").text() };
@@ -155,6 +155,6 @@ describe("gateway service home persistence", () => {
     const definition = readFileSync(definitionPath("darwin"), "utf8");
     expect(definition).toContain("a &amp; &lt;home&gt;");
     const document = loadXml(definition, { xmlMode: true });
-    expect(document("home").length).toBe(0);
+    expect(document("home")).toHaveLength(0);
   });
 });
