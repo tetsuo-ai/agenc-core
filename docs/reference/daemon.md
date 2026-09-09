@@ -135,6 +135,12 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 
 ## Protocol
 
+The daemon's local socket and the MCP stdio server accept at most 16 MiB of
+UTF-8 payload per JSON line, excluding the LF, CRLF, or CR delimiter. A line
+exactly at the limit is valid. An oversized line closes the input before JSON
+parsing or dispatch, including when the terminating newline arrives in the
+chunk that crosses the limit. Multiple bounded lines can share a chunk.
+
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
 - Protocol version constant: **`1.9.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).

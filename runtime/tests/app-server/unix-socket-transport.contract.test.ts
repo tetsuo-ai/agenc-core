@@ -14,8 +14,10 @@ import {
   isAgenCWindowsNamedPipePath,
   prepareAgenCUnixSocketPath,
   resolveAgenCPrivateUnixSocketOwnerUid,
+  type AgenCUnixSocketMessageContext,
 } from "./transport/unix-socket.js";
 import { compileAndLoadAgenCNativePeerCredentialBinding } from "./transport/peer-credentials.js";
+import { AGENC_STDIO_DEFAULT_MAX_LINE_BYTES } from "./transport/stdio.js";
 
 const itUnix = process.platform === "win32" ? it.skip : it;
 const itLinuxNative =
@@ -232,6 +234,45 @@ describe("AgenC Unix socket transport", () => {
     await server.close();
     expect(existsSync(socketPath)).toBe(false);
     await rm(dir, { recursive: true, force: true });
+  });
+
+  itUnix.each([0, 1])("enforces the default JSON line cap over a real socket with %s extra bytes", async (extraBytes) => {
+    const dir = await tempDir();
+    const socketPath = join(dir, "daemon.sock");
+    const onMessage = vi.fn(async (_message: unknown, connection: AgenCUnixSocketMessageContext) => {
+      await connection.send({ jsonrpc: JSON_RPC_VERSION, id: 1, result: {} });
+    });
+    const errors: Error[] = [];
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage,
+      onError: (error) => { errors.push(error); },
+    });
+    let client: Socket | undefined;
+    try {
+      await server.listen();
+      client = createConnection(socketPath);
+      client.on("error", () => {});
+      await once(client, "connect");
+      const frame = Buffer.alloc(AGENC_STDIO_DEFAULT_MAX_LINE_BYTES + extraBytes + 1, 0x20);
+      Buffer.from('{"jsonrpc":"2.0","id":1,"method":"agent.list"}').copy(frame);
+      frame[frame.length - 1] = 0x0a;
+      client.write(frame);
+      if (extraBytes === 0) {
+        expect(JSON.parse(await nextChunk(client))).toEqual({ jsonrpc: JSON_RPC_VERSION, id: 1, result: {} });
+        expect(onMessage).toHaveBeenCalledTimes(1);
+        expect(errors).toEqual([]);
+      } else {
+        await vi.waitFor(() => expect(client?.destroyed).toBe(true));
+        expect(onMessage).not.toHaveBeenCalled();
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toBeInstanceOf(RangeError);
+      }
+    } finally {
+      client?.destroy();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   itLinuxNative(

@@ -279,7 +279,7 @@ describe("MCP stdio server transport", () => {
     expect(input.destroyed).toBe(true);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(RangeError);
-    expect(errors[0]?.message).toMatch(/64 bytes without a newline/);
+    expect(errors[0]?.message).toMatch(/line exceeded 64 bytes/);
 
     await transport.close();
   });

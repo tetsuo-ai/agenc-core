@@ -563,7 +563,7 @@ describe("AgenC stdio transport", () => {
     expect(input.destroyed).toBe(true);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(RangeError);
-    expect(errors[0]?.message).toMatch(/64 bytes without a newline/);
+    expect(errors[0]?.message).toMatch(/line exceeded 64 bytes/);
   });
 
   it("does not trip the cap when newlines keep lines bounded", async () => {

@@ -12,7 +12,6 @@
  */
 
 import { Buffer } from "node:buffer";
-import { createInterface, type Interface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
@@ -21,15 +20,8 @@ import {
   maxQueuedRequestsFromOptions,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
+import { BoundedJsonLineReader } from "../../utils/bounded-json-lines.js";
 
-/**
- * Default upper bound on a single unterminated input line, matching the
- * websocket transport's default max payload. A peer that streams bytes
- * without ever emitting a newline would otherwise grow the readline
- * internal buffer (and daemon memory) unbounded; the transport tracks the
- * bytes seen since the last newline and tears the connection down once this
- * cap is exceeded, treating it as a fatal framing violation.
- */
 export const AGENC_STDIO_DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024;
 
 export interface AgenCStdioTransportOptions {
@@ -55,7 +47,7 @@ export class AgenCStdioTransport {
   // request that authenticates and establishes connection state.
   #initializeBarrier: Promise<void> = Promise.resolve();
   #queuedNormalMessages = 0;
-  #reader: Interface | null = null;
+  #reader: BoundedJsonLineReader | null = null;
 
   constructor(options: AgenCStdioTransportOptions) {
     this.#options = options;
@@ -66,50 +58,19 @@ export class AgenCStdioTransport {
       throw new Error("AgenC stdio transport is already started");
     }
 
-    const reader = createInterface({
+    const reader = new BoundedJsonLineReader({
       input: this.#options.input,
-      crlfDelay: Infinity,
-      terminal: false,
+      maxLineBytes:
+        this.#options.maxLineBytes ?? AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
+      onLine: (line) => this.#handleLine(line),
+      onError: (error) => this.#options.onError?.(error, ""),
+      onClose: () => {
+        this.#reader = null;
+        this.#options.onClose?.();
+      },
     });
     this.#reader = reader;
-
-    // Node's readline does not enforce a maximum line length, so a peer that
-    // streams bytes without ever emitting a newline would grow the internal
-    // line buffer (and daemon memory) unbounded. Track the number of bytes
-    // accumulated since the last newline and tear the connection down once it
-    // exceeds the cap, mirroring the websocket transport's maxPayload bound.
-    const maxLineBytes =
-      this.#options.maxLineBytes ?? AGENC_STDIO_DEFAULT_MAX_LINE_BYTES;
-    let unterminatedBytes = 0;
-    const onData = (chunk: Buffer | string): void => {
-      const data =
-        typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-      const lastNewline = data.lastIndexOf(0x0a);
-      if (lastNewline === -1) {
-        unterminatedBytes += data.length;
-      } else {
-        unterminatedBytes = data.length - lastNewline - 1;
-      }
-      if (unterminatedBytes > maxLineBytes) {
-        this.#options.onError?.(
-          new RangeError(
-            `AgenC stdio transport line exceeded ${maxLineBytes} bytes without a newline`,
-          ),
-          "",
-        );
-        this.#options.input.destroy();
-      }
-    };
-    this.#options.input.on("data", onData);
-
-    reader.on("line", (line) => {
-      this.#handleLine(line);
-    });
-    reader.once("close", () => {
-      this.#options.input.off("data", onData);
-      this.#reader = null;
-      this.#options.onClose?.();
-    });
+    reader.start();
   }
 
   async send(message: JsonValue): Promise<void> {
