@@ -161,7 +161,6 @@ function restrictedNetworkDeniedSyscalls(table: SyscallTable): number[] {
     table.accept4,
     table.bind,
     table.listen,
-    table.shutdown,
     table.sendto,
     table.sendmmsg,
     table.recvmmsg,

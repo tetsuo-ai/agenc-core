@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import type { LLMMessage } from "../../src/llm/types.js";
+import type { LLMMessage, LLMTool } from "../../src/llm/types.js";
 import type {
   CompactContext,
   RuntimeMessage,
 } from "../../src/services/compact/types.js";
-import { mkProvider, mkSession } from "../fixtures.js";
+import { mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
 const summarizer = vi.hoisted(() => ({
   manualCompactCall: vi.fn(),
@@ -76,6 +76,48 @@ describe("/compact keeps retained assistant tool calls", () => {
   afterEach(() => {
     summarizer.manualCompactCall.mockReset();
   });
+
+  test.each(["ollama", "grok", "lmstudio"])(
+    "accounts for the %s sampling catalog without runtime tool wrappers",
+    async (providerName) => {
+      summarizer.manualCompactCall.mockImplementation(keepRecentTail);
+      const tools: LLMTool[] = ["FileRead", "Write", "remote_tool"].map(
+        (name) => ({
+          type: "function",
+          function: {
+            name,
+            description: `${name} description`,
+            parameters: { type: "object", properties: {} },
+          },
+        }),
+      );
+      const { session } = mkSession({
+        history: [
+          { role: "user", content: "first request" },
+          { role: "assistant", content: "first answer" },
+        ],
+      });
+      vi.spyOn(session.services.registry, "toLLMTools").mockReturnValue(tools);
+      vi.spyOn(session, "newDefaultTurnWithSubId").mockReturnValue(mkCtx({
+        modelProviderId: providerName,
+        dynamicTools: [{ name: "Write", deferLoading: true }] as never,
+        baseInstructions: "base instructions",
+      }));
+
+      const result = await compactCommand.execute(commandContext(session));
+
+      expect(result).toMatchObject({ kind: "compact" });
+      expect(summarizer.manualCompactCall).toHaveBeenCalledTimes(1);
+      const compactContext = summarizer.manualCompactCall.mock.calls[0]?.[1];
+      const expectedNames = providerName === "lmstudio"
+        ? ["FileRead"]
+        : ["FileRead", "remote_tool"];
+      expect(compactContext?.options?.tools).toEqual(
+        tools.filter((tool) => expectedNames.includes(tool.function.name)),
+      );
+      expect(compactContext?.options?.systemPrompt).toBe("base instructions");
+    },
+  );
 
   test("a retained assistant tool call and its result survive manual compaction with the arguments intact", async () => {
     summarizer.manualCompactCall.mockImplementation(keepRecentTail);

@@ -309,7 +309,7 @@ function resolveProviderTraceSink(session: Session): ProviderTraceSink | undefin
   return sink ?? undefined;
 }
 
-function buildProviderOptions(
+export function buildProviderOptions(
   request: StreamModelRequestContract,
   ctx: TurnContext,
   signal: AbortSignal,

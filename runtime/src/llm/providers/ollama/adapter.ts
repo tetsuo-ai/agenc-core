@@ -604,6 +604,7 @@ export class OllamaProvider implements LLMProvider {
     let promptTokens = 0;
     let completionTokens = 0;
     let sawProviderUsage = false;
+    let doneReason: string | undefined;
 
     try {
       emitProviderTraceEvent(options, {
@@ -654,6 +655,8 @@ export class OllamaProvider implements LLMProvider {
 
               const chunkModel = readString(chunk.model);
               if (chunkModel) model = chunkModel;
+              const chunkDoneReason = readString(chunk.done_reason);
+              if (chunkDoneReason) doneReason = chunkDoneReason;
               const reportedPromptTokens = readNonNegativeNumber(
                 chunk.prompt_eval_count,
               );
@@ -676,8 +679,11 @@ export class OllamaProvider implements LLMProvider {
       });
 
       const finishReason: LLMResponse["finishReason"] =
-        toolCalls.length > 0 ? "tool_calls" : "stop";
-      onChunk({ content: "", done: true, toolCalls });
+        doneReason === "length"
+          ? "length"
+          : toolCalls.length > 0 ? "tool_calls" : "stop";
+      const completedToolCalls = finishReason === "length" ? [] : toolCalls;
+      onChunk({ content: "", done: true, toolCalls: completedToolCalls });
       emitProviderTraceEvent(options, {
         kind: "response",
         transport: "chat_stream",
@@ -699,6 +705,7 @@ export class OllamaProvider implements LLMProvider {
               : {}),
           },
           model,
+          ...(doneReason !== undefined ? { done_reason: doneReason } : {}),
           prompt_eval_count: promptTokens,
           eval_count: completionTokens,
         },
@@ -706,7 +713,7 @@ export class OllamaProvider implements LLMProvider {
 
       return {
         content,
-        toolCalls,
+        toolCalls: completedToolCalls,
         usage: coerceUsage({
           promptTokens,
           completionTokens,
@@ -996,7 +1003,8 @@ export class OllamaProvider implements LLMProvider {
     const record = isRecord(response) ? response : {};
     const message = isRecord(record.message) ? record.message : {};
     const content = readString(message.content);
-    const toolCalls = normalizeOllamaToolCalls(message.tool_calls);
+    const truncated = record.done_reason === "length";
+    const toolCalls = truncated ? [] : normalizeOllamaToolCalls(message.tool_calls);
 
     const promptTokens = readNonNegativeNumber(record.prompt_eval_count);
     const completionTokens = readNonNegativeNumber(record.eval_count);
@@ -1017,7 +1025,7 @@ export class OllamaProvider implements LLMProvider {
         readString(record.model) ||
         options?.model?.trim() ||
         this.config.model,
-      finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
+      finishReason: truncated ? "length" : toolCalls.length > 0 ? "tool_calls" : "stop",
       ...this.buildUnsupportedDiagnostics(options),
     };
   }

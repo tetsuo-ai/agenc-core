@@ -693,6 +693,15 @@ describe("Linux sandbox launcher", () => {
     ).toThrow(/does not support/u);
   });
 
+  it.each([
+    { arch: "x64" as const, shutdown: 48, denied: [42, 43, 288, 49, 50, 44, 307, 299, 54] },
+    { arch: "arm64" as const, shutdown: 210, denied: [203, 202, 242, 200, 201, 206, 269, 243, 208] },
+  ])("allows socket shutdown without opening connectivity on $arch", ({ arch, shutdown, denied }) => {
+    const restrictedDenied = deniedSyscalls(createNetworkSeccompProgram("restricted", arch));
+    expect(restrictedDenied).not.toContain(shutdown);
+    expect(restrictedDenied).toEqual(expect.arrayContaining(denied));
+  });
+
   it("isolates seccomp and proxy artifacts across two explicit session temp roots", async () => {
     const rootA = withTempDir("agenc-linux-session-temp-a-");
     const rootB = withTempDir("agenc-linux-session-temp-b-");

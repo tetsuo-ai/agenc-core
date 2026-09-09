@@ -684,16 +684,18 @@ current Ledger action is documented in
 
 A keep-alive (interactive / desktop) session must stay promptable after
 a capped turn. Bounded stops (`no_progress`, `max_turns`,
-`max_budget_usd`, `compact_failed`, and `editor_request_failed`) complete
-the **turn** with an honest message and leave the run available. The daemon mapper used to promote those stops
+`max_budget_usd`, `compact_failed`, `empty_response`, and
+`editor_request_failed`) emit canonical `turn_failed` with the stop reason
+as the code and leave the run available. The daemon mapper used to promote those stops
 to `run_error`, after which every later prompt answered
 `no longer running (status: error)` while the durable run might still
 be healthy underneath.
 
-The daemon-backed CLI one-shot path currently maps the resulting
-`turn_complete` to exit code 0 without inspecting its bounded `stopReason`.
-The compatibility `runAgent` path with `keepAlive: false` instead reports a
-bounded stop as failure.
+The daemon-backed CLI one-shot path returns exit code 1 for these failed
+turns. The compatibility `runAgent` path with `keepAlive: false` also reports
+failure. A keep-alive worker records an `errored` task receipt before
+returning to idle. A later prompt can succeed without changing the failed
+outcome of the earlier task.
 
 `TaskCreate` accepts a subject-only call. `description` defaults to the
 subject instead of failing validation. A model that retried a missing
@@ -713,25 +715,38 @@ and `phaseEventToProgressEvent` mapped `stopReason: "error"` to
 `no longer running (status: error)` after one turn, even when the
 durable run was still healthy.
 
-Those paths now emit `warning` with the same cause and yield
+Mid-turn threshold failures and pre-sampling throws emit `warning` with
+the same cause and yield
 `stopReason: "compact_failed"`. `warning` is not a status event.
-The daemon mapper treats `compact_failed` like the other bounded
-stops (`no_progress`, `max_turns`, `max_budget_usd`):
-`turn_complete`, not `run_error`. The user-facing message prefers
+Every `compact_failed` stop emits canonical `turn_failed` with code
+`compact_failed`. Prepared-request fit checks can fail without a separate
+threshold warning.
+This closes the failed turn without killing the reusable run. The user-facing message prefers
 the compact error text (for a skip,
 `mid_turn_compact_skipped: lastSamplePromptTokens=<n> limit=<n>`).
 
+A typed `no_shrink` result is different. The proposed summary did not meet
+the minimum reduction, and durable history is unchanged. AgenC defers
+repeated advisory attempts and prepares the next full sampling request.
+The turn can continue only while that request fits the effective context
+window, including current instructions, visible tools, tool results, and
+reserved output. If it no longer fits, AgenC attempts necessary compaction
+once, prepares the request again, and requires it to fit or fails the turn
+with `compact_failed`. Other failures do not qualify for `no_shrink`
+deferral. Existing retry and pre-sampling failure handling remain in place,
+as do normal model-admission checks.
+
 | Path | When the turn ends | Event |
 | --- | --- | --- |
-| Mid-turn sampling loop | Thrown compact **or** `autoCompactIfNeeded` returns `wasCompacted: false` after the outer token gate | `warning` cause `mid_turn_compact_failed` |
-| Pre-sampling | Thrown compact only. A no-op continues the turn. | `warning` cause `pre_sampling_compact_failed` |
-| Post-tool checkpoint | A no-op does **not** terminate. The loop continues to commit. | none |
+| Mid-turn sampling loop | Thrown compact or no committed result after the outer token gate, except a safely deferred `no_shrink`. | `warning` cause `mid_turn_compact_failed`, then `turn_failed` code `compact_failed` |
+| Pre-sampling | Thrown compact only. A no-op continues the turn. | `warning` cause `pre_sampling_compact_failed`, then `turn_failed` code `compact_failed` |
+| Post-tool checkpoint | After the outer token gate, compact returns no committed result, except a safely deferred `no_shrink`. | `warning` cause `mid_turn_compact_failed`, then `turn_failed` code `compact_failed` |
 
 Keep-alive (interactive / desktop / `keepAlive` subagent) sessions
 stay promptable. A later `message.send` can start a new turn. The
-daemon-backed `--print` / `--no-tui` path currently maps this
-`turn_complete` to exit code 0. The compatibility `runAgent` path with
-`keepAlive: false` reports it as failure. `--autonomous` keepalive calls
+daemon-backed `--print` / `--no-tui` path exits 1 for this `turn_failed`.
+The compatibility `runAgent` path with `keepAlive: false` also reports
+failure. `--autonomous` keepalive calls
 `setContextBlocked(true)` after `compact_failed` (same as hard
 `error`) and will not schedule another tick.
 
@@ -760,8 +775,8 @@ output limit that Editor mode cannot recover from. These paths emit a
 `warning` with their specific cause and yield
 `stopReason: "editor_request_failed"`.
 
-The daemon maps `editor_request_failed` to `turn_complete`, so the next
-`message.send` can start a new turn. The TUI displays the warning and blocks
+The kernel emits canonical `turn_failed` with code `editor_request_failed`.
+The next `message.send` can start a new turn. The TUI displays the warning and blocks
 autonomous keepalive until the user sends another prompt. Child-agent turns
 cannot carry an Editor interaction. If the stop reason reaches `runAgent`
 despite that contract, `runAgent` fails the child run.
@@ -800,7 +815,7 @@ and its in-memory attach replay.
 | --- | --- |
 | `stop_hook_threw` | `phases/stop-hooks.ts` (hook throw, or `shouldBlock` with a blank reason) |
 | `stream_disconnected` | Stream reconnect in `session/run-turn.ts`. Live `emitError({ streamError: true })` is typed `stream_error` (never a bookkeeping status event). A `type: "error"` record with this cause used to latch. |
-| `max_turns` | Legacy journal `error` records (bounded stops now complete the turn) |
+| `max_turns` | Legacy journal `error` records (bounded stops now emit `turn_failed`) |
 | `user_prompt_submit_hook_blocked` | Legacy prompt-hook `error` records |
 | `mid_turn_compact_failed` / `pre_sampling_compact_failed` | Legacy compact-skip `error` records |
 
@@ -818,10 +833,10 @@ that marker clears `activeTurn` and stops the Working spinner
 An unmarked session `error` keeps the turn open.
 
 This projection does not revive a session that already has a durable
-`run_error`. It also does not change bounded-stop exit handling: the
-daemon-backed one-shot CLI currently exits 0 on the resulting
-`turn_complete`, while the compatibility `runAgent` path with
-`keepAlive: false` reports failure.
+`run_error`. Bounded stops use the separate canonical `turn_failed`
+terminal, which returns exit code 1 through the daemon-backed one-shot
+CLI. The compatibility `runAgent` path with `keepAlive: false` also
+reports failure.
 
 ### Prompt hook blocks stay per-prompt
 
@@ -914,7 +929,7 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | --- | --- |
 | `PROMPT_BLOCKED` on `message.send` / `message.stream` | A `UserPromptSubmit` hook refused this prompt. The session should stay promptable. Confirm `agent.status` is not `error`, then send an allowed follow-up. See [hooks.md](hooks.md#userpromptsubmit). |
 | `no longer running (status: error)` right after a hook denial, stop-hook throw, or stream reconnect | Unexpected after the `session_only` projection. Look for a real `event.agent_status`, `run_error`, or failed `run_terminal`. Session `error` events stay visible as `event.session_event` and do not latch the run. See [telemetry errors](#telemetry-errors-stay-session-only). |
-| `no longer running (status: error)` after a compact skip or compact throw | Unexpected on a keep-alive session. Confirm the event is `warning` with `mid_turn_compact_failed` / `pre_sampling_compact_failed`, or a legacy `error` with `statusProjection: "session_only"`. The daemon-backed one-shot CLI currently exits 0 on the resulting `turn_complete`; the compatibility `runAgent` path fails. Autonomous keepalive ticks stop after `compact_failed` by design. |
+| `no longer running (status: error)` after a compact skip or compact throw | Unexpected on a keep-alive session. Current writers emit a compact warning and canonical `turn_failed` with code `compact_failed`; legacy diagnostic `error` events carry `statusProjection: "session_only"`. The daemon-backed one-shot CLI exits 1, and the compatibility `runAgent` path fails. Autonomous keepalive ticks stop after `compact_failed` by design. |
 | Follow-up `message.send` after `mid_turn_compact_skipped` | Expected to start a new turn on a keep-alive session. The prior turn closed with `stopReason: "compact_failed"`. |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |

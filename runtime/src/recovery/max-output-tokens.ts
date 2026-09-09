@@ -66,7 +66,7 @@ export interface RunMaxOutputTokensOpts {
  * the model-fallback pattern. Idempotent via the I-41 re-entrance
  * guard on `executor.discard`.
  */
-function discardExecutorForMaxOutputTokens(
+export function discardExecutorForMaxOutputTokens(
   session: Session,
   state: TurnState,
   opts: { readonly appendCompletedHistory?: boolean } = {},

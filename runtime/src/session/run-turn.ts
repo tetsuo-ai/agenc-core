@@ -60,6 +60,19 @@ import {
 } from "../elicitation/ledger-wallet-cli.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
 import { createTurnFailedEvent } from "../contracts/turn-terminal.js";
+import {
+  createTokenAccountingConfigurationRevision,
+  createTokenAccountingRequest,
+  tokenAccountingService,
+} from "../llm/token-accounting.js";
+import { readProviderFactoryOptions } from "../llm/provider.js";
+import {
+  accountingOptionsForProvider,
+  providerLocalModelSlug,
+  providerNativeToolsForAccounting,
+} from "../budget/admitted-model-call.js";
+import { buildProviderOptions } from "../phases/stream-model.js";
+import { discardExecutorForMaxOutputTokens } from "../recovery/max-output-tokens.js";
 import { commit } from "../phases/commit.js";
 import {
   continuationNudge,
@@ -946,10 +959,19 @@ async function tryRunSamplingRequest(
     throw streamModelError;
   }
 
+  const lastAssistant = state.assistantMessages.at(-1);
+  const unrecoveredMaxOutputTokens =
+    state.transition === undefined &&
+    lastAssistant !== undefined &&
+    isWithheldMaxOutputTokens(lastAssistant);
+  if (unrecoveredMaxOutputTokens) {
+    discardExecutorForMaxOutputTokens(session, state, { appendCompletedHistory: true });
+  }
+
   // Phase 4: continuation nudge. Editor interactions never inject an
   // Agent-side nudge/resample; their provider response is accepted as-is or
   // failed closed by the Editor contract.
-  if (ctx.editorInteraction === undefined) {
+  if (ctx.editorInteraction === undefined && !unrecoveredMaxOutputTokens) {
     await continuationNudge(state, ctx, session, signal);
   }
 
@@ -967,6 +989,12 @@ async function tryRunSamplingRequest(
       availability: "unknown",
       provenance: "synthetic",
     },
+    ...(unrecoveredMaxOutputTokens ? {
+      terminal: {
+        reason: "model_error" as const,
+        error: new Error("The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete."),
+      },
+    } : {}),
   };
 }
 
@@ -999,8 +1027,11 @@ async function runSamplingRequest(
   events: PhaseEvent[],
   querySource: string,
   assistantOutputSink?: AssistantOutputStreamSink,
+  beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
 ): Promise<SamplingRequestResult> {
-  const prepared = await prepareSamplingRequestBoundary(
+  const trackingState = getAttachmentTrackingState(session);
+  const previousSwarmChoiceTurnId = trackingState.lastSwarmSpawnToolChoiceTurnId;
+  let prepared = await prepareSamplingRequestBoundary(
     state,
     ctx,
     session,
@@ -1009,6 +1040,19 @@ async function runSamplingRequest(
     querySource,
   );
   if (prepared.kind === "terminal") return prepared.result;
+  if (beforeDispatch !== undefined && !(await beforeDispatch(prepared.request))) {
+    if (trackingState.lastSwarmSpawnToolChoiceTurnId === ctx.subId) {
+      trackingState.lastSwarmSpawnToolChoiceTurnId = previousSwarmChoiceTurnId;
+    }
+    prepared = await prepareSamplingRequestBoundary(
+      state, ctx, session, signal, events, querySource,
+    );
+    if (prepared.kind === "terminal") return prepared.result;
+    if (!(await beforeDispatch(prepared.request))) {
+      throw new DeferredCompactionError("Compaction could not produce an admissible request.");
+    }
+  }
+  const request = prepared.request;
 
   const outage = providerOutagePolicy(session);
   let waitedMs = 0;
@@ -1027,7 +1071,7 @@ async function runSamplingRequest(
           state,
           ctx,
           session,
-          prepared.request,
+          request,
           signal,
           events,
           assistantOutputSink,
@@ -1108,6 +1152,70 @@ async function runSamplingRequest(
     await abortableSleep(delayMs, signal);
     if (signal.aborted) throw samplingAbortError(signal, "aborted");
   }
+}
+
+class DeferredCompactionError extends Error {}
+
+async function preparedRequestFitsContext(
+  request: StreamModelRequestContract,
+  session: Session,
+  ctx: TurnContext,
+  signal: AbortSignal,
+  requestedModel: string,
+): Promise<boolean> {
+  const configuredWindow = request.contextWindowTokens;
+  if (configuredWindow === undefined || !Number.isFinite(configuredWindow) || configuredWindow <= 0) {
+    return false;
+  }
+  const window = Math.floor(configuredWindow);
+  const provider = session.services.provider;
+  const options = buildProviderOptions(request, ctx, signal, session);
+  const profile = await provider.getExecutionProfile?.(options);
+  const providerName = profile?.provider?.trim() || provider.name;
+  const model = providerName !== provider.name
+    ? providerLocalModelSlug(profile?.model?.trim() || requestedModel, providerName)
+    : providerLocalModelSlug(requestedModel, providerName);
+  const configuredMaxOutputTokens = [options.maxOutputTokens, profile?.maxOutputTokens]
+    .find((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
+  const maxOutputTokens = configuredMaxOutputTokens === undefined
+    ? 0
+    : Math.floor(configuredMaxOutputTokens);
+  const factoryOptions = readProviderFactoryOptions(provider);
+  const accountingOptions = accountingOptionsForProvider(provider, factoryOptions, {
+    ...options,
+    model,
+    ...(configuredMaxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(profile?.providerExecutionHandle !== undefined
+      ? { providerExecutionHandle: profile.providerExecutionHandle }
+      : {}),
+  }, window);
+  const providerNativeTools = providerNativeToolsForAccounting(
+    provider, providerName, model, factoryOptions.extra ?? {}, accountingOptions,
+  );
+  const accounting = await tokenAccountingService.count(createTokenAccountingRequest({
+    provider: providerName,
+    model,
+    messages: request.input,
+    options: accountingOptions,
+    ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),
+    endpointIdentity: factoryOptions.baseURL,
+    configurationRevision: createTokenAccountingConfigurationRevision({
+      systemPrompt: accountingOptions.systemPrompt ?? "",
+      tools: accountingOptions.tools ?? [],
+      temperature: accountingOptions.temperature ?? null,
+      providerNativeTools,
+      contextWindowTokens: window,
+      maxOutputTokens,
+    }),
+    contextWindowTokens: window,
+    reservedOutputTokens: maxOutputTokens,
+  }), {
+    ...(provider.tokenCountCapability !== undefined
+      ? { capability: provider.tokenCountCapability }
+      : {}),
+    signal,
+  });
+  return accounting.admissible && accounting.totalTokens <= window;
 }
 
 function isTransientSamplingError(err: unknown): boolean {
@@ -1442,8 +1550,41 @@ export async function* runTurnKernel(
       },
     });
   };
-  const emitTurnComplete = (content: string): void => {
+  const emitTurnComplete = (
+    content: string,
+    stopReason: Extract<
+      PhaseEvent,
+      { type: "turn_complete" }
+    >["stopReason"] = "completed",
+    error?: unknown,
+  ): void => {
     if (terminalAttempted) return;
+    if (stopReason === "cancelled") {
+      emitTurnAborted(error instanceof Error ? error.message : "cancelled");
+      return;
+    }
+    if (stopReason !== "completed") {
+      const messages = {
+        max_turns:
+          "Turn stopped at the iteration limit before completing the task. Send a new prompt to continue.",
+        max_budget_usd:
+          "Turn stopped at the cost limit before completing the task. Send a new prompt to continue.",
+        no_progress:
+          content || "Turn stopped because no further progress was being made.",
+        compact_failed:
+          "Turn stopped because compaction could not shrink the context.",
+        empty_response: "The model returned no assistant output after a retry.",
+        editor_request_failed: "The editor request did not complete.",
+        error: "The turn failed before completing the task.",
+      };
+      emitTurnFailed(
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : messages[stopReason],
+        stopReason,
+      );
+      return;
+    }
     terminalAttempted = true;
     session.emit({
       id: session.nextInternalSubId(),
@@ -1463,7 +1604,10 @@ export async function* runTurnKernel(
     terminalAttempted = true;
     session.emitTurnAbortedOnce(ctx.subId, reason);
   };
-  const emitTurnFailed = (message: string): void => {
+  const emitTurnFailed = (
+    message: string,
+    code = "turn_execution_failed",
+  ): void => {
     if (terminalAttempted) return;
     terminalAttempted = true;
     const completedAt = Date.now();
@@ -1471,7 +1615,7 @@ export async function* runTurnKernel(
       id: session.nextInternalSubId(),
       msg: createTurnFailedEvent({
         turnId: ctx.subId,
-        code: "turn_execution_failed",
+        code,
         message,
         completedAt,
         durationMs: completedAt - turnStartedAt,
@@ -1612,7 +1756,11 @@ export async function* runTurnKernel(
 interface RunTurnKernelCommons {
   readonly turnStartedAt: number;
   readonly emitTurnStarted: (turnContextItem: TurnContextItem) => void;
-  readonly emitTurnComplete: (content: string) => void;
+  readonly emitTurnComplete: (
+    content: string,
+    stopReason?: Extract<PhaseEvent, { type: "turn_complete" }>["stopReason"],
+    error?: unknown,
+  ) => void;
   readonly emitTurnAborted: (reason: string) => void;
   readonly emitTurnFailed: (message: string) => void;
   readonly referenceContextItem: TurnContextItem;
@@ -2114,8 +2262,25 @@ async function* runTurnKernelInner(
   // whether compaction happened; if yes and we had a prewarmed
   // client session, reset it (agenc runtime 155-157 — AgenC has no prewarm
   // today).
+  let deferredCompaction = false;
+  let requiredCompactionAttempted = false;
+  const deferNoShrink = (): void => {
+    deferredCompaction = true;
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "auto_compact_deferred",
+          message: "Compaction did not reduce enough history. Continuing only while the next full request fits the context window.",
+        },
+      },
+    });
+  };
   try {
-    await runPreSamplingCompact(session, ctx, turnQuerySource, state);
+    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
+      onNoShrink: deferNoShrink,
+    });
   } catch (error) {
     const underlying = compactFailureError(error);
     emitTurnWarning(
@@ -2126,7 +2291,7 @@ async function* runTurnKernelInner(
     // agenc runtime: "return None" on pre-compact failure. The turn
     // ends; the daemon session must stay promptable.
     await syncSessionState();
-    emitTurnComplete("");
+    emitTurnComplete("", "compact_failed", underlying);
     const terminal: Terminal = { reason: "completed", error: underlying };
     yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
     return terminal;
@@ -2183,7 +2348,7 @@ async function* runTurnKernelInner(
     const error = new Error(`${cause}: ${message}`);
     emitTurnWarning(session, cause, message);
     await syncSessionState();
-    emitTurnComplete(message);
+    emitTurnComplete(message, "editor_request_failed", error);
     return {
       terminal: { reason: "completed", error },
       event: editorRequestFailedTurnComplete(message, usage, error),
@@ -2275,7 +2440,7 @@ async function* runTurnKernelInner(
     if (state.turnCount > maxTurns) {
       await drainInFlight(state, ctx, session);
       await syncSessionState();
-      emitTurnComplete(lastContent);
+      emitTurnComplete(lastContent, "max_turns");
       const terminal: Terminal = { reason: "max_turns" };
       yield {
         type: "turn_complete",
@@ -2298,7 +2463,7 @@ async function* runTurnKernelInner(
     ) {
       await drainInFlight(state, ctx, session);
       await syncSessionState();
-      emitTurnComplete(lastContent);
+      emitTurnComplete(lastContent, "max_budget_usd");
       const terminal: Terminal = { reason: "max_budget_usd" };
       yield {
         type: "turn_complete",
@@ -2371,7 +2536,7 @@ async function* runTurnKernelInner(
 
         await drainInFlight(state, ctx, session); // pair orphan tool_use → tool_result
         await syncSessionState(); // persist history + rollout
-        emitTurnComplete(lastContent); // canonical lifecycle close
+        emitTurnComplete(lastContent, "no_progress");
         const terminal: Terminal = { reason: "no_progress" };
         yield {
           type: "turn_complete",
@@ -2430,6 +2595,40 @@ async function* runTurnKernelInner(
         pending,
         turnQuerySource,
         opts.assistantOutputSink,
+        async (request) => {
+          if (!deferredCompaction) return true;
+          if (await preparedRequestFitsContext(
+            request, session, ctx, signal,
+            state.pendingAdmissionFallback?.toModel ??
+              session.config?.model ?? ctx.config.model ?? ctx.modelInfo.slug,
+          )) {
+            if (requiredCompactionAttempted) deferredCompaction = false;
+            requiredCompactionAttempted = false;
+            return true;
+          }
+          if (requiredCompactionAttempted) {
+            throw new DeferredCompactionError(
+              "Compaction could not fit the next request and reserved output within the context window.",
+            );
+          }
+          requiredCompactionAttempted = true;
+          persistNewResponseItems();
+          const compacted = await runAutoCompact(
+            session, ctx, "before_last_user_message", "context_limit", "in_turn", state,
+            {
+              querySource: turnQuerySource,
+              durableMessageCount: compactionDurableCount(),
+              onDurableHistoryReplaced: onCompactionReplacedHistory,
+            },
+          );
+          if (!compacted) {
+            throw new DeferredCompactionError(
+              "Compaction could not shrink the context enough for the next request and reserved output.",
+            );
+          }
+          session.bindProviderConversation();
+          return false;
+        },
       );
       for (const ev of pending) {
         yield ev;
@@ -2449,7 +2648,11 @@ async function* runTurnKernelInner(
           lastContent = result.assistantText;
         }
         await syncSessionState();
-        emitTurnComplete(lastContent);
+        emitTurnComplete(
+          lastContent,
+          terminalToStopReason(result.terminal.reason),
+          result.terminal.error,
+        );
         yield {
           type: "turn_complete",
           content: lastContent,
@@ -2493,6 +2696,12 @@ async function* runTurnKernelInner(
         };
         return terminal;
       }
+      if (underlying instanceof DeferredCompactionError) {
+        await syncSessionState();
+        emitTurnComplete(lastContent, "compact_failed", underlying);
+        yield compactFailedTurnComplete(lastContent, usage, underlying);
+        return { reason: "completed", error: underlying };
+      }
       // Editor turns refuse Agent recovery (compact / resample / route
       // switch). A withheld 413, oversized media, or max-output-tokens
       // result is request-scoped: the Explain/Edit ends, but mapping
@@ -2509,7 +2718,7 @@ async function* runTurnKernelInner(
           underlying.message,
         );
         await syncSessionState();
-        emitTurnComplete(content);
+        emitTurnComplete(content, "editor_request_failed", underlying);
         const terminal: Terminal = { reason: "completed", error: underlying };
         yield editorRequestFailedTurnComplete(content, usage, underlying);
         return terminal;
@@ -2650,6 +2859,7 @@ async function* runTurnKernelInner(
     if (
       ctx.editorInteraction === undefined &&
       tokenLimitReached &&
+      !deferredCompaction &&
       needsFollowUpForCompact &&
       !toolWorkPending
     ) {
@@ -2666,6 +2876,7 @@ async function* runTurnKernelInner(
             querySource: turnQuerySource,
             durableMessageCount: compactionDurableCount(),
             onDurableHistoryReplaced: onCompactionReplacedHistory,
+            onNoShrink: deferNoShrink,
           },
         );
       } catch (error) {
@@ -2680,13 +2891,13 @@ async function* runTurnKernelInner(
           underlying.message,
         );
         await syncSessionState();
-        emitTurnComplete(lastContent);
+        emitTurnComplete(lastContent, "compact_failed", underlying);
         const terminal: Terminal = { reason: "completed", error: underlying };
         yield compactFailedTurnComplete(lastContent, usage, underlying);
         return terminal;
       }
 
-      if (!midTurnCompacted) {
+      if (!midTurnCompacted && !deferredCompaction) {
         // agenc runtime's `is_err()` arm fires only on dispatcher failure. If
         // the dispatcher ran but reported `wasCompacted=false` (circuit
         // breaker tripped, feature disabled, or threshold logic inside
@@ -2702,8 +2913,8 @@ async function* runTurnKernelInner(
           reasonText,
         );
         await syncSessionState();
-        emitTurnComplete(lastContent);
         const underlying = new Error(reasonText);
+        emitTurnComplete(lastContent, "compact_failed", underlying);
         const terminal: Terminal = { reason: "completed", error: underlying };
         yield compactFailedTurnComplete(lastContent, usage, underlying);
         return terminal;
@@ -2716,14 +2927,14 @@ async function* runTurnKernelInner(
       // so the next request opens a fresh continuation under the same
       // conversationId (agenc runtime's websocket session is keyed per
       // conversation the same way).
-      session.bindProviderConversation();
+      if (midTurnCompacted) session.bindProviderConversation();
       // agenc runtime sets `can_drain_pending_input = !model_needs_follow_up;`
       // to gate mailbox drain on the outer loop's next iteration. AgenC
       // does not yet surface a matching gate (the phase machine drains
       // pending input whenever `prepareContext` decides), so there is
       // nothing to set here; the session mailbox fires naturally on the
       // next iteration.
-      continue;
+      if (midTurnCompacted) continue;
     }
 
     const lastAssistant = state.assistantMessages.at(-1);
@@ -2749,7 +2960,7 @@ async function* runTurnKernelInner(
         const error = new Error(`${cause}: ${lastContent}`);
         emitTurnWarning(session, cause, lastContent);
         await syncSessionState();
-        emitTurnComplete(lastContent);
+        emitTurnComplete(lastContent, "editor_request_failed", error);
         const terminal: Terminal = { reason: "completed", error };
         yield editorRequestFailedTurnComplete(lastContent, usage, error);
         return terminal;
@@ -2782,9 +2993,7 @@ async function* runTurnKernelInner(
       const stopReason =
         assistantText.length === 0 ? "empty_response" : "completed";
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
-      // T6 gap #119: canonical happy-path `turn_complete` so rollouts
-      // record the close of this turn's lifecycle.
-      emitTurnComplete(lastContent);
+      emitTurnComplete(lastContent, stopReason);
       const terminal: Terminal = { reason: "completed" };
       yield {
         type: "turn_complete",
@@ -2932,8 +3141,8 @@ async function* runTurnKernelInner(
         continue;
       }
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
-      emitTurnComplete(lastContent);
       const stopReason = noProgressStop !== undefined ? "no_progress" : "completed";
+      emitTurnComplete(lastContent, stopReason);
       const terminal: Terminal = { reason: stopReason };
       yield {
         type: "turn_complete",
@@ -2969,6 +3178,7 @@ async function* runTurnKernelInner(
     if (
       ctx.editorInteraction === undefined &&
       postToolTokenLimitReached &&
+      !deferredCompaction &&
       (state.needsFollowUp || state.toolResults.length > 0)
     ) {
       // The results that just came back are the newest context and the
@@ -2987,30 +3197,28 @@ async function* runTurnKernelInner(
           querySource: turnQuerySource,
           durableMessageCount: compactionDurableCount(),
           onDurableHistoryReplaced: onCompactionReplacedHistory,
+          onNoShrink: deferNoShrink,
         },
       );
       if (midTurnCompacted) {
         session.bindProviderConversation();
         continue;
       }
-      // Same rule as the mid-turn gate: a dispatcher that ran and declined
-      // leaves the state unchanged, so sampling again would only walk into
-      // the admission denial the compaction was meant to prevent. Close the
-      // turn on a compact_failed boundary with the reason already in the
-      // rollout (`auto_compact_failed`, emitted by runAutoCompact).
-      await drainInFlight(state, ctx, session);
-      const postToolUsageTokens = Math.max(
-        state.lastResponseUsage?.promptTokens ?? 0,
-        getActiveContextTokenUsage(session, ctx, state),
-      );
-      const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${postToolUsageTokens} limit=${postToolAutoCompactLimit}`;
-      emitTurnWarning(session, MID_TURN_COMPACT_FAILED_CAUSE, reasonText);
-      await syncSessionState();
-      emitTurnComplete(lastContent);
-      const underlying = new Error(reasonText);
-      const terminal: Terminal = { reason: "completed", error: underlying };
-      yield compactFailedTurnComplete(lastContent, usage, underlying);
-      return terminal;
+      if (!deferredCompaction) {
+        await drainInFlight(state, ctx, session);
+        const postToolUsageTokens = Math.max(
+          state.lastResponseUsage?.promptTokens ?? 0,
+          getActiveContextTokenUsage(session, ctx, state),
+        );
+        const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${postToolUsageTokens} limit=${postToolAutoCompactLimit}`;
+        emitTurnWarning(session, MID_TURN_COMPACT_FAILED_CAUSE, reasonText);
+        await syncSessionState();
+        const underlying = new Error(reasonText);
+        emitTurnComplete(lastContent, "compact_failed", underlying);
+        const terminal: Terminal = { reason: "completed", error: underlying };
+        yield compactFailedTurnComplete(lastContent, usage, underlying);
+        return terminal;
+      }
     }
 
     // Phase 6 — commit iteration. Stop-hook may request re-entry.

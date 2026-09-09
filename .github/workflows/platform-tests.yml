@@ -476,8 +476,8 @@ jobs:
             numPassedTestSuites: 3,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 9,
-            numPassedTests: 9,
+            numTotalTests: 14,
+            numPassedTests: 14,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -511,7 +511,7 @@ jobs:
             );
           }
           console.log(
-            "real-kernel sandbox lane passed 9 tests in 2 files with zero skipped",
+            "real-kernel sandbox lane passed 14 tests in 2 files with zero skipped",
           );
           NODE
 
