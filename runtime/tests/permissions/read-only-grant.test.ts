@@ -116,6 +116,41 @@ describe("unattended read-only grant", () => {
     expect(verdict(tool("system.background.bash"), { command: "ls" }).granted).toBe(false);
   });
 
+  it("accepts a workdir that names this folder in another form", () => {
+    // Observed live: a routine's own agent passed `workdir: "."`, which is
+    // the run's folder, and the string comparison called it a different one.
+    // The run then had no way to read the project it was created for.
+    for (const workdir of [".", "./", `${CWD}/`, `${CWD}/.`, "./sub/.."]) {
+      expect(
+        verdict(tool("exec_command"), { cmd: "git status", workdir }).granted,
+        workdir,
+      ).toBe(true);
+    }
+  });
+
+  it("still refuses a workdir that genuinely leaves the folder", () => {
+    for (const workdir of ["..", "/tmp", `${CWD}/../sibling`, "sub"]) {
+      const result = verdict(tool("exec_command"), { cmd: "ls", workdir });
+      expect(result.granted, workdir).toBe(false);
+      if (!result.granted && result.refusal.kind === "shell") {
+        expect(result.refusal.reason).toContain("different folder");
+      }
+    }
+  });
+
+  it("admits tool discovery, which declares itself side-effecting", () => {
+    // system.searchTools carries recoveryCategory "side-effecting" for
+    // recovery purposes and writes nothing (virtualNoFsWrites). Refusing it
+    // left an unattended run unable to find the tools it is allowed to use.
+    expect(verdict(tool("system.searchTools")).granted).toBe(true);
+    // Loading a schema does not widen what may run: a non-builtin tool is
+    // still refused when it is actually called.
+    expect(
+      verdict({ name: "system.searchTools", metadata: { source: "mcp" } })
+        .granted,
+    ).toBe(false);
+  });
+
   it("refuses a command that moves its own working directory", () => {
     expect(verdict(tool("exec_command"), { cmd: "ls", workdir: "/elsewhere" }).granted).toBe(false);
     expect(verdict(tool("exec_command"), { cmd: "ls", workdir: CWD }).granted).toBe(true);

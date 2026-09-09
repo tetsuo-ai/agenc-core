@@ -10,7 +10,7 @@ import type { RunRuntimeSettingsSnapshot } from "../../contracts/run-contracts.j
 import type { WhisperStatus, WhisperTranscription } from "../../audio/whisper.js";
 export type { WhisperStatus, WhisperTranscription, WhisperInstallParams, WhisperTranscribeParams, WhisperLanguage, WhisperTask, WhisperCompute } from "../../audio/whisper.js";
 import type { ProviderModelSelectionOutcome } from "../../contracts/provider-model-selection.js";
-import type { RoutineCapabilities, RoutineListResult, RoutineResult, RoutineDeleteResult, RoutineRunResult, RoutineRunsResult, RoutineIdParams, RoutineCreateParams, RoutineUpdateParams, RoutineDeleteParams, RoutineRunsParams, RoutineCancelParams, RoutineUpdatedEvent } from "../../routines/types.js";
+import type { RoutineCapabilities, RoutineListResult, RoutineResult, RoutineDeleteResult, RoutineRunResult, RoutineRunsResult, RoutineIdParams, RoutineCreateParams, RoutineUpdateParams, RoutineDeleteParams, RoutineRunParams, RoutineRunsParams, RoutineCancelParams, RoutineUpdatedEvent } from "../../routines/types.js";
 export type * from "../../routines/types.js";
 
 /** JSON-RPC version required on daemon requests, responses, and notifications. */
@@ -2372,7 +2372,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"routine.create", RoutineCreateParams>
   | AgenCDaemonRequestWithParams<"routine.update", RoutineUpdateParams>
   | AgenCDaemonRequestWithParams<"routine.delete", RoutineDeleteParams>
-  | AgenCDaemonRequestWithParams<"routine.run", RoutineIdParams>
+  | AgenCDaemonRequestWithParams<"routine.run", RoutineRunParams>
   | AgenCDaemonRequestWithParams<"routine.runs", RoutineRunsParams>
   | AgenCDaemonRequestWithParams<"routine.cancel", RoutineCancelParams>
   | AgenCDaemonRequestWithParams<"initialize", InitializeParams>

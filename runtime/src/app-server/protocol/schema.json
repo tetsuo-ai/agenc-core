@@ -636,6 +636,34 @@
         }
       ]
     },
+    "RoutineWorkspaceExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "dev": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[0-9]{1,32}(?![\\s\\S])"
+        },
+        "ino": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[0-9]{1,32}(?![\\s\\S])"
+        }
+      },
+      "required": [
+        "cwd",
+        "dev",
+        "ino"
+      ]
+    },
     "RoutineCreateParams": {
       "type": "object",
       "additionalProperties": false,
@@ -684,6 +712,9 @@
         },
         "notifyOnCompletion": {
           "type": "boolean"
+        },
+        "expectedWorkspace": {
+          "$ref": "#/definitions/RoutineWorkspaceExpectation"
         }
       },
       "required": [
@@ -773,14 +804,47 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "expectedWorkspace": {
+          "$ref": "#/definitions/RoutineWorkspaceExpectation"
         }
       },
       "required": [
         "id",
         "patch"
-      ]
+      ],
+      "dependencies": {
+        "expectedWorkspace": {
+          "properties": {
+            "patch": {
+              "required": [
+                "cwd"
+              ]
+            }
+          }
+        }
+      }
     },
     "RoutineDeleteParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectedUpdatedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "RoutineRunParams": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -1303,7 +1367,7 @@
           "const": "routine.run"
         },
         "params": {
-          "$ref": "#/definitions/RoutineIdParams"
+          "$ref": "#/definitions/RoutineRunParams"
         }
       },
       "required": [

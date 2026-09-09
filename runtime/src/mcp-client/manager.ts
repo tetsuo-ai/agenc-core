@@ -21,7 +21,7 @@ import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { hasLocalMcpAccess, attachmentLogger, redactMcpAttachmentText, redactMcpAttachmentValue } from "./local-control.js";
-import { hasDesktopAuthority } from "./desktop-authority.js";
+import { hasDesktopAuthority, isAuthenticatedDesktopToolName } from "./desktop-authority.js";
 import { createMCPConnection } from "./connection.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import {
@@ -1091,6 +1091,20 @@ export class MCPManager {
     return this.bridges.get(name)?.tools ?? [];
   }
 
+  /** Only the live, signed product overlay can extend a reduced model catalog.
+   * This does not discover tools or authorize their execution. */
+  getAuthenticatedDesktopToolNames(): readonly string[] {
+    if (this.isSandboxExecutionAuthorityClosed() || !hasLocalMcpAccess()) return [];
+    const name = "agenc-desktop-control";
+    const config = this.getServerConfig(name);
+    if (config?.localOnly !== true || config.origin?.scope !== "session" || !this.bridges.has(name)) return [];
+    const prefix = `mcp.${name}.`;
+    return this.getToolsByServer(name).filter(tool =>
+      tool.name.startsWith(prefix) &&
+      isAuthenticatedDesktopToolName(config.desktopAuthorityGrant, tool.name.slice(prefix.length)),
+    ).map(tool => tool.name);
+  }
+
   /**
    * Execute one raw MCP tool through the connected server's canonical bridge.
    *
@@ -1176,8 +1190,11 @@ export class MCPManager {
     if (this.getServerConfig(name)?.localOnly === true) {
       if (!hasLocalMcpAccess() || !this.bridges.has(name)) return undefined;
       if (name !== "agenc-desktop-control" || !hasDesktopAuthority(this.getServerConfig(name)?.desktopAuthorityGrant)) return this.serverInstructions.get(name);
-      const tools = this.getToolsByServer(name).slice(0, 32).map(tool => tool.name).join(", ");
-      return `This is authenticated local AgenC Desktop app control, not a web page or the isolated Browser tool. Discover its tools with system.searchTools, then select the exact MCP tool name before calling it. Available tools: ${tools}. Use only for the user's requested app operation; this capability does not grant additional permissions. Native visible-terminal mutations require an explicitly full-access session. In restricted sessions use Core exec_command/system.bash for sandboxed commands; never loosen permissions just to control the visible terminal.\n\n${this.serverInstructions.get(name) ?? ""}`;
+      const tools = this.getAuthenticatedDesktopToolNames().join(", ");
+      const routineGuidance = tools.includes("mcp.agenc-desktop-control.desktop_routine_list")
+        ? " For the user's AgenC Desktop Routines, discover desktop_routine_list/get/create/update/delete/run/runs/cancel and desktop_routines_open here. These operate the app's real Routine records. CronCreate/CronList/CronDelete are a separate conversation scheduler, not a substitute for Desktop Routines. Inspect current records before updating, deleting or running them; preserve revision checks. Routine changes require ordinary approval and are unavailable in read-only/plan mode; routine execution uses its own default/plan Core permissions, never inherited bypass."
+        : "";
+      return `This is authenticated local AgenC Desktop app control, not a web page or the isolated Browser tool. Discover its tools with system.searchTools, then select the exact MCP tool name before calling it. Available tools: ${tools}. Use only for the user's requested app operation; this capability does not grant additional permissions.${routineGuidance} Native visible-terminal mutations require an explicitly full-access session. In restricted sessions use Core exec_command/system.bash for sandboxed commands; never loosen permissions just to control the visible terminal.\n\n${this.serverInstructions.get(name) ?? ""}`;
     }
     return this.serverInstructions.get(name);
   }

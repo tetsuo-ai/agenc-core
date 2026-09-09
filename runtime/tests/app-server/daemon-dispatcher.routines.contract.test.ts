@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -227,6 +227,56 @@ describe("routine dispatcher and daemon execution contract", () => {
     expect(response).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_INVALID_ARGUMENT" } } });
     expect(h.service.list().routines).toEqual([]);
     expect(h.starts).toEqual([]);
+  });
+
+  it("checks a request-only workspace expectation over RPC before admitting a replaced project", async () => {
+    const h = await harness(); const stat = lstatSync(h.cwd, { bigint: true });
+    const expectedWorkspace = { cwd: h.cwd, dev: String(stat.dev), ino: String(stat.ino) };
+    const routine = result<{ routine: Routine }>(await h.connection.dispatch(request("guarded-create", "routine.create", {
+      ...h.createParams, expectedWorkspace,
+    }))).routine;
+    expect(routine.cwd).toBe(h.cwd); expect(routine).not.toHaveProperty("expectedWorkspace");
+    const updated = result<{ routine: Routine }>(await h.connection.dispatch(request("guarded-update", "routine.update", {
+      id: routine.id, patch: { cwd: h.cwd, name: "Updated" }, expectedWorkspace,
+    }))).routine;
+    expect(updated.name).toBe("Updated"); expect(updated).not.toHaveProperty("expectedWorkspace");
+    const misplaced = await h.connection.dispatch(request("misplaced-guard", "routine.update", {
+      id: routine.id, patch: { name: "No workspace" }, expectedWorkspace,
+    }));
+    expect(misplaced).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_INVALID_ARGUMENT" } } });
+    const outside = `${h.cwd}-outside`; mkdirSync(outside);
+    renameSync(h.cwd, `${h.cwd}-original`); symlinkSync(outside, h.cwd, "dir");
+    const notices = h.notifications.length;
+    for (const [method, params] of [
+      ["routine.create", { ...h.createParams, expectedWorkspace }],
+      ["routine.update", { id: routine.id, patch: { cwd: h.cwd }, expectedUpdatedAt: updated.updatedAt, expectedWorkspace }],
+    ] as const) {
+      const response = await h.connection.dispatch(request(`stale-${method}`, method, params));
+      expect(response).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_CONFLICT" } } });
+    }
+    expect(h.service.list().routines).toEqual([updated]); expect(h.starts).toEqual([]);
+    expect(h.notifications).toHaveLength(notices); expect(await h.history(routine.id)).toEqual([]);
+  });
+
+  it("rejects a stale run revision over RPC before starting agents or creating history", async () => {
+    const h = await harness(); const reviewed = await h.create();
+    const changed = result<{ routine: Routine }>(await h.connection.dispatch(request("edit-before-run", "routine.update", {
+      id: reviewed.id, expectedUpdatedAt: reviewed.updatedAt, patch: { instructions: "Changed after Desktop inspected it" },
+    }))).routine;
+    const response = await h.connection.dispatch(request("stale-run", "routine.run", {
+      id: reviewed.id, expectedUpdatedAt: reviewed.updatedAt,
+    }));
+    expect(response).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_CONFLICT" } } });
+    expect(h.starts).toEqual([]); expect(await h.history(reviewed.id)).toEqual([]);
+    const accepted = result<{ run: RoutineRun }>(await h.connection.dispatch(request("current-run", "routine.run", {
+      id: changed.id, expectedUpdatedAt: changed.updatedAt,
+    })));
+    expect(accepted.run.status).toBe("starting");
+    const submitted = await h.submission.promise;
+    expect(submitted.params.content).toBe(changed.instructions);
+    expect(h.starts).toHaveLength(1);
+    h.terminal.resolve(0);
+    await vi.waitFor(async () => expect((await h.history(changed.id))[0]?.status).toBe("completed"));
   });
 
   it.each([{ code: 0, status: "completed" }, { code: 1, status: "failed" } ] as const)(

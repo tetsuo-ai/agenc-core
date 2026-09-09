@@ -1485,6 +1485,35 @@ function sessionTransactionGuardConfig(
 /** After this many unproductive calls in a row, say so in the result. */
 const UNATTENDED_UNPRODUCTIVE_LIMIT = 3;
 
+/**
+ * Where advice becomes a stop.
+ *
+ * Past `UNATTENDED_UNPRODUCTIVE_LIMIT` the run is told to stop calling tools,
+ * but telling is not bounding: observed live, a routine was refused eleven
+ * times in a row and spent three and a half minutes re-asking for the same
+ * tool before the turn ended with nothing written. After this many
+ * consecutive dead calls the next one is refused without being dispatched,
+ * which leaves the model nothing to do except write its answer. The counter
+ * resets on any call that gets somewhere, so a run making progress never
+ * reaches it.
+ */
+const UNATTENDED_UNPRODUCTIVE_STOP = 6;
+
+/** What a dead-call streak of this length earns. */
+export type UnattendedStreakOutcome = "count" | "advise" | "stop";
+
+/**
+ * Escalation for an unattended read-only run's consecutive dead calls.
+ * Exported so the thresholds are pinned by a test rather than by reading.
+ */
+export function unattendedStreakOutcome(
+  consecutiveDenials: number,
+): UnattendedStreakOutcome {
+  if (consecutiveDenials >= UNATTENDED_UNPRODUCTIVE_STOP) return "stop";
+  if (consecutiveDenials >= UNATTENDED_UNPRODUCTIVE_LIMIT) return "advise";
+  return "count";
+}
+
 const STOP_AND_REPORT =
   "This run has nobody attached, so nothing here will be approved or " +
   "unblocked by asking again. Stop calling tools and write what you have " +
@@ -1522,11 +1551,21 @@ function noteUnproductiveCall(
   }
   const next = recordDenial(state);
   persistDenialState(context, next);
-  if (next.consecutiveDenials < UNATTENDED_UNPRODUCTIVE_LIMIT) return output;
+  const outcome = unattendedStreakOutcome(next.consecutiveDenials);
+  if (outcome === "count") return output;
   const content = typeof output.content === "string" ? output.content : "";
-  return content.includes(STOP_AND_REPORT)
+  const advised = content.includes(STOP_AND_REPORT)
     ? output
     : { ...output, content: `${content}\n\n${STOP_AND_REPORT}` };
+  // Telling the run to stop is not the same as stopping it: observed live, a
+  // routine was refused eleven times in a row and spent three and a half
+  // minutes re-asking before the turn ended with nothing written. Past the
+  // stop threshold the tool loop is ended the same way a denied approval ends
+  // it, which leaves the model nothing to do but write its answer. The
+  // counter resets on any call that gets somewhere, so a run making progress
+  // never reaches this.
+  if (outcome === "stop") PREVENT_CONTINUATION_OUTPUTS.add(advised);
+  return advised;
 }
 
 export async function runToolUse(

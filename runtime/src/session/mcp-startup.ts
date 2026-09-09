@@ -1963,6 +1963,10 @@ export function createSessionMcpService(
       typeof manager.getToolsByServer === "function"
         ? manager.getToolsByServer.bind(manager)
         : undefined,
+    getAuthenticatedDesktopToolNames:
+      typeof manager.getAuthenticatedDesktopToolNames === "function"
+        ? () => closed ? [] : manager.getAuthenticatedDesktopToolNames()
+        : undefined,
     getConfiguredServers:
       typeof manager.getConfiguredServers === "function"
         ? manager.getConfiguredServers.bind(manager)

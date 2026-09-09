@@ -71,8 +71,8 @@ describe("operator-bootstrapped Desktop control authority", () => {
   it.each(["durable", "live"] as const)("allows only audited inspection through the %s unknown-outcome admission gate", async (gate) => {
     const f = await fixture();
     const grant = await verifyDesktopAuthority(f.config, f.root);
-    const reads = ["desktop_state", "desktop_window_state", "browser_tabs", "browser_screenshot", "browser_downloads", "browser_console", "terminal_list", "terminal_read"];
-    const gated = ["desktop_settings_open", "desktop_settings_update", "desktop_window", "desktop_session_open", "desktop_session_update", "desktop_project_select", "browser_open_tab", "browser_select_tab", "browser_close_tab", "browser_navigate", "browser_click", "browser_type", "browser_press_key", "browser_scroll", "browser_back", "browser_forward", "browser_reload", "browser_evaluate", "terminal_open", "terminal_run", "terminal_type", "terminal_close", "browser_snapshot", "browser_read_text", "browser_wait_for"];
+    const reads = ["desktop_state", "desktop_window_state", "desktop_routine_list", "desktop_routine_get", "desktop_routine_runs", "browser_tabs", "browser_screenshot", "browser_downloads", "browser_console", "terminal_list", "terminal_read"];
+    const gated = ["desktop_routines_open", "desktop_routine_create", "desktop_routine_update", "desktop_routine_delete", "desktop_routine_run", "desktop_routine_cancel", "desktop_settings_open", "desktop_settings_update", "desktop_window", "desktop_session_open", "desktop_session_update", "desktop_project_select", "browser_open_tab", "browser_select_tab", "browser_close_tab", "browser_navigate", "browser_click", "browser_type", "browser_press_key", "browser_scroll", "browser_back", "browser_forward", "browser_reload", "browser_evaluate", "terminal_open", "terminal_run", "terminal_type", "terminal_close", "browser_snapshot", "browser_read_text", "browser_wait_for"];
     const callTool = vi.fn(async () => ({ content: [{ type: "text", text: "inspection" }] }));
     const client = { listTools: async () => ({ tools: [...reads, ...gated].map(name => ({ name, annotations: { readOnlyHint: true, idempotentHint: true } })) }), callTool, close: async () => {} };
     const bridge = await createToolBridge(client, f.config.name, undefined, { environment: {}, serverConfig: toToolCatalogPolicyConfig({ ...f.config, desktopAuthorityGrant: grant }) });
@@ -172,13 +172,16 @@ describe("operator-bootstrapped Desktop control authority", () => {
     expect(await verifyDesktopAuthority({ ...f.config, desktopAuthority: undefined }, undefined)).toBeUndefined();
     await expect(verifyDesktopAuthority(f.config, undefined)).rejects.toThrow("could not be verified");
   });
-  it("accepts only call-bound outcomes from a live verified Desktop authority", async () => {
+  it.each([
+    ["browser_open_tab", "confirmed_committed"],
+    ["desktop_routine_update", "confirmed_no_effect"],
+  ])("accepts only call-bound %s outcomes from a live verified Desktop authority", async (toolName, disposition) => {
     const f = await fixture(); const grant = await verifyDesktopAuthority(f.config, f.root);
-    const receipt = { version: 1, toolUseId: "call-1", toolName: "browser_open_tab", disposition: "confirmed_committed", evidence: "Navigation reached a known error page." };
+    const receipt = { version: 1, toolUseId: "call-1", toolName, disposition, evidence: "The native host confirmed this exact outcome." };
     const raw = { isError: true, _meta: { "agenc.desktopControl.effect": receipt } };
     const options = { serverName: f.config.name, toolName: receipt.toolName, toolUseId: receipt.toolUseId, localOnly: true, sensitiveHeaders: f.config.headers, desktopAuthorityGrant: grant };
     await withLocalMcpAccess(true, async () => {
-      expect(desktopControlEffectReceipt(raw, options)).toMatchObject({ disposition: "confirmed_committed", evidenceKind: "provider_receipt" });
+      expect(desktopControlEffectReceipt(raw, options)).toMatchObject({ disposition, evidenceKind: "provider_receipt" });
       for (const override of [{ serverName: "other" }, { localOnly: false }, { toolUseId: "other" }, { toolName: "other" }, { sensitiveHeaders: undefined }, { desktopAuthorityGrant: undefined }, { desktopAuthorityGrant: { ...grant! } }]) expect(desktopControlEffectReceipt(raw, { ...options, ...override })).toBeUndefined();
       for (const override of [{ version: 2 }, { disposition: "remains_unknown" }, { evidence: "" }, { evidence: "x".repeat(2049) }, { extra: true }]) expect(desktopControlEffectReceipt({ _meta: { "agenc.desktopControl.effect": { ...receipt, ...override } } }, options)).toBeUndefined();
     });
@@ -315,6 +318,79 @@ describe("operator-bootstrapped Desktop control authority", () => {
     }
     expect(callTool).toHaveBeenCalledTimes(4);
     expect(canUseTool).not.toHaveBeenCalled();
+    await bridge.dispose();
+  });
+
+  it("keeps Routine inspection read-only and every Routine mutation approval-gated", async () => {
+    const f = await fixture(); const grant = await verifyDesktopAuthority(f.config, f.root);
+    const reads = ["desktop_routine_list", "desktop_routine_get", "desktop_routine_runs"];
+    const writes = ["desktop_routine_create", "desktop_routine_update", "desktop_routine_delete", "desktop_routine_run", "desktop_routine_cancel"];
+    const client = { listTools: async () => ({ tools: [...reads, ...writes, "desktop_routines_open"].map(name => ({ name, annotations: { readOnlyHint: true, idempotentHint: true } })) }), callTool: vi.fn(async () => ({ content: [] })), close: async () => {} };
+    const bridge = await createToolBridge(client, f.config.name, undefined, { environment: {}, serverConfig: toToolCatalogPolicyConfig({ ...f.config, desktopAuthorityGrant: grant }) });
+    for (const tool of bridge.tools) {
+      const read = reads.includes(tool.mcpInfo!.toolName);
+      expect(tool.isReadOnly === true).toBe(read);
+      expect(tool.recoveryCategory === "idempotent").toBe(read);
+      if (!read) expect(tool).toMatchObject({ requiresApproval: true, metadata: { mutating: true, virtualNoFsWrites: true } });
+      for (const mode of ["default", "plan"] as const) {
+        const context = { session: { services: {} } as never, getAppState: () => ({ toolPermissionContext: { ...createEmptyToolPermissionContext(), mode }, denialTracking: freshDenialTracking(), autoModeActive: false }) };
+        expect((await hasPermissionsToUseTool(tool, {}, context)).behavior).toBe(read ? "allow" : mode === "plan" ? "deny" : "ask");
+      }
+    }
+    await bridge.dispose();
+    const unsigned = await createToolBridge(client, f.config.name, undefined, { environment: {}, serverConfig: toToolCatalogPolicyConfig(f.config) });
+    for (const tool of unsigned.tools) {
+      expect(tool.isReadOnly).toBeUndefined();
+      expect(tool.metadata?.virtualNoFsWrites).toBeUndefined();
+      expect(tool.recoveryCategory).not.toBe("idempotent");
+    }
+    await unsigned.dispose();
+  });
+
+  it.each(["create", "update", "delete", "run", "cancel"])("refuses routine %s from read-only, plan, remote or forged runtime context", async action => {
+    const f = await fixture(); const grant = await verifyDesktopAuthority(f.config, f.root);
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: f.root });
+    const session = { services: { sandboxExecutionBroker: broker } } as never;
+    let mode: "default" | "plan" = "default";
+    const canUseTool = vi.fn(async () => ({ behavior: "deny" as const, message: "not approved" }));
+    const callTool = vi.fn(async () => ({ content: [{ type: "text", text: "record changed" }] }));
+    const name = `desktop_routine_${action}`;
+    const bridge = await createToolBridge({ listTools: async () => ({ tools: [{ name }] }), callTool, close: async () => {} }, f.config.name, undefined, {
+      environment: {}, serverConfig: toToolCatalogPolicyConfig({ ...f.config, desktopAuthorityGrant: grant }),
+      permissions: { session, getActiveTurnId: () => "turn-routine", canUseTool,
+        permissionContext: { session, getAppState: () => ({ toolPermissionContext: { ...createEmptyToolPermissionContext(), mode }, denialTracking: freshDenialTracking(), autoModeActive: false }) } },
+    });
+    const tool = bridge.tools[0]!;
+    const invoke = (override: Partial<ToolRuntimeAttemptContext> = {}, local = true, forged = false) => {
+      const args = { id: "routine-fixture" }; Object.defineProperty(args, "__callId", { value: "routine-call" });
+      const context = { callId: "routine-call", toolName: tool.name, approvalResolved: true, requestedSandboxMode: "workspace_write", sandboxMode: "workspace_write", rawArgs: JSON.stringify(args), invocation: { callId: "routine-call", session, turn: { subId: "turn-routine" } }, ...override } as ToolRuntimeAttemptContext;
+      if (forged) Object.defineProperty(args, "__toolRuntimeContext", { value: context });
+      else attachToolRuntimeContext(args, context);
+      attachSandboxExecutionBroker(args, broker);
+      return withLocalMcpAccess(local, () => tool.execute(args));
+    };
+    expect((await invoke()).isError).not.toBe(true);
+    expect(canUseTool).not.toHaveBeenCalled();
+    for (const override of [{ requestedSandboxMode: "read_only" as const }, { sandboxMode: "read_only" as const }, { invocation: { callId: "routine-call", session, turn: { subId: "old-turn" } } as never }]) {
+      expect(await invoke(override)).toMatchObject({ isError: true, effectDisposition: { disposition: "confirmed_no_effect" } });
+    }
+    expect((await invoke({}, false)).isError).toBe(true);
+    expect((await invoke({}, true, true)).isError).toBe(true);
+    mode = "plan";
+    expect(await invoke()).toMatchObject({ isError: true, effectDisposition: { disposition: "confirmed_no_effect" } });
+    mode = "default";
+    expect((await invoke({ approvalResolved: false })).isError).toBe(true);
+    canUseTool.mockImplementationOnce(async () => { mode = "plan"; return { behavior: "allow" } as never; });
+    expect(await invoke({ approvalResolved: false })).toMatchObject({ isError: true, effectDisposition: { disposition: "confirmed_no_effect" } });
+    mode = "default";
+    const liveMode = vi.spyOn(broker, "mode", "get").mockReturnValue("read_only");
+    expect(await invoke()).toMatchObject({ isError: true, effectDisposition: { disposition: "confirmed_no_effect" } });
+    liveMode.mockRestore();
+    expect(callTool).toHaveBeenCalledOnce();
+    callTool.mockRejectedValueOnce(new Error("RPC timed out after dispatch"));
+    const uncertain = await invoke();
+    expect(uncertain.isError).toBe(true);
+    expect(uncertain.effectDisposition).toBeUndefined();
     await bridge.dispose();
   });
 });

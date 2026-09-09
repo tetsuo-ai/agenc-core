@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { computeNextCronRun, parseCronExpression } from "../utils/cron.js";
-import type { Routine, RoutineCapabilities, RoutineCreateParams, RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineUpdatedEvent } from "./types.js";
+import type { Routine, RoutineCapabilities, RoutineConfig, RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineUpdatedEvent, RoutineWorkspaceExpectation } from "./types.js";
 
 export const MAX_ROUTINES = 100;
 export const MAX_ROUTINE_RUNS = 50;
@@ -48,6 +48,23 @@ function cwdAuthority(value: unknown): { cwd: string; cwdIdentity: Identity } {
     return { cwd, cwdIdentity: identity(cwd) };
   } catch { return invalid("cwd must be an absolute existing directory."); }
 }
+function workspaceExpectation(value: unknown): RoutineWorkspaceExpectation | undefined {
+  if (value === undefined) return undefined;
+  const input = object(value, ["cwd", "dev", "ino"]);
+  const cwd = text(input.cwd, "expectedWorkspace.cwd", 4096);
+  if (!isAbsolute(cwd) || normalize(cwd) !== cwd) return invalid("expectedWorkspace.cwd must be a normalized absolute path.");
+  const digitString = (field: "dev" | "ino"): string => {
+    const value = input[field];
+    if (typeof value !== "string" || value.length < 1 || value.length > 32 || /[^0-9]/.test(value)) return invalid(`expectedWorkspace.${field} must be a digit string of at most 32 characters.`);
+    return value;
+  };
+  return { cwd, dev: digitString("dev"), ino: digitString("ino") };
+}
+function guardWorkspace(expected: RoutineWorkspaceExpectation | undefined, cwd: string, cwdIdentity: Identity): void {
+  if (expected && (expected.cwd !== cwd || !sameIdentity(expected, cwdIdentity))) {
+    throw new RoutineError("ROUTINE_CONFLICT", "Workspace changed; refresh it before saving.");
+  }
+}
 function schedule(value: unknown, now: Date): RoutineSchedule {
   const input = object(value, ["kind", "expression"]);
   if (input.kind === "manual" && input.expression === undefined) return { kind: "manual" };
@@ -62,7 +79,7 @@ function nextRun(routine: Pick<Routine, "schedule" | "enabled">, now: Date): str
   const fields = parseCronExpression(routine.schedule.expression);
   return fields ? computeNextCronRun(fields, now)?.toISOString() ?? null : null;
 }
-function normalizeCreate(value: unknown, now: Date): { config: Required<Pick<RoutineCreateParams, "name" | "description" | "instructions" | "cwd" | "schedule" | "permissionMode" | "enabled" | "notifyOnCompletion">> & Pick<RoutineCreateParams, "provider" | "model">; cwdIdentity: Identity } {
+function normalizeCreate(value: unknown, now: Date): { config: Required<Pick<RoutineConfig, "name" | "description" | "instructions" | "cwd" | "schedule" | "permissionMode" | "enabled" | "notifyOnCompletion">> & Pick<RoutineConfig, "provider" | "model">; cwdIdentity: Identity } {
   const input = object(value, CREATE_KEYS);
   const authority = cwdAuthority(input.cwd);
   if (input.permissionMode !== undefined && input.permissionMode !== "default" && input.permissionMode !== "plan") return invalid("Routine permission mode must be default or plan.");
@@ -211,17 +228,23 @@ export class RoutineService {
   get(params: unknown): { routine: Routine } { const p = object(params, ["id"]); return { routine: structuredClone(this.#entry(p.id).routine) }; }
   create(params: unknown): { routine: Routine } {
     this.#assertOpen(); if (this.#entries.length >= MAX_ROUTINES) throw new RoutineError("ROUTINE_LIMIT", `At most ${MAX_ROUTINES} routines are supported.`);
-    const now = this.#now(); const normalized = normalizeCreate(params, now);
+    const { expectedWorkspace, ...config } = object(params, [...CREATE_KEYS, "expectedWorkspace"]);
+    const expected = workspaceExpectation(expectedWorkspace);
+    const now = this.#now(); const normalized = normalizeCreate(config, now);
+    guardWorkspace(expected, normalized.config.cwd, normalized.cwdIdentity);
     const routine: Routine = { ...normalized.config, id: `routine_${randomUUID()}`, createdAt: now.toISOString(), updatedAt: now.toISOString(), nextRunAt: nextRun(normalized.config, now), lastRun: null };
     this.#commit(() => { this.#entries.push({ routine, cwdIdentity: normalized.cwdIdentity, runs: [] }); });
     this.#emit(routine.id, "created"); this.#arm(); return { routine: structuredClone(routine) };
   }
   update(params: unknown): { routine: Routine } {
-    const p = object(params, ["id", "patch", "expectedUpdatedAt"]); const entry = this.#entry(p.id); this.#guard(entry, p.expectedUpdatedAt);
+    const p = object(params, ["id", "patch", "expectedUpdatedAt", "expectedWorkspace"]); const entry = this.#entry(p.id); this.#guard(entry, p.expectedUpdatedAt);
     const patch = object(p.patch, CREATE_KEYS); if (Object.keys(patch).length === 0) return invalid("Routine patch must contain a setting.");
+    const expected = workspaceExpectation(p.expectedWorkspace);
+    if (expected && patch.cwd === undefined) return invalid("expectedWorkspace requires patch.cwd.");
     const existing = Object.fromEntries(CREATE_KEYS.filter((key) => entry.routine[key] !== undefined).map((key) => [key, entry.routine[key]]));
     const now = this.#now(); const normalized = normalizeCreate({ ...existing, ...patch, ...(patch.cwd === undefined ? { cwd: this.#store.root } : {}) }, now);
     const config = { ...normalized.config, cwd: patch.cwd === undefined ? entry.routine.cwd : normalized.config.cwd };
+    guardWorkspace(expected, config.cwd, normalized.cwdIdentity);
     this.#commit(() => {
       entry.routine = { ...entry.routine, ...config, updatedAt: new Date(Math.max(now.getTime(), Date.parse(entry.routine.updatedAt) + 1)).toISOString(), nextRunAt: nextRun(config, now) };
       if (patch.cwd !== undefined) entry.cwdIdentity = normalized.cwdIdentity;
@@ -238,7 +261,13 @@ export class RoutineService {
     if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > MAX_ROUTINE_RUNS) return invalid(`limit must be between 1 and ${MAX_ROUTINE_RUNS}.`);
     return { runs: structuredClone(entry.runs.slice(0, limit)) };
   }
-  run(params: unknown): { run: RoutineRun } { const p = object(params, ["id"]); return { run: this.#launch(this.#entry(p.id), "manual") }; }
+  run(params: unknown): { run: RoutineRun } {
+    const p = object(params, ["id", "expectedUpdatedAt"]); const entry = this.#entry(p.id);
+    // No await between this guard and #launch's configuration snapshot/commit:
+    // a concurrent editor cannot substitute an unreviewed workspace or policy.
+    this.#guard(entry, p.expectedUpdatedAt);
+    return { run: this.#launch(entry, "manual") };
+  }
   async cancel(params: unknown): Promise<{ run: RoutineRun }> {
     const p = object(params, ["id", "runId"]); const entry = this.#entry(p.id); const active = this.#active.get(entry.routine.id);
     const selected = p.runId === undefined ? entry.runs[0] : entry.runs.find((run) => run.id === text(p.runId, "runId", 128));

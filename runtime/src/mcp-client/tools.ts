@@ -634,7 +634,7 @@ const DESKTOP_NATIVE_TERMINALS = new Set(["terminal_open", "terminal_run", "term
 // page-main-world JavaScript and may invoke page-defined getters or setters.
 // Do not replay those while another effect is unresolved.
 const DESKTOP_IDEMPOTENT_INSPECTIONS = new Set([
-  "desktop_state", "desktop_window_state", "browser_tabs", "browser_screenshot",
+  "desktop_state", "desktop_window_state", "desktop_routine_list", "desktop_routine_get", "desktop_routine_runs", "browser_tabs", "browser_screenshot",
   "browser_downloads", "browser_console", "terminal_list", "terminal_read",
 ]);
 function nativeDesktopTerminalAllowed(args: Record<string, unknown>, callId: string,
@@ -648,6 +648,22 @@ function nativeDesktopTerminalAllowed(args: Record<string, unknown>, callId: str
       broker !== context.invocation.session.services.sandboxExecutionBroker ||
       broker.mode !== "danger_full_access") return false;
   try { broker.assertReady("tool"); return true; } catch { return false; }
+}
+
+function desktopRoutineMutationAllowed(args: Record<string, unknown>, callId: string,
+  toolName: string, options: MCPToolBridgePermissionOptions | undefined): boolean {
+  const context = exactDesktopInvocation(args, callId, toolName, options);
+  const broker = readSandboxExecutionBroker(args);
+  // A routine does not inherit a one-shot escalation or the parent's bypass.
+  // Its separate child policy cannot be used to escape a read-only parent.
+  if (!context || !broker || broker !== context.invocation.session.services.sandboxExecutionBroker ||
+      context.requestedSandboxMode === "read_only" || context.sandboxMode === "read_only" ||
+      broker.mode === "read_only") return false;
+  try {
+    if (options?.permissionContext?.getAppState().toolPermissionContext.mode === "plan") return false;
+    broker.assertReady("tool");
+    return true;
+  } catch { return false; }
 }
 
 function responseScopeFromDecision(
@@ -980,7 +996,10 @@ export async function createToolBridge(
       ),
       serverId: serverName,
       mcpInfo: { serverName, toolName: mcpTool.name },
-      ...(virtualNoFsWrites || desktopClass === "ui-mutation"
+      // Routine writes are fixed runtime-derived storage, not caller-chosen
+      // files; their child execution owns its own Core sandbox. The separate
+      // guard below also refuses read-only/plan parents before any dispatch.
+      ...(virtualNoFsWrites || desktopClass === "ui-mutation" || desktopClass === "routine-mutation"
         ? { metadata: { mutating: true, virtualNoFsWrites: true } }
         : {}),
       // Only the signed product-owned inspection list is safe to repeat after
@@ -989,7 +1008,7 @@ export async function createToolBridge(
       ...(desktopClass === "read" ? { isReadOnly: true, metadata: { mutating: false } } : {}),
       ...(desktopClass === "read" && DESKTOP_IDEMPOTENT_INSPECTIONS.has(mcpTool.name)
         ? { recoveryCategory: "idempotent" as const } : {}),
-      ...(desktopClass === "ui-mutation" || (hasDesktopAuthority(options.serverConfig?.desktopAuthorityGrant) && DESKTOP_NATIVE_TERMINALS.has(mcpTool.name)) ? { requiresApproval: true } : {}),
+      ...(desktopClass === "ui-mutation" || desktopClass === "routine-mutation" || (hasDesktopAuthority(options.serverConfig?.desktopAuthorityGrant) && DESKTOP_NATIVE_TERMINALS.has(mcpTool.name)) ? { requiresApproval: true } : {}),
       ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}),
 
       async execute(args: Record<string, unknown>): Promise<ToolResult> {
@@ -1021,6 +1040,10 @@ export async function createToolBridge(
         const terminalRefusal = () => preEffectRefusal(namespacedName,
           "The visible Desktop terminal is not sandboxed by Core and requires an explicitly full-access session. Use the Core exec_command/system.bash tools for sandboxed commands; do not change permissions just to use this terminal.");
         if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) return terminalRefusal();
+        const routineMutation = desktopClass === "routine-mutation";
+        const routineRefusal = () => preEffectRefusal(namespacedName,
+          "Desktop Routine changes require an admitted local user call outside read-only and plan mode. Read the routine instead; do not change permissions to run it.");
+        if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) return routineRefusal();
         const progressCallback = progressCallbackFromArgs(args);
         if (
           mcpTool.name === MCP_REQUEST_PERMISSIONS_TOOL_NAME &&
@@ -1054,6 +1077,7 @@ export async function createToolBridge(
             return preEffectRefusal(namespacedName, "Desktop host authority expired during authorization.");
           }
           if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) return terminalRefusal();
+          if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) return routineRefusal();
           const executionArgs = withoutMcpExecutionOnlyArgs(
             authorization.args,
           );
@@ -1074,6 +1098,7 @@ export async function createToolBridge(
               if (options.serverConfig?.desktopAuthorityGrant && !hasDesktopAuthority(options.serverConfig.desktopAuthorityGrant)) throw new DesktopMcpPreflightRefusal("Desktop host authority expired before dispatch.");
               if (signal.aborted || effectSignal?.aborted) throw new DesktopMcpPreflightRefusal("The app-control operation was cancelled before dispatch.");
               if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The visible terminal no longer has full-access authority.");
+              if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The Desktop Routine call no longer has writable local authority.");
             }, () => client.callTool(
                 {
                   name: mcpTool.name,

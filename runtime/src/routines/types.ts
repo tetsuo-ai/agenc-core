@@ -17,7 +17,7 @@ export interface RoutineRun extends JsonObject {
   readonly coreRunId: string | null;
   readonly error: string | null;
 }
-export interface RoutineCreateParams extends JsonObject {
+export interface RoutineConfig extends JsonObject {
   readonly name: string;
   readonly description?: string;
   readonly instructions: string;
@@ -29,7 +29,16 @@ export interface RoutineCreateParams extends JsonObject {
   readonly enabled?: boolean;
   readonly notifyOnCompletion?: boolean;
 }
-export interface Routine extends RoutineCreateParams {
+/** Request-only identity captured by a trusted client after workspace approval. */
+export interface RoutineWorkspaceExpectation extends JsonObject {
+  readonly cwd: string;
+  readonly dev: string;
+  readonly ino: string;
+}
+export interface RoutineCreateParams extends RoutineConfig {
+  readonly expectedWorkspace?: RoutineWorkspaceExpectation;
+}
+export interface Routine extends RoutineConfig {
   readonly id: string;
   readonly description: string;
   readonly permissionMode: "default" | "plan";
@@ -42,10 +51,14 @@ export interface Routine extends RoutineCreateParams {
 }
 export interface RoutineIdParams extends JsonObject { readonly id: string }
 export interface RoutineUpdateParams extends RoutineIdParams {
-  readonly patch: Partial<RoutineCreateParams>;
+  readonly patch: Partial<RoutineConfig>;
   readonly expectedUpdatedAt?: string;
+  /** Only valid when patch.cwd supplies a new workspace. */
+  readonly expectedWorkspace?: RoutineWorkspaceExpectation;
 }
 export interface RoutineDeleteParams extends RoutineIdParams { readonly expectedUpdatedAt?: string }
+/** Optional for legacy callers; binds a reviewed definition to its manual run. */
+export interface RoutineRunParams extends RoutineIdParams { readonly expectedUpdatedAt?: string }
 export interface RoutineRunsParams extends RoutineIdParams { readonly limit?: number }
 export interface RoutineCancelParams extends RoutineIdParams { readonly runId?: string }
 export interface RoutineCapabilities extends JsonObject {

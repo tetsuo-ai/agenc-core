@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +20,10 @@ function setup(executor: RoutineExecutor = { execute: vi.fn(async () => "complet
 }
 async function terminal(service: RoutineService, id: string): Promise<void> {
   await vi.waitFor(() => expect(["completed", "failed", "cancelled", "interrupted"]).toContain(service.runs({ id }).runs[0]?.status));
+}
+function workspaceExpectation(cwd: string) {
+  const stat = lstatSync(cwd, { bigint: true });
+  return { cwd, dev: String(stat.dev), ino: String(stat.ino) };
 }
 
 describe("daemon-owned local routines", () => {
@@ -72,6 +76,124 @@ describe("daemon-owned local routines", () => {
     expect(changed.provider).toBeUndefined(); expect(changed.model).toBeUndefined();
     f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
     expect(f.service.get({ id: routine.id }).routine.updatedAt).toBe(changed.updatedAt);
+  });
+
+  it("accepts approved workspace identities without storing request guards and preserves legacy aliases", async () => {
+    const f = setup(); const expectedWorkspace = workspaceExpectation(f.cwd);
+    const routine = f.service.create({ ...f.params, expectedWorkspace }).routine;
+    expect(routine.cwd).toBe(f.cwd); expect(routine).not.toHaveProperty("expectedWorkspace");
+    const nextCwd = join(f.home, "next-project"); mkdirSync(nextCwd);
+    const updated = f.service.update({ id: routine.id, patch: { cwd: nextCwd }, expectedUpdatedAt: routine.updatedAt, expectedWorkspace: workspaceExpectation(nextCwd) }).routine;
+    expect(updated.cwd).toBe(nextCwd); expect(updated).not.toHaveProperty("expectedWorkspace");
+    expect(readFileSync(f.path, "utf8")).not.toContain("expectedWorkspace");
+    const alias = join(f.home, "project-alias"); symlinkSync(f.cwd, alias, "dir");
+    expect(f.service.create({ ...f.params, cwd: alias }).routine.cwd).toBe(f.cwd);
+    expect(f.service.update({ id: routine.id, patch: { cwd: alias } }).routine.cwd).toBe(f.cwd);
+    await f.service.close();
+    const restored = new RoutineService({ home: f.home, executor: f.executor }); services.push(restored);
+    expect(restored.get({ id: routine.id }).routine.cwd).toBe(f.cwd);
+  });
+
+  it.each(["symlink", "replacement", "ancestor-symlink"])("rejects a workspace %s introduced after approval before creating anything", kind => {
+    const f = setup();
+    const approved = kind === "ancestor-symlink" ? join(f.cwd, "child") : f.cwd;
+    if (kind === "ancestor-symlink") mkdirSync(approved);
+    const expectedWorkspace = workspaceExpectation(approved);
+    const other = join(f.home, "outside-project"); mkdirSync(other);
+    if (kind === "ancestor-symlink") mkdirSync(join(other, "child"));
+    renameSync(f.cwd, join(f.home, "original-project"));
+    if (kind === "replacement") mkdirSync(f.cwd); else symlinkSync(other, f.cwd, "dir");
+    const disk = readFileSync(f.path, "utf8"), events: unknown[] = [];
+    f.service.onUpdated(event => events.push(event));
+    expect(() => f.service.create({ ...f.params, cwd: approved, expectedWorkspace }))
+      .toThrow(expect.objectContaining({ code: "ROUTINE_CONFLICT" }));
+    expect(f.service.list().routines).toEqual([]); expect(events).toEqual([]);
+    expect(f.executor.execute).not.toHaveBeenCalled(); expect(readFileSync(f.path, "utf8")).toBe(disk);
+    // A rejected expectation does not poison the service's storage health.
+    expect(f.service.create({ ...f.params, cwd: other }).routine.cwd).toBe(other);
+  });
+
+  it.each(["cwd", "dev", "ino"])("checks the approved %s on create and update before any commit", field => {
+    const f = setup(); const routine = f.service.create(f.params).routine;
+    const target = join(f.home, "target"); mkdirSync(target);
+    const expectedWorkspace = { ...workspaceExpectation(target), [field]: field === "cwd" ? f.cwd : "0" };
+    const disk = readFileSync(f.path, "utf8"), events: unknown[] = [];
+    f.service.onUpdated(event => events.push(event));
+    expect(() => f.service.create({ ...f.params, cwd: target, expectedWorkspace }))
+      .toThrow(expect.objectContaining({ code: "ROUTINE_CONFLICT" }));
+    expect(() => f.service.update({ id: routine.id, patch: { cwd: target, name: "must not persist" }, expectedWorkspace }))
+      .toThrow(expect.objectContaining({ code: "ROUTINE_CONFLICT" }));
+    expect(f.service.get({ id: routine.id }).routine).toEqual(routine); expect(events).toEqual([]);
+    expect(f.executor.execute).not.toHaveBeenCalled(); expect(readFileSync(f.path, "utf8")).toBe(disk);
+  });
+
+  it("rejects a changed workspace on update with its original identity and revision intact", () => {
+    const f = setup(); const routine = f.service.create(f.params).routine;
+    const target = join(f.home, "target"), outside = join(f.home, "outside"); mkdirSync(target); mkdirSync(outside);
+    const expectedWorkspace = workspaceExpectation(target);
+    renameSync(target, join(f.home, "original-target")); symlinkSync(outside, target, "dir");
+    const disk = readFileSync(f.path, "utf8");
+    expect(() => f.service.update({ id: routine.id, patch: { cwd: target }, expectedUpdatedAt: routine.updatedAt, expectedWorkspace }))
+      .toThrow(expect.objectContaining({ code: "ROUTINE_CONFLICT" }));
+    expect(f.service.get({ id: routine.id }).routine).toEqual(routine); expect(readFileSync(f.path, "utf8")).toBe(disk);
+  });
+
+  it("rejects malformed or misplaced workspace expectations without side effects", () => {
+    const f = setup(); const routine = f.service.create(f.params).routine;
+    const valid = workspaceExpectation(f.cwd), disk = readFileSync(f.path, "utf8");
+    for (const expectedWorkspace of [
+      null, [], {}, { ...valid, extra: true }, { cwd: valid.cwd, dev: valid.dev },
+      { ...valid, cwd: "." }, { ...valid, cwd: `${f.cwd}/../project` }, { ...valid, cwd: "/" + "x".repeat(4096) },
+      ...[null, 12, "", "-1", "1.0", "1e2", "1\n", "x", "1".repeat(33)].flatMap(value => [{ ...valid, dev: value }, { ...valid, ino: value }]),
+    ]) {
+      expect(() => f.service.create({ ...f.params, expectedWorkspace })).toThrow(expect.objectContaining({ code: "ROUTINE_INVALID_ARGUMENT" }));
+      expect(() => f.service.update({ id: routine.id, patch: { cwd: f.cwd }, expectedWorkspace })).toThrow(expect.objectContaining({ code: "ROUTINE_INVALID_ARGUMENT" }));
+    }
+    expect(() => f.service.update({ id: routine.id, patch: { name: "no cwd" }, expectedWorkspace: valid }))
+      .toThrow(expect.objectContaining({ code: "ROUTINE_INVALID_ARGUMENT" }));
+    expect(() => f.service.update({ id: routine.id, patch: { cwd: f.cwd, expectedWorkspace: valid } }))
+      .toThrow(expect.objectContaining({ code: "ROUTINE_INVALID_ARGUMENT" }));
+    expect(f.service.get({ id: routine.id }).routine).toEqual(routine); expect(readFileSync(f.path, "utf8")).toBe(disk);
+  });
+
+  it.each(["cwd", "permissionMode", "instructions"])("refuses a reviewed run after %s changes without writing or starting work", async field => {
+    const execute = vi.fn(async () => "completed" as const); const f = setup({ execute });
+    const reviewed = f.service.create({ ...f.params, permissionMode: "plan" }).routine;
+    const other = join(f.home, "other-project"); mkdirSync(other);
+    const patch = field === "cwd" ? { cwd: other } : field === "permissionMode" ? { permissionMode: "default" } : { instructions: "New instructions" };
+    const changed = f.service.update({ id: reviewed.id, patch }).routine;
+    const disk = readFileSync(f.path, "utf8"), events: unknown[] = [];
+    f.service.onUpdated(event => events.push(event));
+    expect(() => f.service.run({ id: reviewed.id, expectedUpdatedAt: reviewed.updatedAt }))
+      .toThrow(expect.objectContaining({ code: "ROUTINE_CONFLICT" }));
+    await Promise.resolve();
+    expect(execute).not.toHaveBeenCalled(); expect(events).toEqual([]);
+    expect(f.service.runs({ id: reviewed.id }).runs).toEqual([]);
+    expect(f.service.get({ id: reviewed.id }).routine).toEqual(changed);
+    expect(readFileSync(f.path, "utf8")).toBe(disk);
+  });
+
+  it("snapshots the exact accepted revision synchronously and preserves revisionless callers", async () => {
+    const execute = vi.fn<RoutineExecutor["execute"]>(async () => "completed"); const f = setup({ execute });
+    const reviewed = f.service.create(f.params).routine;
+    f.service.run({ id: reviewed.id, expectedUpdatedAt: reviewed.updatedAt });
+    // The executor is deferred, but its configuration was already frozen by run.
+    f.service.update({ id: reviewed.id, patch: { instructions: "Only the next run sees this" } });
+    await terminal(f.service, reviewed.id);
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({ instructions: reviewed.instructions, updatedAt: reviewed.updatedAt });
+    f.service.run({ id: reviewed.id }); await terminal(f.service, reviewed.id);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls[1]?.[0]).toMatchObject({ instructions: "Only the next run sees this" });
+  });
+
+  it.each([null, 12, "", "x".repeat(65)])("rejects malformed run revisions before side effects: %j", revision => {
+    const execute = vi.fn(async () => "completed" as const); const f = setup({ execute });
+    const routine = f.service.create(f.params).routine;
+    const disk = readFileSync(f.path, "utf8");
+    expect(() => f.service.run({ id: routine.id, expectedUpdatedAt: revision }))
+      .toThrow(expect.objectContaining({ code: "ROUTINE_INVALID_ARGUMENT" }));
+    expect(execute).not.toHaveBeenCalled(); expect(f.service.runs({ id: routine.id }).runs).toEqual([]);
+    expect(readFileSync(f.path, "utf8")).toBe(disk);
   });
 
   it("fences new work and deletion after an unproven cancellation", async () => {

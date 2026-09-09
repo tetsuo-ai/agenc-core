@@ -13,7 +13,10 @@
  * (tools/router.ts, `ledgerTurnBlocksTool`), and then removes three families
  * that satisfy it on paper and not in fact.
  */
+import { resolve } from "node:path";
+
 import { isBashTool } from "../tools/concurrency.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import type { ToolPermissionContext } from "./types.js";
 
 /** The shape the evaluator sees. Kept structural so tests need no registry. */
@@ -52,6 +55,20 @@ const NEVER_GRANTED = Object.freeze(
     "AskUserQuestion",
   ]),
 );
+
+/**
+ * Tool discovery, which declares itself side-effecting but changes nothing.
+ *
+ * `system.searchTools` widens the turn's own advertised tool list and writes
+ * nothing (its metadata says `virtualNoFsWrites`). It is marked
+ * side-effecting for recovery purposes, so the read-only conjunction below
+ * refuses it, and an unattended run is then unable to find the very tools it
+ * is allowed to use: observed live, a routine burned its turn being refused
+ * discovery and never produced a report. Loading a schema does not widen what
+ * may actually run, because every non-builtin source is still refused when
+ * the tool is called.
+ */
+const DISCOVERY_TOOLS = Object.freeze(new Set([SYSTEM_SEARCH_TOOLS_NAME]));
 
 /**
  * Shell that may run: read-only by command, and confined to the workspace.
@@ -117,8 +134,14 @@ export function shellCallIsGranted(
     return { ok: false, reason: "the command could not be read" };
   }
   // A working directory of its own would move the ground the path check
-  // measures against, so only the run's own folder is accepted.
-  if (parsed.workdir !== undefined && parsed.workdir !== cwd) {
+  // measures against, so only the run's own folder is accepted. Compared
+  // after resolution, not as strings: a relative workdir is relative to the
+  // run's cwd, so "." is that folder, and refusing it stranded routines whose
+  // agent quite reasonably passed one.
+  if (
+    parsed.workdir !== undefined &&
+    resolve(cwd, parsed.workdir) !== resolve(cwd)
+  ) {
     return { ok: false, reason: "it runs in a different folder" };
   }
   if (deps.checkReadOnly({ command: parsed.command }).behavior !== "allow") {
@@ -171,6 +194,9 @@ export function readOnlyGrantVerdict(
   }
   if (NEVER_GRANTED.has(tool.name) || tool.requiresUserInteraction?.() === true) {
     return { granted: false, refusal: { kind: "interactive" } };
+  }
+  if (DISCOVERY_TOOLS.has(tool.name) && tool.metadata?.source === "builtin") {
+    return GRANTED;
   }
   // An MCP or plugin tool describes itself, and that description arrives from
   // the server. `readOnlyHint` is advisory everywhere else in this codebase

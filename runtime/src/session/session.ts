@@ -1090,6 +1090,8 @@ export interface McpManager {
   callTool?: MCPManager["callTool"];
   getTools?(): ReadonlyArray<McpSessionToolInfo>;
   getToolsByServer?(name: string): ReadonlyArray<McpSessionToolInfo>;
+  /** Live signed Desktop names, for reduced model catalogs only. Does not discover or authorize tools. */
+  getAuthenticatedDesktopToolNames?(): readonly string[];
   getConfiguredServers?(): readonly McpSessionServerConfig[];
   getConnectionState?(name: string): McpConnectionProjection | undefined;
   getConnectedConnection?(name: string): MCPServerConnection | undefined;

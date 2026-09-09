@@ -1,6 +1,8 @@
 /** Real built daemon + SDK + scripted loopback model + authenticated HTTP MCP.
  * No operator profile, cloud provider, global MCP config, or Electron instance.
  * Run after build: node scripts/check-desktop-mcp-delivery.mjs
+ * Native chat fixture: node scripts/check-desktop-mcp-delivery.mjs --serve --routines
+ * Reduced-profile fixture: node scripts/check-desktop-mcp-delivery.mjs --serve --routines --openai-compatible
  */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -28,9 +30,18 @@ const model = "gpt-4.1-mini"; // Wire-compatible fixture only; every request sta
 const namespace = "mcp.agenc-desktop-control.";
 const serve = process.argv.includes("--serve");
 const terminalPolicy = process.argv.includes("--terminal-policy");
+const routines = process.argv.includes("--routines");
+const fixtureProvider = process.argv.includes("--openai-compatible") ? "openai-compatible" : "openai";
 assert(!(serve && terminalPolicy), "terminal-policy cannot be combined with serve");
-const steps = terminalPolicy ? ["terminal_open"] : ["desktop_state", "desktop_window_state", "desktop_settings_open"];
-const providerEnv = url => ({ AGENC_PROVIDER: "openai", AGENC_MODEL: model, OPENAI_BASE_URL: `${url}/v1`, OPENAI_API_KEY: "isolated-scripted-key", AGENC_AUTH_MANAGED_KEYS_ENABLED: "0" });
+assert(!routines || serve, "routines requires serve and the real Desktop routine bridge");
+const steps = routines ? ["desktop_routine_list", "desktop_routine_create", "desktop_routines_open"]
+  : terminalPolicy ? ["terminal_open"] : ["desktop_state", "desktop_window_state", "desktop_settings_open"];
+const finalMessage = routines ? "DESKTOP_ROUTINES_CHAT_OK" : "DESKTOP_MCP_DELIVERY_OK";
+const smokeRoutine = { name: "Chat routine smoke", instructions: "Inspect this workspace and report findings without changing files.",
+  schedule: { kind: "manual" }, enabled: false, permissionMode: "plan" };
+// Both adapters support these canonical credentials/base-URL variables; the
+// fresh gate environment never inherits competing operator provider settings.
+const providerEnv = url => ({ AGENC_PROVIDER: fixtureProvider, AGENC_MODEL: model, OPENAI_BASE_URL: `${url}/v1`, OPENAI_API_KEY: "isolated-scripted-key", AGENC_AUTH_MANAGED_KEYS_ENABLED: "0" });
 
 async function bodyOf(request) {
   let raw = "";
@@ -53,10 +64,10 @@ function replyModel(response, body, call) {
   if (Array.isArray(body.input)) {
     const id = `desktop_smoke_${++callId}`;
     const item = call ? { type: "function_call", id: `fc_${id}`, call_id: id, name: call.name, arguments: JSON.stringify(call.args), status: "completed" }
-      : { type: "message", id: `msg_${id}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: "DESKTOP_MCP_DELIVERY_OK", annotations: [] }] };
+      : { type: "message", id: `msg_${id}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: finalMessage, annotations: [] }] };
     response.writeHead(200, { "content-type": "text/event-stream" });
     const events = [{ type: "response.output_item.done", output_index: 0, item }, { type: "response.completed", response: { id: `resp_${id}`, status: "completed", model: body.model, output: [item], usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 } } }];
-    if (!call) events.unshift({ type: "response.output_text.delta", delta: "DESKTOP_MCP_DELIVERY_OK" });
+    if (!call) events.unshift({ type: "response.output_text.delta", delta: finalMessage });
     for (const event of events) response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     response.end();
     return;
@@ -65,7 +76,7 @@ function replyModel(response, body, call) {
   response.writeHead(200, { "content-type": "text/event-stream" });
   const chunks = [frame({ role: "assistant" })];
   if (call) chunks.push(frame({ tool_calls: [{ index: 0, id: `desktop_smoke_${++callId}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.args) } }] }));
-  else chunks.push(frame({ content: "DESKTOP_MCP_DELIVERY_OK" }));
+  else chunks.push(frame({ content: finalMessage }));
   chunks.push({ ...frame({}, call ? "tool_calls" : "stop"), usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } });
   for (const chunk of chunks) response.write(`data: ${JSON.stringify(chunk)}\n\n`);
   response.end("data: [DONE]\n\n");
@@ -93,6 +104,7 @@ try {
     if (request.method === "GET" && request.url === "/v1/models") return json(response, 200, { object: "list", data: [{ id: model, object: "model", owned_by: "fixture" }] });
     if (request.url === "/api/show") return json(response, 404, { error: "not an Ollama fixture" });
     assert(["/v1/chat/completions", "/v1/responses"].includes(request.url));
+    if (fixtureProvider === "openai-compatible") assert.equal(request.url, "/v1/chat/completions", "compatible fixture must exercise the Chat Completions adapter");
     const body = await bodyOf(request);
     sdkRequests.push(body);
     console.log(`Scripted provider request ${sdkRequests.length}`);
@@ -109,7 +121,7 @@ try {
     if (results.length === 0) {
       const name = find("system_searchTools") ?? find("system.searchTools") ?? find("searchTools");
       assert(name, `search tool unavailable: ${available.map(tool => tool.function?.name).join(",")}`);
-      return replyModel(response, body, { name, args: { select: steps.map(step => `${namespace}${step}`), maxResults: 3 } });
+      return replyModel(response, body, { name, args: { select: steps.map(step => `${namespace}${step}`), maxResults: steps.length } });
     }
     const target = steps[results.length - 1];
     const name = find(target);
@@ -117,7 +129,8 @@ try {
       console.error(`${target} absent after selection; schemas: ${JSON.stringify(available.map(tool => ({ name: tool.name, type: tool.type, function: tool.function?.name })))}`);
       return replyModel(response, body);
     }
-    replyModel(response, body, { name, args: target === "desktop_settings_open" ? { section: "appearance" } : {} });
+    const args = target === "desktop_routine_create" ? smokeRoutine : target === "desktop_settings_open" ? { section: "appearance" } : {};
+    replyModel(response, body, { name, args });
   });
   socketRoot = await mkdtemp(join(await realpath("/tmp"), "agenc-dc-"));
   await chmod(socketRoot, 0o700);
@@ -157,20 +170,23 @@ try {
   // ordinary session creation path cannot fall back to a cloud endpoint.
   const providerBaseUrl = `${provider.url}/v1`;
   assert.equal(new URL(providerBaseUrl).hostname, "127.0.0.1");
-  await appendFile(configPath, `\n[providers.openai]\nbase_url = ${JSON.stringify(providerBaseUrl)}\ndefault_model = ${JSON.stringify(model)}\ntimeout_ms = 10000\n`);
+  await appendFile(configPath, `\n[providers.${JSON.stringify(fixtureProvider)}]\nbase_url = ${JSON.stringify(providerBaseUrl)}\ndefault_model = ${JSON.stringify(model)}\ntimeout_ms = 10000\n`);
   await writeTuiGateTrust(state.env, [project]);
   const before = await readFile(configPath, "utf8");
   await startTuiGateDaemon(state, bin);
   if (serve) {
     await access(desktopBin, constants.X_OK);
-    const launch = { bin: desktopBin, project, provider: "openai", model, env: state.env, prompt: "DESKTOP_CONTROL_SMOKE: inspect Desktop state and window, then open Appearance settings using the authenticated Desktop tools." };
+    const launch = { bin: desktopBin, project, provider: fixtureProvider, model, env: state.env, mode: routines ? "routines" : "controls",
+      prompt: routines
+        ? "DESKTOP_CONTROL_SMOKE: list AgenC Desktop Routines, create exactly one manual disabled routine named Chat routine smoke in this chat's workspace with plan permissions and instructions to inspect the workspace and report findings without changing files, then open the Routines section. Do not start or schedule any run. Use the authenticated Desktop routine tools only."
+        : "DESKTOP_CONTROL_SMOKE: inspect Desktop state and window, then open Appearance settings using the authenticated Desktop tools." };
     const path = join(state.root, "desktop-launch.json");
     await writeFile(path, JSON.stringify(launch, null, 2), { mode: 0o600 });
     console.log(JSON.stringify({ status: "READY", launchRecipe: path, agencHome: state.agencHome, modelBaseUrl: provider.url, project }));
     await new Promise(resolve => { process.once("SIGINT", resolve); process.once("SIGTERM", resolve); });
   } else {
   client = await connect({ env: state.env, autostart: false, clientName: "desktop-control-delivery-gate", onPermissionRequest: (event) => { console.log(`Approved once: ${event.toolName}`); return { behavior: "allow", scope: "once" }; } });
-  const created = await client.spawnAgent({ objective: "Desktop MCP delivery gate", cwd: project, initialContent: [], provider: "openai", model,
+  const created = await client.spawnAgent({ objective: "Desktop MCP delivery gate", cwd: project, initialContent: [], provider: fixtureProvider, model,
     permissionMode: terminalPolicy ? "bypassPermissions" : "default",
     // Match Desktop ingress: endpoint is deliberately NOT an env override.
     envOverrides: { OPENAI_API_KEY: "isolated-scripted-key", AGENC_AUTH_MANAGED_KEYS_ENABLED: "0" },
@@ -218,7 +234,7 @@ try {
   const visible = JSON.stringify({ events, result, transcript: await session.transcript(), mcp: await client.request("session.mcp.status", { sessionId: session.sessionId }) });
   for (const secret of secrets) assert(!visible.includes(secret), "credential reached session output");
   if (terminalPolicy) {
-    const restricted = await client.spawnAgent({ objective: "Desktop restricted terminal refusal gate", cwd: project, initialContent: [], provider: "openai", model,
+    const restricted = await client.spawnAgent({ objective: "Desktop restricted terminal refusal gate", cwd: project, initialContent: [], provider: fixtureProvider, model,
       permissionMode: "default", envOverrides: { OPENAI_API_KEY: "isolated-scripted-key", AGENC_AUTH_MANAGED_KEYS_ENABLED: "0" },
       runtimeOptions: { simpleMode: false, dangerouslyBypassApprovalsAndSandbox: false, stdinDataMode: false, remoteMode: false, pluginStorageRoot: project, allowUntrustedHooks: false },
     });

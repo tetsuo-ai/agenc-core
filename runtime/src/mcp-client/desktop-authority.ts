@@ -8,10 +8,15 @@ export interface DesktopAuthorityGrant { readonly id: string; readonly expiresAt
 const grants = new WeakSet<object>();
 const publicKeys = new WeakMap<object, KeyObject>();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const READS = new Set(["desktop_state", "desktop_window_state", "browser_tabs", "browser_snapshot", "browser_read_text", "browser_screenshot", "browser_wait_for", "browser_downloads", "browser_console", "terminal_list", "terminal_read"]);
+const READS = new Set(["desktop_state", "desktop_window_state", "desktop_routine_list", "desktop_routine_get", "desktop_routine_runs", "browser_tabs", "browser_snapshot", "browser_read_text", "browser_screenshot", "browser_wait_for", "browser_downloads", "browser_console", "terminal_list", "terminal_read"]);
 // Browser v1 contract: isolated no-Node contents, http(s)-only navigation,
 // owner-targeted tabs, automatic downloads blocked before any file creation.
-const UI_MUTATIONS = new Set(["desktop_settings_open", "desktop_settings_update", "desktop_window", "desktop_session_open", "desktop_session_update", "desktop_project_select", "browser_open_tab", "browser_select_tab", "browser_close_tab", "browser_navigate", "browser_click", "browser_type", "browser_press_key", "browser_scroll", "browser_back", "browser_forward", "browser_reload", "browser_evaluate"]);
+const UI_MUTATIONS = new Set(["desktop_settings_open", "desktop_settings_update", "desktop_window", "desktop_session_open", "desktop_session_update", "desktop_project_select", "desktop_routines_open", "browser_open_tab", "browser_select_tab", "browser_close_tab", "browser_navigate", "browser_click", "browser_type", "browser_press_key", "browser_scroll", "browser_back", "browser_forward", "browser_reload", "browser_evaluate"]);
+// These change only Core's fixed private routine store / scheduler. Execution
+// runs in a fresh canonical Core child, never an unsandboxed Desktop process.
+// Unlike UI navigation, they also require a non-read-only admitted parent.
+const ROUTINE_MUTATIONS = new Set(["desktop_routine_create", "desktop_routine_update", "desktop_routine_delete", "desktop_routine_run", "desktop_routine_cancel"]);
+const NATIVE_TERMINALS = new Set(["terminal_open", "terminal_run", "terminal_type", "terminal_close"]);
 
 /** Exact protocol keys, independent of insertion order or host locale. */
 function hasExactOwnKeys(value: object, expected: readonly string[]): boolean {
@@ -144,9 +149,17 @@ export function hasDesktopAuthority(grant: DesktopAuthorityGrant | undefined): b
 }
 
 /** Closed product-owned capability classification; server annotations cannot grant it. */
-export function desktopToolClassification(grant: DesktopAuthorityGrant | undefined, name: string): "read" | "ui-mutation" | undefined {
+export function desktopToolClassification(grant: DesktopAuthorityGrant | undefined, name: string): "read" | "ui-mutation" | "routine-mutation" | undefined {
   if (!hasDesktopAuthority(grant)) return undefined;
   if (READS.has(name)) return "read";
   if (UI_MUTATIONS.has(name)) return "ui-mutation";
+  if (ROUTINE_MUTATIONS.has(name)) return "routine-mutation";
   return undefined;
+}
+
+/** Catalog eligibility only; invocation still needs its ordinary admission,
+ * local turn, live host, sandbox and approval checks. Never match a prefix. */
+export function isAuthenticatedDesktopToolName(grant: DesktopAuthorityGrant | undefined, name: string): boolean {
+  return hasDesktopAuthority(grant) &&
+    (desktopToolClassification(grant, name) !== undefined || NATIVE_TERMINALS.has(name));
 }

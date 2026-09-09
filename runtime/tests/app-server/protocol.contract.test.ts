@@ -403,6 +403,45 @@ describe("AgenC daemon protocol surface", () => {
     // against this repository's canonical TypeScript registry and schema.
   });
 
+  it("accepts an optional manual routine run revision without widening other routine requests", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    const envelope = { jsonrpc: JSON_RPC_VERSION, id: "reviewed-run", method: "routine.run" };
+    const params = { id: "routine_test", expectedUpdatedAt: "2026-09-09T12:00:00.000Z" };
+    expect(validate({ ...envelope, params })).toBe(true);
+    expect(validate({ ...envelope, params: { id: params.id } })).toBe(true);
+    for (const expectedUpdatedAt of [null, 12, "", "x".repeat(65)]) {
+      expect(validate({ ...envelope, params: { ...params, expectedUpdatedAt } })).toBe(false);
+    }
+    expect(validate({ ...envelope, method: "routine.get", params })).toBe(false);
+    expect(validate({ ...envelope, params: { ...params, permissionMode: "bypassPermissions" } })).toBe(false);
+  });
+
+  it("bounds request-only workspace expectations and only permits update guards with a cwd patch", () => {
+    const schema = readProtocolSchema();
+    const validate = compileRequestValidator(schema);
+    const expectedWorkspace = { cwd: "/workspace/project", dev: "1", ino: "1234" };
+    const create = { name: "Review", instructions: "Review this project.", cwd: expectedWorkspace.cwd, schedule: { kind: "manual" } };
+    const update = { id: "routine_test", patch: { cwd: expectedWorkspace.cwd } };
+    const envelope = (method: string, params: unknown) => ({ jsonrpc: JSON_RPC_VERSION, id: "workspace-guard", method, params });
+    for (const [method, params] of [["routine.create", create], ["routine.update", update]] as const) {
+      expect(validate(envelope(method, params))).toBe(true);
+      expect(validate(envelope(method, { ...params, expectedWorkspace })), JSON.stringify(validate.errors)).toBe(true);
+      for (const guard of [
+        null, [], {}, { ...expectedWorkspace, extra: true }, { cwd: expectedWorkspace.cwd, dev: "1" },
+        { ...expectedWorkspace, cwd: "" }, { ...expectedWorkspace, cwd: "x".repeat(4097) },
+        ...[null, 12, "", "-1", "1.0", "1e2", "1\n", "x", "1".repeat(33)].flatMap(value => [{ ...expectedWorkspace, dev: value }, { ...expectedWorkspace, ino: value }]),
+      ]) expect(validate(envelope(method, { ...params, expectedWorkspace: guard })), JSON.stringify(guard)).toBe(false);
+    }
+    expect(validate(envelope("routine.update", { ...update, patch: { name: "Not a workspace edit" }, expectedWorkspace }))).toBe(false);
+    expect(validate(envelope("routine.update", { ...update, patch: { ...update.patch, expectedWorkspace } }))).toBe(false);
+    expect(validate(envelope("routine.run", { id: update.id, expectedWorkspace }))).toBe(false);
+    expect(validate(envelope("routine.get", { id: update.id, expectedWorkspace }))).toBe(false);
+    const validateRoutine = compileDefinitionValidator(schema, "Routine");
+    const routine = { ...create, id: update.id, description: "", permissionMode: "plan", enabled: false, notifyOnCompletion: true, createdAt: "2026-09-09T12:00:00.000Z", updatedAt: "2026-09-09T12:00:00.000Z", nextRunAt: null, lastRun: null };
+    expect(validateRoutine(routine)).toBe(true);
+    expect(validateRoutine({ ...routine, expectedWorkspace })).toBe(false);
+  });
+
   it("defines bounded Whisper internal contracts without widening the public request surface", () => {
     const schema = readProtocolSchema();
     const methods = ["audio.whisper.status", "audio.whisper.install", "audio.whisper.transcribe"];
