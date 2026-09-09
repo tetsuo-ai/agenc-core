@@ -6,20 +6,19 @@ import { assertHostedAgencModelAuthority, resolveProviderRuntimeAuthority } from
 import { collectProviderAvailability } from "../../src/llm/discovery/provider-discovery.js";
 import { defaultConfig } from "../../src/config/schema.js";
 
-const model = "Qwen/Qwen3.8-Flash-Next";
-const future = new Date(Date.now() + 60_000).toISOString();
-const usage: AuthLlmUsage = {
-  managedModelsEnabled: true,
-  subscriptionTier: "free",
-  modelAllowance: { status: "active", allowedModelCount: 1, duration: "pilot" },
-  pilotAccess: { provider: "agenc", models: [model], expiresAt: future },
-};
+describe.each(["Qwen/Qwen3.8-Flash-Next", "Qwen/Qwen3-Coder-30B-A3B-Instruct"])("explicit private pilot access: %s", (model) => {
+  const future = new Date(Date.now() + 60_000).toISOString();
+  const usage: AuthLlmUsage = {
+    managedModelsEnabled: true,
+    subscriptionTier: "free",
+    modelAllowance: { status: "active", allowedModelCount: 1, duration: "pilot" },
+    pilotAccess: { provider: "agenc", models: [model], expiresAt: future },
+  };
 
-function backend(value: AuthLlmUsage = usage): AuthBackend {
-  return new RemoteAuthBackend({ managedKeysEnabled: true, llmUsageResolver: () => value });
-}
+  function backend(value: AuthLlmUsage = usage): AuthBackend {
+    return new RemoteAuthBackend({ managedKeysEnabled: true, llmUsageResolver: () => value });
+  }
 
-describe("explicit private pilot access", () => {
   it("retains model-scoped entitlement without promoting the account tier", async () => {
     const authBackend = backend();
     expect(await authBackend.getLlmUsage()).toEqual(usage);
@@ -48,6 +47,8 @@ describe("explicit private pilot access", () => {
 
   it("does not grant a default route, another model or a malformed entitlement", () => {
     expect(hasActivePilotModelAccess(usage, "agenc")).toBe(false);
+    const otherModel = model.includes("Coder") ? "Qwen/Qwen3.8-Flash-Next" : "Qwen/Qwen3-Coder-30B-A3B-Instruct";
+    expect(hasActivePilotModelAccess(usage, otherModel)).toBe(false);
     expect(hasActivePilotModelAccess(usage, model.toLowerCase())).toBe(false);
     expect(normalizePilotAccess({ ...usage.pilotAccess, expiresAt: "never" })).toBeUndefined();
     expect(normalizePilotAccess({ ...usage.pilotAccess, provider: "qwen" })).toBeUndefined();

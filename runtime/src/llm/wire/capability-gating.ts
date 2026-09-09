@@ -32,6 +32,7 @@ import type { ProviderReasoningProvenance } from "../types.js";
 import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "../registry/openai-reasoning-models.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
+import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
 
 export interface ChatCompletionsCapabilityHints {
   /**
@@ -399,7 +400,8 @@ export function chatCompletionsCapabilityHintsForProvider(
     /(?:^|[/:])glm-(?:5(?:\.(?:1|2|3))?|4\.(?:6|7))(?:$|[-_.:])/i.test(
       model ?? "",
     );
-  const isQwenCloud = slug === "qwen" || slug === "qwen-token-plan";
+  const isQwenCloud = (slug === "qwen" || slug === "qwen-token-plan") &&
+    !isQwenCoder30BModel(model);
   const isQwenFlashNext = slug === "qwen" && isQwenFlashNextModel(model);
   const preservesThinkingHistory =
     (slug === "qwen" &&
