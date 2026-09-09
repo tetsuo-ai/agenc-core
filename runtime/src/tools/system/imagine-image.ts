@@ -777,26 +777,46 @@ function maxImagesPerRequest(backend: ImageBackend, model: string): number {
 }
 
 /**
- * `quality` means different things per backend, so each one owns its own
- * vocabulary; a backend with no notion of quality rejects the field outright
- * rather than dropping it silently.
+ * The universal schema this tool advertises before a Session attaches offers
+ * `quality` as hd/standard, so a model following it sends those words to
+ * whichever backend is resolved later. OpenAI grades quality on its own
+ * scale, and the two map cleanly, so translate rather than refuse: refusing
+ * a value the tool itself advertised wedges the run (the model rewords the
+ * prompt and re-sends the same field).
  */
-function imageQualityError(
+const UNIVERSAL_TO_OPENAI_QUALITY: Readonly<Record<string, string>> =
+  Object.freeze({ hd: "high", standard: "medium" });
+
+/**
+ * What a backend does with the `quality` it was given: use it, ignore it
+ * because it has no such control, or refuse it as unusable.
+ */
+type QualityDecision =
+  | { readonly kind: "use"; readonly value: string | undefined }
+  | { readonly kind: "ignore" }
+  | { readonly kind: "refuse"; readonly error: string };
+
+function decideImageQuality(
   backend: ImageBackend,
   quality: string | undefined,
-): string | undefined {
-  if (quality === undefined) return undefined;
+): QualityDecision {
+  if (quality === undefined) return { kind: "use", value: undefined };
   if (backend.kind === "zai") {
     return quality === "hd" || quality === "standard"
-      ? undefined
-      : "quality must be hd or standard";
+      ? { kind: "use", value: quality }
+      : { kind: "refuse", error: "quality must be hd or standard" };
   }
   if (backend.kind === "openai") {
-    return OPENAI_IMAGE_QUALITIES.has(quality)
-      ? undefined
-      : `OpenAI quality must be one of ${[...OPENAI_IMAGE_QUALITIES].join(", ")}`;
+    const translated = UNIVERSAL_TO_OPENAI_QUALITY[quality] ?? quality;
+    return OPENAI_IMAGE_QUALITIES.has(translated)
+      ? { kind: "use", value: translated }
+      : {
+          kind: "refuse",
+          error: `OpenAI quality must be one of ${[...OPENAI_IMAGE_QUALITIES].join(", ")}`,
+        };
   }
-  return "quality is supported only by Z.AI and OpenAI images";
+  // Meta, QwenCloud, MiniMax and xAI have no quality control at all.
+  return { kind: "ignore" };
 }
 
 interface ImageRequestShape {
@@ -1140,88 +1160,54 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           (backend.provider === "qwen" && !isPayGoModel) ||
           (backend.provider === "qwen-token-plan" && !isTokenPlanModel)
         ) {
-          return json(
-            {
+          return refusal({
               error:
                 backend.provider === "qwen"
                   ? "QwenCloud Pay-As-You-Go image model must be qwen-image-3.0 or qwen-image-3.0-pro"
                   : "QwenCloud Token Plan image model must be qwen-image-3.0-pro, wan2.7-image, or wan2.7-image-pro",
-            },
-            true,
-          );
+            });
         }
       } else if (backend.kind === "zai") {
         if (model !== "glm-image" && model !== "cogview-4-250304") {
-          return json(
-            {
+          return refusal({
               error:
                 "Z.AI image model must be glm-image or cogview-4-250304",
-            },
-            true,
-          );
+            });
         }
       } else if (backend.kind === "openai") {
         if (!OPENAI_IMAGE_MODELS.has(model)) {
-          return json(
-            {
+          return refusal({
               error: `OpenAI image model must be one of ${[...OPENAI_IMAGE_MODELS].join(", ")}`,
-            },
-            true,
-          );
+            });
         }
       } else if (backend.kind === "minimax") {
         if (!MINIMAX_IMAGE_MODELS.has(model)) {
-          return json(
-            {
+          return refusal({
               error: `MiniMax image model must be one of ${[...MINIMAX_IMAGE_MODELS].join(", ")}`,
-            },
-            true,
-          );
+            });
         }
       } else if (
         model !== "grok-imagine-image" &&
         model !== "grok-imagine-image-2.0" &&
         model !== "grok-imagine-image-quality"
       ) {
-        return json(
-          {
+        return refusal({
             error:
               "xAI image model must be grok-imagine-image, grok-imagine-image-2.0, or grok-imagine-image-quality",
-          },
-          true,
-        );
+          });
       }
 
       const nRaw = typeof args.n === "number" ? args.n : 1;
       if (backend.kind === "zai" && nRaw !== 1) {
-        return json(
-          {
+        return refusal({
             error:
               "Z.AI image generation returns exactly one image per request",
-          },
-          true,
-        );
+          });
       }
       const n = Math.max(1, Math.min(maxImagesPerRequest(backend, model), Math.floor(nRaw)));
       const aspect_ratio = stringValue(args.aspect_ratio);
       if (aspect_ratio !== undefined && !ALLOWED_ASPECT.has(aspect_ratio)) {
-        return json(
-          { error: `unsupported aspect_ratio: ${aspect_ratio}` },
-          true,
-        );
-      }
-      if (
-        backend.kind === "minimax" &&
-        aspect_ratio !== undefined &&
-        aspect_ratio !== "auto" &&
-        !MINIMAX_ASPECT_RATIOS.has(aspect_ratio)
-      ) {
-        return json(
-          {
-            error: `MiniMax aspect_ratio must be one of ${[...MINIMAX_ASPECT_RATIOS].join(", ")}`,
-          },
-          true,
-        );
+        return refusal({ error: `unsupported aspect_ratio: ${aspect_ratio}` });
       }
       const resolution = stringValue(args.resolution);
       if (
@@ -1231,38 +1217,48 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       ) {
         return refusal({ error: "resolution must be 1k or 2k" });
       }
-      if (backend.kind === "zai" && resolution !== undefined) {
-        return json(
-          {
-            error:
-              "Z.AI image size is selected by aspect_ratio; resolution is not supported",
-          },
-          true,
-        );
-      }
+
+      // A control the advertised schema offers but this backend has no notion
+      // of is dropped and named in the result, never refused. The universal
+      // schema is what a model sees before a Session attaches, so refusing
+      // here punishes it for following the schema it was given, and it does
+      // not recover: observed live, the model rewords the prompt and re-sends
+      // the same field until the repeat-call guard stops the turn.
+      const ignoredControls: string[] = [];
       if (
-        (backend.kind === "openai" || backend.kind === "minimax") &&
-        resolution !== undefined
+        resolution !== undefined &&
+        (backend.kind === "openai" ||
+          backend.kind === "minimax" ||
+          backend.kind === "zai")
       ) {
-        return json(
-          {
-            error: `${backend.kind === "openai" ? "OpenAI" : "MiniMax"} image size is selected by aspect_ratio; resolution is not supported`,
-          },
-          true,
-        );
+        ignoredControls.push("resolution");
       }
-      const quality = stringValue(args.quality);
-      const qualityError = imageQualityError(backend, quality);
-      if (qualityError !== undefined) {
-        return refusal({ error: qualityError });
+      // MiniMax takes a shorter list of ratios than this tool's shared
+      // vocabulary; an unsupported one falls back to MiniMax's own default.
+      const minimaxRejectsAspect =
+        backend.kind === "minimax" &&
+        aspect_ratio !== undefined &&
+        aspect_ratio !== "auto" &&
+        !MINIMAX_ASPECT_RATIOS.has(aspect_ratio);
+      if (minimaxRejectsAspect) ignoredControls.push("aspect_ratio");
+      const effectiveAspect = minimaxRejectsAspect ? undefined : aspect_ratio;
+      const qualityDecision = decideImageQuality(
+        backend,
+        stringValue(args.quality),
+      );
+      if (qualityDecision.kind === "refuse") {
+        return refusal({ error: qualityDecision.error });
       }
+      if (qualityDecision.kind === "ignore") ignoredControls.push("quality");
+      const quality =
+        qualityDecision.kind === "use" ? qualityDecision.value : undefined;
 
       const body: Record<string, unknown> = initialImageRequestBody({
         backend,
         model,
         prompt,
         n,
-        aspectRatio: aspect_ratio,
+        aspectRatio: effectiveAspect,
         quality,
       });
       if (backend.kind === "xai") {
@@ -1515,6 +1511,8 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           paths,
           path: paths[0],
           n: paths.length,
+          // Named so the model can tell the user what it did not honour.
+          ...(ignoredControls.length > 0 ? { ignoredControls } : {}),
         });
       } catch (error) {
         admittedSignal?.throwIfAborted();

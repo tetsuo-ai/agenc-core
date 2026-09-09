@@ -641,18 +641,21 @@ describe("ImagineImage tool", () => {
     expect(invalidCount.content).toMatch(/exactly one image/u);
     expect(fetchImpl).not.toHaveBeenCalled();
 
-    const invalidResolution = await tool.execute({
-      prompt: "must not send",
+    // Z.AI picks its size from aspect_ratio, so `resolution` is dropped and
+    // named rather than refused: it is a control the universal schema offers,
+    // and refusing it stalls the run instead of correcting it.
+    const droppedResolution = await tool.execute({
+      prompt: "host validation",
       resolution: "2k",
     });
-    expect(invalidResolution.isError).toBe(true);
-    expect(invalidResolution.content).toMatch(/selected by aspect_ratio/u);
-    expect(fetchImpl).not.toHaveBeenCalled();
-
-    const untrusted = await tool.execute({ prompt: "host validation" });
-    expect(untrusted.isError).toBe(true);
-    expect(untrusted.content).toMatch(/not trusted for the zai backend/u);
+    expect(droppedResolution.isError).toBe(true);
+    expect(droppedResolution.content).toMatch(/not trusted for the zai backend/u);
     expect(fetchImpl).toHaveBeenCalledOnce();
+    const sentBody = JSON.parse(
+      String((fetchImpl.mock.calls[0]?.[1] as { body: string }).body),
+    ) as Record<string, unknown>;
+    expect(sentBody.resolution).toBeUndefined();
+    expect(sentBody.size).toBe("1280x1280");
   });
 
   it("fails closed when Z.ai unexpectedly returns more than one image", async () => {
@@ -1318,11 +1321,26 @@ describe("ImagineImage tool", () => {
 
   it("keeps each backend's own quality vocabulary", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-quality-"));
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ data: [] }),
-    })) as unknown as typeof fetch;
+    // One mock for both backends: each answers in its own response shape.
+    const b64 = Buffer.from("pixels").toString("base64");
+    const fetchImpl = vi.fn(async (url: string | URL) =>
+      String(url).includes("/image_generation")
+        ? {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: { image_base64: [b64] },
+              base_resp: { status_code: 0 },
+            }),
+          }
+        : {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: [{ b64_json: b64 }],
+              output_format: "png",
+            }),
+          }) as unknown as typeof fetch;
     const openaiTool = createSessionImagineImageTool({
       workspaceRoot: root,
       provider: createProvider("openai", {
@@ -1343,28 +1361,53 @@ describe("ImagineImage tool", () => {
       fetchImpl,
     });
 
-    // Z.AI's vocabulary is not OpenAI's, and vice versa.
+    // hd/standard is the universal schema's vocabulary, which a model sees
+    // before a Session attaches. OpenAI grades quality differently but the
+    // two map cleanly, so it is translated rather than refused.
     const hd = await openaiTool.execute({ prompt: "x", quality: "hd" });
-    expect(hd.isError).toBe(true);
-    expect(String(hd.content)).toContain("OpenAI quality must be");
-    const unsupported = await minimaxTool.execute({
-      prompt: "x",
-      quality: "high",
-    });
-    expect(unsupported.isError).toBe(true);
-    expect(String(unsupported.content)).toContain(
-      "supported only by Z.AI and OpenAI",
-    );
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(hd.isError).toBeUndefined();
+    const hdBody = JSON.parse(
+      ((fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
+        .calls[0]?.[1] as { body: string }).body,
+    ) as { quality?: string };
+    expect(hdBody.quality).toBe("high");
+
+    // A value no backend vocabulary contains is still refused.
+    const bogus = await openaiTool.execute({ prompt: "x", quality: "ultra" });
+    expect(bogus.isError).toBe(true);
+    expect(String(bogus.content)).toContain("OpenAI quality must be");
+
+    // MiniMax has no quality control, so the field is dropped and named.
+    const dropped = await minimaxTool.execute({ prompt: "x", quality: "high" });
+    expect(dropped.isError).toBeUndefined();
+    expect(
+      (JSON.parse(dropped.content) as { ignoredControls?: string[] })
+        .ignoredControls,
+    ).toEqual(["quality"]);
   });
 
   it("refuses controls the new backends do not have", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-controls-"));
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ data: [] }),
-    })) as unknown as typeof fetch;
+    // One mock for both backends: each answers in its own response shape.
+    const b64 = Buffer.from("pixels").toString("base64");
+    const fetchImpl = vi.fn(async (url: string | URL) =>
+      String(url).includes("/image_generation")
+        ? {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: { image_base64: [b64] },
+              base_resp: { status_code: 0 },
+            }),
+          }
+        : {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: [{ b64_json: b64 }],
+              output_format: "png",
+            }),
+          }) as unknown as typeof fetch;
     const minimaxTool = createSessionImagineImageTool({
       workspaceRoot: root,
       provider: createProvider("minimax", {
@@ -1375,19 +1418,33 @@ describe("ImagineImage tool", () => {
       fetchImpl,
     });
 
-    // 2:1 is in this tool's shared vocabulary but MiniMax rejects it.
+    // 2:1 is in this tool's shared vocabulary but MiniMax rejects it, and
+    // MiniMax has no resolution tier. Both are dropped and named rather than
+    // refused, so the run proceeds instead of stalling on a control the
+    // advertised schema itself offered.
     const aspect = await minimaxTool.execute({ prompt: "x", aspect_ratio: "2:1" });
-    expect(aspect.isError).toBe(true);
-    expect(String(aspect.content)).toContain("MiniMax aspect_ratio must be");
+    expect(aspect.isError).toBeUndefined();
+    expect(
+      (JSON.parse(aspect.content) as { ignoredControls?: string[] })
+        .ignoredControls,
+    ).toEqual(["aspect_ratio"]);
+    const aspectBody = JSON.parse(
+      ((fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
+        .calls[0]?.[1] as { body: string }).body,
+    ) as { aspect_ratio?: string };
+    expect(aspectBody.aspect_ratio).toBeUndefined();
 
     const resolution = await minimaxTool.execute({ prompt: "x", resolution: "2k" });
-    expect(resolution.isError).toBe(true);
-    expect(String(resolution.content)).toContain("resolution is not supported");
+    expect(resolution.isError).toBeUndefined();
+    expect(
+      (JSON.parse(resolution.content) as { ignoredControls?: string[] })
+        .ignoredControls,
+    ).toEqual(["resolution"]);
 
+    // An unknown model is still refused: it cannot be silently substituted.
     const model = await minimaxTool.execute({ prompt: "x", model: "image-99" });
     expect(model.isError).toBe(true);
     expect(String(model.content)).toContain("MiniMax image model must be");
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("clamps a MiniMax batch to the nine images it will return", async () => {
@@ -1495,6 +1552,61 @@ describe("ImagineImage tool", () => {
     expect(minimaxSchema.properties.n?.maximum).toBe(9);
     // The advertised ratios are the ones MiniMax will accept, not the union.
     expect(minimaxSchema.properties.aspect_ratio?.enum).not.toContain("2:1");
+  });
+
+  it("never gates the session on an argument it refused before requesting", async () => {
+    // Repro from the desktop app: the tool registry is built before the
+    // Session attaches, so the model sees the universal schema and sends
+    // resolution/quality that the resolved backend has no notion of. A bare
+    // isError from a side-effecting tool is filed as an unknown outcome and
+    // blocks every later side-effecting call behind /resolve (#2190), which
+    // is what happened: one stray `resolution: "1k"` bricked the session.
+    const root = await mkdtemp(join(tmpdir(), "imagine-refusal-"));
+    const fetchImpl = vi.fn();
+    const openai = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("openai", {
+        apiKey: "unused",
+        model: "gpt-6-astra",
+        baseURL: "https://api.openai.com/v1",
+      }),
+      env: { OPENAI_API_KEY: "isolated-openai-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const minimax = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("minimax", {
+        apiKey: "unused",
+        model: "MiniMax-M2.5",
+      }),
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const zai = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("zai", { apiKey: "k", model: "glm-5.3" }),
+      env: { ZAI_API_KEY: "isolated-zai-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const cases: Array<[string, Promise<{ isError?: boolean; effectDisposition?: { disposition?: string } }>]> = [
+      ["openai model", openai.execute({ prompt: "x", model: "gpt-image-99" })],
+      ["openai quality", openai.execute({ prompt: "x", quality: "ultra" })],
+      ["minimax model", minimax.execute({ prompt: "x", model: "image-99" })],
+      ["aspect vocabulary", openai.execute({ prompt: "x", aspect_ratio: "5:1" })],
+      ["resolution vocabulary", openai.execute({ prompt: "x", resolution: "9k" })],
+      // The pre-existing backends carried the same defect.
+      ["zai model", zai.execute({ prompt: "x", model: "glm-nope" })],
+      ["zai n", zai.execute({ prompt: "x", n: 3 })],
+    ];
+    for (const [name, pending] of cases) {
+      const result = await pending;
+      expect(result.isError, name).toBe(true);
+      expect(result.effectDisposition?.disposition, name).toBe(
+        "confirmed_no_effect",
+      );
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("refuses a missing prompt before any request, and says so", async () => {
