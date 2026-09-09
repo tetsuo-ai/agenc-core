@@ -1,4 +1,9 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "codex/flash-next-local": false
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
