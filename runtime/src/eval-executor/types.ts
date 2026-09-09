@@ -115,6 +115,7 @@ export interface ContainerExecRequest {
    * --env`, not visible in host `ps`.
    */
   readonly envPassthrough?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface ContainerExecResult {

@@ -33,6 +33,7 @@ interface SpawnBoundedOptions {
   readonly timeoutMs?: number;
   readonly stdin?: Uint8Array;
   readonly maxOutputBytes?: number;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 function spawnBounded(
@@ -44,6 +45,7 @@ function spawnBounded(
     const startedAt = Date.now();
     const child = spawn(command, args, {
       stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"],
+      ...(options.env !== undefined ? { env: options.env } : {}),
     });
     let stdout: Buffer = Buffer.alloc(0);
     let stderr: Buffer = Buffer.alloc(0);
@@ -523,20 +525,26 @@ export class DockerContainerRunner implements ContainerRunner {
   }
 
   async exec(handle: ContainerHandle, request: ContainerExecRequest): Promise<ContainerExecResult> {
-    // `-e NAME` (no `=value`) forwards the value from the executor's own
-    // environment: a secret is never on the argv the way `-e NAME=value`
-    // would be. Reject a name that could smuggle a literal value.
+    // `-e NAME` forwards values from the docker child's environment, never
+    // from shell source or `-e NAME=value` arguments.
     const envArgs: string[] = [];
-    for (const name of request.envPassthrough ?? []) {
+    const names = new Set([...Object.keys(request.env ?? {}), ...(request.envPassthrough ?? [])]);
+    for (const name of names) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
         throw new EvalExecutorError([`invalid env passthrough name ${name}`]);
       }
       envArgs.push("-e", name);
     }
+    for (const [name, value] of Object.entries(request.env ?? {})) {
+      if (typeof value !== "string" || value.includes("\0")) {
+        throw new EvalExecutorError([`invalid env value for ${name}`]);
+      }
+    }
     return spawnBounded(
       "docker",
       ["exec", ...envArgs, "-w", handle.workdir, handle.id, "bash", "-c", request.script],
       {
+        ...(request.env !== undefined ? { env: { ...process.env, ...request.env } } : {}),
         ...(request.timeoutMs !== undefined
           ? { timeoutMs: request.timeoutMs }
           : {}),

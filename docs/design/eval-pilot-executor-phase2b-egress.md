@@ -29,8 +29,18 @@ the adversarial review:
   test (a `/proc/net/ipv6_route` parse proved fragile across kernels).
 - **Key redaction.** Beyond scanning the patch, the provider key is scanned in
   the agent's stdout result and stderr and redacted from every persisted /
-  digested text artifact; a hit quarantines the run. A too-short key and a
-  model / base URL containing shell metacharacters are rejected up front.
+  digested text artifact; a hit quarantines the run. A too-short key or invalid
+  model is rejected up front. Provider URLs must parse as HTTPS, match the
+  configured egress host and port, and contain no credentials, fragments,
+  backslashes, spaces, or control characters.
+
+The executor passes the provider URL, model, and proxy values in a per-call
+environment map. The Docker child receives those values directly, and
+`docker exec -e NAME` forwards them by name. Configuration never becomes bash
+source or a command-line value. Accepted URL path and query bytes remain
+literal, including dollar signs, parentheses, quotes, and command separators.
+Concurrent calls do not change the executor's environment. Existing secret
+name-only passthrough is retained.
 
 Phase 2a ships the offline agent-run lane (`--network none`, bundled
 in-container mock provider). Phase 2b lets the agent reach a **real** model

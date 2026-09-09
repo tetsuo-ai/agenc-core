@@ -133,13 +133,11 @@ describe("egress probe parsing + containment", () => {
 
 describe("real-provider agent script", () => {
   test("routes through the proxy and never assigns the key", () => {
-    const script = buildRealProviderAgentScript({
-      proxyIp: "10.88.7.2", proxyListenPort: 8080, model: "grok-4.5", baseUrl: "https://api.x.ai/v1",
-    });
-    expect(script).toContain("HTTPS_PROXY=http://10.88.7.2:8080");
+    const script = buildRealProviderAgentScript();
+    expect(script).toContain("${HTTPS_PROXY:?}");
     expect(script).toContain("AGENC_PROXY_RESOLVES_HOSTS=1");
-    expect(script).toContain("AGENC_MODEL=grok-4.5");
-    expect(script).toContain('OPENAI_COMPATIBLE_BASE_URL="https://api.x.ai/v1"');
+    expect(script).toContain("${AGENC_MODEL:?}");
+    expect(script).toContain("${OPENAI_COMPATIBLE_BASE_URL:?}");
     // The key is delivered via docker exec -e, never assigned in the script.
     expect(script).not.toContain("OPENAI_COMPATIBLE_API_KEY=");
     // No mock provider in the real lane.
@@ -336,6 +334,39 @@ describe("real-provider lane gating (fake lane, no docker)", () => {
     const { factory } = laneFactory(ALL_TRUE, runner);
     await expect(runRealProviderAgentOnTask(runner, factory, inputs(), config()))
       .rejects.toThrow(new RegExp(KEY_VAR));
+  });
+
+  test.each([
+    "https://api.x.ai/v1",
+    "https://api.x.ai:443/v1?api-version=2026-09&value=a+b%20c",
+    "https://api.x.ai/v1/$(true)?value='quoted'&other=();",
+  ])("passes provider URL %j as environment data, never shell source", async (baseUrl) => {
+    const runner = new FakeRunner("");
+    const { factory } = laneFactory(ALL_TRUE, runner);
+    await runRealProviderAgentOnTask(runner, factory, inputs(), { ...config(), baseUrl });
+    const agentExec = runner.execs.find((request) => request.script.includes("agenc.js") && request.script.includes("AGENC_PROVIDER"));
+    expect(agentExec).toBeDefined();
+    expect(agentExec!.script).not.toContain(baseUrl);
+    expect(agentExec!.script).not.toContain("grok-4.5");
+    expect(Reflect.get(agentExec!, "env")).toMatchObject({
+      OPENAI_COMPATIBLE_BASE_URL: baseUrl, AGENC_MODEL: "grok-4.5",
+      HTTPS_PROXY: "http://10.88.9.2:8080", HTTP_PROXY: "http://10.88.9.2:8080", NO_PROXY: "",
+    });
+  });
+
+  test.each([
+    "http://api.x.ai/v1", "https:///api.x.ai/v1", "https://user:pass@api.x.ai/v1",
+    "https://other.invalid/v1", "https://api.x.ai:444/v1", "https://api.x.ai/v1#fragment",
+    "https://api.x.ai/v1\n", "https://api.x.ai/v1\t", "https://api.x.ai/v1 with spaces",
+    "https://api.x.ai\\v1", "https://[broken", "https://api.x.ai/\0value",
+  ])("rejects provider URL %j before lane creation", async (baseUrl) => {
+    const runner = new FakeRunner("");
+    let created = false;
+    const factory = async (): Promise<EgressLane> => { created = true; throw new Error("must not create lane"); };
+    await expect(runRealProviderAgentOnTask(runner, factory, inputs(), { ...config(), baseUrl }))
+      .rejects.toThrow(/invalid provider base URL/u);
+    expect(created).toBe(false);
+    expect(runner.execs).toHaveLength(0);
   });
 
   test("a too-short key and an invalid model are rejected up front", async () => {
