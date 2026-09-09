@@ -10,6 +10,7 @@
  */
 
 import { VERSION } from "../../version.js";
+import { Agent as UndiciAgent } from "undici";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
@@ -24,8 +25,12 @@ import { getProxyFetchOptions } from "../../utils/proxy.js";
 import type { ProviderEnvironment } from "../../llm/provider-options.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 import type { McpOAuthConfig } from "../../config/mcp-oauth.js";
+import { attestDesktopEndpoint, assertDesktopSocketBinding, type DesktopAuthorityGrant } from "../desktop-authority.js";
+import { assertDesktopMcpDispatchGuard } from "../local-control.js";
 
 export interface MCPServerHttpConfig {
+  readonly desktopAuthorityGrant?: DesktopAuthorityGrant;
+  readonly localOnly?: boolean;
   readonly oauth?: McpOAuthConfig;
   readonly name: string;
   readonly endpoint: string;
@@ -51,11 +56,41 @@ export async function createHttpMCPConnection(
   );
 
   const timeout = config.timeout ?? 30_000;
-  const proxyOptions = getProxyFetchOptions({ environment });
+  const socketAgent = config.desktopAuthorityGrant === undefined ? undefined :
+    new UndiciAgent({ connect: { socketPath: config.desktopAuthorityGrant.socketPath } });
+  const proxyOptions = socketAgent ? { dispatcher: socketAgent } : getProxyFetchOptions({
+    // This supplies an explicit direct dispatcher, avoiding even a process-
+    // global fetch proxy while retaining the existing owned agent lifecycle.
+    environment: config.localOnly === true ? EMPTY_MCP_REQUEST_ENVIRONMENT : environment,
+  });
 
   const url = new URL(config.endpoint);
+  const privateFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    if (config.desktopAuthorityGrant) await assertDesktopSocketBinding(config.desktopAuthorityGrant);
+    if (config.desktopAuthorityGrant) {
+      // SDK tool-call bodies are JSON strings. Protocol initialization/listing
+      // may run outside a user turn; actual execution requires its live guard.
+      let toolCall = false;
+      if (typeof init?.body === "string") {
+        try { toolCall = JSON.parse(init.body)?.method === "tools/call"; } catch { /* SDK validates protocol bodies */ }
+      }
+      if (toolCall) assertDesktopMcpDispatchGuard(true);
+    }
+    return fetch(input, { ...init, ...proxyOptions, redirect: "error" });
+  };
+  try {
+  await attestDesktopEndpoint(config, privateFetch);
   const oauth = config.oauth === undefined ? undefined : await import("../../services/mcp/interactive-auth.js");
   const transport = new StreamableHTTPClientTransport(url, {
+    ...(config.localOnly === true ? {
+      // A private loopback credential must never follow an endpoint redirect
+      // or inherit an operator's outbound HTTP proxy.
+      fetch: (input: string | URL | Request, init?: RequestInit) => {
+        const target = new URL(input instanceof Request ? input.url : String(input));
+        if (target.href !== url.href) return Promise.reject(new Error("Local MCP endpoint changed"));
+        return privateFetch(input, init);
+      },
+    } : {}),
     ...(oauth === undefined || config.oauth === undefined ? {} : {
       authProvider: oauth.runtimeMcpOAuthProvider(config.name, config.endpoint, "http", config.oauth, environment, config.headers),
       fetch: oauth.mcpOAuthTransportFetch(environment, fetch, config),
@@ -76,6 +111,13 @@ export async function createHttpMCPConnection(
       ),
     },
   );
+  if (socketAgent) {
+    const closeClient = client.close.bind(client);
+    let closing: Promise<void> | undefined;
+    client.close = () => closing ??= (async () => {
+      try { await closeClient(); } finally { await socketAgent.close(); }
+    })();
+  }
   configureMcpHostRequestHandlers(
     client,
     config.name,
@@ -98,4 +140,8 @@ export async function createHttpMCPConnection(
 
   logger.info(`Connected to MCP HTTP server "${config.name}"`);
   return client;
+  } catch (error) {
+    await socketAgent?.destroy().catch(() => {});
+    throw error;
+  }
 }

@@ -66,6 +66,17 @@ describe("mcpInstructionsDeltaProducer", () => {
     _resetAttachmentTrackingStateForTest(sessionKey);
   });
 
+  test("announces late local attachments on the first eligible turn and changed instructions", async () => {
+    const sessionKey = makeSession(new Map([["desktop", "local app controls"], ["fs", "ordinary bootstrap"]]));
+    Object.assign(sessionKey.services.mcpManager, { getConfiguredServers: () => [{ name: "desktop", localOnly: true }, { name: "fs" }] });
+    const state = getAttachmentTrackingState(sessionKey);
+    expect(await mcpInstructionsDeltaProducer(makeOpts(sessionKey), state)).toEqual([{ kind: "mcp_instructions_delta", addedNames: ["desktop"], addedBlocks: ["local app controls"], removedNames: [] }]);
+    expect(await mcpInstructionsDeltaProducer(makeOpts(sessionKey), state)).toEqual([]);
+    sessionKey.services.mcpManager.servers.set("desktop", "updated app controls");
+    expect(await mcpInstructionsDeltaProducer(makeOpts(sessionKey), state)).toEqual([{ kind: "mcp_instructions_delta", addedNames: ["desktop"], addedBlocks: ["updated app controls"], removedNames: [] }]);
+    _resetAttachmentTrackingStateForTest(sessionKey);
+  });
+
   test("two new servers connect at once → both in addedNames", async () => {
     const sessionKey = makeSession(new Map());
     const state = getAttachmentTrackingState(sessionKey);

@@ -242,3 +242,22 @@ export function truncateToLines(text: string, maxLines: number): string {
   }
   return lines.slice(0, maxLines).join('\n') + '…'
 }
+
+/**
+ * Order two strings by UTF-16 code unit, which is exactly what a bare
+ * `.sort()` does.
+ *
+ * Sonar's S2871 asks for an explicit comparator and suggests
+ * `String.localeCompare`. Do not use it here. Much of what this codebase sorts
+ * feeds something that has to be identical everywhere: cache keys built by
+ * `stableKeyNode`, canonical projections, config layering. `localeCompare`
+ * answers differently under different locales, so adopting it would make those
+ * keys machine-dependent — a real regression in exchange for a clean rule.
+ *
+ * This says the same thing the default already did, in a form the rule accepts
+ * and a reader can check.
+ */
+export function compareCodeUnits(left: string, right: string): number {
+  if (left < right) return -1;
+  return left > right ? 1 : 0;
+}

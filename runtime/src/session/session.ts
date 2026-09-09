@@ -1081,7 +1081,7 @@ export interface McpManager {
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
-  addServer?(config: McpSessionServerConfig): Promise<McpServerMutationResult>;
+  addServer?(config: McpSessionServerConfig, options?: { readonly replace?: boolean }): Promise<McpServerMutationResult>;
   /**
    * Canonical live-manager tool boundary for callers that have already
    * acquired session effect admission. Callers must propagate that admitted
@@ -1090,6 +1090,8 @@ export interface McpManager {
   callTool?: MCPManager["callTool"];
   getTools?(): ReadonlyArray<McpSessionToolInfo>;
   getToolsByServer?(name: string): ReadonlyArray<McpSessionToolInfo>;
+  /** Live signed Desktop names, for reduced model catalogs only. Does not discover or authorize tools. */
+  getAuthenticatedDesktopToolNames?(): readonly string[];
   getConfiguredServers?(): readonly McpSessionServerConfig[];
   getConnectionState?(name: string): McpConnectionProjection | undefined;
   getConnectedConnection?(name: string): MCPServerConnection | undefined;
@@ -1176,6 +1178,9 @@ export interface McpSessionServerConfig {
   readonly endpoint?: string;
   readonly enabled?: boolean;
   readonly required?: boolean;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly localOnly?: boolean;
+  readonly desktopAuthority?: { readonly id: string; readonly signature: string };
 }
 
 export interface McpSessionToolInfo {

@@ -284,6 +284,8 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly streamId: string;
   readonly acceptedAt: string;
   readonly ifBusy?: "reject";
+  /** Trusted daemon connection provenance; omitted/internal/autonomous ingress fails closed. */
+  readonly localMcpAccess?: boolean;
 }
 
 export interface AgenCBackgroundAgentMessageResult {
@@ -318,9 +320,11 @@ export class AgenCBackgroundAgentMessageError extends Error {
 const DAEMON_USER_PROMPT_PREPARED: unique symbol = Symbol(
   "agenc.daemon-user-prompt-prepared",
 );
+const DAEMON_LOCAL_MCP_ACCESS: unique symbol = Symbol("agenc.daemon-local-mcp-access");
 
 type DaemonSessionSubmitOptions = SessionSubmitOptions & {
   readonly [DAEMON_USER_PROMPT_PREPARED]?: true;
+  readonly [DAEMON_LOCAL_MCP_ACCESS]?: boolean;
 };
 
 export interface AgenCBackgroundAgentClearSessionParams {
@@ -335,6 +339,7 @@ export interface AgenCBackgroundAgentSnapshotSessionParams {
 export interface AgenCBackgroundAgentMcpAddServerParams {
   readonly sessionId: string;
   readonly config: SessionMcpServerConfig;
+  readonly replace?: boolean;
 }
 
 export interface AgenCBackgroundAgentMcpServerByNameParams {
@@ -973,6 +978,7 @@ function hashStable(value: string): string {
 
 export {
   DAEMON_USER_PROMPT_PREPARED,
+  DAEMON_LOCAL_MCP_ACCESS,
   positiveSequence,
   nonNegativeSequence,
   positiveInteger,

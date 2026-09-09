@@ -2880,6 +2880,7 @@ export class AgenCDaemonAgentManager {
     const result = await this.#runner.addMcpServer(agentId, {
       sessionId: params.sessionId,
       config: params.config,
+      ...(params.replace !== undefined ? { replace: params.replace } : {}),
     });
     return {
       sessionId: params.sessionId,
@@ -3609,6 +3610,8 @@ export class AgenCDaemonAgentManager {
     readonly displayUserMessage?: string | null;
     readonly editorInteraction?: SessionEditorInteraction;
     readonly methodName?: "message.send" | "message.stream";
+    /** Set only by authenticated daemon ingress, never by RPC payload metadata. */
+    readonly localMcpAccess?: boolean;
   }): Promise<AgenCBackgroundAgentMessageResult> {
     const methodName = params.methodName ?? "message.stream";
     if (this.#sessionManager === undefined) {
@@ -3670,6 +3673,7 @@ export class AgenCDaemonAgentManager {
         sessionId: params.sessionId,
         content: params.content,
         originalContent: params.content,
+        ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }
           : {}),

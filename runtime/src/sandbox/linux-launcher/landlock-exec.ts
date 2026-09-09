@@ -153,6 +153,11 @@ export function planLandlockConfinement(input: LandlockPlanInput): LandlockPlan 
   }
   const protectedCreateTargets: string[] = [];
   for (const root of writableRoots) {
+    // A watcher cannot prevent a forged key from being written before it fires.
+    // Fail closed even when the reserved trust directory does not exist yet.
+    if ((root.reservedReadOnlyPaths?.length ?? 0) > 0) {
+      return { kind: "refused", reason: "reserved Desktop authority paths require non-overridable read-only carve-outs; bubblewrap is required" };
+    }
     // Landlock rulesets compose by union along the path hierarchy: a grant
     // on the root covers its whole subtree, and nothing can subtract a
     // child. An EXISTING protected subpath (a real .git under a writable

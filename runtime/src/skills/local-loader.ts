@@ -1857,13 +1857,15 @@ function buildSchedulePrompt(args: string): string {
 
 Help the user schedule, update, list, or run local AgenC scheduled agent jobs.
 
-Use CronCreate, CronList, and CronDelete. If the user asks for remote cloud-hosted agents, explain that this local runtime only has the local cron surface available.
+If the user specifically means AgenC Desktop Routines, discover the authenticated desktop_routine_* tools with system.searchTools and use those to operate the app's actual Routine records. If those tools are unavailable, explain that Desktop Routine management is unavailable in this session; do not silently create a Cron job instead. Preserve revision checks and ordinary approvals; read-only/plan sessions may inspect but must not change or run Routines.
+
+For conversation-local scheduling rather than Desktop Routines, use CronCreate, CronList, and CronDelete. If the user asks for remote cloud-hosted agents, explain that this local runtime does not provide remote cloud scheduling.
 
 ## User Request
 
 ${args || "Ask the user what they want to schedule: create, list, update, or run."}
 
-For create/update requests, collect the cron expression, prompt, timezone, durability, and whether the job should recur before calling the cron tool.`;
+For Cron create/update requests, collect the cron expression, prompt, timezone, durability, and whether the job should recur before calling the cron tool.`;
 }
 
 function buildApiPrompt(args: string): string {

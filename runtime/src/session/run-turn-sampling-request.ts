@@ -140,7 +140,12 @@ export function builtTools(
   // Small local models drown in the frontier catalog; give them the
   // core loop only. Cloud providers are untouched.
   if (usesLocalToolProfile(ctx.modelProviderId)) {
-    advertised = filterToolsForLocalProfile(advertised);
+    const baseProfile = new Set(filterToolsForLocalProfile(advertised));
+    const desktop = new Set(session.services.mcpManager?.getAuthenticatedDesktopToolNames?.() ?? []);
+    // Preserve only tools already discovered in this request, and only when
+    // the real manager proves a live signed local Desktop attachment. Generic
+    // MCP names, forged annotations and a same-named server gain no exception.
+    advertised = advertised.filter(tool => baseProfile.has(tool) || desktop.has(tool.function.name));
   }
   const interaction = ctx.editorInteraction;
   if (interaction === undefined) return advertised;

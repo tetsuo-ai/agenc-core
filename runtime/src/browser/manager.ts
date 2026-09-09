@@ -299,7 +299,7 @@ export class BrowserManager {
     this.#idleTimer.unref?.();
   }
 
-  async #createTab(url: string): Promise<TabEntry> {
+  async #createTab(url: string, signal?: AbortSignal): Promise<TabEntry> {
     const connection = this.#connection;
     const proxy = this.#proxy;
     if (connection === undefined || proxy === undefined) {
@@ -310,14 +310,14 @@ export class BrowserManager {
         `too many open tabs (max ${MAX_TABS}) — close one first`,
       );
     }
-    const created = await connection.send("Target.createTarget", {
-      url: "about:blank",
-    });
+    const sendOptions = signal === undefined ? {} : { signal };
+    const created = await connection.send(
+      "Target.createTarget", { url: "about:blank" }, undefined, sendOptions,
+    );
     const targetId = created.targetId as string;
-    const attached = await connection.send("Target.attachToTarget", {
-      targetId,
-      flatten: true,
-    });
+    const attached = await connection.send(
+      "Target.attachToTarget", { targetId, flatten: true }, undefined, sendOptions,
+    );
     const sessionId = attached.sessionId as string;
     const page = new BrowserPage({
       connection,
@@ -326,13 +326,15 @@ export class BrowserManager {
       navigationTimeoutMs: this.#options.policy.navigationTimeoutMs,
       blockReporter: (host) => proxy.takeBlockReason(host),
     });
-    await page.init();
-    if (url !== "about:blank" && url !== "") {
-      await page.navigate(url);
-    }
     const entry: TabEntry = { id: this.#nextTabId++, page };
     this.#tabs.push(entry);
     this.#activeTabId = entry.id;
+    // Own the attached target before any initialization/navigation can fail.
+    // Its error page remains inspectable and the next navigate reuses it.
+    await page.init(signal);
+    if (url !== "about:blank" && url !== "") {
+      await page.navigate(url, signal);
+    }
     return entry;
   }
 
@@ -361,7 +363,7 @@ export class BrowserManager {
     await this.#ensureLaunched();
     this.#touchIdle();
     if (this.#tabs.length === 0 && tabId === undefined) {
-      const entry = await this.#createTab(url);
+      const entry = await this.#createTab(url, signal);
       return entry.page;
     }
     const entry = this.#tabById(tabId);
@@ -374,7 +376,7 @@ export class BrowserManager {
   async newTab(url?: string, signal?: AbortSignal): Promise<TabDescriptor> {
     await this.#ensureLaunched();
     this.#touchIdle();
-    const entry = await this.#createTab(url ?? "about:blank");
+    const entry = await this.#createTab(url ?? "about:blank", signal);
     const info = await entry.page.info(signal);
     return { id: entry.id, url: info.url, title: info.title, active: true };
   }

@@ -51,6 +51,7 @@ import {
   type SandboxPreparedSpawn,
 } from "./execution-prepared-spawn.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
+import { desktopAuthorityRoot, protectDesktopAuthority } from "./desktop-authority-protection.js";
 
 export {
   SandboxExecutionLeaseCleanupError,
@@ -295,6 +296,9 @@ function immutablePermissionProfile(
     fileSystem: Object.freeze({
       ...profile.fileSystem,
       entries: Object.freeze(entries),
+      ...(profile.fileSystem.reservedReadOnlyPaths === undefined ? {} : {
+        reservedReadOnlyPaths: Object.freeze([...profile.fileSystem.reservedReadOnlyPaths]),
+      }),
     }),
   });
 }
@@ -509,6 +513,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     UnifiedExecRuntimeSandbox["windowsSandboxLevel"]
   >;
   readonly #windowsSandboxPrivateDesktop: boolean;
+  readonly #desktopAuthorityRoot: string;
   #allowGpu: boolean;
   #permissionProfile: PermissionProfile | undefined;
   readonly #probe: NonNullable<SandboxExecutionBrokerOptions["probe"]>;
@@ -531,6 +536,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       : 0;
     this.#cwd = path.resolve(options.cwd);
     this.#env = { ...(options.env ?? process.env) };
+    this.#desktopAuthorityRoot = desktopAuthorityRoot(undefined, this.#env);
     this.#platform = options.platform ?? process.platform;
     this.#sandboxManager = options.sandboxManager ?? defaultSandboxManager;
     this.#explicitLinuxHelper = options.agencLinuxSandboxExe;
@@ -966,11 +972,13 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     if (!this.required) return undefined;
     const status = this.#assertReadyAfterLifecycleAdmission(surface);
     return {
-      permissionProfile:
+      permissionProfile: protectDesktopAuthority(
         this.#permissionProfile ??
         permissionProfileForSandboxMode(this.mode, {
           cwd: this.#cwd,
         }),
+        this.#desktopAuthorityRoot,
+      ),
       sandboxPolicyCwd: this.#cwd,
       sessionTempRoot: this.#sessionTempRoot,
       preference: "require",
@@ -1014,7 +1022,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         this.mode === "workspace_write"
           ? {
               ...modeSandbox,
-              permissionProfile: command.permissionProfileOverride,
+              permissionProfile: protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot),
             }
           : modeSandbox;
       const resolvedProgram = resolveSpawnExecutable({

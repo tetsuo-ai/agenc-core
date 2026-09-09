@@ -121,6 +121,13 @@ import type {
   CanUseToolFn,
   ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
+import { persistDenialState } from "../permissions/evaluator.js";
+import {
+  freshDenialTracking,
+  recordDenial,
+  recordSuccess,
+} from "../permissions/denial-tracking.js";
+import { unattendedPolicyForContext } from "../permissions/unattended-policy.js";
 import { reviewDecisionIsAllow } from "../permissions/review-decision.js";
 import type { PermissionMode } from "../permissions/types.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
@@ -1475,6 +1482,92 @@ function sessionTransactionGuardConfig(
   return store.current().transaction_guard;
 }
 
+/** After this many unproductive calls in a row, say so in the result. */
+const UNATTENDED_UNPRODUCTIVE_LIMIT = 3;
+
+/**
+ * Where advice becomes a stop.
+ *
+ * Past `UNATTENDED_UNPRODUCTIVE_LIMIT` the run is told to stop calling tools,
+ * but telling is not bounding: observed live, a routine was refused eleven
+ * times in a row and spent three and a half minutes re-asking for the same
+ * tool before the turn ended with nothing written. After this many
+ * consecutive dead calls the next one is refused without being dispatched,
+ * which leaves the model nothing to do except write its answer. The counter
+ * resets on any call that gets somewhere, so a run making progress never
+ * reaches it.
+ */
+const UNATTENDED_UNPRODUCTIVE_STOP = 6;
+
+/** What a dead-call streak of this length earns. */
+export type UnattendedStreakOutcome = "count" | "advise" | "stop";
+
+/**
+ * Escalation for an unattended read-only run's consecutive dead calls.
+ * Exported so the thresholds are pinned by a test rather than by reading.
+ */
+export function unattendedStreakOutcome(
+  consecutiveDenials: number,
+): UnattendedStreakOutcome {
+  if (consecutiveDenials >= UNATTENDED_UNPRODUCTIVE_STOP) return "stop";
+  if (consecutiveDenials >= UNATTENDED_UNPRODUCTIVE_LIMIT) return "advise";
+  return "count";
+}
+
+const STOP_AND_REPORT =
+  "This run has nobody attached, so nothing here will be approved or " +
+  "unblocked by asking again. Stop calling tools and write what you have " +
+  "found as your final answer.";
+
+/**
+ * Count the streak and, past the limit, append the instruction to the error the
+ * model is about to read. Errors and refusals share one counter because they
+ * mean the same thing to the run: that call got nowhere.
+ */
+function noteUnproductiveCall(
+  opts: RunToolUseOptions,
+  output: ToolOutput,
+): ToolOutput {
+  const context = opts.permissionContext;
+  if (context === undefined) return output;
+  let policy;
+  try {
+    policy = unattendedPolicyForContext(
+      context.toolPermissionContext
+        ? context.toolPermissionContext(context.getAppState())
+        : context.getAppState().toolPermissionContext,
+    );
+  } catch {
+    return output;
+  }
+  if (!policy.readOnly) return output;
+  const state =
+    context.denialTracking ??
+    context.getAppState().denialTracking ??
+    freshDenialTracking();
+  if (output.isError !== true) {
+    persistDenialState(context, recordSuccess(state));
+    return output;
+  }
+  const next = recordDenial(state);
+  persistDenialState(context, next);
+  const outcome = unattendedStreakOutcome(next.consecutiveDenials);
+  if (outcome === "count") return output;
+  const content = typeof output.content === "string" ? output.content : "";
+  const advised = content.includes(STOP_AND_REPORT)
+    ? output
+    : { ...output, content: `${content}\n\n${STOP_AND_REPORT}` };
+  // Telling the run to stop is not the same as stopping it: observed live, a
+  // routine was refused eleven times in a row and spent three and a half
+  // minutes re-asking before the turn ended with nothing written. Past the
+  // stop threshold the tool loop is ended the same way a denied approval ends
+  // it, which leaves the model nothing to do but write its answer. The
+  // counter resets on any call that gets somewhere, so a run making progress
+  // never reaches this.
+  if (outcome === "stop") PREVENT_CONTINUATION_OUTPUTS.add(advised);
+  return advised;
+}
+
 export async function runToolUse(
   rawArgs: string,
   opts: RunToolUseOptions,
@@ -2498,10 +2591,13 @@ export interface ExecuteToolDispatchOptions extends RunToolUseOptions {
 export async function executeToolDispatch(
   opts: ExecuteToolDispatchOptions,
 ): Promise<ToolDispatchResult> {
-  const output = await runToolUse(opts.rawArgs, {
-    ...opts,
-    throwOnExecutionError: true,
-  });
+  const output = noteUnproductiveCall(
+    opts,
+    await runToolUse(opts.rawArgs, {
+      ...opts,
+      throwOnExecutionError: true,
+    }),
+  );
   return {
     content: output.content,
     isError: output.isError,

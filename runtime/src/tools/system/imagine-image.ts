@@ -98,6 +98,35 @@ const DEFAULT_QWEN_BASE_URL =
 const DEFAULT_QWEN_TOKEN_PLAN_BASE_URL =
   "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 const DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4";
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+/**
+ * MiniMax rejects any other value outright. Its own list also carries 21:9,
+ * which this tool's shared aspect vocabulary does not offer, so the set here
+ * is the intersection rather than MiniMax's full list.
+ */
+const MINIMAX_ASPECT_RATIOS = Object.freeze(
+  new Set(["1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16"]),
+);
+const OPENAI_IMAGE_MODELS = Object.freeze(
+  new Set([
+    "gpt-image-2",
+    "gpt-image-1.5",
+    "gpt-image-1",
+    "gpt-image-1-mini",
+    "chatgpt-image-latest",
+  ]),
+);
+const OPENAI_IMAGE_QUALITIES = Object.freeze(
+  new Set(["low", "medium", "high", "auto"]),
+);
+/** OpenAI's three encodings, keyed by the `output_format` it reports. */
+const OPENAI_OUTPUT_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze(
+  { jpeg: "jpg", webp: "webp", png: "png" },
+);
+const MINIMAX_IMAGE_MODELS = Object.freeze(
+  new Set(["image-01", "image-01-live"]),
+);
+const DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1";
 const MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_DOWNLOAD_REDIRECTS = 5;
 const ZAI_GLM_IMAGE_COST_USD = 0.015;
@@ -122,6 +151,16 @@ type ImageBackend =
     }
   | {
       readonly kind: "zai";
+      readonly baseURL: string;
+      readonly bearer: string;
+    }
+  | {
+      readonly kind: "openai";
+      readonly baseURL: string;
+      readonly bearer: string;
+    }
+  | {
+      readonly kind: "minimax";
       readonly baseURL: string;
       readonly bearer: string;
     };
@@ -151,6 +190,24 @@ function isZaiCodingPlanBaseURL(baseURL: string): boolean {
   }
 }
 
+/**
+ * Registered download hosts per backend, keyed so that adding a backend
+ * cannot inherit another one's hosts by falling through a chain of
+ * ternaries. An empty list means the backend never downloads: OpenAI and
+ * MiniMax are both asked for base64 payloads, so a URL arriving from either
+ * is unexpected and refused rather than fetched.
+ */
+const IMAGE_DOWNLOAD_HOSTS: Readonly<
+  Record<ImageBackend["kind"], readonly string[]>
+> = Object.freeze({
+  qwen: ["aliyuncs.com"],
+  meta: ["meta.ai", "fbcdn.net", "facebook.com"],
+  zai: ["z.ai", "bigmodel.cn", "chatglm.cn"],
+  xai: ["x.ai"],
+  openai: [],
+  minimax: [],
+});
+
 function validatedImageDownloadUrl(value: string, backend: ImageBackend): URL {
   let url: URL;
   try {
@@ -162,24 +219,9 @@ function validatedImageDownloadUrl(value: string, backend: ImageBackend): URL {
     throw new Error("Image download URL must use credential-free HTTPS");
   }
   const hostname = url.hostname.toLowerCase();
-  const trusted =
-    backend.kind === "qwen"
-      ? hostname === "aliyuncs.com" || hostname.endsWith(".aliyuncs.com")
-      : backend.kind === "meta"
-        ? hostname === "meta.ai" ||
-          hostname.endsWith(".meta.ai") ||
-          hostname === "fbcdn.net" ||
-          hostname.endsWith(".fbcdn.net") ||
-          hostname === "facebook.com" ||
-          hostname.endsWith(".facebook.com")
-        : backend.kind === "zai"
-          ? hostname === "z.ai" ||
-            hostname.endsWith(".z.ai") ||
-            hostname === "bigmodel.cn" ||
-            hostname.endsWith(".bigmodel.cn") ||
-            hostname === "chatglm.cn" ||
-            hostname.endsWith(".chatglm.cn")
-          : hostname === "x.ai" || hostname.endsWith(".x.ai");
+  const trusted = IMAGE_DOWNLOAD_HOSTS[backend.kind].some(
+    (suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`),
+  );
   if (!trusted) {
     throw new Error(
       `Image download host is not trusted for the ${backend.kind} backend`,
@@ -302,6 +344,52 @@ function zaiEnvironmentBackend(
 }
 
 /**
+ * OpenAI images are reachable only with an API key. The ChatGPT OAuth grant
+ * this app can hold authorizes the Responses backend and not
+ * `/images/generations`, so the session credential is never consulted here:
+ * the canonical OPENAI_API_KEY ingress is the only authority for this route.
+ */
+function openaiEnvironmentBackend(
+  env: NodeJS.ProcessEnv,
+): ImageBackend | undefined {
+  const credential = resolveProviderApiKeyEnvironment("openai", env);
+  if (credential === undefined) return undefined;
+  const baseURL =
+    resolveProviderBaseURLEnvironment("openai", env)?.value ??
+    DEFAULT_OPENAI_BASE_URL;
+  try {
+    new URL(baseURL);
+  } catch {
+    return undefined;
+  }
+  return {
+    kind: "openai",
+    baseURL: withoutTrailingSlash(baseURL),
+    bearer: credential.value,
+  };
+}
+
+function minimaxEnvironmentBackend(
+  env: NodeJS.ProcessEnv,
+): ImageBackend | undefined {
+  const credential = resolveProviderApiKeyEnvironment("minimax", env);
+  if (credential === undefined) return undefined;
+  const baseURL =
+    resolveProviderBaseURLEnvironment("minimax", env)?.value ??
+    DEFAULT_MINIMAX_BASE_URL;
+  try {
+    new URL(baseURL);
+  } catch {
+    return undefined;
+  }
+  return {
+    kind: "minimax",
+    baseURL: withoutTrailingSlash(baseURL),
+    bearer: credential.value,
+  };
+}
+
+/**
  * Media credentials are intentionally independent from the reasoning
  * provider. A Meta/OpenAI/etc session key must never become an xAI bearer.
  * Direct Grok sessions retain their existing session-bearer compatibility.
@@ -381,6 +469,20 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
     if (backend !== undefined) return { backend };
   }
 
+  // An OpenAI session generates with OpenAI, the same way a Qwen, Z.AI or
+  // Meta session uses its own native route. Only the API-key ingress can
+  // authorize it, so a session running on the ChatGPT OAuth grant alone
+  // falls through to the independent backends below.
+  if (providerIdentity === "openai") {
+    const backend = openaiEnvironmentBackend(env);
+    if (backend !== undefined) return { backend };
+  }
+
+  if (providerIdentity === "minimax") {
+    const backend = minimaxEnvironmentBackend(env);
+    if (backend !== undefined) return { backend };
+  }
+
   if (providerIdentity === "grok" && provider !== undefined) {
     const factory = readProviderFactoryOptions(provider as never);
     if (isDirectXaiInferenceHost(factory.baseURL)) {
@@ -446,9 +548,19 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
     return { backend: fallbackZaiBackend };
   }
 
+  const fallbackOpenaiBackend = openaiEnvironmentBackend(env);
+  if (fallbackOpenaiBackend !== undefined) {
+    return { backend: fallbackOpenaiBackend };
+  }
+
+  const fallbackMinimaxBackend = minimaxEnvironmentBackend(env);
+  if (fallbackMinimaxBackend !== undefined) {
+    return { backend: fallbackMinimaxBackend };
+  }
+
   return {
     error:
-      "ImagineImage needs a media backend credential: MODEL_API_KEY for Meta Muse Image; DASHSCOPE_API_KEY/QWEN_API_KEY or QWEN_TOKEN_PLAN_API_KEY for QwenCloud; ZAI_API_KEY for GLM-Image; or /grok-login, XAI_API_KEY, or GROK_API_KEY for xAI Imagine.",
+      "ImagineImage needs a media backend credential: MODEL_API_KEY for Meta Muse Image; DASHSCOPE_API_KEY/QWEN_API_KEY or QWEN_TOKEN_PLAN_API_KEY for QwenCloud; ZAI_API_KEY for GLM-Image; OPENAI_API_KEY for GPT Image; MINIMAX_API_KEY for MiniMax Image; or /grok-login, XAI_API_KEY, or GROK_API_KEY for xAI Imagine.",
   };
 }
 
@@ -459,7 +571,12 @@ export function hasImagineImageBackend(
   return "backend" in resolveImageBackend(opts);
 }
 
-function metaImageSize(aspectRatio: string | undefined): string {
+/**
+ * Backends that take a pixel size but only three shapes: square, landscape,
+ * portrait. Meta Muse Image and OpenAI GPT Image both work this way, and
+ * every OpenAI size must have both axes divisible by 16, which these are.
+ */
+function orientedImageSize(aspectRatio: string | undefined): string {
   if (
     aspectRatio === undefined ||
     aspectRatio === "auto" ||
@@ -564,6 +681,197 @@ function extensionForImageContentType(
   }
 }
 
+interface ImageListItem {
+  readonly b64_json?: string;
+  readonly url?: string;
+}
+
+type ImagePayloadData =
+  | readonly ImageListItem[]
+  | { readonly image_base64?: readonly string[] };
+
+/** `Array.isArray` alone does not narrow a readonly array out of a union. */
+function isImageList(data: ImagePayloadData): data is readonly ImageListItem[] {
+  return Array.isArray(data);
+}
+
+/** Images as a flat list, whichever container the backend used. */
+function imagesFromImagePayload(
+  data: ImagePayloadData | undefined,
+): readonly ImageListItem[] {
+  if (data === undefined) return [];
+  if (isImageList(data)) return data;
+  // MiniMax keys its images off an object, not a list.
+  return (data.image_base64 ?? []).map((b64_json) => ({ b64_json }));
+}
+
+/** What a backend generates with when the caller names no model. */
+function defaultImageModel(backend: ImageBackend): string {
+  switch (backend.kind) {
+    case "meta":
+      return "muse-image-1.0";
+    case "qwen":
+      return backend.provider === "qwen" ? "qwen-image-3.0" : "wan2.7-image";
+    case "zai":
+      return "glm-image";
+    case "openai":
+      return "gpt-image-2";
+    case "minimax":
+      return "image-01";
+    case "xai":
+      return "grok-imagine-image";
+  }
+}
+
+/** Backend name as it appears in an error the model reads. */
+function imageBackendLabel(backend: ImageBackend): string {
+  switch (backend.kind) {
+    case "meta":
+      return "Muse Image";
+    case "qwen":
+      return "QwenCloud image";
+    case "zai":
+      return "Z.AI image";
+    case "openai":
+      return "GPT Image";
+    case "minimax":
+      return "MiniMax image";
+    case "xai":
+      return "Imagine";
+  }
+}
+
+/**
+ * The extension a saved file gets before any download reports its own
+ * content type. Electron's agenc-media protocol derives the rendered content
+ * type from this, so a wrong guess shows a broken image in the transcript.
+ */
+function defaultImageExtension(
+  backend: ImageBackend,
+  openaiOutputFormat: string | undefined,
+): string {
+  switch (backend.kind) {
+    case "meta":
+      // Muse Image returns WebP.
+      return "webp";
+    case "qwen":
+    case "zai":
+      return "png";
+    case "openai":
+      // gpt-image defaults to PNG and echoes the format it actually used.
+      return OPENAI_OUTPUT_EXTENSIONS[openaiOutputFormat ?? ""] ?? "png";
+    case "minimax":
+      // MiniMax Image returns JPEG.
+      return "jpg";
+    case "xai":
+      return "jpg";
+  }
+}
+
+/** Per-backend ceiling on images returned by one request. */
+function maxImagesPerRequest(backend: ImageBackend, model: string): number {
+  if (backend.kind === "qwen") {
+    return /^wan2\.7-image(?:-pro)?$/i.test(model) ? 4 : 6;
+  }
+  return backend.kind === "minimax" ? 9 : 10;
+}
+
+/**
+ * The universal schema this tool advertises before a Session attaches offers
+ * `quality` as hd/standard, so a model following it sends those words to
+ * whichever backend is resolved later. OpenAI grades quality on its own
+ * scale, and the two map cleanly, so translate rather than refuse: refusing
+ * a value the tool itself advertised wedges the run (the model rewords the
+ * prompt and re-sends the same field).
+ */
+const UNIVERSAL_TO_OPENAI_QUALITY: Readonly<Record<string, string>> =
+  Object.freeze({ hd: "high", standard: "medium" });
+
+/**
+ * What a backend does with the `quality` it was given: use it, ignore it
+ * because it has no such control, or refuse it as unusable.
+ */
+type QualityDecision =
+  | { readonly kind: "use"; readonly value: string | undefined }
+  | { readonly kind: "ignore" }
+  | { readonly kind: "refuse"; readonly error: string };
+
+function decideImageQuality(
+  backend: ImageBackend,
+  quality: string | undefined,
+): QualityDecision {
+  if (quality === undefined) return { kind: "use", value: undefined };
+  if (backend.kind === "zai") {
+    return quality === "hd" || quality === "standard"
+      ? { kind: "use", value: quality }
+      : { kind: "refuse", error: "quality must be hd or standard" };
+  }
+  if (backend.kind === "openai") {
+    const translated = UNIVERSAL_TO_OPENAI_QUALITY[quality] ?? quality;
+    return OPENAI_IMAGE_QUALITIES.has(translated)
+      ? { kind: "use", value: translated }
+      : {
+          kind: "refuse",
+          error: `OpenAI quality must be one of ${[...OPENAI_IMAGE_QUALITIES].join(", ")}`,
+        };
+  }
+  // Meta, QwenCloud, MiniMax and xAI have no quality control at all.
+  return { kind: "ignore" };
+}
+
+interface ImageRequestShape {
+  readonly backend: ImageBackend;
+  readonly model: string;
+  readonly prompt: string;
+  readonly n: number;
+  readonly aspectRatio: string | undefined;
+  readonly quality: string | undefined;
+}
+
+/**
+ * The request body before any backend-specific rewriting. QwenCloud starts
+ * empty because its DashScope shape is assembled against the resolved
+ * endpoint further down.
+ */
+function initialImageRequestBody(
+  shape: ImageRequestShape,
+): Record<string, unknown> {
+  const { backend, model, prompt, n, aspectRatio, quality } = shape;
+  switch (backend.kind) {
+    case "meta":
+      return { model, prompt, size: orientedImageSize(aspectRatio), n };
+    case "qwen":
+      return {};
+    case "zai":
+      return {
+        model,
+        prompt,
+        size: zaiImageSize(model, aspectRatio),
+        quality: quality ?? (model === "glm-image" ? "hd" : "standard"),
+      };
+    case "openai":
+      return {
+        model,
+        prompt,
+        n,
+        size: orientedImageSize(aspectRatio),
+        ...(quality !== undefined ? { quality } : {}),
+      };
+    case "minimax":
+      return {
+        model,
+        prompt,
+        n,
+        response_format: "base64",
+        ...(aspectRatio !== undefined && aspectRatio !== "auto"
+          ? { aspect_ratio: aspectRatio }
+          : {}),
+      };
+    case "xai":
+      return { model, prompt, n, response_format: "b64_json" };
+  }
+}
+
 function imagineImageDescription(backend: ImageBackend | undefined): string {
   switch (backend?.kind) {
     case "meta":
@@ -576,8 +884,12 @@ function imagineImageDescription(backend: ImageBackend | undefined): string {
       return "Generate exactly one image with Z.AI GLM-Image or CogView and save it under the workspace. Select image dimensions with aspect_ratio; Z.AI does not accept resolution or multiple-image requests.";
     case "xai":
       return "Generate images with xAI Imagine and save them under the workspace.";
+    case "openai":
+      return "Generate images with OpenAI GPT Image and save them under the workspace. Select dimensions with aspect_ratio and detail with quality.";
+    case "minimax":
+      return "Generate up to nine images with MiniMax Image and save them under the workspace. Select dimensions with aspect_ratio; MiniMax does not accept a resolution tier.";
     default:
-      return "Generate images with the configured QwenCloud, Meta, Z.AI, or xAI media backend and save them under the workspace.";
+      return "Generate images with the configured QwenCloud, Meta, Z.AI, OpenAI, MiniMax, or xAI media backend and save them under the workspace.";
   }
 }
 
@@ -662,11 +974,57 @@ function imagineImageInputSchema(
         },
       });
       break;
+    case "openai":
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          enum: [...OPENAI_IMAGE_MODELS],
+          description: "OpenAI image model (default gpt-image-2).",
+        },
+        n: {
+          type: "integer",
+          minimum: 1,
+          maximum: 10,
+          description: "Number of images to generate (default 1).",
+        },
+        aspect_ratio: aspectRatio,
+        quality: {
+          type: "string",
+          enum: [...OPENAI_IMAGE_QUALITIES],
+          description:
+            "OpenAI rendering quality (default auto). Lower quality costs fewer output tokens.",
+        },
+      });
+      break;
+    case "minimax":
+      Object.assign(properties, {
+        model: {
+          type: "string",
+          enum: [...MINIMAX_IMAGE_MODELS],
+          description: "MiniMax image model (default image-01).",
+        },
+        n: {
+          type: "integer",
+          minimum: 1,
+          maximum: 9,
+          description: "Number of images to generate, from 1 to 9 (default 1).",
+        },
+        aspect_ratio: {
+          type: "string",
+          enum: [...MINIMAX_ASPECT_RATIOS],
+          description: "Desired output aspect ratio (default 1:1).",
+        },
+      });
+      break;
     case "xai":
       Object.assign(properties, {
         model: {
           type: "string",
-          enum: ["grok-imagine-image", "grok-imagine-image-quality"],
+          enum: [
+            "grok-imagine-image",
+            "grok-imagine-image-2.0",
+            "grok-imagine-image-quality",
+          ],
           description: "xAI image model (default grok-imagine-image).",
         },
         n: {
@@ -788,17 +1146,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       const prompt = stringValue(args.prompt);
       if (!prompt) return refusal({ error: "prompt is required" });
 
-      const model =
-        stringValue(args.model) ??
-        (backend.kind === "meta"
-          ? "muse-image-1.0"
-          : backend.kind === "qwen"
-            ? backend.provider === "qwen"
-              ? "qwen-image-3.0"
-              : "wan2.7-image"
-            : backend.kind === "zai"
-              ? "glm-image"
-              : "grok-imagine-image");
+      const model = stringValue(args.model) ?? defaultImageModel(backend);
       if (backend.kind === "meta") {
         if (model !== "muse-image-1.0") {
           return refusal({ error: "Meta image model must be muse-image-1.0" });
@@ -812,60 +1160,54 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           (backend.provider === "qwen" && !isPayGoModel) ||
           (backend.provider === "qwen-token-plan" && !isTokenPlanModel)
         ) {
-          return json(
-            {
+          return refusal({
               error:
                 backend.provider === "qwen"
                   ? "QwenCloud Pay-As-You-Go image model must be qwen-image-3.0 or qwen-image-3.0-pro"
                   : "QwenCloud Token Plan image model must be qwen-image-3.0-pro, wan2.7-image, or wan2.7-image-pro",
-            },
-            true,
-          );
+            });
         }
       } else if (backend.kind === "zai") {
         if (model !== "glm-image" && model !== "cogview-4-250304") {
-          return json(
-            {
+          return refusal({
               error:
                 "Z.AI image model must be glm-image or cogview-4-250304",
-            },
-            true,
-          );
+            });
+        }
+      } else if (backend.kind === "openai") {
+        if (!OPENAI_IMAGE_MODELS.has(model)) {
+          return refusal({
+              error: `OpenAI image model must be one of ${[...OPENAI_IMAGE_MODELS].join(", ")}`,
+            });
+        }
+      } else if (backend.kind === "minimax") {
+        if (!MINIMAX_IMAGE_MODELS.has(model)) {
+          return refusal({
+              error: `MiniMax image model must be one of ${[...MINIMAX_IMAGE_MODELS].join(", ")}`,
+            });
         }
       } else if (
         model !== "grok-imagine-image" &&
+        model !== "grok-imagine-image-2.0" &&
         model !== "grok-imagine-image-quality"
       ) {
-        return json(
-          {
+        return refusal({
             error:
-              "xAI image model must be grok-imagine-image or grok-imagine-image-quality",
-          },
-          true,
-        );
+              "xAI image model must be grok-imagine-image, grok-imagine-image-2.0, or grok-imagine-image-quality",
+          });
       }
 
       const nRaw = typeof args.n === "number" ? args.n : 1;
       if (backend.kind === "zai" && nRaw !== 1) {
-        return json(
-          {
+        return refusal({
             error:
               "Z.AI image generation returns exactly one image per request",
-          },
-          true,
-        );
+          });
       }
-      const qwenMaxImages = /^wan2\.7-image(?:-pro)?$/i.test(model) ? 4 : 6;
-      const n = Math.max(
-        1,
-        Math.min(backend.kind === "qwen" ? qwenMaxImages : 10, Math.floor(nRaw)),
-      );
+      const n = Math.max(1, Math.min(maxImagesPerRequest(backend, model), Math.floor(nRaw)));
       const aspect_ratio = stringValue(args.aspect_ratio);
       if (aspect_ratio !== undefined && !ALLOWED_ASPECT.has(aspect_ratio)) {
-        return json(
-          { error: `unsupported aspect_ratio: ${aspect_ratio}` },
-          true,
-        );
+        return refusal({ error: `unsupported aspect_ratio: ${aspect_ratio}` });
       }
       const resolution = stringValue(args.resolution);
       if (
@@ -875,41 +1217,50 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       ) {
         return refusal({ error: "resolution must be 1k or 2k" });
       }
-      if (backend.kind === "zai" && resolution !== undefined) {
-        return json(
-          {
-            error:
-              "Z.AI image size is selected by aspect_ratio; resolution is not supported",
-          },
-          true,
-        );
-      }
-      const quality = stringValue(args.quality);
-      if (
-        quality !== undefined &&
-        quality !== "hd" &&
-        quality !== "standard"
-      ) {
-        return refusal({ error: "quality must be hd or standard" });
-      }
-      if (backend.kind !== "zai" && quality !== undefined) {
-        return refusal({ error: "quality is supported only by Z.AI images" });
-      }
 
-      const body: Record<string, unknown> =
-        backend.kind === "meta"
-          ? { model, prompt, size: metaImageSize(aspect_ratio), n }
-          : backend.kind === "qwen"
-            ? {}
-            : backend.kind === "zai"
-              ? {
-                  model,
-                  prompt,
-                  size: zaiImageSize(model, aspect_ratio),
-                  quality:
-                    quality ?? (model === "glm-image" ? "hd" : "standard"),
-                }
-              : { model, prompt, n, response_format: "b64_json" };
+      // A control the advertised schema offers but this backend has no notion
+      // of is dropped and named in the result, never refused. The universal
+      // schema is what a model sees before a Session attaches, so refusing
+      // here punishes it for following the schema it was given, and it does
+      // not recover: observed live, the model rewords the prompt and re-sends
+      // the same field until the repeat-call guard stops the turn.
+      const ignoredControls: string[] = [];
+      if (
+        resolution !== undefined &&
+        (backend.kind === "openai" ||
+          backend.kind === "minimax" ||
+          backend.kind === "zai")
+      ) {
+        ignoredControls.push("resolution");
+      }
+      // MiniMax takes a shorter list of ratios than this tool's shared
+      // vocabulary; an unsupported one falls back to MiniMax's own default.
+      const minimaxRejectsAspect =
+        backend.kind === "minimax" &&
+        aspect_ratio !== undefined &&
+        aspect_ratio !== "auto" &&
+        !MINIMAX_ASPECT_RATIOS.has(aspect_ratio);
+      if (minimaxRejectsAspect) ignoredControls.push("aspect_ratio");
+      const effectiveAspect = minimaxRejectsAspect ? undefined : aspect_ratio;
+      const qualityDecision = decideImageQuality(
+        backend,
+        stringValue(args.quality),
+      );
+      if (qualityDecision.kind === "refuse") {
+        return refusal({ error: qualityDecision.error });
+      }
+      if (qualityDecision.kind === "ignore") ignoredControls.push("quality");
+      const quality =
+        qualityDecision.kind === "use" ? qualityDecision.value : undefined;
+
+      const body: Record<string, unknown> = initialImageRequestBody({
+        backend,
+        model,
+        prompt,
+        n,
+        aspectRatio: effectiveAspect,
+        quality,
+      });
       if (backend.kind === "xai") {
         if (aspect_ratio !== undefined) body.aspect_ratio = aspect_ratio;
         if (resolution !== undefined) body.resolution = resolution;
@@ -921,7 +1272,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         ? AbortSignal.any([admittedSignal, timeoutSignal])
         : timeoutSignal;
       try {
-        let endpoint = `${backend.baseURL}/images/generations`;
+        let endpoint =
+          backend.kind === "minimax"
+            ? `${backend.baseURL}/image_generation`
+            : `${backend.baseURL}/images/generations`;
         const headers: Record<string, string> = {
           authorization: `Bearer ${backend.bearer}`,
           "content-type": "application/json",
@@ -981,10 +1335,16 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           signal: requestSignal,
         });
         let payload = (await res.json()) as {
-          data?: readonly { b64_json?: string; url?: string }[];
+          data?:
+            | readonly { b64_json?: string; url?: string }[]
+            | { image_base64?: readonly string[] };
           error?: { message?: string };
           code?: string;
           message?: string;
+          // OpenAI echoes the encoding it chose; MiniMax answers HTTP 200
+          // for a rejected request and puts the failure in base_resp.
+          output_format?: string;
+          base_resp?: { status_code?: number; status_msg?: string };
           output?: {
             task_id?: string;
             task_status?: string;
@@ -1004,10 +1364,24 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
               error:
                 payload.error?.message ??
                 payload.message ??
-                `${backend.kind === "meta" ? "Muse Image" : backend.kind === "qwen" ? "QwenCloud image" : backend.kind === "zai" ? "Z.AI image" : "Imagine"} HTTP ${res.status}`,
+                `${imageBackendLabel(backend)} HTTP ${res.status}`,
             },
             true,
           );
+        }
+        // MiniMax reports invalid params and quota failures with HTTP 200.
+        if (backend.kind === "minimax") {
+          const status = payload.base_resp?.status_code;
+          if (status !== 0) {
+            return json(
+              {
+                error:
+                  payload.base_resp?.status_msg ??
+                  `MiniMax image request failed with status ${status ?? "unknown"}`,
+              },
+              true,
+            );
+          }
         }
         if (
           backend.kind === "qwen" &&
@@ -1067,7 +1441,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             }
           }
         }
-        const images =
+        const images: readonly { b64_json?: string; url?: string }[] =
           backend.kind === "qwen"
             ? [
                 ...(payload.output?.choices ?? []).flatMap((choice) =>
@@ -1079,15 +1453,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
                   result.url ? [{ url: result.url }] : [],
                 ),
               ]
-            : (payload.data ?? []);
+            : imagesFromImagePayload(payload.data);
         if (images.length === 0) {
           return json(
-            {
-              error:
-                backend.kind === "qwen"
-                  ? "QwenCloud returned no images"
-                  : "Imagine returned no images",
-            },
+            { error: `${imageBackendLabel(backend)} returned no images` },
             true,
           );
         }
@@ -1102,16 +1471,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         await mkdir(outDir, { recursive: true });
         const paths: string[] = [];
         for (const image of images) {
-          // Muse Image returns WebP. Keep the extension honest so Electron's
-          // agenc-media protocol derives a renderable content type.
-          let extension =
-            backend.kind === "meta"
-              ? "webp"
-              : backend.kind === "qwen"
-                ? "png"
-                : backend.kind === "zai"
-                  ? "png"
-                  : "jpg";
+          let extension = defaultImageExtension(backend, payload.output_format);
           let bytes: Buffer | undefined;
           if ("b64_json" in image && image.b64_json) {
             bytes = Buffer.from(image.b64_json, "base64");
@@ -1151,6 +1511,8 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           paths,
           path: paths[0],
           n: paths.length,
+          // Named so the model can tell the user what it did not honour.
+          ...(ignoredControls.length > 0 ? { ignoredControls } : {}),
         });
       } catch (error) {
         admittedSignal?.throwIfAborted();

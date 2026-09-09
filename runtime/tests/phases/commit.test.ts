@@ -207,6 +207,51 @@ describe("commit", () => {
     });
   });
 
+  test("reports a saved memory off the conversation, by file name", async () => {
+    // It used to arrive as an `agent_message`, so a line reading
+    // "Saved memory: /private/tmp/.../memory/user_language.md" appeared in the
+    // chat as something the assistant had said, and was replayed as history.
+    const session = mkSession();
+    await commit(
+      mkState({
+        needsFollowUp: false,
+        toolUseBlocks: [],
+        messages: [
+          { role: "user", content: "answer in Spanish" },
+          { role: "assistant", content: "ok" },
+        ],
+      }),
+      mkCtx(),
+      session,
+    );
+
+    const extract = vi.mocked(executeExtractMemories);
+    expect(extract).toHaveBeenCalled();
+    const report = extract.mock.calls.at(-1)?.[1];
+    expect(report).toBeTypeOf("function");
+    report?.(["/private/tmp/home/projects/v2--Users-x/memory/user_language.md"]);
+
+    const emitted = vi
+      .mocked(session.emit)
+      .mock.calls.map((call) => call[0] as { msg: { type: string; payload: Record<string, unknown> } });
+    const notice = emitted.find((event) =>
+      String(event.msg.payload["message"] ?? "").startsWith("Saved memor"),
+    );
+    expect(notice?.msg.type).toBe("warning");
+    expect(notice?.msg.payload).toEqual({
+      cause: "memory_saved",
+      message: "Saved memory: user_language.md",
+    });
+    // Nothing about a saved memory reaches the channel the model speaks on.
+    expect(
+      emitted.some(
+        (event) =>
+          event.msg.type === "agent_message" &&
+          String(event.msg.payload["message"] ?? "").includes("Saved memor"),
+      ),
+    ).toBe(false);
+  });
+
   test("summary promise rejection is non-fatal and still clears the pending slot", async () => {
     const state = mkState({
       pendingToolUseSummary: Promise.reject(new Error("summary_boom")),

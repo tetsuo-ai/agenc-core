@@ -25,6 +25,7 @@ import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { resolveHomeContext } from "../config/home.js";
+import { LocalWhisperService } from "../audio/whisper.js";
 import { RemoteService } from "../remote/service.js";
 import { createRemoteBackend } from "../remote/backend.js";
 import { remoteAuthSessionTokenSync } from "../auth/session-state.js";
@@ -3902,6 +3903,7 @@ async function runAgenCDaemonForegroundLocked(
       },
       health,
       realtime,
+      whisper: new LocalWhisperService({ home: authStartup.daemonHome, env: host.env }),
       runInspection: new AgenCDaemonRunInspectionService({
         stateDatabasePaths: () =>
           discoverAgenCDaemonStateDatabasePaths(

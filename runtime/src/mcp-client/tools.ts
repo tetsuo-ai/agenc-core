@@ -8,6 +8,11 @@
  */
 
 import type { Tool, ToolResult, JSONSchema } from "./_deps/tools-types.js";
+import { hasLocalMcpAccess, redactMcpAttachmentText, redactMcpAttachmentValue, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
+import { desktopToolClassification, hasDesktopAuthority } from "./desktop-authority.js";
+import { preEffectRefusal } from "../tools/results.js";
+import { readToolRuntimeContext, type ToolRuntimeAttemptContext } from "../tools/runtimes/context.js";
+import { readSandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import type { MCPToolBridge } from "./types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
@@ -75,6 +80,9 @@ import {
  * I-74 supply-chain pin.
  */
 export interface MCPToolCatalogPolicyConfig {
+  readonly desktopAuthorityGrant?: import("./desktop-authority.js").DesktopAuthorityGrant;
+  readonly localOnly?: boolean;
+  readonly sensitiveHeaders?: Readonly<Record<string, string>>;
   readonly allowedTools?: readonly string[];
   readonly deniedTools?: readonly string[];
   readonly pinnedCatalogSha256?: string;
@@ -599,6 +607,65 @@ async function authorizeMcpClientToolCall(
   return { ok: true, args: executionArgs };
 }
 
+/** Reuse only the executor's exact, already-approved invocation. JSON/model
+ * arguments cannot mint the private runtime-context marker. The Desktop bridge
+ * otherwise asks twice with the same call ID, leaving SDK clients waiting on a
+ * duplicate approval they have correctly deduplicated. */
+function exactDesktopInvocation(
+  args: Record<string, unknown>,
+  callId: string,
+  toolName: string,
+  options: MCPToolBridgePermissionOptions | undefined,
+): ToolRuntimeAttemptContext | undefined {
+  const context = readToolRuntimeContext(args);
+  const session = options?.session ?? options?.permissionContext?.session;
+  if (!context || !session ||
+      context.callId !== callId || context.toolName !== toolName ||
+      context.invocation.callId !== callId || context.invocation.session !== session ||
+      context.invocation.turn.subId !== options?.getActiveTurnId?.()) return undefined;
+  try {
+    return JSON.stringify(JSON.parse(context.rawArgs)) ===
+      JSON.stringify(withoutMcpExecutionOnlyArgs(args)) ? context : undefined;
+  } catch { return undefined; }
+}
+
+const DESKTOP_NATIVE_TERMINALS = new Set(["terminal_open", "terminal_run", "terminal_type", "terminal_close"]);
+// Narrower than permission-level reads: snapshot/read_text/wait_for execute
+// page-main-world JavaScript and may invoke page-defined getters or setters.
+// Do not replay those while another effect is unresolved.
+const DESKTOP_IDEMPOTENT_INSPECTIONS = new Set([
+  "desktop_state", "desktop_window_state", "desktop_routine_list", "desktop_routine_get", "desktop_routine_runs", "browser_tabs", "browser_screenshot",
+  "browser_downloads", "browser_console", "terminal_list", "terminal_read",
+]);
+function nativeDesktopTerminalAllowed(args: Record<string, unknown>, callId: string,
+  toolName: string, options: MCPToolBridgePermissionOptions | undefined): boolean {
+  const context = exactDesktopInvocation(args, callId, toolName, options);
+  const broker = readSandboxExecutionBroker(args);
+  // The existing Electron PTY is not a child of Core's sandbox. Neither an
+  // ordinary tool approval nor a one-shot escalation can sandbox that process.
+  if (!context || context.sandboxMode !== "danger_full_access" ||
+      context.requestedSandboxMode !== "danger_full_access" || !broker ||
+      broker !== context.invocation.session.services.sandboxExecutionBroker ||
+      broker.mode !== "danger_full_access") return false;
+  try { broker.assertReady("tool"); return true; } catch { return false; }
+}
+
+function desktopRoutineMutationAllowed(args: Record<string, unknown>, callId: string,
+  toolName: string, options: MCPToolBridgePermissionOptions | undefined): boolean {
+  const context = exactDesktopInvocation(args, callId, toolName, options);
+  const broker = readSandboxExecutionBroker(args);
+  // A routine does not inherit a one-shot escalation or the parent's bypass.
+  // Its separate child policy cannot be used to escape a read-only parent.
+  if (!context || !broker || broker !== context.invocation.session.services.sandboxExecutionBroker ||
+      context.requestedSandboxMode === "read_only" || context.sandboxMode === "read_only" ||
+      broker.mode === "read_only") return false;
+  try {
+    if (options?.permissionContext?.getAppState().toolPermissionContext.mode === "plan") return false;
+    broker.assertReady("tool");
+    return true;
+  } catch { return false; }
+}
+
 function responseScopeFromDecision(
   decision: ReviewDecision | null,
 ): RequestPermissionsResponse["scope"] {
@@ -900,6 +967,9 @@ export async function createToolBridge(
 
   const tools: Tool[] = providerSafeMcpTools.map((mcpTool) => {
     const namespacedName = `mcp.${serverName}.${mcpTool.name}`;
+    const desktopClass = serverName === "agenc-desktop-control" && options.serverConfig?.localOnly === true
+      ? desktopToolClassification(options.serverConfig.desktopAuthorityGrant, mcpTool.name)
+      : undefined;
     const defaultPermissionMode = perMcpToolApprovalMode(
       options.serverConfig,
       mcpTool.name,
@@ -916,22 +986,40 @@ export async function createToolBridge(
         modelFacingName: encodeMcpToolNameForWire(namespacedName),
         canonicalName: namespacedName,
         rawToolName: mcpTool.name,
-        rawDescription: mcpTool.description,
+        rawDescription: redactMcpAttachmentText(mcpTool.description ?? "", options.serverConfig?.sensitiveHeaders),
       }),
       inputSchema: modelFacingMcpInputSchema(
         serverName,
         mcpTool.name,
-        mcpTool.inputSchema ?? { type: "object", properties: {} },
+        redactMcpAttachmentValue(mcpTool.inputSchema ?? { type: "object", properties: {} }, options.serverConfig?.sensitiveHeaders),
         logger,
       ),
       serverId: serverName,
       mcpInfo: { serverName, toolName: mcpTool.name },
-      ...(virtualNoFsWrites
+      // Routine writes are fixed runtime-derived storage, not caller-chosen
+      // files; their child execution owns its own Core sandbox. The separate
+      // guard below also refuses read-only/plan parents before any dispatch.
+      ...(virtualNoFsWrites || desktopClass === "ui-mutation" || desktopClass === "routine-mutation"
         ? { metadata: { mutating: true, virtualNoFsWrites: true } }
         : {}),
+      // Only the signed product-owned inspection list is safe to repeat after
+      // an unknown effect. Generic MCP readOnlyHint/isReadOnly annotations are
+      // not recovery authority. Live local/host checks below still apply.
+      ...(desktopClass === "read" ? { isReadOnly: true, metadata: { mutating: false } } : {}),
+      ...(desktopClass === "read" && DESKTOP_IDEMPOTENT_INSPECTIONS.has(mcpTool.name)
+        ? { recoveryCategory: "idempotent" as const } : {}),
+      ...(desktopClass === "ui-mutation" || desktopClass === "routine-mutation" || (hasDesktopAuthority(options.serverConfig?.desktopAuthorityGrant) && DESKTOP_NATIVE_TERMINALS.has(mcpTool.name)) ? { requiresApproval: true } : {}),
       ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}),
 
       async execute(args: Record<string, unknown>): Promise<ToolResult> {
+        // A previously discovered/captured proxy still checks trusted turn
+        // provenance before any approval, observer, reconnect or remote call.
+        if (options.serverConfig?.localOnly === true && !hasLocalMcpAccess()) {
+          return preEffectRefusal(namespacedName, "This app-control tool is available only during a local daemon user turn.");
+        }
+        if (options.serverConfig?.desktopAuthorityGrant && !hasDesktopAuthority(options.serverConfig.desktopAuthorityGrant)) {
+          return preEffectRefusal(namespacedName, "Desktop host authority expired; reattach from the local app.");
+        }
         const effectSignal = abortSignalFromArgs(args);
         effectSignal?.throwIfAborted();
         if (disposed) {
@@ -947,6 +1035,15 @@ export async function createToolBridge(
         const trustedCallId = trustedCallIdFromArgs(args);
         const callId = trustedCallId ??
           `mcp-${serverName}-${mcpTool.name}-${randomCallId()}`;
+        const nativeTerminal = serverName === "agenc-desktop-control" &&
+          hasDesktopAuthority(options.serverConfig?.desktopAuthorityGrant) && DESKTOP_NATIVE_TERMINALS.has(mcpTool.name);
+        const terminalRefusal = () => preEffectRefusal(namespacedName,
+          "The visible Desktop terminal is not sandboxed by Core and requires an explicitly full-access session. Use the Core exec_command/system.bash tools for sandboxed commands; do not change permissions just to use this terminal.");
+        if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) return terminalRefusal();
+        const routineMutation = desktopClass === "routine-mutation";
+        const routineRefusal = () => preEffectRefusal(namespacedName,
+          "Desktop Routine changes require an admitted local user call outside read-only and plan mode. Read the routine instead; do not change permissions to run it.");
+        if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) return routineRefusal();
         const progressCallback = progressCallbackFromArgs(args);
         if (
           mcpTool.name === MCP_REQUEST_PERMISSIONS_TOOL_NAME &&
@@ -957,7 +1054,10 @@ export async function createToolBridge(
         const startedAtMs = Date.now();
 
         try {
-          const authorization = await authorizeMcpClientToolCall(
+          const authorization: PermissionResolution = (desktopClass !== undefined || nativeTerminal) &&
+            exactDesktopInvocation(args, callId, namespacedName, options.permissions)?.approvalResolved === true
+            ? { ok: true, args }
+            : await authorizeMcpClientToolCall(
             bridgeTool,
             serverName,
             mcpTool,
@@ -968,6 +1068,16 @@ export async function createToolBridge(
           if (!authorization.ok) {
             return authorization.result;
           }
+          // Approval can outlive the originating turn. A captured proxy must
+          // not carry a revoked local lease across that asynchronous boundary.
+          if (options.serverConfig?.localOnly === true && !hasLocalMcpAccess()) {
+            return preEffectRefusal(namespacedName, "The local app-control turn has ended.");
+          }
+          if (options.serverConfig?.desktopAuthorityGrant && !hasDesktopAuthority(options.serverConfig.desktopAuthorityGrant)) {
+            return preEffectRefusal(namespacedName, "Desktop host authority expired during authorization.");
+          }
+          if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) return terminalRefusal();
+          if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) return routineRefusal();
           const executionArgs = withoutMcpExecutionOnlyArgs(
             authorization.args,
           );
@@ -983,8 +1093,13 @@ export async function createToolBridge(
           const rawResult = await withRPCDeadline<unknown>(
             `MCP tool "${mcpTool.name}" callTool`,
             callToolTimeoutMs,
-            (signal) =>
-              client.callTool(
+            (signal) => withDesktopMcpDispatchGuard(() => {
+              if (options.serverConfig?.localOnly === true && !hasLocalMcpAccess()) throw new DesktopMcpPreflightRefusal("The local app-control turn has ended.");
+              if (options.serverConfig?.desktopAuthorityGrant && !hasDesktopAuthority(options.serverConfig.desktopAuthorityGrant)) throw new DesktopMcpPreflightRefusal("Desktop host authority expired before dispatch.");
+              if (signal.aborted || effectSignal?.aborted) throw new DesktopMcpPreflightRefusal("The app-control operation was cancelled before dispatch.");
+              if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The visible terminal no longer has full-access authority.");
+              if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The Desktop Routine call no longer has writable local authority.");
+            }, () => client.callTool(
                 {
                   name: mcpTool.name,
                   arguments: executionArgs,
@@ -1008,7 +1123,7 @@ export async function createToolBridge(
                     ? {
                         onprogress: (progress: unknown) => {
                           forwardMcpProgress(
-                            progress,
+                            redactMcpAttachmentValue(progress, options.serverConfig?.sensitiveHeaders),
                             progressCallback,
                             logger,
                             mcpTool.name,
@@ -1017,16 +1132,24 @@ export async function createToolBridge(
                       }
                     : {}),
                 },
-              ),
+              )),
             effectSignal,
           );
           const result = await normalizeMcpToolOutput({
-            raw: rawResult,
+            raw: redactMcpAttachmentValue(rawResult, options.serverConfig?.sensitiveHeaders),
             serverName,
             toolName: mcpTool.name,
             callId,
             environment,
             logger,
+          });
+          const effectDisposition = desktopControlEffectReceipt(rawResult, {
+            serverName,
+            toolName: mcpTool.name,
+            ...(options.serverConfig?.desktopAuthorityGrant ? { desktopAuthorityGrant: options.serverConfig.desktopAuthorityGrant } : {}),
+            ...(trustedCallId !== undefined ? { toolUseId: trustedCallId } : {}),
+            ...(options.serverConfig?.localOnly === true ? { localOnly: true } : {}),
+            ...(options.serverConfig?.sensitiveHeaders !== undefined ? { sensitiveHeaders: options.serverConfig.sensitiveHeaders } : {}),
           });
 
           const content = result.content;
@@ -1040,7 +1163,7 @@ export async function createToolBridge(
             isError,
             durationMs,
           });
-          return result;
+          return effectDisposition === undefined ? result : { ...result, effectDisposition };
         } catch (error) {
           const effectiveError = effectSignal?.aborted
             ? effectSignal.reason
@@ -1048,7 +1171,7 @@ export async function createToolBridge(
           const rawErrorMessage =
             `MCP tool "${mcpTool.name}" failed: ${effectiveError instanceof Error ? effectiveError.message : String(effectiveError)}`;
           const errMessage = sanitizeMcpOutputText(
-            truncateMcpUtf8(rawErrorMessage, 16 * 1024),
+            truncateMcpUtf8(redactMcpAttachmentText(rawErrorMessage, options.serverConfig?.sensitiveHeaders), 16 * 1024),
           );
           const durationMs = Date.now() - startedAtMs;
           options.callObserver?.onEnd?.({
@@ -1059,6 +1182,7 @@ export async function createToolBridge(
             isError: true,
             durationMs,
           });
+          if (error instanceof DesktopMcpPreflightRefusal) return preEffectRefusal(namespacedName, errMessage);
           effectSignal?.throwIfAborted();
           return {
             content: errMessage,

@@ -7,8 +7,10 @@
  */
 
 import type { RunRuntimeSettingsSnapshot } from "../../contracts/run-contracts.js";
+import type { WhisperStatus, WhisperTranscription } from "../../audio/whisper.js";
+export type { WhisperStatus, WhisperTranscription, WhisperInstallParams, WhisperTranscribeParams, WhisperLanguage, WhisperTask, WhisperCompute } from "../../audio/whisper.js";
 import type { ProviderModelSelectionOutcome } from "../../contracts/provider-model-selection.js";
-import type { RoutineCapabilities, RoutineListResult, RoutineResult, RoutineDeleteResult, RoutineRunResult, RoutineRunsResult, RoutineIdParams, RoutineCreateParams, RoutineUpdateParams, RoutineDeleteParams, RoutineRunsParams, RoutineCancelParams, RoutineUpdatedEvent } from "../../routines/types.js";
+import type { RoutineCapabilities, RoutineListResult, RoutineResult, RoutineDeleteResult, RoutineRunResult, RoutineRunsResult, RoutineIdParams, RoutineCreateParams, RoutineUpdateParams, RoutineDeleteParams, RoutineRunParams, RoutineRunsParams, RoutineCancelParams, RoutineUpdatedEvent } from "../../routines/types.js";
 export type * from "../../routines/types.js";
 
 /** JSON-RPC version required on daemon requests, responses, and notifications. */
@@ -157,6 +159,9 @@ export const AGENC_DAEMON_METHODS = [
 export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 
 export const AGENC_DAEMON_INTERNAL_METHODS = [
+  "audio.whisper.status",
+  "audio.whisper.install",
+  "audio.whisper.transcribe",
   "workspace.editor.acquire",
   "workspace.editor.sync",
   "workspace.editor.staleAuthority.refresh",
@@ -724,6 +729,18 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
 });
 
 export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
+  "audio.whisper.status": {
+    method: "audio.whisper.status", direction: "client-to-server", params: "required", result: "object",
+    description: "Read local Whisper engine and verified model availability without downloading.",
+  },
+  "audio.whisper.install": {
+    method: "audio.whisper.install", direction: "client-to-server", params: "required", result: "object",
+    description: "Explicitly download and verify an allowlisted local Whisper model.",
+  },
+  "audio.whisper.transcribe": {
+    method: "audio.whisper.transcribe", direction: "client-to-server", params: "required", result: "object",
+    description: "Transcribe bounded PCM16 mono 16 kHz WAV locally with whisper.cpp.",
+  },
   "workspace.editor.acquire": {
     method: "workspace.editor.acquire",
     direction: "client-to-server",
@@ -1520,11 +1537,18 @@ export interface SessionMcpServerConfig extends JsonObject {
   readonly endpoint?: string;
   readonly enabled?: boolean;
   readonly required?: boolean;
+  /** Ephemeral HTTP authentication; never written to canonical configuration. */
+  readonly headers?: { readonly [key: string]: string };
+  /** Restrict this attachment to trusted local daemon turns (not remote/browser input). */
+  readonly localOnly?: boolean;
+  readonly desktopAuthority?: { readonly id: string; readonly signature: string };
 }
 
 export interface SessionMcpAddServerParams extends JsonObject {
   readonly sessionId: string;
   readonly config: SessionMcpServerConfig;
+  /** Replace only an existing session-owned overlay; canonical definitions stay protected. */
+  readonly replace?: boolean;
 }
 
 export interface SessionMcpServerByNameParams extends JsonObject {
@@ -2348,7 +2372,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"routine.create", RoutineCreateParams>
   | AgenCDaemonRequestWithParams<"routine.update", RoutineUpdateParams>
   | AgenCDaemonRequestWithParams<"routine.delete", RoutineDeleteParams>
-  | AgenCDaemonRequestWithParams<"routine.run", RoutineIdParams>
+  | AgenCDaemonRequestWithParams<"routine.run", RoutineRunParams>
   | AgenCDaemonRequestWithParams<"routine.runs", RoutineRunsParams>
   | AgenCDaemonRequestWithParams<"routine.cancel", RoutineCancelParams>
   | AgenCDaemonRequestWithParams<"initialize", InitializeParams>
@@ -3879,6 +3903,9 @@ export interface AgenCDaemonResultByMethod {
 }
 
 export interface AgenCDaemonInternalResultByMethod {
+  readonly "audio.whisper.status": WhisperStatus;
+  readonly "audio.whisper.install": WhisperStatus;
+  readonly "audio.whisper.transcribe": WhisperTranscription;
   readonly "workspace.editor.acquire": WorkspaceEditorLeaseResult;
   readonly "workspace.editor.sync": WorkspaceEditorSyncResult;
   readonly "workspace.editor.staleAuthority.refresh": WorkspaceEditorStaleAuthorityRefreshResult;

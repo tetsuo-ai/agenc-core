@@ -1415,10 +1415,13 @@ async function installUnattendedPermissionPolicy(
   registry: PermissionModeRegistry,
   allow: readonly string[] | undefined,
   deny: readonly string[] | undefined,
+  readOnly = false,
 ): Promise<void> {
   const next = applyUnattendedPermissionPolicyToContext(registry.current(), {
     ...(allow !== undefined ? { allowlist: allow } : {}),
     ...(deny !== undefined ? { denylist: deny } : {}),
+    // Defaults off, so every caller that does not pass it is byte-identical.
+    ...(readOnly ? { readOnly: true } : {}),
   });
   await registry.update(next);
 }

@@ -11,6 +11,8 @@ import {
   type PreparedTurnRuntimeInputs,
 } from "./agenc-main.js";
 import { __installDaemonTurnDriverHooksForTest } from "../app-server/background-agent-runner.js";
+import { DAEMON_LOCAL_MCP_ACCESS, DAEMON_USER_PROMPT_PREPARED } from "../app-server/background-agent-runner/shared.js";
+import { hasLocalMcpAccess } from "../mcp-client/local-control.js";
 import { defaultConfig } from "../config/schema.js";
 import {
   resolveProjectTrustRootSync,
@@ -620,6 +622,24 @@ describe("UserPromptSubmit prompt ingress", () => {
         }),
       }),
     );
+  });
+
+  it("carries trusted local MCP authority through the actual turn driver and revokes it afterward", async () => {
+    const { session } = fakeSession("/workspace");
+    const observed: boolean[] = [];
+    const runTurnFn = vi.fn(async function* () {
+      await Promise.resolve();
+      observed.push(hasLocalMcpAccess());
+      yield { type: "turn_complete", content: "ok", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, stopReason: "completed" } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    __installDaemonTurnDriverHooksForTest(session as never, { current: () => defaultConfig } as never, runTurnFn as never);
+    await session.submit("local", { [DAEMON_USER_PROMPT_PREPARED]: true, [DAEMON_LOCAL_MCP_ACCESS]: true });
+    expect(hasLocalMcpAccess()).toBe(false);
+    await session.submit("remote", { [DAEMON_USER_PROMPT_PREPARED]: true, [DAEMON_LOCAL_MCP_ACCESS]: false });
+    await session.submit("unknown", { [DAEMON_USER_PROMPT_PREPARED]: true, localMcpAccess: true });
+    expect(observed).toEqual([true, false, false]);
+    expect(hasLocalMcpAccess()).toBe(false);
   });
 
   it("runs the owning daemon session hook exactly once and sends its context to the model", async () => {

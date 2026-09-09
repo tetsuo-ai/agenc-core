@@ -119,6 +119,11 @@
     "thread/realtime/error",
     "thread/realtime/closed"
   ],
+  "x-agenc-whisper-internal-methods": [
+    "audio.whisper.status",
+    "audio.whisper.install",
+    "audio.whisper.transcribe"
+  ],
   "oneOf": [
     {
       "$ref": "#/definitions/AgenCDaemonRequest"
@@ -134,6 +139,75 @@
     }
   ],
   "definitions": {
+    "WhisperModel": { "type": "string", "enum": ["base", "small"] },
+    "WhisperLanguage": { "type": "string", "enum": ["auto", "en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "uk", "zh", "ja", "ko", "ar", "hi", "tr"] },
+    "WhisperStatusParams": { "type": "object", "additionalProperties": false },
+    "WhisperInstallParams": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "model": { "$ref": "#/definitions/WhisperModel" } },
+      "required": ["model"]
+    },
+    "WhisperTranscribeParams": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "model": { "$ref": "#/definitions/WhisperModel" },
+        "language": { "$ref": "#/definitions/WhisperLanguage" },
+        "task": { "type": "string", "enum": ["transcribe", "translate"], "default": "transcribe" },
+        "compute": { "type": "string", "enum": ["auto", "cpu"], "default": "auto" },
+        "prompt": { "type": "string", "maxLength": 500, "pattern": "^[^\\u0000-\\u001f\\u007f]*$", "description": "Vocabulary hints; runtime additionally bounds UTF-16 code units to 500." },
+        "audio": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "mimeType": { "const": "audio/wav" },
+            "data": { "type": "string", "minLength": 64, "maxLength": 1280060, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$", "description": "Canonical PCM16 mono 16 kHz WAV, at most 30 seconds; runtime validates base64 padding bits and every header field." }
+          },
+          "required": ["mimeType", "data"]
+        }
+      },
+      "required": ["model", "language", "audio"]
+    },
+    "WhisperStatus": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "engine": { "const": "whisper.cpp" },
+        "optionsVersion": { "const": 1 },
+        "available": { "type": "boolean" },
+        "reason": { "type": "string", "maxLength": 500 },
+        "models": {
+          "type": "array", "maxItems": 2,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "properties": { "id": { "$ref": "#/definitions/WhisperModel" }, "installed": { "type": "boolean" }, "bytes": { "type": "integer", "enum": [147951465, 487601967] } },
+            "required": ["id", "installed", "bytes"]
+          }
+        }
+      },
+      "required": ["engine", "available", "models"]
+    },
+    "WhisperTranscription": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "text": { "type": "string", "maxLength": 16000 }, "model": { "$ref": "#/definitions/WhisperModel" }, "provider": { "const": "local" } },
+      "required": ["text", "model", "provider"]
+    },
+    "WhisperStatusRequest": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "jsonrpc": { "const": "2.0" }, "id": { "$ref": "#/definitions/RequestId" }, "method": { "const": "audio.whisper.status" }, "params": { "$ref": "#/definitions/WhisperStatusParams" } },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "WhisperInstallRequest": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "jsonrpc": { "const": "2.0" }, "id": { "$ref": "#/definitions/RequestId" }, "method": { "const": "audio.whisper.install" }, "params": { "$ref": "#/definitions/WhisperInstallParams" } },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "WhisperTranscribeRequest": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "jsonrpc": { "const": "2.0" }, "id": { "$ref": "#/definitions/RequestId" }, "method": { "const": "audio.whisper.transcribe" }, "params": { "$ref": "#/definitions/WhisperTranscribeParams" } },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "WhisperInternalRequest": {
+      "description": "Opt-in local authenticated client extension; not part of the public request union or remote browser grant surface.",
+      "oneOf": [{ "$ref": "#/definitions/WhisperStatusRequest" }, { "$ref": "#/definitions/WhisperInstallRequest" }, { "$ref": "#/definitions/WhisperTranscribeRequest" }]
+    },
     "RemoteCapabilitiesRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -562,6 +636,34 @@
         }
       ]
     },
+    "RoutineWorkspaceExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "dev": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[0-9]{1,32}(?![\\s\\S])"
+        },
+        "ino": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[0-9]{1,32}(?![\\s\\S])"
+        }
+      },
+      "required": [
+        "cwd",
+        "dev",
+        "ino"
+      ]
+    },
     "RoutineCreateParams": {
       "type": "object",
       "additionalProperties": false,
@@ -610,6 +712,9 @@
         },
         "notifyOnCompletion": {
           "type": "boolean"
+        },
+        "expectedWorkspace": {
+          "$ref": "#/definitions/RoutineWorkspaceExpectation"
         }
       },
       "required": [
@@ -699,14 +804,47 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "expectedWorkspace": {
+          "$ref": "#/definitions/RoutineWorkspaceExpectation"
         }
       },
       "required": [
         "id",
         "patch"
-      ]
+      ],
+      "dependencies": {
+        "expectedWorkspace": {
+          "properties": {
+            "patch": {
+              "required": [
+                "cwd"
+              ]
+            }
+          }
+        }
+      }
     },
     "RoutineDeleteParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectedUpdatedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "RoutineRunParams": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -1229,7 +1367,7 @@
           "const": "routine.run"
         },
         "params": {
-          "$ref": "#/definitions/RoutineIdParams"
+          "$ref": "#/definitions/RoutineRunParams"
         }
       },
       "required": [
@@ -2226,6 +2364,31 @@
         },
         "required": {
           "type": "boolean"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "localOnly": {
+          "type": "boolean"
+        },
+        "desktopAuthority": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "signature": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "signature"
+          ]
         }
       },
       "required": [
@@ -2242,6 +2405,9 @@
         },
         "config": {
           "$ref": "#/definitions/SessionMcpServerConfig"
+        },
+        "replace": {
+          "type": "boolean"
         }
       },
       "required": [

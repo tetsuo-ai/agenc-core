@@ -647,6 +647,19 @@ All=$ARGUMENTS
     expect(leaf?.pluginRoot).toBeDefined();
   });
 
+  it("routes explicit Desktop Routine scheduling to native tools without substituting Cron", async () => {
+    const agencHome = tmpRoot("skills-routine-home");
+    const services = createLocalSkillsServices({ agencHome, pluginStorageRoot: join(agencHome, "plugins"), workspaceRoot: tmpRoot("skills-routine-workspace"), env: {} });
+    const schedule = await services.skillsManager.renderSkill?.({ name: "schedule-agents", args: "Create a Desktop Routine" });
+    expect(schedule?.content).toContain("authenticated desktop_routine_* tools");
+    expect(schedule?.content).toContain("do not silently create a Cron job instead");
+    expect(schedule?.content).toContain("read-only/plan sessions may inspect");
+    expect(schedule?.content).toContain("For conversation-local scheduling rather than Desktop Routines");
+    const loop = await services.skillsManager.renderSkill?.({ name: "loop", args: "5m check progress" });
+    expect(loop?.content).toContain("Use the CronCreate, CronDelete, and CronList tools");
+    expect(loop?.content).not.toContain("desktop_routine_");
+  });
+
   it("binds session services and tracks invoked skills separately from available skills", async () => {
     clearInvokedSkills();
     const agencHome = tmpRoot("skills-home");

@@ -20,6 +20,8 @@ import type {
 import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
+import { hasLocalMcpAccess, attachmentLogger, redactMcpAttachmentText, redactMcpAttachmentValue } from "./local-control.js";
+import { hasDesktopAuthority, isAuthenticatedDesktopToolName } from "./desktop-authority.js";
 import { createMCPConnection } from "./connection.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import {
@@ -1074,7 +1076,8 @@ export class MCPManager {
   getTools(): Tool[] {
     if (this.isSandboxExecutionAuthorityClosed()) return [];
     const tools: Tool[] = [];
-    for (const bridge of this.bridges.values()) {
+    for (const [name, bridge] of this.bridges) {
+      if (this.getServerConfig(name)?.localOnly === true && !hasLocalMcpAccess()) continue;
       tools.push(...bridge.tools);
     }
     return tools;
@@ -1086,6 +1089,20 @@ export class MCPManager {
   getToolsByServer(name: string): Tool[] {
     if (this.isSandboxExecutionAuthorityClosed()) return [];
     return this.bridges.get(name)?.tools ?? [];
+  }
+
+  /** Only the live, signed product overlay can extend a reduced model catalog.
+   * This does not discover tools or authorize their execution. */
+  getAuthenticatedDesktopToolNames(): readonly string[] {
+    if (this.isSandboxExecutionAuthorityClosed() || !hasLocalMcpAccess()) return [];
+    const name = "agenc-desktop-control";
+    const config = this.getServerConfig(name);
+    if (config?.localOnly !== true || config.origin?.scope !== "session" || !this.bridges.has(name)) return [];
+    const prefix = `mcp.${name}.`;
+    return this.getToolsByServer(name).filter(tool =>
+      tool.name.startsWith(prefix) &&
+      isAuthenticatedDesktopToolName(config.desktopAuthorityGrant, tool.name.slice(prefix.length)),
+    ).map(tool => tool.name);
   }
 
   /**
@@ -1170,11 +1187,24 @@ export class MCPManager {
    */
   getServerInstructions(name: string): string | undefined {
     if (this.isSandboxExecutionAuthorityClosed()) return undefined;
+    if (this.getServerConfig(name)?.localOnly === true) {
+      if (!hasLocalMcpAccess() || !this.bridges.has(name)) return undefined;
+      if (name !== "agenc-desktop-control" || !hasDesktopAuthority(this.getServerConfig(name)?.desktopAuthorityGrant)) return this.serverInstructions.get(name);
+      const tools = this.getAuthenticatedDesktopToolNames().join(", ");
+      const routineGuidance = tools.includes("mcp.agenc-desktop-control.desktop_routine_list")
+        ? " For the user's AgenC Desktop Routines, discover desktop_routine_list/get/create/update/delete/run/runs/cancel and desktop_routines_open here. These operate the app's real Routine records. CronCreate/CronList/CronDelete are a separate conversation scheduler, not a substitute for Desktop Routines. Inspect current records before updating, deleting or running them; preserve revision checks. Routine changes require ordinary approval and are unavailable in read-only/plan mode; routine execution uses its own default/plan Core permissions, never inherited bypass."
+        : "";
+      return `This is authenticated local AgenC Desktop app control, not a web page or the isolated Browser tool. Discover its tools with system.searchTools, then select the exact MCP tool name before calling it. Available tools: ${tools}. Use only for the user's requested app operation; this capability does not grant additional permissions.${routineGuidance} Native visible-terminal mutations require an explicitly full-access session. In restricted sessions use Core exec_command/system.bash for sandboxed commands; never loosen permissions just to control the visible terminal.\n\n${this.serverInstructions.get(name) ?? ""}`;
+    }
     return this.serverInstructions.get(name);
   }
 
   getConfiguredServers(): readonly MCPServerConfig[] {
-    return this.configs;
+    return this.configs.map(config => {
+      if (config.origin?.scope !== "session" || config.headers === undefined) return config;
+      const { headers: _headers, desktopAuthority: _proof, desktopAuthorityGrant: _grant, ...publicConfig } = config;
+      return publicConfig;
+    });
   }
 
   getServerConfig(name: string): MCPServerConfig | undefined {
@@ -1518,6 +1548,15 @@ export class MCPManager {
     startupGate?: StartupGate,
     isCurrent: () => boolean = () => true,
   ): Promise<RefreshedCompanionBridges> {
+    if (config.localOnly === true) {
+      // Local app control is a tool-only surface: no server-initiated skill,
+      // resource or prompt can escape the turn-scoped execution boundary.
+      const previous = [this.resourceBridges.get(config.name), this.promptBridges.get(config.name)];
+      this.resourceBridges.delete(config.name);
+      this.promptBridges.delete(config.name);
+      await Promise.all(previous.filter(value => value !== undefined).map(value => invokeDisposal(value)));
+      return {};
+    }
     let createdResourceBridge: MCPResourceBridge | undefined;
     let createdPromptBridge: MCPPromptBridge | undefined;
     const abandonCreatedBridges = async (): Promise<void> => {
@@ -1612,17 +1651,20 @@ export class MCPManager {
     startupGate: StartupGate,
     isCurrent: () => boolean,
   ): Promise<MCPToolBridge> {
+    const sensitiveHeaders = config.origin?.scope === "session" ? config.headers : undefined;
+    const logger = attachmentLogger(this.logger, sensitiveHeaders);
     let client: Awaited<ReturnType<typeof createMCPConnection>>;
     try {
       client = await createMCPConnection(
         config,
-        this.logger,
-        this.elicitationHandlers,
-        this.samplingHandlers,
+        logger,
+        config.localOnly === true ? undefined : this.elicitationHandlers,
+        config.localOnly === true ? undefined : this.samplingHandlers,
         this.sandboxExecutionBroker,
         this.environment,
       );
     } catch (error) {
+      error = redactMcpAttachmentValue(error, sensitiveHeaders);
       if (isMCPTransportCleanupFailure(error)) {
         this.retainUnownedCleanupFailure(config.name, error);
         throw new MCPConnectionCleanupError(config.name, error, [error]);
@@ -1638,11 +1680,12 @@ export class MCPManager {
       // value is immutable for the lifetime of the connection.
       const capabilities = readClientCapabilities(client);
       const serverInfo = readClientServerInfo(client);
-      const instructions = readClientInstructions(client);
+      const rawInstructions = readClientInstructions(client);
+      const instructions = rawInstructions === undefined ? undefined : redactMcpAttachmentText(rawInstructions, sensitiveHeaders);
       const rawBridge = await createToolBridge(
         client,
         config.name,
-        this.logger,
+        logger,
         {
           listToolsTimeoutMs: config.timeout,
           callToolTimeoutMs: config.timeout,
@@ -1661,7 +1704,7 @@ export class MCPManager {
       // already-registered tools (from earlier servers). Bail the
       // whole bridge — the caller can re-configure the namespace.
       this.assertNoNameShadowing(config.name, rawBridge);
-      bridge = new ResilientMCPBridge(config, rawBridge, this.logger, {
+      bridge = new ResilientMCPBridge(config, rawBridge, logger, {
         ...(this.permissionOptions !== undefined
           ? { permissions: this.permissionOptions }
           : {}),
@@ -1675,10 +1718,10 @@ export class MCPManager {
         // resilient bridge re-registers them on the fresh client it spawns
         // during reconnect — otherwise server-initiated elicitation breaks
         // silently after a transient drop.
-        ...(this.elicitationHandlers !== undefined
+        ...(config.localOnly !== true && this.elicitationHandlers !== undefined
           ? { elicitationHandlers: this.elicitationHandlers }
           : {}),
-        ...(this.samplingHandlers !== undefined
+        ...(config.localOnly !== true && this.samplingHandlers !== undefined
           ? { samplingHandlers: this.samplingHandlers }
           : {}),
         ...(this.sandboxExecutionBroker !== undefined
@@ -1743,7 +1786,7 @@ export class MCPManager {
         capabilities,
         ...(serverInfo !== undefined ? { serverInfo } : {}),
         ...(instructions !== undefined ? { instructions } : {}),
-        config: toScopedMcpServerConfig(config),
+        config: toScopedMcpServerConfig(sensitiveHeaders === undefined ? config : { ...config, headers: undefined }),
         cleanup: async () => {
           await this.disconnectServer(
             config.name,
@@ -1754,6 +1797,7 @@ export class MCPManager {
       this.connectionStates.set(config.name, { type: "connected" });
       return bridge;
     } catch (error) {
+      error = redactMcpAttachmentValue(error, sensitiveHeaders);
       if (bridge !== undefined && this.bridges.get(config.name) === bridge) {
         this.bridges.delete(config.name);
       }

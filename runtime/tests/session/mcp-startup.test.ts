@@ -6,7 +6,9 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -37,10 +39,13 @@ import {
   createSessionMcpService as createRuntimeSessionMcpService,
   requiredMcpServerNames,
   resolveSessionMcpConfig as resolveRuntimeSessionMcpConfig,
+  resolveSessionMcpPlan,
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
 import { ConfigStore } from "../config/store.js";
+import { withLocalMcpAccess } from "../mcp-client/local-control.js";
+import { verifyDesktopAuthority } from "../mcp-client/desktop-authority.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
   getCanonicalSettingsAuthority,
@@ -207,6 +212,21 @@ beforeEach(() => {
 });
 
 describe("mcp-startup.attachMcpManagerToSession", () => {
+  it("resolves the daemon approval bridge at call time after bootstrap", async () => {
+    const setPermissionOptions = vi.fn();
+    const { manager } = stubManager();
+    Object.assign(manager, { setPermissionOptions });
+    const services: { approvalResolver?: { request: ReturnType<typeof vi.fn> } } = {};
+    const { session } = stubSession();
+    Object.assign(session, { services, permissionModeRegistry: { current: vi.fn() }, sessionConfiguration: { cwd: "/tmp", approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "workspace_write" } } });
+    attachMcpManagerToSession(manager, session);
+    const resolver = setPermissionOptions.mock.calls[0][0].approvalResolver;
+    expect(await resolver.request({})).toEqual({ kind: "denied" });
+    services.approvalResolver = { request: vi.fn(async () => ({ kind: "approved" })) };
+    expect(await resolver.request({})).toEqual({ kind: "approved" });
+    services.approvalResolver = { request: vi.fn(async () => ({ kind: "abort" })) };
+    expect(await resolver.request({})).toEqual({ kind: "abort" });
+  });
   it("installs a call observer on the manager", () => {
     const {
       manager,
@@ -2367,7 +2387,233 @@ describe("mcp-startup session-owned manager helpers", () => {
   });
 });
 
+async function createPrivateDesktopFixture(home: string) {
+  const socketRoot = mkdtempSync(join(realpathSync("/tmp"), "agenc-dc-"));
+  chmodSync(socketRoot, 0o700);
+  const socketPath = join(socketRoot, "control.sock");
+  const socket = createServer();
+  await new Promise<void>((resolve, reject) => {
+    socket.once("error", reject);
+    socket.listen(socketPath, resolve);
+  });
+  chmodSync(socketPath, 0o600);
+  const directory = join(home, "desktop-control-authorities");
+  mkdirSync(directory, { mode: 0o700 });
+  const keys = generateKeyPairSync("ed25519");
+  const id = randomUUID();
+  const config = {
+    name: "agenc-desktop-control", transport: "http" as const,
+    endpoint: "http://127.0.0.1:43219/mcp", localOnly: true,
+    headers: { Authorization: `Bearer ${"a".repeat(48)}` },
+  };
+  const material = JSON.stringify([2, config.name, config.endpoint,
+    createHash("sha256").update(config.headers.Authorization).digest("hex"), 1, socketPath]);
+  const record = { version: 2, publicKey: keys.publicKey.export({ type: "spki", format: "pem" }),
+    expiresAt: Date.now() + 600_000, socketPath };
+  writeFileSync(join(directory, `${id}.json`), JSON.stringify(record), { mode: 0o600 });
+  const signed = { ...config, desktopAuthority: {
+    id, signature: sign(null, Buffer.from(material), keys.privateKey).toString("base64"),
+  } };
+  const grant = (await verifyDesktopAuthority(signed, home))!;
+  return {
+    config: signed, grant,
+    async cleanup() {
+      await new Promise<void>(resolve => socket.close(() => resolve()));
+      rmSync(socketRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+function legacyDesktopLines(name: string, endpoint = "http://127.0.0.1:43117/mcp", token = "b".repeat(48), transport = "http") {
+  return [`[mcp_servers.${name}]`, `transport = ${JSON.stringify(transport)}`,
+    `endpoint = ${JSON.stringify(endpoint)}`, `headers = { Authorization = ${JSON.stringify(`Bearer ${token}`)} }`];
+}
+
+describe("private Desktop session legacy migration", () => {
+  it("retires both native global bridges and captured proxies only in the attached session, then restores them on explicit disable", async () => {
+    const fixture = await createMcpAuthorityFixture({ user: [
+      ...legacyDesktopLines("agenc-desktop"), ...legacyDesktopLines("agenc-browser"),
+      '[mcp_servers.unrelated]', 'command = "other-mcp"',
+    ] });
+    const privateDesktop = await createPrivateDesktopFixture(fixture.home);
+    const originalConfig = readFileSync(fixture.userConfigPath, "utf8");
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, { authority: fixture.store, environment: { AGENC_HOME: fixture.home } });
+    const otherManager = createSessionMcpManager([]);
+    const otherService = createSessionMcpService(otherManager, { authority: fixture.store, environment: {} });
+    const bridges: ReturnType<typeof makeMockBridge>[] = [];
+    mockCreateToolBridge.mockImplementation(async (_client, name, _logger, options) => {
+      const bridge = makeMockBridge(name, options?.callObserver);
+      bridges.push(bridge);
+      return bridge as never;
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      await otherService.refreshFromAuthority?.();
+      const captured = ["agenc-desktop", "agenc-browser"].map(name => manager.getToolsByServer(name)[0]!);
+      for (const tool of captured) await expect(tool.execute({})).resolves.toMatchObject({ content: "ok", isError: false });
+      const originalBridges = bridges.slice(0, 3).filter(bridge => bridge.serverName !== "unrelated");
+      await expect(service.addServer?.(privateDesktop.config, { replace: true })).resolves.toMatchObject({ success: true });
+      expect(manager.getConfiguredServers().map(config => config.name).sort()).toEqual(["agenc-desktop-control", "unrelated"]);
+      expect(otherManager.getConfiguredServers().map(config => config.name).sort()).toEqual(["agenc-browser", "agenc-desktop", "unrelated"]);
+      const connections = mockCreateMCPConnection.mock.calls.length;
+      for (const tool of captured) {
+        await expect(tool.execute({})).resolves.toMatchObject({ isError: true, content: expect.stringContaining("disposed") });
+      }
+      for (const bridge of originalBridges) {
+        expect(bridge.dispose).toHaveBeenCalledTimes(1);
+        expect(bridge.tools[0]!.execute).toHaveBeenCalledTimes(1);
+      }
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(connections);
+      await expect(service.reconnectServer?.("agenc-desktop")).resolves.toMatchObject({ success: false });
+      await expect(service.enableServer?.("agenc-browser")).resolves.toMatchObject({ success: false });
+      // Rejected mutations reconcile the surviving services, but cannot open
+      // either superseded endpoint again.
+      expect(mockCreateMCPConnection.mock.calls.slice(connections).map(([config]) => config.name))
+        .not.toEqual(expect.arrayContaining(["agenc-desktop"]));
+      expect(mockCreateMCPConnection.mock.calls.slice(connections).map(([config]) => config.name))
+        .not.toEqual(expect.arrayContaining(["agenc-browser"]));
+      expect(readFileSync(fixture.userConfigPath, "utf8")).toBe(originalConfig);
+      await expect(service.disableServer?.("agenc-desktop-control")).resolves.toMatchObject({ success: true });
+      expect(manager.getConfiguredServers().map(config => config.name).sort()).toEqual(["agenc-browser", "agenc-desktop", "agenc-desktop-control", "unrelated"]);
+      expect(manager.isConnected("agenc-desktop")).toBe(true);
+      expect(manager.isConnected("agenc-browser")).toBe(true);
+      // A retired proxy stays retired; restoring the user fallback creates new ones.
+      await expect(captured[0]!.execute({})).resolves.toMatchObject({ isError: true, content: expect.stringContaining("disposed") });
+      await expect(manager.getToolsByServer("agenc-desktop")[0]!.execute({})).resolves.toMatchObject({ content: "ok" });
+      await service.dispose?.();
+      expect((await resolveSessionMcpConfig(fixture.store, {})).map(config => config.name).sort()).toEqual(["agenc-browser", "agenc-desktop", "unrelated"]);
+      expect(readFileSync(fixture.userConfigPath, "utf8")).toBe(originalConfig);
+    } finally {
+      await service.dispose?.(); await otherService.dispose?.();
+      await privateDesktop.cleanup(); fixture.cleanup();
+    }
+  });
+
+  it("requires a genuine private grant, hides legacy definitions, and never falls back just because the grant expires", async () => {
+    const fixture = await createMcpAuthorityFixture({ user: legacyDesktopLines("agenc-desktop") });
+    const privateDesktop = await createPrivateDesktopFixture(fixture.home);
+    const config = { ...privateDesktop.config, desktopAuthorityGrant: privateDesktop.grant };
+    const planFor = (attachment: MCPServerConfig) => resolveSessionMcpPlan(fixture.store, {},
+      { [attachment.name]: attachment }, new Map(), { pluginStorageRoot: TEST_PLUGIN_STORAGE_ROOT });
+    try {
+      for (const attachment of [
+        { ...config, desktopAuthorityGrant: undefined },
+        { ...config, desktopAuthorityGrant: { ...privateDesktop.grant } },
+        { ...config, localOnly: false },
+        { ...config, enabled: false },
+      ]) {
+        expect((await planFor(attachment)).configs.map(server => server.name)).toContain("agenc-desktop");
+      }
+      const active = await planFor(config);
+      expect(active.configs.map(server => server.name)).not.toContain("agenc-desktop");
+      expect(active.definitions.has("agenc-desktop")).toBe(false);
+      const now = vi.spyOn(Date, "now").mockReturnValue(privateDesktop.grant.expiresAt + 1);
+      try {
+        expect((await planFor(config)).configs.map(server => server.name)).not.toContain("agenc-desktop");
+      } finally { now.mockRestore(); }
+    } finally { await privateDesktop.cleanup(); fixture.cleanup(); }
+  });
+
+  it.each([
+    ["other-native-name", "http://127.0.0.1:43117/mcp", "b".repeat(48), "http"],
+    ["agenc-desktop", "https://127.0.0.1:43117/mcp", "b".repeat(48), "http"],
+    ["agenc-desktop", "http://localhost:43117/mcp", "b".repeat(48), "http"],
+    ["agenc-desktop", "http://127.0.0.1/mcp", "b".repeat(48), "http"],
+    ["agenc-desktop", "http://127.0.0.1:43117/mcp?custom=1", "b".repeat(48), "http"],
+    ["agenc-desktop", "http://127.0.0.1:43117/mcp#custom", "b".repeat(48), "http"],
+    ["agenc-desktop", "http://user@127.0.0.1:43117/mcp", "b".repeat(48), "http"],
+    ["agenc-desktop", "http://127.0.0.1:43117/custom", "b".repeat(48), "http"],
+    ["agenc-desktop", "http://127.0.0.1:43117/mcp", "B".repeat(48), "http"],
+    ["agenc-desktop", "http://127.0.0.1:43117/mcp", "b".repeat(47), "http"],
+    ["agenc-desktop", "http://127.0.0.1:43117/mcp", "b".repeat(48), "sse"],
+  ])("retains non-native configuration %s %s %s %s", async (name, endpoint, token, transport) => {
+    const fixture = await createMcpAuthorityFixture({ user: legacyDesktopLines(name, endpoint, token, transport) });
+    const privateDesktop = await createPrivateDesktopFixture(fixture.home);
+    try {
+      const configs = await resolveSessionMcpConfig(fixture.store, {}, {
+        "agenc-desktop-control": { ...privateDesktop.config, desktopAuthorityGrant: privateDesktop.grant },
+      });
+      expect(configs.map(config => config.name)).toContain(name);
+    } finally { await privateDesktop.cleanup(); fixture.cleanup(); }
+  });
+});
+
 describe("session MCP mutation transactions", () => {
+  it("attaches, idempotently replaces and rotates authenticated local HTTP state without persisting credentials", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const before = readFileSync(fixture.userConfigPath, "utf8");
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, { authority: fixture.store, environment: {} });
+    const token = "b".repeat(48);
+    const config = { name: "agenc-desktop-control", transport: "http" as const, endpoint: "http://127.0.0.1:43118/mcp", headers: { Authorization: `Bearer ${token}` }, localOnly: true };
+    try {
+      await expect(service.addServer?.(config, { replace: true })).resolves.toMatchObject({ success: true, toolCount: 1 });
+      expect(mockCreateMCPConnection.mock.calls[0]?.[0]).toMatchObject({ headers: config.headers, localOnly: true, origin: { scope: "session" } });
+      expect(manager.getTools()).toEqual([]);
+      expect(manager.getServerInstructions(config.name)).toBeUndefined();
+      await withLocalMcpAccess(true, async () => {
+        expect(manager.getTools().map(tool => tool.name)).toEqual(["mcp.agenc-desktop-control.echo"]);
+        // A matching server name and bearer alone cannot claim product identity.
+        expect(manager.getServerInstructions(config.name)).toBeUndefined();
+      });
+      expect(mockCreateResourceBridge).not.toHaveBeenCalled();
+      expect(mockCreatePromptBridge).not.toHaveBeenCalled();
+      for (const projection of [manager.getConfiguredServers(), manager.getConnectedConnection(config.name), service.mcpSurfaceSnapshot?.()]) {
+        expect(JSON.stringify(projection)).not.toContain(token);
+      }
+      await expect(service.addServer?.(config, { replace: true })).resolves.toMatchObject({ success: true });
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(1);
+      const rotated = { ...config, endpoint: "http://127.0.0.1:43119/mcp", headers: { Authorization: `Bearer ${"c".repeat(48)}` } };
+      await expect(service.addServer?.(rotated, { replace: true })).resolves.toMatchObject({ success: true });
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+      expect(mockCreateMCPConnection.mock.calls[1]?.[0]).toMatchObject(rotated);
+      await expect(service.reconnectServer?.(config.name)).resolves.toMatchObject({ success: true });
+      expect(mockCreateMCPConnection.mock.calls.at(-1)?.[0]).toMatchObject(rotated);
+      expect(mockCreateToolBridge.mock.calls.at(-1)?.[3]?.serverConfig).toMatchObject({ localOnly: true, sensitiveHeaders: rotated.headers });
+      expect(readFileSync(fixture.userConfigPath, "utf8")).toBe(before);
+      await expect(service.addServer?.({ ...rotated, localOnly: false }, { replace: true })).resolves.toMatchObject({ success: false });
+      await service.dispose?.();
+      const restored = createSessionMcpManager([]);
+      const restoredService = createSessionMcpService(restored, { authority: fixture.store, environment: {} });
+      await restoredService.refreshFromAuthority?.();
+      expect(restored.getConfiguredServers()).toEqual([]);
+      await restoredService.dispose?.();
+    } finally { await service.dispose?.(); fixture.cleanup(); }
+  });
+
+  it("does not replace canonical user MCP definitions and preserves managed exclusivity", async () => {
+    for (const settings of [
+      { user: ['[mcp_servers.owner]', 'command = "owner-mcp"'] },
+      { managed: ['[mcp_servers]'] },
+    ]) {
+      const fixture = await createMcpAuthorityFixture(settings);
+      const manager = createSessionMcpManager([]);
+      const service = createSessionMcpService(manager, { authority: fixture.store, environment: {} });
+      try {
+        await expect(service.addServer?.({ name: "owner", transport: "http", endpoint: "http://127.0.0.1:43118/mcp", headers: { Authorization: `Bearer ${"d".repeat(48)}` }, localOnly: true }, { replace: true })).resolves.toMatchObject({ success: false });
+        expect(manager.getConfiguredServers().every(config => config.localOnly !== true)).toBe(true);
+      } finally { await service.dispose?.(); fixture.cleanup(); }
+    }
+  });
+
+  it("redacts failed auth diagnostics and rolls back the prior attachment", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, { authority: fixture.store, environment: {} });
+    const config = { name: "agenc-desktop-control", transport: "http" as const, endpoint: "http://127.0.0.1:43118/mcp", headers: { Authorization: `Bearer ${"e".repeat(48)}` }, localOnly: true };
+    try {
+      await service.addServer?.(config, { replace: true });
+      const rotatedToken = "f".repeat(48);
+      mockCreateMCPConnection.mockRejectedValueOnce(new Error(`Authentication failed: Bearer ${rotatedToken}`));
+      const result = await service.addServer?.({ ...config, headers: { Authorization: `Bearer ${rotatedToken}` } }, { replace: true });
+      expect(result?.success).toBe(false);
+      expect(JSON.stringify(result)).not.toContain(rotatedToken);
+      expect(manager.getConnectionState(config.name)?.type).toBe("connected");
+      expect(mockCreateMCPConnection.mock.calls.at(-1)?.[0]).toMatchObject(config);
+    } finally { await service.dispose?.(); fixture.cleanup(); }
+  });
+
   it("rejects malformed session additions before touching the manager", async () => {
     const fixture = await createMcpAuthorityFixture();
     const harness = createTransactionalManager();
