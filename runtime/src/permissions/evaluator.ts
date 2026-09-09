@@ -42,6 +42,7 @@
  */
 
 import {
+  freshDenialTracking,
   handleDenialLimitExceeded,
   recordDenial,
   recordSuccess,
@@ -497,6 +498,22 @@ async function decideReadOnlyGrant(
   permissionContext: ToolPermissionContext,
   unattended: { readonly behavior: string; readonly toolName: string },
 ): Promise<PermissionDecision> {
+  const appState = context.getAppState();
+  // A refused call is the end of that road, and the model needs to hear that
+  // it is: left to a plain refusal it re-issues the same tool until the turn
+  // errors, which costs minutes and loses the report it was about to write.
+  const refuse = (message: string): PermissionDecision => {
+    const next = recordDenial(
+      context.denialTracking ?? appState.denialTracking ?? freshDenialTracking(),
+    );
+    persistDenialState(context, next);
+    return unattendedReadOnlyDenyDecision(
+      tool.name,
+      next.consecutiveDenials >= 2
+        ? `${message} This run has now been refused ${next.consecutiveDenials} times. Stop calling tools and write your findings as your final answer.`
+        : message,
+    );
+  };
   // An operator naming the tool explicitly is a decision already made; the
   // set decides everything else.
   if (unattended.behavior !== "allow") {
@@ -508,21 +525,21 @@ async function decideReadOnlyGrant(
       READ_ONLY_GRANT_DEPS,
     );
     if (!verdict.granted) {
-      return unattendedReadOnlyDenyDecision(
-        tool.name,
-        readOnlyGrantRefusalMessage(tool.name, verdict.refusal),
-      );
+      return refuse(readOnlyGrantRefusalMessage(tool.name, verdict.refusal));
     }
   }
   // Being admitted is not authority to skip the tool's own check. Anything
   // that still wants a human is refused here too.
   const toolResult = await resolveToolPermissionResult(tool, input, context);
   if (toolResult.behavior === "ask" || toolResult.behavior === "deny") {
-    return unattendedReadOnlyDenyDecision(
-      tool.name,
-      readOnlyGrantRefusalMessage(tool.name, { kind: "interactive" }),
-    );
+    return refuse(readOnlyGrantRefusalMessage(tool.name, { kind: "interactive" }));
   }
+  // A granted call clears the streak, so an occasional refusal mid-report does
+  // not accumulate into the escalated wording.
+  persistDenialState(
+    context,
+    recordSuccess(context.denialTracking ?? appState.denialTracking ?? freshDenialTracking()),
+  );
   return unattendedAllowDecision(unattended.toolName, input);
 }
 

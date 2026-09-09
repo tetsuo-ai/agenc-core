@@ -15,6 +15,7 @@ import {
   DOCKER_READ_ONLY_COMMANDS,
   EXTERNAL_READONLY_COMMANDS,
   type FlagArgType,
+  GH_READ_ONLY_COMMANDS,
   GIT_READ_ONLY_COMMANDS,
   PYRIGHT_READ_ONLY_COMMANDS,
   RIPGREP_READ_ONLY_COMMANDS,
@@ -161,6 +162,13 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
   },
   // All git read-only commands from shared validation map
   ...GIT_READ_ONLY_COMMANDS,
+  /* The same curated gh listing surface the PowerShell validator has consulted
+     all along. It was defined beside the git map and imported by only one of
+     the two shells, so `gh pr list` fell through to "no opinion" here while
+     `git log` was allowed. Each entry carries its own safe-flag allowlist and
+     the shared dangerous-argument callback, so this admits the listed
+     subcommands and nothing else: `gh pr merge` is not in the map. */
+  ...GH_READ_ONLY_COMMANDS,
   file: {
     safeFlags: {
       // Output format flags
