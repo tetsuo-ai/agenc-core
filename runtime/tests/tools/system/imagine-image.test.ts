@@ -1120,6 +1120,383 @@ describe("ImagineImage tool", () => {
     expect(requestSignal?.aborted).toBe(true);
   });
 
+  it("generates with GPT Image for an OpenAI session holding an API key", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-openai-"));
+    const provider = createProvider("openai", {
+      apiKey: "chatgpt-oauth-bearer-must-not-leak",
+      model: "gpt-6-astra",
+      baseURL: "https://api.openai.com/v1",
+    });
+    const b64 = Buffer.from("openai-png").toString("base64");
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ b64_json: b64 }], output_format: "png" }),
+    })) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider,
+      env: {
+        OPENAI_API_KEY: "isolated-openai-key",
+        XAI_API_KEY: "must-not-win-for-openai-session",
+      },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({
+      prompt: "a grey square",
+      aspect_ratio: "16:9",
+      quality: "low",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content) as {
+      backend: string;
+      model: string;
+      path: string;
+    };
+    expect(parsed).toMatchObject({ backend: "openai", model: "gpt-image-2" });
+    expect(parsed.path).toMatch(/\.png$/u);
+    expect(await readFile(parsed.path, "utf8")).toBe("openai-png");
+
+    const call = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0];
+    expect(String(call?.[0])).toBe("https://api.openai.com/v1/images/generations");
+    const init = call?.[1] as { headers: Record<string, string>; body: string };
+    // The session bearer is a ChatGPT OAuth grant, which cannot call this
+    // endpoint at all. Only the API-key ingress may authorize it.
+    expect(init.headers.authorization).toBe("Bearer isolated-openai-key");
+    expect(JSON.parse(init.body)).toEqual({
+      model: "gpt-image-2",
+      prompt: "a grey square",
+      n: 1,
+      size: "1536x1024",
+      quality: "low",
+    });
+  });
+
+  it("saves the format GPT Image reports rather than assuming PNG", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-openai-jpeg-"));
+    const b64 = Buffer.from("openai-jpeg").toString("base64");
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ b64_json: b64 }], output_format: "jpeg" }),
+    })) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("openai", {
+        apiKey: "unused",
+        model: "gpt-6-astra",
+        baseURL: "https://api.openai.com/v1",
+      }),
+      env: { OPENAI_API_KEY: "isolated-openai-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a grey square" });
+
+    const parsed = JSON.parse(result.content) as { path: string };
+    expect(parsed.path).toMatch(/\.jpg$/u);
+  });
+
+  it("generates with MiniMax Image for a MiniMax session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-minimax-"));
+    const b64 = Buffer.from("minimax-jpeg").toString("base64");
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: "req-1",
+        data: { image_base64: [b64] },
+        base_resp: { status_code: 0, status_msg: "success" },
+      }),
+    })) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("minimax", {
+        apiKey: "minimax-session-key",
+        model: "MiniMax-M2.5",
+      }),
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({
+      prompt: "a grey square",
+      aspect_ratio: "16:9",
+      n: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content) as {
+      backend: string;
+      model: string;
+      path: string;
+    };
+    expect(parsed).toMatchObject({ backend: "minimax", model: "image-01" });
+    expect(parsed.path).toMatch(/\.jpg$/u);
+    expect(await readFile(parsed.path, "utf8")).toBe("minimax-jpeg");
+
+    const call = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0];
+    // MiniMax names this route differently from every OpenAI-shaped backend.
+    expect(String(call?.[0])).toBe("https://api.minimax.io/v1/image_generation");
+    const init = call?.[1] as { headers: Record<string, string>; body: string };
+    expect(init.headers.authorization).toBe("Bearer isolated-minimax-key");
+    expect(JSON.parse(init.body)).toEqual({
+      model: "image-01",
+      prompt: "a grey square",
+      n: 1,
+      response_format: "base64",
+      aspect_ratio: "16:9",
+    });
+  });
+
+  it("treats a MiniMax HTTP 200 carrying a failure status as an error", async () => {
+    // MiniMax answers 200 for invalid params and quota failures alike; the
+    // outcome is in base_resp, so an HTTP-only check saves nothing and
+    // reports success.
+    const root = await mkdtemp(join(tmpdir(), "imagine-minimax-fail-"));
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: "req-2",
+        data: null,
+        base_resp: { status_code: 1008, status_msg: "insufficient balance" },
+      }),
+    })) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("minimax", {
+        apiKey: "unused",
+        model: "MiniMax-M2.5",
+      }),
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a grey square" });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("insufficient balance");
+  });
+
+  it("refuses a URL from a backend that was asked for inline bytes", async () => {
+    // OpenAI and MiniMax are both asked for base64, and neither has a
+    // registered download host, so a URL must fail closed rather than be
+    // fetched from whatever host answered.
+    const root = await mkdtemp(join(tmpdir(), "imagine-openai-url-"));
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{ url: "https://api.x.ai/generated/openai.png" }],
+      }),
+    })) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("openai", {
+        apiKey: "unused",
+        model: "gpt-6-astra",
+        baseURL: "https://api.openai.com/v1",
+      }),
+      env: { OPENAI_API_KEY: "isolated-openai-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a grey square" });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("not trusted");
+    // Only the generation call happened: no download was attempted.
+    expect(
+      (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls,
+    ).toHaveLength(1);
+  });
+
+  it("keeps each backend's own quality vocabulary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-quality-"));
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [] }),
+    })) as unknown as typeof fetch;
+    const openaiTool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("openai", {
+        apiKey: "unused",
+        model: "gpt-6-astra",
+        baseURL: "https://api.openai.com/v1",
+      }),
+      env: { OPENAI_API_KEY: "isolated-openai-key" },
+      fetchImpl,
+    });
+    const minimaxTool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("minimax", {
+        apiKey: "unused",
+        model: "MiniMax-M2.5",
+      }),
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+    });
+
+    // Z.AI's vocabulary is not OpenAI's, and vice versa.
+    const hd = await openaiTool.execute({ prompt: "x", quality: "hd" });
+    expect(hd.isError).toBe(true);
+    expect(String(hd.content)).toContain("OpenAI quality must be");
+    const unsupported = await minimaxTool.execute({
+      prompt: "x",
+      quality: "high",
+    });
+    expect(unsupported.isError).toBe(true);
+    expect(String(unsupported.content)).toContain(
+      "supported only by Z.AI and OpenAI",
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("refuses controls the new backends do not have", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-controls-"));
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [] }),
+    })) as unknown as typeof fetch;
+    const minimaxTool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("minimax", {
+        apiKey: "unused",
+        model: "MiniMax-M2.5",
+      }),
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+    });
+
+    // 2:1 is in this tool's shared vocabulary but MiniMax rejects it.
+    const aspect = await minimaxTool.execute({ prompt: "x", aspect_ratio: "2:1" });
+    expect(aspect.isError).toBe(true);
+    expect(String(aspect.content)).toContain("MiniMax aspect_ratio must be");
+
+    const resolution = await minimaxTool.execute({ prompt: "x", resolution: "2k" });
+    expect(resolution.isError).toBe(true);
+    expect(String(resolution.content)).toContain("resolution is not supported");
+
+    const model = await minimaxTool.execute({ prompt: "x", model: "image-99" });
+    expect(model.isError).toBe(true);
+    expect(String(model.content)).toContain("MiniMax image model must be");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("clamps a MiniMax batch to the nine images it will return", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-minimax-clamp-"));
+    const b64 = Buffer.from("m").toString("base64");
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: { image_base64: [b64] },
+        base_resp: { status_code: 0 },
+      }),
+    })) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("minimax", {
+        apiKey: "unused",
+        model: "MiniMax-M2.5",
+      }),
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+    });
+
+    await tool.execute({ prompt: "x", n: 10 });
+
+    const init = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0]?.[1] as { body: string };
+    expect((JSON.parse(init.body) as { n: number }).n).toBe(9);
+  });
+
+  it("offers xAI's second-generation image model", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-xai-20-"));
+    const b64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ b64_json: b64 }] }),
+    })) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("grok", {
+        apiKey: "unused",
+        model: "grok-4.6",
+        baseURL: "https://api.x.ai/v1",
+      }),
+      env: { XAI_API_KEY: "real-byok-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({
+      prompt: "a grey square",
+      model: "grok-imagine-image-2.0",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(
+      (JSON.parse(result.content) as { model: string }).model,
+    ).toBe("grok-imagine-image-2.0");
+  });
+
+  it("advertises the controls each new backend actually has", () => {
+    const root = process.cwd();
+    const openaiSchema = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("openai", {
+        apiKey: "unused",
+        model: "gpt-6-astra",
+        baseURL: "https://api.openai.com/v1",
+      }),
+      env: { OPENAI_API_KEY: "isolated-openai-key" },
+    }).inputSchema as {
+      properties: Record<string, { enum?: readonly string[]; maximum?: number }>;
+    };
+    expect(Object.keys(openaiSchema.properties).sort()).toEqual([
+      "aspect_ratio",
+      "model",
+      "n",
+      "prompt",
+      "quality",
+    ]);
+    expect(openaiSchema.properties.model?.enum).toContain("gpt-image-2");
+    expect(openaiSchema.properties.quality?.enum).toEqual([
+      "low",
+      "medium",
+      "high",
+      "auto",
+    ]);
+
+    const minimaxSchema = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("minimax", {
+        apiKey: "unused",
+        model: "MiniMax-M2.5",
+      }),
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+    }).inputSchema as {
+      properties: Record<string, { enum?: readonly string[]; maximum?: number }>;
+    };
+    expect(Object.keys(minimaxSchema.properties).sort()).toEqual([
+      "aspect_ratio",
+      "model",
+      "n",
+      "prompt",
+    ]);
+    expect(minimaxSchema.properties.n?.maximum).toBe(9);
+    // The advertised ratios are the ones MiniMax will accept, not the union.
+    expect(minimaxSchema.properties.aspect_ratio?.enum).not.toContain("2:1");
+  });
+
   it("refuses a missing prompt before any request, and says so", async () => {
     // #2190: a bare error from a mutating tool gates the session behind /resolve.
     const fetchImpl = vi.fn(async () => new Response("unreachable", { status: 500 }));
