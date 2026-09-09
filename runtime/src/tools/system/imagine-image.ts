@@ -119,6 +119,10 @@ const OPENAI_IMAGE_MODELS = Object.freeze(
 const OPENAI_IMAGE_QUALITIES = Object.freeze(
   new Set(["low", "medium", "high", "auto"]),
 );
+/** OpenAI's three encodings, keyed by the `output_format` it reports. */
+const OPENAI_OUTPUT_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze(
+  { jpeg: "jpg", webp: "webp", png: "png" },
+);
 const MINIMAX_IMAGE_MODELS = Object.freeze(
   new Set(["image-01", "image-01-live"]),
 );
@@ -701,6 +705,24 @@ function imagesFromImagePayload(
   return (data.image_base64 ?? []).map((b64_json) => ({ b64_json }));
 }
 
+/** What a backend generates with when the caller names no model. */
+function defaultImageModel(backend: ImageBackend): string {
+  switch (backend.kind) {
+    case "meta":
+      return "muse-image-1.0";
+    case "qwen":
+      return backend.provider === "qwen" ? "qwen-image-3.0" : "wan2.7-image";
+    case "zai":
+      return "glm-image";
+    case "openai":
+      return "gpt-image-2";
+    case "minimax":
+      return "image-01";
+    case "xai":
+      return "grok-imagine-image";
+  }
+}
+
 /** Backend name as it appears in an error the model reads. */
 function imageBackendLabel(backend: ImageBackend): string {
   switch (backend.kind) {
@@ -737,11 +759,7 @@ function defaultImageExtension(
       return "png";
     case "openai":
       // gpt-image defaults to PNG and echoes the format it actually used.
-      return openaiOutputFormat === "jpeg"
-        ? "jpg"
-        : openaiOutputFormat === "webp"
-          ? "webp"
-          : "png";
+      return OPENAI_OUTPUT_EXTENSIONS[openaiOutputFormat ?? ""] ?? "png";
     case "minimax":
       // MiniMax Image returns JPEG.
       return "jpg";
@@ -1108,21 +1126,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       const prompt = stringValue(args.prompt);
       if (!prompt) return refusal({ error: "prompt is required" });
 
-      const model =
-        stringValue(args.model) ??
-        (backend.kind === "meta"
-          ? "muse-image-1.0"
-          : backend.kind === "qwen"
-            ? backend.provider === "qwen"
-              ? "qwen-image-3.0"
-              : "wan2.7-image"
-            : backend.kind === "zai"
-              ? "glm-image"
-              : backend.kind === "openai"
-                ? "gpt-image-2"
-                : backend.kind === "minimax"
-                  ? "image-01"
-                  : "grok-imagine-image");
+      const model = stringValue(args.model) ?? defaultImageModel(backend);
       if (backend.kind === "meta") {
         if (model !== "muse-image-1.0") {
           return refusal({ error: "Meta image model must be muse-image-1.0" });
