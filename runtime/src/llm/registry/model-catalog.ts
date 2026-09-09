@@ -16,6 +16,7 @@ import {
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
+import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import {
   GEMINI_THINKING_MODELS,
   resolveGeminiThinkingModel,
@@ -507,6 +508,31 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     })),
     ...qwenCloudCatalogEntries(),
+    // Metadata only: exposing this private route requires configured model access.
+    // https://huggingface.co/Qwen/Qwen3.8-Flash-Next/tree/de4b8e4d43b917e7706784d8bb445c9af86a3540
+    ...["agenc", "qwen"].map((provider): RegisteredModelCatalogEntry => ({
+      provider,
+      model: QWEN_FLASH_NEXT_MODEL,
+      displayName: "Qwen Flash Next",
+      contextWindow: 262_144,
+      maxContextWindow: 262_144,
+      maxOutputTokens: 16_384,
+      maxOutputTokensUpperLimit: 32_768,
+      inputModalities: TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: QWEN_38_REASONING_LEVELS,
+      defaultReasoningLevel: "xhigh",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 0,
+      visibility: "none",
+    })),
     {
       provider: "cerebras",
       model: "gpt-oss-120b",

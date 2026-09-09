@@ -1514,10 +1514,13 @@ export class OpenAIProvider implements LLMProvider {
               onChunk({ content: "", done: false });
             }
           }
-          const reasoningDelta =
+          const primaryReasoningDelta =
             streamCapabilityHints.reasoningContentField === "reasoning"
               ? delta.reasoning
               : delta.reasoning_content;
+          const fallbackReasoningField = streamCapabilityHints.reasoningContentFallbackField;
+          const reasoningDelta = primaryReasoningDelta ??
+            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined);
           if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
             reasoningContent += reasoningDelta;
             onChunk({

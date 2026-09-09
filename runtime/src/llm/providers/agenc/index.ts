@@ -62,6 +62,7 @@ const CONCRETE_PROVIDER_NAMES = [
   "groq",
   "deepseek",
   "gemini",
+  "qwen",
 ] as const satisfies readonly ConcreteProviderName[];
 
 export class AgenCProvider implements LLMProvider {

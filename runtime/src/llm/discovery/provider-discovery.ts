@@ -23,7 +23,7 @@ import {
   resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../provider.js";
-import { resolveProviderCredentialAuthority } from "../provider-options.js";
+import { assertHostedAgencModelAuthority, resolveProviderCredentialAuthority } from "../provider-options.js";
 
 export type ProviderAvailabilityStatus = "usable" | "unusable";
 export type ProviderCredentialStatus =
@@ -49,6 +49,7 @@ const HOSTED_AGENC_DELEGATE_PROVIDERS = new Set<ProviderName>([
   "nvidia-nim",
   "minimax",
   "github",
+  "qwen",
 ]);
 
 const DEFAULT_LOCAL_PROVIDER_PROBE_TIMEOUT_MS = 750;
@@ -257,16 +258,11 @@ async function resolveProviderAvailabilityEntry(params: {
       : { localStatus: "n/a" as const };
 
   if (params.provider === "agenc") {
-    const hostedRoute = paidSubscription
-      ? await verifyHostedAgencRoute({
+    const hostedRoute = await verifyHostedAgencRoute({
           authBackend: params.authBackend,
           model,
           subscriptionTier,
-        })
-      : {
-          usable: false,
-          detail: "requires paid AgenC subscription",
-        };
+        });
     return buildEntry({
       provider: params.provider,
       model,
@@ -618,7 +614,17 @@ async function verifyHostedAgencRoute(params: {
       detail: "hosted AgenC routing unavailable: no auth backend configured",
     };
   }
+  if (params.authBackend.kind !== "remote" && !isPaidSubscriptionTier(params.subscriptionTier)) {
+    return { usable: false, detail: "requires paid AgenC subscription" };
+  }
   try {
+    await assertHostedAgencModelAuthority({
+      provider: "agenc",
+      authBackend: params.authBackend,
+      model: params.model,
+      sessionId: PROVIDER_CHECK_SESSION_ID,
+      subscriptionTier: params.subscriptionTier,
+    });
     const inferred = await params.authBackend.inferAgencModel({
       provider: "agenc",
       requestedModel: params.model,

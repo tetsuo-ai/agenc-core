@@ -121,7 +121,7 @@ import {
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import {
-  assertHostedAgencSubscriptionAuthority,
+  assertHostedAgencModelAuthority,
   MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
   requireProviderRuntimeCredential,
   resolveProviderRuntimeAuthority,
@@ -227,8 +227,10 @@ async function resolveAuthModelSelection(params: {
       profileModel: params.model,
     };
   }
-  assertHostedAgencSubscriptionAuthority({
+  await assertHostedAgencModelAuthority({
     provider: params.provider,
+    model: params.model,
+    sessionId: params.sessionId,
     authBackend: params.authBackend,
     subscriptionTier: params.subscriptionTier,
   });

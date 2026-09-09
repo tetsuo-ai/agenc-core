@@ -31,6 +31,7 @@ import {
 import type { ProviderReasoningProvenance } from "../types.js";
 import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "../registry/openai-reasoning-models.js";
+import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 
 export interface ChatCompletionsCapabilityHints {
   /**
@@ -84,6 +85,10 @@ export interface ChatCompletionsCapabilityHints {
   readonly replaysReasoningContent?: boolean;
   /** Provider-specific assistant reasoning field used for parse and replay. */
   readonly reasoningContentField?: "reasoning_content" | "reasoning";
+  /** Older compatible runtimes may emit the legacy name while replay uses canonical. */
+  readonly reasoningContentFallbackField?: "reasoning_content" | "reasoning";
+  /** vLLM receives Jinja thinking controls inside chat_template_kwargs. */
+  readonly usesVllmThinkingTemplate?: boolean;
   /**
    * Replay provider-owned reasoning only for the complete assistant-tool/result
    * group immediately preceding this request. Z.AI requires that state for a
@@ -395,6 +400,7 @@ export function chatCompletionsCapabilityHintsForProvider(
       model ?? "",
     );
   const isQwenCloud = slug === "qwen" || slug === "qwen-token-plan";
+  const isQwenFlashNext = slug === "qwen" && isQwenFlashNextModel(model);
   const preservesThinkingHistory =
     (slug === "qwen" &&
       /(?:^|[/:])qwen3\.(?:7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/i.test(
@@ -563,6 +569,13 @@ export function chatCompletionsCapabilityHintsForProvider(
             ? { preservesThinkingHistory: true }
             : {}),
           disablesThinkingForForcedToolChoice: true,
+        }
+      : {}),
+    ...(isQwenFlashNext
+      ? {
+          reasoningContentField: "reasoning" as const,
+          reasoningContentFallbackField: "reasoning_content" as const,
+          usesVllmThinkingTemplate: true,
         }
       : {}),
     ...(slug === "cerebras"

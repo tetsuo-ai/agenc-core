@@ -135,6 +135,14 @@ export interface AuthLlmUsage extends AuthJsonObject {
   readonly managedModelsEnabled: boolean;
   readonly modelAllowance: AuthLlmUsageAllowance;
   readonly subscriptionTier: AuthSubscriptionTier;
+  /** Explicit, expiring model access for a private pilot; never a paid tier. */
+  readonly pilotAccess?: AuthPilotAccess;
+}
+
+export interface AuthPilotAccess extends AuthJsonObject {
+  readonly provider: "agenc";
+  readonly models: readonly string[];
+  readonly expiresAt: string;
 }
 
 export interface AuthBackend {

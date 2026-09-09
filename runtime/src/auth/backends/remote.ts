@@ -34,6 +34,7 @@ import {
   type RemoteBearerCredential,
 } from "../native-credentials.js";
 import { getProxyFetchOptions } from "../../utils/proxy.js";
+import { normalizePilotAccess } from "../pilot-access.js";
 
 const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
   "https://id.agenc.ag/v1/auth/llm-credential" as const;
@@ -1265,10 +1266,12 @@ function normalizeRemoteAuthLlmUsage(value: Partial<AuthLlmUsage>): AuthLlmUsage
     throw new Error("RemoteAuthBackend LLM usage response has invalid subscriptionTier");
   }
   const allowance = normalizeRemoteAuthLlmUsageAllowance(value.modelAllowance);
+  const pilotAccess = normalizePilotAccess(value.pilotAccess);
   return {
     managedModelsEnabled: value.managedModelsEnabled === true,
     modelAllowance: allowance,
     subscriptionTier,
+    ...(pilotAccess !== undefined ? { pilotAccess } : {}),
   };
 }
 
