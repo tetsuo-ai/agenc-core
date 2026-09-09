@@ -21,6 +21,13 @@ Errors: `AgencRpcError`, `AgencMalformedResponseError`,
 `AgencCapabilityUnavailableError` (1.2 fail-closed), `AgencRunReplayGapError`,
 `AgencRunReplayProtocolError`. Full table: [`docs/sdk.md`](../../docs/sdk.md).
 
+The socket transport rejects every pending request and closes the connection
+when a completed line contains malformed JSON or an invalid JSON-RPC response
+or notification envelope. `onClose` receives the protocol error once, and later
+requests fail immediately. Partial lines may span chunks within the 16 MiB
+buffer limit. Valid `message.send` and `message.stream` calls remain unbounded
+by the control-request timeout.
+
 Prompt events on protocol 1.2 also include `message_committed`,
 `history_reset`, `elicitation_request`, `gap`, and `session_event`. The sample
 loop below only prints `text`.

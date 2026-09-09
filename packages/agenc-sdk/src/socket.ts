@@ -27,6 +27,7 @@ import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 import { createConnection, type Socket } from "node:net";
 import { spawn as nodeSpawn } from "node:child_process";
 import {
+  AGENC_SDK_JSON_RPC_VERSION,
   isJsonObject,
   type AgencDaemonMethod,
   type AgencDaemonRequest,
@@ -162,6 +163,34 @@ export interface AgencSocketTransportOptions {
   readonly onClose?: (error: Error | null) => void;
 }
 
+function isDaemonSocketResponse(message: JsonObject): boolean {
+  const hasResult = Object.hasOwn(message, "result");
+  const hasError = Object.hasOwn(message, "error");
+  if (hasResult === hasError) return false;
+  const hasRequestId = typeof message.id === "string" ||
+    (typeof message.id === "number" && Number.isFinite(message.id));
+  if (hasResult) return hasRequestId;
+  return (hasRequestId || message.id === null) &&
+    isJsonObject(message.error) &&
+    typeof message.error.code === "number" &&
+    Number.isInteger(message.error.code) &&
+    typeof message.error.message === "string";
+}
+
+function isDaemonSocketFrame(message: unknown): message is JsonObject {
+  if (!isJsonObject(message) || message.jsonrpc !== AGENC_SDK_JSON_RPC_VERSION) {
+    return false;
+  }
+  if (Object.hasOwn(message, "method")) {
+    return typeof message.method === "string" && message.method.length > 0 &&
+      !Object.hasOwn(message, "id") &&
+      !Object.hasOwn(message, "result") &&
+      !Object.hasOwn(message, "error") &&
+      (message.params === undefined || isJsonObject(message.params) || Array.isArray(message.params));
+  }
+  return isDaemonSocketResponse(message);
+}
+
 /**
  * Persistent newline-JSON socket transport. Single connection, no reconnect
  * layer — embedders that need reconnect can recreate the client via
@@ -172,6 +201,7 @@ export class AgencSocketTransport implements AgencTransport {
   readonly #pending = new Map<RequestId, PendingRequest>();
   readonly #requestTimeoutMs: number;
   readonly #onNotification: ((message: JsonObject) => void) | undefined;
+  readonly #onClose: ((error: Error | null) => void) | undefined;
   #buffer = "";
   #closed = false;
 
@@ -180,24 +210,17 @@ export class AgencSocketTransport implements AgencTransport {
     this.#requestTimeoutMs =
       options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.#onNotification = options.onNotification;
+    this.#onClose = options.onClose;
 
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
-      this.#handleData(chunk, options.onClose);
+      this.#handleData(chunk);
     });
     socket.once("error", (error) => {
-      this.#failAll(error);
-      if (!this.#closed) {
-        this.#closed = true;
-        options.onClose?.(error);
-      }
+      this.#terminate(error);
     });
     socket.once("close", () => {
-      this.#failAll(new Error("AgenC daemon connection closed"));
-      if (!this.#closed) {
-        this.#closed = true;
-        options.onClose?.(null);
-      }
+      this.#terminate(null);
     });
   }
 
@@ -255,30 +278,30 @@ export class AgencSocketTransport implements AgencTransport {
   }
 
   async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#socket.destroy();
-    this.#failAll(new Error("AgenC daemon connection closed"));
+    this.#terminate(new Error("AgenC daemon connection closed"), false);
   }
 
-  #handleData(
-    chunk: string,
-    onClose: ((error: Error | null) => void) | undefined,
-  ): void {
+  #terminate(error: Error | null, notifyClose = true): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#buffer = "";
+    this.#failAll(error ?? new Error("AgenC daemon connection closed"));
+    this.#socket.destroy();
+    if (notifyClose) this.#onClose?.(error);
+  }
+
+  #handleData(chunk: string): void {
+    if (this.#closed) return;
     this.#buffer += chunk;
     if (Buffer.byteLength(this.#buffer, "utf8") > MAX_CLIENT_BUFFER_BYTES) {
       const overflow = new Error(
         `AgenC daemon connection exceeded ${MAX_CLIENT_BUFFER_BYTES} bytes without a complete message`,
       );
-      this.#buffer = "";
-      this.#failAll(overflow);
-      this.#closed = true;
-      this.#socket.destroy(overflow);
-      onClose?.(overflow);
+      this.#terminate(overflow);
       return;
     }
     let newlineIndex = this.#buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
+    while (newlineIndex >= 0 && !this.#closed) {
       const line = this.#buffer.slice(0, newlineIndex).trim();
       this.#buffer = this.#buffer.slice(newlineIndex + 1);
       if (line.length > 0) this.#handleLine(line);
@@ -291,9 +314,13 @@ export class AgencSocketTransport implements AgencTransport {
     try {
       message = JSON.parse(line);
     } catch {
-      return; // Ignore malformed frames; requests still time out safely.
+      this.#terminate(new Error("AgenC daemon sent a malformed JSON frame"));
+      return;
     }
-    if (!isJsonObject(message)) return;
+    if (!isDaemonSocketFrame(message)) {
+      this.#terminate(new Error("AgenC daemon sent an invalid JSON-RPC frame"));
+      return;
+    }
     if (typeof message.id === "string" || typeof message.id === "number") {
       const waiter = this.#pending.get(message.id);
       if (waiter === undefined) return;
