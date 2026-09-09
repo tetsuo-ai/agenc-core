@@ -9,6 +9,7 @@ import { resolveHomeContext } from "../../src/config/home.js";
 import { RuntimeStateRepository } from "../../src/config/runtime-state-repository.js";
 import { createCanonicalStateDocument, writeCanonicalStateAtomicSync } from "../../src/config/state.js";
 import { syncStatePublicationDirectorySync } from "../../src/config/state-publication.js";
+import * as lockfile from "../../src/utils/lockfile.js";
 
 const directories: string[] = [];
 const repositories: RuntimeStateRepository[] = [];
@@ -77,6 +78,7 @@ function terminatePublication(file: string, transition: string, recover = false)
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const repository of repositories.splice(0)) repository.close();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
@@ -223,6 +225,25 @@ describe("canonical state publication recovery", () => {
     terminatePublication(file, "journal-write");
     expect(() => repository.get()).toThrow(/missing prior committed state/u);
     expect(existsSync(file)).toBe(false);
+  });
+
+  test("retries a freshness lock failure without requiring another file event", async () => {
+    const { directory, file } = fixture();
+    let notify: (() => void) | undefined;
+    const repository = new RuntimeStateRepository(resolveHomeContext({ AGENC_HOME: directory, HOME: directory }), {
+      storage: "disk",
+      watchFile: (_file, _options, listener) => { notify = () => listener({} as Stats, {} as Stats); },
+      unwatchFile: () => {},
+    });
+    repositories.push(repository);
+    expect(repository.get()).toMatchObject(previousGlobal);
+    terminatePublication(file, "publication");
+    const contention = Object.assign(new Error("injected stale writer lock"), { code: "ELOCKED" });
+    const acquire = vi.spyOn(lockfile, "lock").mockRejectedValueOnce(contention);
+    notify!();
+    await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(repository.get()).toMatchObject(replacementGlobal), { timeout: 200 });
+    expect(readdirSync(directory)).toEqual(["state.json"]);
   });
 
   test("preserves the directory sync failure when closing also fails", () => {

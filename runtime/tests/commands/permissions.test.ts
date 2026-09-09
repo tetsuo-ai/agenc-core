@@ -124,12 +124,16 @@ async function withInjectedDirectoryFsyncFailure<T>(
   const originalOpenSync = nodeFs.openSync;
   const originalFsyncSync = nodeFs.fsyncSync;
   const originalCloseSync = nodeFs.closeSync;
+  let directorySyncCount = 0;
   nodeFs.openSync = (path, flags, mode) =>
     path === directory && flags === "r"
       ? injectedDescriptor
       : originalOpenSync(path, flags, mode);
   nodeFs.fsyncSync = (descriptor) => {
-    if (descriptor === injectedDescriptor) throw failure;
+    if (descriptor === injectedDescriptor) {
+      if (++directorySyncCount === 2) throw failure;
+      return;
+    }
     originalFsyncSync(descriptor);
   };
   nodeFs.closeSync = (descriptor) => {
@@ -1246,7 +1250,7 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
         setDaemonPermissionMode: vi.fn(),
       } as unknown as Session;
       const failure = Object.assign(
-        new Error("injected post-rename directory fsync failure"),
+        new Error("injected post-publication directory fsync failure"),
         { code: "EIO" },
       );
       const result = await withInjectedDirectoryFsyncFailure(

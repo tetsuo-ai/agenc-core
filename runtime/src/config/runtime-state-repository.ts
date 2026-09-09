@@ -1029,6 +1029,10 @@ export class RuntimeStateRepository {
       })
       .catch((error: unknown) => {
         if (this.#closed || generation !== this.#refreshGeneration) return;
+        if (error instanceof Error && "code" in error && error.code === "ELOCKED") {
+          this.#cache = { loaded: false, config: null };
+          return;
+        }
         this.#cache = {
           loaded: true,
           config: null,

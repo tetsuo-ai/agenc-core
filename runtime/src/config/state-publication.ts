@@ -87,24 +87,24 @@ function readArtifactBytes(descriptor: number, maximumBytes?: number): Buffer {
 }
 
 function withArtifactDescriptor<Result>(descriptor: number, operation: () => Result): Result {
-  let failure: { readonly error: unknown } | null = null;
+  let outcome: { readonly succeeded: true; readonly value: Result } | { readonly succeeded: false; readonly error: unknown };
   try {
-    return operation();
+    outcome = { succeeded: true, value: operation() };
   } catch (error) {
-    failure = { error };
-    throw error;
-  } finally {
-    try {
-      closeSync(descriptor);
-    } catch (closeError) {
-      if (failure === null) throw closeError;
-      try {
-        if (failure.error instanceof Error && Object.isExtensible(failure.error)) {
-          Object.defineProperty(failure.error, "cleanupErrors", { configurable: true, value: Object.freeze([closeError]) });
-        }
-      } catch {}
-    }
+    outcome = { succeeded: false, error };
   }
+  try {
+    closeSync(descriptor);
+  } catch (closeError) {
+    if (outcome.succeeded) throw closeError;
+    try {
+      if (outcome.error instanceof Error && Object.isExtensible(outcome.error)) {
+        Object.defineProperty(outcome.error, "cleanupErrors", { configurable: true, value: Object.freeze([closeError]) });
+      }
+    } catch {}
+  }
+  if (!outcome.succeeded) throw outcome.error;
+  return outcome.value;
 }
 
 function readArtifact(file: string, maximumBytes?: number): Artifact | null {
@@ -188,7 +188,7 @@ export function writeStatePublicationJournalSync(
   const bytes = Buffer.from(`${JSON.stringify(journal)}\n`);
   writeFileSync(journalPath, bytes, { flag: "wx", mode: 0o600, flush: true });
   const observed = readArtifact(journalPath, 32_768);
-  if (observed === null || !observed.bytes.equals(bytes)) throw recoveryError(journalPath, "prepared journal changed");
+  if (!observed?.bytes.equals(bytes)) throw recoveryError(journalPath, "prepared journal changed");
   parseJournal(observed, transactionId);
 }
 

@@ -83,6 +83,8 @@ an initial read, update, or freshness reload. Recovery and normal updates use
 the same configuration authority lock. A process that dies while holding that
 lock can leave it unavailable until its existing 30-second stale interval
 expires. Do not remove the lock while another AgenC process is running.
+Lock contention during a freshness reload invalidates the cache. The next
+read retries recovery even if `state.json` has not emitted another change.
 
 Each replacement has a versioned transaction journal and matching temporary
 and quarantine filenames. The journal binds the prior and replacement file

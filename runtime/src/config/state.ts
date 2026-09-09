@@ -1046,7 +1046,7 @@ export function writeCanonicalStateAtomicSync(
       encoding: "utf8", flag: "wx", flush: true, mode: CANONICAL_STATE_FILE_MODE,
     });
     temporarySnapshot = readCanonicalStateSnapshotSync(temporary);
-    if (temporarySnapshot === null || !temporarySnapshot.bytes.equals(Buffer.from(content, "utf8"))) {
+    if (!temporarySnapshot?.bytes.equals(Buffer.from(content, "utf8"))) {
       throw stateFileError(temporary, "state publication stage changed while it was prepared");
     }
     writeStatePublicationJournalSync(path, transactionId, expected, temporarySnapshot);
