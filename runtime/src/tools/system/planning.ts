@@ -372,10 +372,8 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
    *
    * Tool result content is AgenC
    * `mapToolResultToToolResultBlockParam`'s `base` sentence
-   * (`TodoWriteTool.ts`). When the AgenC verification-agent
-   * contract is enabled, the close-out nudge below mirrors the donor:
-   * finishing 3+ tasks without a verification item reminds the model
-   * to spawn the verification agent before final response.
+   * (`TodoWriteTool.ts`). Finishing 3+ tasks without a verification
+   * item adds a reminder to verify within the user's task constraints.
    */
   const todoWriteTool: Tool = {
     name: "TodoWrite",
@@ -431,9 +429,9 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
       await persistTodosToTaskBoard(nextTodos);
       const verificationNudgeNeeded = allDone &&
         todos.length >= 3 &&
-        !todos.some((todo) => /verif/i.test(todo.content));
+        !todos.some((todo) => /\b(?:verif\w*|tests?|testing|checks?|checking|reviews?|reviewing)\b/i.test(todo.content));
       const nudge = verificationNudgeNeeded
-        ? '\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. Before writing your final summary, spawn the sentinel agent (agent_type="sentinel"). You cannot self-assign PARTIAL by listing caveats in your summary; only the sentinel issues a verdict.'
+        ? "\n\nVerify the changes with the checks allowed by the user's instructions, then report the actual results and any checks you could not perform."
         : "";
       return textResult(`${TODO_WRITE_RESULT_MESSAGE}${nudge}`, {
         verificationNudgeNeeded,

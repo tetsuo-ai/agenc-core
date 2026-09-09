@@ -1904,7 +1904,9 @@ function toolDispatchErrorResult(err: unknown): ToolDispatchResult {
       // A resolver denial ends the turn after this batch so the model
       // cannot re-issue the same call (observed: 8 identical retries until
       // the no-progress backstop).
-      ...(approvalDenialEndsTurn(err) ? { preventContinuation: true } : {}),
+      ...(approvalDenialEndsTurn(err)
+        ? { preventContinuation: true, metadata: { approvalDenied: true } }
+        : {}),
     };
   }
   return {

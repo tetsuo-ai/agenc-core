@@ -41,7 +41,7 @@ const CONTINUATION_SIGNALS: RegExp[] = [
   /\blet me (go ahead and |now )?(do|create|write|edit|update|fix|implement|add|run|check|make|build|set up|proceed)\b/,
   /\btime to (do|create|write|edit|update|fix|implement|add|run|check|make|build|get started|begin)\b/,
   /\b(continuing|proceeding|executing|starting|moving on to)\b.{0,120}\b(do|create|write|edit|update|fix|implement|add|run|check|make|build|test|verify|wire|parse|dispatch|execute)\b/,
-  /\b(source|eval|tests?|edits?|tool calls?|verification)\b.{0,80}\b(incoming|next|queued|sequential)\b/,
+  /\b(source|eval|tests?|edits?|tool calls?|verification)\b.{0,80}\b(incoming|queued|sequential)\b/,
 ];
 
 const SHORT_TEXT_SIGNALS: RegExp[] = [
@@ -52,9 +52,12 @@ const SHORT_TEXT_SIGNALS: RegExp[] = [
 const COMPLETION_MARKERS =
   /\b(done|finished|completed|complete|summary|that's all|that is all|all set|hope this helps|let me know if)\b/;
 
+const CONSENT_MARKERS =
+  /\b(?:if|when|once|after|until|unless) you(?:['’]d| would)? (?:want|like|approve|agree|confirm|prefer|allow|authorize|permit|give)\b|\b(?:your|user) (?:approval|permission|confirmation|consent|go[- ]ahead)\b|\b(?:would|do) you (?:like|want)\b|\b(?:may|shall|should|can|could) i\b|\blet me know\b/;
+
 function matchesContinuationSignal(text: string): boolean {
   const lowered = text.toLowerCase();
-  if (COMPLETION_MARKERS.test(lowered)) return false;
+  if (COMPLETION_MARKERS.test(lowered) || CONSENT_MARKERS.test(lowered)) return false;
   if (CONTINUATION_SIGNALS.some((re) => re.test(lowered))) return true;
   if (lowered.length < 80 && SHORT_TEXT_SIGNALS.some((re) => re.test(lowered))) {
     return true;

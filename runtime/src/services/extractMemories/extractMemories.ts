@@ -220,6 +220,7 @@ interface QueuedExtraction {
 interface VisibleRange {
   readonly visibleMessages: readonly LLMMessage[];
   readonly unprocessedMessages: readonly LLMMessage[];
+  readonly unprocessedVisibleCount: number;
   readonly currentVisibleCount: number;
 }
 
@@ -825,18 +826,16 @@ export function initExtractMemories(
     const range: VisibleRange = memoryExtractionVisibleRange(
       queued.context.messages,
       lane.trigger.processedVisibleCount,
+      MAX_EXTRACTION_BATCH_MESSAGES,
     );
     // The cursor restarts at zero when the visible history shrank (a reset).
     const batchStart =
       range.currentVisibleCount < lane.trigger.processedVisibleCount
         ? 0
         : lane.trigger.processedVisibleCount;
-    const batch = range.unprocessedMessages.slice(
-      0,
-      MAX_EXTRACTION_BATCH_MESSAGES,
-    );
-    const batchEnd = batchStart + batch.length;
-    const newMessageCount = batch.length;
+    const batch = range.unprocessedMessages;
+    const newMessageCount = range.unprocessedVisibleCount;
+    const batchEnd = batchStart + newMessageCount;
     if (newMessageCount === 0) {
       emitExtractionWarning(
         session,

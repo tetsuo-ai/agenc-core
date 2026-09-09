@@ -540,12 +540,15 @@ function AgenCApprovalOverlay({
     toolName: toolUseConfirm.tool.name,
     description: toolUseConfirm.description,
     command,
+    toolInput: toolUseConfirm.input,
   });
   const destructive = risk === "destructive";
   const requiredWord = typedConfirmationWordForRisk({
     risk,
     command,
     description: toolUseConfirm.description,
+    toolName: toolUseConfirm.tool.name,
+    toolInput: toolUseConfirm.input,
   });
   const [typed, setTyped] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);

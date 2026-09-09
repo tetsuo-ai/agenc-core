@@ -3108,6 +3108,19 @@ async function* runTurnKernelInner(
     }
     if (state.preventContinuation) {
       state.toolUseBlocks = [];
+      const approvalDeniedTools = state.completedToolResults.filter(
+        (result) => result.isError === true && result.metadata?.approvalDenied === true,
+      );
+      if (approvalDeniedTools.length > 0) {
+        const toolNames = [...new Set(approvalDeniedTools.map((result) => result.toolName))];
+        lastContent = `Approval was denied for ${toolNames.join(", ")}. The turn stopped without running the denied action.`;
+        const error = new Error(lastContent);
+        state.messages.push({ role: "assistant", content: lastContent });
+        await syncSessionState();
+        emitTurnComplete(lastContent, "error", error);
+        yield { type: "turn_complete", content: lastContent, usage, stopReason: "error", error };
+        return { reason: "aborted_tools", error };
+      }
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
       });
