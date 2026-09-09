@@ -79,6 +79,58 @@ function createSessionImagineImageTool(options: {
   });
 }
 
+/**
+ * One mock serving both new backends: MiniMax answers on its own route with
+ * its own envelope, everything else gets the OpenAI-shaped list.
+ */
+function backendAwareImageFetch(): typeof fetch {
+  const b64 = Buffer.from("pixels").toString("base64");
+  return vi.fn(async (url: string | URL) =>
+    String(url).includes("/image_generation")
+      ? {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: { image_base64: [b64] },
+            base_resp: { status_code: 0 },
+          }),
+        }
+      : {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [{ b64_json: b64 }],
+            output_format: "png",
+          }),
+        }) as unknown as typeof fetch;
+}
+
+/** An OpenAI session whose only media authority is the API-key ingress. */
+function openaiImagineTool(root: string, fetchImpl?: typeof fetch) {
+  return createSessionImagineImageTool({
+    workspaceRoot: root,
+    provider: createProvider("openai", {
+      apiKey: "unused",
+      model: "gpt-6-astra",
+      baseURL: "https://api.openai.com/v1",
+    }),
+    env: { OPENAI_API_KEY: "isolated-openai-key" },
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+  });
+}
+
+function minimaxImagineTool(root: string, fetchImpl?: typeof fetch) {
+  return createSessionImagineImageTool({
+    workspaceRoot: root,
+    provider: createProvider("minimax", {
+      apiKey: "unused",
+      model: "MiniMax-M2.5",
+    }),
+    env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+  });
+}
+
 describe("ImagineImage tool", () => {
   it("is catalog-registered for non-Grok sessions with an independent xAI credential", () => {
     expect(isModelFacingToolRegistered("ImagineImage", {
@@ -1186,16 +1238,7 @@ describe("ImagineImage tool", () => {
       status: 200,
       json: async () => ({ data: [{ b64_json: b64 }], output_format: "jpeg" }),
     })) as unknown as typeof fetch;
-    const tool = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("openai", {
-        apiKey: "unused",
-        model: "gpt-6-astra",
-        baseURL: "https://api.openai.com/v1",
-      }),
-      env: { OPENAI_API_KEY: "isolated-openai-key" },
-      fetchImpl,
-    });
+    const tool = openaiImagineTool(root, fetchImpl);
 
     const result = await tool.execute({ prompt: "a grey square" });
 
@@ -1270,15 +1313,7 @@ describe("ImagineImage tool", () => {
         base_resp: { status_code: 1008, status_msg: "insufficient balance" },
       }),
     })) as unknown as typeof fetch;
-    const tool = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("minimax", {
-        apiKey: "unused",
-        model: "MiniMax-M2.5",
-      }),
-      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
-      fetchImpl,
-    });
+    const tool = minimaxImagineTool(root, fetchImpl);
 
     const result = await tool.execute({ prompt: "a grey square" });
 
@@ -1298,16 +1333,7 @@ describe("ImagineImage tool", () => {
         data: [{ url: "https://api.x.ai/generated/openai.png" }],
       }),
     })) as unknown as typeof fetch;
-    const tool = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("openai", {
-        apiKey: "unused",
-        model: "gpt-6-astra",
-        baseURL: "https://api.openai.com/v1",
-      }),
-      env: { OPENAI_API_KEY: "isolated-openai-key" },
-      fetchImpl,
-    });
+    const tool = openaiImagineTool(root, fetchImpl);
 
     const result = await tool.execute({ prompt: "a grey square" });
 
@@ -1321,45 +1347,9 @@ describe("ImagineImage tool", () => {
 
   it("keeps each backend's own quality vocabulary", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-quality-"));
-    // One mock for both backends: each answers in its own response shape.
-    const b64 = Buffer.from("pixels").toString("base64");
-    const fetchImpl = vi.fn(async (url: string | URL) =>
-      String(url).includes("/image_generation")
-        ? {
-            ok: true,
-            status: 200,
-            json: async () => ({
-              data: { image_base64: [b64] },
-              base_resp: { status_code: 0 },
-            }),
-          }
-        : {
-            ok: true,
-            status: 200,
-            json: async () => ({
-              data: [{ b64_json: b64 }],
-              output_format: "png",
-            }),
-          }) as unknown as typeof fetch;
-    const openaiTool = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("openai", {
-        apiKey: "unused",
-        model: "gpt-6-astra",
-        baseURL: "https://api.openai.com/v1",
-      }),
-      env: { OPENAI_API_KEY: "isolated-openai-key" },
-      fetchImpl,
-    });
-    const minimaxTool = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("minimax", {
-        apiKey: "unused",
-        model: "MiniMax-M2.5",
-      }),
-      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
-      fetchImpl,
-    });
+    const fetchImpl = backendAwareImageFetch();
+    const openaiTool = openaiImagineTool(root, fetchImpl);
+    const minimaxTool = minimaxImagineTool(root, fetchImpl);
 
     // hd/standard is the universal schema's vocabulary, which a model sees
     // before a Session attaches. OpenAI grades quality differently but the
@@ -1388,35 +1378,8 @@ describe("ImagineImage tool", () => {
 
   it("refuses controls the new backends do not have", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-controls-"));
-    // One mock for both backends: each answers in its own response shape.
-    const b64 = Buffer.from("pixels").toString("base64");
-    const fetchImpl = vi.fn(async (url: string | URL) =>
-      String(url).includes("/image_generation")
-        ? {
-            ok: true,
-            status: 200,
-            json: async () => ({
-              data: { image_base64: [b64] },
-              base_resp: { status_code: 0 },
-            }),
-          }
-        : {
-            ok: true,
-            status: 200,
-            json: async () => ({
-              data: [{ b64_json: b64 }],
-              output_format: "png",
-            }),
-          }) as unknown as typeof fetch;
-    const minimaxTool = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("minimax", {
-        apiKey: "unused",
-        model: "MiniMax-M2.5",
-      }),
-      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
-      fetchImpl,
-    });
+    const fetchImpl = backendAwareImageFetch();
+    const minimaxTool = minimaxImagineTool(root, fetchImpl);
 
     // 2:1 is in this tool's shared vocabulary but MiniMax rejects it, and
     // MiniMax has no resolution tier. Both are dropped and named rather than
@@ -1458,15 +1421,7 @@ describe("ImagineImage tool", () => {
         base_resp: { status_code: 0 },
       }),
     })) as unknown as typeof fetch;
-    const tool = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("minimax", {
-        apiKey: "unused",
-        model: "MiniMax-M2.5",
-      }),
-      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
-      fetchImpl,
-    });
+    const tool = minimaxImagineTool(root, fetchImpl);
 
     await tool.execute({ prompt: "x", n: 10 });
 
@@ -1563,25 +1518,8 @@ describe("ImagineImage tool", () => {
     // is what happened: one stray `resolution: "1k"` bricked the session.
     const root = await mkdtemp(join(tmpdir(), "imagine-refusal-"));
     const fetchImpl = vi.fn();
-    const openai = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("openai", {
-        apiKey: "unused",
-        model: "gpt-6-astra",
-        baseURL: "https://api.openai.com/v1",
-      }),
-      env: { OPENAI_API_KEY: "isolated-openai-key" },
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    });
-    const minimax = createSessionImagineImageTool({
-      workspaceRoot: root,
-      provider: createProvider("minimax", {
-        apiKey: "unused",
-        model: "MiniMax-M2.5",
-      }),
-      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    });
+    const openai = openaiImagineTool(root, fetchImpl as unknown as typeof fetch);
+    const minimax = minimaxImagineTool(root, fetchImpl as unknown as typeof fetch);
     const zai = createSessionImagineImageTool({
       workspaceRoot: root,
       provider: createProvider("zai", { apiKey: "k", model: "glm-5.3" }),
