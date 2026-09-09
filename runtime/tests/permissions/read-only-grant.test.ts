@@ -13,12 +13,10 @@ import { checkPathConstraints } from "../../src/tools/BashTool/pathValidation.js
 import { createEmptyToolPermissionContext } from "./types.js";
 
 const CWD = "/workspace/project";
-const context = createEmptyToolPermissionContext({
-  mode: "unattended",
-  additionalWorkingDirectories: new Map([
-    [CWD, { path: CWD, source: "session" as const }],
-  ]),
-});
+// No directory grants. The routine path builds an empty Map, so seeding the
+// run folder here would test an alignment production never provides — which
+// is exactly how a gate that refused a routine its own folder passed review.
+const context = createEmptyToolPermissionContext({ mode: "unattended" });
 
 /** The real gates, so the table is checked against shipped behaviour. */
 const deps: ShellGateDeps = {
@@ -128,8 +126,20 @@ describe("unattended read-only grant", () => {
     }
   });
 
+  it("accepts a workdir inside the run's own folder", () => {
+    // The run's folder is the boundary, not the exact directory: an agent
+    // that cds into its own `src` before listing has not left the project.
+    // The subdirectory becomes the base its path arguments resolve from.
+    for (const workdir of ["sub", `${CWD}/sub`, "."]) {
+      expect(
+        verdict(tool("exec_command"), { cmd: "ls", workdir }).granted,
+        workdir,
+      ).toBe(true);
+    }
+  });
+
   it("still refuses a workdir that genuinely leaves the folder", () => {
-    for (const workdir of ["..", "/tmp", `${CWD}/../sibling`, "sub"]) {
+    for (const workdir of ["..", "/tmp", `${CWD}/../sibling`]) {
       const result = verdict(tool("exec_command"), { cmd: "ls", workdir });
       expect(result.granted, workdir).toBe(false);
       if (!result.granted && result.refusal.kind === "shell") {

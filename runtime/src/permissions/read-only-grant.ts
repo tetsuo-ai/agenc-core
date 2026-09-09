@@ -13,7 +13,7 @@
  * (tools/router.ts, `ledgerTurnBlocksTool`), and then removes three families
  * that satisfy it on paper and not in fact.
  */
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import { isBashTool } from "../tools/concurrency.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
@@ -107,22 +107,72 @@ export function shellToolIsGrantable(name: string): boolean {
 export function readShellCommand(
   toolName: string,
   input: unknown,
-): { command: string; workdir?: string } | null {
+): { command: string; workdir?: string; unparsedOperands?: true } | null {
   if (typeof input !== "object" || input === null) return null;
-  const record = input as { command?: unknown; cmd?: unknown; workdir?: unknown };
+  const record = input as {
+    command?: unknown;
+    cmd?: unknown;
+    args?: unknown;
+    workdir?: unknown;
+    cwd?: unknown;
+  };
   // system.bash keys it `command`; exec_command keys it `cmd`.
-  const raw = toolName === "exec_command" ? record.cmd : record.command;
+  const isExec = toolName === "exec_command";
+  const raw = isExec ? record.cmd : record.command;
   if (typeof raw !== "string" || raw.trim().length === 0) return null;
+  // Each tool names its per-call working directory differently: `workdir` on
+  // exec_command (tools/system/exec-command.ts), `cwd` on system.bash
+  // (tools/system/bash.ts, applied unless lockCwd). Reading only `workdir`
+  // left a system.bash override invisible to the folder check below.
+  const override = isExec ? record.workdir : record.cwd;
   return {
     command: raw,
-    ...(typeof record.workdir === "string" ? { workdir: record.workdir } : {}),
+    ...(typeof override === "string" ? { workdir: override } : {}),
+    // system.bash also has a direct mode that puts the operands in `args` and
+    // execFiles them, so `cat` + ["/etc/passwd"] reaches both gates as the
+    // bare word "cat": read-only, no path arguments, granted. The operands
+    // are not in the string either gate parses, so the call is refused here.
+    ...(!isExec && Array.isArray(record.args) && record.args.length > 0
+      ? { unparsedOperands: true as const }
+      : {}),
   };
+}
+
+/**
+ * The run's own folder, named as a containment root for this one check.
+ *
+ * `checkPathConstraints` does not measure containment against the cwd it is
+ * handed; that argument only says where a relative path argument resolves
+ * from. The allowed roots come from `allWorkingDirectories`
+ * (utils/permissions/filesystem.ts): the process-global `getOriginalCwd()`
+ * plus `additionalWorkingDirectories`. In a daemon that hosts many sessions,
+ * `getOriginalCwd()` is the folder the daemon itself was started in, never a
+ * routine's project, and on the routine path the Map is empty. The file tools
+ * do not have this problem, because their own path check
+ * (permissions/path-validation.ts) adds the cwd it is handed to the root set;
+ * this brings the shell gate to the same rule. Added to a copy, so the
+ * session's context is left untouched.
+ */
+function withRunFolderAsRoot(
+  cwd: string,
+  context: ToolPermissionContext,
+): ToolPermissionContext {
+  if (context.additionalWorkingDirectories.has(cwd)) return context;
+  const roots = new Map(context.additionalWorkingDirectories);
+  roots.set(cwd, { path: cwd, source: "session" });
+  return { ...context, additionalWorkingDirectories: roots };
+}
+
+/** `child` is `root` or sits under it. */
+function pathIsInside(child: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 export function shellCallIsGranted(
   toolName: string,
   input: unknown,
-  cwd: string,
+  cwd: string | null,
   context: ToolPermissionContext,
   deps: ShellGateDeps,
 ): ShellGateResult {
@@ -133,23 +183,32 @@ export function shellCallIsGranted(
   if (parsed === null) {
     return { ok: false, reason: "the command could not be read" };
   }
-  // A working directory of its own would move the ground the path check
-  // measures against, so only the run's own folder is accepted. Compared
-  // after resolution, not as strings: a relative workdir is relative to the
-  // run's cwd, so "." is that folder, and refusing it stranded routines whose
-  // agent quite reasonably passed one.
-  if (
-    parsed.workdir !== undefined &&
-    resolve(cwd, parsed.workdir) !== resolve(cwd)
-  ) {
+  // A caller that cannot name the run's folder has nothing safe to put in its
+  // place: every check below measures against it.
+  if (cwd === null) {
+    return { ok: false, reason: "this run has no folder of its own" };
+  }
+  if (parsed.unparsedOperands === true) {
+    return { ok: false, reason: "its arguments are not part of the command" };
+  }
+  // A working directory of its own moves the ground the path check measures
+  // against, so it has to stay inside the run's folder. A subdirectory is
+  // legitimate and is where the command actually runs, so it becomes the base
+  // the path arguments resolve from; anything outside is refused.
+  const workdir =
+    parsed.workdir === undefined ? resolve(cwd) : resolve(cwd, parsed.workdir);
+  if (!pathIsInside(workdir, cwd)) {
     return { ok: false, reason: "it runs in a different folder" };
   }
   if (deps.checkReadOnly({ command: parsed.command }).behavior !== "allow") {
     return { ok: false, reason: "the command is not read-only" };
   }
   if (
-    deps.checkPaths({ command: parsed.command }, cwd, context).behavior !==
-    "passthrough"
+    deps.checkPaths(
+      { command: parsed.command },
+      workdir,
+      withRunFolderAsRoot(resolve(cwd), context),
+    ).behavior !== "passthrough"
   ) {
     return { ok: false, reason: "it reads outside this project folder" };
   }
@@ -185,7 +244,7 @@ function declaresItselfReadOnly(tool: ReadOnlyGrantTool): boolean {
 export function readOnlyGrantVerdict(
   tool: ReadOnlyGrantTool,
   input: unknown,
-  cwd: string,
+  cwd: string | null,
   context: ToolPermissionContext,
   deps: ShellGateDeps,
 ): ReadOnlyGrantVerdict {
