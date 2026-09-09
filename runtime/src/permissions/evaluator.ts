@@ -481,10 +481,49 @@ const READ_ONLY_GRANT_DEPS: ShellGateDeps = {
 function readOnlyGrantWorkingDirectory(
   context: ToolPermissionContext,
 ): string {
-  for (const directory of context.additionalWorkingDirectories.keys()) {
-    return directory;
+  const [first] = context.additionalWorkingDirectories.keys();
+  return first ?? process.cwd();
+}
+
+/**
+ * The whole decision for a run with nobody attached: proceed on read-only
+ * work, refuse everything else. Never returns "ask", because an ask is what
+ * this policy exists to remove.
+ */
+async function decideReadOnlyGrant(
+  tool: ToolLike,
+  input: unknown,
+  context: ToolEvaluatorContext,
+  permissionContext: ToolPermissionContext,
+  unattended: { readonly behavior: string; readonly toolName: string },
+): Promise<PermissionDecision> {
+  // An operator naming the tool explicitly is a decision already made; the
+  // set decides everything else.
+  if (unattended.behavior !== "allow") {
+    const verdict = readOnlyGrantVerdict(
+      tool,
+      input,
+      readOnlyGrantWorkingDirectory(permissionContext),
+      permissionContext,
+      READ_ONLY_GRANT_DEPS,
+    );
+    if (!verdict.granted) {
+      return unattendedReadOnlyDenyDecision(
+        tool.name,
+        readOnlyGrantRefusalMessage(tool.name, verdict.refusal),
+      );
+    }
   }
-  return process.cwd();
+  // Being admitted is not authority to skip the tool's own check. Anything
+  // that still wants a human is refused here too.
+  const toolResult = await resolveToolPermissionResult(tool, input, context);
+  if (toolResult.behavior === "ask" || toolResult.behavior === "deny") {
+    return unattendedReadOnlyDenyDecision(
+      tool.name,
+      readOnlyGrantRefusalMessage(tool.name, { kind: "interactive" }),
+    );
+  }
+  return unattendedAllowDecision(unattended.toolName, input);
 }
 
 function unattendedReadOnlyDenyDecision(
@@ -693,36 +732,14 @@ async function checkUnattendedPolicy(
   // This sits ABOVE the mode gate below on purpose: a routine still carrying
   // permissionMode "plan" keeps `mode: "plan"` through `preserveMode`, so a
   // branch placed after that early return would never run for it.
-  const policy = unattendedPolicyForContext(permissionContext);
-  if (policy.readOnly) {
-    // An operator naming the tool explicitly is a decision already made; the
-    // set decides everything else.
-    if (unattended.behavior !== "allow") {
-      const verdict = readOnlyGrantVerdict(
-        tool,
-        input,
-        readOnlyGrantWorkingDirectory(permissionContext),
-        permissionContext,
-        READ_ONLY_GRANT_DEPS,
-      );
-      if (!verdict.granted) {
-        return unattendedReadOnlyDenyDecision(
-          tool.name,
-          readOnlyGrantRefusalMessage(tool.name, verdict.refusal),
-        );
-      }
-    }
-    // Being admitted is not authority to skip the tool's own check. Anything
-    // that still wants a human is refused here, never paused: a pause is what
-    // this policy exists to remove.
-    const toolResult = await resolveToolPermissionResult(tool, input, context);
-    if (toolResult.behavior === "ask" || toolResult.behavior === "deny") {
-      return unattendedReadOnlyDenyDecision(
-        tool.name,
-        readOnlyGrantRefusalMessage(tool.name, { kind: "interactive" }),
-      );
-    }
-    return unattendedAllowDecision(unattended.toolName, input);
+  if (unattendedPolicyForContext(permissionContext).readOnly) {
+    return decideReadOnlyGrant(
+      tool,
+      input,
+      context,
+      permissionContext,
+      unattended,
+    );
   }
 
   // The allowlist / pause behaviors are the additive subset semantics that
