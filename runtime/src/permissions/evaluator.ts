@@ -1168,7 +1168,7 @@ function getUpdatedInputOrFallback(
   return undefined;
 }
 
-function persistDenialState(
+export function persistDenialState(
   context: ToolEvaluatorContext,
   next: DenialTrackingState,
 ): void {
