@@ -38,6 +38,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { preEffectRefusal } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
 
@@ -60,6 +61,16 @@ function json(payload: unknown, isError?: boolean): ToolResult {
     content: safeStringify(payload),
     ...(isError ? { isError: true } : {}),
   };
+}
+
+/**
+ * A refusal made before any provider request. ImagineVideo is
+ * `side-effecting`, so a bare error result is filed as an unknown outcome and
+ * gates every later side-effecting call behind /resolve (#2190). Argument
+ * validation provably touched nothing, so it must carry the disposition.
+ */
+function refusal(payload: unknown): ToolResult {
+  return preEffectRefusal("ImagineVideo", safeStringify(payload));
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -641,34 +652,37 @@ function xaiSubmitError(
 async function runOpenAiVideo(ctx: VideoRunContext): Promise<ToolResult> {
   const { args, backend, fetchImpl, signal } = ctx;
   if (ctx.imageUrl || ctx.referenceImages.length > 0) {
-    return json(
-      {
-        error:
-          "Sora image-to-video needs an uploaded reference and is not wired here; this backend is text-to-video only",
-      },
-      true,
-    );
+    return refusal({
+      error:
+        "Sora image-to-video needs an uploaded reference and is not wired here; this backend is text-to-video only",
+    });
   }
   const model = stringValue(args.model) ?? "sora-2";
   if (!OPENAI_VIDEO_MODELS.has(model)) {
-    return json(
-      {
-        error: `Sora model must be one of ${[...OPENAI_VIDEO_MODELS].join(", ")}`,
-      },
-      true,
-    );
+    return refusal({
+      error: `Sora model must be one of ${[...OPENAI_VIDEO_MODELS].join(", ")}`,
+    });
   }
-  const aspect_ratio = stringValue(args.aspect_ratio) ?? "16:9";
-  if (aspect_ratio !== "16:9" && aspect_ratio !== "9:16") {
-    return json(
-      { error: "Sora aspect_ratio must be 16:9 or 9:16" },
-      true,
-    );
+  // A dimension control the universal schema offers but this backend cannot
+  // honour is dropped and named, never refused: the schema a model sees
+  // before a Session attaches is the xAI one, and refusing what it advertised
+  // stalls the run rather than correcting it.
+  const ignoredControls: string[] = [];
+  const requestedAspect = stringValue(args.aspect_ratio);
+  const aspectSupported =
+    requestedAspect === "16:9" || requestedAspect === "9:16";
+  if (requestedAspect !== undefined && !aspectSupported) {
+    ignoredControls.push("aspect_ratio");
   }
-  const resolution = (stringValue(args.resolution) ?? "720p").toLowerCase();
-  if (!OPENAI_VIDEO_RESOLUTIONS.has(resolution)) {
-    return json({ error: "Sora resolution must be 720p or 1080p" }, true);
+  const aspect_ratio = aspectSupported ? requestedAspect : "16:9";
+  const requestedResolution = stringValue(args.resolution)?.toLowerCase();
+  const resolutionSupported =
+    requestedResolution !== undefined &&
+    OPENAI_VIDEO_RESOLUTIONS.has(requestedResolution);
+  if (requestedResolution !== undefined && !resolutionSupported) {
+    ignoredControls.push("resolution");
   }
+  const resolution = resolutionSupported ? requestedResolution : "720p";
   const size =
     OPENAI_VIDEO_SIZES[aspect_ratio][resolution as "720p" | "1080p"];
   const seconds = snapDuration(
@@ -770,6 +784,7 @@ async function runOpenAiVideo(ctx: VideoRunContext): Promise<ToolResult> {
     resolution,
     size,
     modality: "text",
+    ...(ignoredControls.length > 0 ? { ignoredControls } : {}),
   });
 }
 
@@ -792,52 +807,40 @@ function minimaxFailure(payload: MinimaxEnvelope): string | undefined {
 async function runMinimaxVideo(ctx: VideoRunContext): Promise<ToolResult> {
   const { args, backend, fetchImpl, signal } = ctx;
   if (ctx.referenceImages.length > 0) {
-    return json(
-      {
-        error:
-          "MiniMax takes a single first frame; use image_url rather than reference_image_urls",
-      },
-      true,
-    );
+    return refusal({
+      error:
+        "MiniMax takes a single first frame; use image_url rather than reference_image_urls",
+    });
   }
+  // MiniMax sizes a video by resolution and model, so an aspect_ratio from
+  // the universal schema is dropped and named rather than refused.
+  const ignoredControls: string[] = [];
   if (stringValue(args.aspect_ratio) !== undefined) {
-    return json(
-      {
-        error:
-          "MiniMax video dimensions come from resolution and the model; aspect_ratio is not supported",
-      },
-      true,
-    );
+    ignoredControls.push("aspect_ratio");
   }
   const model = stringValue(args.model) ?? MINIMAX_TEXT_TO_VIDEO_MODEL;
   if (!MINIMAX_VIDEO_MODELS.has(model)) {
-    return json(
-      {
-        error: `MiniMax video model must be one of ${[...MINIMAX_VIDEO_MODELS].join(", ")}`,
-      },
-      true,
-    );
+    return refusal({
+      error: `MiniMax video model must be one of ${[...MINIMAX_VIDEO_MODELS].join(", ")}`,
+    });
   }
-  const resolution = stringValue(args.resolution) ?? "768P";
-  if (!MINIMAX_VIDEO_RESOLUTIONS.has(resolution)) {
-    return json(
-      {
-        error: `MiniMax resolution must be one of ${[...MINIMAX_VIDEO_RESOLUTIONS].join(", ")}`,
-      },
-      true,
-    );
+  const requestedResolution = stringValue(args.resolution);
+  const resolutionSupported =
+    requestedResolution !== undefined &&
+    MINIMAX_VIDEO_RESOLUTIONS.has(requestedResolution);
+  if (requestedResolution !== undefined && !resolutionSupported) {
+    // 480p/720p are the xAI vocabulary; MiniMax grades in 512P/768P/1080P.
+    ignoredControls.push("resolution");
   }
+  const resolution = resolutionSupported ? requestedResolution : "768P";
   if (
     resolution === MINIMAX_FIRST_FRAME_ONLY_RESOLUTION &&
     ctx.imageUrl === undefined
   ) {
-    return json(
-      {
-        error:
-          "MiniMax accepts 512P only with a first frame; pass image_url or choose 768P or 1080P",
-      },
-      true,
-    );
+    return refusal({
+      error:
+        "MiniMax accepts 512P only with a first frame; pass image_url or choose 768P or 1080P",
+    });
   }
   const duration = snapDuration(
     requestedDuration(args),
@@ -959,6 +962,7 @@ async function runMinimaxVideo(ctx: VideoRunContext): Promise<ToolResult> {
     duration,
     resolution,
     modality: ctx.imageUrl === undefined ? "text" : "image",
+    ...(ignoredControls.length > 0 ? { ignoredControls } : {}),
   });
 }
 
@@ -1101,12 +1105,12 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       admittedSignal?.throwIfAborted();
       const backendResolution = resolveVideoBackend(opts);
       if ("error" in backendResolution) {
-        return json({ error: backendResolution.error }, true);
+        return refusal({ error: backendResolution.error });
       }
       const { backend } = backendResolution;
 
       const prompt = stringValue(args.prompt);
-      if (!prompt) return json({ error: "prompt is required" }, true);
+      if (!prompt) return refusal({ error: "prompt is required" });
 
       const imageUrlRaw = stringValue(args.image_url);
       const imageUrl = imageUrlRaw
@@ -1119,21 +1123,14 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
           )
         : [];
       if (imageUrl && refRaw.length > 0) {
-        return json(
-          {
-            error:
-              "image_url and reference_image_urls cannot be combined on xAI",
-          },
-          true,
-        );
+        return refusal({
+          error: "image_url and reference_image_urls cannot be combined on xAI",
+        });
       }
       if (refRaw.length > MAX_REFERENCE_IMAGES) {
-        return json(
-          {
-            error: `reference_image_urls supports at most ${MAX_REFERENCE_IMAGES} images`,
-          },
-          true,
-        );
+        return refusal({
+          error: `reference_image_urls supports at most ${MAX_REFERENCE_IMAGES} images`,
+        });
       }
       const referenceImages: { url: string }[] = [];
       for (const r of refRaw) {

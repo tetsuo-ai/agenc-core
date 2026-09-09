@@ -465,9 +465,6 @@ describe("ImagineVideo execute", () => {
     expect(withImage.isError).toBe(true);
     expect(String(withImage.content)).toContain("text-to-video only");
 
-    const badAspect = await tool.execute({ prompt: "x", aspect_ratio: "4:3" });
-    expect(badAspect.isError).toBe(true);
-    expect(String(badAspect.content)).toContain("16:9 or 9:16");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -649,10 +646,6 @@ describe("ImagineVideo execute", () => {
     expect(lowRes.isError).toBe(true);
     expect(String(lowRes.content)).toContain("512P only with a first frame");
 
-    const aspect = await tool.execute({ prompt: "x", aspect_ratio: "16:9" });
-    expect(aspect.isError).toBe(true);
-    expect(String(aspect.content)).toContain("aspect_ratio is not supported");
-
     const model = await tool.execute({ prompt: "x", model: "MiniMax-Hailuo-99" });
     expect(model.isError).toBe(true);
     expect(String(model.content)).toContain("MiniMax video model must be");
@@ -688,6 +681,119 @@ describe("ImagineVideo execute", () => {
 
     expect(result.isError).toBe(true);
     expect(String(result.content)).toContain("insufficient balance");
+  });
+
+  it("drops a dimension control the backend cannot honour and names it", async () => {
+    // The universal schema a model sees before a Session attaches is the xAI
+    // one, so 480p and 4:3 reach Sora, and 16:9 reaches MiniMax. Refusing
+    // them stalls the run; dropping and naming them lets it finish.
+    const root = await mkdtemp(join(tmpdir(), "imagine-video-drop-"));
+    const soraFetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/videos") && init?.method === "POST") {
+        return { ok: true, status: 200, json: async () => ({ id: "v9" }) };
+      }
+      if (u.endsWith("/videos/v9")) {
+        return { ok: true, status: 200, json: async () => ({ status: "completed" }) };
+      }
+      return new Response(Uint8Array.from([0x00, 0x01]), { status: 200 });
+    }) as unknown as typeof fetch;
+    const sora = createImagineVideoTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () =>
+        ({
+          services: {
+            provider: createProvider("openai", {
+              apiKey: "unused",
+              model: "gpt-6-astra",
+              baseURL: "https://api.openai.com/v1",
+            }),
+          },
+        }) as unknown as Session,
+      env: { OPENAI_API_KEY: "isolated-openai-key" },
+      fetchImpl: soraFetch,
+      pollIntervalMs: 1,
+      pollTimeoutMs: 5_000,
+    });
+
+    const result = await sora.execute({
+      prompt: "a rotating cube",
+      aspect_ratio: "4:3",
+      resolution: "480p",
+    });
+
+    expect(result.isError, String(result.content)).toBeUndefined();
+    const parsed = JSON.parse(result.content) as {
+      ignoredControls?: string[];
+      size: string;
+    };
+    expect(parsed.ignoredControls).toEqual(["aspect_ratio", "resolution"]);
+    // Falls back to Sora's own defaults rather than guessing a translation.
+    expect(parsed.size).toBe("1280x720");
+  });
+
+  it("never gates the session on an argument it refused before requesting", async () => {
+    // ImagineVideo is side-effecting, so a bare isError from argument
+    // validation is filed as an unknown outcome and blocks every later
+    // side-effecting call behind /resolve (#2190). None of these paths
+    // reached a provider, so each must carry the disposition that says so.
+    const fetchImpl = vi.fn();
+    const sora = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () =>
+        ({
+          services: {
+            provider: createProvider("openai", {
+              apiKey: "unused",
+              model: "gpt-6-astra",
+              baseURL: "https://api.openai.com/v1",
+            }),
+          },
+        }) as unknown as Session,
+      env: { OPENAI_API_KEY: "isolated-openai-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const hailuo = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () =>
+        ({
+          services: {
+            provider: createProvider("minimax", {
+              apiKey: "unused",
+              model: "MiniMax-M2.5",
+            }),
+          },
+        }) as unknown as Session,
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const unconfigured = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => null,
+      env: {},
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const cases: Array<[string, Promise<{ isError?: boolean; effectDisposition?: { disposition?: string } }>]> = [
+      ["no prompt", sora.execute({})],
+      ["no credential", unconfigured.execute({ prompt: "x" })],
+      ["sora image_url", sora.execute({ prompt: "x", image_url: "https://e/x.png" })],
+      ["sora model", sora.execute({ prompt: "x", model: "sora-9" })],
+      ["minimax model", hailuo.execute({ prompt: "x", model: "Hailuo-99" })],
+      ["minimax 512P", hailuo.execute({ prompt: "x", resolution: "512P" })],
+    ];
+    for (const [name, pending] of cases) {
+      const result = await pending;
+      expect(result.isError, name).toBe(true);
+      expect(result.effectDisposition?.disposition, name).toBe(
+        "confirmed_no_effect",
+      );
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("fails closed when a Meta session has no independent xAI credential", async () => {
