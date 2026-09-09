@@ -226,7 +226,7 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 | Var | Effect |
 | --- | --- |
 | `AGENC_DAEMON_AUTOSTART` | `0` disables autostart |
-| `AGENC_DAEMON_READY_TIMEOUT_MS` | Ready-wait. Launcher default 2000 ms; runtime/SDK default 45000 ms |
+| `AGENC_DAEMON_READY_TIMEOUT_MS` | Readiness budget. Launcher/runtime/SDK default 45000 ms; launcher and SDK include initial probe and starter time |
 | `AGENC_DAEMON_REQUEST_TIMEOUT_MS` | Per-request RPC timeout (SDK default 30000 ms) |
 | `AGENC_DAEMON_MAX_OLD_SPACE_MB` | Detached daemon V8 heap cap (default 4096) |
 | `AGENC_DAEMON_MAX_QUEUED_REQUESTS`, `AGENC_DAEMON_MAX_IN_FLIGHT_REQUESTS` | RPC overload bounds |

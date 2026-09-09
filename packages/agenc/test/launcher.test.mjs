@@ -38,7 +38,7 @@ test("daemon autostart env opt-out disables launcher startup", () => {
 });
 
 test("ready timeout env must be a positive integer", () => {
-  assert.equal(resolveReadyTimeoutMs({}), 2000);
+  assert.equal(resolveReadyTimeoutMs({}), 45_000);
   assert.equal(resolveReadyTimeoutMs({ AGENC_DAEMON_READY_TIMEOUT_MS: "50" }), 50);
   assert.throws(
     () => resolveReadyTimeoutMs({ AGENC_DAEMON_READY_TIMEOUT_MS: "0" }),
@@ -107,7 +107,7 @@ test("waitForDaemonReady requires a running pid and non-empty cookie", async () 
     const ready = await waitForDaemonReady({
       env,
       userHome: home,
-      timeoutMs: 1,
+      timeoutMs: 100,
       pollMs: 1,
       signalPid: (pid, signal) => {
         assert.equal(pid, 4201);
@@ -164,13 +164,16 @@ test("ensureDaemonForLaunch starts daemon and waits for health check", async () 
       spawnDaemonFn: async (runtimeBin, options) => {
         assert.equal(runtimeBin, "/tmp/runtime-bin");
         assert.equal(options.cwd, "/tmp/project");
-        assert.equal(options.env, env);
+        assert.equal(options.env.AGENC_HOME, env.AGENC_HOME);
+        assert.ok(Number(options.env.AGENC_DAEMON_READY_TIMEOUT_MS) <= 25);
+        assert.notEqual(options.env, env);
         assert.equal(options.nodeBin, "/tmp/private-node");
         assert.equal(options.nodeLibraryPath, "/tmp/private-node-library");
       },
     });
     assert.equal(result.status, "started");
-    assert.deepEqual(calls, [1, undefined]);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((timeout) => timeout > 0 && timeout <= 25));
   });
 });
 

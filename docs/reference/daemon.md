@@ -40,8 +40,23 @@ Ready-wait timeout for clients that start the daemon
 
 | Client                                                         | Default      |
 | -------------------------------------------------------------- | ------------ |
-| Published launcher (`packages/agenc`)                          | **2000** ms  |
+| Published launcher (`packages/agenc`)                          | **45000** ms |
 | Runtime daemon autostart / `agenc daemon` / SDK socket connect | **45000** ms |
+
+The launcher and SDK use one deadline from the initial probe through readiness.
+The SDK includes its socket connection and initialize handshake. The launcher's
+old 2s default covered only polling after the starter finished; the 45s total
+budget now includes that starter. Both pass the remaining budget to the nested
+daemon-start command.
+
+Timeout or caller cancellation terminates the owned starter, with `SIGKILL`
+after 100 ms if needed. Waiting for `close` can add up to 1s. Cleanup failure is
+reported rather than treated as proof of termination. An existing or already
+detached daemon is not signalled by this cleanup. Custom launcher
+`spawnDaemonFn` callbacks must honor the supplied `signal` and register bounded
+child cleanup with `registerCleanup(promise)` if they manage their own child.
+An unresolved callback alone cannot expose a hidden child for termination.
+The launcher still continues to the requested command after autostart failure.
 
 ```bash
 AGENC_DAEMON_READY_TIMEOUT_MS=45000

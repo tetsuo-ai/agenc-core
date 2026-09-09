@@ -81,6 +81,25 @@ await client.close();
 
 ## Defaults
 
+`connect({ readyTimeoutMs, signal })` uses one monotonic deadline for the initial
+probe, CLI startup, readiness polling, socket connection, and initialize
+handshake. The default is 45,000 ms. Caller cancellation preserves
+`signal.reason`; cancellation after `connect()` returns does not close the client.
+Control RPCs keep their separate request timeout.
+
+The nested starter receives the remaining `AGENC_DAEMON_READY_TIMEOUT_MS`.
+On timeout or cancellation, the SDK sends its starter `SIGTERM`, escalates to
+`SIGKILL` after 100 ms, and waits for `close`. Cleanup can add up to 1,000 ms
+beyond the readiness deadline. Missing `close` produces an `AggregateError`
+with the original reason as its cause. The SDK does not signal an existing
+daemon or claim to terminate a daemon that the starter already detached.
+
+Custom `AgencSpawnFn` adapters must now provide `kill`, `on("error")`,
+`once("close")`, and `removeListener` for those events. A piped stderr stream
+also needs `removeListener("data")`. Update exit-only test fakes to emit `close`
+after exit and stdio closure. A Node `ChildProcess` satisfies the contract
+without an adapter. No protocol or stored-state migration is needed.
+
 - Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; a stable per-home named pipe on Windows
 - Cookie: `${AGENC_HOME:-~/.agenc}/daemon.cookie` (first message must be `initialize` with `authCookie`; `connect()` handles this)
 - Plugin storage: `createSession()` requires an exact absolute `pluginStorageRoot` of at most 4096 UTF-8 bytes, with no surrounding whitespace. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR`, derive a root from `AGENC_HOME`, or accept `agentId`; use `attachAgent()` for an existing agent.

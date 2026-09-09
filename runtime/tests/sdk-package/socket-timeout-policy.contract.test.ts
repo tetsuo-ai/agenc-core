@@ -107,7 +107,8 @@ describe.skipIf(process.platform === "win32")(
           cookiePath,
           autostart: false,
         });
-        const sdkOptions = connectTransport.mock.calls[0]?.[0];
+        expect(connectTransport).toHaveBeenCalledTimes(2);
+        const sdkOptions = connectTransport.mock.calls.at(-1)?.[0];
         expect(sdkOptions?.requestTimeoutMs, testCase.label).toBe(runtimeValue);
         await client.close();
       }

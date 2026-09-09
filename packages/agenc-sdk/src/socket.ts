@@ -26,6 +26,9 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 import { createConnection, type Socket } from "node:net";
 import { spawn as nodeSpawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+import { StartupDeadline } from "./startup-deadline.js";
+import { waitForStartupChild, type StartupChild } from "./startup-child.js";
 import {
   AGENC_SDK_JSON_RPC_VERSION,
   isJsonObject,
@@ -157,6 +160,7 @@ interface PendingRequest {
 
 export interface AgencSocketTransportOptions {
   readonly socketPath: string;
+  readonly signal?: AbortSignal;
   readonly connectTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
   readonly onNotification?: (message: JsonObject) => void;
@@ -226,22 +230,45 @@ export class AgencSocketTransport implements AgencTransport {
 
   static connect(options: AgencSocketTransportOptions): Promise<AgencSocketTransport> {
     return new Promise((resolve, reject) => {
+      const signal = options.signal;
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
       const socket = createConnection(options.socketPath);
-      const timeout = setTimeout(() => {
+      let settled = false;
+      const cleanup = (): void => {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", onAbort);
+        socket.removeListener("connect", onConnect);
+        socket.removeListener("error", onError);
+      };
+      const fail = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         socket.destroy();
-        reject(
-          new Error(`Timed out connecting to daemon at ${options.socketPath}`),
-        );
-      }, options.connectTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-      socket.once("error", (error) => {
-        clearTimeout(timeout);
         reject(error);
-      });
-      socket.once("connect", () => {
-        clearTimeout(timeout);
-        socket.removeAllListeners("error");
+      };
+      const onAbort = (): void => fail(signal?.reason);
+      const onError = (error: Error): void => fail(error);
+      const onConnect = (): void => {
+        if (settled) return;
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
+        settled = true;
+        cleanup();
         resolve(new AgencSocketTransport(socket, options));
-      });
+      };
+      const timeout = setTimeout(() => {
+        fail(new Error(`Timed out connecting to daemon at ${options.socketPath}`));
+      }, options.connectTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+      socket.once("error", onError);
+      socket.once("connect", onConnect);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
 
@@ -350,14 +377,7 @@ export type AgencSpawnFn = (
     /** stdin and stdout are discarded; stderr is piped so a failed start can say why. */
     readonly stdio: "ignore" | readonly ["ignore", "ignore", "pipe"];
   },
-) => {
-  once(event: "exit", listener: (code: number | null) => void): unknown;
-  once(event: "error", listener: (error: Error) => void): unknown;
-  /** Present when stderr is piped; absent or null spawners keep the bare exit message. */
-  readonly stderr?: {
-    on(event: "data", listener: (chunk: Buffer | string) => void): unknown;
-  } | null;
-};
+) => StartupChild;
 
 /** How much of the CLI's stderr a failed daemon start carries into its error. */
 const DAEMON_START_STDERR_TAIL_BYTES = 2_048;
@@ -391,6 +411,7 @@ export interface AgencConnectOptions {
   readonly agencCommand?: string | readonly string[];
   /** Total budget for autostart + readiness polling. Default 45s or `AGENC_DAEMON_READY_TIMEOUT_MS`. */
   readonly readyTimeoutMs?: number;
+  readonly signal?: AbortSignal;
   /**
    * Per-request timeout for bounded control RPCs. Default 30s or
    * `AGENC_DAEMON_REQUEST_TIMEOUT_MS`. Full-turn message RPCs are unbounded.
@@ -427,69 +448,61 @@ export async function connect(
     requestTimeoutMsFromEnv(env.AGENC_DAEMON_REQUEST_TIMEOUT_MS) ??
     DEFAULT_REQUEST_TIMEOUT_MS;
 
-  let authCookie = await readDaemonCookie(cookiePath);
-  let reachable = authCookie !== null && (await canConnect(socketPath));
-
-  if (!reachable) {
-    if (options.autostart === false) {
-      throw new Error(
-        `AgenC daemon is not running at ${socketPath} and autostart is disabled`,
-      );
-    }
-    await startDaemonViaCli(options.agencCommand ?? "agenc", env, options.spawn);
-    const deadline = Date.now() + readyTimeoutMs;
-    for (;;) {
-      authCookie = await readDaemonCookie(cookiePath);
-      if (authCookie !== null && (await canConnect(socketPath))) {
-        reachable = true;
-        break;
-      }
-      if (Date.now() >= deadline) {
+  const deadline = new StartupDeadline(
+    readyTimeoutMs,
+    `AgenC daemon did not become ready at ${socketPath} within ${readyTimeoutMs}ms`,
+    options.signal,
+  );
+  let transport: AgencSocketTransport | undefined;
+  try {
+    let authCookie = await deadline.run(() => readDaemonCookie(cookiePath, deadline.signal));
+    const reachable = authCookie !== null && await canConnect(socketPath, deadline);
+    if (!reachable) {
+      if (options.autostart === false) {
         throw new Error(
-          `AgenC daemon did not become ready at ${socketPath} within ${readyTimeoutMs}ms`,
+          `AgenC daemon is not running at ${socketPath} and autostart is disabled`,
         );
       }
-      await sleep(READY_POLL_MS);
+      deadline.assertActive();
+      await startDaemonViaCli(options.agencCommand ?? "agenc", env, options.spawn, deadline);
+      for (;;) {
+        authCookie = await deadline.run(() => readDaemonCookie(cookiePath, deadline.signal));
+        if (authCookie !== null && await canConnect(socketPath, deadline)) break;
+        await deadline.run(() => delay(Math.min(READY_POLL_MS, deadline.remainingMs()), undefined, { signal: deadline.signal }));
+      }
     }
-  }
-
-  if (authCookie === null) {
-    throw new Error(`daemon cookie is not available at ${cookiePath}`);
-  }
-
-  let client: AgencClient | null = null;
-  const transport = await AgencSocketTransport.connect({
-    socketPath,
-    requestTimeoutMs,
-    connectTimeoutMs: readyTimeoutMs,
-    onNotification: (message) => client?.dispatchNotification(message),
-    onClose: (error) => options.onDisconnect?.(error),
-  });
-  client = new AgencClient({
-    transport,
-    ...(options.clientId !== undefined ? { clientId: options.clientId } : {}),
-    ...(options.clientName !== undefined
-      ? { clientName: options.clientName }
-      : {}),
-    ...(options.onPermissionRequest !== undefined
-      ? { onPermissionRequest: options.onPermissionRequest }
-      : {}),
-    ...(options.onElicitationRequest !== undefined
-      ? { onElicitationRequest: options.onElicitationRequest }
-      : {}),
-  });
-  try {
-    await client.initialize({ authCookie });
+    if (authCookie === null) throw new Error(`daemon cookie is not available at ${cookiePath}`);
+    let client: AgencClient | null = null;
+    transport = await AgencSocketTransport.connect({
+      socketPath,
+      requestTimeoutMs,
+      signal: deadline.signal,
+      connectTimeoutMs: deadline.remainingMs(),
+      onNotification: (message) => client?.dispatchNotification(message),
+      onClose: (error) => options.onDisconnect?.(error),
+    });
+    deadline.assertActive();
+    client = new AgencClient({
+      transport,
+      ...(options.clientId !== undefined ? { clientId: options.clientId } : {}),
+      ...(options.clientName !== undefined ? { clientName: options.clientName } : {}),
+      ...(options.onPermissionRequest !== undefined ? { onPermissionRequest: options.onPermissionRequest } : {}),
+      ...(options.onElicitationRequest !== undefined ? { onElicitationRequest: options.onElicitationRequest } : {}),
+    });
+    const initializedClient = client;
+    await deadline.run(() => initializedClient.initialize({ authCookie }));
+    return client;
   } catch (error) {
-    await transport.close();
+    await transport?.close();
     throw error;
+  } finally {
+    deadline.dispose();
   }
-  return client;
 }
 
-async function readDaemonCookie(cookiePath: string): Promise<string | null> {
+async function readDaemonCookie(cookiePath: string, signal: AbortSignal): Promise<string | null> {
   try {
-    const cookie = (await readFile(cookiePath, "utf8")).trim();
+    const cookie = (await readFile(cookiePath, { encoding: "utf8", signal })).trim();
     return cookie.length > 0 ? cookie : null;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -498,24 +511,25 @@ async function readDaemonCookie(cookiePath: string): Promise<string | null> {
   }
 }
 
-function canConnect(socketPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = createConnection(socketPath);
-    socket.once("connect", () => {
-      socket.destroy();
-      resolve(true);
+async function canConnect(socketPath: string, deadline: StartupDeadline): Promise<boolean> {
+  try {
+    const transport = await AgencSocketTransport.connect({
+      socketPath, signal: deadline.signal, connectTimeoutMs: deadline.remainingMs(),
     });
-    socket.once("error", () => {
-      socket.destroy();
-      resolve(false);
-    });
-  });
+    await transport.close();
+    deadline.assertActive();
+    return true;
+  } catch {
+    deadline.assertActive();
+    return false;
+  }
 }
 
-function startDaemonViaCli(
+async function startDaemonViaCli(
   command: string | readonly string[],
   env: NodeJS.ProcessEnv,
   spawnFn: AgencSpawnFn | undefined,
+  deadline: StartupDeadline,
 ): Promise<void> {
   const [executable, ...prefixArgs] =
     typeof command === "string" ? [command] : command;
@@ -531,43 +545,38 @@ function startDaemonViaCli(
         stdio:
           spawnOptions.stdio === "ignore" ? "ignore" : [...spawnOptions.stdio],
       }));
-  return new Promise((resolve, reject) => {
-    const child = spawner(executable, [...prefixArgs, "daemon", "start"], {
-      env,
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    const stderrChunks: string[] = [];
-    let stderrBytes = 0;
-    child.stderr?.on("data", (chunk) => {
-      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      stderrChunks.push(text);
-      stderrBytes += text.length;
-      // Bound the buffer: drop whole leading chunks once the tail is covered.
-      while (
-        stderrChunks.length > 1 &&
-        stderrBytes - stderrChunks[0].length >= DAEMON_START_STDERR_TAIL_BYTES
-      ) {
-        stderrBytes -= stderrChunks.shift()!.length;
-      }
-    });
-    child.once("error", (error: Error) => {
-      reject(
-        new Error(`failed to start AgenC daemon via ${executable}: ${error.message}`),
-      );
-    });
-    child.once("exit", (code: number | null) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(
-        new Error(
-          `AgenC daemon start exited with code ${code ?? "null"} (command: ${executable})` +
-            describeDaemonStartStderr(stderrChunks),
-        ),
-      );
-    });
+  const child = spawner(executable, [...prefixArgs, "daemon", "start"], {
+    env: { ...env, AGENC_DAEMON_READY_TIMEOUT_MS: String(deadline.remainingMs()) },
+    stdio: ["ignore", "ignore", "pipe"],
   });
+  const stderrChunks: string[] = [];
+  let stderrBytes = 0;
+  const onData = (chunk: Buffer | string): void => {
+    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    stderrChunks.push(text);
+    stderrBytes += text.length;
+    // Bound the buffer: drop whole leading chunks once the tail is covered.
+    while (
+      stderrChunks.length > 1 &&
+      stderrBytes - stderrChunks[0].length >= DAEMON_START_STDERR_TAIL_BYTES
+    ) {
+      stderrBytes -= stderrChunks.shift()!.length;
+    }
+  };
+  let code: number | null;
+  try {
+    code = await waitForStartupChild(child, deadline.signal, onData);
+  } catch (error) {
+    if (deadline.signal.aborted || error instanceof AggregateError) throw error;
+    throw new Error(`failed to start AgenC daemon via ${executable}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  deadline.assertActive();
+  if (code !== 0) {
+    throw new Error(
+      `AgenC daemon start exited with code ${code ?? "null"} (command: ${executable})` +
+        describeDaemonStartStderr(stderrChunks),
+    );
+  }
 }
 
 function positiveIntFromEnv(raw: string | undefined): number | null {
@@ -583,10 +592,4 @@ function requestTimeoutMsFromEnv(raw: string | undefined): number | null {
   if (!/^[1-9]\d*$/u.test(trimmed)) return null;
   const value = Number(trimmed);
   return Number.isInteger(value) && value <= MAX_TIMER_TIMEOUT_MS ? value : null;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }

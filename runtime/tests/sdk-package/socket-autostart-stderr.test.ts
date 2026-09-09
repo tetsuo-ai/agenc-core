@@ -29,11 +29,14 @@ function fakeSpawner(
     calls.push({ command, args, stdio: options.stdio });
     const child = new EventEmitter() as EventEmitter & {
       stderr: EventEmitter | null;
+      kill: () => boolean;
     };
+    child.kill = () => { child.emit("close", null, "SIGTERM"); return true; };
     child.stderr = stderrText === null ? null : new EventEmitter();
     setImmediate(() => {
       if (stderrText !== null) child.stderr?.emit("data", Buffer.from(stderrText));
       child.emit("exit", code);
+      child.emit("close", code, null);
     });
     return child;
   };

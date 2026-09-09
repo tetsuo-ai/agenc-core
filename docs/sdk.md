@@ -216,7 +216,12 @@ Windows.
 
 When the socket is not accepting connections and `autostart` is enabled
 (default), `connect()` runs `<agencCommand> daemon start` and polls the cookie
-and socket until ready (45s budget, or `AGENC_DAEMON_READY_TIMEOUT_MS`).
+and socket until ready. The 45s default budget, overridden by `readyTimeoutMs`
+or `AGENC_DAEMON_READY_TIMEOUT_MS`, covers the initial probe, starter, polling,
+final connection, and initialize handshake together. Pass `signal` for caller
+cancellation. Starter termination can add up to 1s for cleanup; an unclosed
+starter produces an explicit cleanup error. See the
+[SDK startup and custom-spawner contract](../packages/agenc-sdk/README.md#defaults).
 
 Deviation from the launcher: the runtime's internal autostart also handles
 build-skew respawn and orphan-daemon adoption. Those need runtime-internal

@@ -5,11 +5,13 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { resolveAgenCHome } from "../lib/home-authority.mjs";
 
 export { resolveAgenCHome } from "../lib/home-authority.mjs";
 
-const DEFAULT_READY_TIMEOUT_MS = 2000;
+const DEFAULT_READY_TIMEOUT_MS = 45_000;
 const DEFAULT_POLL_MS = 25;
 const READY_TIMEOUT_ENV = "AGENC_DAEMON_READY_TIMEOUT_MS";
 const AUTOSTART_ENV = "AGENC_DAEMON_AUTOSTART";
@@ -26,7 +28,7 @@ export function resolveReadyTimeoutMs(env = process.env) {
   const raw = env[READY_TIMEOUT_ENV]?.trim();
   if (raw === undefined || raw.length === 0) return DEFAULT_READY_TIMEOUT_MS;
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isInteger(parsed) || String(parsed) !== raw || parsed <= 0) {
+  if (!Number.isInteger(parsed) || String(parsed) !== raw || parsed <= 0 || parsed > 2_147_483_647) {
     throw new Error(`${READY_TIMEOUT_ENV} must be a positive integer`);
   }
   return parsed;
@@ -148,6 +150,8 @@ export async function spawnNodeScript(
     spawnFn = spawn,
     nodeBin = process.execPath,
     nodeLibraryPath,
+    signal,
+    registerCleanup,
   } = {},
 ) {
   const childEnv = { ...env };
@@ -162,6 +166,15 @@ export async function spawnNodeScript(
     // search an operator-controlled ambient library path before that exact
     // directory.
     childEnv.LD_LIBRARY_PATH = nodeLibraryPath;
+  }
+  signal?.throwIfAborted();
+  if (signal !== undefined) {
+    const child = spawnFn(nodeBin, [scriptPath, ...args], { cwd, env: childEnv, stdio });
+    const result = observeStarter(child, signal);
+    registerCleanup?.(result.then(() => {}, (error) => {
+      if (error instanceof AggregateError) throw error;
+    }));
+    return result;
   }
   return new Promise((resolveExit, reject) => {
     const child = spawnFn(nodeBin, [scriptPath, ...args], {
@@ -213,14 +226,22 @@ export async function isDaemonReady(
 export async function waitForDaemonReady(options = {}) {
   const timeoutMs = options.timeoutMs ?? resolveReadyTimeoutMs(options.env);
   const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
-  const startedAt = Date.now();
-  const sleep = options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
-
-  while (Date.now() - startedAt < timeoutMs) {
-    if (await isDaemonReady(options)) return true;
-    await sleep(pollMs);
+  const deadline = options.deadline ?? launchDeadline(timeoutMs, options.signal);
+  try {
+    for (;;) {
+      if (await withinLaunchDeadline(deadline, () => isDaemonReady(options))) return true;
+      if (options.probeOnly) return false;
+      const pause = Math.min(pollMs, deadline.remaining());
+      await withinLaunchDeadline(deadline, () => options.sleep
+        ? options.sleep(pause)
+        : delay(pause, undefined, { signal: deadline.signal }));
+    }
+  } catch (error) {
+    if (options.deadline === undefined && error === deadline.timeoutError) return false;
+    throw error;
+  } finally {
+    if (options.deadline === undefined) deadline.dispose();
   }
-  return isDaemonReady(options);
 }
 
 export async function ensureDaemonForLaunch({
@@ -235,35 +256,134 @@ export async function ensureDaemonForLaunch({
   signalPid = process.kill,
   spawnDaemonFn = spawnDaemon,
   waitForReadyFn = waitForDaemonReady,
+  signal,
 } = {}) {
   if (isDaemonCommand(argv)) return { status: "skipped-daemon-command" };
   if (!shouldAutostartDaemon(env)) return { status: "disabled" };
 
-  if (
-    await waitForReadyFn({
-      env,
-      userHome,
-      readText,
-      signalPid,
-      timeoutMs: 1,
-      pollMs: 1,
-      sleep: async () => {},
-    })
-  ) {
-    return { status: "already-running" };
-  }
+  const deadline = launchDeadline(resolveReadyTimeoutMs(env), signal);
+  const cleanups = [];
+  const probeOptions = { env, userHome, readText, signalPid, deadline, signal: deadline.signal };
+  try {
+    if (await withinLaunchDeadline(deadline, () => waitForReadyFn({
+      ...probeOptions, timeoutMs: deadline.remaining(), probeOnly: true,
+    }))) return { status: "already-running" };
 
-  await spawnDaemonFn(runtimeBin, {
-    env,
-    cwd,
-    nodeBin: runtimeNodeBin,
-    nodeLibraryPath: runtimeNodeLibraryPath,
-  });
-  const ready = await waitForReadyFn({ env, userHome, readText, signalPid });
-  if (!ready) {
-    throw new Error("AgenC daemon did not become ready before timeout");
+    await withinLaunchDeadline(deadline, () => spawnDaemonFn(runtimeBin, {
+      env: { ...env, [READY_TIMEOUT_ENV]: String(deadline.remaining()) },
+      cwd,
+      nodeBin: runtimeNodeBin,
+      nodeLibraryPath: runtimeNodeLibraryPath,
+      signal: deadline.signal,
+      registerCleanup: (cleanup) => {
+        cleanup.catch(() => {});
+        cleanups.push(cleanup);
+      },
+    }));
+    const ready = await withinLaunchDeadline(deadline, () => waitForReadyFn({
+      ...probeOptions, timeoutMs: deadline.remaining(),
+    }));
+    if (!ready) throw deadline.timeoutError;
+    return { status: "started" };
+  } catch (error) {
+    deadline.abort(error);
+    throw error;
+  } finally {
+    deadline.dispose();
+    await Promise.all(cleanups);
   }
-  return { status: "started" };
+}
+
+function launchDeadline(timeoutMs, externalSignal) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
+    throw new RangeError("Daemon readiness timeout must be positive and no greater than 2147483647");
+  }
+  const controller = new AbortController();
+  const expires = performance.now() + timeoutMs;
+  const timeoutError = new Error(`AgenC daemon did not become ready within ${timeoutMs}ms`);
+  const abort = (reason) => controller.abort(reason);
+  const forwardAbort = () => abort(externalSignal.reason);
+  externalSignal?.addEventListener("abort", forwardAbort, { once: true });
+  if (externalSignal?.aborted) forwardAbort();
+  const timer = setTimeout(() => abort(timeoutError), timeoutMs);
+  return {
+    signal: controller.signal,
+    timeoutError,
+    abort,
+    remaining() {
+      if (performance.now() >= expires) abort(timeoutError);
+      controller.signal.throwIfAborted();
+      return Math.max(1, Math.ceil(expires - performance.now()));
+    },
+    dispose() {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", forwardAbort);
+    },
+  };
+}
+
+function withinLaunchDeadline(deadline, operation) {
+  return new Promise((resolveResult, reject) => {
+    const onAbort = () => reject(deadline.signal.reason);
+    deadline.signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve().then(() => {
+      deadline.remaining();
+      return operation();
+    }).then((value) => {
+      deadline.remaining();
+      resolveResult(value);
+    }).catch(reject).finally(() => deadline.signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function observeStarter(child, signal) {
+  return new Promise((resolveExit, reject) => {
+    let finished = false;
+    let cancelled = false;
+    let reason;
+    let killTimer;
+    let reapTimer;
+    const complete = (code, cleanupFailed = false) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(killTimer);
+      clearTimeout(reapTimer);
+      child.removeListener("close", onClose);
+      child.removeListener("error", onError);
+      signal.removeEventListener("abort", onAbort);
+      if (cleanupFailed) {
+        reject(new AggregateError([reason], "Daemon starter did not close within 1000ms of cancellation", { cause: reason }));
+      } else if (cancelled) {
+        reject(reason);
+      } else {
+        resolveExit(code ?? 1);
+      }
+    };
+    const kill = (terminationSignal) => {
+      try { child.kill(terminationSignal); } catch { return; }
+    };
+    const cancel = (error) => {
+      if (finished || cancelled) return;
+      cancelled = true;
+      reason = error;
+      killTimer = setTimeout(() => kill("SIGKILL"), 100);
+      reapTimer = setTimeout(() => complete(null, true), 1_000);
+      kill("SIGTERM");
+    };
+    const onError = (error) => cancel(error);
+    const onAbort = () => cancel(signal.reason);
+    const onClose = (code, exitSignal) => {
+      if (!cancelled && (signal.aborted || exitSignal)) {
+        cancelled = true;
+        reason = signal.aborted ? signal.reason : new Error(`agenc runtime exited from signal ${exitSignal}`);
+      }
+      complete(code);
+    };
+    child.on("error", onError);
+    child.once("close", onClose);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
 }
 
 export async function main(
