@@ -1,7 +1,10 @@
 import type { JsonObject, JsonValue } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { updateAgentRunStatus } from "./agent-runs.js";
-import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
+import {
+  writeSessionSnapshotAtomically,
+  type SessionSnapshotWriteRecord,
+} from "./atomic-snapshot-writes.js";
 import {
   pruneRolloutSessions,
   pruneSessionSnapshotsForSession,
@@ -141,6 +144,14 @@ interface SessionSnapshotState {
   // ticks); a dirty one is flushed by the coalescing timer, the periodic
   // tick, flushSession, or close.
   dirty: boolean;
+  revision: number;
+  writing: boolean;
+  retryAttempt: number;
+  pendingWrite?: {
+    readonly record: SessionSnapshotWriteRecord;
+    readonly trigger: SnapshotPolicyTrigger;
+    readonly revision: number;
+  };
   pendingTrigger?: SnapshotPolicyTrigger;
   // Policy-clock time of the last durable write, for coalescing.
   lastWriteMs?: number;
@@ -222,6 +233,7 @@ export class AgenCSessionSnapshotPolicy {
   #periodicTimer: SnapshotPolicyTimer | undefined;
   #lastSnapshotMs = 0;
   #sessionTouchSeq = 0;
+  #closing = false;
 
   constructor(
     driver: StateSqliteDriver,
@@ -431,23 +443,37 @@ export class AgenCSessionSnapshotPolicy {
   }
 
   /**
-   * Stop timers, flush every dirty session synchronously, and forget all
-   * tracked sessions. Called by the daemon before the state DB is closed.
+   * Stop timers and flush dirty sessions synchronously. Failed sessions stay
+   * tracked and close throws so the owner can retain the DB and retry.
    */
   close(): void {
+    if (this.#closing) throw new Error("snapshot policy close is already running");
     this.stopPeriodic();
-    // Dropping the current entry while iterating a Map is well defined.
-    for (const state of this.#sessions.values()) {
-      try {
-        if (state.dirty) {
-          this.#writeSnapshot(state, state.pendingTrigger ?? "periodic");
+    this.#closing = true;
+    const errors: unknown[] = [];
+    try {
+      for (const state of this.#sessions.values()) {
+        if (state.coalesceTimer !== undefined) {
+          this.#clearTimeout(state.coalesceTimer);
+          state.coalesceTimer = undefined;
         }
-      } catch (error) {
-        this.#onError(error);
+        try {
+          if (state.dirty) {
+            this.#writeSnapshot(state, state.pendingTrigger ?? "periodic");
+          }
+          this.#dropSession(state);
+        } catch (error) {
+          errors.push(error);
+          this.#onError(error);
+        }
       }
-      this.#dropSession(state);
+      this.#reportPruning();
+    } finally {
+      this.#closing = false;
     }
-    this.#reportPruning();
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "snapshot policy close retained unpersisted sessions");
+    }
   }
 
   hydrateSession(hydration: SnapshotPolicySessionHydration): void {
@@ -467,6 +493,7 @@ export class AgenCSessionSnapshotPolicy {
     // dropped, the tail is re-capped); write that once on the next tick so
     // the newest row reflects what this daemon instance actually holds.
     state.dirty = true;
+    state.revision += 1;
     state.pendingTrigger = "periodic";
   }
 
@@ -561,6 +588,7 @@ export class AgenCSessionSnapshotPolicy {
       // periodic tick.
       if (appended) {
         state.dirty = true;
+        state.revision += 1;
         state.pendingTrigger ??= "message_exchange";
       }
       return undefined;
@@ -882,6 +910,9 @@ export class AgenCSessionSnapshotPolicy {
       sessionId,
       lastTouchedMs: this.#sessionTouchSeq++,
       dirty: false,
+      revision: 0,
+      writing: false,
+      retryAttempt: 0,
       conversation: [],
       seenConversationKeys: new Set(),
       toolState: {
@@ -896,13 +927,13 @@ export class AgenCSessionSnapshotPolicy {
         events: [],
       },
     };
-    this.#sessions.set(sessionId, created);
     this.#evictStaleSessions();
+    this.#sessions.set(sessionId, created);
     return created;
   }
 
   #evictStaleSessions(): void {
-    while (this.#sessions.size > this.#maxTrackedSessions) {
+    while (this.#sessions.size >= this.#maxTrackedSessions) {
       let oldest: SessionSnapshotState | undefined;
       for (const state of this.#sessions.values()) {
         if (oldest === undefined || state.lastTouchedMs < oldest.lastTouchedMs) {
@@ -917,6 +948,7 @@ export class AgenCSessionSnapshotPolicy {
         }
       } catch (error) {
         this.#onError(error);
+        throw error;
       }
       this.#dropSession(oldest);
     }
@@ -991,7 +1023,9 @@ export class AgenCSessionSnapshotPolicy {
     trigger: SnapshotPolicyTrigger,
   ): SnapshotPolicySnapshotRecord | undefined {
     state.dirty = true;
+    state.revision += 1;
     state.pendingTrigger = trigger;
+    if (state.writing) return undefined;
     const nowIso = this.#now();
     const nowMs = Date.parse(nowIso);
     const sinceLastWriteMs =
@@ -1017,16 +1051,7 @@ export class AgenCSessionSnapshotPolicy {
         this.#coalesceIntervalMs,
         Math.max(1, this.#coalesceIntervalMs - sinceLastWriteMs),
       );
-      state.coalesceTimer = this.#setTimeout(() => {
-        state.coalesceTimer = undefined;
-        if (!state.dirty) return;
-        try {
-          this.#writeSnapshot(state, state.pendingTrigger ?? trigger);
-        } catch (error) {
-          this.#onError(error);
-        }
-      }, delayMs);
-      state.coalesceTimer.unref?.();
+      this.#scheduleSnapshot(state, delayMs);
     }
     return undefined;
   }
@@ -1036,20 +1061,80 @@ export class AgenCSessionSnapshotPolicy {
     trigger: SnapshotPolicyTrigger,
     nowIso?: string,
   ): SnapshotPolicySnapshotRecord {
-    const snapshotAt = this.#nextSnapshotAt(nowIso);
+    if (state.writing) throw new Error("snapshot write is already running");
     if (state.coalesceTimer !== undefined) {
       this.#clearTimeout(state.coalesceTimer);
       state.coalesceTimer = undefined;
     }
-    state.dirty = false;
-    state.pendingTrigger = undefined;
-    state.lastWriteMs = Date.parse(snapshotAt);
-    state.toolState.lastTrigger = trigger;
-    const conversation = [...state.conversation];
+    state.writing = true;
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        state.pendingWrite ??= this.#captureSnapshot(
+          state, attempt === 0 ? trigger : state.pendingTrigger ?? trigger,
+          attempt === 0 ? nowIso : undefined,
+        );
+        const pending = state.pendingWrite;
+        timed("session_snapshot_write", () =>
+          writeSessionSnapshotAtomically(this.#driver, pending.record, {
+            updateRunLastSnapshotAt: true, replayOnStartup: true, verifyExisting: true,
+          }),
+        );
+        state.pendingWrite = undefined;
+        state.lastWriteMs = Date.parse(pending.record.snapshotAt);
+        state.toolState.lastTrigger = pending.trigger;
+        state.retryAttempt = 0;
+        state.dirty = state.revision !== pending.revision;
+        if (!state.dirty) state.pendingTrigger = undefined;
+        this.#prunePersistedSnapshot(state.sessionId, pending.record.snapshotAt);
+        if (!state.dirty) {
+          return {
+            sessionId: state.sessionId,
+            snapshotAt: pending.record.snapshotAt,
+            trigger: pending.trigger,
+            conversation: JSON.parse(pending.record.conversationJson) as JsonValue[],
+            toolState: JSON.parse(pending.record.toolStateJson) as JsonObject,
+            mcpConnectionState: JSON.parse(pending.record.mcpConnectionStateJson) as JsonObject,
+          };
+        }
+      }
+      throw new Error("snapshot changed repeatedly during persistence; retry required");
+    } catch (error) {
+      if (state.dirty && !this.#closing) {
+        const delayMs = Math.min(30_000, 250 * 2 ** state.retryAttempt);
+        state.retryAttempt = Math.min(7, state.retryAttempt + 1);
+        this.#scheduleSnapshot(state, delayMs);
+      }
+      throw error;
+    } finally {
+      state.writing = false;
+    }
+  }
+
+  #scheduleSnapshot(state: SessionSnapshotState, delayMs: number): void {
+    if (state.coalesceTimer !== undefined || this.#closing) return;
+    state.coalesceTimer = this.#setTimeout(() => {
+      state.coalesceTimer = undefined;
+      if (!state.dirty) return;
+      try {
+        this.#writeSnapshot(state, state.pendingTrigger ?? "periodic");
+      } catch (error) {
+        this.#onError(error);
+      }
+    }, delayMs);
+    state.coalesceTimer.unref?.();
+  }
+
+  #captureSnapshot(
+    state: SessionSnapshotState,
+    trigger: SnapshotPolicyTrigger,
+    nowIso?: string,
+  ): NonNullable<SessionSnapshotState["pendingWrite"]> {
+    const snapshotAt = this.#nextSnapshotAt(nowIso);
     const toolState = normalizeJsonObject({
       ...state.toolState.extras,
       ...state.toolState,
       extras: undefined,
+      lastTrigger: trigger,
       inFlight: { ...state.toolState.inFlight },
       completed: { ...state.toolState.completed },
       statusTransitions: [...state.toolState.statusTransitions],
@@ -1060,41 +1145,38 @@ export class AgenCSessionSnapshotPolicy {
       extras: undefined,
       events: [...state.mcpConnectionState.events],
     });
-    timed("session_snapshot_write", () =>
-      writeSessionSnapshotAtomically(
-        this.#driver,
-        {
-          sessionId: state.sessionId,
-          snapshotAt,
-          conversationJson: JSON.stringify(conversation),
-          toolStateJson: JSON.stringify(toolState),
-          mcpConnectionStateJson: JSON.stringify(mcpConnectionState),
-        },
-        { updateRunLastSnapshotAt: true, replayOnStartup: true },
-      ),
-    );
+    return {
+      revision: state.revision,
+      trigger,
+      record: {
+        sessionId: state.sessionId,
+        snapshotAt,
+        conversationJson: JSON.stringify(state.conversation),
+        toolStateJson: JSON.stringify(toolState),
+        mcpConnectionStateJson: JSON.stringify(mcpConnectionState),
+      },
+    };
+  }
+
+  #prunePersistedSnapshot(sessionId: string, snapshotAt: string): void {
     // Retention runs on every write. The per-session prune is a few indexed
     // statements over at most SESSION_SNAPSHOT_HARD_CAP rows, unlike the
     // table-wide LENGTH() scan it replaces, whose 60 s throttle let one
     // session grow to 5,607 rows / 1.16 GB without ever deleting a row.
     // Reports are aggregated and surfaced from the periodic tick.
-    const pruned = pruneSessionSnapshotsForSession(
-      this.#driver,
-      state.sessionId,
-      { ...(this.#snapshotRetention ?? {}), now: () => snapshotAt },
-    );
-    if (pruned.prunedSnapshots > 0) {
-      this.#prunedSinceReport += pruned.prunedSnapshots;
-      this.#prunedSessionsSinceReport.add(state.sessionId);
+    try {
+      const pruned = pruneSessionSnapshotsForSession(
+        this.#driver,
+        sessionId,
+        { ...(this.#snapshotRetention ?? {}), now: () => snapshotAt },
+      );
+      if (pruned.prunedSnapshots > 0) {
+        this.#prunedSinceReport += pruned.prunedSnapshots;
+        this.#prunedSessionsSinceReport.add(sessionId);
+      }
+    } catch (error) {
+      this.#onError(error);
     }
-    return {
-      sessionId: state.sessionId,
-      snapshotAt,
-      trigger,
-      conversation,
-      toolState,
-      mcpConnectionState,
-    };
   }
 
   #reportPruning(): void {

@@ -5,6 +5,7 @@ import {
   fstatSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -26,6 +27,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { AgenCShutdownSignal } from "../lifecycle/signal-handlers.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import { AgenCSessionSnapshotPolicy } from "../../src/state/snapshot-policy.js";
+import { AgenCCleanupRegistry, type AgenCCleanupTask } from "../../src/lifecycle/cleanup-registry.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { RolloutStore } from "../session/rollout-store.js";
@@ -6865,6 +6868,55 @@ snapshot_max_bytes = 64
     expect(io.stderrText()).toContain("cleanup[daemon-snapshots] failed");
 
     await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("retains a failed snapshot policy and its driver for a later close retry", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    let retryCleanup: AgenCCleanupTask | undefined;
+    let retainedPolicy: AgenCSessionSnapshotPolicy | undefined;
+    let pending: string | undefined;
+    const register = AgenCCleanupRegistry.prototype.register;
+    vi.spyOn(AgenCCleanupRegistry.prototype, "register").mockImplementation(function (this: AgenCCleanupRegistry, name, task) {
+      if (name === "daemon-snapshot-policy") retryCleanup = task;
+      return register.call(this, name, task);
+    });
+    const close = AgenCSessionSnapshotPolicy.prototype.close;
+    vi.spyOn(AgenCSessionSnapshotPolicy.prototype, "close").mockImplementationOnce(function (this: AgenCSessionSnapshotPolicy) {
+      retainedPolicy = this;
+      this.hydrateSession({ sessionId: "shutdown-retry", conversation: [{ content: "shutdown evidence" }] });
+      close.call(this);
+    });
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" }, { host, io, signalProcess },
+    );
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      const driver = openStateDatabases({ cwd: process.cwd(), agencHome });
+      pending = join(driver.projectDir, "session_state_snapshots.pending");
+      driver.close();
+      writeFileSync(pending, "staging obstruction");
+      signalProcess.emit("SIGTERM");
+      await expect(running).resolves.toBe(1);
+      expect(io.stderrText()).toContain("cleanup[daemon-snapshot-policy] failed");
+      expect(retainedPolicy?.trackedSessionIds()).toContain("shutdown-retry");
+      rmSync(pending);
+      expect(retainedPolicy?.flushSession("shutdown-retry")?.conversation)
+        .toEqual([{ content: "shutdown evidence" }]);
+      expect(retryCleanup).toBeDefined();
+      await retryCleanup!({ reason: "daemon_shutdown" });
+      expect(retainedPolicy?.trackedSessionIds()).toEqual([]);
+      expect(() => retainedPolicy?.loadLatest("shutdown-retry")).toThrow();
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running.catch(() => {});
+      if (pending !== undefined) rmSync(pending, { recursive: true, force: true });
+      await retryCleanup?.({ reason: "daemon_shutdown" });
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 });
 

@@ -29,6 +29,7 @@ export interface SessionSnapshotWriteRecord {
 export interface SessionSnapshotAtomicWriteOptions {
   readonly updateRunLastSnapshotAt?: boolean;
   readonly replayOnStartup?: boolean;
+  readonly verifyExisting?: boolean;
 }
 
 export interface PendingSessionSnapshotWrite {
@@ -37,6 +38,7 @@ export interface PendingSessionSnapshotWrite {
   readonly record: SessionSnapshotWriteRecord;
   readonly updateRunLastSnapshotAt: boolean;
   readonly replayOnStartup: boolean;
+  readonly verifyExisting: boolean;
 }
 
 interface SessionSnapshotWriteFile {
@@ -44,6 +46,7 @@ interface SessionSnapshotWriteFile {
   readonly schemaVersion: typeof SNAPSHOT_WRITE_SCHEMA_VERSION;
   readonly replayOnStartup: boolean;
   readonly updateRunLastSnapshotAt: boolean;
+  readonly verifyExisting?: boolean;
   readonly record: SessionSnapshotWriteRecord;
 }
 
@@ -52,9 +55,14 @@ export function writeSessionSnapshotAtomically(
   record: SessionSnapshotWriteRecord,
   options: SessionSnapshotAtomicWriteOptions = {},
 ): void {
+  if (options.verifyExisting && driver.state.inTransaction) {
+    throw new Error("retryable snapshot writes require their own transaction");
+  }
   const pending = stageSessionSnapshotWrite(driver.projectDir, record, options);
   try {
-    commitPendingSessionSnapshotWrite(driver.state, pending, "strict");
+    commitPendingSessionSnapshotWrite(
+      driver.state, pending, options.verifyExisting ? "verify" : "strict",
+    );
   } catch (error) {
     if (!pending.replayOnStartup) removePendingSessionSnapshotWrite(pending);
     throw error;
@@ -81,7 +89,7 @@ export function replayAtomicSessionSnapshotWrites(
         removePendingSessionSnapshotWrite(pending);
         continue;
       }
-      commitPendingSessionSnapshotWrite(db, pending, "idempotent");
+      commitPendingSessionSnapshotWrite(db, pending, pending.verifyExisting ? "verify" : "idempotent");
       removePendingSessionSnapshotWrite(pending);
     } catch {
       // A torn or otherwise corrupt pending write (ENOSPC, power loss,
@@ -126,12 +134,14 @@ export function stageSessionSnapshotWrite(
     record,
     updateRunLastSnapshotAt: options.updateRunLastSnapshotAt === true,
     replayOnStartup: options.replayOnStartup === true,
+    verifyExisting: options.verifyExisting === true,
   };
   const payload: SessionSnapshotWriteFile = {
     format: SNAPSHOT_WRITE_FORMAT,
     schemaVersion: SNAPSHOT_WRITE_SCHEMA_VERSION,
     replayOnStartup: pending.replayOnStartup,
     updateRunLastSnapshotAt: pending.updateRunLastSnapshotAt,
+    ...(pending.verifyExisting ? { verifyExisting: true } : {}),
     record,
   };
   atomicWriteFile(pending.directory, pending.path, `${JSON.stringify(payload)}\n`);
@@ -141,7 +151,7 @@ export function stageSessionSnapshotWrite(
 function commitPendingSessionSnapshotWrite(
   db: SqliteDatabase,
   pending: PendingSessionSnapshotWrite,
-  mode: "strict" | "idempotent",
+  mode: "strict" | "idempotent" | "verify",
 ): void {
   const commit = (): void => {
     insertPendingSessionSnapshotWrite(db, pending, mode);
@@ -157,8 +167,28 @@ function commitPendingSessionSnapshotWrite(
 function insertPendingSessionSnapshotWrite(
   db: SqliteDatabase,
   pending: PendingSessionSnapshotWrite,
-  mode: "strict" | "idempotent",
+  mode: "strict" | "idempotent" | "verify",
 ): void {
+  if (mode === "verify") {
+    const existing = db.prepare<[string, string], {
+      conversation_json: string;
+      tool_state_json: string;
+      mcp_connection_state_json: string;
+    }>(
+      `SELECT conversation_json, tool_state_json, mcp_connection_state_json
+       FROM session_state_snapshots WHERE session_id = ? AND snapshot_at = ?`,
+    ).get(pending.record.sessionId, pending.record.snapshotAt);
+    if (existing !== undefined) {
+      if (
+        existing.conversation_json !== pending.record.conversationJson ||
+        existing.tool_state_json !== pending.record.toolStateJson ||
+        existing.mcp_connection_state_json !== pending.record.mcpConnectionStateJson
+      ) {
+        throw new Error("snapshot retry conflicts with the persisted payload");
+      }
+      return;
+    }
+  }
   const onConflict =
     mode === "idempotent"
       ? `ON CONFLICT(session_id, snapshot_at) DO UPDATE SET
@@ -225,6 +255,7 @@ function readPendingSessionSnapshotWrite(
     record: file.record,
     updateRunLastSnapshotAt: file.updateRunLastSnapshotAt,
     replayOnStartup: file.replayOnStartup,
+    verifyExisting: file.verifyExisting === true,
   };
 }
 
@@ -247,6 +278,8 @@ function expectSnapshotWriteFile(
       file.updateRunLastSnapshotAt,
       "updateRunLastSnapshotAt",
     ),
+    verifyExisting: file.verifyExisting === undefined
+      ? false : expectBoolean(file.verifyExisting, "verifyExisting"),
     record: expectSnapshotRecord(file.record, "record"),
   };
 }

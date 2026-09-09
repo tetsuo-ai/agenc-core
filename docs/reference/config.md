@@ -351,6 +351,23 @@ otherwise.
 | `agent.retention.snapshot_max_bytes` | `67108864` |
 | `agent.retention.rollout_days` | `30` (0 keeps every session) |
 
+Session snapshots stay dirty until persistence succeeds. Failed writes retain
+their serialized payload and timestamp. New events remain pending for the next
+snapshot. Timer retries start at 250 ms and double to a 30-second cap; explicit
+and periodic flushes can also retry. A retry verifies any existing database row
+instead of inserting a duplicate or replacing different content. New pending
+write files carry this verification flag through startup replay. Older pending
+files keep their existing replay behavior, and older runtimes do not enforce the
+new flag. Finish pending recovery before downgrading.
+
+If a dirty session cannot be persisted during eviction, the policy refuses the
+new session rather than exceeding its tracking cap. A failed close retains the
+session and its database driver, stops timers, and reports a cleanup error. An
+in-process owner can repair storage and retry close. Daemon shutdown reports a
+nonzero exit status but does not wait indefinitely for storage repair. Memory
+cannot survive process exit; if storage failed before a recovery file became
+durable, shutdown or a forced kill can still lose that unpersisted state.
+
 `max_turns` is unset by default; an unset turn cap does not impose a
 synthetic stop. `stream_watchdog_timeout_ms` defaults to `600000` (ten
 minutes of provider silence): the runtime warns at half that time and aborts
