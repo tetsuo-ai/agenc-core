@@ -354,8 +354,10 @@ otherwise.
 Session snapshots stay dirty until persistence succeeds. Failed writes retain
 their serialized payload and timestamp. New events remain pending for the next
 snapshot. Timer retries start at 250 ms and double to a 30-second cap; explicit
-and periodic flushes can also retry. A retry verifies any existing database row
-instead of inserting a duplicate or replacing different content. New pending
+and periodic flushes can also retry. A failed session or project does not block
+the remaining periodic writes. A retry verifies any existing database row,
+accepting identical content instead of inserting a duplicate or replacing
+different content. New pending
 write files carry this verification flag through startup replay. Older pending
 files keep their existing replay behavior, and older runtimes do not enforce the
 new flag. Finish pending recovery before downgrading.

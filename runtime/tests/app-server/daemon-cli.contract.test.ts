@@ -6918,6 +6918,43 @@ snapshot_max_bytes = 64
       await rm(agencHome, { recursive: true, force: true });
     }
   });
+
+  it("periodic snapshot failure in one project does not starve another project", async () => {
+    const agencHome = await tempAgencHome();
+    const otherCwd = await mkdtemp(join(tmpdir(), "agenc-periodic-other-"));
+    await mkdir(join(otherCwd, ".git"));
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    seedRecoverableDaemonState(agencHome, {
+      cwd: otherCwd, runId: "run-periodic-good", sessionId: "session-periodic-good", status: "blocked",
+    });
+    const flushPeriodic = AgenCSessionSnapshotPolicy.prototype.flushPeriodic;
+    vi.spyOn(AgenCSessionSnapshotPolicy.prototype, "flushPeriodic").mockImplementation(function (this: AgenCSessionSnapshotPolicy) {
+      if (!this.trackedSessionIds().includes("session-periodic-good")) {
+        throw new Error("default project periodic failure");
+      }
+      return flushPeriodic.call(this);
+    });
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => { throw new Error("not used"); },
+      restoreAgent: async () => true,
+    };
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
+    );
+    try {
+      await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
+      await waitForSnapshotAfter(agencHome, otherCwd, "session-periodic-good", SEEDED_RECOVERY_SNAPSHOT_AT);
+      expect(io.stderrText()).toContain("daemon snapshot policy failed");
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await running;
+      await rm(otherCwd, { recursive: true, force: true });
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
 });
 
 /** snapshot_at of the recovered row seeded by seedRecoverableDaemonState. */

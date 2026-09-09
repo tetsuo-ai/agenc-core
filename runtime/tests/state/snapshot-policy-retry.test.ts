@@ -305,4 +305,26 @@ describe("session snapshot persistence retry", () => {
     expect(policy.trackedSessionIds()).toEqual(["new-success"]);
     expect(policy.loadLatest("session-1")!.conversation).toEqual([{ content: "bounded evidence" }]);
   });
+
+  test("periodic failure does not starve later dirty sessions without retry timers", () => {
+    const { driver, policy } = fixture();
+    driver.state.exec(`CREATE TRIGGER reject_one_snapshot BEFORE INSERT ON session_state_snapshots
+      WHEN NEW.session_id = 'bad-session'
+      BEGIN SELECT RAISE(ABORT, 'one session failed'); END`);
+    policy.hydrateSession({ sessionId: "bad-session", conversation: [{ content: "retry later" }] });
+    policy.hydrateSession({ sessionId: "good-session", conversation: [{ content: "persist now" }] });
+    expect(() => policy.flushPeriodic()).toThrow();
+    expect(policy.loadLatest("good-session")?.conversation).toEqual([{ content: "persist now" }]);
+    expect(policy.loadLatest("bad-session")).toBeUndefined();
+    policy.recordSessionEvent("good-session", {
+      method: "event.message_chunk", params: { delta: "next tick", eventId: "chunk-next" },
+    });
+    expect(() => policy.flushPeriodic()).toThrow();
+    expect(policy.loadLatest("good-session")?.conversation).toEqual(expect.arrayContaining([
+      expect.objectContaining({ delta: "next tick" }),
+    ]));
+    driver.state.exec("DROP TRIGGER reject_one_snapshot");
+    expect(policy.flushPeriodic()).toHaveLength(1);
+    expect(policy.flushPeriodic()).toEqual([]);
+  });
 });

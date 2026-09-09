@@ -4957,8 +4957,17 @@ class AgenCDaemonSnapshotPolicyRegistry {
   }
 
   flushPeriodic(): void {
+    const errors: unknown[] = [];
     for (const entry of this.#policies.values()) {
-      entry.policy.flushPeriodic();
+      try {
+        entry.policy.flushPeriodic();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      for (const error of errors) this.#onError(error);
+      throw new AggregateError(errors, "daemon periodic snapshot flush failed");
     }
   }
 

@@ -675,15 +675,24 @@ export class AgenCSessionSnapshotPolicy {
     // every 30 s forever: 21 identical snapshots per session in the ten idle
     // minutes after the measured runs ended.
     const records: SnapshotPolicySnapshotRecord[] = [];
+    const errors: unknown[] = [];
     for (const state of this.#sessions.values()) {
       if (!state.dirty) continue;
-      records.push(this.#writeSnapshot(state, "periodic"));
+      try {
+        records.push(this.#writeSnapshot(state, "periodic"));
+      } catch (error) {
+        errors.push(error);
+      }
     }
     // Piggy-back the disk-retention sweep on the same throttled tick so
     // rollout/session pruning runs on a bounded timer, not a tight loop.
     this.sweepRolloutRetention();
     this.#reclaimFreePages();
     this.#reportPruning();
+    if (errors.length > 0) {
+      for (const error of errors) this.#onError(error);
+      throw new AggregateError(errors, "periodic snapshot flush retained unpersisted sessions");
+    }
     return records;
   }
 
