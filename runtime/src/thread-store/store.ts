@@ -426,7 +426,7 @@ export class FileThreadStore implements ThreadStore {
       params.source === undefined
         ? undefined
         : canonicalizeThreadSource(params.source);
-    this.bindLiveRecorder(threadId, params.rolloutStore);
+    this.prepareLiveRecorder(params.rolloutStore);
 
     this.updateRegistry((registry) => {
       const now = new Date().toISOString();
@@ -471,6 +471,7 @@ export class FileThreadStore implements ThreadStore {
       };
       registry.set(threadId, entry);
     });
+    this.bindLiveRecorder(threadId, params.rolloutStore);
   }
 
   resumeThread(params: ResumeThreadParams): void {
@@ -492,7 +493,7 @@ export class FileThreadStore implements ThreadStore {
         );
       }
 
-      this.bindLiveRecorder(threadId, params.rolloutStore);
+      this.prepareLiveRecorder(params.rolloutStore);
 
       const now = new Date().toISOString();
       const entry: RegistryEntry = {
@@ -531,6 +532,7 @@ export class FileThreadStore implements ThreadStore {
       };
       registry.set(threadId, entry);
     });
+    this.bindLiveRecorder(threadId, params.rolloutStore);
   }
 
   appendItems(params: AppendThreadItemsParams): void {
@@ -1174,12 +1176,15 @@ export class FileThreadStore implements ThreadStore {
    * (`appendItems`, metadata patches, path lookups).
    */
   private bindLiveRecorder(threadId: ThreadId, rolloutStore: RolloutStore): void {
-    this.liveRecorders.set(threadId, rolloutStore);
     rolloutStore.setOnRolloutCommitted((rolloutPath) => {
       if (this.closed) return;
       if (this.liveRecorders.get(threadId) !== rolloutStore) return;
       this.indexRolloutFile(rolloutPath);
     });
+    this.liveRecorders.set(threadId, rolloutStore);
+  }
+
+  private prepareLiveRecorder(rolloutStore: RolloutStore): void {
     if (existsSync(rolloutStore.rolloutPath)) {
       this.indexRolloutFile(rolloutStore.rolloutPath);
     }
