@@ -648,7 +648,9 @@ async function createMcpAuthorityFixture(
   const root = mkdtempSync(join(tmpdir(), "agenc-mcp-authority-"));
   const home = join(root, "home");
   const cwd = join(root, "project");
-  mkdirSync(home, { recursive: true });
+  // Desktop authority requires an operator-owned home without group writes.
+  // Set the fixture mode explicitly so the host umask cannot weaken it.
+  mkdirSync(home, { recursive: true, mode: 0o700 });
   mkdirSync(cwd, { recursive: true });
   mkdirSync(join(cwd, ".agenc"), { recursive: true });
   const userConfigPath = join(home, "config.toml");
