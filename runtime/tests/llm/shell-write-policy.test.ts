@@ -144,6 +144,51 @@ describe("classifyShellWorkspaceWritePolicy", () => {
     );
   });
 
+  it.each([
+    "command tee src/x.js",
+    "builtin tee src/x.js",
+    "exec tee src/x.js",
+    "nohup tee src/x.js",
+    "time tee src/x.js",
+    "env tee src/x.js",
+    "env FOO=1 tee src/x.js",
+    "command -- tee src/x.js",
+  ])("looks through a prefix launcher: %s", (command) => {
+    const decision = classify(command);
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
+  });
+
+  it("blocks quoted redirects hidden inside eval", () => {
+    const decision = classify("eval 'echo pwned > src/x.js'");
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
+  });
+
+  it("looks through command before eval of a quoted redirect", () => {
+    const decision = classify("command eval 'echo pwned > src/x.js'");
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
+  });
+
+  it("allows eval of a command that does not write workspace files", () => {
+    const decision = classify("eval 'echo hello'");
+
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.observedTargets).toEqual([]);
+  });
+
+  it("fails closed when a prefix launcher has unparsed flags", () => {
+    const decision = classify("nice -n 10 tee src/x.js");
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.indeterminate).toBe(true);
+  });
+
   describe("workspace deletions", () => {
     it("lets a session that edits without prompting rm a workspace file", () => {
       const decision = classify(REFACTOR_CLEANUP, true);

@@ -20,6 +20,20 @@ const SHELL_WRAPPER_COMMANDS = new Set([
   "sh",
   "zsh",
 ]);
+/**
+ * Builtins and launchers that wrap a following command. #2277 already strips
+ * these when extracting executables in bash.ts; the write policy must do the
+ * same or `command tee src/x` looks like an unknown no-write command.
+ */
+const SHELL_PREFIX_COMMANDS = new Set([
+  "command",
+  "builtin",
+  "exec",
+  "time",
+  "nohup",
+  "nice",
+  "setsid",
+]);
 const WRITE_REDIRECT_OPERATORS = new Set([
   ">",
   ">>",
@@ -414,6 +428,68 @@ function collectMoveTargets(
   return collection;
 }
 
+/**
+ * Skip one prefix/launcher and classify the command it invokes. Flags after
+ * the prefix are fail-closed: bash.ts already refuses `nice -n 10 …` as an
+ * unvalidated executable, and we cannot see which remaining token is the
+ * real program.
+ */
+function collectPrefixedCommandWriteTargets(
+  args: readonly string[],
+  cwd: string,
+  allowAssignments: boolean,
+): ShellWriteTargetCollection {
+  let index = 0;
+  if (allowAssignments) {
+    while (index < args.length && ENV_ASSIGNMENT_RE.test(args[index] ?? "")) {
+      index += 1;
+    }
+  }
+  if (args[index] === "--") {
+    index += 1;
+  }
+  const nestedCommand = args[index];
+  if (nestedCommand === undefined || nestedCommand.length === 0) {
+    return emptyTargetCollection();
+  }
+  if (nestedCommand.startsWith("-")) {
+    return indeterminateTargetCollection();
+  }
+  return collectDirectCommandWriteTargets({
+    command: nestedCommand,
+    args: args.slice(index + 1),
+    cwd,
+  });
+}
+
+/**
+ * `eval` concatenates its operands and runs them as a shell command. Quoted
+ * redirects inside that string never appear as top-level tokens, so the
+ * policy must re-lex the operand instead of treating `eval` as unknown.
+ */
+function collectEvalWriteTargets(
+  args: readonly string[],
+  cwd: string,
+): ShellWriteTargetCollection {
+  const operands: string[] = [];
+  let treatRemainingAsOperands = false;
+  for (const token of args) {
+    if (!token) continue;
+    if (!treatRemainingAsOperands && token === "--") {
+      treatRemainingAsOperands = true;
+      continue;
+    }
+    if (!treatRemainingAsOperands && token.startsWith("-")) {
+      return indeterminateTargetCollection();
+    }
+    operands.push(token);
+  }
+  if (operands.length === 0) {
+    return indeterminateTargetCollection();
+  }
+  return collectShellCommandWriteTargets(operands.join(" "), cwd);
+}
+
 function collectDirectCommandWriteTargets(params: {
   readonly command: string;
   readonly args: readonly string[];
@@ -434,7 +510,13 @@ function collectDirectCommandWriteTargets(params: {
       }
       return indeterminateTargetCollection();
     }
-    return emptyTargetCollection();
+    return collectPrefixedCommandWriteTargets(params.args, params.cwd, true);
+  }
+  if (SHELL_PREFIX_COMMANDS.has(command)) {
+    return collectPrefixedCommandWriteTargets(params.args, params.cwd, false);
+  }
+  if (command === "eval") {
+    return collectEvalWriteTargets(params.args, params.cwd);
   }
   if (SHELL_WRAPPER_COMMANDS.has(command)) {
     const nestedCommand = extractWrappedShellCommand(params.args);
