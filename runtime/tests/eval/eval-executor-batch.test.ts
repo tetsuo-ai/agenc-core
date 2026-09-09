@@ -250,6 +250,22 @@ describe("eval executor real-agent batch", () => {
     expect(await fixture.run()).toMatchObject({ skipped: 1, driverErrors: 0, verifiedFixes: 1 });
   });
 
+  test.each(["infrastructure_error", "verified_fix"] as const)("handles an uncreated verifier container for %s", async (outcome) => {
+    const fixture = await createDiskBatch();
+    const report = makeReport(fixture.loaded.lock.tasks[0]!, outcome);
+    await writeFile(fixture.reportPath, serializeChangedReport(report, {
+      verification: { ...report.verification, imageDigest: "", appliedPatches: [], commands: [], testResults: null },
+    }));
+    const summary = await fixture.run();
+    if (outcome === "infrastructure_error") {
+      expect(summary).toMatchObject({ skipped: 1, driverErrors: 0, verifiedFixes: 0 });
+      expect(summary.results[0]?.outcome).toBe(outcome);
+    } else expect(summary).toMatchObject({ skipped: 0, driverErrors: 1, verifiedFixes: 0 });
+    expect(fixture.runTask).not.toHaveBeenCalled();
+    expect(fixture.pullImage).not.toHaveBeenCalled();
+    expect(fixture.refreshKey).not.toHaveBeenCalled();
+  });
+
   test("executes absent reports but refuses a directory, symlink, oversized file, and invalid UTF-8", async () => {
     const absent = await createDiskBatch();
     expect(await absent.run()).toMatchObject({ completed: 1, skipped: 0, driverErrors: 0 });

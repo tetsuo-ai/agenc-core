@@ -41,7 +41,7 @@ const ReportSchema = z.strictObject({
   }).nullable(),
   verification: z.strictObject({
     phase: z.enum(["base", "reference"]),
-    imageDigest: z.string().min(1),
+    imageDigest: z.string(),
     parserImageDigest: z.string().min(1).nullable(),
     appliedPatches: z.array(z.string()),
     commands: z.array(CommandSchema),
@@ -91,6 +91,9 @@ export function validateAgentRunReport(value: unknown, task: PilotSourceLockTask
   }
   if (Date.parse(report.finishedAt) < Date.parse(report.startedAt)) {
     throw new EvalExecutorError(["Agent run report finishes before it starts"]);
+  }
+  if (report.verification?.imageDigest === "" && report.outcome !== "infrastructure_error") {
+    throw new EvalExecutorError(["Only an infrastructure-error report may lack a verification image"]);
   }
   if (report.outcome === "verified_fix" && (
     report.agent.exitCode !== 0 || report.agent.timedOut ||

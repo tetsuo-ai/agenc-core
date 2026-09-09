@@ -281,6 +281,18 @@ describe("eval executor agent run", () => {
     });
   });
 
+  test("a failed verifier container still produces a complete resumable failure report", async () => {
+    await withOverlay(async (config) => {
+      const runner = new FakeAgentRunner([
+        { kind: "agent", agentResultJson: AGENT_RESULT, patchDiff: PATCH },
+      ]);
+      const { report } = await runAgentOnTask(runner, EMPTY_SETUP, config);
+      expect(report.outcome).toBe("infrastructure_error");
+      expect(report.verification).toMatchObject({ imageDigest: "", commands: [], testResults: null });
+      expect(validateAgentRunReport(report, EMPTY_SETUP.task)).toEqual(report);
+    });
+  });
+
   test("an unchanged repository is empty_patch and skips verification", async () => {
     await withOverlay(async (config) => {
       const runner = new FakeAgentRunner([
