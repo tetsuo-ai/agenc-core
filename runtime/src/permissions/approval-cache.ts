@@ -22,6 +22,7 @@
  */
 
 import { canonicalizeCommandForApproval } from "../shell-command/parser.js";
+import { compareCodeUnits } from "../utils/stringUtils.js";
 import type { ReviewDecision } from "./review-decision.js";
 import {
   parseRuleString,
@@ -74,7 +75,7 @@ function stableKeyNode(
     return [
       "object",
       Object.keys(obj)
-        .sort()
+        .sort(compareCodeUnits)
         .map((k) => [k, stableKeyNode(obj[k], seen)]),
     ];
   } finally {
@@ -257,7 +258,7 @@ export class SessionApprovalCache {
   }
 
   snapshot(): SessionApprovalCacheSnapshot {
-    const ruleStrings = [...this.ruleStrings].sort();
+    const ruleStrings = [...this.ruleStrings].sort(compareCodeUnits);
     return Object.freeze({
       ruleStrings: Object.freeze(ruleStrings),
       rules: Object.freeze(ruleStrings.map((rule) => normalizeRule(rule))),
@@ -379,7 +380,7 @@ export function buildShellApprovalKey(
     command: canonicalizeCommandForApproval(opts.command),
     cwd: opts.cwd,
     ...(opts.tty !== undefined ? { tty: opts.tty } : {}),
-    sandbox_permissions: [...(opts.sandbox_permissions ?? [])].sort(),
-    additional_permissions: [...(opts.additional_permissions ?? [])].sort(),
+    sandbox_permissions: [...(opts.sandbox_permissions ?? [])].sort(compareCodeUnits),
+    additional_permissions: [...(opts.additional_permissions ?? [])].sort(compareCodeUnits),
   };
 }
