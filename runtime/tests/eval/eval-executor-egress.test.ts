@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { validateAgentRunReport } from "../../src/eval-executor/agent-run-report.js";
 import {
   allContainmentProbesPass,
   buildAgentEgressCreateArgs,
@@ -297,6 +298,7 @@ describe("real-provider lane gating (fake lane, no docker)", () => {
     const { factory } = laneFactory(ALL_TRUE, runner);
     const { report } = await runRealProviderAgentOnTask(runner, factory, inputs(), config());
     expect(report.outcome).toBe("empty_patch");
+    expect(validateAgentRunReport(report, inputs().task)).toEqual(report);
     expect(report.egress?.oracleContainment).toBe("contained");
     expect(report.egress?.patchKeyScan).toBe("clean");
     const agentExec = runner.execs.find((e) => e.script.includes("HTTPS_PROXY"));

@@ -17,6 +17,7 @@ import {
   type EgressLaneFactory,
 } from "./egress.js";
 import { EvalExecutorError } from "./source-lock.js";
+import { computeSourceTaskDigest, REPORT_DIGEST_DOMAIN } from "./agent-run-report.js";
 import type {
   AgentRunOutcome,
   AgentRunReport,
@@ -74,7 +75,6 @@ export function buildCandidateCollectionScript(): string {
   ].join("\n");
 }
 const ENVIRONMENT_DIGEST_DOMAIN = "agenc.eval.executor-agent-environment.v1";
-const REPORT_DIGEST_DOMAIN = "agenc.eval.executor-agent-run-report.v1";
 const PROMPT_DIGEST_DOMAIN = "agenc.eval.executor-agent-prompt.v1";
 
 /**
@@ -493,6 +493,7 @@ export async function runAgentOnTask(
   const finishedAt = new Date().toISOString();
   const reportBody = {
     taskId: inputs.task.instanceId,
+    sourceTaskDigest: computeSourceTaskDigest(inputs.task),
     startedAt,
     finishedAt,
     promptDigest,
@@ -730,6 +731,7 @@ export async function runRealProviderAgentOnTask(
   const finishedAt = new Date().toISOString();
   const reportBody = {
     taskId: inputs.task.instanceId,
+    sourceTaskDigest: computeSourceTaskDigest(inputs.task),
     startedAt,
     finishedAt,
     promptDigest,

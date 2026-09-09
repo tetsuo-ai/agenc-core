@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { validateAgentRunReport } from "../../src/eval-executor/agent-run-report.js";
 import {
   runAgentOnTask,
   EvalExecutorError,
@@ -231,6 +232,7 @@ describe("eval executor agent run", () => {
       expect(new TextDecoder().decode(patchBytes!)).toBe(PATCH);
       expect(report.verification).not.toBeNull();
       expect(report.reportDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
+      expect(validateAgentRunReport(report, EMPTY_SETUP.task)).toEqual(report);
       // Agent container carries only the overlay mount; verification runs
       // with no mounts. (Network isolation is unconditional in the runner.)
       expect(runner.createOptions[0]!.readOnlyMounts).toHaveLength(1);

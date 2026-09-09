@@ -278,6 +278,7 @@ export interface EgressReport {
 
 export interface AgentRunReport {
   readonly taskId: string;
+  readonly sourceTaskDigest: Sha256Digest;
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly promptDigest: Sha256Digest;

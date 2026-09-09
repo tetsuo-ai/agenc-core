@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { EvalExecutorError, findPilotTask } from "./source-lock.js";
-import type { LoadedPilotSourceLock } from "./types.js";
+import { decodeStrictJson, readBoundedRegularFile } from "../eval-pilot/safe-io.js";
+import { validateAgentRunReport } from "./agent-run-report.js";
+import { EVAL_EXECUTOR_MAXIMUM_ARTIFACT_BYTES, type AgentRunReport, type LoadedPilotSourceLock, type PilotSourceLockTask } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -30,8 +32,7 @@ export interface RealAgentBatchDeps {
   readonly runTask: (taskId: string) => Promise<{ readonly outcome: string }>;
   /** Pre-pull the task's pinned image; failures abort only that task. */
   readonly pullImage: (imageReference: string) => Promise<void>;
-  /** True when this task already has a completed report (resume support). */
-  readonly hasReport: (taskId: string) => Promise<boolean>;
+  readonly loadReport: (task: PilotSourceLockTask) => Promise<AgentRunReport | null>;
   readonly refreshKey?: () => Promise<string>;
   readonly log: (line: string) => Promise<void>;
   readonly setKeyEnv: (name: string, value: string) => void;
@@ -74,12 +75,13 @@ export async function runRealAgentBatch(
   const results: RealAgentBatchTaskResult[] = [];
   for (const taskId of order) {
     const task = tasksById.get(taskId)!;
-    if (await deps.hasReport(taskId)) {
-      await deps.log(`${taskId} SKIP (report exists)`);
-      results.push({ taskId, status: "skipped", outcome: null, detail: null });
-      continue;
-    }
     try {
+      const report = await deps.loadReport(task);
+      if (report !== null) {
+        await deps.log(`${taskId} SKIP (validated report) outcome=${report.outcome}`);
+        results.push({ taskId, status: "skipped", outcome: report.outcome, detail: null });
+        continue;
+      }
       await deps.log(`${taskId} pull`);
       await deps.pullImage(task.image);
       if (deps.refreshKey !== undefined) {
@@ -125,14 +127,27 @@ export function createRealAgentBatchDeps(options: {
         timeout: IMAGE_PULL_TIMEOUT_MS,
       });
     },
-    hasReport: async (taskId) => {
+    loadReport: async (task) => {
+      const taskDir = path.join(options.outputDir, task.instanceId);
+      const reportPath = path.join(taskDir, "agent-run-report.json");
+      const failure = new EvalExecutorError([
+        `Cannot resume ${task.instanceId}: prior report is unreadable, invalid, or not bound to this real-provider source-lock task. Move the task directory ${taskDir} aside or choose a new output directory before rerunning.`,
+      ]);
       try {
-        await readFile(
-          path.join(options.outputDir, taskId, "agent-run-report.json"),
+        await lstat(reportPath);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+        throw failure;
+      }
+      try {
+        const report = validateAgentRunReport(
+          decodeStrictJson(await readBoundedRegularFile(reportPath, EVAL_EXECUTOR_MAXIMUM_ARTIFACT_BYTES), reportPath),
+          task,
         );
-        return true;
+        if (report.egress === null) throw failure;
+        return report;
       } catch {
-        return false;
+        throw failure;
       }
     },
     ...(options.keyCommand !== undefined

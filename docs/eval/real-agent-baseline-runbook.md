@@ -65,8 +65,9 @@ Default output dirs: `eval-executor-output` (agent) and
   `OPENAI_COMPATIBLE_API_KEY`). For a static key, omit `--key-command` and
   export the env var instead. The key travels executor env → `docker exec -e`
   → agent process; it is never on an argv and patches are scanned for it.
-- Resume after an interruption by re-running the same command: tasks with an
-  existing `agent-run-report.json` are skipped.
+- Resume after an interruption by re-running the same command. Tasks with a
+  complete, validated `agent-run-report.json` for the same source-lock task
+  are skipped. Their prior outcomes still count in the new batch summary.
 - `--tasks` accepts a comma-separated list once; repeating the flag is a
   usage error. Integer options (`--seed-slot`, timeouts) are decimal digits
   only; `0x10`, `1e3`, and a blank value are rejected instead of coerced.
@@ -98,6 +99,23 @@ exit 130/143. A second signal of either kind exits immediately without a
 second sweep. Docker spawn stdout/stderr is capped at
 `EVAL_EXECUTOR_MAXIMUM_CAPTURED_OUTPUT_BYTES` (1 MiB) unless a caller raises
 the bound for a specific exec.
+
+## Invalid resume reports
+
+Resume validates the full report schema, task ID, `sourceTaskDigest`, and
+`reportDigest`. The source-task digest binds every field of the locked task,
+including its base commit, image, issue text, and artifact digests. An offline
+mock-provider report cannot stand in for a real-provider result.
+
+An unreadable, malformed, incomplete, oversized, or mismatched report becomes
+a `driver_error`. The executor leaves its task directory unchanged and does
+not pull an image, refresh a key, or run that task. Other tasks continue.
+Reports from older executors without `sourceTaskDigest` also require recovery
+because they cannot prove which locked task produced the result.
+
+Preserve the old evidence, then move the affected task directory aside or
+choose a new `--output` directory before rerunning. Moving only the report can
+leave patch or result files that the executor refuses to overwrite.
 
 ## Outputs
 
