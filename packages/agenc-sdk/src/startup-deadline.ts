@@ -7,7 +7,7 @@ export class StartupDeadline {
   readonly #timeoutError: Error;
   readonly #externalSignal: AbortSignal | undefined;
   readonly #onExternalAbort: () => void;
-  #timer: ReturnType<typeof setTimeout> | undefined;
+  readonly #timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(timeoutMs: number, message: string, externalSignal?: AbortSignal) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
