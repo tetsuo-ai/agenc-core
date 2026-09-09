@@ -93,6 +93,15 @@ async function hashFile(filePath: string, expected: Stats): Promise<Sha256Digest
   }
 }
 
+async function readInternalLink(root: string, filePath: string, relativePath: string): Promise<OverlayManifest["links"][number]> {
+  const target = await readlink(filePath);
+  const resolved = path.relative(root, await realpath(filePath));
+  if (path.isAbsolute(target) || resolved === ".." || resolved.startsWith(`..${path.sep}`) || path.isAbsolute(resolved)) {
+    throw new EvalExecutorError([`agent overlay link escapes its root: ${relativePath}`]);
+  }
+  return { path: relativePath, target };
+}
+
 export async function readOverlayManifest(
   overlay: { readonly hostDir: string },
   options: { readonly egress?: boolean } = {},
@@ -116,12 +125,7 @@ export async function readOverlayManifest(
         if (metadata.isDirectory()) {
           await visit(filePath, relativePath);
         } else if (metadata.isSymbolicLink()) {
-          const target = await readlink(filePath);
-          const resolved = path.relative(root, await realpath(filePath));
-          if (path.isAbsolute(target) || resolved === ".." || resolved.startsWith(`..${path.sep}`) || path.isAbsolute(resolved)) {
-            throw new EvalExecutorError([`agent overlay link escapes its root: ${relativePath}`]);
-          }
-          links.push({ path: relativePath, target });
+          links.push(await readInternalLink(root, filePath, relativePath));
         } else if (metadata.isFile()) {
           files.push({
             path: relativePath, digest: await hashFile(filePath, metadata),
