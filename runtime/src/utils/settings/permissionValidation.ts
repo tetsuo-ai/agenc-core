@@ -5,6 +5,7 @@ import {
   permissionRuleValueFromString,
 } from '../permissions/permissionRuleParser.js'
 import { isRemovedLiveToolName } from '../../permissions/tool-names.js'
+import { serializeRuleValue } from '../../permissions/rules.js'
 import {
   getCustomValidation,
   isBashPrefixTool,
@@ -93,8 +94,10 @@ export function validatePermissionRule(rule: string): {
     return {
       valid: false,
       error: 'Empty parentheses',
-      suggestion: `Either specify a pattern or use just "${toolName}" without parentheses`,
-      examples: [`${toolName}`, `${toolName}(some-pattern)`],
+      suggestion: isRemovedLiveToolName(toolName)
+        ? 'Use the canonical tool name or run agenc config migrate'
+        : `Either specify a pattern or use just "${toolName}" without parentheses`,
+      examples: isRemovedLiveToolName(toolName) ? undefined : [toolName],
     }
   }
 
@@ -165,8 +168,8 @@ export function validatePermissionRule(rule: string): {
         suggestion:
           'Move :* to the end for prefix matching, or use * for wildcard matching',
         examples: [
-          'Bash(npm run:*) - word-boundary prefix matching',
-          'Bash(npm run *) - wildcard matching',
+          `${serializeRuleValue({ toolName: parsed.toolName, ruleContent: 'npm run:*' })} - word-boundary prefix matching`,
+          `${serializeRuleValue({ toolName: parsed.toolName, ruleContent: 'npm run *' })} - wildcard matching`,
         ],
       }
     }
@@ -177,7 +180,9 @@ export function validatePermissionRule(rule: string): {
         valid: false,
         error: 'Prefix cannot be empty before :*',
         suggestion: 'Specify a command prefix before :*',
-        examples: ['Bash(npm:*)', 'Bash(git:*)'],
+        examples: ['npm:*', 'git:*'].map(ruleContent =>
+          serializeRuleValue({ toolName: parsed.toolName, ruleContent }),
+        ),
       }
     }
 
