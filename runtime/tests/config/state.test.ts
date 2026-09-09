@@ -21,6 +21,7 @@ import {
   getGlobalRuntimeState,
   parseCanonicalStateDocument,
   readCanonicalState,
+  recoverCanonicalStatePublicationSync,
   StateRepositoryError,
   validateCanonicalStateDocument,
   withGlobalRuntimeState,
@@ -38,9 +39,10 @@ function temporaryDirectory(): string {
 function withInjectedDirectoryFsyncFailure<T>(
   failure: NodeJS.ErrnoException,
   operation: () => T,
+  failureAt = 1,
 ): T {
   const nodeFs = createRequire(import.meta.url)('node:fs') as {
-    openSync(path: string, flags: string | number): number
+    openSync(path: string, flags: string | number, mode?: number): number
     fsyncSync(descriptor: number): void
     closeSync(descriptor: number): void
   }
@@ -48,13 +50,14 @@ function withInjectedDirectoryFsyncFailure<T>(
   const originalFsyncSync = nodeFs.fsyncSync
   const originalCloseSync = nodeFs.closeSync
   let directoryDescriptor: number | undefined
-  nodeFs.openSync = (path, flags) => {
-    const descriptor = originalOpenSync(path, flags)
+  let directorySyncCount = 0
+  nodeFs.openSync = (path, flags, mode) => {
+    const descriptor = originalOpenSync(path, flags, mode)
     if (flags === 'r') directoryDescriptor = descriptor
     return descriptor
   }
   nodeFs.fsyncSync = (descriptor) => {
-    if (descriptor === directoryDescriptor) throw failure
+    if (descriptor === directoryDescriptor && ++directorySyncCount === failureAt) throw failure
     originalFsyncSync(descriptor)
   }
   nodeFs.closeSync = (descriptor) => originalCloseSync(descriptor)
@@ -543,14 +546,30 @@ describe('canonical runtime state', () => {
         path,
         document,
       ),
+      2,
     )
 
     expect(outcome).toEqual({
       committed: true,
       directoryDurability: 'indeterminate',
-      postCommitErrors: [failure],
+      postCommitErrors: expect.arrayContaining([failure]),
     })
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(document)
+    recoverCanonicalStatePublicationSync(path)
+    expect(readdirSync(directory)).toEqual(['state.json'])
+  })
+
+  test('keeps committed state when directory sync fails before quarantine', () => {
+    const directory = temporaryDirectory()
+    const path = join(directory, 'state.json')
+    const original = createCanonicalStateDocument({ global: { hasUsedStash: true } })
+    writeCanonicalStateAtomicSync(path, original)
+    const failure = Object.assign(new Error('injected pre-commit directory sync failure'), { code: 'EIO' })
+    expect(() => withInjectedDirectoryFsyncFailure(failure, () =>
+      writeCanonicalStateAtomicSync(path, createCanonicalStateDocument({ global: { hasSeenTasksHint: true } })),
+    )).toThrow(failure)
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(original)
+    expect(readdirSync(directory)).toEqual(['state.json'])
   })
 
   test('throws a pre-rename failure without publishing or retaining its stage', () => {

@@ -22,14 +22,14 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 
-import { runWithConfigAuthorityLockSync } from "./authority-lock.js";
+import { runWithConfigAuthorityLocks, runWithConfigAuthorityLockSync, withConfigAuthorityLockSync } from "./authority-lock.js";
 import { cloneRecord, isPlainRecord, type JsonRecord } from "./json.js";
 import {
   createCanonicalStateDocument,
   getGlobalRuntimeState,
-  readCanonicalState,
   readCanonicalStateSnapshotSync,
   readCanonicalStateSync,
+  recoverCanonicalStatePublicationSync,
   StateRepositoryError,
   withGlobalRuntimeState,
   writeCanonicalStateAtomicSync,
@@ -989,10 +989,14 @@ export class RuntimeStateRepository {
   }
 
   #readDocumentSync(): CanonicalStateDocument | null {
-    return readCanonicalStateSync(this.statePath);
+    return withConfigAuthorityLockSync(this.statePath, () => {
+      recoverCanonicalStatePublicationSync(this.statePath);
+      return readCanonicalStateSync(this.statePath);
+    });
   }
 
   #readSnapshotSync(): CanonicalStateFileSnapshot | null {
+    recoverCanonicalStatePublicationSync(this.statePath);
     return readCanonicalStateSnapshotSync(this.statePath);
   }
 
@@ -1010,12 +1014,17 @@ export class RuntimeStateRepository {
 
   #refreshAfterWatchEvent(): void {
     const generation = ++this.#refreshGeneration;
-    void readCanonicalState(this.statePath)
-      .then((document) => {
+    void runWithConfigAuthorityLocks([this.statePath], () => {
+      recoverCanonicalStatePublicationSync(this.statePath);
+      return readCanonicalStateSync(this.statePath);
+    })
+      .then((outcome) => {
         if (this.#closed || generation !== this.#refreshGeneration) return;
+        if (outcome.status === "failed") throw outcome.error;
+        reportAuthorityReleaseErrors(this.statePath, outcome.postOperationReleaseErrors);
         this.#cache = {
           loaded: true,
-          config: globalStateFromDocument(document, this.statePath),
+          config: globalStateFromDocument(outcome.value, this.statePath),
         };
       })
       .catch((error: unknown) => {

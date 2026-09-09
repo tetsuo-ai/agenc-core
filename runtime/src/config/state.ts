@@ -3,7 +3,6 @@ import {
   closeSync,
   constants as fsConstants,
   fstatSync,
-  fsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -16,6 +15,7 @@ import {
 } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { reconcileStatePublicationSync, syncStatePublicationDirectorySync, writeStatePublicationJournalSync } from "./state-publication.js";
 
 import {
   cloneRecord,
@@ -962,223 +962,121 @@ function removeExactStateArtifactSync(
   unlinkSync(path);
 }
 
-function removeLinkedStateStageSync(
-  path: string,
-  expected: CanonicalStateFileSnapshot,
-): void {
-  const current = lstatExistingStateSync(path);
-  if (
-    !current.isFile() ||
-    current.isSymbolicLink() ||
-    current.dev !== expected.version.dev ||
-    current.ino !== expected.version.ino ||
-    current.size !== expected.version.size ||
-    current.mtimeNs !== expected.version.mtimeNs ||
-    current.mode !== expected.version.mode ||
-    current.uid !== expected.version.uid ||
-    current.nlink !== 2n
-  ) {
-    throw stateFileError(
-      path,
-      "state cleanup preserved a linked stage that changed identity or metadata",
-    );
-  }
-  unlinkSync(path);
+function createStatePublicationIO(path: string) {
+  let directoryDurability: CanonicalStateDirectoryDurability = "confirmed";
+  const errors: Error[] = [];
+  return {
+    parse: parseCanonicalStateDocument,
+    errors,
+    get directoryDurability(): CanonicalStateDirectoryDurability { return directoryDurability; },
+    synchronize: (): void => {
+      if (directoryDurability === "unsupported") return;
+      try {
+        syncStatePublicationDirectorySync(path);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EISDIR" || isUnsupportedDirectoryDurabilityError(error)) {
+          directoryDurability = "unsupported";
+          errors.push(asPostCommitError(error));
+          return;
+        }
+        directoryDurability = "indeterminate";
+        throw error;
+      }
+    },
+  };
 }
 
-/** Strict CAS state write. There is intentionally no overwrite fallback. */
+export function recoverCanonicalStatePublicationSync(path: string): void {
+  reconcileStatePublicationSync(path, createStatePublicationIO(path));
+}
+
+function publishPreparedStateSync(
+  path: string, temporary: string, quarantine: string, expected: CanonicalStateFileSnapshot | null,
+  io: ReturnType<typeof createStatePublicationIO>,
+): void {
+  if (expected !== null) {
+    const current = readCanonicalStateSnapshotSync(path);
+    if (current === null || !sameCanonicalStateSnapshot(current, expected)) {
+      throw stateFileError(path, "state publication refuses a destination that changed after read");
+    }
+    renameSync(path, quarantine);
+    const quarantined = readCanonicalStateSnapshotSync(quarantine);
+    if (quarantined === null || !sameRenamedCanonicalStateSnapshot(quarantined, expected)) {
+      throw stateFileError(quarantine, "state publication quarantined a concurrent revision; it was preserved for recovery");
+    }
+    io.synchronize();
+  } else {
+    const appeared = lstatStateOrMissingSync(path);
+    if (appeared !== null) {
+      assertRegularStatePath(path, appeared);
+      throw stateFileError(path, "state publication refuses a destination that appeared after read");
+    }
+  }
+  try {
+    linkSync(temporary, path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw stateFileError(path, "state publication refuses to overwrite a destination that appeared");
+    }
+    throw error;
+  }
+}
+
 export function writeCanonicalStateAtomicSync(
   path: string,
   state: Readonly<CanonicalStateDocument>,
   options: CanonicalStateWriteOptions = {},
 ): CanonicalStateWriteOutcome {
-  const parent = dirname(path);
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const io = createStatePublicationIO(path);
+  reconcileStatePublicationSync(path, io);
   const expected = Object.hasOwn(options, "expected")
     ? options.expected ?? null
     : readCanonicalStateSnapshotSync(path);
   const content = serializeCanonicalState(state);
-  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  const quarantine = `${path}.quarantine-${process.pid}-${randomUUID()}`;
+  const transactionId = `${process.pid}-${randomUUID()}`;
+  const temporary = `${path}.tmp-${transactionId}`;
+  const quarantine = `${path}.quarantine-${transactionId}`;
   let temporarySnapshot: CanonicalStateFileSnapshot | null = null;
-  let quarantinedSnapshot: CanonicalStateFileSnapshot | null = null;
-  let committed = false;
+  let journalPrepared = false;
   const postCommitErrors: Error[] = [];
   try {
     writeFileSync(temporary, content, {
-      encoding: "utf8",
-      flag: "wx",
-      flush: true,
-      mode: CANONICAL_STATE_FILE_MODE,
+      encoding: "utf8", flag: "wx", flush: true, mode: CANONICAL_STATE_FILE_MODE,
     });
     temporarySnapshot = readCanonicalStateSnapshotSync(temporary);
-    if (
-      temporarySnapshot === null ||
-      !temporarySnapshot.bytes.equals(Buffer.from(content, "utf8"))
-    ) {
-      throw stateFileError(
-        temporary,
-        "state publication stage changed while it was prepared",
-      );
+    if (temporarySnapshot === null || !temporarySnapshot.bytes.equals(Buffer.from(content, "utf8"))) {
+      throw stateFileError(temporary, "state publication stage changed while it was prepared");
     }
-
-    if (expected !== null) {
-      const current = readCanonicalStateSnapshotSync(path);
-      if (current === null || !sameCanonicalStateSnapshot(current, expected)) {
-        throw stateFileError(
-          path,
-          "state publication refuses a destination that changed after read",
-        );
-      }
-      try {
-        renameSync(path, quarantine);
-      } catch (error) {
-        throw error;
-      }
-      const quarantineCandidate = readCanonicalStateSnapshotSync(quarantine);
-      if (
-        quarantineCandidate === null ||
-        !sameRenamedCanonicalStateSnapshot(quarantineCandidate, expected)
-      ) {
-        throw stateFileError(
-          quarantine,
-          "state publication quarantined a concurrent revision; it was preserved for recovery",
-        );
-      }
-      quarantinedSnapshot = quarantineCandidate;
-    } else {
-      const appeared = lstatStateOrMissingSync(path);
-      if (appeared !== null) {
-        assertRegularStatePath(path, appeared);
-        throw stateFileError(
-          path,
-          "state publication refuses a destination that appeared after read",
-        );
-      }
-    }
-
-    try {
-      linkSync(temporary, path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        throw stateFileError(
-          path,
-          "state publication refuses to overwrite a destination that appeared",
-        );
-      }
-      throw error;
-    }
-    committed = true;
+    writeStatePublicationJournalSync(path, transactionId, expected, temporarySnapshot);
+    journalPrepared = true;
+    io.synchronize();
+    publishPreparedStateSync(path, temporary, quarantine, expected, io);
   } catch (error) {
     const cleanupErrors: Error[] = [];
-    if (quarantinedSnapshot !== null) {
-      try {
-        if (lstatStateOrMissingSync(path) !== null) {
-          throw stateFileError(
-            path,
-            `state publication could not restore the validated state because its path reappeared; recover it from ${quarantine}`,
-          );
-        }
-        try {
-          linkSync(quarantine, path);
-        } catch (restoreError) {
-          if ((restoreError as NodeJS.ErrnoException).code === "EEXIST") {
-            throw stateFileError(
-              path,
-              `state publication could not restore the validated state because its path reappeared; recover it from ${quarantine}`,
-            );
-          }
-          throw restoreError;
-        }
-        removeLinkedStateStageSync(quarantine, quarantinedSnapshot);
-        const restored = readCanonicalStateSnapshotSync(path);
-        if (
-          restored === null ||
-          !sameRenamedCanonicalStateSnapshot(restored, quarantinedSnapshot)
-        ) {
-          throw stateFileError(
-            path,
-            `state publication restored an unexpected file; recover the validated state from ${quarantine}`,
-          );
-        }
-        quarantinedSnapshot = null;
-      } catch (restoreError) {
-        cleanupErrors.push(asStateCleanupError(restoreError));
-      }
-    }
-    if (temporarySnapshot !== null) {
-      try {
-        removeExactStateArtifactSync(temporary, temporarySnapshot);
-      } catch (cleanupError) {
-        if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") {
-          cleanupErrors.push(asStateCleanupError(cleanupError));
-        }
-      }
+    try {
+      if (journalPrepared) reconcileStatePublicationSync(path, io);
+      else if (temporarySnapshot !== null) removeExactStateArtifactSync(temporary, temporarySnapshot);
+    } catch (cleanupError) {
+      cleanupErrors.push(asStateCleanupError(cleanupError));
     }
     attachStateCleanupErrors(error, cleanupErrors);
     throw error;
   }
 
-  // linkSync above is the commit point. Nothing below may report a
-  // pre-commit failure while the new state remains visible at `path`.
-  if (committed && temporarySnapshot !== null) {
-    try {
-      removeLinkedStateStageSync(temporary, temporarySnapshot);
-    } catch (error) {
-      postCommitErrors.push(asStateCleanupError(error));
-    }
-  }
-  if (quarantinedSnapshot !== null) {
-    try {
-      removeExactStateArtifactSync(quarantine, quarantinedSnapshot);
-    } catch (error) {
-      postCommitErrors.push(asStateCleanupError(error));
-    }
+  try {
+    reconcileStatePublicationSync(path, io);
+  } catch (error) {
+    postCommitErrors.push(asStateCleanupError(error));
   }
   try {
     const published = readCanonicalStateSnapshotSync(path);
-    if (
-      published === null ||
-      temporarySnapshot === null ||
-      !published.bytes.equals(temporarySnapshot.bytes)
-    ) {
-      postCommitErrors.push(stateFileError(
-        path,
-        "committed state could not be verified against its publication stage",
-      ));
+    if (published === null || temporarySnapshot === null || !published.bytes.equals(temporarySnapshot.bytes)) {
+      throw stateFileError(path, "committed state could not be verified against its publication stage");
     }
   } catch (error) {
     postCommitErrors.push(asStateCleanupError(error));
   }
-
-  let directoryFd: number;
-  try {
-    directoryFd = openSync(parent, "r");
-  } catch (error) {
-    const postCommitError = asPostCommitError(error);
-    const code = (error as NodeJS.ErrnoException).code;
-    const unsupported = code === "EISDIR" ||
-      isUnsupportedDirectoryDurabilityError(error);
-    return committedStateWriteOutcome(
-      unsupported ? "unsupported" : "indeterminate",
-      [...postCommitErrors, postCommitError],
-    );
-  }
-
-  let directoryDurability: CanonicalStateDirectoryDurability = "confirmed";
-  try {
-    fsyncSync(directoryFd);
-  } catch (error) {
-    directoryDurability = isUnsupportedDirectoryDurabilityError(error)
-      ? "unsupported"
-      : "indeterminate";
-    postCommitErrors.push(asPostCommitError(error));
-  }
-  try {
-    closeSync(directoryFd);
-  } catch (error) {
-    postCommitErrors.push(asPostCommitError(error));
-  }
-
-  return committedStateWriteOutcome(directoryDurability, postCommitErrors);
+  return committedStateWriteOutcome(io.directoryDurability, [...io.errors, ...postCommitErrors]);
 }
