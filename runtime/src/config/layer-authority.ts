@@ -137,7 +137,7 @@ export function assertUserConfigDocumentAuthority(
   const invalid = presentKeys(raw, MANAGED_ONLY_CONFIG_KEYS);
   if (invalid.length === 0) return;
   throw new Error(
-    `${label} contains managed-only key${invalid.length === 1 ? "" : "s"} ${invalid.sort(compareCodeUnits).join(", ")}; move ${invalid.length === 1 ? "it" : "them"} to canonical managed config.toml`,
+    `${label} contains managed-only key${invalid.length === 1 ? "" : "s"} ${[...invalid].sort(compareCodeUnits).join(", ")}; move ${invalid.length === 1 ? "it" : "them"} to canonical managed config.toml`,
   );
 }
 
@@ -149,7 +149,7 @@ export function assertConfigPatchAuthority(
   const managed = presentKeys(patch, MANAGED_ONLY_CONFIG_KEYS);
   if (managed.length > 0) {
     throw new Error(
-      `${scope} config.toml cannot set managed-only key${managed.length === 1 ? "" : "s"} ${managed.sort(compareCodeUnits).join(", ")}; deletions are allowed for repair`,
+      `${scope} config.toml cannot set managed-only key${managed.length === 1 ? "" : "s"} ${[...managed].sort(compareCodeUnits).join(", ")}; deletions are allowed for repair`,
     );
   }
   if (scope === "user") return;
@@ -161,7 +161,7 @@ export function assertConfigPatchAuthority(
   ];
   if (operator.length > 0) {
     throw new Error(
-      `${scope} config.toml cannot set operator-only key${operator.length === 1 ? "" : "s"} ${operator.sort(compareCodeUnits).join(", ")}; use user or managed config.toml`,
+      `${scope} config.toml cannot set operator-only key${operator.length === 1 ? "" : "s"} ${[...operator].sort(compareCodeUnits).join(", ")}; use user or managed config.toml`,
     );
   }
 }
