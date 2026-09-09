@@ -385,6 +385,23 @@ export {
   planApprovalPayloadFields,
 } from "./background-agent-runner/tool-recovery.js";
 
+/**
+ * A routine invocation, which is the one agent kind that runs with nobody
+ * attached to answer an approval. Both keys are required: the routine service
+ * always writes the pair (routines/daemon-executor.ts), and demanding both
+ * keeps a single stray field from switching the grant on.
+ */
+function isRoutineRun(metadata: unknown): boolean {
+  if (typeof metadata !== "object" || metadata === null) return false;
+  const record = metadata as { routineId?: unknown; routineRunId?: unknown };
+  return (
+    typeof record.routineId === "string" &&
+    record.routineId.length > 0 &&
+    typeof record.routineRunId === "string" &&
+    record.routineRunId.length > 0
+  );
+}
+
 export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentRunner {
   readonly #agentStopTimeoutMs: number;
   readonly #durableResumeTimeoutMs: number;
@@ -581,6 +598,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         bootstrap.session.permissionModeRegistry,
         params.unattendedAllow,
         params.unattendedDeny,
+        isRoutineRun(params.metadata),
       );
 
       // Upstream-parity top-level executor: bootstrap already registered
@@ -1072,6 +1090,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           bootstrap.session.permissionModeRegistry,
           metadataStringList(params.metadata, "unattendedAllow"),
           metadataStringList(params.metadata, "unattendedDeny"),
+          isRoutineRun(params.metadata),
         );
         const canonicalRuntimeState = currentCanonicalRuntimeStateFromRollout(
           bootstrap,

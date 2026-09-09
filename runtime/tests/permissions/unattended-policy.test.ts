@@ -66,6 +66,8 @@ describe("unattended permission policy", () => {
     expect(next.unattendedPolicy).toEqual({
       allowlist: ["FileRead"],
       denylist: ["system.bash"],
+      // Off unless a caller asks for it, so no existing surface changes.
+      readOnly: false,
     });
     expect(base.mode).toBe("default");
   });
@@ -104,6 +106,8 @@ describe("unattended permission policy", () => {
     expect(next.unattendedPolicy).toEqual({
       allowlist: ["FileRead"],
       denylist: ["system.bash"],
+      // Off unless a caller asks for it, so no existing surface changes.
+      readOnly: false,
     });
     expect(Object.isFrozen(next)).toBe(true);
     expect(Object.isFrozen(next.unattendedPolicy)).toBe(true);
@@ -132,9 +136,31 @@ describe("unattended permission policy", () => {
       expect(next.unattendedPolicy).toEqual({
         allowlist: ["FileRead"],
         denylist: [],
+        readOnly: false,
       });
     },
   );
+
+  test("carries the read-only grant only when a caller asks for it", () => {
+    // The flag is the only switch for the whole grant, so its default is the
+    // thing that keeps every existing unattended surface byte-identical.
+    expect(createUnattendedPermissionPolicy().readOnly).toBe(false);
+    expect(createUnattendedPermissionPolicy({ readOnly: true }).readOnly).toBe(true);
+    const base = createEmptyToolPermissionContext({ mode: "default" });
+    expect(
+      applyUnattendedPermissionPolicyToContext(base, {}).unattendedPolicy?.readOnly,
+    ).toBe(false);
+    const granted = applyUnattendedPermissionPolicyToContext(base, { readOnly: true });
+    expect(granted.unattendedPolicy?.readOnly).toBe(true);
+    // A routine may still be carrying plan mode; the flag must survive the
+    // preserveMode path or the grant silently does nothing for it.
+    const planned = applyUnattendedPermissionPolicyToContext(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+      { readOnly: true },
+    );
+    expect(planned.mode).toBe("plan");
+    expect(planned.unattendedPolicy?.readOnly).toBe(true);
+  });
 
   test("still forces unattended for non-explicit modes (default)", () => {
     const next = applyUnattendedPermissionPolicyToContext(

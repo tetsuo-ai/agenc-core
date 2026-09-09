@@ -72,7 +72,7 @@ function normalizeCreate(value: unknown, now: Date): { config: Required<Pick<Rou
     config: {
       name: text(input.name, "Name", 128).trim(), description: text(input.description ?? "", "Description", 2048, true),
       instructions: text(input.instructions, "Instructions", 16_384), cwd: authority.cwd,
-      schedule: schedule(input.schedule, now), permissionMode: input.permissionMode ?? "plan",
+      schedule: schedule(input.schedule, now), permissionMode: input.permissionMode ?? "default",
       enabled: bool(input.enabled, "enabled", true), notifyOnCompletion: bool(input.notifyOnCompletion, "notifyOnCompletion", true),
       ...optional("provider"), ...optional("model"),
     },

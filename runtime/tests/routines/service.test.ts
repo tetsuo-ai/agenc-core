@@ -23,10 +23,21 @@ async function terminal(service: RoutineService, id: string): Promise<void> {
 }
 
 describe("daemon-owned local routines", () => {
-  it("persists CRUD, defaults to plan, guards stale edits, and returns detached values", async () => {
+  it("still honours an explicitly chosen plan mode and never rewrites a stored one", async () => {
+    // The default changed; a routine the operator configured as plan must not
+    // be silently converted, on create or on reload.
+    const { service, params } = setup();
+    const planned = service.create({ ...params, permissionMode: "plan" }).routine;
+    expect(planned.permissionMode).toBe("plan");
+    expect(service.list().routines.find((r) => r.id === planned.id)?.permissionMode).toBe("plan");
+  });
+
+  it("persists CRUD, defaults to default mode, guards stale edits, and returns detached values", async () => {
     const f = setup(); const events: unknown[] = []; f.service.onUpdated((event) => events.push(event));
     const { routine } = f.service.create(f.params);
-    expect(routine).toMatchObject({ permissionMode: "plan", enabled: true, notifyOnCompletion: true, lastRun: null, nextRunAt: null });
+    // Plan mode ends by handing a plan to a person, and a routine has nobody
+    // to hand it to, so the default is the mode that can actually finish.
+    expect(routine).toMatchObject({ permissionMode: "default", enabled: true, notifyOnCompletion: true, lastRun: null, nextRunAt: null });
     const list = f.service.list(); (list.routines as unknown as { name: string }[])[0]!.name = "tampered";
     expect(f.service.get({ id: routine.id }).routine.name).toBe("Daily check");
     const updated = f.service.update({ id: routine.id, patch: { name: "Weekly check", schedule: { kind: "cron", expression: "0 9 * * 1" } }, expectedUpdatedAt: routine.updatedAt }).routine;
