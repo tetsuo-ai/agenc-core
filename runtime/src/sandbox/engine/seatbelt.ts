@@ -186,12 +186,14 @@ export function createSeatbeltCommandArgs(
     fileSystemSandboxPolicy,
     sandboxPolicyCwd,
   );
+  const [reservedWritePolicy, reservedWriteParams] = buildReservedWritePolicy(fileSystemSandboxPolicy);
 
   const policySections = [
     getMacosSeatbeltBasePolicy(),
     fileReadPolicy,
     fileWritePolicy,
     denyReadPolicy,
+    reservedWritePolicy,
     networkPolicy,
   ];
   if (includePlatformDefaults(fileSystemSandboxPolicy)) {
@@ -205,6 +207,7 @@ export function createSeatbeltCommandArgs(
   const dirParams = [
     ...fileReadDirParams,
     ...fileWriteDirParams,
+    ...reservedWriteParams,
     ...macosDirParams(),
     ...unixSocketDirParams(proxy),
   ];
@@ -215,6 +218,25 @@ export function createSeatbeltCommandArgs(
     "--",
     ...command,
   ];
+}
+
+function buildReservedWritePolicy(policy: FileSystemSandboxPolicy): readonly [string, readonly (readonly [string, string])[]] {
+  const rules: string[] = [];
+  const params: [string, string][] = [];
+  const ancestors = new Set<string>();
+  for (const [index, root] of (policy.reservedReadOnlyPaths ?? []).entries()) {
+    const key = `RESERVED_READ_ONLY_${index}`;
+    params.push([key, root]);
+    rules.push(`(deny file-write* (subpath (param "${key}")))`);
+    // A writable ancestor must not be renamed/replaced to bypass the subtree.
+    for (let parent = root; parent !== path.dirname(parent); parent = path.dirname(parent)) ancestors.add(parent);
+  }
+  for (const [index, ancestor] of [...ancestors].entries()) {
+    const key = `RESERVED_ANCESTOR_${index}`;
+    params.push([key, ancestor]);
+    rules.push(`(deny file-write-unlink (literal (param "${key}")))`);
+  }
+  return [rules.join("\n"), params];
 }
 
 export function spawnSeatbeltCommand(

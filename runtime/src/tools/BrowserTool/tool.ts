@@ -15,11 +15,13 @@
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { validationErrorToolResult } from "../results.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import type { PermissionResult, PermissionUpdate } from "../../permissions/types.js";
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
 import { BrowserManager } from "../../browser/manager.js";
+import { readBrowserNavigationFailureReceipt } from "../../browser/page.js";
 import {
   isSandboxExecutionBrokerDisposed,
   registerSandboxExecutionLifecycleParticipant,
@@ -90,7 +92,8 @@ function errorResult(message: string): ToolResult {
 /**
  * A refusal made before the browser was touched. A bare error from this
  * mutating tool is filed as an unknown outcome and gates the session behind
- * /resolve (#2190); a failed browser action keeps the bare form.
+ * /resolve (#2190). Only a received navigation failure has a separate,
+ * authoritative completed-command receipt; other action failures stay unknown.
  */
 function refuse(message: string): ToolResult {
   return validationErrorToolResult("tool:Browser:validation", message);
@@ -517,7 +520,24 @@ export function createBrowserTool(
         return await dispatch(input, signal, sandboxExecutionBroker);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return errorResult(`Browser action failed: ${message}`);
+        const result = errorResult(`Browser action failed: ${message}`);
+        const receipt = readBrowserNavigationFailureReceipt(err);
+        if (
+          receipt === undefined ||
+          (input.action !== "navigate" && input.action !== "new_tab") ||
+          receipt.url !== str(input.url)
+        ) return result;
+        return {
+          ...result,
+          effectDisposition: createToolEffectDispositionEvidence({
+            // Chromium completed the attempted command with an error. This
+            // is not a successful page load and must never claim no effect.
+            disposition: "confirmed_committed",
+            evidenceKind: "provider_receipt",
+            evidenceRef: "tool:Browser:cdp-navigation-response",
+            evidenceMaterial: JSON.stringify(receipt),
+          }),
+        };
       }
     },
   };

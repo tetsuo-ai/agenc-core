@@ -6,6 +6,7 @@ import {
 import type { MCPToolBridgePermissionOptions } from "./tools.js";
 import type { MCPServerConfig, MCPToolBridge } from "./types.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "./environment.js";
+import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
 
 vi.mock("./connection.js", () => ({
   createMCPConnection: vi.fn(),
@@ -43,6 +44,16 @@ describe("ResilientMCPBridge", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("preserves a bound terminal receipt despite connection-like text in a result URL", async () => {
+    const effectDisposition = createToolEffectDispositionEvidence({ disposition: "confirmed_committed", evidenceKind: "provider_receipt", evidenceRef: "desktop-mcp:call:browser_navigate", evidenceMaterial: "observed terminal failure" });
+    const result = { isError: true, content: "Navigation finished at http://127.0.0.1/econnreset with a known error page", effectDisposition };
+    const inner = makeBridge("agenc-desktop-control", vi.fn().mockResolvedValue(result));
+    const bridge = new ResilientMCPBridge({ name: inner.serverName, command: "node" }, inner);
+    expect(await bridge.tools[0]!.execute({})).toBe(result);
+    expect(mockCreateMCPConnection).not.toHaveBeenCalled();
+    await bridge.dispose();
   });
 
   it.each(["default", "managed", "user"] as const)(

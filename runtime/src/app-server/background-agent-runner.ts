@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join as joinPath } from "node:path";
+import { withLocalMcpAccess } from "../mcp-client/local-control.js";
 import {
   CompletedAgentEventCache,
   completedEventReplayRequired,
@@ -177,6 +178,7 @@ import {
   AgenCBackgroundAgentSuspensionShutdownError,
   AgenCBackgroundAgentMessageError,
   DAEMON_USER_PROMPT_PREPARED,
+  DAEMON_LOCAL_MCP_ACCESS,
   positiveSequence,
   finiteNumber,
   messageContentFingerprint,
@@ -2493,6 +2495,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       });
     }
     const submitOptions: DaemonSessionSubmitOptions = {
+      [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
       ...(params.editorInteraction === undefined
         ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
         : {}),
@@ -2584,7 +2587,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         "MCP addServer is not available for this daemon session.",
       );
     }
-    const result = await addServer(params.config);
+    const result = await addServer(params.config, { replace: params.replace });
     return {
       serverName: result.serverName,
       success: result.success,
@@ -5473,6 +5476,7 @@ function installDaemonTurnDriverHooks(
       // metadata threaded through from the TUI). Without this guard
       // both emits fire with different ids, so the transcript-reducer
       // (which dedups by id) renders the user message twice.
+      await withLocalMcpAccess(opts?.[DAEMON_LOCAL_MCP_ACCESS] === true, async () => {
       for await (const event of runTurnFn(
         session as never,
         ctx as never,
@@ -5500,6 +5504,7 @@ function installDaemonTurnDriverHooks(
           session as unknown as { emitPhaseEvent: (e: unknown) => void }
         ).emitPhaseEvent(event);
       }
+      });
     },
     flushEventLog: async () => {
       /* daemon path has no extra event log to flush. */

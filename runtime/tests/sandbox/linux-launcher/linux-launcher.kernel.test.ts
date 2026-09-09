@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer, connect, type Server } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expect, test } from "vitest";
@@ -37,6 +37,62 @@ const builtLauncher = join(
   "linux-launcher",
   "main.js",
 );
+
+test("protects custom Desktop authority records and their ancestor namespace with the real Linux kernel", { timeout: 30_000 }, async () => {
+  expect(process.platform).toBe("linux");
+  const workspace = realpathSync(mkdtempSync(join("/var/tmp", "agenc-authority-kernel-")));
+  const home = join(workspace, "nested", "custom-agent-state");
+  const authority = join(home, "desktop-control-authorities");
+  const record = join(authority, "public.json");
+  const temp = join(workspace, "temp");
+  mkdirSync(authority, { recursive: true, mode: 0o700 });
+  mkdirSync(temp);
+  writeFileSync(record, "native-public-record");
+  const alias = join(workspace, "alias");
+  symlinkSync(authority, alias);
+  try {
+    const environment = { ...stringEnvironment(process.env), AGENC_HOME: home };
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: workspace, env: environment,
+      sessionTempRoot: temp, agencLinuxSandboxExe: launcherEntry });
+    expect(broker.status().kind).toBe("ready");
+    for (const cwd of [workspace, home, authority]) {
+      const result = await broker.prepareSpawn("tool", {
+        program: process.execPath,
+        args: ["--input-type=module", "--eval", `
+          import fs from 'node:fs';
+          const [record, alias, home, ancestor, allowed] = process.argv.slice(1);
+          const attempt = (fn) => { try { fn(); return 'ALLOWED'; } catch(e) { return e.code; } };
+          const result = {
+            overwrite: attempt(() => fs.writeFileSync(record, 'forged')),
+            create: attempt(() => fs.writeFileSync(alias + '/new.json', 'forged')),
+            unlink: attempt(() => fs.unlinkSync(record)),
+            hardlink: attempt(() => fs.linkSync(record, allowed + '.link')),
+            homeMove: attempt(() => fs.renameSync(home, home + '-moved')),
+            ancestorMove: attempt(() => fs.renameSync(ancestor, ancestor + '-moved')),
+            normal: attempt(() => fs.writeFileSync(allowed, 'allowed')),
+          };
+          process.stdout.write(JSON.stringify(result));
+        `, record, alias, home, dirname(home), join(workspace, "allowed.txt")],
+        cwd, env: { ...environment, AGENC_HOME: join(workspace, "untrusted-command-home") },
+        additionalPermissions: { fileSystem: { entries: [
+          { path: { kind: "path", path: authority }, access: "write" },
+          { path: { kind: "path", path: record }, access: "write" },
+        ] } },
+      }).run(async command => spawnSync(command.program, [...command.args], {
+        cwd: command.cwd, env: command.env, encoding: "utf8", timeout: 8_000,
+      }));
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      for (const key of ["overwrite", "create", "unlink", "hardlink", "homeMove", "ancestorMove"]) expect(evidence[key], JSON.stringify(evidence)).not.toBe("ALLOWED");
+      expect(evidence.normal).toBe("ALLOWED");
+      expect(readFileSync(record, "utf8")).toBe("native-public-record");
+      expect(existsSync(join(authority, "new.json"))).toBe(false);
+    }
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
 
 test(
   "enforces the production Linux sandbox boundary with the real kernel",

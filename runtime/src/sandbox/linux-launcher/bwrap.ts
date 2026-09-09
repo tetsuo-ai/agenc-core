@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { canonicalAuthorityPath, isWithinAuthorityPath } from "../desktop-authority-protection.js";
 
 import {
   hasFullDiskReadAccess,
@@ -275,6 +276,10 @@ function createFilesystemArgs(
     appendReadOnlyIfExists(args, root);
   }
   for (const root of options.extraWritableBindRoots ?? []) {
+    const canonical = canonicalAuthorityPath(root);
+    if ((policy.reservedReadOnlyPaths ?? []).some((reserved) =>
+      isWithinAuthorityPath(canonical, reserved) || isWithinAuthorityPath(reserved, canonical)
+    )) throw new Error("extra writable bind overlaps reserved Desktop authority");
     appendBindIfExists(args, root);
   }
   for (const root of unreadableTargets.filter(isNestedUnreadable)) {
@@ -298,12 +303,30 @@ function appendWritableRoot(
   protectedCreateTargets: string[],
 ): void {
   appendBindIfExists(args, root.root);
+  // Self-bind each writable ancestor before the read-only leaf. A mountpoint
+  // cannot be renamed, so `mv home; mkdir home` cannot replace the trust root.
+  // Apply these before the root's ordinary carve-outs, never over their masks.
+  const canonicalRoot = canonicalAuthorityPath(root.root);
+  const anchors = new Set<string>();
+  for (const reserved of root.reservedReadOnlyPaths ?? []) {
+    for (let ancestor = path.dirname(reserved);
+      ancestor !== canonicalRoot && isWithinAuthorityPath(ancestor, canonicalRoot);
+      ancestor = path.dirname(ancestor)) {
+      if (!fs.existsSync(ancestor)) throw new Error(`cannot enforce missing reserved authority ancestor: ${ancestor}`);
+      anchors.add(ancestor);
+    }
+  }
+  for (const ancestor of [...anchors].sort((a, b) => a.length - b.length)) appendBindIfExists(args, ancestor);
   const handledProtectedNames = new Set<string>();
   for (const subpath of root.readOnlySubpaths) {
     if (fs.existsSync(subpath)) {
       rejectSymlinkCrossing(subpath, root.root, "read-only subpath");
       appendReadOnlyIfExists(args, subpath);
     } else {
+      if (root.reservedReadOnlyPaths?.includes(subpath)) {
+        appendReadOnlyEmptyDirectory(args, subpath);
+        continue;
+      }
       const protectedName = protectedMetadataNameForPath(root.root, subpath);
       if (protectedName !== null) {
         handledProtectedNames.add(protectedName);

@@ -586,11 +586,23 @@ export interface SessionMcpServerConfig extends JsonObject {
     readonly endpoint?: string;
     readonly enabled?: boolean;
     readonly required?: boolean;
+    /** Ephemeral HTTP authentication; never written to canonical configuration. */
+    readonly headers?: {
+        readonly [key: string]: string;
+    };
+    /** Restrict this attachment to trusted local daemon turns (not remote/browser input). */
+    readonly localOnly?: boolean;
+    readonly desktopAuthority?: {
+        readonly id: string;
+        readonly signature: string;
+    };
 }
 
 export interface SessionMcpAddServerParams extends JsonObject {
     readonly sessionId: string;
     readonly config: SessionMcpServerConfig;
+    /** Replace only an existing session-owned overlay; canonical definitions stay protected. */
+    readonly replace?: boolean;
 }
 
 export interface MessageSendParams extends JsonObject {
@@ -758,6 +770,9 @@ export type AgenCDaemonRequest = AgenCDaemonRequestWithParams<"telegram.capabili
 export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
 
 export const AGENC_DAEMON_INTERNAL_METHODS = [
+    "audio.whisper.status",
+    "audio.whisper.install",
+    "audio.whisper.transcribe",
     "workspace.editor.acquire",
     "workspace.editor.sync",
     "workspace.editor.staleAuthority.refresh",

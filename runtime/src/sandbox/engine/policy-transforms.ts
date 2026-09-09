@@ -115,6 +115,7 @@ function effectiveFileSystemSandboxPolicy(
         permissions.globScanMaxDepth,
       ),
       includePlatformDefaults: fileSystemPolicy.includePlatformDefaults,
+      reservedReadOnlyPaths: fileSystemPolicy.reservedReadOnlyPaths,
     },
   );
 }

@@ -8,6 +8,7 @@ import {
 import {
   MAX_ADDITIONAL_WORKING_DIRECTORIES,
 } from "../../src/contracts/additional-working-directories.js";
+import { MAX_WHISPER_WAV_BYTES, WHISPER_LANGUAGES } from "../../src/audio/whisper.js";
 import {
   AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
   AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET,
@@ -43,6 +44,7 @@ interface ProtocolSchema {
   };
   readonly "x-agenc-methods": readonly string[];
   readonly "x-agenc-notifications": readonly string[];
+  readonly "x-agenc-whisper-internal-methods": readonly string[];
 }
 
 const expectedMethods = [
@@ -160,6 +162,9 @@ const expectedNotifications = [
 ] as const;
 
 const expectedInternalMethods = [
+  "audio.whisper.status",
+  "audio.whisper.install",
+  "audio.whisper.transcribe",
   "workspace.editor.acquire",
   "workspace.editor.sync",
   "workspace.editor.staleAuthority.refresh",
@@ -398,6 +403,42 @@ describe("AgenC daemon protocol surface", () => {
     // against this repository's canonical TypeScript registry and schema.
   });
 
+  it("defines bounded Whisper internal contracts without widening the public request surface", () => {
+    const schema = readProtocolSchema();
+    const methods = ["audio.whisper.status", "audio.whisper.install", "audio.whisper.transcribe"];
+    expect(schema["x-agenc-whisper-internal-methods"]).toEqual(methods);
+    for (const method of methods) {
+      expect(schema["x-agenc-methods"]).not.toContain(method);
+      expect(AGENC_DAEMON_INTERNAL_METHODS).toContain(method);
+    }
+    const internal = compileDefinitionValidator(schema, "WhisperInternalRequest");
+    const external = compileRequestValidator(schema);
+    const audio = { mimeType: "audio/wav", data: "A".repeat(64) };
+    const envelope = (method: string, params: Record<string, unknown>) => ({ jsonrpc: JSON_RPC_VERSION, id: "whisper", method, params });
+    for (const request of [envelope(methods[0]!, {}), envelope(methods[1]!, { model: "base" }), ...WHISPER_LANGUAGES.map(language => envelope(methods[2]!, { model: "small", language, audio, task: "translate", compute: "cpu", prompt: "AgenC" }))]) {
+      expect(internal(request), JSON.stringify(internal.errors)).toBe(true);
+      expect(external(request)).toBe(false);
+    }
+    for (const request of [
+      envelope(methods[0]!, { download: true }),
+      envelope(methods[1]!, { model: "base", url: "https://invalid.example/model" }),
+      envelope(methods[1]!, { model: "tiny" }),
+      ...[
+        { audio: { ...audio, path: "/private/audio.wav" } }, { audio: { ...audio, mimeType: "audio/mp3" } },
+        { audio: { ...audio, data: "A".repeat(Math.ceil(MAX_WHISPER_WAV_BYTES / 3) * 4 + 4) } },
+        { language: "--translate" }, { task: "translate-to-es" }, { compute: "gpu" },
+        { prompt: "x".repeat(501) }, { prompt: "line\nbreak" }, { executable: "/tmp/other" },
+      ].map(patch => envelope(methods[2]!, { model: "base", language: "auto", audio, ...patch })),
+    ]) expect(internal(request), JSON.stringify(request).slice(0, 200)).toBe(false);
+    const status = compileDefinitionValidator(schema, "WhisperStatus");
+    expect(status({ engine: "whisper.cpp", optionsVersion: 1, available: true, models: [{ id: "base", installed: true, bytes: 147951465 }] })).toBe(true);
+    expect(status({ engine: "whisper.cpp", available: false, models: [], executable: "/private/engine" })).toBe(false);
+    const result = compileDefinitionValidator(schema, "WhisperTranscription");
+    expect(result({ text: "", model: "base", provider: "local" })).toBe(true);
+    expect(result({ text: "hello", model: "base", provider: "google" })).toBe(false);
+    expect(result({ text: "x".repeat(16001), model: "base", provider: "local" })).toBe(false);
+  });
+
   it("keeps the additional-directory ingress limit aligned", () => {
     const schema = readProtocolSchema();
     const agentCreate = schema.definitions.AgentCreateParams as {
@@ -461,6 +502,25 @@ describe("AgenC daemon protocol surface", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it("publishes the private Desktop attachment without loosening other request fields", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    const config = {
+      name: "agenc-desktop-control", transport: "http",
+      endpoint: "http://127.0.0.1:12345/mcp", localOnly: true,
+      headers: { Authorization: "Bearer fixture-only" },
+      desktopAuthority: { id: "fixture-authority", signature: "fixture-proof" },
+    };
+    const request = (patch: Record<string, unknown> = {}) => ({
+      jsonrpc: JSON_RPC_VERSION, id: "desktop-attach", method: "session.mcp.addServer",
+      params: { sessionId: "session_1", config, replace: true, ...patch },
+    });
+    expect(validate(request()), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate(request({ config: { ...config, headers: { Authorization: 1 } } }))).toBe(false);
+    expect(validate(request({ config: { ...config, desktopAuthority: { ...config.desktopAuthority, trusted: true } } }))).toBe(false);
+    expect(validate(request({ replace: "true" }))).toBe(false);
+    expect(validate(request({ trusted: true }))).toBe(false);
   });
 
   it("publishes only passive, non-authority MCP status fields", () => {

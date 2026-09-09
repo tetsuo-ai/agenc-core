@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { canonicalAuthorityPath, isWithinAuthorityPath } from "../desktop-authority-protection.js";
 
 export const AGENC_LINUX_SANDBOX_ARG0 = "agenc-linux-sandbox";
 export const PROTECTED_METADATA_PATH_NAMES = [".git", ".agenc", ".agents"] as const;
@@ -60,6 +61,8 @@ export interface FileSystemSandboxPolicy {
   readonly entries: readonly FileSystemSandboxEntry[];
   readonly globScanMaxDepth?: number;
   readonly includePlatformDefaults?: boolean;
+  /** Native runtime reservations, never overrideable by additional/model grants. */
+  readonly reservedReadOnlyPaths?: readonly string[];
 }
 
 export interface NetworkPermissions {
@@ -88,6 +91,7 @@ export interface WritableRoot {
   readonly root: string;
   readonly readOnlySubpaths: readonly string[];
   readonly protectedMetadataNames?: readonly string[];
+  readonly reservedReadOnlyPaths?: readonly string[];
 }
 
 export interface SandboxCommand {
@@ -176,6 +180,7 @@ export function restrictedFileSystemPolicy(
   options: {
     readonly globScanMaxDepth?: number;
     readonly includePlatformDefaults?: boolean;
+    readonly reservedReadOnlyPaths?: readonly string[];
   } = {},
 ): FileSystemSandboxPolicy {
   return {
@@ -186,6 +191,9 @@ export function restrictedFileSystemPolicy(
       : {}),
     ...(options.includePlatformDefaults !== undefined
       ? { includePlatformDefaults: options.includePlatformDefaults }
+      : {}),
+    ...(options.reservedReadOnlyPaths !== undefined
+      ? { reservedReadOnlyPaths: [...options.reservedReadOnlyPaths] }
       : {}),
   };
 }
@@ -332,6 +340,9 @@ export function getWritableRootsWithCwd(
   const writableRoots = dedupPaths(writableEntries, true);
 
   return writableRoots.map((root) => {
+    const reservedReadOnlyPaths = (policy.reservedReadOnlyPaths ?? []).filter(
+      (reserved) => isWithinAuthorityPath(reserved, canonicalAuthorityPath(root)),
+    );
     const preserveRawCarveoutPaths = !isFilesystemRoot(root);
     const rawWritableRoots = writableEntries.filter(
       (entry) => normalizeEffectivePath(entry) === root,
@@ -357,10 +368,12 @@ export function getWritableRootsWithCwd(
     const readOnlySubpaths = dedupPaths([
       ...defaultCarveouts,
       ...explicitCarveouts,
+      ...reservedReadOnlyPaths,
     ]);
     return {
       root,
       readOnlySubpaths,
+      ...(reservedReadOnlyPaths.length > 0 ? { reservedReadOnlyPaths } : {}),
       protectedMetadataNames: protectedMetadataNamesForWritableRoot(
         policy,
         root,
@@ -456,6 +469,9 @@ export function canWritePathWithCwd(
   cwd: string,
   sessionTempRoot: string,
 ): boolean {
+  if ((policy.reservedReadOnlyPaths ?? []).some((root) =>
+    isWithinAuthorityPath(canonicalAuthorityPath(path.resolve(cwd, target)), root)
+  )) return false;
   if (
     !canWriteAccess(
       resolveAccessWithCwd(policy, target, cwd, sessionTempRoot),
@@ -466,6 +482,7 @@ export function canWritePathWithCwd(
 }
 
 export function hasFullDiskWriteAccess(policy: FileSystemSandboxPolicy): boolean {
+  if ((policy.reservedReadOnlyPaths?.length ?? 0) > 0) return false;
   switch (policy.kind) {
     case "unrestricted":
     case "external_sandbox":

@@ -59,6 +59,7 @@ import {
   AgenCBackgroundAgentSuspensionShutdownError,
 } from "./background-agent-runner.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { RemoteAccessBoundary } from "../remote/access.js";
 import {
   MAX_ADDITIONAL_WORKING_DIRECTORIES,
 } from "../contracts/additional-working-directories.js";
@@ -6731,9 +6732,55 @@ describe("AgenC background agent lifecycle", () => {
           messageId: "portal-message-1",
           streamId: "portal-message-1",
           acceptedAt: "2026-05-01T12:10:02.000Z",
+          localMcpAccess: true,
         },
       },
     ]);
+  });
+
+  it("keeps actual remote portal messages non-local through the manager and runner", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: () => "session_remote_portal",
+      now: () => "2026-09-09T00:00:00.000Z",
+    });
+    const submitted = vi.fn(async () => {});
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({ agentId: "agent_remote_portal", startedAt: "2026-09-09T00:00:00.000Z", status: "running" }),
+        submitAgentMessage: submitted,
+      },
+    });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "remote portal provenance" });
+    const remoteAccess = new RemoteAccessBoundary({
+      workspaceId: "workspace_remote_portal",
+      workspacePath: process.cwd(),
+      sessionIds: ["session_remote_portal"],
+      role: "control",
+      allowFiles: false,
+      allowApprovals: false,
+    }, () => true, (id) => sessions.getSession(id), tmpdir());
+    const connection = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+      sessionManager: sessions,
+      now: () => "2026-09-09T00:00:01.000Z",
+    }).createConnection({ remoteAccess });
+    await expect(connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION, id: "initialize", method: "initialize",
+      params: { protocol: { version: "1.0.0" }, clientName: "agenc-desktop" },
+    })).resolves.toMatchObject({ result: { type: "initialized" } });
+    const params = { sessionId: "session_remote_portal", content: "remote request", clientMessageId: "remote-message", ifBusy: "reject" };
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "send", method: "message.send", params })).resolves.toMatchObject({ result: { messageId: "remote-message" } });
+    expect(submitted).toHaveBeenCalledExactlyOnceWith("agent_remote_portal", {
+      sessionId: "session_remote_portal", content: "remote request", originalContent: "remote request",
+      messageId: "remote-message", streamId: "remote-message", acceptedAt: "2026-09-09T00:00:01.000Z",
+      ifBusy: "reject", localMcpAccess: false,
+    });
+    // The real browser boundary is stricter than generic daemon ingress:
+    // metadata cannot spoof provenance, and streaming RPC is not admitted.
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "forged", method: "message.send", params: { ...params, metadata: { localMcpAccess: true } } })).resolves.toMatchObject({ error: { data: { code: "REMOTE_MESSAGE_INVALID" } } });
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "stream", method: "message.stream", params })).resolves.toMatchObject({ error: { data: { code: "REMOTE_METHOD_DENIED" } } });
+    expect(submitted).toHaveBeenCalledOnce();
   });
 
   it("dispatches portal background agent dashboard list/start/stop through JSON-RPC", async () => {
@@ -7039,6 +7086,7 @@ describe("AgenC background agent lifecycle", () => {
           messageId: "portal-structured",
           streamId: "portal-structured",
           acceptedAt: "2026-05-01T12:20:02.000Z",
+          localMcpAccess: true,
         },
       },
     ]);

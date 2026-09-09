@@ -24,6 +24,45 @@ async function initialize(connection: {
 }
 
 describe("daemon session-control internal method dispatch", () => {
+  it("validates ephemeral authenticated MCP attachment fields without echoing credentials", async () => {
+    const addMcpServerToSession = vi.fn(async () => ({ sessionId: "session_1", serverName: "agenc-desktop-control", success: true, toolCount: 1 }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { addMcpServerToSession } as never });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+    const token = "a".repeat(48);
+    const config = { name: "agenc-desktop-control", transport: "http", endpoint: "http://127.0.0.1:43118/mcp", localOnly: true, headers: { Authorization: `Bearer ${token}` } };
+    const params = { sessionId: "session_1", replace: true, config };
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "attach", method: "session.mcp.addServer", params })).resolves.toMatchObject({ result: { success: true } });
+    expect(addMcpServerToSession).toHaveBeenLastCalledWith(params);
+    for (const malformed of [
+      { ...params, replace: "yes" },
+      { ...params, config: { ...config, localOnly: "yes" } },
+      { ...params, config: { ...config, endpoint: `http://127.0.0.1:43118/mcp?token=${token}` } },
+      { ...params, config: { ...config, headers: { Authorization: `${token}\r\n` } } },
+      { ...params, config: { ...config, headers: { Host: token } } },
+    ]) {
+      const result = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "invalid", method: "session.mcp.addServer", params: malformed });
+      expect(result).toMatchObject({ error: { code: -32602 } });
+      expect(JSON.stringify(result)).not.toContain(token);
+    }
+    expect(addMcpServerToSession).toHaveBeenCalledOnce();
+  });
+
+  it.each(["message.send", "message.stream"])("derives %s local/remote turn authority from the connection, not user metadata", async (method) => {
+    const streamAgentMessage = vi.fn(async () => ({ disposition: "started", acceptedAt: "2026-09-09T00:00:00Z" }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { streamAgentMessage } as never });
+    const local = dispatcher.createConnection();
+    await initialize(local);
+    await local.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "local", method, params: { sessionId: "s", content: "open settings", metadata: { localMcpAccess: false } } });
+    expect(streamAgentMessage).toHaveBeenLastCalledWith(expect.objectContaining({ localMcpAccess: true }));
+    const remote = dispatcher.createConnection({ remoteAccess: { authorize: async (method: string) => { if (method === "session.mcp.addServer") throw new Error("denied"); }, allowsMethod: () => true, projection: () => ({}) } as never });
+    await initialize(remote);
+    await remote.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "remote", method, params: { sessionId: "s", content: "open settings", metadata: { localMcpAccess: true } } });
+    expect(streamAgentMessage).toHaveBeenLastCalledWith(expect.objectContaining({ localMcpAccess: false }));
+    const forged = await local.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "forged", method, params: { sessionId: "s", content: "open settings", localMcpAccess: true } });
+    expect(forged).toMatchObject({ error: { code: -32602 } });
+  });
+
   it("routes the exact SDK 0.3.0 tool-resolution shape and rejects partial hybrids", async () => {
     const resolveSessionToolCall = vi.fn(async () => ({
       sessionId: "session_1",

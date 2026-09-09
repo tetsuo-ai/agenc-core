@@ -39,6 +39,28 @@ export class BrowserActionError extends Error {
   }
 }
 
+/** A received CDP navigation failure, not a lost/aborted command response. */
+export interface BrowserNavigationFailureReceipt {
+  readonly command: "Page.navigate";
+  readonly targetId: string;
+  readonly sessionId: string;
+  readonly url: string;
+  readonly errorText: string;
+  readonly frameId?: string;
+  readonly loaderId?: string;
+}
+
+const NAVIGATION_FAILURE_RECEIPTS = new WeakMap<object, BrowserNavigationFailureReceipt>();
+
+/** Only this adapter can attest that Chromium actually answered the command. */
+export function readBrowserNavigationFailureReceipt(
+  error: unknown,
+): BrowserNavigationFailureReceipt | undefined {
+  return typeof error === "object" && error !== null
+    ? NAVIGATION_FAILURE_RECEIPTS.get(error)
+    : undefined;
+}
+
 interface NamedKey {
   readonly keyCode: number;
   readonly key: string;
@@ -84,10 +106,10 @@ export class BrowserPage {
     return this.#targetId;
   }
 
-  async init(): Promise<void> {
-    await this.#send("Page.enable");
-    await this.#send("Runtime.enable");
-    await this.#send("DOM.enable");
+  async init(signal?: AbortSignal): Promise<void> {
+    await this.#send("Page.enable", {}, signal);
+    await this.#send("Runtime.enable", {}, signal);
+    await this.#send("DOM.enable", {}, signal);
     // Reset refs whenever the main frame finishes a fresh load.
     this.#disposeNav = this.#conn.on(
       this.#sessionId,
@@ -117,14 +139,18 @@ export class BrowserPage {
     const parsed = validateNavigableUrl(url);
     this.#refRegistry.reset();
     const result = await this.#send("Page.navigate", { url }, signal);
-    const errorText = result.errorText as string | undefined;
+    const errorText = result.errorText;
+    if (errorText !== undefined && typeof errorText !== "string") {
+      throw new BrowserActionError("invalid Page.navigate error response");
+    }
     if (errorText === undefined || errorText === "") {
       try {
         await this.#conn.waitFor(this.#sessionId, "Page.loadEventFired", {
           timeoutMs: this.#navTimeout,
           ...(signal !== undefined ? { signal } : {}),
         });
-      } catch {
+      } catch (error) {
+        if (signal?.aborted === true || this.#conn.closed) throw error;
         // Some pages never fire load (long-poll, streaming); fall through to
         // the block check and, if clean, treat as best-effort success.
       }
@@ -134,7 +160,20 @@ export class BrowserPage {
       throw new BrowserActionError(`navigation blocked: ${blocked}`);
     }
     if (errorText !== undefined && errorText !== "") {
-      throw new BrowserActionError(`navigation failed: ${errorText} (${url})`);
+      const error = new BrowserActionError(`navigation failed: ${errorText} (${url})`);
+      // The command completed and reports a known navigation failure. This
+      // does NOT prove no network request happened, or that the page loaded.
+      // A thrown CDP timeout/disconnect never reaches this receipt boundary.
+      NAVIGATION_FAILURE_RECEIPTS.set(error, Object.freeze({
+        command: "Page.navigate",
+        targetId: this.#targetId,
+        sessionId: this.#sessionId,
+        url,
+        errorText,
+        ...(typeof result.frameId === "string" ? { frameId: result.frameId } : {}),
+        ...(typeof result.loaderId === "string" ? { loaderId: result.loaderId } : {}),
+      }));
+      throw error;
     }
   }
 

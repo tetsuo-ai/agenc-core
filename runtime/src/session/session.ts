@@ -1081,7 +1081,7 @@ export interface McpManager {
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
-  addServer?(config: McpSessionServerConfig): Promise<McpServerMutationResult>;
+  addServer?(config: McpSessionServerConfig, options?: { readonly replace?: boolean }): Promise<McpServerMutationResult>;
   /**
    * Canonical live-manager tool boundary for callers that have already
    * acquired session effect admission. Callers must propagate that admitted
@@ -1176,6 +1176,9 @@ export interface McpSessionServerConfig {
   readonly endpoint?: string;
   readonly enabled?: boolean;
   readonly required?: boolean;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly localOnly?: boolean;
+  readonly desktopAuthority?: { readonly id: string; readonly signature: string };
 }
 
 export interface McpSessionToolInfo {

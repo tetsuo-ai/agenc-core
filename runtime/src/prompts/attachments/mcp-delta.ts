@@ -43,6 +43,7 @@ interface SessionLikeForMcpInstructions {
 }
 
 interface McpManagerLikeForInstructions {
+  getConfiguredServers?(): readonly { readonly name: string; readonly localOnly?: boolean }[];
   /** AgenC public surface today (returns server names). */
   getConnectedServers?(): readonly string[];
   /**
@@ -77,18 +78,23 @@ export const mcpInstructionsDeltaProducer: AttachmentProducer = async (
   trackingState,
 ) => {
   const currentMap = readConnectedInstructions(opts.sessionKey);
-  const prior = trackingState.lastMcpInstructionsMap;
+  let prior = trackingState.lastMcpInstructionsMap;
 
   if (prior === undefined) {
-    // First turn — seed without emitting. Initial connections are
-    // already announced through the system prompt's MCP section.
+    // Ordinary bootstrap connections already appear in the system prompt.
+    // Session-local app controls attach after that prompt is built, even when
+    // they arrive before the first user turn. Announce those on their first
+    // eligible local turn; the manager hides them from remote turns.
     trackingState.lastMcpInstructionsMap = currentMap;
-    return [];
+    const lateLocalNames = new Set((opts.sessionKey as SessionLikeForMcpInstructions)
+      .services?.mcpManager?.getConfiguredServers?.()
+      .filter(server => server.localOnly === true).map(server => server.name) ?? []);
+    prior = new Map([...currentMap].filter(([name]) => !lateLocalNames.has(name)));
   }
 
   const added: { name: string; block: string }[] = [];
   for (const [name, block] of currentMap) {
-    if (!prior.has(name)) added.push({ name, block });
+    if (prior.get(name) !== block) added.push({ name, block });
   }
   const removed: string[] = [];
   for (const name of prior.keys()) {

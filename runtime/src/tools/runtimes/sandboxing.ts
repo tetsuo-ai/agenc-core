@@ -35,6 +35,7 @@ import type { ToolRuntimeAttemptContext } from "./context.js";
 import { analyzeApplyPatchRuntimeWrites } from "./apply-patch.js";
 import { resolveRuntimePathTarget } from "./paths.js";
 import { analyzeShellRuntimeAccess } from "./shell.js";
+import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
 
 export interface RuntimeSandboxProfileOptions {
   readonly cwd: string;
@@ -293,7 +294,17 @@ export function permissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  return applyRuntimeAdditionalPermissions(profile, context, options.cwd);
+  return protectDesktopAuthority(
+    applyRuntimeAdditionalPermissions(profile, context, options.cwd),
+    runtimeDesktopAuthorityRoot(context),
+  );
+}
+
+function runtimeDesktopAuthorityRoot(context: ToolRuntimeAttemptContext): string {
+  const session = context.invocation.session as {
+    readonly services?: { readonly configStore?: { readonly homeContext?: { readonly path?: string } } };
+  } | undefined;
+  return desktopAuthorityRoot(session?.services?.configStore?.homeContext?.path);
 }
 
 function applyRuntimeAdditionalPermissions(
@@ -387,6 +398,14 @@ export function enforceRuntimeSandboxAttempt(
   }
   if (!toolMayMutate(input.tool)) return;
   const writes = analyzeWrites(input.tool, input.args, cwd);
+  const authorityRoot = runtimeDesktopAuthorityRoot(input.context);
+  for (const target of writes.targets) {
+    if (overlapsDesktopAuthority(target, authorityRoot)) {
+      throw new SandboxDeniedError("Desktop authority records are reserved for the native host", {
+        denial: "filesystem", target, policy,
+      });
+    }
+  }
   if (writes.indeterminate) {
     if (
       policy.kind === "workspace_write" &&

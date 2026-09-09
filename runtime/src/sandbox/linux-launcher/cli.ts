@@ -45,6 +45,7 @@ const FILE_SYSTEM_KEYS: ReadonlySet<string> = new Set([
   "entries",
   "globScanMaxDepth",
   "includePlatformDefaults",
+  "reservedReadOnlyPaths",
 ]);
 const ENTRY_KEYS: ReadonlySet<string> = new Set(["path", "access"]);
 const PATH_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -291,6 +292,11 @@ function assertFileSystem(value: unknown): void {
   for (const entry of candidate.entries) {
     assertFileSystemEntry(entry);
   }
+  if (candidate.reservedReadOnlyPaths !== undefined && (
+    !Array.isArray(candidate.reservedReadOnlyPaths) ||
+    candidate.reservedReadOnlyPaths.length > 32 ||
+    candidate.reservedReadOnlyPaths.some((root) => typeof root !== "string" || !path.isAbsolute(root) || root.includes(NUL_BYTE))
+  )) throw new LinuxSandboxCliError("permission profile reservedReadOnlyPaths must be bounded absolute paths");
 }
 
 function assertFileSystemEntry(value: unknown): void {

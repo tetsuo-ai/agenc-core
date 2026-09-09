@@ -103,3 +103,54 @@ through the session MCP service in `src/session/mcp-startup.ts`. That service
 serializes each transaction and re-resolves canonical policy before replacing
 the manager's configuration. The low-level manager intentionally exposes only
 single-server reconnect as a direct live operation.
+
+## Session-local Desktop controls
+
+Desktop attaches `agenc-desktop-control` using `session.mcp.addServer` with
+`replace: true`, `localOnly: true`, memory-only HTTP `headers`, and a signed
+`desktopAuthority` proof. Repeated attachments are idempotent; rotated credentials
+or renewed authority records reconnect. Nothing is written to global MCP config.
+Credentials, proofs, and internal grants are omitted from public status/catalog
+projections and redacted from model-visible data and logs.
+
+Audited classification requires an operator-owned version-2 Ed25519 public record
+under `AGENC_HOME/desktop-control-authorities`. The record binds a private Unix
+socket in `/tmp/agenc-dc-*/control.sock` (canonical paths, owner-only directory and
+socket). Core verifies ownership and inode identity before each request, connects
+with an explicit Unix-socket dispatcher, and never falls back to TCP. The HTTP URL
+is only a logical protocol address. A fresh nonce proof precedes credentials.
+This POSIX design trusts the host OS and same-user native processes; it is not a
+boundary against compromise of the user's account. Unsupported platforms fail
+closed for audited controls without granting unsigned servers equivalent rights.
+
+Only local daemon user turns may discover/use the private tools. Captured tools
+are checked again after approval and asynchronous transport preflight. A real
+runtime-approved invocation is reused only when its private marker, call, session,
+turn, tool, and arguments all match; JSON input cannot manufacture that proof.
+Read/UI classifications use a closed product-owned list, never MCP annotations.
+Ordinary approvals and plan restrictions still apply.
+
+Only those authenticated, audited inspection tools declare an `idempotent`
+recovery category: `desktop_state`, `desktop_window_state`, `browser_tabs`,
+`browser_screenshot`, `browser_downloads`, `browser_console`, `terminal_list`,
+and `terminal_read`. They can inspect a session that has a prior unresolved
+outcome without clearing it or
+replaying the original action. All mutations remain behind the session-wide
+unknown-outcome gate. Generic MCP read-only annotations grant no exemption, and
+captured inspection tools still refuse remote turns or expired host authority.
+`browser_snapshot`, `browser_read_text`, and `browser_wait_for` remain gated:
+their page-main-world JavaScript may invoke page-defined code, so permission-level
+read classification alone is not sufficient to declare safe recovery/replay.
+
+The visible native PTY is **not Core-sandboxed**. `terminal_open`, `terminal_run`,
+`terminal_type`, and `terminal_close` require an already full-access session and
+its current authenticated sandbox broker; one-shot approval/escalation is not
+enough. In restricted sessions the agent must use Core's sandboxed `exec_command`
+or `system.bash`. Permissions are never raised automatically. Existing native
+processes remain outside Core's policy-transition/drain lifecycle; tightening
+policy blocks new native terminal mutations but does not retroactively stop them.
+
+Run `npm run check:desktop-mcp-delivery` after building for the real isolated
+daemon/SDK/private-socket smoke. `--serve` on the underlying script supplies a
+fresh Desktop launch recipe using a scripted loopback model and pinned fixture
+provider configuration; it does not use an operator profile or cloud credential.

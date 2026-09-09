@@ -25,6 +25,7 @@ import type {
   CreateMessageResultWithTools,
   SamplingMessageContentBlock,
 } from "@modelcontextprotocol/sdk/types.js";
+import { isDeepStrictEqual } from "node:util";
 
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import {
@@ -84,6 +85,8 @@ import { createSessionMcpElicitationHandlers } from "../elicitation/mcp.js";
 import type { McpGranularElicitationPolicy } from "../elicitation/mcp.js";
 import { logForDebugging } from "../utils/debug.js";
 import { redactSecrets } from "../secrets/index.js";
+import { sessionMcpAttachmentIssue, redactMcpAttachmentText } from "../mcp-client/local-control.js";
+import { isDesktopAuthorityGrant, verifyDesktopAuthority } from "../mcp-client/desktop-authority.js";
 
 export interface McpStartupCancellationToken {
   readonly signal: AbortSignal;
@@ -798,6 +801,19 @@ function toRuntimeMcpServerConfig(
   } as MCPServerConfig;
 }
 
+/** Only the exact old native global registration is superseded. A similarly
+ * named user/project/plugin service is not evidence of Desktop ownership. */
+function isLegacyNativeDesktopServer(config: MCPServerConfig): boolean {
+  if (config.origin?.scope !== "user" ||
+      (config.name !== "agenc-desktop" && config.name !== "agenc-browser") ||
+      config.transport !== "http") return false;
+  const endpoint = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/mcp$/.exec(config.endpoint ?? "");
+  if (!endpoint || Number(endpoint[1]) > 65535) return false;
+  const headers = Object.entries(config.headers ?? {});
+  return headers.length === 1 && headers[0]![0].toLowerCase() === "authorization" &&
+    /^Bearer [0-9a-f]{48}$/.test(headers[0]![1]);
+}
+
 /** Resolve one complete policy-checked MCP lifecycle plan for a live session. */
 export async function resolveSessionMcpPlan(
   authority: CanonicalSettingsAuthority,
@@ -832,11 +848,26 @@ export async function resolveSessionMcpPlan(
     scopedSessionServers,
     enabledOverrides,
   );
+  const configs: MCPServerConfig[] = Object.entries(servers).map(([name, config]) => ({
+      ...toRuntimeMcpServerConfig(name, config),
+      // This restriction is runtime-owned, not a configurable permission grant.
+      ...(sessionDispositions[name] === "active" && sessionServers[name]?.localOnly === true
+        ? { localOnly: true, ...(sessionServers[name]?.desktopAuthorityGrant ? { desktopAuthorityGrant: sessionServers[name].desktopAuthorityGrant } : {}) } : {}),
+    }));
+  const privateDesktopActive = configs.some(config =>
+    config.name === "agenc-desktop-control" && config.origin?.scope === "session" &&
+    config.enabled !== false && config.localOnly === true &&
+    // Expiry denies private execution; it must never reactivate an unrelated
+    // old global window. Only explicit disable/removal restores that fallback.
+    isDesktopAuthorityGrant(config.desktopAuthorityGrant));
+  const superseded = new Set(privateDesktopActive
+    ? configs.filter(isLegacyNativeDesktopServer).map(config => config.name)
+    : []);
   return {
-    configs: Object.entries(servers).map(([name, config]) =>
-      toRuntimeMcpServerConfig(name, config),
-    ),
-    definitions,
+    // Reconciliation retires removed bridges, including already captured tool
+    // proxies. This is a session projection, never a global config migration.
+    configs: configs.filter(config => !superseded.has(config.name)),
+    definitions: new Map(Array.from(definitions).filter(([name]) => !superseded.has(name))),
     knownDefinitionIds,
     pluginDefinitionKnowledgeComplete,
     authoritySnapshot,
@@ -1507,7 +1538,10 @@ export function createSessionMcpService(
   };
   const addSessionServerUnlocked = async (
     config: McpSessionServerConfig,
+    replace = false,
   ): Promise<McpServerMutationResult> => {
+    const attachmentIssue = sessionMcpAttachmentIssue(config);
+    if (attachmentIssue) return mcpMutationFailure(config.name, new Error(attachmentIssue));
     const serverNameIssue = mcpServerNameValidationIssue(config.name);
     if (serverNameIssue !== undefined) {
       return {
@@ -1518,10 +1552,15 @@ export function createSessionMcpService(
       };
     }
     const { args: inputArgs, ...inputConfig } = config;
+    let desktopAuthorityGrant;
+    try { desktopAuthorityGrant = await verifyDesktopAuthority(config, options.environment.AGENC_HOME); }
+    catch (error) { return mcpMutationFailure(config.name, error); }
     const candidate: MCPServerConfig = {
       ...inputConfig,
       ...(inputArgs !== undefined ? { args: [...inputArgs] } : {}),
+      ...(config.headers !== undefined ? { headers: Object.freeze({ ...config.headers }) } : {}),
       origin: { scope: "session" },
+      ...(desktopAuthorityGrant ? { desktopAuthorityGrant } : {}),
     };
     try {
       toScopedMcpServerConfig(candidate);
@@ -1548,14 +1587,26 @@ export function createSessionMcpService(
       existingConfig?.origin?.scope === "default" ||
       existingConfig?.origin?.scope === "plugin";
     if (
-      baseline.servers.has(config.name) ||
-      (existingConfig !== undefined && !existingCanBeShadowed)
+      (baseline.servers.has(config.name) && !replace) ||
+      (existingConfig !== undefined && !existingCanBeShadowed &&
+        !(replace && baseline.servers.has(config.name) && existingConfig.origin?.scope === "session"))
     ) {
       return rejectAfterCanonicalReconciliation(
         config.name,
         baseline,
         new Error(`MCP server "${config.name}" is already configured.`),
       );
+    }
+    if (baseline.servers.get(config.name)?.localOnly === true && candidate.localOnly !== true) {
+      return mcpMutationFailure(config.name, new Error("A local-only attachment cannot be downgraded by replacement."));
+    }
+    if (replace && isDeepStrictEqual(baseline.servers.get(config.name), candidate) &&
+      appliedAuthorityGeneration === authorityGeneration &&
+      options.authority.current() === baselinePlan.authoritySnapshot &&
+      baselinePlan.sessionDispositions[config.name] === "active" &&
+      isDeepStrictEqual(existingConfig, runtimeManager.getServerConfig?.(config.name)) &&
+      manager.getConnectionState(config.name)?.type === "connected") {
+      return { serverName: config.name, success: true, toolCount: manager.getToolsByServer(config.name).length };
     }
     const candidateState: SessionMcpOverlayState = {
       servers: new Map(baseline.servers).set(candidate.name, candidate),
@@ -1858,10 +1909,17 @@ export function createSessionMcpService(
       enqueueServerMutation(name, () => setServerEnabledUnlocked(name, true)),
     disableServer: (name) =>
       enqueueServerMutation(name, () => setServerEnabledUnlocked(name, false)),
-    addServer: (config) =>
-      enqueueServerMutation(config.name, () =>
-        addSessionServerUnlocked(config),
-      ),
+    addServer: (config, mutationOptions) => {
+      // Snapshot at ingress; callers cannot mutate credentials while queued.
+      const snapshot = { ...config, ...(config.headers ? { headers: { ...config.headers } } : {}),
+        ...(config.desktopAuthority ? { desktopAuthority: { ...config.desktopAuthority } } : {}),
+        ...(config.args ? { args: [...config.args] } : {}) };
+      return enqueueServerMutation(config.name, () =>
+        addSessionServerUnlocked(snapshot, mutationOptions?.replace === true),
+      ).then(result => result.error === undefined ? result : {
+        ...result, error: redactMcpAttachmentText(result.error, snapshot.headers),
+      });
+    },
     callTool: (serverName, toolName, args, callOptions) => {
       if (closed) return Promise.reject(closedError());
       return manager.callTool(serverName, toolName, args, callOptions);
@@ -2028,9 +2086,12 @@ function createMcpPermissionOptionsForSession(
         };
       },
     }),
-    ...(services.approvalResolver !== undefined
-      ? { approvalResolver: services.approvalResolver }
-      : {}),
+    // The daemon installs its interactive approval bridge after bootstrap.
+    // Do not retain bootstrap's headless resolver inside long-lived MCP tools.
+    approvalResolver: {
+      request: (ctx) => services.approvalResolver?.request(ctx) ??
+        Promise.resolve({ kind: "denied" as const }),
+    },
     ...(services.guardianApprovalReviewer !== undefined
       ? { guardianApprovalReviewer: services.guardianApprovalReviewer }
       : {}),

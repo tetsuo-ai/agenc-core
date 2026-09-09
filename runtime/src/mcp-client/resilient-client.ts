@@ -72,11 +72,17 @@ export function toToolCatalogPolicyConfig(
     deniedTools === undefined &&
     defaultToolsApprovalMode === undefined &&
     virtualNoFsWriteTools === undefined &&
-    config.tools === undefined
+    config.tools === undefined &&
+    config.localOnly !== true &&
+    !(config.origin?.scope === "session" && config.headers !== undefined)
   ) {
     return undefined;
   }
   return {
+    ...(config.localOnly === true ? { localOnly: true } : {}),
+    ...(config.desktopAuthorityGrant ? { desktopAuthorityGrant: config.desktopAuthorityGrant } : {}),
+    ...(config.origin?.scope === "session" && config.headers !== undefined
+      ? { sensitiveHeaders: config.headers } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(deniedTools !== undefined ? { deniedTools } : {}),
     ...(config.pinnedCatalogSha256 !== undefined
@@ -288,6 +294,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
   private createProxyTool(namespacedName: string, templateTool: Tool): Tool {
     return {
+      ...templateTool,
       name: namespacedName,
       description: templateTool.description,
       inputSchema: templateTool.inputSchema,
@@ -322,7 +329,9 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
         const result = await innerTool.execute(args);
 
-        if (result.isError && isConnectionError(result.content)) {
+        // A bound provider receipt describes a known terminal tool outcome,
+        // not a transport loss inferred from arbitrary result text/URLs.
+        if (result.isError && result.effectDisposition === undefined && isConnectionError(result.content)) {
           this.scheduleReconnect();
           return { content: `MCP server "${this.serverName}" lost connection — reconnecting...`, isError: true };
         }
