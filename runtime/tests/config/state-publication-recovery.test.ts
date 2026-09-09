@@ -28,6 +28,23 @@ function fixture(): { readonly directory: string; readonly file: string; readonl
   return { directory, file: home.statePath, repository };
 }
 
+function watchedRepository(directory: string): { readonly repository: RuntimeStateRepository; readonly notify: () => void } {
+  let listener: (() => void) | undefined;
+  const repository = new RuntimeStateRepository(resolveHomeContext({ AGENC_HOME: directory, HOME: directory }), {
+    storage: "disk",
+    watchFile: (_file, _options, callback) => { listener = () => callback({} as Stats, {} as Stats); },
+    unwatchFile: () => {},
+  });
+  repositories.push(repository);
+  return {
+    repository,
+    notify: () => {
+      if (listener === undefined) throw new Error("state watcher was not registered");
+      listener();
+    },
+  };
+}
+
 function terminatePublication(file: string, transition: string, recover = false): void {
   const script = `
     import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -191,17 +208,10 @@ describe("canonical state publication recovery", () => {
 
   test("recovers a published replacement during asynchronous freshness reload", async () => {
     const { directory, file } = fixture();
-    let notify: (() => void) | undefined;
-    const repository = new RuntimeStateRepository(resolveHomeContext({ AGENC_HOME: directory, HOME: directory }), {
-      storage: "disk",
-      watchFile: (_file, _options, listener) => { notify = () => listener({} as Stats, {} as Stats); },
-      unwatchFile: () => {},
-    });
-    repositories.push(repository);
+    const { repository, notify } = watchedRepository(directory);
     expect(repository.get()).toMatchObject(previousGlobal);
     terminatePublication(file, "publication");
-    expect(notify).toBeDefined();
-    notify!();
+    notify();
     await vi.waitFor(() => expect(repository.get()).toMatchObject(replacementGlobal));
     expect(readdirSync(directory)).toEqual(["state.json"]);
   });
@@ -229,18 +239,12 @@ describe("canonical state publication recovery", () => {
 
   test("retries a freshness lock failure without requiring another file event", async () => {
     const { directory, file } = fixture();
-    let notify: (() => void) | undefined;
-    const repository = new RuntimeStateRepository(resolveHomeContext({ AGENC_HOME: directory, HOME: directory }), {
-      storage: "disk",
-      watchFile: (_file, _options, listener) => { notify = () => listener({} as Stats, {} as Stats); },
-      unwatchFile: () => {},
-    });
-    repositories.push(repository);
+    const { repository, notify } = watchedRepository(directory);
     expect(repository.get()).toMatchObject(previousGlobal);
     terminatePublication(file, "publication");
     const contention = Object.assign(new Error("injected stale writer lock"), { code: "ELOCKED" });
     const acquire = vi.spyOn(lockfile, "lock").mockRejectedValueOnce(contention);
-    notify!();
+    notify();
     await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(repository.get()).toMatchObject(replacementGlobal), { timeout: 200 });
     expect(readdirSync(directory)).toEqual(["state.json"]);
