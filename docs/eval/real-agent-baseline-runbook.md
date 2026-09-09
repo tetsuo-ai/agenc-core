@@ -102,6 +102,27 @@ the bound for a specific exec.
 
 ## Invalid resume reports
 
+Source-lock `instanceId` values must be 1 to 128 ASCII characters, start with a
+letter or digit, and contain only letters, digits, periods, underscores, and
+hyphens. Trailing periods and Windows device names are rejected. IDs must also
+be unique when compared without case. These constraints keep each ID a single
+portable directory name; Windows also reserves device names with extensions.
+See [Microsoft's filename rules](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file).
+
+The loader validates IDs even when the source-lock self-digest is correct.
+Preflight, both agent lanes, and batch resume use the same guarded task-output
+directory helpers. They reject linked directories and check pinned directory
+identities before each operation. Reads remain bounded; writes use checked
+file descriptors and reject symlinks, hardlinks, and special files. New task
+artifacts still use exclusive creation. Batch progress appends and summary
+replacement use the same file checks.
+
+Keep output roots under operator control during a run. Directory identity
+checks detect replacements but do not provide a cross-platform directory lock
+against a malicious host. Unsafe legacy IDs must be corrected in a regenerated
+source lock, with its digest recomputed, before execution. Preserve any earlier
+reports rather than moving them into a differently identified task directory.
+
 Resume validates the full report schema, task ID, `sourceTaskDigest`, and
 `reportDigest`. The source-task digest binds every field of the locked task,
 including its base commit, image, issue text, and artifact digests. An offline

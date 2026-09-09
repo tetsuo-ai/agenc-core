@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { appendFile, lstat, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { EvalExecutorError, findPilotTask } from "./source-lock.js";
-import { decodeStrictJson, readBoundedRegularFile } from "../eval-pilot/safe-io.js";
+import { assertPilotInstanceId, EvalExecutorError, findPilotTask } from "./source-lock.js";
+import { decodeStrictJson } from "../eval-pilot/safe-io.js";
 import { validateAgentRunReport } from "./agent-run-report.js";
 import { EVAL_EXECUTOR_MAXIMUM_ARTIFACT_BYTES, type AgentRunReport, type LoadedPilotSourceLock, type PilotSourceLockTask } from "./types.js";
+import { findTaskOutputDirectory, prepareOutputDirectory, readTaskOutputFile, writeTaskOutputFile } from "./task-output.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -119,7 +119,6 @@ export function createRealAgentBatchDeps(options: {
   readonly keyCommand?: string;
   readonly runTask: (taskId: string) => Promise<{ readonly outcome: string }>;
 }): RealAgentBatchDeps {
-  const progressLog = path.join(options.outputDir, "batch-progress.log");
   return {
     runTask: options.runTask,
     pullImage: async (imageReference) => {
@@ -128,20 +127,19 @@ export function createRealAgentBatchDeps(options: {
       });
     },
     loadReport: async (task) => {
+      assertPilotInstanceId(task.instanceId);
       const taskDir = path.join(options.outputDir, task.instanceId);
       const reportPath = path.join(taskDir, "agent-run-report.json");
       const failure = new EvalExecutorError([
         `Cannot resume ${task.instanceId}: prior report is unreadable, invalid, or not bound to this real-provider source-lock task. Move the task directory ${taskDir} aside or choose a new output directory before rerunning.`,
       ]);
       try {
-        await lstat(reportPath);
-      } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
-        throw failure;
-      }
-      try {
+        const directory = await findTaskOutputDirectory(options.outputDir, task.instanceId);
+        if (directory === null) return null;
+        const bytes = await readTaskOutputFile(directory, "agent-run-report.json", EVAL_EXECUTOR_MAXIMUM_ARTIFACT_BYTES);
+        if (bytes === null) return null;
         const report = validateAgentRunReport(
-          decodeStrictJson(await readBoundedRegularFile(reportPath, EVAL_EXECUTOR_MAXIMUM_ARTIFACT_BYTES), reportPath),
+          decodeStrictJson(bytes, reportPath),
           task,
         );
         if (report.egress === null) throw failure;
@@ -163,8 +161,7 @@ export function createRealAgentBatchDeps(options: {
     log: async (line) => {
       const stamped = `[${new Date().toISOString()}] ${line}\n`;
       process.stdout.write(stamped);
-      await mkdir(options.outputDir, { recursive: true });
-      await appendFile(progressLog, stamped);
+      await writeTaskOutputFile(await prepareOutputDirectory(options.outputDir), "batch-progress.log", stamped, "append");
     },
     setKeyEnv: (name, value) => {
       process.env[name] = value;
@@ -176,8 +173,5 @@ export async function writeRealAgentBatchSummary(
   outputDir: string,
   summary: RealAgentBatchSummary,
 ): Promise<string> {
-  await mkdir(outputDir, { recursive: true });
-  const summaryPath = path.join(outputDir, "batch-summary.json");
-  await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
-  return summaryPath;
+  return writeTaskOutputFile(await prepareOutputDirectory(outputDir), "batch-summary.json", `${JSON.stringify(summary, null, 2)}\n`, "replace");
 }

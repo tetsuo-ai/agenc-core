@@ -1,5 +1,5 @@
 import path from "node:path";
-import { computeDocumentDigest, type Sha256Digest } from "../eval-contract/index.js";
+import { assertPortableRelativePath, computeDocumentDigest, type Sha256Digest } from "../eval-contract/index.js";
 import {
   decodeStrictJson,
   loadArtifact,
@@ -37,6 +37,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function assertString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new EvalExecutorError([`${label} must be a non-empty string`]);
+  }
+  return value;
+}
+
+export function assertPilotInstanceId(value: unknown, label = "instanceId"): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value)) {
+    throw new EvalExecutorError([`${label} must be a portable identifier of 1 to 128 ASCII characters starting with a letter or digit`]);
+  }
+  try {
+    assertPortableRelativePath(value, label);
+  } catch {
+    throw new EvalExecutorError([`${label} must not be a reserved name or end with a period`]);
   }
   return value;
 }
@@ -102,7 +114,7 @@ function assertTask(value: unknown, index: number): PilotSourceLockTask {
   return {
     ordinal,
     language: assertString(value.language, `${label}.language`),
-    instanceId: assertString(value.instanceId, `${label}.instanceId`),
+    instanceId: assertPilotInstanceId(value.instanceId, `${label}.instanceId`),
     categories: assertStringArray(value.categories, `${label}.categories`),
     stressors: assertStringArray(value.stressors, `${label}.stressors`),
     sourceRowDigest: sourceRowDigest as Sha256Digest,
@@ -158,9 +170,9 @@ function assertPilotSourceLock(value: unknown, file: string): PilotSourceLock {
     throw new EvalExecutorError([`${file} tasks must be a non-empty array`]);
   }
   const tasks = value.tasks.map((task, index) => assertTask(task, index));
-  const instanceIds = new Set(tasks.map((task) => task.instanceId));
+  const instanceIds = new Set(tasks.map((task) => task.instanceId.toLowerCase()));
   if (instanceIds.size !== tasks.length) {
-    throw new EvalExecutorError([`${file} tasks must have unique instanceIds`]);
+    throw new EvalExecutorError([`${file} tasks must have unique instanceIds ignoring case`]);
   }
   const lock: PilotSourceLock = {
     kind: PILOT_SOURCE_LOCK_KIND,
@@ -211,6 +223,7 @@ export async function loadPilotSourceLock(lockFile: string): Promise<LoadedPilot
 }
 
 export function findPilotTask(lock: PilotSourceLock, instanceId: string): PilotSourceLockTask {
+  assertPilotInstanceId(instanceId);
   const task = lock.tasks.find((candidate) => candidate.instanceId === instanceId);
   if (!task) {
     throw new EvalExecutorError([

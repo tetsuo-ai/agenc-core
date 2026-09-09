@@ -1,6 +1,5 @@
 import { randomBytes, randomInt } from "node:crypto";
 import { resolve4 } from "node:dns/promises";
-import { mkdir, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
@@ -28,6 +27,7 @@ import {
 import { runTrustSuiteFromFiles } from "./trust-run.js";
 import type { LoadedPilotSourceLock } from "./types.js";
 import { decodeVerifierBundle } from "./verifier-bundle.js";
+import { prepareTaskOutputDirectory, writeTaskOutputFile } from "./task-output.js";
 
 const DEFAULT_LOCK_PATH =
   "eval/suites/competitive-coding/1.0.0/task-sets/pilot/1.0.0/source-lock.json";
@@ -156,6 +156,8 @@ async function preflight(options: {
 }): Promise<number> {
   const loaded = await loadPilotSourceLock(options.lockPath);
   const task = findPilotTask(loaded.lock, options.taskId);
+  const output = await prepareTaskOutputDirectory(options.outputDir, task.instanceId);
+  const taskDir = output.path;
   const inputs: PreflightTaskInputs = {
     task,
     bundle: decodeVerifierBundle(
@@ -171,17 +173,14 @@ async function preflight(options: {
   const result = await runTriplePreflight(runner, inputs, DEFAULT_PREFLIGHT_TIMEOUTS, {
     parserFallbackImage: options.parserFallbackImage,
   });
-  const taskDir = path.join(options.outputDir, task.instanceId);
-  await mkdir(taskDir, { recursive: true });
   for (const run of result.runs) {
-    await writeFile(
-      path.join(taskDir, `preflight-run-${run.runIndex}.json`),
+    await writeTaskOutputFile(
+      output, `preflight-run-${run.runIndex}.json`,
       `${JSON.stringify(run, null, 2)}\n`,
-      { flag: "wx" },
     );
   }
-  await writeFile(
-    path.join(taskDir, "preflight-summary.json"),
+  await writeTaskOutputFile(
+    output, "preflight-summary.json",
     `${JSON.stringify({
       taskId: result.taskId,
       qualified: result.qualified,
@@ -192,17 +191,15 @@ async function preflight(options: {
         evidenceDigest: run.evidenceDigest,
       })),
     }, null, 2)}\n`,
-    { flag: "wx" },
   );
   if (result.qualified && options.operatorTaskDigest) {
     const evidence = mintUpstreamPreflightEvidence(
       result,
       options.operatorTaskDigest as `sha256:${string}`,
     );
-    await writeFile(
-      path.join(taskDir, "upstream-preflight-evidence.json"),
+    await writeTaskOutputFile(
+      output, "upstream-preflight-evidence.json",
       `${JSON.stringify(evidence, null, 2)}\n`,
-      { flag: "wx" },
     );
   }
   process.stdout.write(`${JSON.stringify({
@@ -224,6 +221,8 @@ async function runAgent(options: {
 }): Promise<number> {
   const loaded = await loadPilotSourceLock(options.lockPath);
   const task = findPilotTask(loaded.lock, options.taskId);
+  const output = await prepareTaskOutputDirectory(options.outputDir, task.instanceId);
+  const taskDir = output.path;
   const runner = new DockerContainerRunner();
   await runner.environment();
   const { report, patchBytes, rawAgentResult } = await runAgentOnTask(
@@ -243,18 +242,15 @@ async function runAgent(options: {
     DEFAULT_PREFLIGHT_TIMEOUTS,
     { parserFallbackImage: options.parserFallbackImage },
   );
-  const taskDir = path.join(options.outputDir, task.instanceId);
-  await mkdir(taskDir, { recursive: true });
-  await writeFile(
-    path.join(taskDir, "agent-run-report.json"),
+  await writeTaskOutputFile(
+    output, "agent-run-report.json",
     `${JSON.stringify(report, null, 2)}\n`,
-    { flag: "wx" },
   );
   if (patchBytes !== null) {
-    await writeFile(path.join(taskDir, "agent-patch.diff"), patchBytes, { flag: "wx" });
+    await writeTaskOutputFile(output, "agent-patch.diff", patchBytes);
   }
   if (rawAgentResult !== null && rawAgentResult.length > 0) {
-    await writeFile(path.join(taskDir, "agent-result.json"), rawAgentResult, { flag: "wx" });
+    await writeTaskOutputFile(output, "agent-result.json", rawAgentResult);
   }
   process.stdout.write(`${JSON.stringify({
     taskId: report.taskId,
@@ -288,6 +284,8 @@ async function runRealProviderAgentTask(
   options: RealProviderRunConfig,
 ): Promise<{ readonly outcome: string; readonly summary: Record<string, unknown> }> {
   const task = findPilotTask(loaded.lock, taskId);
+  const output = await prepareTaskOutputDirectory(options.outputDir, task.instanceId);
+  const taskDir = output.path;
   const runner = new DockerContainerRunner();
   await runner.environment();
   // Resolve the provider host once, on the host, to a set of pinned IPs the
@@ -319,18 +317,15 @@ async function runRealProviderAgentTask(
     DEFAULT_PREFLIGHT_TIMEOUTS,
     { parserFallbackImage: options.parserFallbackImage },
   );
-  const taskDir = path.join(options.outputDir, task.instanceId);
-  await mkdir(taskDir, { recursive: true });
-  await writeFile(
-    path.join(taskDir, "agent-run-report.json"),
+  await writeTaskOutputFile(
+    output, "agent-run-report.json",
     `${JSON.stringify(report, null, 2)}\n`,
-    { flag: "wx" },
   );
   if (patchBytes !== null) {
-    await writeFile(path.join(taskDir, "agent-patch.diff"), patchBytes, { flag: "wx" });
+    await writeTaskOutputFile(output, "agent-patch.diff", patchBytes);
   }
   if (rawAgentResult !== null && rawAgentResult.length > 0) {
-    await writeFile(path.join(taskDir, "agent-result.json"), rawAgentResult, { flag: "wx" });
+    await writeTaskOutputFile(output, "agent-result.json", rawAgentResult);
   }
   return {
     outcome: report.outcome,

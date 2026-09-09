@@ -1,7 +1,7 @@
 import { mkdir, readFile, symlink, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createRealAgentBatchDeps, runRealAgentBatch, type RealAgentBatchDeps } from "../../src/eval-executor/batch.js";
+import { createRealAgentBatchDeps, runRealAgentBatch, writeRealAgentBatchSummary, type RealAgentBatchDeps } from "../../src/eval-executor/batch.js";
 import { digestCanonicalJson } from "../../src/eval-contract/index.js";
 import { computeOverlayManifestDigest, type OverlayManifest } from "../../src/eval-executor/overlay-manifest.js";
 import type { AgentRunOutcome, AgentRunReport, LoadedPilotSourceLock, PilotSourceLockTask } from "../../src/eval-executor/types.js";
@@ -173,6 +173,30 @@ function makeDeps(overrides: {
 }
 
 describe("eval executor real-agent batch", () => {
+  test("refuses direct resume lookup outside outputDir even for a self-consistent report", async () => {
+    const fixture = await createDiskBatch();
+    const outside = await workspaces.create();
+    const task = { ...fixture.loaded.lock.tasks[0]!, instanceId: path.relative(fixture.outputDir, outside) };
+    const bytes = JSON.stringify(makeReport(task));
+    const outsideReport = path.join(outside, "agent-run-report.json");
+    await writeFile(outsideReport, bytes);
+    const deps = createRealAgentBatchDeps({ outputDir: fixture.outputDir, runTask: fixture.runTask });
+    await expect(deps.loadReport(task)).rejects.toThrow(/instanceId/u);
+    expect(await readFile(outsideReport, "utf8")).toBe(bytes);
+    expect(fixture.runTask).not.toHaveBeenCalled();
+  });
+
+  test.runIf(process.platform !== "win32")("refuses a linked batch summary instead of overwriting an outside file", async () => {
+    const output = await workspaces.create();
+    const outside = path.join(await workspaces.create(), "sentinel");
+    await writeFile(outside, "unchanged");
+    await symlink(outside, path.join(output, "batch-summary.json"));
+    await expect(writeRealAgentBatchSummary(output, {
+      total: 0, completed: 0, skipped: 0, driverErrors: 0, verifiedFixes: 0, results: [],
+    })).rejects.toThrow(/regular file/u);
+    expect(await readFile(outside, "utf8")).toBe("unchanged");
+  });
+
   test.each([
     ["empty", () => ""],
     ["truncated", () => '{"taskId":"t-a",'],

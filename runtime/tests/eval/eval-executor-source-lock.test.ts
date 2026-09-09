@@ -8,7 +8,9 @@ import {
   findPilotTask,
   loadPilotSourceLock,
   readPilotArtifact,
+  type PilotSourceLock,
 } from "../../src/eval-executor/index.js";
+import { computeDocumentDigest } from "../../src/eval-contract/index.js";
 
 const committedLock = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -24,6 +26,38 @@ describe("eval executor pilot source-lock loader", () => {
 
   afterEach(async () => {
     await rm(scratch, { recursive: true, force: true });
+  });
+
+  async function copyLockWithIds(ids: readonly string[]): Promise<string> {
+    const original = JSON.parse(await readFile(committedLock, "utf8")) as PilotSourceLock;
+    const changed = {
+      ...original,
+      tasks: original.tasks.map((task, index) => ids[index] === undefined ? task : { ...task, instanceId: ids[index]! }),
+    };
+    const copied = path.join(scratch, "source-lock.json");
+    await mkdir(path.join(scratch, "cas", "sha256"), { recursive: true });
+    await writeFile(copied, JSON.stringify({ ...changed, documentDigest: computeDocumentDigest(changed) }));
+    return copied;
+  }
+
+  test.each([
+    "../../outside", "../outside", "/outside", "C:\\outside", "C:outside", "\\\\server\\share",
+    ".", "..", "task/child", "task\\child", "", "task\0name", "task\nname", "task\tname",
+    "task.", "task ", "task name", "CON", "nul.txt", "COM1.log", "LPT9", "task:stream",
+    "task?name", "task*name", "task|name", "a".repeat(129),
+  ])("rejects unsafe instance ID %j even in a self-digested lock", async (instanceId) => {
+    const copied = await copyLockWithIds([instanceId]);
+    await expect(loadPilotSourceLock(copied)).rejects.toThrow(/instanceId/u);
+  });
+
+  test("rejects case-folding ID collisions before portable output directories can alias", async () => {
+    const copied = await copyLockWithIds(["Owner__Repo-123", "owner__repo-123"]);
+    await expect(loadPilotSourceLock(copied)).rejects.toThrow(/unique instanceIds/iu);
+  });
+
+  test.each(["owner__repo-123", "Owner__Repo.Name-123", "a", "a".repeat(128)])("accepts portable instance ID %j", async (instanceId) => {
+    const copied = await copyLockWithIds([instanceId]);
+    expect((await loadPilotSourceLock(copied)).lock.tasks[0]!.instanceId).toBe(instanceId);
   });
 
   test("loads the committed frozen lock and resolves its CAS root", async () => {
