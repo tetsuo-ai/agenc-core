@@ -107,6 +107,13 @@ Resume validates the full report schema, task ID, `sourceTaskDigest`, and
 including its base commit, image, issue text, and artifact digests. An offline
 mock-provider report cannot stand in for a real-provider result.
 
+New reports also carry the versioned `overlayManifest`. Resume checks its
+required components and execution mode, then recomputes its digest and checks
+the sidecar digest. Legacy reports without this manifest are rejected with a
+recovery message. Preserve them for inspection and rerun in a new output
+directory. Do not add a manifest to an old report or recompute its stored digest
+as a substitute for running the attested overlay.
+
 An unreadable, malformed, incomplete, oversized, or mismatched report becomes
 a `driver_error`. The executor leaves its task directory unchanged and does
 not pull an image, refresh a key, or run that task. Other tasks continue.

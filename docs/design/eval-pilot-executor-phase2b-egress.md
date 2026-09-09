@@ -88,8 +88,38 @@ blackholed (`--dns 127.0.0.1`).
 
 A small deny-by-default HTTP `CONNECT` proxy shipped inside the read-only
 overlay (`overlay/proxy/allowlist-proxy.mjs`), run by the overlay's pinned
-`node`. It is added to `assertOverlayLayout()` and folded into
-`computeOverlayDigest()`, so the report attests which proxy enforced egress.
+`node`. The versioned overlay manifest includes both the proxy and its Node
+binary, along with the containment probe and the rest of the overlay.
+
+### Overlay manifest
+
+Every new agent report includes `overlayManifest`, with kind
+`agenc.eval.executor-overlay-manifest`, version `1.0.0`, and mode `offline` or
+`real-provider`. The manifest has two sorted arrays. `files` records each
+overlay-relative POSIX path, SHA-256 digest of the exact bytes, `sizeBytes`, and
+permission `mode` bits (`0o7777`). `links` records each internal symlink's path
+and literal target without recursively following directory aliases.
+
+The inventory includes every regular file under `node/`, `runtime/`, `mock/`,
+and `proxy/`. That includes the Node binary and distribution, compatibility
+libraries, runtime entrypoint, chunks and dependencies, raw runtime `VERSION`,
+mock provider, proxy, probe, and added helper files. Required entrypoints must
+be regular files. The runtime `VERSION` must exist and be nonempty. Unexpected
+top-level entries, special files, broken links, and links outside the overlay
+are rejected before a task container starts.
+
+The manifest digest uses the canonical JSON domain
+`agenc.eval.executor-overlay-manifest.v1`. Real-provider reports use that same
+digest for `egress.sidecarOverlayDigest` and the overlay input to
+`environmentDigest`. Offline reports use it in their environment digest too.
+The complete manifest is part of `reportDigest`. Changing a sidecar program,
+probe, runtime file, dependency, Node binary, library, or internal link changes
+the attestation.
+
+This records the staged inputs before execution. The operator must keep the
+host overlay unchanged during the run. A read-only container mount does not
+prevent a host process from editing the source directory, and the manifest
+does not claim authenticity against a malicious host.
 
 Config via env (delivered by `-e`): `AGENC_PROXY_ALLOW_HOST` (exact host),
 `AGENC_PROXY_ALLOW_PORT` (443), `AGENC_PROXY_PIN_IPS` (host-resolved A

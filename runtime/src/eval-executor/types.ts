@@ -1,4 +1,5 @@
 import type { Sha256Digest } from "../eval-contract/index.js";
+import type { OverlayManifest } from "./overlay-manifest.js";
 
 /** Media types pinned by the frozen pilot source lock. */
 export const PILOT_SOURCE_LOCK_KIND = "agenc.eval.pilot-source-lock";
@@ -301,6 +302,7 @@ export interface AgentRunReport {
   readonly failureDetail: string | null;
   /** Present only for the real-provider lane; null for the offline mock lane. */
   readonly egress: EgressReport | null;
+  readonly overlayManifest: OverlayManifest;
   readonly environmentDigest: Sha256Digest;
   readonly reportDigest: Sha256Digest;
 }

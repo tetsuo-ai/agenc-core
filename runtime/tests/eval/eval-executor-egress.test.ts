@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -238,6 +238,7 @@ describe("real-provider lane gating (fake lane, no docker)", () => {
     const bin = path.join(overlayDir, "runtime", "node_modules", "@tetsuo-ai", "runtime", "dist", "bin");
     await mkdir(bin, { recursive: true });
     await writeFile(path.join(bin, "agenc.js"), "");
+    await writeFile(path.join(bin, "..", "VERSION"), "0.17.0\n");
     await mkdir(path.join(overlayDir, "mock"), { recursive: true });
     await writeFile(path.join(overlayDir, "mock", "serve.mjs"), "");
     await mkdir(path.join(overlayDir, "proxy"), { recursive: true });
@@ -289,6 +290,43 @@ describe("real-provider lane gating (fake lane, no docker)", () => {
     expect(state.tornDown).toBe(true);
     // The agent script (HTTPS_PROXY + agenc.js) must never have run.
     expect(runner.execs.some((e) => e.script.includes("HTTPS_PROXY"))).toBe(false);
+  });
+
+  test.each([
+    "node/bin/node", "node/compat/libatomic.so.1", "mock/serve.mjs",
+    "runtime/node_modules/@tetsuo-ai/runtime/dist/bin/agenc.js",
+    "runtime/node_modules/@tetsuo-ai/runtime/dist/VERSION",
+    "proxy/allowlist-proxy.mjs", "proxy/eval-egress-probe.mjs",
+  ])("binds a one-byte change to %s into both reported environment digests", async (relativePath) => {
+    const runner = new FakeRunner("");
+    const { factory } = laneFactory(ALL_TRUE, runner);
+    const first = await runRealProviderAgentOnTask(runner, factory, inputs(), config());
+    const identical = await runRealProviderAgentOnTask(runner, factory, inputs(), config());
+    expect(identical.report.egress?.sidecarOverlayDigest).toBe(first.report.egress?.sidecarOverlayDigest);
+    expect(identical.report.environmentDigest).toBe(first.report.environmentDigest);
+    await appendFile(path.join(overlayDir, relativePath), "1");
+    const changed = await runRealProviderAgentOnTask(runner, factory, inputs(), config());
+    expect(changed.report.egress?.sidecarOverlayDigest).not.toBe(first.report.egress?.sidecarOverlayDigest);
+    expect(changed.report.environmentDigest).not.toBe(first.report.environmentDigest);
+  });
+
+  test("binds added runtime helpers into the reported environment", async () => {
+    const runner = new FakeRunner("");
+    const { factory } = laneFactory(ALL_TRUE, runner);
+    const first = await runRealProviderAgentOnTask(runner, factory, inputs(), config());
+    await writeFile(path.join(overlayDir, "runtime", "node_modules", "@tetsuo-ai", "runtime", "dist", "helper.mjs"), "export const value = 1;\n");
+    const changed = await runRealProviderAgentOnTask(runner, factory, inputs(), config());
+    expect(changed.report.egress?.sidecarOverlayDigest).not.toBe(first.report.egress?.sidecarOverlayDigest);
+    expect(changed.report.environmentDigest).not.toBe(first.report.environmentDigest);
+  });
+
+  test("rejects a missing runtime VERSION before creating a lane", async () => {
+    await rm(path.join(overlayDir, "runtime", "node_modules", "@tetsuo-ai", "runtime", "dist", "VERSION"));
+    const runner = new FakeRunner("");
+    let created = false;
+    const factory = async (): Promise<EgressLane> => { created = true; throw new Error("must not create lane"); };
+    await expect(runRealProviderAgentOnTask(runner, factory, inputs(), config())).rejects.toThrow(/VERSION/u);
+    expect(created).toBe(false);
   });
 
   test("passing probes + empty patch is contained; key delivered via envPassthrough, never in argv", async () => {

@@ -1,4 +1,3 @@
-import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { digestCanonicalJson, sha256Digest, type Sha256Digest } from "../eval-contract/index.js";
 import {
@@ -18,6 +17,7 @@ import {
 } from "./egress.js";
 import { EvalExecutorError } from "./source-lock.js";
 import { computeSourceTaskDigest, REPORT_DIGEST_DOMAIN } from "./agent-run-report.js";
+import { computeOverlayManifestDigest, readOverlayManifest } from "./overlay-manifest.js";
 import type {
   AgentRunOutcome,
   AgentRunReport,
@@ -34,7 +34,6 @@ import {
   AGENT_HELPER_DIR,
   AGENT_HOME,
   AGENT_RUNTIME_ENTRY,
-  OVERLAY_AGENT_ENTRY_SUBPATH,
   OVERLAY_CONTAINER_PATH,
   OVERLAY_NODE,
   OVERLAY_NODE_COMPAT_LIB,
@@ -110,51 +109,7 @@ export async function assertOverlayLayout(
   overlay: AgentOverlay,
   options: { readonly egress?: boolean } = {},
 ): Promise<void> {
-  const required = [
-    path.join(overlay.hostDir, "node", "bin", "node"),
-    // Shim for task images that lack libatomic.so.1 (portable Node needs
-    // it); missing staging fails fast here instead of as an opaque loader
-    // error inside the container.
-    path.join(overlay.hostDir, "node", "compat", "libatomic.so.1"),
-    path.join(overlay.hostDir, OVERLAY_AGENT_ENTRY_SUBPATH),
-    path.join(overlay.hostDir, "mock", "serve.mjs"),
-    // The real-model lane also needs the proxy sidecar and containment probe.
-    ...(options.egress
-      ? [
-        path.join(overlay.hostDir, "proxy", "allowlist-proxy.mjs"),
-        path.join(overlay.hostDir, "proxy", "eval-egress-probe.mjs"),
-      ]
-      : []),
-  ];
-  for (const file of required) {
-    try {
-      await access(file);
-    } catch {
-      throw new EvalExecutorError([`agent overlay is missing ${file}`]);
-    }
-  }
-}
-
-/**
- * Attest which agent build is under test by digesting the overlay's runtime
- * entrypoint (and its VERSION when present). Without this the report cannot
- * say which agenc.js produced an outcome.
- */
-async function computeOverlayDigest(overlay: AgentOverlay): Promise<Sha256Digest> {
-  const entry = await readFile(path.join(overlay.hostDir, OVERLAY_AGENT_ENTRY_SUBPATH));
-  let version = "";
-  try {
-    version = await readFile(
-      path.join(overlay.hostDir, "runtime", "node_modules", "@tetsuo-ai", "runtime", "dist", "VERSION"),
-      "utf8",
-    );
-  } catch {
-    version = "unknown";
-  }
-  return digestCanonicalJson("agenc.eval.executor-agent-overlay.v1", {
-    entryDigest: sha256Digest(entry),
-    version: version.trim(),
-  });
+  await readOverlayManifest(overlay, options);
 }
 
 /**
@@ -424,10 +379,10 @@ export async function runAgentOnTask(
   timeouts: PreflightTimeouts = DEFAULT_PREFLIGHT_TIMEOUTS,
   options: PreflightExecutionOptions = {},
 ): Promise<AgentRunArtifacts> {
-  await assertOverlayLayout(config.overlay);
+  const overlayManifest = await readOverlayManifest(config.overlay);
   const startedAt = new Date().toISOString();
   const environment = await runner.environment();
-  const overlayDigest = await computeOverlayDigest(config.overlay);
+  const overlayDigest = computeOverlayManifestDigest(overlayManifest);
   const environmentDigest = digestCanonicalJson(ENVIRONMENT_DIGEST_DOMAIN, {
     ...environment,
     image: inputs.task.image,
@@ -503,6 +458,7 @@ export async function runAgentOnTask(
     outcome: outcome ?? "infrastructure_error",
     failureDetail,
     egress: null,
+    overlayManifest,
     environmentDigest,
   };
   const report: AgentRunReport = {
@@ -612,7 +568,7 @@ export async function runRealProviderAgentOnTask(
   timeouts: PreflightTimeouts = DEFAULT_PREFLIGHT_TIMEOUTS,
   options: PreflightExecutionOptions = {},
 ): Promise<AgentRunArtifacts> {
-  await assertOverlayLayout(config.overlay, { egress: true });
+  const overlayManifest = await readOverlayManifest(config.overlay, { egress: true });
   const secret = process.env[config.keyEnvVar];
   if (secret === undefined || secret.length === 0) {
     throw new EvalExecutorError([`${config.keyEnvVar} is not set in the executor environment`]);
@@ -629,7 +585,7 @@ export async function runRealProviderAgentOnTask(
   assertProviderBaseUrl(config);
   const startedAt = new Date().toISOString();
   const environment = await runner.environment();
-  const overlayDigest = await computeOverlayDigest(config.overlay);
+  const overlayDigest = computeOverlayManifestDigest(overlayManifest);
   const environmentDigest = digestCanonicalJson(ENVIRONMENT_DIGEST_DOMAIN, {
     ...environment,
     image: inputs.task.image,
@@ -749,6 +705,7 @@ export async function runRealProviderAgentOnTask(
     outcome: outcome ?? "infrastructure_error",
     failureDetail,
     egress,
+    overlayManifest,
     environmentDigest,
   };
   const report: AgentRunReport = {

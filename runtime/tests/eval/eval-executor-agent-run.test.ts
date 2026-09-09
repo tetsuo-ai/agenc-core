@@ -188,6 +188,7 @@ async function makeOverlay(): Promise<string> {
   );
   await mkdir(runtimeBin, { recursive: true });
   await writeFile(path.join(runtimeBin, "agenc.js"), "// fake agent build\n");
+  await writeFile(path.join(runtimeBin, "..", "VERSION"), "0.17.0\n");
   await mkdir(path.join(dir, "mock"), { recursive: true });
   await writeFile(path.join(dir, "mock", "serve.mjs"), "");
   return dir;

@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { digestCanonicalJson, type Sha256Digest } from "../eval-contract/index.js";
 import { EvalExecutorError } from "./source-lock.js";
+import { computeOverlayManifestDigest, OverlayManifestSchema } from "./overlay-manifest.js";
 import type { AgentRunReport, PilotSourceLockTask } from "./types.js";
 
 export const REPORT_DIGEST_DOMAIN = "agenc.eval.executor-agent-run-report.v1";
@@ -69,6 +70,7 @@ const ReportSchema = z.strictObject({
     patchKeyScan: z.enum(["clean", "key-substring-found", "not-run"]),
   }).nullable(),
   environmentDigest: DigestSchema,
+  overlayManifest: OverlayManifestSchema,
   reportDigest: DigestSchema,
 }) satisfies z.ZodType<AgentRunReport>;
 
@@ -77,11 +79,19 @@ export function computeSourceTaskDigest(task: PilotSourceLockTask): Sha256Digest
 }
 
 export function validateAgentRunReport(value: unknown, task: PilotSourceLockTask): AgentRunReport {
+  if (typeof value === "object" && value !== null && !("overlayManifest" in value)) {
+    throw new EvalExecutorError(["Agent run report lacks the versioned overlay manifest; preserve the old report and rerun in a new output directory"]);
+  }
   const parsed = ReportSchema.safeParse(value);
   if (!parsed.success) {
     throw new EvalExecutorError(["Agent run report does not match the complete report schema"]);
   }
   const report = parsed.data;
+  if ((report.egress === null) !== (report.overlayManifest.mode === "offline") || (
+    report.egress !== null && report.egress.sidecarOverlayDigest !== computeOverlayManifestDigest(report.overlayManifest)
+  )) {
+    throw new EvalExecutorError(["Agent run report overlay manifest does not match its execution mode or sidecar digest"]);
+  }
   if (report.taskId !== task.instanceId || report.sourceTaskDigest !== computeSourceTaskDigest(task)) {
     throw new EvalExecutorError(["Agent run report does not match the source-lock task"]);
   }

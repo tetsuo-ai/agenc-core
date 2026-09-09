@@ -147,9 +147,12 @@ with the hidden verifier — all offline.
 - **Overlay:** the operator stages a directory with `node/` (official Node 26
   linux-x64), `runtime/` (extracted `agenc-runtime-*-linux-x64` release
   tarball), and `mock/serve.mjs` (the bundled offline provider). It is
-  bind-mounted read-only at `/agenc-overlay`. `assertOverlayLayout` checks the
-  three required entrypoints; `computeOverlayDigest` records which `agenc.js`
-  build was evaluated in the run report.
+  bind-mounted read-only at `/agenc-overlay`. `assertOverlayLayout` validates
+  the complete versioned manifest, including required entrypoints and a
+  nonempty runtime `VERSION`. Reports record every regular file and internal
+  symlink, including dependencies, Node, and compatibility libraries. The
+  manifest digest binds those inputs into the environment digest. See the
+  [overlay manifest contract](eval-pilot-executor-phase2b-egress.md#overlay-manifest).
 - **Provider:** always the in-container offline mock (`--network none`). There
   are no secrets in any container and no egress. This lane validates the
   pipeline mechanically; it does not yet measure a real model.

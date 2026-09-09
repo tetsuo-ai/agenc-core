@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createRealAgentBatchDeps, runRealAgentBatch, type RealAgentBatchDeps } from "../../src/eval-executor/batch.js";
 import { digestCanonicalJson } from "../../src/eval-contract/index.js";
+import { computeOverlayManifestDigest, type OverlayManifest } from "../../src/eval-executor/overlay-manifest.js";
 import type { AgentRunOutcome, AgentRunReport, LoadedPilotSourceLock, PilotSourceLockTask } from "../../src/eval-executor/types.js";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 
@@ -11,6 +12,16 @@ const workspaces = createTempWorkspaceFixture("agenc-batch-resume-");
 afterEach(async () => { await workspaces.cleanup(); });
 
 function makeReport(task: PilotSourceLockTask, outcome: AgentRunOutcome = "verified_fix") {
+  const overlayManifest: OverlayManifest = {
+    kind: "agenc.eval.executor-overlay-manifest", version: "1.0.0", mode: "real-provider",
+    files: [
+      "node/bin/node", "node/compat/libatomic.so.1", "mock/serve.mjs",
+      "runtime/node_modules/@tetsuo-ai/runtime/dist/bin/agenc.js",
+      "runtime/node_modules/@tetsuo-ai/runtime/dist/VERSION",
+      "proxy/allowlist-proxy.mjs", "proxy/eval-egress-probe.mjs",
+    ].sort().map((filePath) => ({ path: filePath, digest: digestOf("d"), sizeBytes: 1, mode: 0o644 })),
+    links: [],
+  };
   const reportBody = {
     taskId: task.instanceId,
     sourceTaskDigest: digestCanonicalJson("agenc.eval.executor-source-task.v1", task),
@@ -30,7 +41,7 @@ function makeReport(task: PilotSourceLockTask, outcome: AgentRunOutcome = "verif
     failureDetail: outcome === "verified_fix" ? null : "test failure",
     egress: {
       mode: "real-provider" as const, allowHost: "provider.invalid", keyExposure: "agent-env" as const,
-      sidecarOverlayDigest: digestOf("d"), oracleContainment: "contained" as const,
+      sidecarOverlayDigest: computeOverlayManifestDigest(overlayManifest), oracleContainment: "contained" as const,
       denyProbes: {
         noRouteOffNet: true, githubBlocked: true, dnsBlackholed: true,
         ipv6Absent: true, ipLiteralRejected: true, sniPinned: true,
@@ -38,6 +49,7 @@ function makeReport(task: PilotSourceLockTask, outcome: AgentRunOutcome = "verif
       patchKeyScan: "clean" as const,
     },
     environmentDigest: digestOf("e"),
+    overlayManifest,
   };
   return {
     ...reportBody,
@@ -170,6 +182,10 @@ describe("eval executor real-agent batch", () => {
     ["wrong task", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { taskId: "t-other" })],
     ["wrong source task", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { sourceTaskDigest: digestOf("f") })],
     ["legacy unbound", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { sourceTaskDigest: undefined })],
+    ["legacy unattested overlay", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { overlayManifest: undefined })],
+    ["mismatched overlay digest", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { egress: { ...report.egress, sidecarOverlayDigest: digestOf("f") } })],
+    ["wrong overlay lane", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { overlayManifest: { ...report.overlayManifest, mode: "offline" } })],
+    ["unsupported overlay manifest", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { overlayManifest: { ...report.overlayManifest, version: "0.0.0" } })],
     ["incomplete agent", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { agent: {} })],
     ["invalid outcome", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { outcome: "success" })],
     ["invalid timestamp", (report: ReturnType<typeof makeReport>) => serializeChangedReport(report, { finishedAt: "yesterday" })],
