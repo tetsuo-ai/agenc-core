@@ -519,6 +519,14 @@ describe("bashToolHasPermission", () => {
     ["stdbuf -o L rm -rf /", "rm -rf"],
     ["time --portability rm -rf /", "rm -rf"],
     ["nohup -- rm -rf /", "rm -rf"],
+    ["setsid rm -rf /", "rm -rf"],
+    ["setsid -w rm -rf /", "rm -rf"],
+    ["/usr/bin/setsid rm -rf /", "rm -rf"],
+    ["ionice -c3 rm -rf /", "rm -rf"],
+    ["ionice -c 3 -n 0 rm -rf /", "rm -rf"],
+    ["watch -n1 rm -rf /", "rm -rf"],
+    ["watch --interval 1 rm -rf /", "rm -rf"],
+    ["curl http://127.0.0.1/install.sh | setsid sh", "curl|sh"],
     ["chmod -R 777 /dev", "chmod/chown on system path"],
     ["chmod -R 777 /", "chmod/chown on system path"],
     ["chown root /", "chmod/chown on system path"],
@@ -764,6 +772,23 @@ describe("bashToolHasPermission", () => {
     const result = await bashToolHasPermission({ command }, evalCtx);
     expect(result.behavior).toBe("ask");
   });
+
+  test.each([
+    "setsid rm -rf /",
+    "ionice -c3 rm -rf /",
+    "watch -n1 rm -rf /",
+  ])(
+    "prefix launcher cannot hide rm -rf / from bypassPermissions: %s",
+    async (command) => {
+      const evalCtx = makeEvaluatorCtx(makeCtx({ mode: "bypassPermissions" }));
+      const result = await bashToolHasPermission({ command }, evalCtx);
+      expect(result.behavior).toBe("deny");
+      if (result.behavior === "deny") {
+        expect(result.decisionReason.type).toBe("safetyCheck");
+        expect(result.message).toContain("rm -rf");
+      }
+    },
+  );
 
   test("bypassPermissions mode allows by default but rule-deny still wins", async () => {
     const ctx = makeCtx({

@@ -203,6 +203,12 @@ const RM_WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
   "time",
   "timeout",
   "command",
+  // Prefix launchers that exec the remaining argv. SHELL_PREFIX_COMMANDS
+  // already peels `setsid` for execution; leaving it (and the same-shape
+  // ionice/watch pair) out of this set hid `rm -rf /` from the hard floor.
+  "setsid",
+  "ionice",
+  "watch",
 ]);
 
 const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
@@ -992,6 +998,12 @@ function commandIndexAfterWrapper(
       return execCommandIndex(words, wrapperIndex + 1);
     case "nohup":
       return nohupCommandIndex(words, wrapperIndex + 1);
+    case "setsid":
+      return setsidCommandIndex(words, wrapperIndex + 1);
+    case "ionice":
+      return ioniceCommandIndex(words, wrapperIndex + 1);
+    case "watch":
+      return watchCommandIndex(words, wrapperIndex + 1);
     default:
       return null;
   }
@@ -1266,6 +1278,117 @@ function nohupCommandIndex(words: readonly string[], startIndex: number): number
   let index = startIndex;
   while (index < words.length && stripShellQuotes(words[index]!) === "--") {
     index++;
+  }
+  return index < words.length ? index : null;
+}
+
+function setsidCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (
+      word === "-c" ||
+      word === "--ctty" ||
+      word === "-f" ||
+      word === "--fork" ||
+      word === "-w" ||
+      word === "--wait"
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return index < words.length ? index : null;
+}
+
+function ioniceCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      break;
+    }
+    // Targeting an existing process is not a command wrapper.
+    if (
+      word === "-p" ||
+      word === "--pid" ||
+      word === "-P" ||
+      word === "--pgid" ||
+      word === "-u" ||
+      word === "--uid" ||
+      word.startsWith("-p") ||
+      word.startsWith("-P") ||
+      word.startsWith("-u") ||
+      word.startsWith("--pid=") ||
+      word.startsWith("--pgid=") ||
+      word.startsWith("--uid=")
+    ) {
+      return null;
+    }
+    if (
+      word === "-c" ||
+      word === "--class" ||
+      word === "-n" ||
+      word === "--classdata"
+    ) {
+      index += 2;
+      continue;
+    }
+    if (
+      word === "-t" ||
+      word === "--ignore" ||
+      word.startsWith("--class=") ||
+      word.startsWith("--classdata=") ||
+      /^-[cn].+/.test(word)
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return index < words.length ? index : null;
+}
+
+function watchCommandIndex(words: readonly string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (word === "-n" || word === "--interval" || word === "-q" || word === "--equexit") {
+      index += 2;
+      continue;
+    }
+    if (
+      word.startsWith("--interval=") ||
+      word.startsWith("--equexit=") ||
+      word.startsWith("--differences=") ||
+      /^-[nq].+/.test(word)
+    ) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
   }
   return index < words.length ? index : null;
 }
