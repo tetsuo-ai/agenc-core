@@ -17,8 +17,12 @@ function isMissing(error: unknown): boolean {
 }
 
 async function inspect(filePath: string): Promise<BigIntStats | null> {
-  try { return await lstat(filePath, { bigint: true }); }
-  catch (error) { if (isMissing(error)) return null; throw error; }
+  try {
+    return await lstat(filePath, { bigint: true });
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
 }
 
 async function openDirectory(directory: string, create: boolean): Promise<DirectoryIdentity | null> {
