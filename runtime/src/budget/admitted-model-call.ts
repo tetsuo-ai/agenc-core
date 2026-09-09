@@ -67,7 +67,7 @@ function nonBlankString(value: unknown): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function accountingOptionsForProvider(
+export function accountingOptionsForProvider(
   provider: LLMProvider,
   factoryOptions: ProviderFactoryOptions,
   options: LLMChatOptions,
@@ -102,7 +102,7 @@ function accountingOptionsForProvider(
   };
 }
 
-function providerNativeToolsForAccounting(
+export function providerNativeToolsForAccounting(
   provider: LLMProvider,
   providerName: string,
   model: string,

@@ -8,7 +8,10 @@
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { compactConversation } from "./compact.js";
 import { isTransientProviderError } from "../../recovery/api-errors.js";
-import { CompactionReconstructionRequiredError } from "./transaction-types.js";
+import {
+  CompactionCannotReduceError,
+  CompactionReconstructionRequiredError,
+} from "./transaction-types.js";
 import {
   estimateMessagesTokens,
   isTruthyEnv,
@@ -115,6 +118,7 @@ export async function autoCompactIfNeeded(
    * was unavailable to anyone trying to act on it.
    */
   readonly skippedReason?: string;
+  readonly skippedCode?: CompactionCannotReduceError["code"];
 }> {
   if (querySource === "compact" || querySource === "session_memory") {
     return { wasCompacted: false };
@@ -172,6 +176,9 @@ export async function autoCompactIfNeeded(
       return {
         wasCompacted: false,
         consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1,
+        ...(error instanceof CompactionCannotReduceError
+          ? { skippedCode: error.code }
+          : {}),
         skippedReason:
           error instanceof Error && error.message.trim().length > 0
             ? error.message

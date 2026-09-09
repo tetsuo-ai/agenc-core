@@ -161,7 +161,9 @@ mid-turn outer gate consults only `AGENC_DISABLE_AUTO_COMPACT`. Setting
 `AGENC_DISABLE_COMPACT` alone still trips that gate, then
 `autoCompactIfNeeded` returns `wasCompacted: false`, and the turn ends
 with `mid_turn_compact_skipped` (`warning` cause `mid_turn_compact_failed`,
-`stopReason: "compact_failed"`). Keep-alive sessions stay promptable.
+`stopReason: "compact_failed"`). The canonical terminal is `turn_failed`
+with code `compact_failed`. Keep-alive sessions stay promptable, while
+daemon-backed `--print` / `--no-tui` exits 1.
 Env catalog: [env.md](env.md). Session survival:
 [daemon.md](daemon.md#compact-skip-stays-per-turn).
 

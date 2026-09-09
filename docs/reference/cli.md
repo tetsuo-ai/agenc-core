@@ -117,10 +117,10 @@ active turn.
   not skip mid-turn compact. The outer condition can still be met, auto returns
   `wasCompacted: false`, and the sampling loop emits `warning` cause
   `mid_turn_compact_failed`. Its message starts with
-  `mid_turn_compact_skipped`. The turn stop is `compact_failed`. Keep-alive
-  sessions stay promptable; daemon-backed `--print` reports the terminal
-  `turn_complete` and exits 0. The compatibility `runAgent` surface with
-  `keepAlive: false` still reports failure. See
+  `mid_turn_compact_skipped`. The turn emits `turn_failed` with code
+  `compact_failed`. Keep-alive sessions stay promptable. Daemon-backed
+  `--print` and `--no-tui` exit 1, and the compatibility `runAgent` surface
+  with `keepAlive: false` reports failure. See
   [daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 ---

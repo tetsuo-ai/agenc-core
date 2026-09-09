@@ -19,7 +19,10 @@ import {
   type AgenCRuntimeMessage,
 } from "./runtime-message-conversion.js";
 import { resetRelevantMemoryBudget } from "./attachment-state.js";
-import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
+import {
+  CompactionReconstructionRequiredError,
+  type CompactionCannotReduceError,
+} from "../services/compact/transaction-types.js";
 import {
   CompactionCleanupPendingError,
   finalizeCompactionTransaction,
@@ -61,6 +64,7 @@ interface AgenCAutoCompactResult {
   readonly consecutiveFailures?: number;
   /** Why an attempt declined to compact; surfaced to the turn. */
   readonly skippedReason?: string;
+  readonly skippedCode?: CompactionCannotReduceError["code"];
 }
 
 type AgenCCompactionResult = {
@@ -98,6 +102,25 @@ async function runAgenCAutoCompact(params: {
       params.ctx,
       { querySource: params.querySource },
     );
+    const request = buildSamplingRequestContract(
+      { ...state, messagesForQuery: [] },
+      params.session,
+      params.ctx,
+    );
+    const compactContext = {
+      ...toolUseContext,
+      options: {
+        ...toolUseContext.options,
+        tools: request.tools,
+        systemPrompt: request.baseInstructions,
+        ...(request.maxOutputTokens !== undefined
+          ? { maxOutputTokens: request.maxOutputTokens }
+          : {}),
+        ...(request.toolChoice !== undefined
+          ? { toolChoice: request.toolChoice }
+          : {}),
+      },
+    };
     const cacheSafeParams = {
       systemPrompt: [],
       userContext: {},
@@ -109,7 +132,7 @@ async function runAgenCAutoCompact(params: {
       await import("../services/compact/autoCompact.js");
     const result = await autoCompactIfNeeded(
       messages,
-      toolUseContext,
+      compactContext,
       cacheSafeParams,
       params.querySource,
       state.autoCompactTracking,
@@ -120,7 +143,11 @@ async function runAgenCAutoCompact(params: {
       // The reason the attempt declined rides along: without it the caller
       // sees a bare "did not compact" and the turn ends mid-plan with
       // nothing in the rollout to act on.
-      return compactionNotRun(result.consecutiveFailures, result.skippedReason);
+      return compactionNotRun(
+        result.consecutiveFailures,
+        result.skippedReason,
+        result.skippedCode,
+      );
     }
     const compactionResult = await toAgenCCompactionResult(
       result.compactionResult as AgenCCompactionResult,
@@ -259,11 +286,13 @@ function toCompactServiceResult(
 function compactionNotRun(
   consecutiveFailures?: number,
   skippedReason?: string,
+  skippedCode?: CompactionCannotReduceError["code"],
 ): AgenCAutoCompactResult {
   return {
     wasCompacted: false,
     ...(consecutiveFailures !== undefined ? { consecutiveFailures } : {}),
     ...(skippedReason !== undefined ? { skippedReason } : {}),
+    ...(skippedCode !== undefined ? { skippedCode } : {}),
   };
 }
 
@@ -318,6 +347,7 @@ export type InitialContextInjection =
 interface RunAutoCompactOptions {
   readonly propagateErrors?: boolean;
   readonly querySource?: string;
+  readonly onNoShrink?: () => void;
   /**
    * How many leading `state.messages` the durable rollout already holds.
    * An in-turn compaction may only offer those to the transaction: it maps
@@ -346,6 +376,7 @@ export interface AutoCompactResult {
   readonly compactionResult?: AgenCAutoCompactResult["compactionResult"];
   readonly consecutiveFailures?: number;
   readonly skippedReason?: string;
+  readonly skippedCode?: CompactionCannotReduceError["code"];
 }
 export type AutoCompactImpl = (
   ...args: unknown[]
@@ -554,7 +585,10 @@ async function runAutoCompact(
       return true;
     }
 
-    if (result.consecutiveFailures !== undefined && state) {
+    const deferredNoShrink =
+      result.skippedCode === "no_shrink" && options.onNoShrink !== undefined;
+    if (deferredNoShrink) options.onNoShrink?.();
+    if (result.consecutiveFailures !== undefined && state && !deferredNoShrink) {
       const previousTracking = state.autoCompactTracking;
       state.autoCompactTracking = {
         compacted: previousTracking?.compacted ?? false,
@@ -785,6 +819,7 @@ async function runPreSamplingCompact(
   ctx: TurnContext,
   querySource: string,
   state?: TurnState,
+  options: Pick<RunAutoCompactOptions, "onNoShrink"> = {},
 ): Promise<boolean> {
   const activeContextTokensBefore = getActiveContextTokenUsage(
     session,
@@ -809,7 +844,7 @@ async function runPreSamplingCompact(
       "context_limit",
       "pre_turn",
       state,
-      { propagateErrors: true, querySource },
+      { propagateErrors: true, querySource, ...options },
     );
     preSamplingCompacted = preSamplingCompacted || contextLimitCompacted;
   }

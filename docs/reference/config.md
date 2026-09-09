@@ -393,11 +393,12 @@ instead of parking the approval. `[budget]`, `[heartbeat]`, `[browser]`, and
 `[transaction_guard]` apply their documented subsystem defaults when absent.
 
 On a keep-alive (interactive) session, hitting `max_turns`,
-`max_budget_usd`, the no-progress backstop, or `compact_failed` ends
-that **turn** only. Send another prompt; the session stays running.
-Daemon-backed one-shot agents (`--print` / `--no-tui`) report the terminal
-`turn_complete` and exit 0. The compatibility `runAgent` surface with
-`keepAlive: false` still reports failure. See
+`max_budget_usd`, the no-progress backstop, or `compact_failed` fails
+that turn only. An `empty_response` after the retry also fails the turn.
+Each emits canonical `turn_failed` with the stop reason as its code.
+Send another prompt; the session stays running. Daemon-backed one-shot
+agents (`--print` / `--no-tui`) exit 1. The compatibility `runAgent` surface
+with `keepAlive: false` also reports failure. See
 [daemon.md](daemon.md#interactive-session-survival). Compact skip:
 [daemon.md](daemon.md#compact-skip-stays-per-turn).
 

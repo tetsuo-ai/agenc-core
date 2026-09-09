@@ -326,10 +326,10 @@ describe("reproducible install and release contract", () => {
       "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
     );
     expect(linuxKernelJob).toContain("numTotalTestSuites: 3");
-    expect(linuxKernelJob).toContain("numTotalTests: 9");
-    expect(linuxKernelJob).toContain("numPassedTests: 9");
+    expect(linuxKernelJob).toContain("numTotalTests: 15");
+    expect(linuxKernelJob).toContain("numPassedTests: 15");
     expect(linuxKernelJob).toContain(
-      "real-kernel sandbox lane passed 9 tests in 2 files with zero skipped",
+      "real-kernel sandbox lane passed 15 tests in 2 files with zero skipped",
     );
     expect(linuxKernelJob).toContain('bwrap_help="$(bwrap --help)"');
     expect(linuxKernelJob).toContain("grep -Fq -- '--ro-bind-fd'");

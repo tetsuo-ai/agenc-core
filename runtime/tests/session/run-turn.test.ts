@@ -1866,7 +1866,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         return failure;
       },
     } as unknown as ToolRegistry;
-    const { session } = mkSession({ provider, registry });
+    const { session, events } = mkSession({ provider, registry });
 
     const yielded: PhaseEvent[] = [];
     for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
@@ -1884,6 +1884,17 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       "Turn stopped by the no-progress backstop: the exact flaky_tool call failed 3 " +
         "times with the same error and was refused (count=3). No further progress " +
         "was being made. No task was completed.",
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_failed",
+          payload: expect.objectContaining({
+            code: "no_progress",
+            message: last.content,
+          }),
+        },
+      }),
     );
   });
 
@@ -2728,11 +2739,10 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: {
-          type: "turn_complete",
+          type: "turn_failed",
           payload: expect.objectContaining({
-            lastAgentMessage: expect.stringContaining(
-              "Editor edit request incomplete",
-            ),
+            code: "editor_request_failed",
+            message: expect.stringContaining("Editor edit request incomplete"),
           }),
         },
       }),
@@ -7829,6 +7839,17 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         e.msg.payload.cause === "pre_sampling_compact_failed",
     );
     expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_failed",
+          payload: expect.objectContaining({
+            code: "compact_failed",
+            message: "compact-blew-up",
+          }),
+        },
+      }),
+    );
     expect(yielded).toContainEqual(
       expect.objectContaining({
         type: "turn_complete",

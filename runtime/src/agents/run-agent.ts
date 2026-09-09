@@ -3858,13 +3858,15 @@ export async function* runAgent(
         stopReason === "max_turns" ||
         stopReason === "max_budget_usd" ||
         stopReason === "no_progress" ||
-        stopReason === "compact_failed";
+        stopReason === "compact_failed" ||
+        stopReason === "empty_response";
       // A bounded stop in a keep-alive (interactive) run is a per-turn
       // outcome: the backstop's message already reached the transcript,
       // and the user must be able to keep prompting. Ending the run here
       // bricked the whole session after one capped turn. One-shot agents
       // keep failing the run — there is nobody left to continue them.
-      if (stopReason === "error" || (boundedStop && !params.keepAlive)) {
+      let turnFailureMessage: string | undefined;
+      if (stopReason === "error" || boundedStop) {
         let message: string;
         if (stopReason === "max_turns") {
           message = `subagent exceeded maxTurns${params.maxTurns !== undefined ? ` (${params.maxTurns})` : ""}`;
@@ -3877,8 +3879,9 @@ export async function* runAgent(
         } else if (stopReason === "compact_failed") {
           message =
             (terminalError instanceof Error ? terminalError.message : undefined) ||
-            assistantText ||
             "subagent stopped because compaction could not shrink the context";
+        } else if (stopReason === "empty_response") {
+          message = "subagent returned no assistant output after a retry";
         } else if (terminalError instanceof Error) {
           message = terminalError.message;
         } else if (typeof terminalError === "string") {
@@ -3886,6 +3889,10 @@ export async function* runAgent(
         } else {
           message = assistantText || "subagent turn failed";
         }
+        turnFailureMessage = message;
+      }
+      if (stopReason === "error" || (boundedStop && !params.keepAlive)) {
+        const message = turnFailureMessage ?? "subagent turn failed";
         const result = await finishErroredRun({
           message,
           error:
@@ -3959,7 +3966,8 @@ export async function* runAgent(
         const completedTaskId = currentTaskId;
         const receipt: TaskTurnReceipt = {
           ...taskCorrelation(),
-          outcome: "completed",
+          outcome: boundedStop ? "errored" : "completed",
+          ...(turnFailureMessage !== undefined ? { reason: turnFailureMessage } : {}),
           ...(assistantText ? { message: assistantText } : {}),
           toolCallCount: turnToolCallCount,
         };
@@ -3992,11 +4000,13 @@ export async function* runAgent(
         }
         if (reuseBlockedReason === undefined) {
           live.status.markIdle(completedTurnId);
-          pendingWorkerTerminal = {
-            status: "completed",
-            turnId: completedTurnId,
-            ...(assistantText ? { message: assistantText } : {}),
-          };
+          pendingWorkerTerminal = turnFailureMessage !== undefined
+            ? { status: "errored", turnId: completedTurnId, error: turnFailureMessage }
+            : {
+                status: "completed",
+                turnId: completedTurnId,
+                ...(assistantText ? { message: assistantText } : {}),
+              };
           // The completed receipt owns the previous correlation. While parked,
           // teardown is a worker-lifecycle event, not a second task outcome.
           currentTaskId = undefined;
@@ -4010,7 +4020,9 @@ export async function* runAgent(
           kind: "turn_complete",
           turnId: completedTurnId,
           ...(completedTaskId !== undefined ? { taskId: completedTaskId } : {}),
-          ...(assistantText ? { finalMessage: assistantText } : {}),
+          ...(turnFailureMessage !== undefined
+            ? { finalMessage: turnFailureMessage }
+            : assistantText ? { finalMessage: assistantText } : {}),
           toolCallCount: turnToolCallCount,
           ...(params.worktree !== undefined
             ? {
@@ -4070,6 +4082,22 @@ export async function* runAgent(
       pendingWorkerTerminal?.status === "completed"
         ? pendingWorkerTerminal
         : undefined;
+    if (
+      params.keepAlive &&
+      currentTaskId === undefined &&
+      currentTurnReceiptCommitted &&
+      pendingWorkerTerminal?.status === "errored"
+    ) {
+      const message = pendingWorkerTerminal.error;
+      yield { kind: "run_error", error: message, ...taskCorrelation() };
+      return {
+        threadId: live.agentId,
+        durationMs: Date.now() - startedAt,
+        outcome: "errored",
+        error: new Error(message),
+        toolCallCount,
+      };
+    }
     if (merged.signal.aborted && parkedCompletion === undefined) {
       const reason = String(merged.signal.reason ?? "aborted");
       if (!currentTurnReceiptCommitted) {

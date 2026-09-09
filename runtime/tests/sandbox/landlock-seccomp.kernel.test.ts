@@ -196,6 +196,86 @@ describe("Landlock and seccomp on the native kernel", () => {
     expect(run.stdout).toContain("unix-open");
   });
 
+  it.each([
+    {
+      method: "spawnSync",
+      script: [
+        'const result = spawnSync("/bin/sh", ["-c", "printf success"], { encoding: "utf8" });',
+        "assert.equal(result.error, undefined);",
+        "assert.equal(result.status, 0);",
+        'assert.equal(result.stdout, "success");',
+      ].join("\n"),
+    },
+    {
+      method: "execSync",
+      script: 'assert.equal(execSync("printf success", { encoding: "utf8" }), "success");',
+    },
+    {
+      method: "spawnSync with input",
+      script: [
+        'const result = spawnSync("/bin/cat", [], { encoding: "utf8", input: "stdin payload", timeout: 2000 });',
+        "assert.equal(result.error, undefined);",
+        "assert.equal(result.status, 0);",
+        'assert.equal(result.stdout, "stdin payload");',
+      ].join("\n"),
+    },
+    {
+      method: "spawn with stdin end",
+      script: [
+        'const child = spawn("/bin/cat", [], { timeout: 2000 });',
+        'let output = "";',
+        'child.stdout.on("data", (chunk) => { output += chunk.toString(); });',
+        'child.stdin.on("error", (error) => { throw error; });',
+        'child.on("error", (error) => { throw error; });',
+        'child.on("close", (code) => { assert.equal(code, 0); assert.equal(output, "stdin payload"); });',
+        'child.stdin.end("stdin payload");',
+      ].join("\n"),
+    },
+  ])("keeps Node $method working under restricted seccomp", ({ script }) => {
+    assertKernelLaneCapabilities();
+    const program = createNetworkSeccompProgram("restricted");
+    const run = runWithSeccomp(program, [
+      process.execPath,
+      "--input-type=module",
+      "--eval",
+      [
+        'import assert from "node:assert/strict";',
+        'import { execSync, spawn, spawnSync } from "node:child_process";',
+        script,
+      ].join("\n"),
+    ]);
+    expect(run.error).toBeUndefined();
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stderr).toBe("");
+  });
+
+  it("allows Unix socket half-close while still denying socket connections", () => {
+    assertKernelLaneCapabilities();
+    const run = runWithSeccomp(createNetworkSeccompProgram("restricted"), [
+      PYTHON,
+      "-c",
+      [
+        "import errno, os, socket",
+        "sender, receiver = socket.socketpair()",
+        "os.write(sender.fileno(), b'payload')",
+        "sender.shutdown(socket.SHUT_WR)",
+        "assert receiver.recv(7) == b'payload'",
+        "assert receiver.recv(1) == b''",
+        "for family, address in [(socket.AF_UNIX, '/tmp/agenc-denied-socket'), (socket.AF_INET, ('127.0.0.1', 9)), (socket.AF_INET6, ('::1', 9))]:",
+        "  try:",
+        "    candidate = socket.socket(family)",
+        "    candidate.connect(address)",
+        "  except OSError as error:",
+        "    assert error.errno == errno.EPERM, error",
+        "  else:",
+        "    raise AssertionError('socket connection was allowed')",
+      ].join("\n"),
+    ]);
+    expect(run.error).toBeUndefined();
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stderr).toBe("");
+  });
+
   it("filesystem and network confinement hold in one run", () => {
     assertKernelLaneCapabilities();
     const program = createNetworkSeccompProgram("restricted");
