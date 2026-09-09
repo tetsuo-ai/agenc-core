@@ -4,11 +4,14 @@
  * Run:
  *   OPENAI_API_KEY=… MINIMAX_API_KEY=… \
  *     npm --workspace=@tetsuo-ai/runtime exec vitest run \
+ *     --config vitest.live.config.ts \
  *     tests/live/imagine-image-backends.live.test.ts
  *
  * Each case generates one image and is therefore billed. Both providers are
  * asked for inline base64, so a passing run also proves the tool never needs
- * a download host for either backend.
+ * a download host for either backend. The saved extension is checked against
+ * the file's own magic bytes: Electron's agenc-media handler derives the
+ * rendered content type from it, so a wrong guess shows a broken image.
  */
 import { describe, expect, it } from "vitest";
 import { mkdtemp, readFile } from "node:fs/promises";
@@ -22,92 +25,96 @@ import type { Session } from "../../src/session/session.js";
 
 const PROMPT = "a plain grey square on a white background";
 
-async function generate(input: {
+interface LiveImageCase {
+  readonly label: string;
   readonly provider: "openai" | "minimax";
-  readonly model: string;
+  readonly sessionModel: string;
   readonly credential: string;
   readonly args: Record<string, unknown>;
-}) {
-  const root = await mkdtemp(join(tmpdir(), `live-imagine-${input.provider}-`));
-  const tool = createImagineImageTool({
-    workspaceRoot: root,
-    home: resolveHomeContext(
-      { AGENC_HOME: join(root, ".agenc-home"), HOME: root },
-      { platformHome: root },
-    ),
-    getSession: () =>
-      ({
-        services: {
-          provider: createProvider(input.provider, {
-            // Deliberately not a usable media credential: only the
-            // environment ingress may authorize either backend.
-            apiKey: "session-key-not-for-media",
-            model: input.model,
-          }),
-        },
-      }) as unknown as Session,
-    env: { [input.credential]: process.env[input.credential] ?? "" },
-  });
-  const result = await tool.execute({ prompt: PROMPT, ...input.args });
-  return { tool, result };
+  readonly backend: string;
+  readonly imageModel: string;
+  readonly extension: string;
+  /** Leading bytes the real encoding must start with. */
+  readonly magic: string;
 }
 
-describe.skipIf(!process.env.OPENAI_API_KEY)("GPT Image, live", () => {
-  it("generates and saves a real image", async () => {
-    const { tool, result } = await generate({
-      provider: "openai",
-      model: "gpt-6-astra",
-      credential: "OPENAI_API_KEY",
-      args: { aspect_ratio: "1:1", quality: "low" },
-    });
+const CASES: readonly LiveImageCase[] = [
+  {
+    label: "GPT Image",
+    provider: "openai",
+    sessionModel: "gpt-6-astra",
+    credential: "OPENAI_API_KEY",
+    args: { aspect_ratio: "1:1", quality: "low" },
+    backend: "openai",
+    imageModel: "gpt-image-2",
+    extension: ".png",
+    magic: "89504e470d0a1a0a",
+  },
+  {
+    label: "MiniMax Image",
+    provider: "minimax",
+    sessionModel: "MiniMax-M2.5",
+    credential: "MINIMAX_API_KEY",
+    args: { aspect_ratio: "1:1", n: 1 },
+    backend: "minimax",
+    imageModel: "image-01",
+    extension: ".jpg",
+    magic: "ffd8",
+  },
+];
 
-    expect(tool.description).toContain("GPT Image");
-    expect(result.isError, String(result.content)).toBeUndefined();
-    const parsed = JSON.parse(result.content) as {
-      backend: string;
-      model: string;
-      path: string;
-      n: number;
-    };
-    expect(parsed).toMatchObject({
-      backend: "openai",
-      model: "gpt-image-2",
-      n: 1,
-    });
-    const bytes = await readFile(parsed.path);
-    expect(bytes.length).toBeGreaterThan(1_000);
-    // The saved extension has to match the real encoding or the desktop
-    // transcript renders a broken image.
-    expect(parsed.path.endsWith(".png")).toBe(true);
-    expect(bytes.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
-  }, 300_000);
-});
+for (const testCase of CASES) {
+  describe.skipIf(!process.env[testCase.credential])(
+    `${testCase.label}, live`,
+    () => {
+      it("generates and saves a real image", async () => {
+        const root = await mkdtemp(
+          join(tmpdir(), `live-imagine-${testCase.provider}-`),
+        );
+        const tool = createImagineImageTool({
+          workspaceRoot: root,
+          home: resolveHomeContext(
+            { AGENC_HOME: join(root, ".agenc-home"), HOME: root },
+            { platformHome: root },
+          ),
+          getSession: () =>
+            ({
+              services: {
+                provider: createProvider(testCase.provider, {
+                  // Deliberately not a usable media credential: only the
+                  // environment ingress may authorize either backend.
+                  apiKey: "session-key-not-for-media",
+                  model: testCase.sessionModel,
+                }),
+              },
+            }) as unknown as Session,
+          env: {
+            [testCase.credential]: process.env[testCase.credential] ?? "",
+          },
+        });
 
-describe.skipIf(!process.env.MINIMAX_API_KEY)("MiniMax Image, live", () => {
-  it("generates and saves a real image", async () => {
-    const { tool, result } = await generate({
-      provider: "minimax",
-      model: "MiniMax-M2.5",
-      credential: "MINIMAX_API_KEY",
-      args: { aspect_ratio: "1:1", n: 1 },
-    });
+        const result = await tool.execute({ prompt: PROMPT, ...testCase.args });
 
-    expect(tool.description).toContain("MiniMax Image");
-    expect(result.isError, String(result.content)).toBeUndefined();
-    const parsed = JSON.parse(result.content) as {
-      backend: string;
-      model: string;
-      path: string;
-      n: number;
-    };
-    expect(parsed).toMatchObject({
-      backend: "minimax",
-      model: "image-01",
-      n: 1,
-    });
-    const bytes = await readFile(parsed.path);
-    expect(bytes.length).toBeGreaterThan(1_000);
-    expect(parsed.path.endsWith(".jpg")).toBe(true);
-    expect(bytes.subarray(0, 2).toString("hex")).toBe("ffd8");
-  }, 300_000);
-});
+        expect(tool.description).toContain(testCase.label);
+        expect(result.isError, String(result.content)).toBeUndefined();
+        const parsed = JSON.parse(result.content) as {
+          backend: string;
+          model: string;
+          path: string;
+          n: number;
+        };
+        expect(parsed).toMatchObject({
+          backend: testCase.backend,
+          model: testCase.imageModel,
+          n: 1,
+        });
+        expect(parsed.path.endsWith(testCase.extension)).toBe(true);
+        const bytes = await readFile(parsed.path);
+        expect(bytes.length).toBeGreaterThan(1_000);
+        expect(
+          bytes.subarray(0, testCase.magic.length / 2).toString("hex"),
+        ).toBe(testCase.magic);
+      }, 300_000);
+    },
+  );
+}
