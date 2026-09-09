@@ -798,7 +798,7 @@ export interface EvidenceAnchorReceipt {
   /** Digest of the exact canonical EvidenceLedgerSealStatement bytes. */
   readonly statementDigest: Sha256Digest;
   readonly anchorPolicyDigest: Sha256Digest;
-  readonly signatureAlgorithm: "ed25519" | "ecdsa-p256-sha256";
+  readonly signatureAlgorithm: "ed25519" | "ecdsa-p256-sha256" | "hmac-sha256";
   readonly signatureDigest: Sha256Digest;
   readonly verificationMaterialDigest: Sha256Digest;
   readonly anchorUri: string;
@@ -813,7 +813,7 @@ export interface EvidenceLedgerSealDocument {
   readonly receipt: EvidenceAnchorReceipt;
 }
 
-/** Exact externally supplied content address for an EvidenceLedgerSealDocument. */
+/** Exact caller-supplied content address for an EvidenceLedgerSealDocument. */
 export interface EvidenceLedgerSeal extends EvidenceLedgerSealDocument {
   readonly sealDigest: Sha256Digest;
 }

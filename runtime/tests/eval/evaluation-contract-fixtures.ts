@@ -44,6 +44,8 @@ export function makeAnchorProvider(): EvidenceAnchorProvider {
     Buffer.concat([Buffer.from("test-signature\0"), Buffer.from(bytes)]),
   );
   return {
+    trustClass: "externally_anchored",
+    signatureAlgorithm: "ed25519",
     anchorPolicyDigest,
     verifierDigest,
     async anchor(statementBytes, statementDigest) {

@@ -9,7 +9,7 @@
  *
  *   1. re-validate the record (`validateVerifiedChangeRecord`, including
  *      the canonical document digest and spec-digest binding),
- *   2. verify the sealed hash chain (`verifyEvidenceLedger`, pinned by the
+ *   2. verify the sealed hash chain (`verifyLocalEvidenceLedger`, pinned by the
  *      seal digest the record carries and the bundle's local anchor
  *      material),
  *   3. cross-check the record's ledger head against the verified
@@ -29,7 +29,7 @@ import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import { sha256Digest } from "../eval-contract/canonical-json.js";
-import { verifyEvidenceLedger } from "../eval-contract/evidence-ledger.js";
+import { verifyLocalEvidenceLedger } from "../eval-contract/evidence-ledger.js";
 import type { Sha256Digest } from "../eval-contract/types.js";
 import type {
   RunArtifactPointer,
@@ -239,7 +239,7 @@ export async function reconstructVerifiedChange(
   }
   let verified;
   try {
-    verified = await verifyEvidenceLedger({
+    verified = await verifyLocalEvidenceLedger({
       root: bundleDir,
       runId: record.runId,
       expectedSealDigest: sealDigest,

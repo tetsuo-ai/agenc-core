@@ -129,6 +129,8 @@ export interface IntegrityOnlyEvidenceInspection extends EvidenceLedgerContext {
 }
 
 export interface EvidenceAnchorProvider {
+  readonly trustClass: "integrity_only" | "externally_anchored";
+  readonly signatureAlgorithm: EvidenceAnchorReceipt["signatureAlgorithm"];
   readonly anchorPolicyDigest: Sha256Digest;
   readonly verifierDigest: Sha256Digest;
   anchor(
@@ -148,6 +150,8 @@ export interface SealEvidenceLedgerOptions extends EvidenceLedgerAccess {
 }
 
 export interface EvidenceAnchorVerifier {
+  readonly trustClass: "integrity_only" | "externally_anchored";
+  readonly signatureAlgorithm: EvidenceAnchorReceipt["signatureAlgorithm"];
   readonly anchorPolicyDigest: Sha256Digest;
   readonly verifierDigest: Sha256Digest;
   verify(
@@ -158,17 +162,29 @@ export interface EvidenceAnchorVerifier {
 
 export interface VerifyEvidenceLedgerOptions extends EvidenceLedgerAccess {
   readonly runId: string;
-  /** Must come from outside the evidence root. Local discovery is forbidden. */
+  /** Caller-pinned seal digest; external verification requires an out-of-root pin. */
   readonly expectedSealDigest: Sha256Digest;
   readonly anchorVerifier: EvidenceAnchorVerifier;
 }
 
-export interface VerifiedEvidenceLedger {
-  readonly trust: "externally_anchored";
+interface VerifiedSealEvidence {
   readonly inspection: IntegrityOnlyEvidenceInspection;
   readonly seal: EvidenceLedgerSeal;
   readonly anchorVerifierDigest: Sha256Digest;
   readonly platformProtectionVerifierDigest: Sha256Digest | null;
+}
+
+export interface VerifiedEvidenceLedger extends VerifiedSealEvidence {
+  readonly trust: "externally_anchored";
+  readonly seal: EvidenceLedgerSeal & {
+    readonly receipt: EvidenceAnchorReceipt & {
+      readonly signatureAlgorithm: "ed25519" | "ecdsa-p256-sha256";
+    };
+  };
+}
+
+export interface LocallyVerifiedEvidenceLedger extends VerifiedSealEvidence {
+  readonly trust: "integrity_only";
 }
 
 const externallyVerifiedEvidence = new WeakSet<object>();
@@ -1089,8 +1105,9 @@ async function recoverStoredSeal(
     throw corrupt("stored seal describes a different frozen statement");
   }
   if (document.receipt.anchorPolicyDigest !== verifier.anchorPolicyDigest) {
-    throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "stored seal used an unpinned anchor policy");
+    throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "stored seal used an unpinned anchor policy or unsupported receipt version");
   }
+  assertReceiptVerifierPins(document.receipt, verifier);
   const statementBytes = Buffer.from(canonicalizeJson(statement), "utf8");
   if (!(await verifier.verify(statementBytes, document.receipt))) {
     throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "stored seal failed pinned verification");
@@ -1138,6 +1155,7 @@ export async function sealEvidenceLedger(
       "anchor receipt does not match the frozen statement and pinned policy",
     );
   }
+  assertReceiptVerifierPins(receipt, options.anchorProvider);
   if (!(await options.anchorProvider.verify(statementBytes, receipt))) {
     throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "anchor receipt verification failed");
   }
@@ -1183,13 +1201,53 @@ function assertSealMatchesInspection(
 ): void {
   const statement = statementFromInspection(inspection, seal.statement.sealedAt);
   if (!sameStatement(statement, seal.statement)) {
-    throw corrupt("externally anchored seal does not match the exact ledger bytes");
+    throw corrupt("sealed evidence does not match the exact ledger bytes");
   }
 }
 
 export async function verifyEvidenceLedger(
   options: VerifyEvidenceLedgerOptions,
 ): Promise<VerifiedEvidenceLedger> {
+  if (options.anchorVerifier.trustClass !== "externally_anchored") {
+    throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "local integrity verification cannot establish external trust; use verifyLocalEvidenceLedger");
+  }
+  const evidence = await verifySealedEvidenceLedger(options);
+  const signatureAlgorithm = evidence.seal.receipt.signatureAlgorithm;
+  if (signatureAlgorithm === "hmac-sha256") {
+    throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "a shared-secret MAC cannot establish external trust");
+  }
+  const verified = deepFreezeVerifiedEvidence<VerifiedEvidenceLedger>({
+    ...evidence,
+    trust: "externally_anchored",
+    seal: { ...evidence.seal, receipt: { ...evidence.seal.receipt, signatureAlgorithm } },
+  });
+  externallyVerifiedEvidence.add(verified);
+  return verified;
+}
+
+export async function verifyLocalEvidenceLedger(
+  options: VerifyEvidenceLedgerOptions,
+): Promise<LocallyVerifiedEvidenceLedger> {
+  if (options.anchorVerifier.trustClass !== "integrity_only") {
+    throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "local verification requires an explicitly pinned integrity-only verifier");
+  }
+  return deepFreezeVerifiedEvidence({
+    ...await verifySealedEvidenceLedger(options),
+    trust: "integrity_only" as const,
+  });
+}
+
+function assertReceiptVerifierPins(receipt: EvidenceAnchorReceipt, verifier: EvidenceAnchorVerifier): void {
+  if (
+    (verifier.trustClass !== "integrity_only" && verifier.trustClass !== "externally_anchored") ||
+    receipt.signatureAlgorithm !== verifier.signatureAlgorithm ||
+    (verifier.trustClass === "externally_anchored" && receipt.signatureAlgorithm === "hmac-sha256")
+  ) {
+    throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "receipt algorithm does not match the pinned verifier and trust class");
+  }
+}
+
+async function verifySealedEvidenceLedger(options: VerifyEvidenceLedgerOptions): Promise<VerifiedSealEvidence> {
   if (!DIGEST_PATTERN.test(options.expectedSealDigest)) {
     throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "expectedSealDigest is not sha256");
   }
@@ -1199,31 +1257,29 @@ export async function verifyEvidenceLedger(
     const bytes = await readPrivateFile(filePath, options, "seal", 256 * 1024).catch((error) => {
       throw new EvidenceLedgerError(
         "EVIDENCE_UNANCHORED",
-        "externally expected seal is absent from the evidence store",
+        "pinned seal is absent from the evidence store",
         { cause: error },
       );
     });
     if (sha256Digest(bytes) !== options.expectedSealDigest) {
-      throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "seal bytes do not match external anchor");
+      throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "seal bytes do not match the pinned content address");
     }
     const document = parseCanonicalObject<EvidenceLedgerSealDocument>(bytes, "evidence seal");
     validateEvalContractDocument(document);
     assertSealMatchesInspection(document, inspection);
     if (document.receipt.anchorPolicyDigest !== options.anchorVerifier.anchorPolicyDigest) {
-      throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "seal used an unpinned anchor policy");
+      throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "seal used an unpinned anchor policy or unsupported receipt version");
     }
+    assertReceiptVerifierPins(document.receipt, options.anchorVerifier);
     const statementBytes = Buffer.from(canonicalizeJson(document.statement), "utf8");
     if (!(await options.anchorVerifier.verify(statementBytes, document.receipt))) {
       throw new EvidenceLedgerError("EVIDENCE_UNANCHORED", "pinned anchor verification failed");
     }
-    const verified = deepFreezeVerifiedEvidence<VerifiedEvidenceLedger>({
-      trust: "externally_anchored",
+    return {
       inspection,
       seal: { ...document, sealDigest: options.expectedSealDigest },
       anchorVerifierDigest: options.anchorVerifier.verifierDigest,
       platformProtectionVerifierDigest: document.statement.platformProtectionVerifierDigest,
-    });
-    externallyVerifiedEvidence.add(verified);
-    return verified;
+    };
   });
 }

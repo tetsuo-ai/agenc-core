@@ -273,6 +273,18 @@ Trusted verification requires an
 preregistered receipt verifier. The API never discovers a local "latest seal"
 and labels journal-only inspection `integrity_only_unanchored`.
 
+Providers and verifiers explicitly pin a `trustClass` and `signatureAlgorithm`.
+Receipt verification checks both before accepting the provider's result.
+`verifyEvidenceLedger` accepts only externally anchored asymmetric signatures
+and is the only API that creates the external-verification runtime brand.
+
+`verifyLocalEvidenceLedger` verifies local seals and returns `integrity_only`.
+Local HMAC-SHA256 receipts cannot pass `isExternallyVerifiedEvidenceLedger`,
+even if a caller changes their advertised trust class. HMAC is permitted in
+stored seal receipts, but not in external evidence references or score summaries.
+The local result and its nested evidence are frozen without acquiring the
+external brand.
+
 The local filesystem boundary requires canonical local paths, one SQLite lock
 for create/append/inspect/seal/verify, `0700` directories, `0600` single-link
 regular files, no create/truncate flags on append, descriptor/path identity

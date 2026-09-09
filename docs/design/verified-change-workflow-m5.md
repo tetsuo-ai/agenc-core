@@ -249,14 +249,24 @@ the final prose summary.
 
 `reconstructVerifiedChange(bundleDir)`
 (`runtime/src/workflow/evidence-reconstruction.ts`) is the mechanical form of
-that claim: it re-validates the record (canonical document digest + spec
-binding), verifies the sealed hash chain via `verifyEvidenceLedger` — pinned
-by the `evidenceLedger.sealDigest` the completed record now carries and the
-bundle's local anchor material — recomputes every artifact digest from the
-exact CAS bytes, re-derives the review blockers from the
+that claim. It re-validates the record's canonical document digest and spec
+binding, then verifies the sealed hash chain via `verifyLocalEvidenceLedger`.
+Verification is pinned by the record's `evidenceLedger.sealDigest` and the
+bundle's local anchor material. Reconstruction recomputes every artifact digest
+from the exact CAS bytes, re-derives the review blockers from the
 `independent_review` artifact, and cross-checks the recorded verification
 commands against a `test_result` artifact. Any tampered byte fails loudly
 with a typed error; a summary is never produced from unverified bytes.
+
+Local v2 seals use HMAC-SHA256 and remain `integrity_only`. The exported secret
+lets a holder produce another local seal, so local verification is not an
+external authenticity claim and cannot supply externally verified score evidence.
+
+Legacy local v1 receipts labeled a different shared-secret construction as
+Ed25519. The new local policy and verifier pins reject those receipts with an
+unsupported-policy/version error. Preserve old bundles for inspection and rerun
+the workflow with a new run ID to produce v2 evidence. Do not edit old receipts,
+change their algorithm label, or overwrite their stored seal digest.
 
 ## Operator troubleshooting
 

@@ -9,14 +9,13 @@
  *     uses it to VERIFY a seal from an exported bundle (read-only; the
  *     secret must already exist in the bundle).
  *
- * The signature is sha256(secret || statementBytes) keyed by a per-home
- * random secret, so a seal cannot be silently reforged by editing ledger
- * files. It is NOT an external anchor — the trust statement stays
- * "integrity_only" and external anchoring remains an explicit later
- * concern. The policy/verifier digest strings below are part of every
- * recorded seal receipt; changing them invalidates existing seals.
+ * Local v2 receipts use HMAC-SHA256 with the per-home secret. Verification
+ * remains integrity_only; anyone holding the exported secret can create a
+ * new local seal. Local v1 receipts used a different construction and are
+ * rejected by the new policy and verifier pins.
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 
@@ -30,10 +29,10 @@ import type { Sha256Digest } from "../eval-contract/types.js";
 export const WORKFLOW_LOCAL_ANCHOR_SECRET_FILENAME = "local-anchor-secret";
 
 export const WORKFLOW_LOCAL_ANCHOR_POLICY_DIGEST: Sha256Digest = sha256Digest(
-  "agenc.workflow.m5.local-anchor.v1",
+  "agenc.workflow.m5.local-anchor.hmac-sha256.v2",
 );
 export const WORKFLOW_LOCAL_ANCHOR_VERIFIER_DIGEST: Sha256Digest = sha256Digest(
-  "agenc.workflow.m5.local-anchor-verifier.v1",
+  "agenc.workflow.m5.local-anchor-verifier.hmac-sha256.v2",
 );
 
 export interface WorkflowLocalAnchorCrypto {
@@ -47,16 +46,14 @@ export interface WorkflowLocalAnchorCrypto {
 export function createWorkflowLocalAnchorCrypto(
   secret: Uint8Array,
 ): WorkflowLocalAnchorCrypto {
-  const verificationMaterialDigest = sha256Digest(secret);
+  const key = Buffer.from(secret);
+  const verificationMaterialDigest = sha256Digest(key);
   return {
     anchorPolicyDigest: WORKFLOW_LOCAL_ANCHOR_POLICY_DIGEST,
     verifierDigest: WORKFLOW_LOCAL_ANCHOR_VERIFIER_DIGEST,
     verificationMaterialDigest,
     signatureFor(bytes: Uint8Array): Sha256Digest {
-      const joined = new Uint8Array(secret.byteLength + bytes.byteLength);
-      joined.set(secret, 0);
-      joined.set(bytes, secret.byteLength);
-      return sha256Digest(joined);
+      return `sha256:${createHmac("sha256", key).update(bytes).digest("hex")}`;
     },
   };
 }
@@ -67,13 +64,15 @@ export function workflowLocalAnchorProvider(
 ): EvidenceAnchorProvider {
   const crypto = createWorkflowLocalAnchorCrypto(secret);
   return {
+    trustClass: "integrity_only",
+    signatureAlgorithm: "hmac-sha256",
     anchorPolicyDigest: crypto.anchorPolicyDigest,
     verifierDigest: crypto.verifierDigest,
     async anchor(statementBytes, statementDigest) {
       return {
         statementDigest,
         anchorPolicyDigest: crypto.anchorPolicyDigest,
-        signatureAlgorithm: "ed25519",
+        signatureAlgorithm: "hmac-sha256",
         signatureDigest: crypto.signatureFor(statementBytes),
         verificationMaterialDigest: crypto.verificationMaterialDigest,
         // The seal schema requires an https URI; the reserved `.invalid`
@@ -83,9 +82,15 @@ export function workflowLocalAnchorProvider(
       };
     },
     verify(statementBytes, receipt) {
+      if (
+        receipt.signatureAlgorithm !== "hmac-sha256" ||
+        receipt.anchorPolicyDigest !== crypto.anchorPolicyDigest ||
+        receipt.verificationMaterialDigest !== crypto.verificationMaterialDigest
+      ) return false;
+      const expected = Buffer.from(crypto.signatureFor(statementBytes));
+      const received = Buffer.from(receipt.signatureDigest);
       return (
-        receipt.signatureDigest === crypto.signatureFor(statementBytes) &&
-        receipt.verificationMaterialDigest === crypto.verificationMaterialDigest
+        received.byteLength === expected.byteLength && timingSafeEqual(received, expected)
       );
     },
   };
@@ -97,6 +102,8 @@ export function workflowLocalAnchorVerifier(
 ): EvidenceAnchorVerifier {
   const provider = workflowLocalAnchorProvider(secret);
   return {
+    trustClass: provider.trustClass,
+    signatureAlgorithm: provider.signatureAlgorithm,
     anchorPolicyDigest: provider.anchorPolicyDigest,
     verifierDigest: provider.verifierDigest,
     verify: (statementBytes, receipt) =>

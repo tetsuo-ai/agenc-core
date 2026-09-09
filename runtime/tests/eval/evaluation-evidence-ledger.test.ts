@@ -259,6 +259,8 @@ describe("append-only evaluation evidence ledger", () => {
       releaseSecondAnchor = resolve;
     });
     const provider = {
+      trustClass: "externally_anchored",
+      signatureAlgorithm: "ecdsa-p256-sha256",
       anchorPolicyDigest: base.anchorPolicyDigest,
       verifierDigest: base.verifierDigest,
       async anchor(_bytes: Uint8Array, statementDigest: `sha256:${string}`) {

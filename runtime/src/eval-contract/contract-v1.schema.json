@@ -1821,7 +1821,7 @@
           "properties": {
             "statementDigest": { "$ref": "#/definitions/digest" },
             "anchorPolicyDigest": { "$ref": "#/definitions/digest" },
-            "signatureAlgorithm": { "enum": ["ed25519", "ecdsa-p256-sha256"] },
+            "signatureAlgorithm": { "enum": ["ed25519", "ecdsa-p256-sha256", "hmac-sha256"] },
             "signatureDigest": { "$ref": "#/definitions/digest" },
             "verificationMaterialDigest": { "$ref": "#/definitions/digest" },
             "anchorUri": { "type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 2048 },
