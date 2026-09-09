@@ -2,6 +2,17 @@ import { matchedDangerousShellCommandLabel } from "./dangerous-patterns.js";
 
 export type ApprovalRiskTier = "low" | "medium" | "destructive";
 
+const DATA_BEARING_BUILTIN_TOOL_NAMES = new Set([
+  "spawn_agent",
+  "send_message",
+  "TodoWrite",
+  "TaskCreate",
+  "TaskUpdate",
+  "Write",
+  "Edit",
+  "NotebookEdit",
+]);
+
 const SHELL_COMMAND_FRAGMENT = String.raw`[^;&|\n]*`;
 const RECURSIVE_FORCE_RM_BUNDLED_FLAGS = new RegExp(
   [
@@ -20,22 +31,26 @@ export function classifyApprovalRisk(input: {
   readonly toolName?: string;
   readonly description?: string;
   readonly command?: string;
+  readonly toolInput?: unknown;
 }): ApprovalRiskTier {
   const requestToolName =
     typeof input.request?.ctx?.toolName === "string"
       ? input.request.ctx.toolName
       : undefined;
+  const command = input.toolInput === undefined
+    ? input.command
+    : approvalActionText(input.toolInput, input.toolName ?? requestToolName);
   const haystack = [
-    requestToolName,
-    input.toolName,
+    requestToolName?.replaceAll("_", " "),
+    input.toolName?.replaceAll("_", " "),
     input.description,
-    input.command,
+    command,
   ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
 
-  if (commandLooksDestructive(input.command)) {
+  if (commandLooksDestructive(command)) {
     return "destructive";
   }
   // "slash" is deliberately NOT a destructive keyword: it collides with the
@@ -56,15 +71,52 @@ export function typedConfirmationWordForRisk(input: {
   readonly risk: ApprovalRiskTier;
   readonly command?: string;
   readonly description?: string;
+  readonly toolName?: string;
+  readonly toolInput?: unknown;
 }): string {
   if (input.risk !== "destructive") return "yes";
-  const haystack = [input.command, input.description].filter(Boolean).join(" ").toLowerCase();
+  const command = input.toolInput === undefined
+    ? input.command
+    : approvalActionText(input.toolInput, input.toolName);
+  const haystack = [command, input.description, input.toolName?.replaceAll("_", " ")].filter(Boolean).join(" ").toLowerCase();
   if (/\bsettle\b/u.test(haystack)) return "settle";
   if (/\bstake\b/u.test(haystack)) return "stake";
   if (/\btransfer\b/u.test(haystack)) return "transfer";
   if (/\b(delete|destroy|wipe)\b/u.test(haystack)) return "delete";
-  if (input.command && commandLooksLikeRemoval(input.command)) return "delete";
+  if (command && commandLooksLikeRemoval(command)) return "delete";
   return "approve";
+}
+
+function approvalActionText(input: unknown, toolName: string | undefined): string | undefined {
+  if (typeof input === "string") return input;
+  if (input === null || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  const parts = Array.isArray(input)
+    ? input.filter((part) => typeof part === "string")
+    : ["command", "cmd", "script", "code", "action", "operation", "method", "edit_mode"]
+      .flatMap((key) => {
+        const value = record[key];
+        return typeof value === "string"
+          ? [value]
+          : Array.isArray(value)
+            ? value.filter((part) => typeof part === "string")
+            : [];
+      });
+  if (parts.length > 0 && Array.isArray(record.args)) {
+    parts.push(...record.args.filter((part) => typeof part === "string"));
+  }
+  if (toolName?.split(".").at(-1) === "write_stdin" && typeof record.chars === "string") {
+    parts.push(record.chars);
+  }
+  if (!DATA_BEARING_BUILTIN_TOOL_NAMES.has(toolName ?? "")) {
+    try {
+      const serialized = JSON.stringify(input);
+      if (serialized !== undefined) parts.push(serialized);
+    } catch {
+      parts.push(String(input));
+    }
+  }
+  return parts.join(" ");
 }
 
 function dangerousShellCommandLabel(command: string | undefined): string | null {

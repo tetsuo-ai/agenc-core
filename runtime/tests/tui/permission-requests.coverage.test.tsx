@@ -365,4 +365,69 @@ describe("permission request overlay coverage", () => {
       await sleep();
     }
   });
+
+  test("keeps verification prose out of destructive action classification", async () => {
+    const resolved: ReviewDecision[] = [];
+    const base = createPendingRequest((decision) => resolved.push(decision), {
+      input: {
+        task_name: "verify_notes",
+        message: "Verify notes CLI add/list/show/delete and its storage format. Do not delete project files.",
+        agent_type: "verification",
+      },
+      description: "Permission to use spawn_agent is required",
+    });
+    const request = { ...base, ctx: { ...base.ctx, toolName: "spawn_agent" } };
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+    try {
+      root.render(<AgenCPermissionOverlay request={request} tools={[{ name: "spawn_agent" }]} />);
+      await sleep();
+      const frame = stripAnsi(extractLastFrame(output())).replace(/\s+/gu, "");
+      expect(frame).not.toContain("high-riskapproval");
+      expect(frame).not.toContain("type'delete'");
+      expect(resolved).toEqual([]);
+      stdin.write("3");
+      await sleep();
+      expect(resolved).toEqual([DENIED]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
+
+  test("requires typed confirmation for destructive interactive stdin", async () => {
+    const resolved: ReviewDecision[] = [];
+    const base = createPendingRequest((decision) => resolved.push(decision), {
+      input: { session_id: 1, chars: "rm -rf /tmp/agenc-danger\n" },
+      description: "Send input to an interactive command",
+    });
+    const request = { ...base, ctx: { ...base.ctx, toolName: "write_stdin" } };
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+    try {
+      root.render(<AgenCPermissionOverlay request={request} tools={[{ name: "write_stdin" }]} />);
+      await sleep();
+      const frame = stripAnsi(extractLastFrame(output())).replace(/\s+/gu, "");
+      expect(frame).toContain("high-riskapproval");
+      expect(frame).toContain("type'delete'toapprove");
+      stdin.write("\r");
+      await sleep();
+      expect(resolved).toEqual([]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
 });

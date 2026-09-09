@@ -378,6 +378,19 @@ function installDaemonCliDepsForTest(
           },
         };
       }
+      if (method === "session.transcript.v2") {
+        return {
+          schemaVersion: 2,
+          sessionId,
+          runId: runtimeSessionId,
+          historyEpoch: "test_epoch",
+          asOfSequence: 2,
+          messages: [
+            { messageId: "prior_user", commitEventId: "event:1", role: "user", text: "Earlier request", committedSequence: 1 },
+            { messageId: "prior_assistant", commitEventId: "event:2", role: "assistant", text: "Earlier answer", committedSequence: 2 },
+          ],
+        };
+      }
       if (method === "agent.stop") {
         return { agentId, stopped: true };
       }
@@ -2907,6 +2920,7 @@ describe("main() smoke", () => {
       expect(daemon.requests.map((request) => request.method)).toEqual([
         "agent.list",
         "agent.attach",
+        "session.transcript.v2",
       ]);
     } finally {
       vi.doUnmock("../tui/main.js");
@@ -3238,6 +3252,34 @@ describe("main() smoke", () => {
     },
   );
 
+  it("fails transcript restoration before allocating local TUI resources", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-transcript-failure-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-transcript-failure-cwd-"));
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_transcript_failure",
+      sessionId: "session_transcript_failure",
+      cwd: tmpCwd,
+      requestErrors: { "session.transcript.v2": new Error("transcript unavailable") },
+    });
+    const bootTUI = vi.fn(async () => ({ unmount: vi.fn(), waitUntilExit: async () => undefined }));
+    vi.doMock("../tui/main.js", () => ({ bootTUI }));
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(attachAgentTuiEntry({
+        agentId: "agent_transcript_failure",
+        clientId: "client_transcript_failure",
+        env: { AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, HOME: tmpHome },
+      })).rejects.toThrow("transcript unavailable");
+      expect(daemon.createTuiContext).not.toHaveBeenCalled();
+      expect(daemon.client.close).toHaveBeenCalledOnce();
+      expect(bootTUI).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("attach binds local TUI work to the daemon session runtime options", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-bare-attach-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-bare-attach-cwd-"));
@@ -3250,9 +3292,11 @@ describe("main() smoke", () => {
       runtimeOptions,
     });
     const observedBareMode: boolean[] = [];
+    const observedTranscript: unknown[] = [];
     vi.doMock("../tui/main.js", () => ({
-      bootTUI: vi.fn(async () => {
+      bootTUI: vi.fn(async (options: { session: { getInitialTranscriptEvents(): readonly unknown[] } }) => {
         observedBareMode.push(isBareMode());
+        observedTranscript.push(...options.session.getInitialTranscriptEvents());
         return {
           unmount: vi.fn(),
           waitUntilExit: async () => {
@@ -3286,6 +3330,10 @@ describe("main() smoke", () => {
         }),
       );
       expect(observedBareMode).toEqual([true, true]);
+      expect(observedTranscript).toEqual([
+        { id: "snapshot:test_epoch:prior_user", type: "user_message", payload: { message: "Earlier request" } },
+        { id: "snapshot:test_epoch:prior_assistant", type: "agent_message", payload: { message: "Earlier answer" } },
+      ]);
       await expect(
         attachAgentTuiEntry({
           agentId: "agent_bare_attach",

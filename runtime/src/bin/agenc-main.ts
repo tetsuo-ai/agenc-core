@@ -2470,6 +2470,7 @@ async function loadCreateDaemonTuiSession(): Promise<
     client: unknown;
     sessionId: string;
     conversationId?: string;
+    transcriptSnapshot?: import("../app-server/protocol/index.js").SessionTranscriptV2Result;
     clientId: string;
     runtimeSettingsCursor: { readonly eventId: string; readonly cwd: string };
   }) => Promise<unknown>
@@ -2480,6 +2481,7 @@ async function loadCreateDaemonTuiSession(): Promise<
       client: unknown;
       sessionId: string;
       conversationId?: string;
+      transcriptSnapshot?: import("../app-server/protocol/index.js").SessionTranscriptV2Result;
       clientId: string;
       runtimeSettingsCursor: {
         readonly eventId: string;
@@ -4932,6 +4934,7 @@ export async function attachAgentTuiEntry(
         `daemon agent runtime options disagree with the attaching client: ${args.agentId}`,
       );
     }
+    const attachedClient = daemonClient;
     return await runWithAgentRuntimeOptions(runtimeOptions, async () => {
       setIsRemoteMode(runtimeOptions.remoteMode);
       const sessionId = attachment.sessionIds[0];
@@ -5016,6 +5019,11 @@ export async function attachAgentTuiEntry(
       const attachProfile = liveSettings.profile ?? undefined;
       const attachConfigPath =
         startupLayers.flagConfigPath ?? retainedConfigPath;
+      const transcriptSnapshot = await attachedClient.request("session.transcript.v2", {
+        sessionId,
+      });
+      const { daemonTranscriptSnapshotEvents } = await import("../tui/daemon-transcript-snapshot.js");
+      daemonTranscriptSnapshotEvents(transcriptSnapshot, sessionId);
       const {
         workspaceRoot,
         baseSession,
@@ -5043,6 +5051,7 @@ export async function attachAgentTuiEntry(
         sessionId,
         conversationId: runtimeSessionId,
         clientId: args.clientId,
+        transcriptSnapshot,
         runtimeSettingsCursor: {
           eventId: attachment.runtimeSettingsEventId,
           cwd: bootstrapCwd,

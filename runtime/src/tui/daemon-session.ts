@@ -9,6 +9,10 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { AgenCDaemonResponseError, MAX_BUFFERED_SESSION_EVENTS_PER_SESSION } from "../app-server/agent-cli.js";
 import { DaemonEventReplay } from "./daemon-event-replay.js";
+import {
+  daemonTranscriptSnapshotCoversEvent,
+  daemonTranscriptSnapshotEvents,
+} from "./daemon-transcript-snapshot.js";
 import { classifyTurnTerminal, createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import type {
   AgentAttachParams,
@@ -50,6 +54,7 @@ import type {
   SessionApplyConfigParams,
   SessionApplyConfigResult,
   SessionSnapshotResult,
+  SessionTranscriptV2Result,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
   SessionResolveToolCallResult,
@@ -663,6 +668,7 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly realtimeWebrtcSessionFactory?: CreateRealtimeTuiControlsOptions["startWebrtcSession"];
   readonly realtimeAudioCaptureFactory?: StartRealtimeAudioCapture;
   readonly realtimeAudioPlayer?: RealtimeAudioPlayer;
+  readonly transcriptSnapshot?: SessionTranscriptV2Result;
   /** Snapshot cursor captured only after this socket's session route exists. */
   readonly runtimeSettingsCursor: {
     readonly eventId: string;
@@ -725,11 +731,16 @@ export async function attachDaemonAgentTuiSession<
     authorityCwd,
     attachment.runtimeSettings,
   );
+  const transcriptSnapshot = await options.client.request("session.transcript.v2", {
+    sessionId,
+  });
+  daemonTranscriptSnapshotEvents(transcriptSnapshot, sessionId);
   return createDaemonTuiSession({
     ...options,
     sessionId,
     conversationId: attachment.runtimeSessionId ?? options.agentId,
     realtimeThreadId: options.agentId,
+    transcriptSnapshot,
     runtimeSettingsCursor: {
       eventId: attachment.runtimeSettingsEventId,
       cwd: authorityCwd,
@@ -743,6 +754,9 @@ export function createDaemonTuiSession<
   options: AgenCDaemonTuiSessionOptions<Session>,
 ): AgenCDaemonBackedTuiSession<Session> {
   const { baseSession, client, sessionId, clientId } = options;
+  const restoredTranscriptEvents = options.transcriptSnapshot === undefined
+    ? undefined
+    : daemonTranscriptSnapshotEvents(options.transcriptSnapshot, sessionId);
   // These authenticated TUI-only methods are intentionally absent from the
   // public daemon method union. The transport accepts known internal methods;
   // keep the widening narrow so ordinary TUI calls remain contract-checked.
@@ -775,7 +789,8 @@ export function createDaemonTuiSession<
   };
   const queuedInputs: DaemonQueuedInput[] = [];
   const eventReplay = new DaemonEventReplay(MAX_BUFFERED_SESSION_EVENTS_PER_SESSION);
-  let activeTurnSnapshot: { readonly turnId: string } | null = null;
+  let activeTurnSnapshot: { readonly turnId: string } | null =
+    options.transcriptSnapshot?.activeTurn ?? null;
   let lastObservedTurnId: string | undefined;
   let daemonTurnStartGeneration = 0;
   let inFlightShellExecutionCount = 0;
@@ -1014,6 +1029,7 @@ export function createDaemonTuiSession<
       () => activeTurnSnapshot?.turnId === "daemon-turn"
         ? lastObservedTurnId
         : activeTurnSnapshot?.turnId ?? lastObservedTurnId,
+      options.transcriptSnapshot,
     );
     const currentConnectionState = client.getConnectionState?.();
     if (
@@ -1751,7 +1767,7 @@ export function createDaemonTuiSession<
       };
     },
     getInitialTranscriptEvents: () => [
-      ...baseInitialTranscriptEvents(baseSession),
+      ...(restoredTranscriptEvents ?? baseInitialTranscriptEvents(baseSession)),
       ...connectionNoticeEvents(client.getConnectionState?.() ?? null),
     ],
   } as AgenCDaemonBackedTuiSession<Session>;
@@ -2527,6 +2543,7 @@ function subscribeToDaemonEvents(
   cb: (event: unknown) => void,
   runtimeSettingsReconciler?: RuntimeSettingsReconciler,
   activeTurnId?: () => string | undefined,
+  transcriptSnapshot?: SessionTranscriptV2Result,
 ): () => void {
   let replayingInitialEvents = true;
   const deliver = (event: JsonObject): void => {
@@ -2559,6 +2576,10 @@ function subscribeToDaemonEvents(
         return;
       }
       const transcriptEvent = toTranscriptEvent(event, activeTurnId?.());
+      if (
+        transcriptSnapshot !== undefined &&
+        daemonTranscriptSnapshotCoversEvent(transcriptSnapshot, event, transcriptEvent)
+      ) return;
       if (runtimeSettingsReconciler === undefined) {
         deliver(transcriptEvent);
       } else if (replayingInitialEvents) {

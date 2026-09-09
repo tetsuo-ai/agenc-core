@@ -458,7 +458,9 @@ function approvalRejectedResult(err: ApprovalRejectedError): ToolDispatchResultL
       approvalDecision: decision,
     }),
     isError: true,
-    ...(approvalDenialEndsTurn(err) ? { preventContinuation: true } : {}),
+    ...(approvalDenialEndsTurn(err)
+      ? { preventContinuation: true, metadata: { approvalDenied: true } }
+      : {}),
   };
 }
 
@@ -991,15 +993,12 @@ export class StreamingToolExecutor {
             },
           });
         } catch (err) {
-          dispatchResult = {
-            content:
-              err instanceof ApprovalRejectedError
-                ? approvalRejectedResult(err).content
-                : err instanceof Error
-                  ? err.message
-                  : String(err),
-            isError: true,
-          };
+          dispatchResult = err instanceof ApprovalRejectedError
+            ? approvalRejectedResult(err)
+            : {
+                content: err instanceof Error ? err.message : String(err),
+                isError: true,
+              };
         }
       }
 

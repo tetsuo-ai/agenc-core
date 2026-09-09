@@ -811,6 +811,19 @@ describe("AgenC TUI daemon session adapter", () => {
           runtimeSettingsEventId: "settings:agent_1:initial",
         } as never;
       }
+      if (method === "session.transcript.v2") {
+        return {
+          schemaVersion: 2,
+          sessionId: "session_1",
+          runId: "agent_runtime",
+          historyEpoch: "epoch_1",
+          asOfSequence: 20,
+          messages: [
+            { messageId: "user_1", commitEventId: "event:1", role: "user", text: "Build a notes CLI", committedSequence: 1 },
+            { messageId: "assistant_1", commitEventId: "event:19", role: "assistant", text: "The notes CLI passes its tests", committedSequence: 19 },
+          ],
+        } as never;
+      }
       return {} as never;
     };
 
@@ -835,11 +848,16 @@ describe("AgenC TUI daemon session adapter", () => {
     unsubscribe();
 
     expect(session.conversationId).toBe("agent_runtime");
+    expect(session.getInitialTranscriptEvents()).toEqual([
+      { id: "snapshot:epoch_1:user_1", type: "user_message", payload: { message: "Build a notes CLI" } },
+      { id: "snapshot:epoch_1:assistant_1", type: "agent_message", payload: { message: "The notes CLI passes its tests" } },
+    ]);
     expect(client.requests).toEqual([
       {
         method: "agent.attach",
         params: { agentId: "agent_1", clientId: "tui_1" },
       },
+      { method: "session.transcript.v2", params: { sessionId: "session_1" } },
     ]);
     expect(received).toEqual([{ type: "turn_delta", id: "turn_1" }]);
   });
