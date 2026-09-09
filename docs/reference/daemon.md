@@ -845,6 +845,19 @@ snapshot clears the stamp. A daemon-restart recovery that restored the
 record without an attached runtime (`recovered === true` and no
 runtime) is immediately reapable because it cannot resume on its own.
 
+### Agent session termination
+
+Agent stop, runner termination, daemon shutdown, stale-agent reaping, and
+failed-create rollback terminate sessions through the client multiplexer.
+Termination removes session routes, client attachments, and buffered
+capability events. Late events cannot recreate a closed session's route
+or reach status observers.
+
+If a termination hook throws after the session closes, routing is still
+removed and the error is reported. Agent shutdown attempts every owned
+session before reporting termination errors. A failed termination that
+leaves the session live keeps its routing so termination can be retried.
+
 ### Admission step identity on keep-alive turns
 
 Daemon sessions set `admissionRequired`. Each streamed sample is admitted

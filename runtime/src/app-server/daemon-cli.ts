@@ -3511,6 +3511,7 @@ async function runAgenCDaemonForegroundLocked(
       agencHome: authStartup.daemonHome,
       runner,
       sessionManager,
+      terminateSession: (params) => clientMultiplexer.terminateSession(params),
       threadStore,
       // DAE-02: prefer client/workspace env over frozen OS cwd when params omit cwd.
       defaultCwd: () => resolveDaemonDefaultCwd(host.env),

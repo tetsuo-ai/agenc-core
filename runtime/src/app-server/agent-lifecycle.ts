@@ -278,6 +278,7 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly now?: () => string;
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly sessionManager?: AgenCDaemonSessionManager;
+  readonly terminateSession?: AgenCDaemonSessionManager["terminateSession"];
   readonly threadStore?: ThreadStore;
   readonly threadStoreForAgentLogs?: (
     route: AgenCDaemonAgentLogThreadStoreRoute,
@@ -480,6 +481,7 @@ export class AgenCDaemonAgentManager {
   readonly #now: () => string;
   readonly #runner: AgenCBackgroundAgentRunner | undefined;
   readonly #sessionManager: AgenCDaemonSessionManager | undefined;
+  readonly #terminateSession: AgenCDaemonSessionManager["terminateSession"] | undefined;
   readonly #threadStore: ThreadStore | undefined;
   readonly #threadStoreForAgentLogs:
     | ((route: AgenCDaemonAgentLogThreadStoreRoute) => ThreadStore | undefined)
@@ -552,7 +554,11 @@ export class AgenCDaemonAgentManager {
     this.#agencHome = getAgencHomeDir(options.agencHome);
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#runner = options.runner;
-    this.#sessionManager = options.sessionManager;
+    const sessionManager = options.sessionManager;
+    this.#sessionManager = sessionManager;
+    this.#terminateSession = options.terminateSession ?? (sessionManager === undefined
+      ? undefined
+      : (params) => sessionManager.terminateSession(params));
     this.#threadStore = options.threadStore;
     this.#threadStoreForAgentLogs = options.threadStoreForAgentLogs;
     this.#readAgentToolOutputs = options.readAgentToolOutputs;
@@ -1185,10 +1191,10 @@ export class AgenCDaemonAgentManager {
         }
         if (
           createdLifecycleSessionId !== undefined &&
-          this.#sessionManager !== undefined
+          this.#terminateSession !== undefined
         ) {
           try {
-            await this.#sessionManager.terminateSession({
+            await this.#terminateSession({
               sessionId: createdLifecycleSessionId,
               reason: "agent.create rollback after lifecycle failure",
             });
@@ -4182,10 +4188,17 @@ export class AgenCDaemonAgentManager {
     sessionIds: readonly string[],
     reason: string,
   ): Promise<void> {
-    if (this.#sessionManager === undefined) return;
+    if (this.#terminateSession === undefined) return;
+    const errors: unknown[] = [];
     for (const sessionId of sessionIds) {
-      await this.#sessionManager.terminateSession({ sessionId, reason });
+      try {
+        await this.#terminateSession({ sessionId, reason });
+      } catch (error) {
+        errors.push(error);
+      }
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Agent session termination failed");
   }
 
   async #markAgentStopFailed(

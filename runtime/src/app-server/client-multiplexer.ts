@@ -512,28 +512,17 @@ export class AgenCDaemonClientMultiplexer {
     params: SessionTerminateParams,
   ): Promise<SessionTerminateResult> {
     return this.#state.with(async (state) => {
-      const route = state.sessions.get(params.sessionId);
-      const affectedClientIds =
-        route === undefined ? [] : [...route.clientAttachmentIds.keys()];
-      const terminated = await this.#sessionManager.terminateSession(params);
-
-      if (route !== undefined) {
-        state.sessions.delete(params.sessionId);
-        for (const clientId of affectedClientIds) {
-          state.clients.get(clientId)?.sessionIds.delete(params.sessionId);
+      try {
+        const terminated = await this.#sessionManager.terminateSession(params);
+        removeSessionRouting(state, params.sessionId);
+        return terminated;
+      } catch (error) {
+        const stillLive = await this.#isSessionLive(params.sessionId).catch(() => true);
+        if (!stillLive) {
+          removeSessionRouting(state, params.sessionId);
         }
+        throw error;
       }
-      for (const [capability, buffered] of state.capabilityBuffers) {
-        const retained = buffered.filter(
-          (item) => item.sessionId !== params.sessionId,
-        );
-        if (retained.length === 0) {
-          state.capabilityBuffers.delete(capability);
-        } else if (retained.length !== buffered.length) {
-          state.capabilityBuffers.set(capability, retained);
-        }
-      }
-      return terminated;
     });
   }
 
@@ -602,6 +591,13 @@ export class AgenCDaemonClientMultiplexer {
     const { deliveries, hadLiveTargets, bufferedWithoutTarget } =
       await this.#state.with(async (state) => {
       const existingRoute = state.sessions.get(sessionId);
+      if (existingRoute === undefined && !(await this.#isSessionLive(sessionId))) {
+        return {
+          deliveries: [] as EnqueuedDelivery[],
+          hadLiveTargets: false,
+          bufferedWithoutTarget: false,
+        };
+      }
 
       const attachedClients =
         existingRoute === undefined
@@ -637,20 +633,6 @@ export class AgenCDaemonClientMultiplexer {
         // hint for an older or detached client would only pollute transcript
         // replay (and can never recover state by itself).
         if (event.method === "event.mcp_status_changed") {
-          return {
-            deliveries: [] as EnqueuedDelivery[],
-            hadLiveTargets: false,
-            bufferedWithoutTarget: false,
-          };
-        }
-        // No attached client to deliver to. Only buffer (creating a route on
-        // demand) when the session is still live: a terminated/unknown session
-        // can never gain a client to drain the buffer, and its buffer-only
-        // route is never reaped (deleteRouteIfEmpty keeps any route with
-        // buffered events), so creating one here would leak `state.sessions`
-        // unbounded on a long-lived daemon. Dropping late events for a dead
-        // session is correct — nobody can ever replay them.
-        if (existingRoute === undefined && !(await this.#isSessionLive(sessionId))) {
           return {
             deliveries: [] as EnqueuedDelivery[],
             hadLiveTargets: false,
@@ -753,6 +735,10 @@ export class AgenCDaemonClientMultiplexer {
     const rejectedDeliveries: AgenCSessionBroadcastFailure[] = [];
     const { deliveries, bufferAfterDelivery } = await this.#state.with(
       async (state) => {
+        if (!(await this.#isSessionLive(sessionId))) return {
+          deliveries: [] as EnqueuedDelivery[],
+          bufferAfterDelivery: false,
+        };
         // Map iteration order is registration order. Retaining the last match
         // makes selection deterministic and prefers the newest live phone.
         let target: MutableClient | undefined;
@@ -762,10 +748,6 @@ export class AgenCDaemonClientMultiplexer {
           }
         }
         if (target === undefined) {
-          if (!(await this.#isSessionLive(sessionId))) return {
-            deliveries: [] as EnqueuedDelivery[],
-            bufferAfterDelivery: false,
-          };
           const buffered = state.capabilityBuffers.get(capability) ?? [];
           bufferCapabilityEvent(
             buffered,
@@ -840,6 +822,21 @@ export class AgenCDaemonClientMultiplexer {
   async #isSessionLive(sessionId: string): Promise<boolean> {
     const summary = await this.#sessionManager.getSession(sessionId);
     return summary !== null && summary.status !== "closed";
+  }
+}
+
+function removeSessionRouting(state: MultiplexerState, sessionId: string): void {
+  state.sessions.delete(sessionId);
+  for (const client of state.clients.values()) {
+    client.sessionIds.delete(sessionId);
+  }
+  for (const [capability, buffered] of state.capabilityBuffers) {
+    const retained = buffered.filter((item) => item.sessionId !== sessionId);
+    if (retained.length === 0) {
+      state.capabilityBuffers.delete(capability);
+    } else if (retained.length !== buffered.length) {
+      state.capabilityBuffers.set(capability, retained);
+    }
   }
 }
 
