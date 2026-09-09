@@ -105,6 +105,22 @@ function backendAwareImageFetch(): typeof fetch {
         }) as unknown as typeof fetch;
 }
 
+/** URL, bearer and parsed body of the first request a mock received. */
+function firstRequest(fetchImpl: typeof fetch): {
+  url: string;
+  authorization: string;
+  body: Record<string, unknown>;
+} {
+  const call = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
+    .calls[0];
+  const init = call?.[1] as { headers: Record<string, string>; body: string };
+  return {
+    url: String(call?.[0]),
+    authorization: init.headers.authorization,
+    body: JSON.parse(init.body) as Record<string, unknown>,
+  };
+}
+
 /** An OpenAI session whose only media authority is the API-key ingress. */
 function openaiImagineTool(root: string, fetchImpl?: typeof fetch) {
   return createSessionImagineImageTool({
@@ -1214,14 +1230,12 @@ describe("ImagineImage tool", () => {
     expect(parsed.path).toMatch(/\.png$/u);
     expect(await readFile(parsed.path, "utf8")).toBe("openai-png");
 
-    const call = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0];
-    expect(String(call?.[0])).toBe("https://api.openai.com/v1/images/generations");
-    const init = call?.[1] as { headers: Record<string, string>; body: string };
+    const sent = firstRequest(fetchImpl);
+    expect(sent.url).toBe("https://api.openai.com/v1/images/generations");
     // The session bearer is a ChatGPT OAuth grant, which cannot call this
     // endpoint at all. Only the API-key ingress may authorize it.
-    expect(init.headers.authorization).toBe("Bearer isolated-openai-key");
-    expect(JSON.parse(init.body)).toEqual({
+    expect(sent.authorization).toBe("Bearer isolated-openai-key");
+    expect(sent.body).toEqual({
       model: "gpt-image-2",
       prompt: "a grey square",
       n: 1,
@@ -1284,13 +1298,11 @@ describe("ImagineImage tool", () => {
     expect(parsed.path).toMatch(/\.jpg$/u);
     expect(await readFile(parsed.path, "utf8")).toBe("minimax-jpeg");
 
-    const call = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0];
+    const sent = firstRequest(fetchImpl);
     // MiniMax names this route differently from every OpenAI-shaped backend.
-    expect(String(call?.[0])).toBe("https://api.minimax.io/v1/image_generation");
-    const init = call?.[1] as { headers: Record<string, string>; body: string };
-    expect(init.headers.authorization).toBe("Bearer isolated-minimax-key");
-    expect(JSON.parse(init.body)).toEqual({
+    expect(sent.url).toBe("https://api.minimax.io/v1/image_generation");
+    expect(sent.authorization).toBe("Bearer isolated-minimax-key");
+    expect(sent.body).toEqual({
       model: "image-01",
       prompt: "a grey square",
       n: 1,
@@ -1356,11 +1368,7 @@ describe("ImagineImage tool", () => {
     // two map cleanly, so it is translated rather than refused.
     const hd = await openaiTool.execute({ prompt: "x", quality: "hd" });
     expect(hd.isError).toBeUndefined();
-    const hdBody = JSON.parse(
-      ((fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
-        .calls[0]?.[1] as { body: string }).body,
-    ) as { quality?: string };
-    expect(hdBody.quality).toBe("high");
+    expect(firstRequest(fetchImpl).body.quality).toBe("high");
 
     // A value no backend vocabulary contains is still refused.
     const bogus = await openaiTool.execute({ prompt: "x", quality: "ultra" });
@@ -1391,11 +1399,7 @@ describe("ImagineImage tool", () => {
       (JSON.parse(aspect.content) as { ignoredControls?: string[] })
         .ignoredControls,
     ).toEqual(["aspect_ratio"]);
-    const aspectBody = JSON.parse(
-      ((fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
-        .calls[0]?.[1] as { body: string }).body,
-    ) as { aspect_ratio?: string };
-    expect(aspectBody.aspect_ratio).toBeUndefined();
+    expect(firstRequest(fetchImpl).body.aspect_ratio).toBeUndefined();
 
     const resolution = await minimaxTool.execute({ prompt: "x", resolution: "2k" });
     expect(resolution.isError).toBeUndefined();
@@ -1425,9 +1429,7 @@ describe("ImagineImage tool", () => {
 
     await tool.execute({ prompt: "x", n: 10 });
 
-    const init = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0]?.[1] as { body: string };
-    expect((JSON.parse(init.body) as { n: number }).n).toBe(9);
+    expect(firstRequest(fetchImpl).body.n).toBe(9);
   });
 
   it("offers xAI's second-generation image model", async () => {
