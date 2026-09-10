@@ -126,7 +126,7 @@ export function formatAgenCPermissionsCliHelpText(): string {
     "",
     "Examples:",
     "  agenc permissions list",
-    "  agenc permissions approve --persist user 'Read(./src/**)'",
+    "  agenc permissions approve --persist user 'FileRead(./src/**)'",
     "  agenc permissions approve --session session_123 call_456",
     "  agenc permissions revoke --session session_123 call_456",
   ].join("\n");
