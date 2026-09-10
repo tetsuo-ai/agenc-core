@@ -54,6 +54,7 @@ function openStore(opts: {
   sessionTempRoot?: string;
 }): RolloutStore {
   const store = new RolloutStore({
+    agencHome,
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     agencVersion: "0.2.0",
@@ -79,7 +80,7 @@ function openStore(opts: {
 }
 
 function seedRunningAgentRun(cwd: string, runId: string): void {
-  const driver = openStateDatabases({ cwd });
+  const driver = openStateDatabases({ cwd, agencHome });
   try {
     upsertAgentRun(driver, {
       id: runId,
@@ -245,6 +246,7 @@ describe("RolloutStore temporary authority", () => {
     expect(
       () =>
         new RolloutStore({
+          agencHome,
           cwd: agencHome,
           sessionId: "relative-temp-root",
           agencVersion: "0.2.0",
@@ -682,7 +684,7 @@ describe("RolloutStore thread-spawn edges", () => {
       });
       try {
         expect(resumed.runEpoch).toBe(2);
-        const driver = openStateDatabases({ cwd });
+        const driver = openStateDatabases({ cwd, agencHome });
         try {
           const row = driver
             .prepareState<
@@ -726,7 +728,7 @@ describe("RolloutStore thread-spawn edges", () => {
       });
       try {
         expect(resumed.runEpoch).toBe(2);
-        const driver = openStateDatabases({ cwd });
+        const driver = openStateDatabases({ cwd, agencHome });
         try {
           const row = driver
             .prepareState<
@@ -870,7 +872,7 @@ describe("RolloutStore thread-spawn edges", () => {
       });
       try {
         expect(resumed.runEpoch).toBe(2);
-        const driver = openStateDatabases({ cwd });
+        const driver = openStateDatabases({ cwd, agencHome });
         try {
           const row = driver
             .prepareState<
@@ -1015,6 +1017,7 @@ describe("RolloutStore thread-spawn edges", () => {
       renameSync(normalPath, recoveryPath);
 
       const resumed = new RolloutStore({
+        agencHome,
         cwd,
         sessionId,
         agencVersion: "0.2.0",
@@ -1211,7 +1214,7 @@ describe("RolloutStore thread-spawn edges", () => {
       });
       original.close();
 
-      const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+      const raw = new Database(resolveStateDatabasePaths({ cwd, agencHome }).stateDbPath);
       try {
         raw
           .prepare(
@@ -1250,7 +1253,7 @@ describe("RolloutStore thread-spawn edges", () => {
       });
       original.close();
 
-      const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+      const raw = new Database(resolveStateDatabasePaths({ cwd, agencHome }).stateDbPath);
       try {
         expect(() =>
           raw
@@ -1314,7 +1317,7 @@ describe("RolloutStore thread-spawn edges", () => {
         },
       });
 
-      const paths = resolveStateDatabasePaths({ cwd });
+      const paths = resolveStateDatabasePaths({ cwd, agencHome });
       const raw = new Database(paths.stateDbPath);
       try {
         const before = raw
@@ -1735,7 +1738,7 @@ describe("RolloutStore thread-spawn edges", () => {
   it("imports obvious legacy snapshots with implicit open status", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const sessionId = "thread-spawn-legacy";
-    const sessionDir = getSessionDir(cwd, sessionId);
+    const sessionDir = getSessionDir(cwd, sessionId, undefined, agencHome);
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(
       join(sessionDir, "thread-spawn-edges.json"),
@@ -1769,7 +1772,7 @@ describe("RolloutStore thread-spawn edges", () => {
   it("backs up corrupt snapshots and starts with an empty graph", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const sessionId = "thread-spawn-corrupt";
-    const sessionDir = getSessionDir(cwd, sessionId);
+    const sessionDir = getSessionDir(cwd, sessionId, undefined, agencHome);
     const snapshotPath = join(sessionDir, "thread-spawn-edges.json");
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(snapshotPath, "{not-json", "utf8");
@@ -1777,7 +1780,7 @@ describe("RolloutStore thread-spawn edges", () => {
     const store = openStore({ cwd, sessionId, resume: true });
     try {
       expect(store.listThreadSpawnChildren("root-1")).toEqual([]);
-      const corruptDir = join(getProjectDir(cwd), "state-corrupt");
+      const corruptDir = join(getProjectDir(cwd, undefined, agencHome), "state-corrupt");
       const backups = readdirSync(corruptDir).filter(
         (entry) =>
           entry.startsWith("thread-spawn-edges-") && entry.endsWith(".json"),
@@ -1828,7 +1831,7 @@ describe("RolloutStore effect_intent childRunId", () => {
     try {
       expect(store.append(intent, { durable: true })).toBe(true);
       store.recordEffectEvent(intent);
-      const driver = openStateDatabases({ cwd });
+      const driver = openStateDatabases({ cwd, agencHome });
       try {
         const repo = new StateRunDurabilityRepository(driver);
         expect(repo.getEffect(sessionId, "workflow.plan")?.childRunId).toBe(
