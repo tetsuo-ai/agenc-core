@@ -33,6 +33,7 @@ import {
 import {
   withSignedAllowedRoots,
 } from "../agents/_deps/filesystem-args.js";
+import { matchesVerifiedSessionPlanFile } from "../tools/system/filesystem.js";
 import type {
   PermissionDecisionReason,
   PermissionResult,
@@ -666,6 +667,17 @@ export function checkToolPathPermission(
       behavior: "deny",
       message: `Permission to ${verb} ${opts.path} has been denied.`,
       decisionReason,
+    };
+  }
+
+  if (matchesVerifiedSessionPlanFile(opts.path, opts.cwd, opts.input)) {
+    return {
+      behavior: "allow",
+      updatedInput: opts.input,
+      decisionReason: {
+        type: "other",
+        reason: "Signed active-session plan file",
+      },
     };
   }
 

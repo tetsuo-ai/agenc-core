@@ -43,7 +43,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { resolve, dirname, basename, join } from "node:path";
+import { resolve, dirname, basename, join, isAbsolute, normalize } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
 // Imported from the defining module rather than the `memory/index.js` barrel.
 // The barrel re-exports the recall pipeline, which reaches `utils/ide.ts` and
@@ -1204,6 +1204,23 @@ export function verifiedPlanFileContextFromArgs(
     ...ctx,
     agencHome: resolveHomeContext({ AGENC_HOME: injectedAgencHome }).path,
   };
+}
+
+/**
+ * True when `targetPath` is the signed active-session plan-file family.
+ * Same authority as {@link safePathAllowingSessionPlanFile}: verified
+ * session id + injected home, exact plan prefix, no AGENC_HOME widening.
+ */
+export function matchesVerifiedSessionPlanFile(
+  targetPath: string,
+  cwd: string,
+  args: Record<string, unknown> | undefined,
+): boolean {
+  const planCtx = verifiedPlanFileContextFromArgs(args);
+  if (planCtx === null || hasUnsafeShape(targetPath)) return false;
+  const absolute = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
+  const identity = normalizeFilesystemUnicodeIdentity(normalize(absolute));
+  return isSessionPlanFile(identity, planCtx);
 }
 
 export async function safePathAllowingSessionPlanFile(
