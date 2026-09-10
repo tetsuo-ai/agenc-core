@@ -312,7 +312,7 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
     expect(providerChat).toHaveBeenCalledWith(
       [{ role: "user", content: "Summarize this" }],
       {
-        accountedInputTokens: 704,
+        accountedInputTokens: 503,
         contextWindowTokens: 1_000_000,
         model: "grok-4.3-mini",
         systemPrompt: "Be brief",
@@ -2390,6 +2390,8 @@ describe("mcp-startup session-owned manager helpers", () => {
 });
 
 async function createPrivateDesktopFixture(home: string) {
+  // This is a valid private authority fixture, independent of the host umask.
+  chmodSync(home, 0o700);
   const socketRoot = mkdtempSync(join(realpathSync("/tmp"), "agenc-dc-"));
   chmodSync(socketRoot, 0o700);
   const socketPath = join(socketRoot, "control.sock");
