@@ -1,158 +1,114 @@
 /**
- * Recover a tool call a model wrote into its reply instead of returning.
+ * Recover complete, call-shaped JSON emitted as text by a local model.
  *
- * Ollama only populates `message.tool_calls` for models whose template emits
- * the structured form. A 7B routinely does not: given tools it writes the call
- * it wanted to make as JSON in `content`, ollama reports `tool_calls: null`,
- * and the runtime faithfully renders the JSON into the chat. That is what a
- * local model looked like to a user asking it to read a file:
+ * Native Ollama tool calls remain the preferred path. Text fallback is for
+ * individual malformed responses, not an assumption about model size or
+ * capabilities. Only the exact request catalog and argument schemas authorize
+ * recovery; recovered calls still pass through the normal execution policy.
  *
- *   {"name": "FileRead", "arguments": {"file_path": "note.txt"}}
- *
- * Nothing executed, nothing was read, and the answer was a fragment of
- * protocol. The model had done its half of the job; only the envelope was
- * wrong.
- *
- * These are the shapes actually observed from `qwen2.5-coder:7b` against a
- * live ollama, at temperature 0, and every one of them is handled here:
- *
- *   {"name": "FileRead", "arguments": {"file_path": "note.txt"}}
- *
- *   ```json
- *   [
- *       {"name": "Glob", "arguments": {"pattern": "*"}},
- *       {"name": "FileRead", "arguments": {"file_path": "note.txt"}}
- *   ]
- *   ```
- *
- *   {
- *     "name": "FileRead",
- *     "arguments": {
- *       "file_path": "note.txt"
- *     }
- *   }
- *
- *   I will first provide an explanation ... Here is the JSON object for the
- *   function call:
- *
- *   ```json
- *   {"name": "FileRead", "arguments": {"file_path": "note.txt"}}
- *   ```
- *
- * The last one matters most: the call is at the tail, after prose that is a
- * real answer and has to survive.
- *
- * THE RISK THIS MUST NOT TAKE. An ordinary reply must come through untouched.
- * Two observed replies that are not tool calls and must never be rewritten:
- * `Hello! How can I assist you today?`, and deepseek-r1's "I'm unable to read
- * files directly, but I can help ...". So this never guesses. A candidate is
- * salvaged only when it parses as JSON, carries a `name` that matches a tool
- * the request actually advertised, and its arguments are an object. Anything
- * else is left alone and reaches the user as the model wrote it.
+ * This cannot infer intent from a standalone example identical to a call.
+ * Keep recovery narrow: JSON-only blocks/lines, no inline examples, nested
+ * fragments, incomplete values, or arbitrary source-code fences.
  */
-
 import { randomUUID } from "node:crypto";
+import { Ajv, type ValidateFunction } from "ajv";
 
 import type { LLMTool, LLMToolCall } from "../../types.js";
 
-/** What a salvage attempt produced. */
 export interface SalvagedToolCalls {
-  /** Calls recovered from the text, in the order the model wrote them. */
   readonly toolCalls: readonly LLMToolCall[];
-  /**
-   * The reply with the recovered JSON removed. Prose the model wrote around
-   * the call is kept: it is often the only explanation the user gets.
-   */
+  /** Unconsumed text, byte-for-byte, including already streamed whitespace. */
   readonly content: string;
 }
 
-/** A fenced block, with or without a language tag. */
-const FENCED_BLOCK = /```(?:[a-zA-Z0-9_-]+)?\s*\n?([\s\S]*?)```/g;
+const MAX_CONTENT_CHARS = 1_048_576;
+const MAX_CALLS = 64;
+const MAX_DEPTH = 64;
+const ajv = new Ajv({ strict: false, validateFormats: false, ownProperties: true });
+const validators = new WeakMap<object, ValidateFunction | null>();
 
-/**
- * Names the request advertised. A call to anything else is not a tool call we
- * can honour, and inventing one would be worse than showing the text.
- */
-function advertisedNames(tools: readonly LLMTool[] | undefined): ReadonlySet<string> {
-  const names = new Set<string>();
-  for (const tool of tools ?? []) {
-    const name = tool?.function?.name;
-    if (typeof name === "string" && name.length > 0) names.add(name);
+function matchesSchema(schema: Record<string, unknown>, value: object): boolean {
+  let validate = validators.get(schema);
+  if (validate === undefined) {
+    try {
+      validate = ajv.compile(schema);
+    } catch {
+      // Unsupported/invalid schemas must not make speculative text executable.
+      validate = null;
+    } finally {
+      // Request catalogs can be regenerated each turn. Let the WeakMap own
+      // their lifetime, rather than retaining every schema in AJV's cache.
+      ajv.removeSchema(schema);
+    }
+    validators.set(schema, validate);
   }
-  return names;
+  try {
+    return validate !== null && validate(value) === true;
+  } catch {
+    return false;
+  }
 }
 
-/**
- * One parsed call, or null.
- *
- * `arguments` is the OpenAI spelling and what these models copy. `parameters`
- * shows up too, because it is the word used in the schema they were shown.
- */
 function toToolCall(
   value: unknown,
-  known: ReadonlySet<string>,
+  known: ReadonlyMap<string, LLMTool>,
   makeId: () => string,
 ): LLMToolCall | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
+  // Extra fields suggest data or a tool schema, not an invocation envelope.
+  if (Object.keys(record).some((key) => !["name", "arguments", "parameters"].includes(key))) return null;
+  if ("arguments" in record && "parameters" in record) return null;
   const name = record.name;
-  if (typeof name !== "string" || !known.has(name)) return null;
+  const tool = typeof name === "string" ? known.get(name) : undefined;
+  if (!tool || typeof name !== "string") return null;
 
-  const rawArguments = record.arguments ?? record.parameters ?? {};
-  // A string here is a model that stringified its own arguments, which is
-  // legal in the wire format it is imitating. Anything not object-shaped is
-  // not a call we can make.
-  if (typeof rawArguments === "string") {
-    return { id: makeId(), name, arguments: rawArguments };
+  let argumentsValue = "arguments" in record ? record.arguments
+    : "parameters" in record ? record.parameters : {};
+  if (typeof argumentsValue === "string") {
+    const text = argumentsValue.trim();
+    if (text[0] !== "{" || jsonSpanEnd(text, 0) !== text.length) return null;
+    try {
+      argumentsValue = JSON.parse(text) as unknown;
+    } catch {
+      return null;
+    }
   }
-  if (
-    typeof rawArguments !== "object" ||
-    rawArguments === null ||
-    Array.isArray(rawArguments)
-  ) {
-    return null;
+  if (typeof argumentsValue !== "object" || argumentsValue === null || Array.isArray(argumentsValue)) return null;
+  // JSON.parse accepts overflowing numeric literals as Infinity. Do not turn
+  // them into null via JSON.stringify, silently changing a model's argument.
+  const pending: unknown[] = [argumentsValue];
+  while (pending.length > 0) {
+    const entry = pending.pop();
+    if (typeof entry === "number" && !Number.isFinite(entry)) return null;
+    if (entry !== null && typeof entry === "object") {
+      for (const child of Object.values(entry)) pending.push(child);
+    }
   }
-  return {
-    id: makeId(),
-    name,
-    arguments: JSON.stringify(rawArguments),
-  };
+  if (!matchesSchema(tool.function.parameters, argumentsValue)) return null;
+  return { id: makeId(), name, arguments: JSON.stringify(argumentsValue) };
 }
 
-/** Calls from one parsed JSON value: a single call, or an array of them. */
 function callsFrom(
   parsed: unknown,
-  known: ReadonlySet<string>,
+  known: ReadonlyMap<string, LLMTool>,
   makeId: () => string,
 ): LLMToolCall[] {
-  if (Array.isArray(parsed)) {
-    const calls: LLMToolCall[] = [];
-    for (const entry of parsed) {
-      const call = toToolCall(entry, known, makeId);
-      // All or nothing: a list where one entry is not a call is not a list of
-      // calls, and half-executing it would be worse than not executing it.
-      if (call === null) return [];
-      calls.push(call);
-    }
-    return calls;
+  const entries = Array.isArray(parsed) ? parsed : [parsed];
+  if (entries.length > MAX_CALLS) return [];
+  const calls: LLMToolCall[] = [];
+  for (const entry of entries) {
+    const call = toToolCall(entry, known, makeId);
+    // Never execute only the valid portion of a malformed batch.
+    if (call === null) return [];
+    calls.push(call);
   }
-  const single = toToolCall(parsed, known, makeId);
-  return single === null ? [] : [single];
+  return calls;
 }
 
-/**
- * The span of the JSON value starting at `start`, or -1.
- *
- * Written by hand rather than by regex because the arguments nest, and a
- * regex that stops at the first `}` truncates every call with an object
- * argument. Strings are tracked so a brace inside a path or a message does
- * not close the value early.
- */
+/** Balanced JSON, with strings/escapes and both bracket types tracked. */
 function jsonSpanEnd(text: string, start: number): number {
-  const opener = text[start];
-  if (opener !== "{" && opener !== "[") return -1;
-  const closer = opener === "{" ? "}" : "]";
-  let depth = 0;
+  const stack: string[] = [];
   let inString = false;
   let escaped = false;
   for (let i = start; i < text.length; i += 1) {
@@ -161,13 +117,13 @@ function jsonSpanEnd(text: string, start: number): number {
       if (escaped) escaped = false;
       else if (char === "\\") escaped = true;
       else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') inString = true;
-    else if (char === opener) depth += 1;
-    else if (char === closer) {
-      depth -= 1;
-      if (depth === 0) return i + 1;
+    } else if (char === '"') inString = true;
+    else if (char === "{" || char === "[") {
+      stack.push(char === "{" ? "}" : "]");
+      if (stack.length > MAX_DEPTH) return -1;
+    } else if (char === "}" || char === "]") {
+      if (stack.pop() !== char) return -1;
+      if (stack.length === 0) return i + 1;
     }
   }
   return -1;
@@ -179,97 +135,93 @@ interface Candidate {
   readonly to: number;
 }
 
-/** Fenced blocks first, then any bare JSON value in the text. */
+/** Linear scan: do not re-scan nested objects inside malformed outer values. */
 function candidates(content: string): Candidate[] {
   const found: Candidate[] = [];
-  FENCED_BLOCK.lastIndex = 0;
-  for (const match of content.matchAll(FENCED_BLOCK)) {
-    const body = match[1];
-    if (body === undefined || match.index === undefined) continue;
-    found.push({ text: body, from: match.index, to: match.index + match[0].length });
+  let cursor = 0;
+  while (cursor < content.length) {
+    const newline = content.indexOf("\n", cursor);
+    const lineEnd = newline === -1 ? content.length : newline;
+    const line = content.slice(cursor, lineEnd).replace(/\r$/, "");
+    const fence = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/.exec(line);
+    if (fence) {
+      const marker = fence[1]!;
+      const language = fence[2]!.trim().toLowerCase();
+      const closer = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \\t\\r]*$`, "m");
+      const restStart = lineEnd + 1;
+      const closing = closer.exec(content.slice(restStart));
+      if (!closing) break;
+      const bodyEnd = restStart + closing.index;
+      const to = bodyEnd + closing[0].length;
+      if (language === "" || language === "json") {
+        const body = content.slice(restStart, bodyEnd).trim();
+        if ((body[0] === "{" || body[0] === "[") && jsonSpanEnd(body, 0) === body.length) {
+          found.push({ text: body, from: cursor + line.indexOf(marker), to });
+        }
+      }
+      cursor = to + 1;
+    } else {
+      const offset = line.search(/\S/);
+      const start = cursor + offset;
+      if (offset >= 0 && (content[start] === "{" || content[start] === "[")) {
+        const end = jsonSpanEnd(content, start);
+        if (end === -1) break;
+        const nextNewline = content.indexOf("\n", end);
+        const after = nextNewline === -1 ? content.length : nextNewline;
+        if (content.slice(end, after).trim() === "") {
+          found.push({ text: content.slice(start, end), from: start, to: end });
+        }
+        cursor = after + 1;
+      } else cursor = lineEnd + 1;
+    }
+    if (found.length > MAX_CALLS) return [];
   }
-  for (let i = 0; i < content.length; i += 1) {
-    const char = content[i];
-    if (char !== "{" && char !== "[") continue;
-    // Skip anything already covered by a fence, so the same call is not
-    // offered twice and the fence markers are removed with it.
-    if (found.some((candidate) => i >= candidate.from && i < candidate.to)) continue;
-    const end = jsonSpanEnd(content, i);
-    if (end === -1) continue;
-    found.push({ text: content.slice(i, end), from: i, to: end });
-    i = end - 1;
-  }
-  return found.sort((a, b) => a.from - b.from);
+  return found;
 }
 
 /**
- * How much of a partial reply is safe to show the user now.
- *
- * Salvage can only run on a whole value, but the reply is streamed, so
- * without this the JSON reaches the screen token by token and the fix arrives
- * too late to matter: the user watches
- * `{"name": "FileRead", "arguments": ...` type itself out and only then does
- * it get replaced. That is the complaint, not a detail of it.
- *
- * So everything before the first point where a JSON value or a fenced block
- * could begin is safe to stream, and everything from there is held until the
- * stream ends and salvage has decided what it was. Ordinary prose has no such
- * point and streams exactly as before. A reply that really is about JSON is
- * held back and released whole, which is a small cost paid only by replies
- * that look like tool calls.
+ * The existing salvage grammar, restricted to one whole-response value.
+ * Used only to diagnose rejected calls, never to grant execution authority.
+ * Surrounding prose, multiple blocks and source-code fences are not candidates.
+ */
+export function standaloneTextToolCallCandidate(content: string): string | undefined {
+  if (content.length > MAX_CONTENT_CHARS) return undefined;
+  const found = candidates(content);
+  if (found.length !== 1) return undefined;
+  const candidate = found[0]!;
+  if (content.slice(0, candidate.from).trim() || content.slice(candidate.to).trim()) return undefined;
+  return candidate.text;
+}
+
+/**
+ * Hold a potential value (and partial Markdown fence) until recovery decides.
+ * The adapter only uses this when the actual request advertised tools.
  */
 export function streamableLength(content: string): number {
-  const fence = content.indexOf("```");
-  let earliest = fence === -1 ? content.length : fence;
-  for (let i = 0; i < earliest; i += 1) {
-    const char = content[i];
-    if (char === "{" || char === "[") {
-      earliest = i;
-      break;
-    }
-  }
-  return earliest;
+  const marker = content.search(/[\[{`~]/);
+  return marker === -1 ? content.length : marker;
 }
 
-/**
- * Pull tool calls out of a reply that was written as text.
- *
- * Returns the calls and the reply with their JSON removed. When nothing
- * salvageable is found the content comes back exactly as it went in, so a
- * plain answer is never disturbed.
- */
 export function salvageTextToolCalls(
   content: string,
   tools: readonly LLMTool[] | undefined,
-  /**
-   * Injected so tests can be deterministic. The default has to be globally
-   * unique, not merely unique within one reply: ids share a namespace with
-   * every earlier turn in the session, and a per-response counter collided on
-   * the second turn with `assistant tool call repeats "salvaged_0"`, which
-   * rejects the history append and kills the turn.
-   */
   makeId: () => string = randomUUID,
 ): SalvagedToolCalls {
-  const known = advertisedNames(tools);
-  if (known.size === 0 || content.trim().length === 0) {
+  if (!tools?.length || content.length > MAX_CONTENT_CHARS || content.trim().length === 0) {
     return { toolCalls: [], content };
   }
-
+  const known = new Map(tools.map((tool) => [tool.function.name, tool]));
   const calls: LLMToolCall[] = [];
-  const consumed: Array<{ from: number; to: number }> = [];
+  const consumed: Candidate[] = [];
   for (const candidate of candidates(content)) {
     let parsed: unknown;
-    try {
-      parsed = JSON.parse(candidate.text);
-    } catch {
-      continue;
-    }
+    try { parsed = JSON.parse(candidate.text); } catch { continue; }
     const found = callsFrom(parsed, known, makeId);
     if (found.length === 0) continue;
     calls.push(...found);
-    consumed.push({ from: candidate.from, to: candidate.to });
+    if (calls.length > MAX_CALLS) return { toolCalls: [], content };
+    consumed.push(candidate);
   }
-
   if (calls.length === 0) return { toolCalls: [], content };
 
   let remaining = "";
@@ -279,9 +231,6 @@ export function salvageTextToolCalls(
     cursor = span.to;
   }
   remaining += content.slice(cursor);
-
-  // Prose around the call survives; the scaffolding that only introduced the
-  // JSON ("Here is the JSON object for the function call:") is left as the
-  // model wrote it rather than guessed at.
-  return { toolCalls: calls, content: remaining.trim() };
+  // Never trim: the prefix may already be visible in the streaming UI.
+  return { toolCalls: calls, content: remaining };
 }

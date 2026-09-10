@@ -85,6 +85,8 @@ import {
   toolNameDisplay,
 } from "./context.js";
 import type { Tool } from "./types.js";
+import { SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./system/coding-common.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./system/tool-search-name.js";
 import { signedSessionPlanFileArgs } from "../agents/_deps/filesystem-args.js";
 import { sessionFilesystemContext, sessionPlanFileAuthority } from "../planning/session-plan-authority.js";
 import {
@@ -1363,6 +1365,8 @@ export interface RunToolUseOptions {
    * calls made without loading the schema first.
    */
   readonly discoveredToolNames?: ReadonlySet<string>;
+  /** Immutable names from the prepared request; only affects discovery copy. */
+  readonly advertisedToolNames?: readonly string[];
   /**
    * Optional MCP side-effect hook. Called when the tool throws an
    * `McpAuthError` — allows the caller (session services) to flip the
@@ -2133,6 +2137,16 @@ export async function runToolUse(
       context: opts.runtimeAttemptContext,
       tool,
       args: inputForTool,
+    });
+  }
+  if (tool.name === SYSTEM_SEARCH_TOOLS_NAME && opts.advertisedToolNames !== undefined) {
+    // Inject after model/schema/hook validation; a model-supplied internal
+    // argument must never decide which capabilities were actually sent.
+    Object.defineProperty(argsForTool, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+      value: Object.freeze([...opts.advertisedToolNames]),
+      enumerable: false,
+      writable: false,
+      configurable: true,
     });
   }
   const sandboxExecutionBroker = invocation.session.services.sandboxExecutionBroker;

@@ -35,6 +35,7 @@ import {
   type PendingAdmissionFallbackSlice,
   validatePendingAdmissionFallbackSlice,
 } from "./turn-checkpoint-slice.js";
+import { readTextToolCallCorrection, type TextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
 
 export const LEGACY_DURABLE_CHECKPOINT_VERSION = 1 as const;
 export const DURABLE_CHECKPOINT_V2 = 2 as const;
@@ -1061,7 +1062,9 @@ function parseCheckpointAdmissionState(
 
 interface ParsedCheckpointModelSampleState {
   modelSampleOrdinal?: number;
-  modelSampleResumePrompt?: "continuation_nudge" | "empty_response";
+  modelSampleResumePrompt?: "continuation_nudge" | "empty_response" | "text_tool_call_correction";
+  textToolCallCorrectionCount?: number;
+  textToolCallCorrection?: TextToolCallCorrection;
 }
 
 function parseCheckpointModelSampleState(
@@ -1077,11 +1080,24 @@ function parseCheckpointModelSampleState(
   if (value.modelSampleResumePrompt !== undefined) {
     if (
       value.modelSampleResumePrompt !== "continuation_nudge" &&
-      value.modelSampleResumePrompt !== "empty_response"
+      value.modelSampleResumePrompt !== "empty_response" &&
+      value.modelSampleResumePrompt !== "text_tool_call_correction"
     ) {
       throw malformed("resumableState.modelSampleResumePrompt is invalid");
     }
     result.modelSampleResumePrompt = value.modelSampleResumePrompt;
+  }
+  if (value.textToolCallCorrectionCount !== undefined) {
+    result.textToolCallCorrectionCount = nonNegativeInteger(value.textToolCallCorrectionCount, "resumableState.textToolCallCorrectionCount");
+  }
+  if (value.textToolCallCorrection !== undefined) {
+    const correction = readTextToolCallCorrection(value.textToolCallCorrection);
+    if (!correction) throw malformed("resumableState.textToolCallCorrection is invalid");
+    result.textToolCallCorrection = correction;
+  }
+  if (result.modelSampleResumePrompt === "text_tool_call_correction" &&
+      (result.textToolCallCorrection === undefined || !result.textToolCallCorrectionCount)) {
+    throw malformed("resumableState tool-call correction is missing its durable counter or identity");
   }
   return result;
 }

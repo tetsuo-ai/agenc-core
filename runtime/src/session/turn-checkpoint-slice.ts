@@ -5,6 +5,8 @@
  * contract tests cannot define the checkpoint slice independently.
  */
 
+import type { TextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
+
 export const MAX_CHECKPOINT_FALLBACK_TEXT_BYTES = 4_096;
 
 export const LEGACY_TURN_CHECKPOINT_SLICE_KEYS = Object.freeze([
@@ -26,6 +28,8 @@ export const TURN_CHECKPOINT_SLICE_KEYS = Object.freeze([
   ...LEGACY_TURN_CHECKPOINT_SLICE_KEYS,
   "editorToolCallsAdmitted",
   "pendingAdmissionFallback",
+  "textToolCallCorrectionCount",
+  "textToolCallCorrection",
 ] as const);
 
 export const PENDING_ADMISSION_FALLBACK_KEYS = Object.freeze([
@@ -54,7 +58,9 @@ export interface TurnCheckpointSliceLine {
   readonly editorToolCallsAdmitted?: number;
   readonly pendingAdmissionFallback?: PendingAdmissionFallbackSlice;
   readonly modelSampleOrdinal?: number;
-  readonly modelSampleResumePrompt?: "continuation_nudge" | "empty_response";
+  readonly modelSampleResumePrompt?: "continuation_nudge" | "empty_response" | "text_tool_call_correction";
+  readonly textToolCallCorrectionCount?: number;
+  readonly textToolCallCorrection?: TextToolCallCorrection;
   readonly taskBudgetRemaining?: number;
   readonly autoCompactTracking?: {
     readonly compacted: boolean;
@@ -70,7 +76,7 @@ export interface TurnCheckpointSliceLine {
 
 export type LegacyTurnCheckpointSliceLine = Omit<
   TurnCheckpointSliceLine,
-  "editorToolCallsAdmitted" | "pendingAdmissionFallback"
+  "editorToolCallsAdmitted" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection"
 > & {
   readonly editorToolCallsAdmitted?: never;
   readonly pendingAdmissionFallback?: never;

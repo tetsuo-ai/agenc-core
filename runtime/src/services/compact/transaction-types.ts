@@ -518,6 +518,30 @@ export class CompactionTransactionError extends Error {
   }
 }
 
+/**
+ * The summary was rejected before commit and the terminal failure was durably
+ * recorded. Only the transaction owner may establish this advisory outcome;
+ * matching an error message/reason alone does not prove the history is usable.
+ */
+export class CompactionSummaryRejectedError extends CompactionTransactionError {
+  constructor(reason: CompactionFailureReason, message: string, options?: ErrorOptions) {
+    super(reason, message, options);
+    this.name = "CompactionSummaryRejectedError";
+  }
+}
+
+/** A failed attempt could not be settled durably; startup reconciliation owns it. */
+export class CompactionFailurePersistenceError extends CompactionTransactionError {
+  constructor(reason: CompactionFailureReason, options?: ErrorOptions) {
+    super(
+      reason,
+      "compaction failed and its terminal failure event could not be committed; source remains pinned for startup reconciliation",
+      options,
+    );
+    this.name = "CompactionFailurePersistenceError";
+  }
+}
+
 export class CompactionReconstructionRequiredError extends Error {
   constructor(readonly attemptId: string, options?: ErrorOptions) {
     super(

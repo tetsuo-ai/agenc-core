@@ -182,6 +182,8 @@ export interface AttachmentTrackingState {
    * them.
    */
   listedSkillNames: Set<string>;
+  /** Exact root-human turn already covered by a listing/relevance evaluation. */
+  lastSkillListingRootTurnId?: string;
   /**
    * Workspace-instruction and memory-index texts at the head of the prompt,
    * frozen for the session so the cached prefix holds (prompts/instruction-head.ts).

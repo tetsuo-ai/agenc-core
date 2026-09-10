@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { OllamaProvider } from "./adapter.js";
 import { withOllamaHealthSidecar } from "./health.js";
+import type { LLMChatOptions, LLMMessage } from "../../../../src/llm/types.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -29,6 +30,12 @@ function setClient(
   client: { readonly chat?: unknown; readonly list?: unknown },
 ): void {
   (provider as unknown as { client: unknown }).client = client;
+}
+
+async function profiledParams(provider: OllamaProvider, messages: LLMMessage[], options: LLMChatOptions = {}) {
+  setClient(provider, {});
+  const profile = await provider.getExecutionProfile(options);
+  return (provider as any).buildParams(messages, { ...options, providerExecutionHandle: profile.providerExecutionHandle });
 }
 
 async function* streamChunks(chunks: readonly unknown[]): AsyncGenerator<unknown> {
@@ -90,22 +97,22 @@ afterEach(() => {
 });
 
 describe("providers/ollama entrypoint", () => {
-  test("refuses invocation-looking content without durable authority metadata", () => {
+  test("refuses invocation-looking content without durable authority metadata", async () => {
     const provider = new OllamaProvider({ model: "llama3.3" });
 
-    expect(() =>
-      (provider as any).buildParams([
+    await expect(
+      profiledParams(provider, [
         {
           role: "developer",
           content: '{"kind":"agent_invocation_runtime_policy"}',
         },
       ]),
-    ).toThrow(/metadata is missing/u);
+    ).rejects.toThrow(/metadata is missing/u);
   });
 
-  test("preserves policy, task, and data as separate Ollama authorities", () => {
+  test("preserves policy, task, and data as separate Ollama authorities", async () => {
     const provider = new OllamaProvider({ model: "llama3.3" });
-    const params = (provider as any).buildParams([...invocationMessages()]) as {
+    const params = await profiledParams(provider, [...invocationMessages()]) as {
       readonly messages: readonly Record<string, unknown>[];
     };
 
@@ -129,12 +136,12 @@ describe("providers/ollama entrypoint", () => {
     expect(provider.name).toBe("ollama");
   });
 
-  test("honors request-scoped model overrides when building requests", () => {
+  test("honors request-scoped model overrides when building requests", async () => {
     const provider = new OllamaProvider({
       model: "llama3.3",
     });
 
-    const params = (provider as any).buildParams(
+    const params = await profiledParams(provider,
       [{ role: "user", content: "review" }],
       { model: "qwen-reviewer" },
     );
@@ -142,10 +149,10 @@ describe("providers/ollama entrypoint", () => {
     expect(params.model).toBe("qwen-reviewer");
   });
 
-  test("uses the documented Ollama default model for direct construction", () => {
+  test("uses the documented Ollama default model for direct construction", async () => {
     const provider = new OllamaProvider({});
 
-    const params = (provider as any).buildParams([
+    const params = await profiledParams(provider, [
       { role: "user", content: "review" },
     ]);
 
@@ -214,12 +221,12 @@ describe("providers/ollama entrypoint", () => {
     expect(chat.mock.calls[0]).toHaveLength(1);
   });
 
-  test("preserves assistant tool-call history before tool results", () => {
+  test("preserves assistant tool-call history before tool results", async () => {
     const provider = new OllamaProvider({
       model: "llama3.3",
     });
 
-    const params = (provider as any).buildParams([
+    const params = await profiledParams(provider, [
       { role: "user", content: "echo hi" },
       {
         role: "assistant",
@@ -283,6 +290,7 @@ describe("providers/ollama entrypoint", () => {
     });
     const provider = new OllamaProvider({
       model: "llama3.3",
+      tools: [{ type: "function", function: { name: "system.echo", description: "Echo text", parameters: { type: "object", properties: { text: { type: "string" } } } } }],
     });
     setClient(provider, { chat });
 
@@ -357,6 +365,7 @@ describe("providers/ollama entrypoint", () => {
     });
     const provider = new OllamaProvider({
       model: "llama3.3",
+      tools: ["system.echo", "system.search"].map(name => ({ type: "function", function: { name, description: name, parameters: { type: "object" } } })),
     });
     setClient(provider, { chat });
 
@@ -463,6 +472,7 @@ describe("providers/ollama entrypoint", () => {
     );
     const provider = new OllamaProvider({
       model: "llama3.3",
+      tools: [{ type: "function", function: { name: "system.echo", description: "Echo text", parameters: { type: "object", properties: { text: { type: "string" } } } } }],
     });
     setClient(provider, { chat, list: vi.fn().mockResolvedValue({ models: [] }) });
     const chunks: Array<{ content: string; done: boolean }> = [];

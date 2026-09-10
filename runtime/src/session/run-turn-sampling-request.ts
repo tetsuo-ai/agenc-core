@@ -137,15 +137,30 @@ export function builtTools(
 ): ReadonlyArray<LLMTool> {
   let advertised: ReadonlyArray<LLMTool> =
     session.services.registry.toLLMTools();
-  // Small local models drown in the frontier catalog; give them the
-  // core loop only. Cloud providers are untouched.
+  // Keep the initial local catalog small, but do not revoke tools loaded
+  // through discovery. Cloud providers are untouched.
   if (usesLocalToolProfile(ctx.modelProviderId)) {
     const baseProfile = new Set(filterToolsForLocalProfile(advertised));
     const desktop = new Set(session.services.mcpManager?.getAuthenticatedDesktopToolNames?.() ?? []);
-    // Preserve only tools already discovered in this request, and only when
-    // the real manager proves a live signed local Desktop attachment. Generic
-    // MCP names, forged annotations and a same-named server gain no exception.
-    advertised = advertised.filter(tool => baseProfile.has(tool) || desktop.has(tool.function.name));
+    const discovered = session.services.registry.getDiscoveredToolNames?.();
+    const liveMcp = new Set(
+      (session.services.mcpManager?.getTools?.() ?? [])
+        .map(tool => tool.name)
+        // Desktop remains a reserved, authenticated product attachment. An
+        // ordinary server using that name cannot acquire its exception.
+        .filter(name => name.startsWith("mcp.") &&
+          !name.startsWith("mcp.agenc-desktop-control.")),
+    );
+    // Explicitly loaded built-ins/plugins also survive the initial profile;
+    // otherwise searchTools would promise capabilities it immediately hides.
+    // MCP additionally requires the manager's live tool inventory. A
+    // name/annotation alone is insufficient,
+    // and disconnected or local-only tools outside their turn stay hidden.
+    // Advertising a tool does not bypass execution admission or permissions.
+    advertised = advertised.filter(tool => baseProfile.has(tool) ||
+      desktop.has(tool.function.name) ||
+      (discovered?.has(tool.function.name) === true &&
+        (!tool.function.name.startsWith("mcp.") || liveMcp.has(tool.function.name))));
   }
   const interaction = ctx.editorInteraction;
   if (interaction === undefined) return advertised;

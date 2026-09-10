@@ -1,12 +1,11 @@
 /**
- * The skill listing must reach the model on every sampling request.
- * Attachment messages are never persisted into canonical history, so a
- * cross-turn hash gate hid the listing from the second request onward.
+ * Restore missing skill listings, but do not drain further relevance batches
+ * on every tool continuation of the same authoritative human turn.
  */
 import { describe, expect, test } from "vitest";
 
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
-import { SKILL_LISTING_REMINDER_HEADER } from "./messages.js";
+import { attachmentsToMessages, SKILL_LISTING_REMINDER_HEADER } from "./messages.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 import { skillListingProducer } from "./skill-listing.js";
 
@@ -201,6 +200,7 @@ describe("skillListingProducer", () => {
       `<system-reminder>\n${SKILL_LISTING_REMINDER_HEADER}\n\n- repo-docs: Explain the repository docs\n</system-reminder>`;
     const opts = makeOpts({
       userInput: "write unit tests for the parser",
+      turnProvenance: { turnId: "human-1", rootHumanTurn: { turnId: "human-1", text: "write unit tests for the parser" } },
       messages: [
         { role: "user", content: rendered, runtimeOnly: { mergeBoundary: "user_context" } },
         { role: "user", content: "write unit tests for the parser" },
@@ -230,6 +230,107 @@ describe("skillListingProducer", () => {
 
     // The same request again: every relevant name is already in front of the model.
     expect(await skillListingProducer(opts, tracking)).toEqual([]);
+  });
+
+  describe("root-human relevance cadence", () => {
+    const request = "write unit tests for the parser";
+    const rootTurn = (turnId: string) => ({ turnId, rootHumanTurn: { turnId, text: request } });
+    const catalog = Array.from({ length: 60 }, (_, i) => ({
+      name: `parser-testing-${String(i).padStart(2, "0")}`,
+      description: "Write unit tests for the parser and verify parsing behavior carefully",
+      loadedFrom: "skills",
+    }));
+    const catalogOptions = () => makeOpts({
+      userInput: request,
+      contextWindowTokens: 32_768,
+      turnProvenance: rootTurn("human-1"),
+      skillsManager: { skillsForConfig: async () => ({ availableSkills: catalog }) },
+    });
+    const retainedListing = attachmentsToMessages([{ kind: "skill_listing", content: "- prior: Prior skill" }]);
+
+    test("the initial listing covers its human turn; later identical text with a new ID can get one batch", async () => {
+      const opts = catalogOptions();
+      const tracking = getAttachmentTrackingState(opts.sessionKey);
+      const initial = await skillListingProducer(opts, tracking);
+      expect(initial[0]?.kind).toBe("skill_listing");
+      expect(tracking.lastSkillListingRootTurnId).toBe("human-1");
+      const afterTool = { ...opts, messages: [
+        ...attachmentsToMessages(initial),
+        { role: "tool" as const, toolName: "FileRead", toolCallId: "read", content: "file contents" },
+      ] };
+      expect(await skillListingProducer(afterTool, tracking)).toEqual([]);
+      expect(await skillListingProducer(afterTool, tracking)).toEqual([]);
+
+      const nextTurn = { ...afterTool, turnProvenance: rootTurn("human-2") };
+      const relevance = await skillListingProducer(nextTurn, tracking);
+      expect(relevance[0]?.kind).toBe("skill_relevance");
+      expect(tracking.lastSkillListingRootTurnId).toBe("human-2");
+      expect(await skillListingProducer(nextTurn, tracking)).toEqual([]);
+      expect((await skillListingProducer({ ...nextTurn, turnProvenance: rootTurn("human-3") }, tracking))[0]?.kind)
+        .toBe("skill_relevance");
+    });
+
+    test("restores a missing listing on durable resume without claiming synthetic root authority", async () => {
+      const opts = { ...catalogOptions(), turnProvenance: { turnId: "resumed-turn", rootHumanTurn: null } };
+      const tracking = getAttachmentTrackingState(opts.sessionKey);
+      const restored = await skillListingProducer(opts, tracking);
+      expect(restored[0]?.kind).toBe("skill_listing");
+      expect(tracking.lastSkillListingRootTurnId).toBeUndefined();
+      expect(await skillListingProducer({ ...opts, messages: attachmentsToMessages(restored) }, tracking)).toEqual([]);
+    });
+
+    test("restores an evicted listing during the same turn without opening another relevance batch", async () => {
+      const opts = catalogOptions();
+      const tracking = getAttachmentTrackingState(opts.sessionKey);
+      const initial = await skillListingProducer(opts, tracking);
+      const restored = await skillListingProducer(opts, tracking);
+      expect(restored).toEqual(initial);
+      expect(await skillListingProducer({ ...opts, messages: attachmentsToMessages(restored) }, tracking)).toEqual([]);
+    });
+
+    test("requires exact authoritative provenance for relevance, not transcript/userInput text", async () => {
+      for (const turnProvenance of [undefined, { turnId: "", rootHumanTurn: { turnId: "", text: request } },
+        { turnId: "current", rootHumanTurn: { turnId: "stale", text: request } },
+        { turnId: "current", rootHumanTurn: null }]) {
+        const opts = { ...catalogOptions(), messages: retainedListing, turnProvenance };
+        const tracking = getAttachmentTrackingState(opts.sessionKey);
+        expect(await skillListingProducer(opts, tracking)).toEqual([]);
+        expect(tracking.lastSkillListingRootTurnId).toBeUndefined();
+      }
+      const opts = { ...catalogOptions(), messages: retainedListing,
+        turnProvenance: { turnId: "current", rootHumanTurn: { turnId: "current", text: "zzzz-unrelated" } } };
+      expect(await skillListingProducer(opts, getAttachmentTrackingState(opts.sessionKey))).toEqual([]);
+    });
+
+    test("concurrent sampling preparation cannot drain two relevance batches for one human turn", async () => {
+      const opts = { ...catalogOptions(), messages: retainedListing };
+      const tracking = getAttachmentTrackingState(opts.sessionKey);
+      const results = await Promise.all([skillListingProducer(opts, tracking), skillListingProducer(opts, tracking)]);
+      expect(results.filter(result => result.length > 0)).toHaveLength(1);
+    });
+
+    test("aborted or failed catalog loading does not consume the human turn", async () => {
+      const controller = new AbortController();
+      const opts = { ...catalogOptions(), messages: retainedListing, signal: controller.signal,
+        skillsManager: { skillsForConfig: async () => { controller.abort(); return { availableSkills: catalog }; } } };
+      const tracking = getAttachmentTrackingState(opts.sessionKey);
+      expect(await skillListingProducer(opts, tracking)).toEqual([]);
+      expect(tracking.lastSkillListingRootTurnId).toBeUndefined();
+      expect(tracking.listedSkillNames.size).toBe(0);
+      const retry = { ...catalogOptions(), sessionKey: opts.sessionKey, messages: retainedListing };
+      await expect(skillListingProducer({ ...retry, skillsManager: { skillsForConfig: async () => { throw new Error("loader failed"); } } }, tracking))
+        .rejects.toThrow("loader failed");
+      expect(tracking.lastSkillListingRootTurnId).toBeUndefined();
+      expect((await skillListingProducer(retry, tracking))[0]?.kind).toBe("skill_relevance");
+    });
+
+    test("recognizes legacy retained listing headers without requiring their old unconditional instruction", async () => {
+      const opts = { ...catalogOptions(), turnProvenance: { turnId: "resumed", rootHumanTurn: null }, messages: [{
+        role: "user" as const,
+        content: "<system-reminder>\nThe following skills are available for use with the Skill tool. If a skill matches the user's request, invoke the Skill tool before responding.\n\n- prior: Prior skill\n</system-reminder>",
+      }] };
+      expect(await skillListingProducer(opts, getAttachmentTrackingState(opts.sessionKey))).toEqual([]);
+    });
   });
 
   test("emits nothing for subagents and skips skills that are not model-invocable", async () => {

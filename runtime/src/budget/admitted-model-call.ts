@@ -102,6 +102,14 @@ export function accountingOptionsForProvider(
   };
 }
 
+export function projectProviderAccountingRequest(
+  provider: LLMProvider,
+  messages: readonly LLMMessage[],
+  options: LLMChatOptions,
+): { readonly messages: readonly LLMMessage[]; readonly options: LLMChatOptions } {
+  return provider.projectRequestForAccounting?.(messages, options) ?? { messages, options };
+}
+
 export function providerNativeToolsForAccounting(
   provider: LLMProvider,
   providerName: string,
@@ -352,6 +360,24 @@ function isSameModelIdentity(reported: string, requested: string): boolean {
  */
 const MIN_ADMISSIBLE_OUTPUT_TOKENS = 1_024;
 
+/**
+ * Shared context-fit authority for admission and advisory-compaction preflight.
+ * Keep the complete input; only lower the requested output ceiling. A caller's
+ * explicit smaller ceiling remains valid when it fits without clamping.
+ */
+export function fitOutputReservationToContext(
+  accounting: Pick<TokenAccountingResult, "admissible" | "inputTokens" | "totalTokens">,
+  contextWindowTokens: number,
+  maxOutputTokens: number,
+): number | undefined {
+  if (!accounting.admissible) return undefined;
+  if (accounting.totalTokens <= contextWindowTokens) return maxOutputTokens;
+  const roomLeftByPrompt = contextWindowTokens - accounting.inputTokens;
+  return roomLeftByPrompt >= MIN_ADMISSIBLE_OUTPUT_TOKENS
+    ? Math.min(maxOutputTokens, roomLeftByPrompt)
+    : undefined;
+}
+
 export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
@@ -484,11 +510,12 @@ export async function runAdmittedModelCall(
     providerFactoryOptions.extra ?? {},
     accountingOptions,
   );
+  const accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,
     model: effectiveModel,
-    messages: params.messages,
-    options: accountingOptions,
+    messages: accountingProjection.messages,
+    options: accountingProjection.options,
     ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),
     endpointIdentity: providerFactoryOptions.baseURL,
     configurationRevision: createTokenAccountingConfigurationRevision({
@@ -517,7 +544,7 @@ export async function runAdmittedModelCall(
     });
     if (!accountingResult.admissible) {
       accountingFailureReason = "token_accounting_uncertain";
-    } else if (accountingResult.totalTokens > contextWindowTokens) {
+    } else {
       // The prompt and the reservation share one window, and only the prompt
       // is fixed. Denying here throws away a turn the model could still have
       // answered, just more briefly, so spend what the prompt left instead.
@@ -527,11 +554,13 @@ export async function runAdmittedModelCall(
       // sending a longer prompt. Deny remains for the case that is genuinely
       // unanswerable, where the prompt alone leaves less room than a usable
       // reply needs.
-      const roomLeftByPrompt = contextWindowTokens - accountingResult.inputTokens;
-      if (roomLeftByPrompt >= MIN_ADMISSIBLE_OUTPUT_TOKENS) {
-        admittedMaxOutputTokens = Math.min(maxOutputTokens, roomLeftByPrompt);
-      } else {
+      const fittedOutputTokens = fitOutputReservationToContext(
+        accountingResult, contextWindowTokens, maxOutputTokens,
+      );
+      if (fittedOutputTokens === undefined) {
         accountingFailureReason = "context_window_exceeded";
+      } else {
+        admittedMaxOutputTokens = fittedOutputTokens;
       }
     }
   } catch (error) {
@@ -590,6 +619,9 @@ export async function runAdmittedModelCall(
     }
     return params.invoke({
       ...accountingOptions,
+      ...(configuredMaxOutputTokens !== undefined
+        ? { maxOutputTokens: admittedMaxOutputTokens }
+        : {}),
       ...(accountingResult !== undefined
         ? { accountedInputTokens: accountingResult.inputTokens }
         : {}),

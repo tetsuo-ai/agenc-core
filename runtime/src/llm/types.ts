@@ -778,6 +778,12 @@ export interface LLMStoredResponseDeleteResult {
 export interface LLMResponse {
   content: string;
   toolCalls: LLMToolCall[];
+  /** Non-executable, bounded provider diagnostic for a fresh admitted correction. */
+  readonly toolCallRecovery?: {
+    readonly reason: "invalid_arguments" | "not_advertised";
+    readonly toolName: string;
+    readonly message: string;
+  };
   usage: LLMUsage;
   model: string;
   /** Provider-computed request diagnostics for this call. */
@@ -1002,6 +1008,15 @@ export interface LLMProvider {
   getExecutionProfile?(
     options?: LLMChatOptions,
   ): Promise<LLMProviderExecutionProfile>;
+  /**
+   * Pure, provider-owned view of the profiled wire request for token accounting.
+   * Must use the same pinned execution handle and projection as chat/chatStream;
+   * never execute requests or expand the caller's tool catalog here.
+   */
+  projectRequestForAccounting?(
+    messages: readonly LLMMessage[],
+    options: LLMChatOptions,
+  ): { readonly messages: readonly LLMMessage[]; readonly options: LLMChatOptions };
   /** Optional startup hook for providers with session/socket prewarm support. */
   prewarmStartup?(
     params: LLMProviderStartupPrewarmParams,

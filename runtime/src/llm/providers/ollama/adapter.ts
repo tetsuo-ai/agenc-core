@@ -23,6 +23,10 @@ import type {
 import { validateToolCall } from "../../types.js";
 import type { OllamaProviderConfig } from "./types.js";
 import { salvageTextToolCalls, streamableLength } from "./salvage-tool-calls.js";
+import { diagnoseRejectedTextToolCall } from "./text-tool-call-recovery.js";
+import { projectOllamaTextTools } from "./text-tools.js";
+import { ollamaTemplateRequiresTextTools } from "./template-tool-support.js";
+import { createOllamaToolNameProjection, projectOllamaHistoryToolNames } from "./tool-naming.js";
 import { LLMProviderError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
@@ -90,6 +94,12 @@ interface ToolSelectionDiagnostics {
   readonly toolResolution: ToolResolutionStrategy;
   readonly toolsAttached: boolean;
   readonly toolSuppressionReason?: string;
+}
+
+interface OllamaCapabilityProfile {
+  readonly mode: "native" | "text";
+  /** Only explicit model metadata can remove incompatible tool-result images. */
+  readonly toolResultImagePolicy?: "strip";
 }
 
 function collectParamDiagnostics(
@@ -165,8 +175,9 @@ function collectParamDiagnostics(
     missingRequestedToolNames: selection?.missingRequestedToolNames,
     toolResolution: selection?.toolResolution,
     providerCatalogToolCount: selection?.providerCatalogToolCount,
-    toolsAttached: selection?.toolsAttached,
-    toolSuppressionReason: selection?.toolSuppressionReason,
+    toolsAttached: tools.length > 0,
+    toolSuppressionReason: selection?.tools.length && !Array.isArray(params.tools)
+      ? "text_tool_protocol" : selection?.toolSuppressionReason,
     toolChoice: undefined,
     toolSchemaChars,
     serializedChars,
@@ -480,6 +491,15 @@ export class OllamaProvider implements LLMProvider {
   };
   private readonly tools: LLMTool[];
   private readonly compactionConfig: ResolvedLLMCompactionConfig;
+  // Instance ownership binds all cached metadata and handles to this endpoint.
+  private readonly toolModes = new Map<string, { expires: number; profile: Promise<OllamaCapabilityProfile> }>();
+  private readonly executions = new WeakMap<object, {
+    model: string;
+    toolsFingerprint: string;
+    mode: "native" | "text";
+    toolResultImagePolicy?: "strip";
+    names: ReturnType<typeof createOllamaToolNameProjection>;
+  }>();
 
   constructor(config: OllamaProviderConfig) {
     this.config = {
@@ -496,6 +516,7 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
+    options = await this.pinExecution(options);
     const requestTools = options?.tools ? [...options.tools] : this.tools;
     const toolSelection = this.selectTools(
       options?.toolRouting?.allowedToolNames,
@@ -585,6 +606,7 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
+    options = await this.pinExecution(options);
     const requestTools = options?.tools ? [...options.tools] : this.tools;
     const toolSelection = this.selectTools(
       options?.toolRouting?.allowedToolNames,
@@ -602,12 +624,15 @@ export class OllamaProvider implements LLMProvider {
     let content = "";
     /** How much of `content` the caller has already been shown. */
     let emittedLength = 0;
+    let holdingText = false;
     let model = String(params.model ?? this.config.model);
     let toolCalls: LLMToolCall[] = [];
     let promptTokens = 0;
     let completionTokens = 0;
     let sawProviderUsage = false;
     let doneReason: string | undefined;
+    let toolCallRecovery: LLMResponse["toolCallRecovery"];
+    const execution = this.requireExecution(options);
 
     try {
       emitProviderTraceEvent(options, {
@@ -651,7 +676,13 @@ export class OllamaProvider implements LLMProvider {
                 // Hold back anything that might turn out to be a tool call
                 // rather than prose. Released once the stream ends and
                 // salvage has decided; see streamableLength.
-                const safeLength = streamableLength(content);
+                // Scan each delta once. Re-scanning the whole accumulated
+                // prose for every token makes a long answer quadratic.
+                const safeDeltaLength = toolSelection.tools.length > 0
+                  ? holdingText ? 0 : streamableLength(chunkContent)
+                  : chunkContent.length;
+                if (safeDeltaLength < chunkContent.length) holdingText = true;
+                const safeLength = emittedLength + safeDeltaLength;
                 if (safeLength > emittedLength) {
                   onChunk({
                     content: content.slice(emittedLength, safeLength),
@@ -695,12 +726,20 @@ export class OllamaProvider implements LLMProvider {
       // returning it. Only once the stream is done is there a whole value to
       // read, so the recovery happens here rather than per chunk.
       if (toolCalls.length === 0 && doneReason !== "length") {
-        const salvaged = salvageTextToolCalls(content, options?.tools);
+        const salvaged = salvageTextToolCalls(content, execution.names.salvageTools);
         if (salvaged.toolCalls.length > 0) {
           toolCalls = [...salvaged.toolCalls];
           content = salvaged.content;
+        } else {
+          toolCallRecovery = diagnoseRejectedTextToolCall(content, execution.names.salvageTools);
+          if (toolCallRecovery) content = "";
         }
       }
+      toolCalls = doneReason === "length" ? [] : this.canonicalizeCalls(toolCalls, execution);
+      if (toolCallRecovery) toolCallRecovery = {
+        ...toolCallRecovery,
+        toolName: execution.names.toCanonicalName(toolCallRecovery.toolName) ?? toolCallRecovery.toolName,
+      };
       // Whatever was held back and is still part of the answer goes out now.
       // When the held text WAS the tool call, salvage removed it and there is
       // nothing left to release, which is the point.
@@ -744,6 +783,7 @@ export class OllamaProvider implements LLMProvider {
 
       return {
         content,
+        ...(toolCallRecovery ? { toolCallRecovery } : {}),
         toolCalls: completedToolCalls,
         usage: coerceUsage({
           promptTokens,
@@ -767,10 +807,15 @@ export class OllamaProvider implements LLMProvider {
       });
       if (content.length > 0) {
         const mappedError = this.mapError(err, requestTimeoutMs);
-        onChunk({ content: "", done: true, toolCalls });
+        // A failed stream is not authority to execute anything. Release held
+        // text verbatim so the callback and persisted partial response agree.
+        if (content.length > emittedLength) {
+          onChunk({ content: content.slice(emittedLength), done: false });
+        }
+        onChunk({ content: "", done: true, toolCalls: [] });
         return {
           content,
-          toolCalls,
+          toolCalls: [],
           usage: coerceUsage({
             promptTokens,
             completionTokens,
@@ -800,12 +845,22 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  async getExecutionProfile() {
-    return (
+  async getExecutionProfile(options?: LLMChatOptions) {
+    const model = options?.model?.trim() || this.config.model;
+    const selectedTools = this.selectTools(options?.toolRouting?.allowedToolNames, options?.tools ?? this.tools).tools;
+    const capabilities = await this.resolveToolMode(model, options?.signal);
+    const providerExecutionHandle = Object.freeze({});
+    this.executions.set(providerExecutionHandle, {
+      model,
+      toolsFingerprint: JSON.stringify(selectedTools),
+      names: createOllamaToolNameProjection(structuredClone(selectedTools)),
+      ...capabilities,
+    });
+    const profile = (
       await resolveContextWindowProfile({
         provider: "ollama",
         baseUrl: this.config.host,
-        model: this.config.model,
+        model,
         maxTokens:
           typeof this.config.maxTokens === "number" && this.config.maxTokens > 0
             ? this.config.maxTokens
@@ -814,7 +869,7 @@ export class OllamaProvider implements LLMProvider {
       })
     ) ?? {
       provider: "ollama",
-      model: this.config.model,
+      model,
       usageReporting: "authoritative" as const,
       supportsMaxOutputTokens: true,
       maxOutputTokens:
@@ -822,6 +877,74 @@ export class OllamaProvider implements LLMProvider {
           ? this.config.maxTokens
           : undefined,
     };
+    return { ...profile, providerExecutionHandle };
+  }
+
+  private async pinExecution(options: LLMChatOptions = {}): Promise<LLMChatOptions> {
+    if (options.providerExecutionHandle !== undefined) {
+      this.requireExecution(options);
+      return options;
+    }
+    const profile = await this.getExecutionProfile(options);
+    return { ...options, providerExecutionHandle: profile.providerExecutionHandle };
+  }
+
+  private requireExecution(options: LLMChatOptions) {
+    const execution = options.providerExecutionHandle && this.executions.get(options.providerExecutionHandle);
+    const tools = this.selectTools(options.toolRouting?.allowedToolNames, options.tools ?? this.tools).tools;
+    if (!execution || execution.model !== (options.model?.trim() || this.config.model) ||
+      execution.toolsFingerprint !== JSON.stringify(tools)) {
+      throw new Error("Ollama execution profile does not match this model and selected tool catalog");
+    }
+    return execution;
+  }
+
+  private canonicalizeCalls(calls: readonly LLMToolCall[], execution: ReturnType<OllamaProvider["requireExecution"]>): LLMToolCall[] {
+    return calls.map((call) => {
+      const canonical = execution.names.canonicalizeToolCall(call);
+      if (!canonical) throw new Error("Ollama returned a tool outside the advertised request catalog");
+      return canonical;
+    });
+  }
+
+  private async resolveToolMode(model: string, signal?: AbortSignal): Promise<OllamaCapabilityProfile> {
+    signal?.throwIfAborted();
+    const cached = this.toolModes.get(model);
+    if (cached && cached.expires > Date.now()) return withTimeout(() => cached.profile, 3_500, this.name, signal);
+    if (this.toolModes.size >= 16) this.toolModes.delete(this.toolModes.keys().next().value!);
+    const profile = (async (): Promise<OllamaCapabilityProfile> => {
+      try {
+        const client = await this.ensureClient() as { show?: (request: { model: string }) => Promise<unknown> };
+        if (typeof client.show !== "function") return { mode: "native" };
+        const metadata = await withTimeout(() => client.show!({ model }), 3_500, this.name);
+        const capabilities = isRecord(metadata) ? metadata.capabilities : undefined;
+        // Missing, malformed, or unknown metadata is not proof tools are unsupported.
+        if (!Array.isArray(capabilities) || !capabilities.every((item) => typeof item === "string") ||
+          !capabilities.includes("completion")) return { mode: "native" };
+        return {
+          mode: capabilities.includes("tools") &&
+            !ollamaTemplateRequiresTextTools(isRecord(metadata) ? metadata.template : undefined)
+            ? "native" : "text",
+          ...(!capabilities.includes("vision") ? { toolResultImagePolicy: "strip" as const } : {}),
+        };
+      } catch {
+        return { mode: "native" };
+      }
+    })();
+    this.toolModes.set(model, { expires: Date.now() + 60_000, profile });
+    return withTimeout(() => profile, 3_500, this.name, signal);
+  }
+
+  projectRequestForAccounting(messages: readonly LLMMessage[], options: LLMChatOptions) {
+    const execution = this.requireExecution(options);
+    validateAgentInvocationMessageSequence([...messages]);
+    const repaired = repairToolTurnSequence([...messages]);
+    validateToolTurnSequence(repaired, { providerName: this.name });
+    const wireMessages = projectOllamaHistoryToolNames(repaired);
+    const wireOptions = { ...options, tools: execution.names.wireTools };
+    return execution.mode === "text"
+      ? projectOllamaTextTools(wireMessages, wireOptions, execution.names.wireTools, execution.toolResultImagePolicy)
+      : { messages: wireMessages, options: wireOptions };
   }
 
   private async ensureClient(): Promise<unknown> {
@@ -829,7 +952,19 @@ export class OllamaProvider implements LLMProvider {
 
     this.client = await ensureLazyImport("ollama", this.name, (mod) => {
       const OllamaClass = (mod.Ollama ?? mod.default) as any;
-      return new OllamaClass({ host: this.config.host });
+      return new OllamaClass({
+        host: this.config.host,
+        // Metadata probing must be bounded physically, not merely stop awaiting
+        // a still-running fetch. Inference requests retain their existing policy.
+        fetch: ((input: RequestInfo | URL, init?: RequestInit) => {
+          const url = input instanceof Request ? input.url : String(input);
+          if (new URL(url).pathname.endsWith("/api/show")) {
+            const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+            return fetch(input, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) });
+          }
+          return fetch(input, init);
+        }) as typeof fetch,
+      });
     });
     return this.client;
   }
@@ -839,17 +974,17 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
     toolSelection?: ToolSelectionDiagnostics,
   ): Record<string, unknown> {
-    validateAgentInvocationMessageSequence(messages);
+    const execution = this.requireExecution(options ?? {});
+    const projection = this.projectRequestForAccounting(messages, options ?? {});
+    options = projection.options;
     const requestMessages =
       options?.systemPrompt?.trim()
-        ? [{ role: "system" as const, content: options.systemPrompt.trim() }, ...messages]
-        : messages;
-    const repairedMessages = repairToolTurnSequence(requestMessages);
-    validateToolTurnSequence(repairedMessages, { providerName: this.name });
+        ? [{ role: "system" as const, content: options.systemPrompt.trim() }, ...projection.messages]
+        : projection.messages;
 
     const params: Record<string, unknown> = {
       model: options?.model?.trim() || this.config.model,
-      messages: repairedMessages.map((m) => this.toOllamaMessage(m)),
+      messages: requestMessages.map((m) => this.toOllamaMessage(m)),
     };
 
     // Build model options
@@ -877,12 +1012,8 @@ export class OllamaProvider implements LLMProvider {
       params.keep_alive = this.config.keepAlive;
 
     // Tools use the provider-compatible function schema.
-    const requestTools = options?.tools ? [...options.tools] : this.tools;
-    if (requestTools.length > 0) {
-      params.tools = (toolSelection ?? this.selectTools(
-        options?.toolRouting?.allowedToolNames,
-        requestTools,
-      )).tools;
+    if (execution.mode === "native" && (toolSelection?.providerCatalogToolCount ?? execution.names.wireTools.length) > 0) {
+      params.tools = execution.names.wireTools;
     }
 
     return params;
@@ -1030,19 +1161,26 @@ export class OllamaProvider implements LLMProvider {
     };
   }
 
-  private parseResponse(response: unknown, options?: LLMChatOptions): LLMResponse {
+  private parseResponse(
+    response: unknown,
+    options?: LLMChatOptions,
+  ): LLMResponse {
     const record = isRecord(response) ? response : {};
     const message = isRecord(record.message) ? record.message : {};
     const rawContent = readString(message.content);
+    const execution = this.requireExecution(options ?? {});
     const truncated = record.done_reason === "length";
     const reported = truncated ? [] : normalizeOllamaToolCalls(message.tool_calls);
     // Same recovery as the streaming path: a reply that IS a call becomes one.
     const salvaged =
       reported.length === 0 && !truncated
-        ? salvageTextToolCalls(rawContent, options?.tools)
+        ? salvageTextToolCalls(rawContent, execution.names.salvageTools)
         : { toolCalls: [], content: rawContent };
-    const toolCalls = salvaged.toolCalls.length > 0 ? [...salvaged.toolCalls] : reported;
-    const content = salvaged.toolCalls.length > 0 ? salvaged.content : rawContent;
+    const toolCalls = this.canonicalizeCalls(salvaged.toolCalls.length > 0 ? salvaged.toolCalls : reported, execution);
+    const toolCallRecovery = toolCalls.length === 0 && !truncated
+      ? diagnoseRejectedTextToolCall(rawContent, execution.names.salvageTools)
+      : undefined;
+    const content = toolCallRecovery ? "" : salvaged.toolCalls.length > 0 ? salvaged.content : rawContent;
 
     const promptTokens = readNonNegativeNumber(record.prompt_eval_count);
     const completionTokens = readNonNegativeNumber(record.eval_count);
@@ -1057,6 +1195,10 @@ export class OllamaProvider implements LLMProvider {
 
     return {
       content,
+      ...(toolCallRecovery ? { toolCallRecovery: {
+        ...toolCallRecovery,
+        toolName: execution.names.toCanonicalName(toolCallRecovery.toolName) ?? toolCallRecovery.toolName,
+      } } : {}),
       toolCalls,
       usage,
       model:

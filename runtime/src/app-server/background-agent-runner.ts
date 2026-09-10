@@ -64,6 +64,8 @@ import {
   authorizeBypassPermissionsConsent,
   canonicalizeBypassPermissionsCwd,
   loadBypassPermissionsConsent,
+  prepareBypassPermissionsConsent,
+  type PreparedBypassPermissionsConsent,
 } from "../permissions/bypass-consent-state.js";
 import {
   isPermissionMode,
@@ -3532,6 +3534,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
         let transitionContext = liveCurrent;
         let workspacePath: string | undefined;
+        let preparedBypassConsent: PreparedBypassPermissionsConsent | undefined;
         if (target === "bypassPermissions") {
           try {
             const canonicalCwd = canonicalizeBypassPermissionsCwd(
@@ -3553,8 +3556,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               }
             }
             if (params.bypassAuthority === "operator_tool_approval") {
+              if (stateRepository === undefined) {
+                throw new Error("Explicit bypass consent requires runtime-state persistence");
+              }
               transitionContext = authorizeBypassPermissionsConsent(
                 transitionContext,
+                canonicalCwd,
+              );
+              // The user's live permission choice must survive cold restore.
+              // Publish durable exact-cwd consent with the permission registry,
+              // never as an eager write or an implicit restore-time grant.
+              preparedBypassConsent = prepareBypassPermissionsConsent(
+                stateRepository,
                 canonicalCwd,
               );
             }
@@ -3602,6 +3615,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           sameModeAutoAuthorityRevoked || liveCurrent.mode !== target;
         return {
           next: nextCtx,
+          ...(preparedBypassConsent !== undefined
+            ? { preparedUpdate: preparedBypassConsent }
+            : {}),
           metadata: {
             runtimeSettings: {
               reason: "permission_mode_changed",
@@ -4551,6 +4567,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const childSubscriptions = new Set<() => void>();
     const childRequestIds = new WeakMap<LocalRuntimeBootstrap["session"], Map<string, string>>();
     const unsubscribeChildren = observeChildApprovalSessions(session, (child) => {
+      // Canonical event IDs are unique within a session, not across siblings.
+      const childEventNamespace = `child-approval:${randomUUID()}`;
       const requestIds = new Map<string, string>();
       childRequestIds.set(child, requestIds);
       const unsubscribe = child.eventLog.subscribe((event) => {
@@ -4564,19 +4582,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         if (projected === null) return;
         const callId = projected.payload?.callId;
         if (typeof callId !== "string") return;
-        let requestId = requestIds.get(callId);
+        // Several permission scopes can belong to the same tool invocation.
+        // Only the canonical request occurrence may resolve/retire its prompt.
+        const sourceRequestId = event.msg.type === "request_permissions"
+          ? projected.eventId
+          : projected.payload?.requestEventId;
+        if (typeof sourceRequestId !== "string" || sourceRequestId.length === 0) return;
+        let requestId = requestIds.get(sourceRequestId);
         if (event.msg.type === "request_permissions") {
           if (!isApprovalSessionOwnedBy(child, session)) return;
-          requestId = `child-approval:${randomUUID()}`;
-          requestIds.set(callId, requestId);
+          // Retransmission of the same occurrence keeps its opaque ID.
+          requestId ??= `${childEventNamespace}:${sourceRequestId}`;
+          requestIds.set(sourceRequestId, requestId);
         } else {
           if (requestId === undefined) return;
-          requestIds.delete(callId);
+          requestIds.delete(sourceRequestId);
         }
         void this.#emitOrBufferEvent(active, {
           id: `${requestId}:${projected.type}`,
+          ...(projected.eventId !== undefined
+            ? { eventId: `${childEventNamespace}:${projected.eventId}` }
+            : {}),
           type: projected.type,
-          payload: { ...projected.payload, callId: requestId },
+          payload: {
+            ...projected.payload,
+            requestId,
+            sourceEventId: projected.eventId!,
+            sourceConversationId: child.conversationId,
+          },
           statusProjection: "session_only",
         }).catch(() => {});
       });
@@ -4592,8 +4625,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ctx,
         session,
         ctx.invocation.session === session
-          ? ctx.callId
-          : childRequestIds.get(ctx.invocation.session)?.get(ctx.callId),
+          ? ctx.requestEventId ?? (
+              // Legacy structural embeddings have no canonical journal. Real
+              // sessions must never accept a call-ID answer in its place.
+              !("rolloutStore" in ctx.invocation.session) ? ctx.callId : undefined
+            )
+          : ctx.requestEventId === undefined
+            ? undefined
+            : childRequestIds.get(ctx.invocation.session)?.get(ctx.requestEventId),
       ),
     };
     services.approvalResolver = resolver;

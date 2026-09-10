@@ -7,7 +7,7 @@ import {
   type SkillListingEntry,
 } from "../../skills/local-loader.js";
 
-/** Relevance lines per request, small enough to keep in the prompt. */
+/** Relevance lines per root-human turn, small enough to keep in the prompt. */
 const RELEVANCE_LIMIT = 12;
 
 function messageCarriesText(message: LLMMessage, needle: string): boolean {
@@ -52,16 +52,25 @@ async function bundledRegistrySkills(): Promise<readonly SkillListingEntry[]> {
  * The listing is emitted once per session and then retained in the projection
  * (session/attachment-retention.ts), so the absence check against the
  * request's messages holds across turns and the listing's bytes stay in the
- * cached prefix. Later requests that name skills the listing had no room for
- * get a small relevance block instead, and every name shown is remembered so
- * neither block repeats itself.
+ * cached prefix. Later human turns can get one relevance block instead. Tool
+ * continuations must not drain another batch of matching skills on each sample.
+ * An absent listing is restored even after compaction or durable resume, when
+ * the in-memory ledger and authoritative root-human provenance may be absent.
  */
 export const skillListingProducer: AttachmentProducer = async (opts, tracking) => {
   if (opts.subagentDepth > 0) return [];
   if (!opts.skillsManager) return [];
+  if (opts.signal.aborted) return [];
   const listingPresent = opts.messages.some((message) =>
     messageCarriesText(message, SKILL_LISTING_REMINDER_HEADER),
   );
+  const provenance = opts.turnProvenance;
+  const rootHumanTurn = provenance?.rootHumanTurn;
+  const rootTurnId = provenance?.turnId && rootHumanTurn?.turnId === provenance.turnId
+    ? provenance.turnId
+    : undefined;
+  if (listingPresent && (rootTurnId === undefined ||
+    tracking.lastSkillListingRootTurnId === rootTurnId)) return [];
 
   const outcome = await opts.skillsManager.skillsForConfig(opts.config ?? {}, null);
   const skills = outcome.availableSkills ?? [];
@@ -74,11 +83,16 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
   const bundled = (await bundledRegistrySkills()).filter(
     (skill) => !known.has(skill.name),
   );
+  if (opts.signal.aborted) return [];
   const catalog = [...skills, ...bundled];
   if (listingPresent) {
+    // Recheck after awaiting catalog loading: concurrent preparations of one
+    // human turn may have claimed its evaluation while this one was waiting.
+    if (rootTurnId === undefined || tracking.lastSkillListingRootTurnId === rootTurnId) return [];
+    tracking.lastSkillListingRootTurnId = rootTurnId;
     const relevant = rankSkillsForRequest(
       catalog,
-      opts.userInput,
+      rootHumanTurn!.text,
       tracking.listedSkillNames,
       RELEVANCE_LIMIT,
     );
@@ -114,6 +128,7 @@ export const skillListingProducer: AttachmentProducer = async (opts, tracking) =
     });
   }
   if (listing.length === 0) return [];
+  if (rootTurnId !== undefined) tracking.lastSkillListingRootTurnId = rootTurnId;
 
   return [
     {

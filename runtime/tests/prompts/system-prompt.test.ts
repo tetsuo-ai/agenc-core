@@ -712,6 +712,10 @@ describe("assembleSystemPrompt", () => {
       ctx: fakeCtx({ currentDate: "2026-08-28" }),
     });
     expect(compact.text).toContain("# How to work");
+    expect(compact.text).toContain("system.searchTools");
+    expect(compact.text).toContain("Skill names are not functions");
+    expect(compact.text).toContain("mcp.agenc-desktop-control");
+    expect(compact.text).toContain("never print tool-call JSON as a chat answer");
     expect(compact.text).toContain("CWD: /tmp/agenc-fake-cwd");
     expect(compact.text).toContain("Date: 2026-08-28");
     expect(compact.text).not.toContain("# Doing tasks");
@@ -729,6 +733,30 @@ describe("assembleSystemPrompt", () => {
     expect(coordinator.text).not.toContain("# Doing tasks");
     expect(coordinator.dynamicSuffix).toBe("");
   });
+
+  test("compact coding guidance uses the enabled Write contract and verifies real results", async () => {
+    const snapshot = await assembleSystemPromptSnapshot({
+      profile: "compact", session: fakeSession, ctx: fakeCtx(),
+      enabledToolNames: new Set(["FileRead", "Edit", "Write", "exec_command"]),
+    });
+    expect(snapshot.text).toContain("Read existing files before edits or overwrites; creating a new file needs no prior read");
+    expect(snapshot.text).toContain("real Write call (not FileWrite), supplying file_path and content");
+    expect(snapshot.text).toContain("Await each successful write before proceeding");
+    expect(snapshot.text).toContain("do not ask the user to copy your code when a permitted write tool can do it");
+    expect(snapshot.text).toContain("A missing test file or zero discovered tests is not verification");
+    expect(snapshot.text).toContain("never print tool-call JSON as a chat answer");
+  });
+
+  test.each([undefined, new Set<string>(), new Set(["FileRead", "exec_command"])])(
+    "compact guidance does not prescribe an unavailable Write tool (%s)", async (enabledToolNames) => {
+      const snapshot = await assembleSystemPromptSnapshot({
+        profile: "compact", session: fakeSession, ctx: fakeCtx(), enabledToolNames,
+      });
+      expect(snapshot.text).not.toContain("real Write call");
+      expect(snapshot.text).not.toContain("do not ask the user to copy your code");
+      expect(snapshot.text).toContain("zero discovered tests is not verification");
+    },
+  );
 
   test("static prefix is stable across repeated calls (prompt-cache safe)", async () => {
     const opts = {

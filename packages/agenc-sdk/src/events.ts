@@ -59,7 +59,10 @@ export type AgencPromptEvent = AgencPromptEventIdentity &
       }
     | {
         readonly type: "permission_request";
+        /** Opaque permission occurrence; echo unchanged in tool.approve/deny. */
         readonly requestId: string;
+        /** Stable tool invocation identity, distinct from the permission occurrence. */
+        readonly callId?: string;
         readonly toolName?: string;
         readonly permissions: readonly string[];
         readonly input?: JsonValue;
@@ -342,6 +345,7 @@ export function promptEventFromNotification(
     return {
       type: "permission_request",
       requestId: params.requestId,
+      ...(typeof params.callId === "string" ? { callId: params.callId } : {}),
       permissions,
       ...identity,
       ...(typeof params.toolName === "string"

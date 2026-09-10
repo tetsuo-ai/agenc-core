@@ -21,6 +21,7 @@ import {
 import { resetRelevantMemoryBudget } from "./attachment-state.js";
 import {
   CompactionReconstructionRequiredError,
+  CompactionTransactionError,
   type CompactionCannotReduceError,
 } from "../services/compact/transaction-types.js";
 import {
@@ -48,6 +49,7 @@ import {
 } from "./run-turn-messages.js";
 import { sessionQuerySourceForTurn } from "./run-turn-queued-commands.js";
 import { buildSamplingRequestContract } from "./run-turn-sampling-request.js";
+import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 
 const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
 const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
@@ -65,6 +67,7 @@ interface AgenCAutoCompactResult {
   /** Why an attempt declined to compact; surfaced to the turn. */
   readonly skippedReason?: string;
   readonly skippedCode?: CompactionCannotReduceError["code"];
+  readonly advisoryFailure?: "summary_rejected";
 }
 
 type AgenCCompactionResult = {
@@ -147,6 +150,7 @@ async function runAgenCAutoCompact(params: {
         result.consecutiveFailures,
         result.skippedReason,
         result.skippedCode,
+        result.advisoryFailure,
       );
     }
     const compactionResult = await toAgenCCompactionResult(
@@ -287,12 +291,14 @@ function compactionNotRun(
   consecutiveFailures?: number,
   skippedReason?: string,
   skippedCode?: CompactionCannotReduceError["code"],
+  advisoryFailure?: "summary_rejected",
 ): AgenCAutoCompactResult {
   return {
     wasCompacted: false,
     ...(consecutiveFailures !== undefined ? { consecutiveFailures } : {}),
     ...(skippedReason !== undefined ? { skippedReason } : {}),
     ...(skippedCode !== undefined ? { skippedCode } : {}),
+    ...(advisoryFailure !== undefined ? { advisoryFailure } : {}),
   };
 }
 
@@ -347,7 +353,7 @@ export type InitialContextInjection =
 interface RunAutoCompactOptions {
   readonly propagateErrors?: boolean;
   readonly querySource?: string;
-  readonly onNoShrink?: () => void;
+  readonly onAdvisoryRefusal?: () => void;
   /**
    * How many leading `state.messages` the durable rollout already holds.
    * An in-turn compaction may only offer those to the transaction: it maps
@@ -377,6 +383,7 @@ export interface AutoCompactResult {
   readonly consecutiveFailures?: number;
   readonly skippedReason?: string;
   readonly skippedCode?: CompactionCannotReduceError["code"];
+  readonly advisoryFailure?: "summary_rejected";
 }
 export type AutoCompactImpl = (
   ...args: unknown[]
@@ -473,6 +480,7 @@ async function runAutoCompact(
       : sessionQuerySourceForTurn(session, options.querySource);
   const force = shouldForceAutoCompact(reason, phase);
   let committedAttemptId: string | undefined;
+  let replacementStarted = false;
   try {
     const autoCompactImplOverride = getAutoCompactImplOverride();
     const result = autoCompactImplOverride
@@ -504,6 +512,9 @@ async function runAutoCompact(
       }
       const cr = result.compactionResult;
       committedAttemptId = cr.transaction?.attempt_id;
+      // A legacy projection/write may partially succeed before throwing, too.
+      // From this point onward a failure is never an unchanged-history no-op.
+      replacementStarted = true;
       const compactedRollout = buildAgenCCompactedRolloutItem(cr);
       // Honor the rollout-persistence suspension invariant. Every other
       // durable write in the turn engine is gated on this flag
@@ -585,10 +596,11 @@ async function runAutoCompact(
       return true;
     }
 
-    const deferredNoShrink =
-      result.skippedCode === "no_shrink" && options.onNoShrink !== undefined;
-    if (deferredNoShrink) options.onNoShrink?.();
-    if (result.consecutiveFailures !== undefined && state && !deferredNoShrink) {
+    const deferredRefusal =
+      (result.skippedCode === "no_shrink" || result.advisoryFailure === "summary_rejected") &&
+      options.onAdvisoryRefusal !== undefined;
+    if (deferredRefusal) options.onAdvisoryRefusal?.();
+    if (result.consecutiveFailures !== undefined && state && !deferredRefusal) {
       const previousTracking = state.autoCompactTracking;
       state.autoCompactTracking = {
         compacted: previousTracking?.compacted ?? false,
@@ -607,7 +619,7 @@ async function runAutoCompact(
      * `mid_turn_compact_skipped` — the reason was computed and then
      * dropped, leaving a turn that ended mid-plan with nothing to act on.
      */
-    if (result.wasCompacted !== true && result.skippedReason !== undefined) {
+    if (!deferredRefusal && result.wasCompacted !== true && result.skippedReason !== undefined) {
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
@@ -636,23 +648,17 @@ async function runAutoCompact(
         },
       },
     });
-    // A compaction that committed nothing leaves the session exactly as it
-    // was, so its failure cannot have made the turn less valid than it
-    // already was, and killing the turn adds nothing but a dead end.
-    // Admission is the authority on whether the context fits; it now sizes
-    // the output reservation to the room the prompt left and denies with a
-    // reason when it genuinely cannot.
-    //
-    // This is what a small local model hits constantly. Compaction asks the
-    // session's own model for a structured summary, and a 7B answers with
-    // something that fails validation ("facts[0] cites an unplanned source
-    // ref") or with nothing worth keeping ("candidate saves -198 tokens").
-    // Propagating turned every one of those into `turn errored` with no
-    // reason shown, which is what a local model looked like on any real
-    // repository. The warning above still records it.
+    // Expected unchanged-history refusals return typed results above. A thrown
+    // error is not evidence that no write occurred: cancellation, persistence,
+    // reconstruction, and unexpected pre-sampling failures must propagate.
     if (
+      options.propagateErrors === true ||
+      replacementStarted ||
       committedAttemptId !== undefined ||
-      error instanceof CompactionReconstructionRequiredError
+      error instanceof CompactionReconstructionRequiredError ||
+      error instanceof CompactionTransactionError ||
+      session.abortController.signal.aborted ||
+      (error instanceof Error && error.name === "AbortError")
     ) {
       throw error;
     }
@@ -832,7 +838,7 @@ async function runPreSamplingCompact(
   ctx: TurnContext,
   querySource: string,
   state?: TurnState,
-  options: Pick<RunAutoCompactOptions, "onNoShrink"> = {},
+  options: Pick<RunAutoCompactOptions, "onAdvisoryRefusal"> = {},
 ): Promise<boolean> {
   const activeContextTokensBefore = getActiveContextTokenUsage(
     session,
@@ -842,7 +848,10 @@ async function runPreSamplingCompact(
   let preSamplingCompacted = await maybeRunPreviousModelInlineCompact(
     session,
     ctx,
-    activeContextTokensBefore,
+    // Model downshift is a separate safety path, not the local proactive gate.
+    usesLocalToolProfile(ctx.modelProviderId)
+      ? getActiveContextTokenUsage(session, ctx, state, { includeOutput: true })
+      : activeContextTokensBefore,
     state,
   );
   const autoCompactLimit = getPreSamplingAutoCompactTokenLimit(ctx);
@@ -868,6 +877,7 @@ function getActiveContextTokenUsage(
   session: Session,
   ctx: TurnContext,
   state?: TurnState,
+  options: { readonly includeOutput?: boolean } = {},
 ): number {
   if (state === undefined) {
     return getTotalTokenUsage(session);
@@ -904,6 +914,11 @@ function getActiveContextTokenUsage(
         ? { toolChoice: request.toolChoice }
         : {}),
     },
+  }, {
+    // Keep input (including its safety margin) on the same scale as the
+    // headroom-reserving proactive threshold. Output remains fully accounted
+    // by hard admission and can be clamped there; no request limit changes.
+    inputOnly: options.includeOutput !== true && usesLocalToolProfile(ctx.modelProviderId),
   });
 }
 

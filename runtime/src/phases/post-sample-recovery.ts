@@ -63,6 +63,7 @@ import {
 import type { StreamingToolExecutor } from "./_deps/tool-runtime.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
+import { recoverRejectedTextToolCall } from "../recovery/rejected-text-tool-call.js";
 
 type ContextCollapseOverflowRecoveryResult =
   | { readonly kind: "applied"; readonly reason: string }
@@ -294,6 +295,24 @@ export async function postSampleRecovery(
   if (ctx.editorInteraction !== undefined) {
     state.pendingBudgetDecision = undefined;
     state.transition = undefined;
+    return state;
+  }
+
+  // Invalid text-shaped tool calls never enter the executable tool ledger.
+  // This separate cap survives other recovery strategies and durable resume.
+  // Any budget continuation is still honored; the outer request boundary
+  // remains responsible for hard context, cost and admission limits.
+  if (state.pendingTextToolCallCorrection !== undefined) {
+    recoverRejectedTextToolCall(state);
+    if (state.textToolCallCorrectionFailure !== undefined) return state;
+    if (state.pendingBudgetDecision?.kind === "stop") {
+      await applyPendingBudgetContinuation(state, ctx, session, signal);
+      if (state.transition?.reason === "token_budget_continuation") {
+        state.transition = { reason: "text_tool_call_correction" };
+      } else if (state.transition === undefined) {
+        state.textToolCallCorrectionFailure = "The tool-call correction could not continue within the turn's token budget. The requested action did not complete.";
+      }
+    }
     return state;
   }
 

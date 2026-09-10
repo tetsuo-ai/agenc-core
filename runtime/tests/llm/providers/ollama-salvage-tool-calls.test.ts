@@ -1,15 +1,15 @@
 /**
  * Recovering a tool call a local model wrote as text.
  *
- * Every "the model said" string below is a verbatim capture from a live
+ * The observed-response fixtures below were captured from a live
  * ollama 0.12 serving qwen2.5-coder:7b or deepseek-r1:7b at temperature 0,
  * with `tool_calls: null` on the wire in every case. They are the reason this
- * module exists: the user asked a local model to read a file and the chat
- * showed them JSON.
+ * module exists. Other fixtures are synthetic regression cases. These
+ * individual responses do not establish a model's native tool capabilities.
  */
 import { describe, expect, test } from "vitest";
 
-import { salvageTextToolCalls } from "../../../src/llm/providers/ollama/salvage-tool-calls.js";
+import { salvageTextToolCalls, streamableLength } from "../../../src/llm/providers/ollama/salvage-tool-calls.js";
 import type { LLMTool } from "../../../src/llm/types.js";
 
 const tool = (name: string): LLMTool => ({
@@ -217,5 +217,107 @@ describe("shapes that are not the happy path", () => {
   test("empty and whitespace content", () => {
     expect(salvageTextToolCalls("", TOOLS).toolCalls).toEqual([]);
     expect(salvageTextToolCalls("   \n  ", TOOLS).content).toBe("   \n  ");
+  });
+});
+
+describe("bounded recovery and actual advertised schemas", () => {
+  const readTool: LLMTool = {
+    type: "function",
+    function: {
+      name: "FileRead",
+      description: "Read a file",
+      parameters: {
+        type: "object",
+        required: ["file_path"],
+        properties: {
+          file_path: { type: "string", minLength: 1 },
+          limit: { type: "integer", minimum: 1, maximum: 100 },
+        },
+        additionalProperties: false,
+      },
+    },
+  };
+  const call = '{"name":"FileRead","arguments":{"file_path":"note.txt"}}';
+
+  test.each([
+    "invalid JSON", "null", "[]", "42", '"a string"',
+  ])("rejects stringified non-object/invalid arguments: %s", (argumentsText) => {
+    const text = JSON.stringify({ name: "FileRead", arguments: argumentsText });
+    expect(salvageTextToolCalls(text, TOOLS)).toEqual({ content: text, toolCalls: [] });
+  });
+
+  test.each([
+    {}, { file_path: 7 }, { file_path: "" }, { file_path: "a", limit: "2" },
+    { file_path: "a", limit: 101 }, { file_path: "a", extra: true },
+  ])("does not invent, coerce or drop arguments to fit the schema: %j", (value) => {
+    const text = JSON.stringify({ name: "FileRead", arguments: value });
+    expect(salvageTextToolCalls(text, [readTool])).toEqual({ content: text, toolCalls: [] });
+  });
+
+  test("accepts arguments matching the request schema", () => {
+    expect(salvageTextToolCalls(call, [readTool]).toolCalls).toHaveLength(1);
+  });
+
+  test("fails closed for an invalid schema", () => {
+    const invalid: LLMTool = {
+      ...readTool,
+      function: { ...readTool.function, parameters: { type: "not-a-json-schema-type" } },
+    };
+    expect(salvageTextToolCalls(call, [invalid])).toEqual({ content: call, toolCalls: [] });
+  });
+
+  test.each([
+    (value: string) => `For example: ${value}`,
+    (value: string) => `\`${value}\``,
+    (value: string) => `> ${value}`,
+    (value: string) => `\`\`\`typescript\n${value}\n\`\`\``,
+    (value: string) => `{"example":${value}}`,
+    (value: string) => `[\n${value}`,
+    (value: string) => `${value} is an example`,
+  ])("does not extract a nested, quoted or inline example", (wrap) => {
+    const text = wrap(call);
+    expect(salvageTextToolCalls(text, [readTool])).toEqual({ content: text, toolCalls: [] });
+  });
+
+  test("extra envelope fields or conflicting aliases are data, not calls", () => {
+    for (const extra of [{ description: "example" }, { parameters: {} }]) {
+      const text = JSON.stringify({ name: "FileRead", arguments: { file_path: "a" }, ...extra });
+      expect(salvageTextToolCalls(text, [readTool])).toEqual({ content: text, toolCalls: [] });
+    }
+  });
+
+  test("preserves all whitespace in prose surrounding an indented fence", () => {
+    const prefix = "  I will read it.\n\n  ";
+    const suffix = "\n\n  Afterwards I will explain.  ";
+    const text = prefix + "\`\`\`json\n" + call + "\n\`\`\`" + suffix;
+    expect(salvageTextToolCalls(text, [readTool]).content).toBe(prefix + suffix);
+  });
+
+  test("accepts tilde JSON fences, holding their partial prefixes", () => {
+    expect(salvageTextToolCalls("~~~json\n" + call + "\n~~~", [readTool]).toolCalls).toHaveLength(1);
+    expect(streamableLength("Reading.\n~")).toBe("Reading.\n".length);
+    expect(streamableLength("Reading.\n\`")).toBe("Reading.\n".length);
+  });
+
+  test("rejects oversized content and batches without partially executing", () => {
+    for (const text of [
+      " ".repeat(1_048_577) + call,
+      "[" + Array(65).fill(call).join(",") + "]",
+      Array(65).fill(call).join("\n"),
+      "[".repeat(65) + call + "]".repeat(65),
+    ]) {
+      expect(salvageTextToolCalls(text, [readTool])).toEqual({ content: text, toolCalls: [] });
+    }
+  });
+
+  test("bounds nesting inside stringified arguments too", () => {
+    const value = '{"nested":' + "[".repeat(65) + "0" + "]".repeat(65) + "}";
+    const text = JSON.stringify({ name: "Glob", arguments: value });
+    expect(salvageTextToolCalls(text, TOOLS)).toEqual({ content: text, toolCalls: [] });
+  });
+
+  test("never changes overflowing numeric arguments into null", () => {
+    const text = '{"name":"Glob","arguments":{"count":1e999}}';
+    expect(salvageTextToolCalls(text, TOOLS)).toEqual({ content: text, toolCalls: [] });
   });
 });

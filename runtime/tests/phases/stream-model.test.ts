@@ -278,6 +278,24 @@ function mkRegistry(tools: Tool[]): ToolRegistry {
 }
 
 describe("streamModel — live assistant text sanitization", () => {
+  test("captures the immutable prepared tool catalog before provider callbacks", async () => {
+    const ctx = mkCtx();
+    const state = mkState(ctx);
+    const tools: LLMTool[] = [{ type: "function", function: { name: "system.searchTools",
+      description: "Search", parameters: { type: "object" } } }];
+    const provider = mkProvider(async (_messages, onChunk) => {
+      expect(state.samplingRequestToolNames).toEqual(["system.searchTools"]);
+      expect(Object.isFrozen(state.samplingRequestToolNames)).toBe(true);
+      tools.push({ type: "function", function: { name: "Skill", description: "Skill", parameters: {} } });
+      onChunk({ content: "done", done: true });
+      return { content: "done", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "test-model", finishReason: "stop" };
+    });
+    const { session } = mkSession(provider);
+    await streamModel(state, ctx, session, { ...mkRequest([{ role: "user", content: "hello" }]), tools });
+    expect(tools).toHaveLength(2);
+    expect(state.samplingRequestToolNames).toEqual(["system.searchTools"]);
+  });
+
   test.each([
     ["gemini-3.1-pro-preview", "high", true],
     ["gemini-3.1-pro-preview", "xhigh", false],

@@ -107,11 +107,15 @@ describe("guardian arbiter", () => {
     const inv = invocation({ session });
 
     const pending = requestApproval({
-      ctx: approvalCtx(inv),
+      ctx: { ...approvalCtx(inv), requestEventId: "stale-caller-id" },
       args: { command: "pwd" },
       resolver: { request: resolver },
     });
     await vi.waitFor(() => expect(resolver).toHaveBeenCalledOnce());
+    expect(resolver).toHaveBeenCalledWith(expect.objectContaining({
+      callId: "call-1",
+      requestEventId: "approval-event-1",
+    }));
     answer.resolve(APPROVED);
     await expect(pending).resolves.toMatchObject({
       decision: APPROVED,
@@ -836,6 +840,7 @@ describe("guardian arbiter", () => {
       });
 
     await run(true);
+    expect(prompt).toHaveBeenCalledWith(expect.objectContaining({ requestEventId: "approval-event-2" }));
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(notificationHook).not.toHaveBeenCalled();
 

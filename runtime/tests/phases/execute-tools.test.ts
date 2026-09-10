@@ -22,6 +22,8 @@ import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 import type { Tool } from "../tools/types.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
+import { buildToolRegistry } from "../tool-registry.js";
+import { builtTools } from "../session/run-turn-sampling-request.js";
 import type { LLMProvider, LLMTool, LLMToolCall } from "../llm/types.js";
 import type { PostToolUseHook, PreToolUseHook } from "../tools/hooks.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
@@ -423,6 +425,59 @@ function editorProposalArgs(): Record<string, unknown> {
 }
 
 describe("executeTools — T7 gap #109 pipeline", () => {
+  test("search → select → next request loads local-filtered non-deferred Skill", async () => {
+    const skill: Tool = { name: "Skill", description: "Load skill instructions",
+      recoveryCategory: "idempotent", inputSchema: { type: "object" },
+      execute: async () => ({ content: "not invoked by discovery" }) };
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp", modelFacingTools: [skill], requireAdmission: false });
+    const session = mkSession({ log: new EventLog(), registry });
+    const ctx = mkCtx({ modelProviderId: "ollama", sandboxPolicy: { value: "danger_full_access" } });
+    const requestNames = () => builtTools(session, ctx).map(tool => tool.function.name);
+    expect(registry.toLLMTools().some(tool => tool.function.name === "Skill")).toBe(true);
+    expect(requestNames()).not.toContain("Skill");
+    const run = async (id: string, args: Record<string, unknown>) => {
+      const state = mkState({ toolCalls: [{ id, name: "system.searchTools", arguments: JSON.stringify(args) }] });
+      state.samplingRequestToolNames = Object.freeze(requestNames());
+      await executeTools(state, ctx, session);
+      expect(state.completedToolResults[0]?.isError).toBe(false);
+      return JSON.parse(state.completedToolResults[0]!.content);
+    };
+    const queried = await run("query-skill", { query: "Skill" });
+    expect(queried.results.find((entry: { name: string }) => entry.name === "Skill"))
+      .toMatchObject({ advertised: false, selected: false, loadHint: expect.stringContaining("select:Skill") });
+    expect(requestNames()).not.toContain("Skill");
+    const selected = await run("select-skill", { select: "Skill" });
+    expect(selected.loaded).toContain("Skill");
+    expect(requestNames()).toContain("Skill");
+    const next = await run("next-query", { query: "Skill" });
+    expect(next.results.find((entry: { name: string }) => entry.name === "Skill"))
+      .toMatchObject({ advertised: true, selected: false });
+  });
+
+  test("each executor retains its own exact request catalog without later-state or model forgery", async () => {
+    const skill: Tool = { name: "Skill", description: "Skill loader", recoveryCategory: "idempotent",
+      inputSchema: { type: "object" }, execute: async () => ({ content: "unused" }) };
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp", modelFacingTools: [skill], requireAdmission: false });
+    const session = mkSession({ log: new EventLog(), registry });
+    const ctx = mkCtx({ sandboxPolicy: { value: "danger_full_access" } });
+    const states = [false, true].map((advertised, i) => {
+      const state = mkState({ toolCalls: [{ id: `request-${i}`, name: "system.searchTools",
+        arguments: JSON.stringify({ query: "Skill", __agencAdvertisedToolNames: advertised ? [] : ["Skill"] }) }] });
+      state.samplingRequestToolNames = Object.freeze(advertised ? ["system.searchTools", "Skill"] : ["system.searchTools"]);
+      ensureStreamingToolExecutor(state, ctx, session);
+      // A subsequent request/state update must not rewrite an existing
+      // executor's captured metadata, even when both run concurrently.
+      state.samplingRequestToolNames = Object.freeze(advertised ? [] : ["Skill"]);
+      return state;
+    });
+    await Promise.all(states.map(state => executeTools(state, ctx, session)));
+    expect(states.map(state => {
+      expect(state.completedToolResults[0]?.isError).toBe(false);
+      return JSON.parse(state.completedToolResults[0]!.content).results
+        .find((entry: { name: string }) => entry.name === "Skill").advertised;
+    })).toEqual([false, true]);
+  });
+
   test("seals the exact tool-result body before later history transformations", async () => {
     const tool: Tool = {
       name: "IntegrityProbe",

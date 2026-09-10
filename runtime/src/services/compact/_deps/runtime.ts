@@ -59,6 +59,7 @@ export function lookupContextWindowForModel(model: string | undefined): number {
 export function estimateMessagesTokens(
   messages: readonly RuntimeMessage[],
   context?: CompactContext,
+  options: { readonly inputOnly?: boolean } = {},
 ): number {
   const provider = context?.provider?.name ?? "unknown";
   const model = context?.options?.mainLoopModel ?? "unknown";
@@ -112,7 +113,7 @@ export function estimateMessagesTokens(
   if (!result.admissible) {
     return context?.options?.contextWindowTokens ?? Number.MAX_SAFE_INTEGER;
   }
-  return result.totalTokens;
+  return options.inputOnly === true ? result.inputTokens : result.totalTokens;
 }
 
 export function messageText(message: RuntimeMessage): string {

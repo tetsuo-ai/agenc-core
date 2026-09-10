@@ -247,6 +247,8 @@ export function defaultExecApprovalRequirement(
 export interface ApprovalCtx {
   readonly invocation: ToolInvocation;
   readonly callId: string;
+  /** Canonical identity of this permission occurrence, not the tool invocation. */
+  readonly requestEventId?: string;
   readonly toolName: string;
   readonly turnId: string;
   /** True when the resolver is also the tool's per-call input channel. */
@@ -351,6 +353,7 @@ export interface ApprovalRequestFn {
     readonly args: Record<string, unknown>;
     readonly currentTurnId: string;
     readonly signal: AbortSignal;
+    readonly requestEventId?: string;
   }): Promise<ModalDecision>;
 }
 
@@ -467,6 +470,11 @@ async function resolveAndJournalApproval(
     opts = { ...opts, ctx: { ...opts.ctx, fileWritePreview } };
   }
   const journal = beginDurableApprovalJournal(opts);
+  if (journal !== null) {
+    // The durable receipt, never a caller-supplied ID, binds the answer to the
+    // exact scope/input that was journaled for this occurrence.
+    opts = { ...opts, ctx: { ...opts.ctx, requestEventId: journal.requestEventId } };
+  }
   const result = await resolveApproval(opts);
   if (journal !== null) {
     appendDurableApprovalDecision(opts.ctx, journal, result);
@@ -1044,6 +1052,13 @@ export async function requestToolUserApproval(
   }
 
   const requestEvent = emitApprovalPromptEvents(opts);
+  const requestEventId = requestEvent === null
+    ? undefined
+    : canonicalApprovalCoordinates(
+        requestEvent,
+        opts.callId ?? opts.subId ?? "approval",
+        "request",
+      ).requestEventId;
   const approvalCache =
     opts.tool.requiresUserInteraction?.() === true
       ? null
@@ -1067,7 +1082,10 @@ export async function requestToolUserApproval(
       opts.signal.addEventListener("abort", onAbort, { once: true });
       let requestPromise: Promise<ModalDecision>;
       try {
-        requestPromise = opts.request(opts);
+        requestPromise = opts.request({
+          ...opts,
+          ...(requestEventId !== undefined ? { requestEventId } : {}),
+        });
       } catch {
         opts.signal.removeEventListener("abort", onAbort);
         resolve({

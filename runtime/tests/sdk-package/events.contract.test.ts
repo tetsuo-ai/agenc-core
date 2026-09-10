@@ -6,6 +6,29 @@ import {
 } from "../../../packages/agenc-sdk/src/events";
 
 describe("agenc-sdk prompt event mapping", () => {
+  it("preserves only the bounded public compaction failure message", () => {
+    const message = "Auto-compaction failed: invalid summary. " + "x".repeat(2_100);
+    expect(terminalStatusFromNotification({
+      method: "event.session_event",
+      params: { turnId: "turn-1", event: {
+        type: "turn_failed",
+        payload: {
+          turnId: "turn-1", code: "compact_failed", message,
+          debug: { request: "private prompt", authorization: "private token" },
+        },
+      } },
+    }, "turn-1")).toEqual({ code: 1, message: message.slice(0, 2_000) });
+  });
+
+  it.each(["", "  compaction failed  "])("keeps public terminal text verbatim: %j", (message) => {
+    expect(terminalStatusFromNotification({
+      method: "event.session_event",
+      params: { event: { type: "turn_failed", payload: {
+        turnId: "turn-1", code: "compact_failed", message,
+      } } },
+    })).toEqual({ code: 1, message });
+  });
+
   it("correlates consistent stale failures against the caller's active turn", () => {
     const notification = {
       method: "event.session_event",

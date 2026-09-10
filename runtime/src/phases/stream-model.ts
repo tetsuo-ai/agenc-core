@@ -1035,6 +1035,15 @@ export async function streamModel(
   if (signal?.aborted) {
     throw new StreamModelError(new Error("aborted before provider call"));
   }
+  state.pendingTextToolCallCorrection = undefined;
+  state.textToolCallCorrectionFailure = undefined;
+
+  // The prepared provider contract, after all model/turn filters, is the
+  // authority for discovery's "advertised" state. Keep a request snapshot
+  // for both mid-stream and post-stream execution of this response's calls.
+  state.samplingRequestToolNames = Object.freeze(
+    request.tools.map(tool => tool.function.name),
+  );
 
   const planMode = isPlanMode(ctx);
 
@@ -1636,6 +1645,28 @@ export async function streamModel(
 
   if (response.error) {
     throw new StreamModelError(response.error, response);
+  }
+  if (response.toolCallRecovery !== undefined) {
+    const marker = response.toolCallRecovery;
+    const advertised = state.samplingRequestToolNames ?? [];
+    const safeName = typeof marker.toolName === "string" &&
+      marker.toolName.length <= 256 && /^[A-Za-z0-9_.:-]+$/.test(marker.toolName);
+    const safeMessage = typeof marker.message === "string" &&
+      marker.message.length > 0 && marker.message.length <= 1_024 &&
+      !/[\u0000-\u001f\u007f]/.test(marker.message);
+    const validTarget = marker.reason === "invalid_arguments"
+      ? advertised.includes(marker.toolName)
+      : marker.reason === "not_advertised" &&
+        advertised.includes("system.searchTools") &&
+        !advertised.includes(marker.toolName) &&
+        /^mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+$/.test(marker.toolName);
+    if (providerName !== "ollama" || !safeName || !safeMessage || !validTarget ||
+        response.content !== "" || response.toolCalls.length !== 0 ||
+        streamedToolCalls.size !== 0 || state.toolUseBlocks.length !== 0 ||
+        response.finishReason !== "stop") {
+      throw new StreamModelError(new Error("Invalid tool-call correction response; no correction was admitted."), response);
+    }
+    state.pendingTextToolCallCorrection = { toolName: marker.toolName, reason: marker.reason };
   }
   return state;
 }

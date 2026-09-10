@@ -19,6 +19,7 @@
  */
 
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
+import { readTextToolCallCorrection, type TextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
 import type { TokenBudgetDecision as BoundaryTokenBudgetDecision } from "../conversation/token-budget.js";
 import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import type { TurnContext } from "./turn-context.js";
@@ -70,13 +71,14 @@ export type ContinueReason =
   | "stop_hook_blocking"
   | "token_budget_continuation"
   | "plan_tool_required"
+  | "text_tool_call_correction"
   | "continuation_nudge";
 
 export interface Continue {
   readonly reason: ContinueReason;
 }
 
-export type ModelSampleResumePrompt = "continuation_nudge" | "empty_response";
+export type ModelSampleResumePrompt = "continuation_nudge" | "empty_response" | "text_tool_call_correction";
 
 /**
  * Terminal — why the run-turn generator returned. Mirrors agenc
@@ -294,6 +296,11 @@ export interface TurnState {
    */
   modelInstructions: string;
 
+  /** Immutable catalog of the exact sampling request that produced this
+   * iteration's calls. Captured before streaming starts, never recomputed
+   * from a mutable registry/discovery set during tool execution. */
+  samplingRequestToolNames?: readonly string[];
+
   /** Auto-compact tracking (turn counter since last compact, consecutive
    *  failure count for circuit breaker). AgenC query.ts:371, 531.
    *  Reset on every successful compact so `turnsSincePreviousCompact`
@@ -374,6 +381,12 @@ export interface TurnState {
    *  re-entry cap). Wired in T8 — incremented at each recovery
    *  continue site, checked before re-entering stream. */
   recoveryReentryCount: number;
+
+  /** Strictly bounded across all samples and durable resumes of this turn. */
+  textToolCallCorrectionCount: number;
+  textToolCallCorrection: TextToolCallCorrection | undefined;
+  pendingTextToolCallCorrection: TextToolCallCorrection | undefined;
+  textToolCallCorrectionFailure: string | undefined;
 
   /** Durable routing evidence consumed by the next admitted model attempt. */
   pendingAdmissionFallback: PendingAdmissionFallback | undefined;
@@ -535,6 +548,10 @@ export function buildInitialTurnState(
     skipCacheWrite: opts?.initialSkipCacheWrite,
     maxOutputTokensRecoveryCount: 0,
     recoveryReentryCount: 0,
+    textToolCallCorrectionCount: 0,
+    textToolCallCorrection: undefined,
+    pendingTextToolCallCorrection: undefined,
+    textToolCallCorrectionFailure: undefined,
     pendingAdmissionFallback: undefined,
     modelSampleOrdinal: 0,
     modelSampleResumePrompt: undefined,
@@ -605,6 +622,8 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     pendingAdmissionFallback?: PendingAdmissionFallback;
     modelSampleOrdinal?: number;
     modelSampleResumePrompt?: ModelSampleResumePrompt;
+    textToolCallCorrectionCount?: number;
+    textToolCallCorrection?: TextToolCallCorrection;
     taskBudgetRemaining?: number;
     autoCompactTracking?: AutoCompactTrackingState;
     transition?: { readonly reason: ContinueReason };
@@ -635,6 +654,14 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   }
   if (state.modelSampleResumePrompt !== undefined) {
     slice.modelSampleResumePrompt = state.modelSampleResumePrompt;
+  }
+  if (state.textToolCallCorrectionCount > 0) {
+    slice.textToolCallCorrectionCount = state.textToolCallCorrectionCount;
+  }
+  if (state.textToolCallCorrection !== undefined) {
+    const correction = readTextToolCallCorrection(state.textToolCallCorrection);
+    if (!correction) throw new Error("cannot serialize invalid tool-call correction");
+    slice.textToolCallCorrection = correction;
   }
   if (typeof state.taskBudgetRemaining === "number") {
     slice.taskBudgetRemaining = state.taskBudgetRemaining;
@@ -669,6 +696,7 @@ const CONTINUE_REASONS: ReadonlySet<string> = new Set<ContinueReason>([
   "stop_hook_blocking",
   "token_budget_continuation",
   "plan_tool_required",
+  "text_tool_call_correction",
   "continuation_nudge",
 ]);
 
@@ -696,9 +724,18 @@ export function restoreFromCheckpoint(
   }
   if (
     slice.modelSampleResumePrompt === "continuation_nudge" ||
-    slice.modelSampleResumePrompt === "empty_response"
+    slice.modelSampleResumePrompt === "empty_response" ||
+    slice.modelSampleResumePrompt === "text_tool_call_correction"
   ) {
     state.modelSampleResumePrompt = slice.modelSampleResumePrompt;
+  }
+  if (slice.textToolCallCorrectionCount !== undefined && Number.isSafeInteger(slice.textToolCallCorrectionCount) && slice.textToolCallCorrectionCount >= 0) {
+    state.textToolCallCorrectionCount = slice.textToolCallCorrectionCount;
+  }
+  state.textToolCallCorrection = readTextToolCallCorrection(slice.textToolCallCorrection);
+  if (state.modelSampleResumePrompt === "text_tool_call_correction" &&
+      (!state.textToolCallCorrection || state.textToolCallCorrectionCount < 1)) {
+    throw new Error("Cannot resume tool-call correction without its validated identity and spent correction count.");
   }
   if (Number.isFinite(slice.maxOutputTokensRecoveryCount)) {
     state.maxOutputTokensRecoveryCount = slice.maxOutputTokensRecoveryCount;

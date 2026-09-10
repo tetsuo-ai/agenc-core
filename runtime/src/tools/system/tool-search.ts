@@ -81,9 +81,12 @@ function matchesCatalogQuery(entry: ToolCatalogEntry, query?: string): boolean {
   return scoreCatalogEntry(entry, query) < 99;
 }
 
-function mcpUseHint(toolName: string): string | undefined {
+function mcpUseHint(toolName: string, available: boolean): string | undefined {
   if (!toolName.startsWith("mcp.")) return undefined;
   const wireName = encodeMcpToolNameForWire(toolName);
+  if (!available) {
+    return `This MCP function is not loaded yet. First call system.searchTools with {"select":"${toolName}"} to load its argument schema. Do not call it or guess its arguments before loading. After loading, use the function ${wireName}; the runtime maps it to ${toolName}. It is not a shell command or a skill.`;
+  }
   const nameHint =
     wireName === toolName
       ? `Call the selected MCP tool through the tool-call interface as ${toolName}, with JSON arguments.`
@@ -172,7 +175,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
   return {
     name: SYSTEM_SEARCH_TOOLS_NAME,
     description:
-      "Search the runtime tool catalog by name, family, source, keyword, or preferred profile. Use select or select:<tool_name> to load a deferred tool schema.",
+      "Search the runtime tool catalog by name, family, source, keyword, or preferred profile. Use select or select:<tool_name> to load a deferred tool schema. Selection alone returns only selected tools or scoped name suggestions; use query or filters to search further.",
     metadata: {
       ...codingToolMetadata(SYSTEM_SEARCH_TOOLS_NAME, false, ["coding", "general", "operator"]),
       keywords: ["tools", "catalog", "discovery", "select", "deferred"],
@@ -211,20 +214,33 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       const explicitSelections = normalizeSelections(args);
       const selectedEntries = explicitSelections
         .map((name) => resolveSelection(name, catalog))
-        .filter((entry): entry is ToolCatalogEntry => entry !== undefined);
+        .filter((entry): entry is ToolCatalogEntry => entry !== undefined)
+        .filter((entry, index, all) => all.findIndex(candidate => candidate.name === entry.name) === index);
       const missingSelections = explicitSelections.filter(
         (name) => resolveSelection(name, catalog) === undefined,
       );
       const family = toOptionalString(args.family);
       const source = toOptionalString(args.source);
       const profile = toOptionalString(args.profile);
+      const selectionOnly = explicitSelections.length > 0 && !query &&
+        !family && !source && !profile && args.includeHidden !== true && args.advertisedOnly !== true;
+      // Loading a schema is not an implicit request to browse the catalog.
+      // Preserve scoped candidates for an ambiguous MCP server selection, but
+      // never append unrelated tools (or load an ambiguous candidate).
+      const suggestionPrefixes = selectionOnly
+        ? missingSelections.map(mcpServerPrefixForSelection)
+          .filter((prefix): prefix is string => prefix !== undefined)
+        : [];
+      const searchCatalog = selectionOnly
+        ? catalog.filter(entry => suggestionPrefixes.some(prefix => entry.name.startsWith(prefix)))
+        : catalog;
       const advertisedToolNames = Array.isArray(args[SESSION_ADVERTISED_TOOL_NAMES_ARG])
         ? new Set(
             (args[SESSION_ADVERTISED_TOOL_NAMES_ARG] as unknown[])
               .filter((value): value is string => typeof value === "string"),
           )
         : undefined;
-      const matchedResults = catalog
+      const matchedResults = searchCatalog
         .filter((entry) => {
           if (args.includeHidden !== true && entry.metadata.hiddenByDefault) return false;
           if (args.advertisedOnly === true && advertisedToolNames && !advertisedToolNames.has(entry.name)) {
@@ -268,17 +284,18 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
           const selected = selectedEntries.some(
             (candidate) => candidate.name === entry.name,
           );
-          const useHint = mcpUseHint(entry.name);
+          const advertised = advertisedToolNames?.has(entry.name) ?? false;
+          const useHint = mcpUseHint(entry.name, selected || advertised);
           return {
             name: modelFacingToolSearchText(entry.name),
             description: modelFacingToolSearchText(entry.description),
             metadata: modelFacingToolSearchMetadata(entry.metadata),
-            advertised: advertisedToolNames?.has(entry.name) ?? false,
+            advertised,
             selected,
             loadHint:
-              entry.metadata.deferred && !selected
+              !selected && !advertised && (advertisedToolNames !== undefined || entry.metadata.deferred)
                 ? modelFacingToolSearchText(
-                    `Call system.searchTools with select:${entry.name} to load this deferred tool.`,
+                    `Call system.searchTools with select:${entry.name} to load this ${entry.metadata.deferred ? "deferred tool" : "tool's argument schema"}.`,
                   )
                 : undefined,
             useHint:

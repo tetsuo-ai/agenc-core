@@ -69,7 +69,10 @@ export class AgenCProvider implements LLMProvider {
 
   readonly #config: AgenCProviderConfig;
   readonly #delegates = new Map<string, Promise<ResolvedAgenCDelegate>>();
-  readonly #preparedExecutions = new WeakMap<object, ResolvedAgenCDelegate>();
+  readonly #preparedExecutions = new WeakMap<object, {
+    delegate: ResolvedAgenCDelegate;
+    innerHandle?: object;
+  }>();
 
   constructor(config: AgenCProviderConfig) {
     this.#config = config;
@@ -191,7 +194,7 @@ export class AgenCProvider implements LLMProvider {
       supportsMaxOutputTokens: false,
     };
     const providerExecutionHandle = Object.freeze({});
-    this.#preparedExecutions.set(providerExecutionHandle, delegate);
+    this.#preparedExecutions.set(providerExecutionHandle, { delegate, innerHandle: profile.providerExecutionHandle });
     return {
       ...profile,
       // The resolved delegate is authoritative. A concrete adapter profile may
@@ -201,6 +204,17 @@ export class AgenCProvider implements LLMProvider {
       model: delegate.model,
       providerExecutionHandle,
     };
+  }
+
+  projectRequestForAccounting(messages: readonly LLMMessage[], options: LLMChatOptions) {
+    const prepared = options.providerExecutionHandle && this.#preparedExecutions.get(options.providerExecutionHandle);
+    if (!prepared) throw new Error("AgenCProvider accounting requires its prepared execution handle");
+    const delegateOptions = {
+      ...withoutExecutionHandle(options),
+      model: prepared.delegate.model,
+      ...(prepared.innerHandle ? { providerExecutionHandle: prepared.innerHandle } : {}),
+    };
+    return prepared.delegate.instance.projectRequestForAccounting?.(messages, delegateOptions) ?? { messages, options: delegateOptions };
   }
 
   private async executionFor(options?: LLMChatOptions): Promise<{
@@ -214,8 +228,8 @@ export class AgenCProvider implements LLMProvider {
         delegateOptions: withoutExecutionHandle(options),
       };
     }
-    const delegate = this.#preparedExecutions.get(handle);
-    if (delegate === undefined) {
+    const prepared = this.#preparedExecutions.get(handle);
+    if (prepared === undefined) {
       throw new Error(
         "AgenCProvider received an invalid or already-consumed execution handle",
       );
@@ -224,8 +238,11 @@ export class AgenCProvider implements LLMProvider {
     // adapters are separately constrained to one wire attempt by admission.
     this.#preparedExecutions.delete(handle);
     return {
-      delegate,
-      delegateOptions: withoutExecutionHandle(options),
+      delegate: prepared.delegate,
+      delegateOptions: {
+        ...withoutExecutionHandle(options),
+        ...(prepared.innerHandle ? { providerExecutionHandle: prepared.innerHandle } : {}),
+      },
     };
   }
 

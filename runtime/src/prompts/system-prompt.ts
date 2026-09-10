@@ -758,15 +758,24 @@ function fixedSystemPromptSnapshot(text: string): AssembledSystemPrompt {
   };
 }
 
-function compactSystemPromptSnapshot(ctx: TurnContext): AssembledSystemPrompt {
+function compactSystemPromptSnapshot(
+  ctx: TurnContext,
+  enabledTools: ReadonlySet<string>,
+): AssembledSystemPrompt {
   return fixedSystemPromptSnapshot(
     [
       `You are AgenC, an open-source coding agent. You work inside the user's repository and complete their request by calling tools.`,
       ``,
       `# How to work`,
       `- Use tools to act; never invent file contents or command output. One tool call at a time is fine — wait for each result before the next step.`,
-      `- Read before you edit. After a change, verify it (run the code, re-read the file).`,
+      `- Read existing files before edits or overwrites; creating a new file needs no prior read.`,
       `- exec_command runs shell commands. FileRead/Edit/MultiEdit/Write handle files. Grep/Glob search. Orient maps the project.`,
+      ...(enabledTools.has("Write") ? [
+        `- Create files with a real Write call (not FileWrite), supplying file_path and content. Await each successful write before proceeding; do not ask the user to copy your code when a permitted write tool can do it.`,
+      ] : []),
+      `- Verify the actual files and run relevant tests. A missing test file or zero discovered tests is not verification; fix the cause instead of reporting success.`,
+      `- For capabilities missing from the current function list, call system.searchTools with a query, then select the returned exact tool name to load it. Call only functions in the available tool list; never print tool-call JSON as a chat answer.`,
+      `- Skill names are not functions. Load the Skill tool through system.searchTools to read a skill. For the app's browser, terminal, settings and routines, search for the corresponding mcp.agenc-desktop-control tools, then call the loaded function. If unavailable, explain the limitation; do not invent a tool.`,
       `- TodoWrite is ONLY for work with 3+ distinct steps. Never call it for a single-step request (answering, writing one thing, one edit) — just do the work. EnterPlanMode/ExitPlanMode only when the user explicitly asks for a plan.`,
       `- ${BRIEF_TOOL_NAME} sends the user a one-line progress note during long work. AskUserQuestion asks the user a question when you are blocked.`,
       `- If a tool call fails, read the error and adjust; do not repeat the same call unchanged.`,
@@ -818,7 +827,7 @@ export async function assembleSystemPromptSnapshot(
   };
   switch (opts.profile ?? "standard") {
     case "compact":
-      return withClientRendering(compactSystemPromptSnapshot(opts.ctx));
+      return withClientRendering(compactSystemPromptSnapshot(opts.ctx, opts.enabledToolNames ?? new Set()));
     case "coordinator": {
       const { getLiveCoordinatorSystemPrompt } =
         await import("../coordinator/coordinatorMode.js");

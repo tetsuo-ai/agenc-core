@@ -21,9 +21,11 @@ function createToolExercise(toolRounds: number, largeResultAt?: number) {
   let samples = 0;
   let tools = 0;
   const requests: LLMMessage[][] = [];
+  const outputLimits: Array<number | undefined> = [];
   const provider = mkProvider();
-  provider.chatStream = async (messages): Promise<LLMResponse> => {
+  provider.chatStream = async (messages, _onChunk, options): Promise<LLMResponse> => {
     requests.push([...messages]);
+    outputLimits.push(options?.maxOutputTokens);
     samples += 1;
     return {
       content: samples <= toolRounds ? "Continue the implementation." : "finished",
@@ -64,7 +66,7 @@ function createToolExercise(toolRounds: number, largeResultAt?: number) {
       autoCompactTokenLimit: 3_000,
     },
   });
-  return { session, events, ctx, requests, samples: () => samples };
+  return { session, events, ctx, requests, outputLimits, samples: () => samples };
 }
 
 function noShrink(): AutoCompactResult {
@@ -76,11 +78,25 @@ function noShrink(): AutoCompactResult {
   };
 }
 
+function summaryRejected(): AutoCompactResult {
+  return {
+    wasCompacted: false,
+    advisoryFailure: "summary_rejected",
+    skippedReason: "facts[0] cites an unplanned source ref",
+    consecutiveFailures: 1,
+  };
+}
+
+const advisoryRefusals = [
+  { name: "no shrink", refuse: noShrink },
+  { name: "durably rejected summary", refuse: summaryRejected },
+];
+
 describe("advisory compaction refusal", () => {
-  test("continues admissible fresh tool rounds without retrying unchanged advisory compaction", async () => {
+  test.each(advisoryRefusals)("$name: continues admissible fresh tool rounds without retrying unchanged advisory compaction", async ({ refuse }) => {
     const exercise = createToolExercise(4);
     const compact = vi.fn(async (_messages, _context, _tracking, _snip, injection) =>
-      injection === "before_last_user_message" ? noShrink() : { wasCompacted: false },
+      injection === "before_last_user_message" ? refuse() : { wasCompacted: false },
     );
     setAutoCompactImplForTests(compact);
 
@@ -90,14 +106,17 @@ describe("advisory compaction refusal", () => {
     expect(compact.mock.calls.filter((call) => call[4] === "before_last_user_message"))
       .toHaveLength(1);
     expect(JSON.stringify(exercise.requests.at(-1))).toContain("fresh result 4");
+    expect(JSON.stringify(exercise.requests.at(-1))).toContain("finish the implementation");
+    expect(exercise.events.filter((event) => event.msg.type === "warning" &&
+      event.msg.payload.cause === "auto_compact_failed")).toHaveLength(0);
     expect(exercise.events.map((event) => classifyTurnTerminal(event.msg)))
       .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
-  test("a new oversized tool result gets one mandatory attempt without spending advisory failure strikes", async () => {
+  test.each(advisoryRefusals)("$name: a new oversized tool result gets one mandatory attempt without spending advisory failure strikes", async ({ refuse }) => {
     const exercise = createToolExercise(4, 4);
     const compact = vi.fn(async (_messages, _context, _tracking, _snip, injection) =>
-      injection === "before_last_user_message" ? noShrink() : { wasCompacted: false },
+      injection === "before_last_user_message" ? refuse() : { wasCompacted: false },
     );
     setAutoCompactImplForTests(compact);
 
@@ -113,13 +132,29 @@ describe("advisory compaction refusal", () => {
       .toContainEqual(expect.objectContaining({ outcome: "errored", failureCode: "compact_failed" }));
   });
 
-  test("re-prepares after mandatory compaction and continues only with the smaller request", async () => {
+  test.each(advisoryRefusals)("$name: re-prepares after mandatory compaction and continues only with the smaller request", async ({ name, refuse }) => {
     const exercise = createToolExercise(1, 1);
+    Object.assign(exercise.session.services.provider, {
+      tokenCountCapability: {
+        capabilityVersion: "mandatory-compaction-native-count",
+        adapterRevision: "1",
+        configurationRevision: name,
+        countTokens: async (request: TokenAccountingRequest) => ({
+          // This request cannot fit even admission's minimum 1,024-token
+          // clamped output. The replacement can; changing the output ceiling
+          // alone must not make this mandatory-compaction fixture admissible.
+          inputTokens: JSON.stringify(request.messages).includes("fresh oversized result") ? 3_073 : 1_024,
+          complete: true,
+          confidence: "exact" as const,
+          countedComponents: ["system", "messages", "tools", "provider_framing"] as const,
+        }),
+      },
+    });
     let attempts = 0;
     setAutoCompactImplForTests(async (_messages, _context, _tracking, _snip, injection) => {
       if (injection !== "before_last_user_message") return { wasCompacted: false };
       attempts += 1;
-      if (attempts === 1) return noShrink();
+      if (attempts === 1) return refuse();
       return {
         wasCompacted: true,
         compactionResult: {
@@ -154,15 +189,15 @@ describe("advisory compaction refusal", () => {
       .toContainEqual(expect.objectContaining({ outcome: "errored", failureCode: "compact_failed" }));
   });
 
-  test.each([0, 1])("uses native counts with the complete output reserve at a %s-token overflow", async (overflow) => {
+  test.each(advisoryRefusals.flatMap((refusal) => [0, 1].map((overflow) => ({ ...refusal, overflow }))))("$name: uses native counts at a $overflow-token overflow past the minimum admitted output", async ({ name, refuse, overflow }) => {
     const exercise = createToolExercise(1, 1);
     const capability = {
       capabilityVersion: "advisory-native-count",
       adapterRevision: "1",
-      configurationRevision: `boundary-${overflow}`,
+      configurationRevision: `${name}-boundary-${overflow}`,
       countTokens: vi.fn(async (request: TokenAccountingRequest) => ({
         inputTokens: JSON.stringify(request.messages).includes("fresh oversized result")
-          ? 2_048 + overflow
+          ? 3_072 + overflow
           : 1_024,
         complete: true,
         confidence: "exact" as const,
@@ -174,16 +209,52 @@ describe("advisory compaction refusal", () => {
     setAutoCompactImplForTests(async (_messages, _context, _tracking, _snip, injection) => {
       if (injection !== "before_last_user_message") return { wasCompacted: false };
       attempts += 1;
-      return noShrink();
+      return refuse();
     });
 
     await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
 
     expect(capability.countTokens).toHaveBeenCalledTimes(2);
     expect(exercise.samples()).toBe(overflow === 0 ? 2 : 1);
+    if (overflow === 0) expect(exercise.outputLimits.at(-1)).toBe(1_024);
     expect(attempts).toBe(overflow === 0 ? 1 : 2);
     expect(exercise.events.map((event) => classifyTurnTerminal(event.msg)))
       .toContainEqual(expect.objectContaining({ outcome: overflow === 0 ? "completed" : "errored" }));
+  });
+
+  test.each(advisoryRefusals)("$name: admits an Ollama-sized growing request by sharing the output reservation clamp", async ({ name, refuse }) => {
+    const exercise = createToolExercise(2);
+    Object.assign(exercise.ctx.modelInfo, {
+      contextWindow: 31_129,
+      maxOutputTokens: 16_384,
+      autoCompactTokenLimit: 1,
+    });
+    Object.assign(exercise.session.services.provider, {
+      tokenCountCapability: {
+        capabilityVersion: "ollama-reservation-growth",
+        adapterRevision: "1",
+        configurationRevision: name,
+        countTokens: vi.fn(async (request: TokenAccountingRequest) => ({
+          inputTokens: JSON.stringify(request.messages).includes("fresh result 2") ? 15_200
+            : JSON.stringify(request.messages).includes("fresh result 1") ? 14_800 : 14_451,
+          complete: true,
+          confidence: "exact" as const,
+          countedComponents: ["system", "messages", "tools", "provider_framing"] as const,
+        })),
+      },
+    });
+    const compact = vi.fn(async () => refuse());
+    setAutoCompactImplForTests(compact);
+
+    await drain(runTurn(exercise.session, exercise.ctx, "so can u build something?"));
+
+    expect(exercise.samples()).toBe(3);
+    expect(compact).toHaveBeenCalledOnce();
+    expect(exercise.outputLimits).toEqual([16_384, 16_329, 15_929]);
+    expect(JSON.stringify(exercise.requests.at(-1))).toContain("fresh result 2");
+    expect(JSON.stringify(exercise.requests.at(-1))).toContain("so can u build something?");
+    expect(exercise.events.map((event) => classifyTurnTerminal(event.msg)))
+      .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
   test("preserves an undispatched required swarm choice through mandatory re-preparation", async () => {
