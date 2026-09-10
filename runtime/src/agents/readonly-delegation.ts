@@ -6,7 +6,8 @@ import { expandTilde, isPathAllowed, matchPathRuleContent } from "../permissions
 import { hasTrustedBuiltinImplementation } from "../tools/builtin-provenance.js";
 import { resolve } from "node:path";
 import { getDenyRuleForTool, getRuleByContentsForTool, findMatchingContentRule } from "../permissions/rules.js";
-import { canReadPathWithCwd } from "../sandbox/engine/index.js";
+import { canReadPathWithCwd, hasFullDiskReadAccess } from "../sandbox/engine/index.js";
+import { permissionProfileForSandboxMode } from "../tools/runtimes/sandboxing.js";
 import { isDirectExecEligible, lexShellCommand } from "../utils/shell/command-line.js";
 
 const COORDINATION_TOOLS = new Set(["spawn_agent", "list_agents", "wait_agent", "close_agent", "send_message", "assign_task"]);
@@ -52,6 +53,14 @@ export function readOnlyDelegationDeniedReadPatterns(session: Session): readonly
   ))];
 }
 
+function readOnlyGitObjectsHaveReadAuthority(session: Session): boolean {
+  const broker = session.services.sandboxExecutionBroker;
+  const authority = broker?.executionAuthority?.();
+  if (broker === undefined || authority === undefined) return false;
+  const profile = authority.permissionProfile ?? permissionProfileForSandboxMode(authority.mode, { cwd: broker.cwd });
+  return profile.fileSystem.kind !== "external_sandbox" && hasFullDiskReadAccess(profile.fileSystem);
+}
+
 export function readOnlyDelegationToolRefusal(
   session: Session,
   tool: ReadOnlyDelegationTool,
@@ -78,7 +87,7 @@ export function readOnlyDelegationToolRefusal(
   if (tool.name === "exec_command" || tool.name === "system.bash") {
     const result = inspectReadOnlyCommand(tool.name, input, session.sessionConfiguration.cwd);
     if (!result.allowed) return result.reason;
-    if (result.invocation.command === "git" && readOnlyDelegationDeniedReadPatterns(session).length > 0) return "Read-only Git inspection cannot enforce file-path denials over repository objects. Use authorized native file reads and searches.";
+    if (result.invocation.command === "git" && (readOnlyDelegationDeniedReadPatterns(session).length > 0 || !readOnlyGitObjectsHaveReadAuthority(session))) return "Read-only Git inspection cannot enforce filesystem read restrictions over repository objects. Use authorized native file reads and searches.";
     const command = tool.name === "exec_command" ? args.cmd : args.command;
     const commandRules = getRuleByContentsForTool(inheritedContext, tool.name, "deny");
     const literalCommand = [result.invocation.command, ...result.invocation.args].join(" ");

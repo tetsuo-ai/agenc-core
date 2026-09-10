@@ -22,7 +22,7 @@ it("runs real constrained commands and native search without profiles, writes, c
     await writeFile(join(cwd, "shell-profile"), "printf MALICIOUS; touch marker\n");
     await writeFile(join(cwd, ".gitattributes"), "*.md filter=malicious\n");
     execFileSync("git", ["init", "--quiet"], { cwd });
-    execFileSync("git", ["add", "README.md"], { cwd });
+    execFileSync("git", ["add", "README.md", "secret.txt"], { cwd });
     execFileSync("git", ["-c", "user.name=Inspection", "-c", "user.email=inspection@example.test", "commit", "--quiet", "-m", "inspection fixture"], { cwd });
     execFileSync("git", ["config", "core.fsmonitor", "sh shell-profile"], { cwd });
     execFileSync("git", ["config", "filter.malicious.clean", "sh shell-profile"], { cwd });
@@ -54,6 +54,29 @@ it("runs real constrained commands and native search without profiles, writes, c
     const gitResult = await gitTool.execute({ cmd: "git log --oneline -5", yield_time_ms: 1000 });
     expect(gitResult.isError, gitResult.content).not.toBe(true);
     expect(gitResult.content).not.toContain("MALICIOUS");
+    const publicBlob = await gitTool.execute({ cmd: "git show HEAD:README.md", yield_time_ms: 1000 });
+    expect(publicBlob.isError, publicBlob.content).not.toBe(true);
+    expect(publicBlob.content).toContain("needle public");
+    const unrestrictedSecretBlob = await gitTool.execute({ cmd: "git show HEAD:secret.txt", yield_time_ms: 1000 });
+    expect(unrestrictedSecretBlob.isError, unrestrictedSecretBlob.content).not.toBe(true);
+    expect(unrestrictedSecretBlob.content).toContain("needle private");
+    for (const kind of ["path", "glob"] as const) {
+      const deniedBroker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd, permissionProfile: {
+        fileSystem: { kind: "restricted", entries: [
+          { path: { kind: "special", value: { kind: "root" } }, access: "write" },
+          { path: kind === "path" ? { kind: "path", path: join(cwd, "secret.txt") } : { kind: "glob", pattern: join(cwd, "*.txt") }, access: "none" },
+        ] }, network: "enabled",
+      } });
+      const deniedSession = { ...gitSession, conversationId: `sandbox-denied-${kind}`, services: { ...gitSession.services, sandboxExecutionBroker: deniedBroker } } as Session;
+      const deniedRegistry = buildFilteredRegistry(base, { childConversationId: deniedSession.conversationId, executionConstraint: gitConstraint, sandboxExecutionBroker: deniedBroker, getSession: () => deniedSession });
+      const deniedReader = deniedRegistry.tools.find(tool => tool.name === "FileRead")!;
+      expect((await deniedReader.execute({ file_path: join(cwd, "secret.txt") })).isError).toBe(true);
+      const deniedGit = deniedRegistry.tools.find(tool => tool.name === "exec_command")!;
+      const secretBlob = await deniedGit.execute({ cmd: "git show HEAD:secret.txt", yield_time_ms: 1000 });
+      expect(secretBlob.isError, secretBlob.content).toBe(true);
+      expect(secretBlob.content).toContain("repository objects");
+      expect(secretBlob.content).not.toContain("needle private");
+    }
     await expect(readFile(join(cwd, "marker"))).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     await manager.closeAll();

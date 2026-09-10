@@ -51,7 +51,8 @@ and searches remain available within the worker's read permissions.
 
 Constrained workers reject `git status` and `git diff`, which can invoke
 repository-configured conversion filters. Object-only Git inspection is
-available when no read-path denial applies; Git objects can otherwise reveal
+available only when the original filesystem authority permits unrestricted
+reads and no read-path denial applies. Git objects can otherwise reveal
 denied file contents. PDF reads that require an external converter are also
 unavailable to these workers. These restrictions do not change ordinary
 coding or verification workers.

@@ -10,7 +10,7 @@ import { checkRuleBasedPermissions, type ToolEvaluatorContext } from "../../src/
 import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
-import { canReadPathWithCwd, canWritePathWithCwd } from "../../src/sandbox/engine/index.js";
+import { canReadPathWithCwd, canWritePathWithCwd, type FileSystemSandboxPolicy } from "../../src/sandbox/engine/index.js";
 
 function authoritySession(mode: "plan" | "bypassPermissions" = "plan") {
   let context = createEmptyToolPermissionContext({ mode });
@@ -139,6 +139,56 @@ describe("read-only delegation authority", () => {
     expect(canReadPathWithCwd(profile.fileSystem, `${cwd}/README.md`, child.cwd, child.sessionTempRoot)).toBe(true);
     expect(canWritePathWithCwd(profile.fileSystem, `${cwd}/README.md`, child.cwd, child.sessionTempRoot)).toBe(false);
     expect(broker.mode).toBe("danger_full_access");
+  });
+
+  it.each(["path", "glob", "implicit", "project-only", "external", "opaque"] as const)("refuses Git repository objects under %s filesystem read restrictions without tool rules", (restriction) => {
+    const { session } = authoritySession("bypassPermissions");
+    const cwd = process.cwd();
+    const fileSystem: FileSystemSandboxPolicy = restriction === "external"
+      ? { kind: "external_sandbox", entries: [] }
+      : {
+          kind: "restricted",
+          entries: restriction === "implicit"
+            ? [{ path: { kind: "path", path: cwd }, access: "read" }]
+            : restriction === "project-only"
+              ? [{ path: { kind: "special", value: { kind: "project_roots" } }, access: "read" }]
+              : [
+                  { path: { kind: "special", value: { kind: "root" } }, access: "read" },
+                  { path: restriction === "glob" ? { kind: "glob", pattern: "*.txt" } : { kind: "path", path: `${cwd}/secret.txt` }, access: "none" },
+                ],
+        };
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd, permissionProfile: { fileSystem, network: "enabled" } });
+    Object.assign(session.services, {
+      readOnlyDelegation: { kind: "read-only", ownerThreadId: "owner" },
+      sandboxExecutionBroker: restriction === "opaque" ? { cwd, mode: "danger_full_access" } : broker,
+    });
+    const registry = buildToolRegistry({ workspaceRoot: cwd, requireAdmission: false });
+    const shell = registry.tools.find(tool => tool.name === "exec_command")!;
+    expect(readOnlyDelegationToolRefusal(session, shell, { cmd: "git show HEAD:secret.txt" })).toMatch(/repository objects/);
+    expect(readOnlyDelegationToolRefusal(session, shell, { cmd: "git log -p" })).toMatch(/repository objects/);
+    if (restriction === "path" || restriction === "glob") {
+      const reader = registry.tools.find(tool => tool.name === "FileRead")!;
+      expect(readOnlyDelegationToolRefusal(session, reader, { file_path: "secret.txt" })).toMatch(/cannot read/);
+      expect(readOnlyDelegationToolRefusal(session, reader, { file_path: "README.md" })).toBeUndefined();
+    }
+  });
+
+  it.each(["danger_full_access", "workspace_write", "read_only", "unrestricted-profile", "full-read-profile"] as const)("retains Git object inspection under %s authority with unrestricted reads", (authority) => {
+    const { session } = authoritySession("bypassPermissions");
+    const cwd = process.cwd();
+    const broker = authority === "unrestricted-profile" || authority === "full-read-profile"
+      ? new SandboxExecutionBroker({ mode: "workspace_write", cwd, permissionProfile: {
+          fileSystem: authority === "unrestricted-profile"
+            ? { kind: "unrestricted", entries: [] }
+            : { kind: "restricted", entries: [{ path: { kind: "special", value: { kind: "root" } }, access: "read" }, { path: { kind: "path", path: cwd }, access: "write" }] },
+          network: "enabled",
+        } })
+      : new SandboxExecutionBroker({ mode: authority, cwd });
+    Object.assign(session.services, { readOnlyDelegation: { kind: "read-only", ownerThreadId: "owner" }, sandboxExecutionBroker: broker });
+    const registry = buildToolRegistry({ workspaceRoot: cwd, requireAdmission: false });
+    const shell = registry.tools.find(tool => tool.name === "exec_command")!;
+    expect(readOnlyDelegationToolRefusal(session, shell, { cmd: "git show HEAD:README.md" })).toBeUndefined();
+    expect(readOnlyDelegationToolRefusal(session, shell, { cmd: "git log --oneline -5" })).toBeUndefined();
   });
 
 });
