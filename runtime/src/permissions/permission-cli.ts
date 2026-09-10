@@ -9,6 +9,7 @@
 
 import { cwd as processCwd } from "node:process";
 import { resolveHomeContext } from "../config/home.js";
+import { FILE_READ_TOOL_NAME } from "../tools/FileReadTool/prompt.js";
 import {
   createAgenCJsonLineDaemonRequestClient,
   defaultEnsureDaemonReady,
@@ -114,6 +115,10 @@ const APPROVE_SCOPES: readonly ApprovalScope[] = Object.freeze([
 ] as const);
 
 export function formatAgenCPermissionsCliHelpText(): string {
+  const readRule = serializeRuleValue({
+    toolName: FILE_READ_TOOL_NAME,
+    ruleContent: "./src/**",
+  });
   return [
     "Usage: agenc permissions <command>",
     "",
@@ -126,7 +131,7 @@ export function formatAgenCPermissionsCliHelpText(): string {
     "",
     "Examples:",
     "  agenc permissions list",
-    "  agenc permissions approve --persist user 'Read(./src/**)'",
+    `  agenc permissions approve --persist user '${readRule}'`,
     "  agenc permissions approve --session session_123 call_456",
     "  agenc permissions revoke --session session_123 call_456",
   ].join("\n");

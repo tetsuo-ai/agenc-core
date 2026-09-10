@@ -12,7 +12,7 @@
  *   - `clearSessionHosts` lifecycle.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   DeniedByPolicy,
   hostApprovalKeyToString,
@@ -504,6 +504,171 @@ describe("NetworkApprovalService — cache toggling", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+// Session reset while approval work is in flight
+// ─────────────────────────────────────────────────────────────────────
+
+describe("NetworkApprovalService — in-flight session reset", () => {
+  function deferredResolver() {
+    const started = Promise.withResolvers<void>();
+    const review = Promise.withResolvers<ReviewDecision>();
+    const requestNetworkApproval = vi.fn(async () => {
+      started.resolve();
+      return review.promise;
+    });
+    return { started: started.promise, review, resolver: { requestNetworkApproval } };
+  }
+
+  const lateDecisions: ReviewDecision[] = [
+    { kind: "approved" },
+    { kind: "approved_for_session" },
+    { kind: "network_policy_amendment", amendment: { action: "allow" } },
+    { kind: "network_policy_amendment", amendment: { action: "deny" } },
+    { kind: "denied" },
+  ];
+
+  test.each(lateDecisions)("discards a late $kind decision after clear: %j", async (review) => {
+    const svc = new NetworkApprovalService();
+    const deferred = deferredResolver();
+    const persistAmendment = vi.fn();
+    const owner = svc.requestNetworkApproval(baseOpts({
+      resolver: deferred.resolver,
+      persistAmendment,
+    }));
+    const waiter = svc.requestNetworkApproval(baseOpts());
+    await deferred.started;
+
+    svc.clearSessionHosts();
+    deferred.review.resolve(review);
+
+    expect(await Promise.all([owner, waiter])).toEqual([
+      { kind: "deny", reason: "session_cleared" },
+      { kind: "deny", reason: "session_cleared" },
+    ]);
+    expect(svc.sessionAllowedSize).toBe(0);
+    expect(svc.sessionDeniedSize).toBe(0);
+    expect(svc.pendingSize()).toBe(0);
+    expect(persistAmendment).not.toHaveBeenCalled();
+    expect(await svc.requestNetworkApproval(baseOpts())).toEqual({
+      kind: "deny", reason: "not_allowed",
+    });
+  });
+
+  test("releases owners and concurrent waiters without waiting for the resolver", async () => {
+    const svc = new NetworkApprovalService();
+    const deferred = deferredResolver();
+    const requests = Array.from({ length: 4 }, () =>
+      svc.requestNetworkApproval(baseOpts({ resolver: deferred.resolver })));
+    await deferred.started;
+    svc.clearSessionHosts();
+
+    try {
+      for (const decision of await Promise.all(requests)) {
+        expect(decision).toEqual({ kind: "deny", reason: "session_cleared" });
+      }
+      expect(deferred.resolver.requestNetworkApproval).toHaveBeenCalledTimes(1);
+      expect(svc.pendingSize()).toBe(0);
+    } finally {
+      deferred.review.resolve({ kind: "approved_for_session" });
+    }
+  });
+
+  test("old cleanup cannot remove a new approval for the same host across repeated clears", async () => {
+    const svc = new NetworkApprovalService();
+    for (let generation = 0; generation < 3; generation += 1) {
+      const old = deferredResolver();
+      const oldOwner = svc.requestNetworkApproval(baseOpts({ resolver: old.resolver }));
+      await old.started;
+      svc.clearSessionHosts();
+
+      const current = deferredResolver();
+      const currentOwner = svc.requestNetworkApproval(baseOpts({ resolver: current.resolver }));
+      await current.started;
+      expect(await oldOwner).toEqual({ kind: "deny", reason: "session_cleared" });
+      old.review.resolve({ kind: "approved_for_session" });
+      const unexpected = countingResolver({ kind: "denied" });
+      const currentWaiter = svc.requestNetworkApproval(baseOpts({ resolver: unexpected.resolver }));
+      expect(svc.pendingSize()).toBe(1);
+      current.review.resolve({ kind: "approved" });
+      expect(await Promise.all([currentOwner, currentWaiter])).toEqual([
+        { kind: "allow" }, { kind: "allow" },
+      ]);
+      expect(unexpected.callCount()).toBe(0);
+      expect(svc.pendingSize()).toBe(0);
+      expect(svc.sessionAllowedSize).toBe(0);
+    }
+  });
+
+  test("a clear before pending lookup completes cancels the old request", async () => {
+    const svc = new NetworkApprovalService();
+    const old = countingResolver({ kind: "approved_for_session" });
+    const request = svc.requestNetworkApproval(baseOpts({ resolver: old.resolver }));
+    svc.clearSessionHosts();
+    expect(await request).toEqual({ kind: "deny", reason: "session_cleared" });
+    expect(old.callCount()).toBe(0);
+    expect(svc.sessionAllowedSize).toBe(0);
+  });
+
+  test("clearing during a hook prevents the resolver from being invoked", async () => {
+    const svc = new NetworkApprovalService();
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<null>();
+    const resolver = countingResolver({ kind: "approved_for_session" });
+    const request = svc.requestNetworkApproval(baseOpts({
+      resolver: resolver.resolver,
+      hooks: [async () => { started.resolve(); return release.promise; }],
+    }));
+    await started.promise;
+    svc.clearSessionHosts();
+    release.resolve(null);
+    expect(await request).toEqual({ kind: "deny", reason: "session_cleared" });
+    expect(resolver.callCount()).toBe(0);
+  });
+
+  test("clearing during amendment persistence cannot cache or publish its decision", async () => {
+    const svc = new NetworkApprovalService();
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const request = svc.requestNetworkApproval(baseOpts({
+      resolver: staticResolver({
+        kind: "network_policy_amendment", amendment: { action: "allow" },
+      }),
+      persistAmendment: async () => { started.resolve(); await release.promise; },
+    }));
+    await started.promise;
+    svc.clearSessionHosts();
+    release.resolve();
+    expect(await request).toEqual({ kind: "deny", reason: "session_cleared" });
+    expect(svc.sessionAllowedSize).toBe(0);
+  });
+
+  test("a hook can synchronously clear the session without an unhandled rejection", async () => {
+    const svc = new NetworkApprovalService();
+    const resolver = countingResolver({ kind: "approved_for_session" });
+    const request = svc.requestNetworkApproval(baseOpts({
+      resolver: resolver.resolver,
+      hooks: [() => { svc.clearSessionHosts(); return null; }],
+    }));
+    expect(await request).toEqual({ kind: "deny", reason: "session_cleared" });
+    expect(resolver.callCount()).toBe(0);
+    expect(svc.sessionAllowedSize).toBe(0);
+  });
+
+  test("clearing a deferred request removes its active registration", async () => {
+    const svc = new NetworkApprovalService();
+    const deferred = deferredResolver();
+    const request = svc.requestDeferredApproval(baseOpts({ resolver: deferred.resolver }));
+    await deferred.started;
+    svc.clearSessionHosts();
+    try {
+      expect(await request).toEqual({ kind: "deny", reason: "session_cleared" });
+      expect(svc.activeApprovalSize()).toBe(0);
+    } finally {
+      deferred.review.resolve({ kind: "approved" });
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 // Hook precedence
 // ─────────────────────────────────────────────────────────────────────
 
@@ -614,6 +779,16 @@ describe("NetworkApprovalService — read_only sandbox", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("NetworkApprovalService — abort signal", () => {
+  test("cancellation preserves a frozen caller-owned error", async () => {
+    const svc = new NetworkApprovalService();
+    const reason = Object.freeze(new Error("caller cancelled"));
+    const ac = new AbortController();
+    ac.abort(reason);
+    await expect(svc.requestNetworkApproval(baseOpts({ signal: ac.signal })))
+      .rejects.toMatchObject({ name: "AbortError", message: "caller cancelled", cause: reason });
+    expect(reason.name).toBe("Error");
+  });
+
   test("already-aborted signal throws before any work", async () => {
     const svc = new NetworkApprovalService();
     const ac = new AbortController();

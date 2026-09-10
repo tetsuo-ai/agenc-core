@@ -3,8 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { parseToml } from "../config/loader.js";
+import { validatePermissionsConfig } from "../../src/config/schema.js";
+import { parseRuleString, serializeRuleValue } from "../../src/permissions/rules.js";
+import { validatePermissionRule } from "../../src/utils/settings/permissionValidation.js";
 import {
   formatAgenCPermissionGrantList,
+  formatAgenCPermissionsCliHelpText,
   parseAgenCPermissionsCliArgs,
   runAgenCPermissionsCli,
   type AgenCPermissionsCliDaemonClient,
@@ -36,6 +40,19 @@ function createIo(): AgenCPermissionsCliIo & {
 }
 
 describe("permission CLI parser", () => {
+  it("prints rule examples accepted by the permission parser and validators", () => {
+    const examples = [...formatAgenCPermissionsCliHelpText().matchAll(/'([^']+)'/g)]
+      .map((match) => match[1]!);
+    expect(examples.length).toBeGreaterThan(0);
+    for (const rule of examples) {
+      const parsed = parseRuleString(rule);
+      expect(parsed, rule).not.toBeNull();
+      expect(serializeRuleValue(parsed!), rule).toBe(rule);
+      expect(validatePermissionRule(rule), rule).toEqual({ valid: true });
+    }
+    expect(validatePermissionsConfig({ allow: examples })!.allow).toEqual(examples);
+  });
+
   it("parses list, rule approval, rule revoke, and request resolution forms", () => {
     expect(parseAgenCPermissionsCliArgs(["hello"])).toBeNull();
     expect(parseAgenCPermissionsCliArgs(["permissions"])).toEqual({

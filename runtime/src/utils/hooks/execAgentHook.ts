@@ -21,6 +21,7 @@ import {
 } from '../../tools/AgentTool/spawnAdmission.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
 import { type Tool, toolMatchesName } from '../../tools/Tool.js'
+import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { ALL_AGENT_DISALLOWED_TOOLS } from '../../tools.js'
 import { asAgentId } from '../../types/ids.js'
@@ -34,6 +35,7 @@ import type { HookResult } from '../hooks.js'
 import { createUserMessage } from '../messages.js'
 import { getSmallFastModel } from '../model/model.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
+import { permissionRuleValueToString } from '../permissions/permissionRuleParser.js'
 import { getAgentTranscriptPath, getTranscriptPath } from '../sessionStorage.js'
 import type { AgentHook } from '../../schemas/hooks.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -188,7 +190,13 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
               mode: 'dontAsk' as const,
               alwaysAllowRules: {
                 ...appState.toolPermissionContext.alwaysAllowRules,
-                session: [...existingSessionRules, `Read(/${transcriptPath})`],
+                session: [
+                  ...existingSessionRules,
+                  permissionRuleValueToString({
+                    toolName: FILE_READ_TOOL_NAME,
+                    ruleContent: transcriptPath,
+                  }),
+                ],
               },
             },
           }
