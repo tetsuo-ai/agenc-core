@@ -20,6 +20,10 @@
 
 import { AsyncLock } from "./_deps/async-lock.js";
 import {
+  normalizeReadOnlyDelegationConstraint,
+  type ReadOnlyDelegationConstraint,
+} from "./readonly-delegation.js";
+import {
   defaultAgentNicknameCandidates,
   formatNicknameWithSuffix,
   type AgentRole,
@@ -36,6 +40,7 @@ export const ROOT_AGENT_PATH = "/root" as AgentPath;
 export const MEMORY_AGENT_PATH = "/morpheus" as AgentPath;
 
 export interface AgentMetadata {
+  readonly executionConstraint?: ReadOnlyDelegationConstraint;
   readonly agentId?: ThreadId;
   readonly agentPath?: AgentPath;
   readonly agentNickname?: string;
@@ -111,6 +116,7 @@ export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
     throw new InvalidAgentMetadataError("invalid agent metadata depth");
   }
   const roleMetadata = normalizeAgentRoleMetadata(record);
+  const executionConstraint = normalizeReadOnlyDelegationConstraint(record.executionConstraint);
   const agentId = optionalMetadataString(record.agentId, "agentId", true);
   const agentPath = optionalMetadataString(record.agentPath, "agentPath", true);
   const agentNickname = optionalMetadataString(
@@ -125,6 +131,7 @@ export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
   );
   return {
     depth: record.depth,
+    ...(executionConstraint !== undefined ? { executionConstraint } : {}),
     ...(agentId !== undefined ? { agentId } : {}),
     ...(agentPath !== undefined ? { agentPath } : {}),
     ...(agentNickname !== undefined ? { agentNickname } : {}),
@@ -824,6 +831,7 @@ export function buildChildMetadata(opts: {
   readonly roleFingerprint: string;
   readonly nickname: string;
   readonly depth: number;
+  readonly executionConstraint?: ReadOnlyDelegationConstraint;
   readonly agentName?: string;
   readonly agentPath?: AgentPath;
 }): AgentMetadata {
@@ -841,6 +849,9 @@ export function buildChildMetadata(opts: {
     agentRole: opts.role.name,
     agentRoleWorkspaceId: opts.roleWorkspaceId,
     agentRoleFingerprint: opts.roleFingerprint,
+    ...(opts.executionConstraint !== undefined
+      ? { executionConstraint: normalizeReadOnlyDelegationConstraint(opts.executionConstraint) }
+      : {}),
     depth: opts.depth,
   };
 }

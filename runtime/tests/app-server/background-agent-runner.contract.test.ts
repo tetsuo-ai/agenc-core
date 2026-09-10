@@ -18,6 +18,7 @@ import {
   AgenCBackgroundAgentMessageError,
   AgenCBackgroundAgentSuspensionShutdownError,
   AgenCDelegateBackgroundAgentRunner,
+  __installDaemonTurnDriverHooksForTest,
   daemonEventFromUnboundSessionEvent,
   notificationFromDaemonEvent,
   resolvePermissionDecisionTimeoutMs,
@@ -768,6 +769,7 @@ function makeTopLevelRunner(opts: {
   // The real Session latches a client Stop until the next user message; the
   // stub carries the same state so tests can read it, not just the calls.
   let stoppedByUserSinceLastPrompt = false;
+  let userStopGeneration = 0;
   const session = {
     abortController: sessionAbortController,
     abortTerminal: vi.fn((reason: string) => {
@@ -840,12 +842,16 @@ function makeTopLevelRunner(opts: {
     abortAllTasks: vi.fn(async () => {}),
     markStoppedByUser: vi.fn(() => {
       stoppedByUserSinceLastPrompt = true;
+      userStopGeneration += 1;
     }),
     clearUserStop: vi.fn(() => {
       stoppedByUserSinceLastPrompt = false;
     }),
     get stoppedByUserSinceLastPrompt() {
       return stoppedByUserSinceLastPrompt;
+    },
+    get userStopGeneration() {
+      return userStopGeneration;
     },
     trackDurableOperation: <T>(operation: Promise<T>): Promise<T> => {
       durableOperations.add(operation);
@@ -8720,7 +8726,7 @@ describe("AgenC delegate background-agent runner", () => {
         ? { blockingError: { blockingError: "follow-up prompt denied" } }
         : {},
     );
-    const { runner, control, stub } = makeTopLevelRunner({
+    const { runner, control, stub, session } = makeTopLevelRunner({
       conversationId: "session-follow-up-prompt-survives-block",
       userPromptSubmitHooks: [blockHook],
     });
@@ -8730,6 +8736,8 @@ describe("AgenC delegate background-agent runner", () => {
       unattendedAllow: [],
       unattendedDeny: [],
     });
+    session.markStoppedByUser();
+    session.clearUserStop.mockClear();
 
     await expect(
       runner.submitAgentMessage("session-follow-up-prompt-survives-block", {
@@ -8743,6 +8751,8 @@ describe("AgenC delegate background-agent runner", () => {
     ).rejects.toMatchObject({
       code: "PROMPT_BLOCKED",
     });
+    expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+    expect(session.clearUserStop).not.toHaveBeenCalled();
     const snapshot = await runner.getAgentSnapshot(
       "session-follow-up-prompt-survives-block",
     );
@@ -8759,7 +8769,76 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).resolves.toMatchObject({ disposition: "started" });
     expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+    expect(session.clearUserStop).not.toHaveBeenCalled();
     expect(stub.thread.submit).not.toHaveBeenCalled();
+    session.markStoppedByUser();
+    await expect(runner.submitAgentMessage("session-follow-up-prompt-survives-block", {
+      sessionId: "session_1",
+      content: "allowed follow-up prompt",
+      originalContent: "allowed follow-up prompt",
+      messageId: "allowed-follow-up-after-block",
+      streamId: "duplicate-stream",
+      acceptedAt: "2026-08-25T00:00:02.000Z",
+    })).resolves.toMatchObject({ disposition: "duplicate" });
+    expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+    expect(session.clearUserStop).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("[managed-thread] retains the stop during failed input admission (structured=%s)", async (structured) => {
+    const { runner, control, stub, session } = makeTopLevelRunner({
+      conversationId: "session-failed-stop-release",
+    });
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    session.markStoppedByUser();
+    const admission = structured ? stub.thread.submit : control.sendInput;
+    admission.mockImplementationOnce(async () => {
+      expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+      await Promise.resolve();
+      expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+      throw new Error("input admission failed");
+    });
+    const content = structured ? [{ type: "text" as const, text: "continue" }] : "continue";
+    await expect(runner.submitAgentMessage("session-failed-stop-release", {
+      sessionId: "session_1", content, originalContent: content,
+      messageId: "failed-stop-release", streamId: "stream_1", acceptedAt: "2026-09-10T00:00:00.000Z",
+    })).rejects.toThrow("input admission failed");
+    expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+    expect(session.clearUserStop).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("[managed-thread] passes the ingress stop generation to durable turn admission (newerStop=%s)", async (newerStop) => {
+    const harness = makeTopLevelRunner({
+      conversationId: "session-generation-stop-release",
+    });
+    const { runner, control, session, configStore } = harness;
+    await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    session.markStoppedByUser();
+    const originalGeneration = session.userStopGeneration;
+    let submitDriver: (message: string, options?: unknown) => Promise<void> = async () => { throw new Error("driver missing"); };
+    const driverSession = {
+      ...session,
+      newDefaultTurn: () => ({}),
+      installTurnDriverHooks: (hooks: { submit: typeof submitDriver }) => { submitDriver = hooks.submit; },
+    };
+    const runTurnFn = vi.fn(async function* (_session: unknown, _turn: unknown, _input: unknown, options: { userStopGenerationToRelease?: number }) {
+      expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+      expect(options.userStopGenerationToRelease).toBe(originalGeneration);
+      if (options.userStopGenerationToRelease === session.userStopGeneration) session.clearUserStop();
+    });
+    __installDaemonTurnDriverHooksForTest(driverSession as never, configStore as never, runTurnFn as never);
+    control.sendInput.mockImplementationOnce(async (...invocation: unknown[]) => {
+      expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+      if (newerStop) session.markStoppedByUser();
+      await submitDriver(invocation[1] as string, invocation[2]);
+    });
+    await runner.submitAgentMessage("session-generation-stop-release", {
+      sessionId: "session_1", content: "continue", originalContent: "continue",
+      messageId: "generation-stop-release", streamId: "stream_1", acceptedAt: "2026-09-10T00:00:00.000Z",
+    });
+    expect(runTurnFn).toHaveBeenCalledOnce();
+    expect(session.stoppedByUserSinceLastPrompt).toBe(newerStop);
+    expect(session.clearUserStop).toHaveBeenCalledTimes(newerStop ? 0 : 1);
   });
 
   it("[managed-thread] replays a legacy hook-block error as session-only after attach", async () => {
@@ -9911,7 +9990,6 @@ describe("AgenC delegate background-agent runner", () => {
       ),
     });
 
-    // A prompt the daemon does admit still releases the latch.
     releaseInitialSubmission.resolve();
     await expect(
       runner.submitAgentMessage("session-stop-refusal", {
@@ -9923,7 +10001,8 @@ describe("AgenC delegate background-agent runner", () => {
         acceptedAt: "2026-09-07T00:00:01.000Z",
       }),
     ).resolves.toMatchObject({ disposition: "started" });
-    expect(session.stoppedByUserSinceLastPrompt).toBe(false);
+    expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+    expect(session.clearUserStop).not.toHaveBeenCalled();
   });
 
   it("[managed-thread] accepts the first opt-in-admission message on a deferred spawn still in pending_init", async () => {
@@ -10921,6 +11000,32 @@ describe("AgenC delegate background-agent runner", () => {
       type: "interrupt",
       reason: "user_cancel",
     });
+  });
+
+  it.each([false, true])("cancels the whole active subtree when durable stop recording fails (scoped=%s)", async (scoped) => {
+    const { runner, session, stub, control, setActiveTurn, abortTurnIfActive } = makeTopLevelRunner({
+      conversationId: "session-stop-persistence-failure",
+      scopedTurnCancellation: scoped,
+    });
+    await runner.startAgent({ objective: "hi", unattendedAllow: [], unattendedDeny: [] });
+    setActiveTurn("turn-stop-persistence-failure");
+    control.openThreadSpawnChildren.mockReturnValue([
+      ["child-agent", { agentId: "child-agent", agentPath: "/root/worker", depth: 1 }],
+    ]);
+    stub.thread.submit.mockClear();
+    session.markStoppedByUser.mockImplementationOnce(() => { throw new Error("stop fsync failed"); });
+
+    const cancellation = scoped
+      ? runner.interruptAgentTurnIfMatches("session-stop-persistence-failure", "user_cancel", "turn-stop-persistence-failure")
+      : runner.interruptAgentTurn("session-stop-persistence-failure", "user_cancel");
+    await expect(cancellation).rejects.toThrow("stop fsync failed");
+    if (scoped) {
+      expect(abortTurnIfActive).toHaveBeenCalledWith("turn-stop-persistence-failure", "interrupted");
+    } else {
+      expect(session.abortAllTasks).toHaveBeenCalledWith("interrupted");
+      expect(stub.thread.submit).toHaveBeenCalledWith({ type: "interrupt", reason: "user_cancel" });
+    }
+    expect(control.interrupt).toHaveBeenCalledWith("child-agent", "user_cancel");
   });
 
   it("[managed-thread] interruptAgentTurn cascades cancellation to live child agents", async () => {

@@ -6,6 +6,7 @@ import { runTurn } from "../../src/session/run-turn.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
 import type { Tool } from "../../src/tools/types.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
+import { markWorkflowApprovalSession } from "../../src/permissions/approval-failure.js";
 
 function registryFor(tool: Tool): ToolRegistry {
   return {
@@ -19,6 +20,24 @@ function registryFor(tool: Tool): ToolRegistry {
 }
 
 describe("workflow turn boundaries", () => {
+  test.each([false, true])("keeps denial feedback in tool results and terminal text (workflow=%s)", async (workflow) => {
+    const reason = "Do not commit. Explain the pending changes instead.";
+    const registry = registryFor({ name: "approved_action", description: "Action requiring approval", inputSchema: { type: "object" }, requiresApproval: true, execute: vi.fn(async () => ({ content: "must not run" })) });
+    const provider = mkProvider({ content: "Requesting approval", toolCalls: [{ id: "feedback-call", name: "approved_action", arguments: "{}" }], finishReason: "tool_calls" });
+    const { session, events } = mkSession({ provider, registry, services: { approvalResolver: { request: async () => ({ kind: "denied", reason }) } } });
+    const unmark = workflow ? markWorkflowApprovalSession(session) : () => {};
+    try {
+      await drain(runTurn(session, mkCtx({ approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "workspace_write" } }), "Run the action"));
+      const closure = events.find((event) => event.msg.type === "tool_call_completed");
+      expect(closure?.msg).toMatchObject({ payload: { isError: true, metadata: { approvalFailure: { decision: "denied", source: "resolver", reason } } } });
+      expect(session.snapshotHistoryMessages().at(-1)?.content).toContain(reason);
+      expect(registry.tools[0]!.execute).not.toHaveBeenCalled();
+    } finally {
+      unmark();
+      await session.shutdown();
+    }
+  });
+
   test("ends an inspection turn after its conditional offer without executing the proposed work", async () => {
     const execute = vi.fn(async () => ({ content: "must not write" }));
     const registry = registryFor({ name: "write_notes", description: "Write the notes CLI", inputSchema: { type: "object" }, execute });
@@ -81,6 +100,7 @@ describe("workflow turn boundaries", () => {
     expect(session.snapshotHistoryMessages().at(-1)).toMatchObject({ role: "assistant", content: expect.stringMatching(/approval.*denied/i) });
     expect(findToolTurnValidationIssue(session.snapshotHistoryMessages())).toBeNull();
     expect(session.abortController.signal.aborted).toBe(false);
+    expect(session.stoppedByUserSinceLastPrompt).toBe(true);
 
     provider.chatStream = mkProvider({ content: "Finished the allowed follow-up." }).chatStream;
     const previousEvents = events.length;
@@ -114,6 +134,7 @@ describe("workflow turn boundaries", () => {
     expect(closure?.msg).toMatchObject({ payload: { isError: true } });
     if (closure?.msg.type === "tool_call_completed") expect(closure.msg.payload.metadata?.approvalDenied).toBeUndefined();
     expect(events.some((event) => event.msg.type === "turn_failed")).toBe(false);
+    expect(session.stoppedByUserSinceLastPrompt).toBe(false);
     expect(events.map((event) => classifyTurnTerminal(event.msg)))
       .toContainEqual(expect.objectContaining({ outcome: "completed", message: "No approval resolver is available, so I made no changes." }));
   });

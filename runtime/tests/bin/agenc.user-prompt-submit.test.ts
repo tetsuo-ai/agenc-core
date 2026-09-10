@@ -37,6 +37,8 @@ function fakeSession(cwd: string) {
   const events: unknown[] = [];
   const session = {
     abortController: new AbortController(),
+    clearUserStop: vi.fn(),
+    userStopGeneration: 7,
     activeTurn: { unsafePeek: () => null },
     conversationId: "conv-hooks",
     emit: (event: unknown) => {
@@ -221,6 +223,74 @@ function installOneShotDaemonSpies() {
 }
 
 describe("UserPromptSubmit prompt ingress", () => {
+  it("cannot authorize release of a newer stop raised during prompt preparation", async () => {
+    const { session } = fakeSession("/workspace");
+    session.services.hooks.userPromptSubmitHooks.push(() => {
+      session.userStopGeneration += 1;
+      return {};
+    });
+    const runSingleTurnFn = vi.fn(async function* () {
+      return { reason: "completed" };
+    });
+    const uninstall = __installTuiSessionContractForTest({
+      session: session as never,
+      configStore: { current: () => defaultConfig },
+      agencHome: "/tmp/agenc",
+      resolvedProvider: "stub",
+      autonomousModeEnabled: false,
+      loadTurnInputsFn: async () => EMPTY_TURN_INPUTS,
+      runSingleTurnFn: runSingleTurnFn as never,
+    });
+    try {
+      await session.submit("new prompt", { source: "user" });
+      expect(runSingleTurnFn).toHaveBeenCalledWith(expect.objectContaining({ userStopGenerationToRelease: 7 }));
+      expect(session.userStopGeneration).toBe(8);
+      expect(session.clearUserStop).not.toHaveBeenCalled();
+    } finally {
+      uninstall();
+    }
+  });
+
+  it.each([
+    { source: "user", blocked: false, releasesStop: true },
+    { source: "user", blocked: true, releasesStop: false },
+    { source: undefined, blocked: false, releasesStop: false },
+    { source: "autonomous_tick", blocked: false, releasesStop: false },
+  ] as const)("releases local stop only after trusted human admission ($source, $blocked)", async ({ source, blocked, releasesStop }) => {
+    const { session } = fakeSession("/workspace");
+    session.services.hooks.userPromptSubmitHooks.push(() => {
+      expect(session.clearUserStop).not.toHaveBeenCalled();
+      return blocked ? { blockingError: { blockingError: "policy denied" } } : {};
+    });
+    const runSingleTurnFn = vi.fn(async function* (options: { userStopGenerationToRelease?: number }) {
+      expect(session.clearUserStop).not.toHaveBeenCalled();
+      expect(options.userStopGenerationToRelease).toBe(releasesStop ? 7 : undefined);
+      yield {
+        type: "turn_complete",
+        content: "ok",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "completed",
+      } satisfies PhaseEvent;
+      return { reason: "completed" };
+    });
+    const uninstall = __installTuiSessionContractForTest({
+      session: session as never,
+      configStore: { current: () => defaultConfig },
+      agencHome: "/tmp/agenc",
+      resolvedProvider: "stub",
+      autonomousModeEnabled: false,
+      loadTurnInputsFn: async () => EMPTY_TURN_INPUTS,
+      runSingleTurnFn: runSingleTurnFn as never,
+    });
+    try {
+      await session.submit("new prompt", { source });
+    } finally {
+      uninstall();
+    }
+    expect(session.clearUserStop).not.toHaveBeenCalled();
+    expect(runSingleTurnFn).toHaveBeenCalledTimes(blocked || source === "autonomous_tick" ? 0 : 1);
+  });
+
   it.each([
     {
       label: "a compact failure",

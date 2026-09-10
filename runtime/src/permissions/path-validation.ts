@@ -262,7 +262,7 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
   return new RegExp(`^${body}$`);
 }
 
-function matchPathRuleContent(ruleContent: string, filePath: string): boolean {
+export function matchPathRuleContent(ruleContent: string, filePath: string): boolean {
   const expandedRule = normalizeSlashes(expandTilde(ruleContent));
   const expandedPath = normalizeSlashes(filePath);
   if (expandedRule === expandedPath) return true;

@@ -1521,6 +1521,7 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
       session,
       ctx,
       input: "hi",
+      userStopGenerationToRelease: 7,
       configStore: store,
       configReloadLatch: latch,
       memoryPromptText: "",
@@ -1546,6 +1547,7 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     // runTurn must receive the assembled system prompt through opts.
     const rtCall = runTurnFn.mock.calls[0]!;
     expect(rtCall[3]!.systemPrompt.length).toBeGreaterThan(0);
+    expect(rtCall[3]!.userStopGenerationToRelease).toBe(7);
   });
 
   it("calls reload again when invoked a second time (multi-turn loop compat)", async () => {

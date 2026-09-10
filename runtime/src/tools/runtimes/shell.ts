@@ -1,4 +1,4 @@
-import path from "node:path";
+import { inspectReadOnlyCommand } from "../../permissions/readonly-inspection.js";
 import {
   isShellCommandSeparator,
   lexShellCommand,
@@ -22,34 +22,6 @@ export interface ShellRuntimeAccessAnalysis {
   readonly knownSafeWhenTargetless: boolean;
 }
 
-const READ_ONLY_SHELL_COMMANDS = new Set([
-  "basename",
-  "cat",
-  "cut",
-  "dirname",
-  "grep",
-  "head",
-  "ls",
-  "pwd",
-  "rg",
-  "sort",
-  "stat",
-  "tail",
-  "test",
-  "true",
-  "uniq",
-  "wc",
-]);
-
-const READ_ONLY_GIT_SUBCOMMANDS = new Set([
-  "branch",
-  "diff",
-  "log",
-  "merge-base",
-  "rev-parse",
-  "show",
-  "status",
-]);
 const DYNAMIC_SHELL_READ_TARGET_RE = /(?:[$*?\[\]{}~]|`|\$\(|<\()/u;
 
 export function analyzeShellRuntimeAccess(
@@ -71,10 +43,15 @@ export function analyzeShellRuntimeAccess(
     };
   }
 
-  const knownReadOnly = isShellCommandKnownReadOnly(command);
-  const reads = shellCommandReadTargets(command, runtimeCommand.cwd);
+  const inspection = inspectReadOnlyCommand(tool.name, { ...args, ...(tool.name === "exec_command" ? { cmd: command } : { command }) }, cwd, { enforceWorkspaceBoundary: false, allowWorktreeGitInspection: true });
+  const literalStdin = isLiteralCatHereDocument(command);
+  const knownReadOnly = inspection.allowed || literalStdin;
+  const reads = inspection.allowed
+    ? { targets: inspection.invocation.readPaths, indeterminate: false }
+    : literalStdin ? { targets: [], indeterminate: false }
+    : shellCommandReadTargets(command, runtimeCommand.cwd);
   for (const target of reads.targets) {
-    readTargets.add(target);
+    if (!isSafePseudoDevicePath(target)) readTargets.add(target);
   }
   const decision = classifyShellWorkspaceWritePolicy({
     toolName: "exec_command",
@@ -95,11 +72,14 @@ export function analyzeShellRuntimeAccess(
   };
 }
 
-function isShellCommandKnownReadOnly(command: string): boolean {
+function isLiteralCatHereDocument(command: string): boolean {
   const parsed = lexShellCommand(command);
-  if (parsed.malformed || parsed.hasCommandSubstitution) return false;
-  const segments = tokenizeShellLike(command);
-  return segments.length > 0 && segments.every(isShellSegmentKnownReadOnly);
+  const [program, redirect, delimiter, ...tail] = parsed.tokens;
+  return !parsed.malformed && !parsed.hasCommandSubstitution && !parsed.hasComment &&
+    program?.kind === "word" && program.value === "cat" && !program.requiresExpansion &&
+    redirect?.kind === "operator" && ["<<", "<<-"].includes(redirect.value) &&
+    delimiter?.kind === "word" && !delimiter.requiresExpansion &&
+    tail.every((token) => token.kind === "operator" && token.value === ";");
 }
 
 function shellCommandReadTargets(
@@ -148,17 +128,6 @@ function collectShellSegmentReadTargets(
   return { indeterminate };
 }
 
-function isShellSegmentKnownReadOnly(segment: readonly string[]): boolean {
-  const command = shellSegmentCommand(segment);
-  if (command === undefined) return true;
-  const basename = path.basename(command);
-  if (basename === "git") {
-    const subcommand = gitSubcommand(segment);
-    return subcommand !== undefined && READ_ONLY_GIT_SUBCOMMANDS.has(subcommand);
-  }
-  return READ_ONLY_SHELL_COMMANDS.has(basename);
-}
-
 function tokenizeShellLike(command: string): string[][] {
   const segments: string[][] = [];
   let current: string[] = [];
@@ -189,16 +158,6 @@ function shellSegmentCommand(segment: readonly string[]): string | undefined {
     index += 1;
   }
   return segment[index];
-}
-
-function gitSubcommand(segment: readonly string[]): string | undefined {
-  const gitIndex = segment.findIndex((token) => path.basename(token) === "git");
-  if (gitIndex < 0) return undefined;
-  for (const token of segment.slice(gitIndex + 1)) {
-    if (token.startsWith("-")) continue;
-    return token;
-  }
-  return undefined;
 }
 
 function isShellPathOperand(token: string): boolean {

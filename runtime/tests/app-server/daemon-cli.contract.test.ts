@@ -1990,6 +1990,46 @@ describe("AgenC daemon CLI", () => {
     }
   });
 
+  it.each(["exited", "replaced", "identity_missing"] as const)("handles Linux shutdown rebind race %s without signalling an unbound process", async (outcome) => {
+    const agencHome = await tempAgencHome();
+    const baseHost = createHost(agencHome);
+    const io = createIo();
+    const pid = 4321;
+    const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
+    const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(agencHome);
+    const identity = recordTestDaemon(agencHome, pid);
+    baseHost.runningPids.add(pid);
+    await writeAgenCDaemonPid(pidPath, pid);
+    let processStart = identity.processStart;
+    const host = { ...baseHost, platform: "linux" as const, readProcessIdentity: () => processStart };
+    try {
+      const result = await runAgenCDaemonCli({ kind: "command", action: "stop" }, {
+        host, io, stopTimeoutMs: 0,
+        requestDaemonInstanceIdentity: () => identity,
+        requestDaemonShutdown: () => {},
+        inspectLegacyDaemonProcess: async () => {
+          await rm(runtimeInfoPath, { force: true });
+          if (outcome === "exited") baseHost.runningPids.delete(pid);
+          if (outcome === "replaced") {
+            processStart = `${identity.processStart}:replacement`;
+            recordTestDaemon(agencHome, pid, { processStart, instanceId: "replacement-after-shutdown" });
+          }
+          return null;
+        },
+      });
+      expect(result).toBe(outcome === "identity_missing" ? 1 : 0);
+      expect(baseHost.terminatedSignals).toEqual([]);
+      if (outcome === "replaced") {
+        expect(readDaemonRuntimeInfo(runtimeInfoPath)?.instanceId).toBe("replacement-after-shutdown");
+        expect(await readAgenCDaemonPid(pidPath)).toBe(pid);
+      }
+      if (outcome === "identity_missing") expect(io.stderrText()).toContain("refusing Linux numeric shutdown");
+      else expect(io.stderrText()).toBe("");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a reused pid whose process token does not match the sidecar", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

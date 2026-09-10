@@ -618,7 +618,13 @@ async function resolveApproval(
       if (!activeApprovalTurnStillMatches(opts.ctx, opts.getActiveTurnId)) {
         throw new ModalApprovalError("stale_modal_decision");
       }
-      return { decision, source: "resolver" };
+      return {
+        decision,
+        source: "resolver",
+        ...(decision.kind === "denied" && decision.reason !== undefined
+          ? { reason: decision.reason }
+          : {}),
+      };
     };
     const fetchDecision = async (): Promise<ReviewDecision> => {
       fetchedResult = await fetchApprovalResult();

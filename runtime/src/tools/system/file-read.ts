@@ -43,6 +43,10 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import {
+  hasReadOnlyDelegationReadGuard,
+  readOnlyDelegationReadPathAllowed,
+} from "../../permissions/readonly-read-guard.js";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
@@ -620,6 +624,7 @@ async function resolveAndCheck(
 // ─────────────────────────────────────────────────────────────────────
 
 interface TextReadOpts {
+  readonly readGuard?: () => void;
   readonly maxTextBytes: number;
   readonly maxTokens: number;
   readonly offset: number;
@@ -693,6 +698,7 @@ async function readTextFile(
         boundFile?.stats.size ??
         fileStats?.size ??
         0);
+  opts.readGuard?.();
   if (!explicitWindow && authoritativeBytes > opts.maxTextBytes) {
     return errorResult(
       `File size ${formatBytes(authoritativeBytes)} exceeds the text-read limit of ${formatBytes(
@@ -755,6 +761,7 @@ async function readTextFile(
   // still satisfy the read-before-write gate. AgenC only blocks
   // auto-injected processed partial views; AgenC does not populate that
   // path here.
+  opts.readGuard?.();
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: sliced.content,
     timestamp:
@@ -1050,6 +1057,7 @@ async function readNotebookFile(
     }
   }
   const fileStats = boundFile?.stats ?? rawFileStats;
+  opts.readGuard?.();
   const rawText =
     editorRead?.content ??
     boundFile?.content.toString("utf8") ??
@@ -1087,6 +1095,7 @@ async function readNotebookFile(
     );
   }
 
+  opts.readGuard?.();
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: sliced.content,
     timestamp:
@@ -1153,6 +1162,7 @@ async function readNotebookFile(
 }
 
 interface ImageReadOpts {
+  readonly readGuard?: () => void;
   readonly displayPath: string;
   readonly ext: string;
   readonly maxImageBytes: number;
@@ -1367,6 +1377,7 @@ async function readImageFile(
     return errorResult("Path is not a regular file");
   }
   const fileStats = boundFile?.stats ?? rawFileStats!;
+  opts.readGuard?.();
   if (fileStats.size === 0) {
     return errorResult(`Image file is empty: ${opts.displayPath}`);
   }
@@ -1403,6 +1414,7 @@ async function readImageFile(
   // of the same image to dedup if the session needs the gate. The
   // changed-files producer uses `rawContent` (base64 here) as the diff
   // anchor for image edits.
+  opts.readGuard?.();
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: null,
     timestamp:
@@ -1581,16 +1593,39 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       const resolveResult = await resolveAndCheck(filePath, config, rawArgs);
       if ("err" in resolveResult) return resolveResult.err;
       const resolved = resolveResult.ok;
+      const guardedRead = hasReadOnlyDelegationReadGuard(rawArgs);
+      const readGuard = (): void => {
+        if (
+          !readOnlyDelegationReadPathAllowed(rawArgs, resolved.absolute) ||
+          !readOnlyDelegationReadPathAllowed(rawArgs, resolved.canonical)
+        ) {
+          throw new Error("Access denied: file is outside delegated read authority");
+        }
+      };
+      const finalizeRead = async (
+        pending: Promise<ToolResult>,
+      ): Promise<ToolResult> => {
+        const result = await pending;
+        readGuard();
+        return result;
+      };
 
       const sessionId = resolveSessionId(rawArgs);
       let boundRead: WorkspaceBoundFileReadCapability | undefined;
 
       try {
+        readGuard();
+        if (guardedRead && isPdf) {
+          return errorResult(
+            "PDF extraction is unavailable under delegated read authority because the external PDF helper cannot use a held file descriptor portably.",
+          );
+        }
         const trustedEditorInteraction =
           readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
           undefined;
         const editorRead = workspaceAuthoritativeRead(resolved.canonical);
         const protectedByEditor =
+          guardedRead ||
           trustedEditorInteraction ||
           workspaceHasProtectedEditorPaths(resolved.canonical);
         const needsDiskCapability = isImage || isPdf || editorRead === null;
@@ -1598,13 +1633,16 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           boundRead = await bindWorkspaceFileReadCapability(resolved.canonical);
         }
         await config.__testAfterFinalPathCheck?.();
+        readGuard();
 
         if (isImage) {
-          return await readImageFile(
-            resolved,
-            { displayPath: filePath, ext, maxImageBytes },
-            sessionId,
-            boundRead,
+          return await finalizeRead(
+            readImageFile(
+              resolved,
+              { displayPath: filePath, ext, maxImageBytes, readGuard },
+              sessionId,
+              boundRead,
+            ),
           );
         }
         if (isPdf) {
@@ -1628,7 +1666,27 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           );
         }
         if (isNotebook) {
-          return await readNotebookFile(
+          return await finalizeRead(
+            readNotebookFile(
+              resolved,
+              {
+                maxTextBytes,
+                maxTokens,
+                offset,
+                limit,
+                displayPath: filePath,
+                maxImageBytes,
+                maxNotebookBytes,
+                readGuard,
+              },
+              sessionId,
+              editorRead,
+              boundRead,
+            ),
+          );
+        }
+        return await finalizeRead(
+          readTextFile(
             resolved,
             {
               maxTextBytes,
@@ -1636,27 +1694,13 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               offset,
               limit,
               displayPath: filePath,
-              maxImageBytes,
-              maxNotebookBytes,
+              readGuard,
             },
             sessionId,
             editorRead,
             boundRead,
-          );
-        }
-        return await readTextFile(
-          resolved,
-          {
-            maxTextBytes,
-            maxTokens,
-            offset,
-            limit,
-            displayPath: filePath,
-          },
-          sessionId,
-          editorRead,
-          boundRead,
-          !trustedEditorInteraction,
+            !trustedEditorInteraction,
+          ),
         );
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;

@@ -1,6 +1,7 @@
 export interface ApprovalFailureMetadata {
   readonly decision: string;
   readonly source: string;
+  readonly reason?: string;
 }
 
 const workflowApprovalSessions = new WeakSet<object>();
@@ -19,7 +20,7 @@ export class WorkflowApprovalFailure extends Error {
 
   constructor(readonly approvalFailure: ApprovalFailureMetadata) {
     super(
-      `Workflow tool approval ${approvalFailure.decision} (${approvalFailure.source}).`,
+      `Workflow tool approval ${approvalFailure.decision} (${approvalFailure.source}).${approvalFailure.reason?.trim() ? ` ${approvalFailure.reason}` : ""}`,
     );
     this.name = "WorkflowApprovalFailure";
     this.stopReason =
@@ -44,6 +45,7 @@ export function workflowApprovalFailureFromMetadata(
   return new WorkflowApprovalFailure({
     decision: metadata.decision,
     source: metadata.source,
+    ...(typeof metadata.reason === "string" ? { reason: metadata.reason } : {}),
   });
 }
 

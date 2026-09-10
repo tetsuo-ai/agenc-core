@@ -1,9 +1,11 @@
+import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
-import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
+import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -38,6 +40,7 @@ import {
   sandboxEscalationAvailable,
 } from "./exec-sandbox-denial.js";
 import { parseSandboxPermissionsArgs } from "../../sandbox/escalation/sandboxing.js";
+import { readReadOnlyInspectionInvocation } from "../../permissions/readonly-inspection.js";
 import {
   permissionProfileForRuntimeContext,
   runtimePlatformSandboxStatus,
@@ -369,6 +372,47 @@ const REMOVED_ALIAS_HINTS = {
   cwd: "the working directory goes in `workdir`",
 } as const;
 
+function validateExecCommandInput(
+  args: Readonly<Record<string, unknown>>,
+  config: ExecCommandToolConfig | undefined,
+): ToolPreflightFailure | null {
+  for (const removedAlias of ["command", "cwd"] as const) {
+    if (Object.prototype.hasOwnProperty.call(args, removedAlias)) {
+      return { code: "invalid-input", message: `unknown field \`${removedAlias}\`; ${REMOVED_ALIAS_HINTS[removedAlias]}` };
+    }
+  }
+  const permissions = parseSandboxPermissionsArgs(args);
+  if (permissions.kind === "invalid") return { code: "invalid-input", message: permissions.reason };
+  const cmd = asString(args.cmd);
+  if (cmd === undefined) return { code: "invalid-input", message: "cmd must be a non-empty string" };
+  const workdir = asString(args.workdir);
+  if (workdir !== undefined && workdir.trim().length > 0) {
+    const canonicalPath = (candidate: string): string => {
+      try {
+        return existsSync(candidate) ? realpathSync(candidate) : candidate;
+      } catch {
+        return candidate;
+      }
+    };
+    const resolvedWorkdir = canonicalPath(resolve(config?.cwd ?? process.cwd(), workdir));
+    const roots = (config?.allowedPaths ?? (config?.cwd !== undefined ? [config.cwd] : [])).map(canonicalPath);
+    if (roots.length > 0 && !roots.some((root) =>
+      resolvedWorkdir === root ||
+      resolvedWorkdir.startsWith(root.endsWith("/") || root.endsWith("\\") ? root : `${root}/`) ||
+      resolvedWorkdir.startsWith(root.endsWith("/") || root.endsWith("\\") ? root : `${root}\\`),
+    )) {
+      return { code: "workdir-validation", message: `workdir is outside allowed workspace paths: ${workdir}` };
+    }
+  }
+  if (isMcpShellPlaceholderCommand(cmd)) {
+    return {
+      code: "mcp-routing",
+      message: "MCP tools are not shell commands. Load the tool with system.searchTools if needed, then call the mcp.<server>.<tool> tool directly with JSON arguments. Do not simulate MCP results with exec_command.",
+    };
+  }
+  return null;
+}
+
 export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   const manager =
     config?.unifiedExecManager ??
@@ -409,6 +453,19 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",
+    preflight(args) {
+      const failure = validateExecCommandInput(args, config);
+      if (failure !== null) return failure;
+      const cmd = asString(args.cmd)!;
+      if (args.tty === true && isPlainInteractiveShellCommand(cmd)) return null;
+      const workdir = asString(args.workdir);
+      return preflightShellWorkspaceWritePolicy({
+        toolName: "exec_command",
+        args: { command: cmd, ...(workdir !== undefined ? { cwd: workdir } : {}) },
+        workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
+        ...shellWorkspaceMutationPermission(args),
+      });
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -463,120 +520,22 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
-      for (const removedAlias of ["command", "cwd"] as const) {
-        if (Object.prototype.hasOwnProperty.call(args, removedAlias)) {
-          // Name the field that replaced the alias: a bare "unknown field"
-          // gave the model nothing to correct, and a goal run's implement
-          // child repeated the same `cwd` call 44 times until the backstop
-          // ended the turn.
-          const message =
-            `unknown field \`${removedAlias}\`; ${REMOVED_ALIAS_HINTS[removedAlias]}`;
-          return {
-            content: safeStringify({ error: message }),
-            isError: true,
-            effectDisposition: confirmedNoEffectDisposition(
-              "tool:system.exec-command:invalid-input",
-              message,
-            ),
-          };
-        }
-      }
-      // An escalation request the runtime cannot parse must be refused, not
-      // dropped: the schema invites an object here, and silently treating an
-      // unknown one as "no escalation requested" left the live incident's
-      // model re-sending the same request twelve times with no sign it had
-      // never been read.
-      const permissionsParse = parseSandboxPermissionsArgs(args);
-      if (permissionsParse.kind === "invalid") {
+      const failure = validateExecCommandInput(args, config);
+      if (failure !== null) {
         return {
-          content: safeStringify({ error: permissionsParse.reason }),
+          content: safeStringify({ error: failure.message }),
           isError: true,
+          ...(failure.code === "mcp-routing" ? { metadata: buildRecoverableToolFailureMetadata("mcp_tool_not_shell_command") } : {}),
           effectDisposition: confirmedNoEffectDisposition(
-            "tool:system.exec-command:invalid-input",
-            permissionsParse.reason,
+            `tool:system.exec-command:${failure.code}`,
+            failure.message,
           ),
         };
       }
-      const cmd = asString(args.cmd);
-      if (!cmd) {
-        const message = "cmd must be a non-empty string";
-        return {
-          content: safeStringify({ error: message }),
-          isError: true,
-          effectDisposition: confirmedNoEffectDisposition(
-            "tool:system.exec-command:invalid-input",
-            message,
-          ),
-        };
-      }
+      const cmd = asString(args.cmd)!;
       const workdir = asString(args.workdir);
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
-
-      // Constrain workdir to allowedPaths / workspace root (todo-132).
-      if (workdir !== undefined && workdir.trim().length > 0) {
-        const { resolve: pathResolve, isAbsolute } = await import("node:path");
-        const { realpathSync, existsSync } = await import("node:fs");
-        let resolvedWorkdir = isAbsolute(workdir)
-          ? workdir
-          : pathResolve(config?.cwd ?? process.cwd(), workdir);
-        try {
-          if (existsSync(resolvedWorkdir)) {
-            resolvedWorkdir = realpathSync(resolvedWorkdir);
-          }
-        } catch {
-          /* keep resolvedWorkdir */
-        }
-        const roots = (
-          config?.allowedPaths ??
-          (config?.cwd !== undefined ? [config.cwd] : [])
-        ).map((r) => {
-          try {
-            return existsSync(r) ? realpathSync(r) : r;
-          } catch {
-            return r;
-          }
-        });
-        if (roots.length > 0) {
-          const allowed = roots.some(
-            (root) =>
-              resolvedWorkdir === root ||
-              resolvedWorkdir.startsWith(
-                root.endsWith("/") || root.endsWith("\\") ? root : `${root}/`,
-              ) ||
-              resolvedWorkdir.startsWith(
-                root.endsWith("/") || root.endsWith("\\") ? root : `${root}\\`,
-              ),
-          );
-          if (!allowed) {
-            const message = `workdir is outside allowed workspace paths: ${workdir}`;
-            return {
-              content: safeStringify({ error: message }),
-              isError: true,
-              effectDisposition: confirmedNoEffectDisposition(
-                "tool:system.exec-command:workdir-validation",
-                message,
-              ),
-            };
-          }
-        }
-      }
-
-      if (isMcpShellPlaceholderCommand(cmd)) {
-        const message =
-          "MCP tools are not shell commands. Load the tool with system.searchTools if needed, then call the mcp.<server>.<tool> tool directly with JSON arguments. Do not simulate MCP results with exec_command.";
-        return {
-          content: safeStringify({ error: message }),
-          isError: true,
-          metadata: buildRecoverableToolFailureMetadata(
-            "mcp_tool_not_shell_command",
-          ),
-          effectDisposition: confirmedNoEffectDisposition(
-            "tool:system.exec-command:mcp-routing",
-            message,
-          ),
-        };
-      }
 
       if (!(tty === true && isPlainInteractiveShellCommand(cmd))) {
         const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({
@@ -607,7 +566,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
 
       try {
-        const runtimeSandbox = runtimeSandboxForExec(
+        const inspection = readReadOnlyInspectionInvocation(args);
+        const runtimeSandbox = inspection?.runtimeSandbox ?? runtimeSandboxForExec(
           args,
           config?.cwd ?? process.cwd(),
         );
@@ -617,10 +577,14 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const output = await manager.execCommand({
           cmd,
           callId: asString(args.__callId),
-          ...(workdir !== undefined ? { workdir } : {}),
-          ...(asString(args.shell) !== undefined ? { shell: asString(args.shell) } : {}),
-          ...(asBoolean(args.login) !== undefined ? { login: asBoolean(args.login) } : {}),
-          ...(tty !== undefined ? { tty } : {}),
+          ...(inspection !== undefined
+            ? { directInvocation: inspection, workdir: inspection.cwd }
+            : {
+                ...(workdir !== undefined ? { workdir } : {}),
+                ...(asString(args.shell) !== undefined ? { shell: asString(args.shell) } : {}),
+                ...(asBoolean(args.login) !== undefined ? { login: asBoolean(args.login) } : {}),
+                ...(tty !== undefined ? { tty } : {}),
+              }),
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : {}),

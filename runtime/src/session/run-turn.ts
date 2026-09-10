@@ -294,6 +294,7 @@ export interface RunTurnOptions {
    * Never model-supplied; daemon turn drivers derive it from Session.submit.
    */
   readonly rootHumanTurnText?: string;
+  readonly userStopGenerationToRelease?: number;
   /**
    * GOAL #4b Stage 1 — durable-turn resume. When set, the kernel re-enters
    * the drain loop CONTINUING an interrupted turn from the last completed
@@ -2273,6 +2274,18 @@ async function* runTurnKernelInner(
     });
   }
   persistNewResponseItems();
+  if (
+    opts.resume === undefined &&
+    opts.userStopGenerationToRelease !== undefined &&
+    opts.userStopGenerationToRelease === session.userStopGeneration &&
+    session.stoppedByUserSinceLastPrompt
+  ) {
+    if (rolloutPersistenceSuspended() || session.rolloutStore === null) {
+      throw new Error("Releasing a user stop requires a durable human instruction");
+    }
+    session.rolloutStore.flushDurable();
+    session.clearUserStop();
+  }
   if (opts.initialHistoryPersistence === "persist_before_turn") {
     if (rolloutPersistenceSuspended() || session.rolloutStore === null) {
       throw new Error(
@@ -3162,8 +3175,15 @@ async function* runTurnKernelInner(
         (result) => result.isError === true && result.metadata?.approvalDenied === true,
       );
       if (approvalDeniedTools.length > 0) {
+        session.markStoppedByUser();
         const toolNames = [...new Set(approvalDeniedTools.map((result) => result.toolName))];
         lastContent = `Approval was denied for ${toolNames.join(", ")}. The turn stopped without running the denied action.`;
+        const reasons = [...new Set(approvalDeniedTools.flatMap((result) => {
+          const failure = result.metadata?.approvalFailure;
+          if (typeof failure !== "object" || failure === null || !("reason" in failure)) return [];
+          return typeof failure.reason === "string" && failure.reason.trim().length > 0 ? [failure.reason] : [];
+        }))];
+        if (reasons.length > 0) lastContent += ` ${reasons.join("\n")}`;
         const error = new Error(lastContent);
         state.messages.push({ role: "assistant", content: lastContent });
         await syncSessionState();
@@ -3336,6 +3356,7 @@ export function runTurn(
         skipCacheWrite?: boolean;
         displayUserMessage?: string | null;
         rootHumanTurnText?: string;
+        userStopGenerationToRelease?: number;
         instructionPolicy?: LiveInstructionPolicy;
         systemPromptTrust?: "trusted_internal" | "workspace_role";
         systemPromptReplacesBase?: boolean;
@@ -3356,6 +3377,7 @@ export function runTurn(
       skipCacheWrite: opts.skipCacheWrite,
       displayUserMessage: opts.displayUserMessage,
       rootHumanTurnText: opts.rootHumanTurnText,
+      userStopGenerationToRelease: opts.userStopGenerationToRelease,
       instructionPolicy: opts.instructionPolicy,
       systemPromptTrust: opts.systemPromptTrust,
       systemPromptReplacesBase: opts.systemPromptReplacesBase,

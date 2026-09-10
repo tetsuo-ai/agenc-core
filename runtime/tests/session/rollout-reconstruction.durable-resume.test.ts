@@ -167,6 +167,128 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
 }
 
 describe("reconstruction durable resume descriptors", () => {
+  const legacyStops: ReadonlyArray<{ readonly name: string; readonly item: RolloutItem }> = [
+    {
+      name: "interrupted turn",
+      item: { type: "event_msg", payload: { id: "legacy-stop", msg: { type: "turn_aborted", payload: { turnId: "other-turn", reason: "interrupted" } } } },
+    },
+    {
+      name: "unscoped interruption",
+      item: { type: "event_msg", payload: { id: "legacy-stop", msg: { type: "turn_aborted", payload: { reason: "interrupted" } } } },
+    },
+    {
+      name: "owner resolver denial",
+      item: { type: "event_msg", payload: { id: "legacy-stop", msg: { type: "permission_decision", payload: {
+        runId: "test-run", callId: "denied-call", toolName: "exec_command", turnId: "other-turn", requestEventId: "approval-request", requestEventSeq: 2,
+        decision: "denied", source: "resolver", recordedAt: "2026-09-10T00:00:00.000Z",
+      } } } },
+    },
+  ];
+
+  test.each(legacyStops)("legacy $name invalidates an older orphan without a userStop slot", ({ item }) => {
+    const buildId = pinBuild("build-legacy-stop");
+    const items = orphanWithCheckpoint({ turnId: "older-orphan", buildId, prefix: [{ role: "user", content: "Old instructions" }] });
+    items.push(item);
+    expect(reconstruct(items).resumableTurns).toEqual([]);
+  });
+
+  test.each(legacyStops)("legacy $name blocks a later orphan until human admission", ({ item }) => {
+    const buildId = pinBuild("build-legacy-stop");
+    const items = [item, ...orphanWithCheckpoint({ turnId: "automatic-followup", buildId, prefix: [{ role: "user", content: "Child receipt" }] })];
+    expect(reconstruct(items).resumableTurns).toEqual([]);
+  });
+
+  test.each(legacyStops)("legacy $name permits a new human turn without reviving earlier work", ({ item }) => {
+    const buildId = pinBuild("build-legacy-stop");
+    const items = orphanWithCheckpoint({ turnId: "older-orphan", buildId, prefix: [] });
+    items.push(item, { type: "event_msg", payload: { id: "human-admission", msg: { type: "user_message", payload: {
+      message: "New instructions", messageId: "human-message", acceptedAt: "2026-09-10T00:01:00.000Z",
+    } } } });
+    items.push(...orphanWithCheckpoint({ turnId: "new-human-turn", buildId, prefix: [{ role: "user", content: "New instructions" }] }));
+    expect(reconstruct(items).resumableTurns.map(turn => turn.turnId)).toEqual(["new-human-turn"]);
+  });
+
+  test("an explicit stop blocks post-stop checkpoints until the durable clear", () => {
+    const buildId = pinBuild("build-explicit-stop");
+    const items: RolloutItem[] = [
+      { type: "session_state", payload: { userStop: { stopped: true, generation: 1 } } },
+      { type: "event_msg", payload: { id: "unadmitted-human", msg: { type: "user_message", payload: {
+        message: "Unadmitted instructions", messageId: "failed-human-message", acceptedAt: "2026-09-10T00:01:00.000Z",
+      } } } },
+      ...orphanWithCheckpoint({ turnId: "unadmitted-turn", buildId, prefix: [] }),
+    ];
+    expect(reconstruct(items).resumableTurns).toEqual([]);
+    items.push({ type: "session_state", payload: { userStop: { stopped: false, generation: 1 } } });
+    items.push(...orphanWithCheckpoint({ turnId: "new-human-turn", buildId, prefix: [] }));
+    expect(reconstruct(items).resumableTurns.map(turn => turn.turnId)).toEqual(["new-human-turn"]);
+  });
+
+  test("a foreign resolver denial does not hold this session's unrelated orphan", () => {
+    const buildId = pinBuild("build-foreign-denial");
+    const items = orphanWithCheckpoint({ turnId: "owner-orphan", buildId, prefix: [] });
+    items.push({ type: "event_msg", payload: { id: "foreign-denial", msg: { type: "permission_decision", payload: {
+      runId: "foreign-run", callId: "foreign-call", toolName: "exec_command", turnId: "foreign-turn", requestEventId: "approval-request", requestEventSeq: 2,
+      decision: "denied", source: "resolver", recordedAt: "2026-09-10T00:00:00.000Z",
+    } } } });
+    expect(reconstruct(items).resumableTurns.map(turn => turn.turnId)).toEqual(["owner-orphan"]);
+  });
+
+  test("a human turn started before its durable release can resume a checkpoint written after release", () => {
+    const buildId = pinBuild("build-human-release");
+    const [started, ...admittedTurn] = orphanWithCheckpoint({ turnId: "human-turn", buildId, prefix: [{ role: "user", content: "New instructions" }] });
+    const items: RolloutItem[] = [
+      { type: "session_state", payload: { userStop: { stopped: true, generation: 1 } } },
+      started!,
+      { type: "session_state", payload: { userStop: { stopped: false, generation: 1 } } },
+      ...admittedTurn,
+    ];
+    expect(reconstruct(items).resumableTurns).toEqual([expect.objectContaining({
+      turnId: "human-turn", buildMatches: true, historyPrefixValid: true,
+    })]);
+  });
+
+  test.each([false, true])("an owner stop invalidates its existing turn even after later human release (%s)", (clearStop) => {
+    const buildId = pinBuild("build-owner-stop");
+    const items = orphanWithCheckpoint({ turnId: "before-stop", buildId, prefix: [{ role: "user", content: "Inspect with a child" }] });
+    items.push({ type: "session_state", payload: { userStop: { stopped: true, generation: 1 } } });
+    if (clearStop) {
+      items.push({ type: "session_state", payload: { userStop: { stopped: false, generation: 1 } } });
+      const laterCheckpoint = orphanWithCheckpoint({ turnId: "before-stop", buildId, prefix: [{ role: "user", content: "Inspect with a child" }], checkpointSeq: 2 }).at(-1)!;
+      items.push(laterCheckpoint);
+    }
+    const reconstruction = reconstruct(items);
+    expect(reconstruction.resumableTurns).toEqual([]);
+    expect(reconstruction.orphanedTurnIds).toEqual(["before-stop"]);
+  });
+
+  test("a distinct human turn after release can resume without reviving the denied turn", () => {
+    const buildId = pinBuild("build-owner-stop");
+    const items = orphanWithCheckpoint({ turnId: "before-stop", buildId, prefix: [{ role: "user", content: "Old instructions" }] });
+    items.push({ type: "session_state", payload: { userStop: { stopped: true, generation: 1 } } });
+    items.push({ type: "session_state", payload: { userStop: { stopped: false, generation: 1 } } });
+    const resumedItems = orphanWithCheckpoint({ turnId: "after-stop", buildId, prefix: [
+      { role: "user", content: "Old instructions" },
+      { role: "user", content: "New instructions" },
+    ] });
+    items.push(...resumedItems.filter((item) => item.type !== "response_item" || item.payload.content !== "Old instructions"));
+    const reconstruction = reconstruct(items);
+    expect(reconstruction.resumableTurns.map((turn) => turn.turnId)).toEqual(["after-stop"]);
+    expect(reconstruction.resumableTurns[0]).toMatchObject({ buildMatches: true, historyPrefixValid: true });
+    expect(reconstruction.orphanedTurnIds).toEqual(expect.arrayContaining(["before-stop", "after-stop"]));
+  });
+
+  test("does not resume a checkpoint after a durable resolver denial without a terminal", () => {
+    const buildId = pinBuild("build-denied");
+    const items = orphanWithCheckpoint({ turnId: "denied-turn", buildId, prefix: [{ role: "user", content: "Run the command" }] });
+    items.push({ type: "event_msg", payload: { id: "denied-decision", seq: 3, msg: { type: "permission_decision", payload: {
+      runId: "test-run", callId: "denied-call", toolName: "exec_command", turnId: "denied-turn", requestEventId: "approval-request", requestEventSeq: 2,
+      decision: "denied", source: "resolver", recordedAt: new Date().toISOString(),
+    } } } });
+    const reconstruction = reconstruct(items);
+    expect(reconstruction.resumableTurns).toEqual([]);
+    expect(reconstruction.orphanedTurnIds).toEqual(["denied-turn"]);
+  });
+
   test("orphan + valid checkpoint + matching build → resumable, gates pass", () => {
     const buildId = pinBuild("build-A");
     const prefix: ResponseItem[] = [

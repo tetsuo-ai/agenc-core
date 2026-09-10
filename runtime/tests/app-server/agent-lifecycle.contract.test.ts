@@ -7790,7 +7790,7 @@ describe("AgenC background agent lifecycle", () => {
         agentId: "agent_approve",
         params: {
           requestId: "call_2",
-          decision: { kind: "denied" },
+          decision: { kind: "denied", reason: "no" },
         },
       },
     ]);

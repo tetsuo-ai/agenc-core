@@ -48,6 +48,11 @@ describe("ReviewDecision — 7 tagged variants", () => {
 });
 
 describe("reviewDecisionIsAllow", () => {
+  test("denial feedback does not grant authority or enter telemetry labels", () => {
+    const decision: ReviewDecision = { kind: "denied", reason: "Private operator feedback" };
+    expect(reviewDecisionIsAllow(decision)).toBe(false);
+    expect(reviewDecisionOpaqueString(decision)).toBe("denied");
+  });
   test("all approve-shaped decisions → true", () => {
     expect(reviewDecisionIsAllow(APPROVED)).toBe(true);
     expect(reviewDecisionIsAllow(APPROVED_FOR_SESSION)).toBe(true);

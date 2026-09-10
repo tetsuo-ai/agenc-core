@@ -4,7 +4,7 @@ import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppState } from '../state/AppState.js';
-import { type DiffStats, type FileHistoryState, fileHistoryCanRestore, fileHistoryGetDiffStats } from '../../utils/fileHistory.js';
+import { type DiffStats, type FileHistoryState, fileHistoryGetDiffStats } from '../../utils/fileHistory.js';
 import { logError } from '../../utils/log.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useSettings } from '../hooks/useSettings.js';
@@ -57,7 +57,7 @@ export function buildMessageSelectorFileHistoryMetadata({
   currentUUID,
   fileHistory,
   isFileHistoryEnabled,
-  canRestoreMessage = fileHistoryCanRestore
+  canRestoreMessage = (state, messageId) => state.snapshots.some(snapshot => snapshot.messageId === messageId)
 }: BuildFileHistoryMetadataOptions): FileHistoryMetadataByMessageId {
   if (!isFileHistoryEnabled) {
     return {};
@@ -117,8 +117,7 @@ export function MessageSelector({
   const fileRestoreAvailable = onPreviewRewind !== undefined || isFileHistoryEnabled;
   const resolveRestoreDiffStats = useCallback(async (message: UserMessage): Promise<DiffStats> => {
     if (onPreviewRewind !== undefined) {
-      const daemonStats = await onPreviewRewind(message);
-      if (daemonStats !== undefined) return daemonStats;
+      return await onPreviewRewind(message);
     }
     if (isFileHistoryEnabled) {
       return await fileHistoryGetDiffStats(fileHistory, message.uuid);
@@ -345,6 +344,25 @@ export function MessageSelector({
   });
   const [fileHistoryMetadata, setFileHistoryMetadata] = useState<FileHistoryMetadataByMessageId>({});
   useEffect(() => {
+    if (onPreviewRewind !== undefined) {
+      let cancelled = false;
+      setFileHistoryMetadata({});
+      if (preselectedMessage === undefined && isFileHistoryEnabled) {
+        const visibleMessages = messageOptions.slice(firstVisibleIndex, firstVisibleIndex + MAX_VISIBLE_MESSAGES)
+          .filter(message => message.uuid !== currentUUID);
+        void Promise.all(visibleMessages.map(async message => {
+          try {
+            return [message.uuid, await onPreviewRewind(message)] as const;
+          } catch (previewError) {
+            logError(previewError as Error);
+            return [message.uuid, undefined] as const;
+          }
+        })).then(entries => {
+          if (!cancelled) setFileHistoryMetadata(Object.fromEntries(entries));
+        });
+      }
+      return () => { cancelled = true; };
+    }
     setFileHistoryMetadata(buildMessageSelectorFileHistoryMetadata({
       messageOptions,
       messages,
@@ -352,7 +370,8 @@ export function MessageSelector({
       fileHistory,
       isFileHistoryEnabled
     }));
-  }, [messageOptions, messages, currentUUID, fileHistory, isFileHistoryEnabled]);
+    return undefined;
+  }, [messageOptions, messages, currentUUID, fileHistory, isFileHistoryEnabled, onPreviewRewind, firstVisibleIndex, preselectedMessage]);
   const canRestoreCode_0 = fileRestoreAvailable && diffStatsForRestore?.filesChanged && diffStatsForRestore.filesChanged.length > 0;
   const showPickList = !error && !messageToRestore && !preselectedMessage && hasMessagesToSelect;
   return <Popup title="rewind" footer={MESSAGE_SELECTOR_FOOTER} status={hasMessagesToSelect ? `${Math.max(0, messageOptions.length - 1)} messages` : 'empty'}>

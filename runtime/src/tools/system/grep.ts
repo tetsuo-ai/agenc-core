@@ -19,6 +19,7 @@ import {
   dirname,
   isAbsolute,
   join,
+  parse,
   relative,
   resolve,
   sep,
@@ -27,6 +28,12 @@ import {
 import { performance } from "node:perf_hooks";
 
 import ignore from "ignore";
+import {
+  hasReadOnlyDelegationReadGuard,
+  readOnlyDelegationReadAuthorityCurrent,
+  readOnlyDelegationReadPathAllowed,
+} from "../../permissions/readonly-read-guard.js";
+import { collectGuardedSearchCandidates } from "./guarded-search-candidates.js";
 
 import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
@@ -823,6 +830,10 @@ async function resolveSearchPath(params: {
     const candidateSafe = await safePath(rawCandidate, allowedPaths);
     if (!candidateSafe.safe) {
       lastDenied = candidateSafe.reason;
+      continue;
+    }
+    if (!readOnlyDelegationReadPathAllowed(params.args, candidateSafe.resolved)) {
+      lastDenied = "search path is outside delegated read authority";
       continue;
     }
     const candidateStat = await stat(candidateSafe.resolved, {
@@ -2346,7 +2357,7 @@ export function searchPathUsesDefaultExcludedDirectory(
   );
 }
 
-async function pinnedSnapshotPathEligibility(params: {
+export async function pinnedSnapshotPathEligibility(params: {
   readonly relativePaths: readonly string[];
   readonly globs: readonly string[];
   readonly type?: string;
@@ -2550,7 +2561,8 @@ async function eligibleAuthoritativeSnapshots(params: {
 }): Promise<
   readonly WorkspaceAuthoritativeDirtySnapshot[] | { readonly error: string }
 > {
-  const relativePaths = params.snapshots.map((snapshot) =>
+  const permittedSnapshots = params.snapshots.filter(snapshot => readOnlyDelegationReadPathAllowed(params.toolArgs, snapshot.path));
+  const relativePaths = permittedSnapshots.map((snapshot) =>
     toRelativeIfInside(snapshot.path, params.target.searchRoot),
   );
   const selectedPaths =
@@ -2569,6 +2581,7 @@ async function eligibleAuthoritativeSnapshots(params: {
   const isIgnored = params.opts.includeIgnored
     ? async (): Promise<boolean> => false
     : await createSearchIgnoreMatcher(params.target.displayRoot, {
+        toolArgs: params.toolArgs,
         ...(params.ignoreReadCapability !== undefined
           ? { readCapability: params.ignoreReadCapability }
           : {}),
@@ -2577,7 +2590,7 @@ async function eligibleAuthoritativeSnapshots(params: {
       });
 
   const eligible: WorkspaceAuthoritativeDirtySnapshot[] = [];
-  for (const snapshot of params.snapshots) {
+  for (const snapshot of permittedSnapshots) {
     if (
       params.deadline !== undefined &&
       remainingGrepOperationMs(params.deadline) < 1
@@ -2643,13 +2656,15 @@ async function collectAuthoritativeSnapshotRecords(params: {
   const eligible = await eligibleAuthoritativeSnapshots(params);
   if ("error" in eligible) return eligible;
   const maximumLines = params.maximumLines;
+  const guardedRead = hasReadOnlyDelegationReadGuard(params.toolArgs);
   const searchSnapshot = (
     snapshot: WorkspaceAuthoritativeDirtySnapshot,
     skipLines: number,
     retainedLineLimit: number | undefined,
     readCapability?: WorkspaceBoundReadCapability,
-  ): Promise<LimitedRipgrepResult> =>
-    runRipgrepCollectRecords({
+  ): Promise<LimitedRipgrepResult> => {
+    if (!readOnlyDelegationReadPathAllowed(params.toolArgs, snapshot.path)) return Promise.resolve(emptyLimitedRipgrepResult());
+    return runRipgrepCollectRecords({
       outputMode: params.opts.outputMode,
       args: buildRipgrepArgs({
         ...params.opts,
@@ -2657,7 +2672,7 @@ async function collectAuthoritativeSnapshotRecords(params: {
         type: undefined,
         globs: [],
       }),
-      cwd: ripgrepCwdForTarget(params.target),
+      cwd: guardedRead ? parse(params.target.absolute).root : ripgrepCwdForTarget(params.target),
       toolArgs: params.toolArgs,
       ...(retainedLineLimit !== undefined
         ? { maximumLines: retainedLineLimit }
@@ -2665,10 +2680,11 @@ async function collectAuthoritativeSnapshotRecords(params: {
       ...(skipLines > 0 ? { skipLines } : {}),
       stdin: snapshot.content,
       signal: params.signal,
-      ...(readCapability !== undefined ? { readCapability } : {}),
+      ...(readCapability !== undefined && !guardedRead ? { readCapability } : {}),
       ...(params.deadline !== undefined ? { deadline: params.deadline } : {}),
       operationBudget: params.operationBudget,
     });
+  };
   const records: RipgrepOutputRecord[] = [];
   let collectedLines = 0;
   let processedLines = 0;
@@ -2724,6 +2740,7 @@ async function collectAuthoritativeSnapshotRecords(params: {
     }
     processedLines += result.processedLines;
     remainingSkip = Math.max(0, remainingSkip - result.processedLines);
+    if (!readOnlyDelegationReadPathAllowed(params.toolArgs, snapshot.path)) continue;
     for (const record of result.records) {
       const attributed = attributeStdinResultRecord(record, snapshot.path);
       if (attributed !== null) {
@@ -3464,7 +3481,8 @@ async function collectDescriptorBoundDiskRecords(params: {
 }): Promise<LimitedRipgrepResult> {
   if (!params.target.existsOnDisk) return emptyLimitedRipgrepResult();
 
-  if (params.target.isDirectory && params.opts.outputMode === "content") {
+  const guardedRead = hasReadOnlyDelegationReadGuard(params.toolArgs);
+  if (!guardedRead && params.target.isDirectory && params.opts.outputMode === "content") {
     return collectDescriptorBoundContentFromSpool(params);
   }
 
@@ -3479,7 +3497,31 @@ async function collectDescriptorBoundDiskRecords(params: {
   let candidatePaths: string[];
   let discoveryTruncated = false;
   let discoveryProcessedLines = 0;
-  if (params.target.isDirectory) {
+  let remainingInputBytes = MAX_GREP_DECODED_BYTES;
+  if (params.target.isDirectory && guardedRead) {
+    const ignored = params.opts.includeIgnored ? async () => false : await createSearchIgnoreMatcher(params.target.displayRoot, {
+      toolArgs: params.toolArgs,
+      readCapability: discoveryReadCapability,
+      deadline: params.deadline,
+      respectVcsIgnores: params.target.respectVcsIgnores,
+    });
+    const candidates = await collectGuardedSearchCandidates({
+      root: params.target.absolute,
+      toolArgs: params.toolArgs,
+      signal: params.signal,
+      acceptPath: async (path, directory) => !searchPathUsesDefaultExcludedDirectory(relative(params.target.displayRoot, path), params.opts.includeIgnored) && !(await ignored(directory ? join(path, ".agenc-search-candidate") : path)),
+    });
+    const selected = await pinnedSnapshotPathEligibility({
+      relativePaths: candidates.map(candidate => relative(params.target.searchRoot, candidate.path)),
+      globs: params.opts.globs,
+      type: params.opts.type,
+      signal: params.signal,
+      deadline: params.deadline,
+    });
+    if ("error" in selected) return { ...emptyLimitedRipgrepResult(), exitCode: 127, spawnError: new Error(selected.error) };
+    candidatePaths = candidates.map(candidate => candidate.path).filter(path => !dirtyDiskPaths.has(path) && selected.has(normalizedRelativeResultPath(relative(params.target.searchRoot, path)))).sort();
+    params.operationBudget.consumeWork(candidatePaths.length);
+  } else if (params.target.isDirectory) {
     const discoveryOutputMode: OutputMode =
       params.opts.outputMode === "count" ? "count" : "files_with_matches";
     const excludedPaths = params.authoritativeSnapshots
@@ -3585,6 +3627,7 @@ async function collectDescriptorBoundDiskRecords(params: {
     skipLines: number,
     retainedLineLimit: number | undefined,
   ): Promise<LimitedRipgrepResult> => {
+    if (!readOnlyDelegationReadPathAllowed(params.toolArgs, candidatePath)) return emptyLimitedRipgrepResult();
     const relativeInputFile = descriptorRelativePath(
       candidatePath,
       capability.rootPath,
@@ -3598,6 +3641,23 @@ async function collectDescriptorBoundDiskRecords(params: {
         ),
       };
     }
+    let stdin: Buffer | undefined;
+    if (guardedRead) {
+      if (params.signal?.aborted) return { ...emptyLimitedRipgrepResult(), aborted: true };
+      try {
+        const admitted = await capability.readRelativeFile(relativeInputFile, remainingInputBytes);
+        remainingInputBytes -= admitted.content.byteLength;
+        stdin = admitted.content;
+      } catch (error) {
+        return {
+          ...emptyLimitedRipgrepResult(),
+          exitCode: 127,
+          spawnError: error instanceof Error ? error : new Error(String(error)),
+        };
+      }
+      if (!readOnlyDelegationReadPathAllowed(params.toolArgs, candidatePath)) return emptyLimitedRipgrepResult();
+      if (params.signal?.aborted) return { ...emptyLimitedRipgrepResult(), aborted: true };
+    }
     return runRipgrepCollectRecords({
       outputMode: params.opts.outputMode,
       args: buildRipgrepArgs({
@@ -3606,15 +3666,14 @@ async function collectDescriptorBoundDiskRecords(params: {
         type: undefined,
         globs: [],
       }),
-      cwd: capability.rootPath,
+      cwd: guardedRead ? parse(capability.rootPath).root : capability.rootPath,
       toolArgs: params.toolArgs,
       ...(retainedLineLimit !== undefined
         ? { maximumLines: retainedLineLimit }
         : {}),
       ...(skipLines > 0 ? { skipLines } : {}),
-      relativeInputFile,
+      ...(stdin !== undefined ? { stdin } : { relativeInputFile, readCapability: capability }),
       signal: params.signal,
-      readCapability: capability,
       ...(params.deadline !== undefined ? { deadline: params.deadline } : {}),
       operationBudget: params.operationBudget,
     });
@@ -3627,7 +3686,7 @@ async function collectDescriptorBoundDiskRecords(params: {
   let killedAfterLimit = discoveryTruncated;
   let remainingSkip = params.skipLines ?? 0;
   const verifiedResults =
-    params.opts.outputMode === "content"
+    guardedRead || params.opts.outputMode === "content"
       ? undefined
       : await mapProtectedRipgrepTasks({
           items: candidatePaths,
@@ -3686,6 +3745,7 @@ async function collectDescriptorBoundDiskRecords(params: {
     decodedBytes += verified.decodedBytes;
     processedLines += verified.processedLines;
     remainingSkip = Math.max(0, remainingSkip - verified.processedLines);
+    if (!readOnlyDelegationReadPathAllowed(params.toolArgs, candidatePath)) continue;
     for (const record of verified.records) {
       const attributed = attributeStdinResultRecord(record, candidatePath);
       if (attributed !== null) {
@@ -3710,7 +3770,7 @@ async function collectDescriptorBoundDiskRecords(params: {
     killedAfterLimit,
     aborted: false,
     processedLines:
-      params.opts.outputMode === "content"
+      guardedRead || params.opts.outputMode === "content"
         ? processedLines
         : discoveryProcessedLines,
   };
@@ -3755,6 +3815,7 @@ async function discoverSearchRootIgnoreFiles(params: {
 export async function createSearchIgnoreMatcher(
   displayRoot: string,
   options: {
+    readonly toolArgs?: object;
     readonly readCapability?: WorkspaceBoundReadCapability;
     readonly deadline?: GrepOperationDeadline;
     readonly respectVcsIgnores?: boolean;
@@ -3796,6 +3857,7 @@ export async function createSearchIgnoreMatcher(
   }
 
   async function readIgnoreFile(path: string): Promise<string | undefined> {
+    if (options.toolArgs !== undefined && !readOnlyDelegationReadPathAllowed(options.toolArgs, path)) return undefined;
     if (
       options.deadline !== undefined &&
       remainingGrepOperationMs(options.deadline) < 1
@@ -4078,6 +4140,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
       if ("error" in target) {
         return errorResult(target.error);
       }
+      if (!readOnlyDelegationReadPathAllowed(rawArgs, target.absolute)) return errorResult("Access denied: search path is outside delegated read authority");
       let readCapability: WorkspaceBoundReadCapability | undefined;
       let toolOperation: WorkspaceToolOperationToken | undefined;
       let requiresStrictCandidateReads = false;
@@ -4087,7 +4150,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           GREP_TOOL_NAME,
         );
         toolOperation = operation.token;
-        requiresStrictCandidateReads = operation.requiresStrictCandidateReads;
+        requiresStrictCandidateReads = operation.requiresStrictCandidateReads || hasReadOnlyDelegationReadGuard(rawArgs);
         readCapability = requiresStrictCandidateReads
           ? await bindTargetReadCapability(target)
           : await bindWorkspaceDirectoryReadCapability(target.displayRoot, {
@@ -4124,18 +4187,24 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         try {
           authoritativeCapture = captureWorkspaceAuthoritativeDirtySnapshots(
             target.absolute,
-            { includeDescendants: target.isDirectory },
+            {
+              includeDescendants: target.isDirectory,
+              ...(hasReadOnlyDelegationReadGuard(rawArgs) ? { pathAllowed: (path: string) => readOnlyDelegationReadPathAllowed(rawArgs, path) } : {}),
+            },
           );
         } catch (error) {
           return editorCoherenceError(error);
         }
-        const authoritativeSnapshots = authoritativeCapture.snapshots;
+        const authoritativeSnapshots = authoritativeCapture.snapshots.filter(snapshot => readOnlyDelegationReadPathAllowed(rawArgs, snapshot.path));
         await afterFinalPathCheck?.();
         const finalizeAuthoritativeResult = async (
           result: ToolResult,
         ): Promise<ToolResult> => {
           await beforeAuthoritativeSnapshotValidation?.();
           try {
+            if (!readOnlyDelegationReadAuthorityCurrent(rawArgs)) {
+              return errorResult("Access denied: delegated read authority changed during search");
+            }
             return authoritativeCapture.isCurrent()
               ? result
               : editorCoherenceError();
@@ -4148,7 +4217,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         const deadline = createGrepOperationDeadline();
         let rootIgnoreSnapshots: readonly RipgrepIgnoreFileSnapshot[];
         try {
-          rootIgnoreSnapshots = normalized.includeIgnored
+          rootIgnoreSnapshots = normalized.includeIgnored || hasReadOnlyDelegationReadGuard(rawArgs)
             ? []
             : await discoverSearchRootIgnoreFiles({
                 target,
@@ -4185,12 +4254,14 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           );
         }
 
-        const cwdForProbe = ripgrepCwdForTarget(target) || process.cwd();
+        const cwdForProbe = hasReadOnlyDelegationReadGuard(rawArgs)
+          ? parse(target.absolute).root
+          : ripgrepCwdForTarget(target) || process.cwd();
         const ripgrepReady = await isRipgrepAvailable(
           cwdForProbe,
           rawArgs,
           signal,
-          readCapability,
+          hasReadOnlyDelegationReadGuard(rawArgs) ? undefined : readCapability,
           deadline,
         );
 

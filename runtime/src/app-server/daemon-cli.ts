@@ -1794,10 +1794,12 @@ async function stopAgenCDaemon(
               }
             }
           } catch (error) {
-            io.stderr.write(
-              `agenc: refusing Linux numeric shutdown for pid ${boundPid} because its authenticated instance could not be rebound: ${formatCleanupError(error)}\n`,
-            );
-            return 1;
+            if (!(await waitForBoundPidExit(host, bound.process, 0))) {
+              io.stderr.write(
+                `agenc: refusing Linux numeric shutdown for pid ${boundPid} because its authenticated instance could not be rebound: ${formatCleanupError(error)}\n`,
+              );
+              return 1;
+            }
           }
         }
         await lifecycle.acquire();

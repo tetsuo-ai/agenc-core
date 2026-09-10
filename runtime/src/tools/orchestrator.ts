@@ -515,6 +515,9 @@ function approvalRejectionMessage(
   result: RequestApprovalResult,
   toolName: string,
 ): string {
+  if (result.source === "resolver" && result.decision.kind === "denied" && result.reason?.trim()) {
+    return `Permission denied: ${toolName}. ${result.reason}`;
+  }
   if (result.reason !== undefined && result.reason.trim().length > 0) {
     return result.reason;
   }

@@ -1,4 +1,5 @@
 import type { Tool } from "../../tools/types.js";
+import { registerBuiltinTool } from "../../tools/builtin-provenance.js";
 import type { MultiAgentV2Options } from "./common.js";
 import { createAssignTaskTool } from "./assign-task.js";
 import { createCloseAgentTool } from "./close-agent.js";
@@ -17,5 +18,5 @@ export function createMultiAgentV2Tools(
     createAssignTaskTool(opts),
     createSendMessageTool(opts),
     createListAgentsTool(opts),
-  ];
+  ].map(registerBuiltinTool);
 }

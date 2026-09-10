@@ -112,6 +112,7 @@ export interface ShellWorkspaceWritePolicyInput {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
   readonly workspaceRoot?: string;
+  readonly validationPhase?: "preflight" | "execution";
   /**
    * Whether this call may remove or move files that already exist in the
    * workspace: true when the session's permission mode allows edits without
@@ -790,6 +791,9 @@ export function classifyShellWorkspaceWritePolicy(
     if (verdict.kind === "allowed") {
       if (verdict.inWorkspace) deletionTargets.push(target);
     } else {
+      if (params.validationPhase === "preflight" && verdict.reason === "needs_approval") {
+        continue;
+      }
       blockedDeletions.push(target);
       deletionReasons.add(verdict.reason);
     }

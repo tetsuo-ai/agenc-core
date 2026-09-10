@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { shellOperationIdentity } from '../tui/shell-operation-identity.js'
 import type { UUID } from 'crypto'
 import { findToolByName, type Tools } from '../tools/Tool.js'
 import { extractBashCommentLabel } from '../tools/BashTool/commentLabel.js'
@@ -390,8 +391,6 @@ function isNonCollapsibleToolUse(
  * can be rolled up into a single row. Returns null when the message is not a
  * single non-collapsible tool use we can key (e.g. grouped/multi tool uses).
  *
- * The target is the file path (Edit/Write) or the command (Bash); when neither
- * is present we fall back to the tool name alone so unrelated calls don't merge.
  */
 function nonCollapsibleToolUseKey(msg: RenderableMessage): string | null {
   if (msg.type !== 'assistant') return null
@@ -400,11 +399,12 @@ function nonCollapsibleToolUseKey(msg: RenderableMessage): string | null {
   // Only single-tool-use assistant messages are keyable here; grouped tool uses
   // are handled by the existing collapse paths.
   if (msg.message.content.length !== 1) return null
-  const input = content.input as
-    | { file_path?: string; path?: string; command?: string }
-    | undefined
-  const target = input?.file_path ?? input?.path ?? input?.command ?? ''
-  return `${content.name}\u0000${target}`
+  const shellKey = shellOperationIdentity(content.name, content.input)
+  if (shellKey !== null) return shellKey
+  if (!['Edit', 'Write', 'FileEdit', 'FileWrite', 'MultiEdit', 'NotebookEdit'].includes(content.name)) return null
+  const input = content.input as { file_path?: unknown; path?: unknown; notebook_path?: unknown } | undefined
+  const target = input?.file_path ?? input?.path ?? input?.notebook_path
+  return typeof target === 'string' && target.length > 0 ? `${content.name}\u0000${target}` : null
 }
 
 /**

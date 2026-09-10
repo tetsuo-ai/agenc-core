@@ -585,7 +585,7 @@ async function submitToSession(
         throw new MailboxCapacityError(session.conversationId);
       }
       if (op.communication.triggerTurn) {
-        await session.submit("", { displayUserMessage: null });
+        await session.submitChildFollowup();
       }
       return session.conversationId;
     }

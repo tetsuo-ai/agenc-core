@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { assertReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
 import { basename, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import treeKill from "tree-kill";
@@ -572,11 +573,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       request.cmd,
     );
     const args = commandShellArgs(shell, command, request.login === true);
+    const direct = request.directInvocation;
+    if (direct !== undefined && (request.tty === true || request.login === true || request.shell !== undefined || request.runtimeSandbox !== direct.runtimeSandbox)) {
+      throw new UnifiedExecError("create_process", "Read-only direct execution cannot use shell options or a different sandbox");
+    }
     const spawnCommand = this.buildSpawnCommand({
-      program: shell,
-      args,
-      cwd,
-      env: buildEnv(this.baseEnv, this.env),
+      program: direct?.program ?? shell,
+      args: direct?.args ?? args,
+      cwd: direct?.cwd ?? cwd,
+      env: direct?.env ?? buildEnv(this.baseEnv, this.env),
       ...(request.runtimeSandbox !== undefined
         ? { runtimeSandbox: request.runtimeSandbox }
         : {}),
@@ -587,6 +592,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       typeof request.ownerId === "string" && request.ownerId.trim().length > 0
         ? request.ownerId.trim()
         : undefined;
+    if (direct !== undefined) assertReadOnlyInspectionInvocation(direct);
     const entry = await this.spawnProcess({
       processId,
       callId,

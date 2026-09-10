@@ -361,6 +361,7 @@ export class ConversationThreadManager extends ThreadManager {
     rolloutItems: ReadonlyArray<RolloutItem>,
     opts: ConversationReplayOptions = {},
   ): Promise<ConversationReplayResult> {
+    session.restoreUserStopFromRollout(rolloutItems);
     const checkpointProjection = checkpointProjectionFor(
       session,
       "root-reconstruction",
