@@ -204,15 +204,18 @@ describe("planLandlockConfinement refusals", () => {
   });
 
   it("never grants /proc or /sys, even under full disk read", () => {
+    const workspace = withTempDir("agenc-landlock-plan-full-read-");
     const plan = planLandlockConfinement({
       ...base,
+      sandboxPolicyCwd: workspace,
+      sessionTempRoot: workspace,
       fileSystem: restrictedFileSystemPolicy(
         [
           {
             path: { kind: "special", value: { kind: "root" } },
             access: "read",
           },
-          { path: { kind: "path", path: "/tmp" }, access: "write" },
+          { path: { kind: "path", path: workspace }, access: "write" },
         ],
         { includePlatformDefaults: true },
       ),
