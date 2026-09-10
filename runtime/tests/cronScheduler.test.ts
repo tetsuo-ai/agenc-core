@@ -207,6 +207,8 @@ describe("CronScheduler", () => {
         isMeta: true,
         queueOwner: TEST_ACTIVATION.queueOwner,
       }),
+      expect.objectContaining({ id: "bbbb0002" }),
+      expect.any(Number),
     );
     // After firing, the next wake is rescheduled (driver re-armed), not dead.
     const tel = sched.getLastTelemetry();

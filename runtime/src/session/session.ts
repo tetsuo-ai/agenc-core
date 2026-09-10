@@ -2590,6 +2590,7 @@ export class Session {
 
   /** Bootstrap-owned submit hook used by the TUI contract. */
   private turnDriverHooks: SessionTurnDriverHooks | null = null;
+  private readonly turnDriverReadyListeners = new Set<() => void>();
   /**
    * SessionStart hooks may be deferred when the atomic first turn is an
    * Editor read-only/proposal-only interaction. This prevents arbitrary
@@ -3492,6 +3493,23 @@ export class Session {
 
   installTurnDriverHooks(hooks: SessionTurnDriverHooks | null): void {
     this.turnDriverHooks = hooks;
+    if (hooks !== null && this.lifecycleState === "open") {
+      const listeners = [...this.turnDriverReadyListeners];
+      this.turnDriverReadyListeners.clear();
+      for (const listener of listeners) listener();
+    }
+  }
+
+  onTurnDriverReady(listener: () => void): () => void {
+    if (this.lifecycleState !== "open") {
+      throw new Error("cannot schedule a turn after shutdown");
+    }
+    if (this.turnDriverHooks !== null) {
+      listener();
+      return () => {};
+    }
+    this.turnDriverReadyListeners.add(listener);
+    return () => { this.turnDriverReadyListeners.delete(listener); };
   }
 
   installDeferredSessionStartHook(hook: (() => Promise<void>) | null): void {
@@ -3763,6 +3781,12 @@ export class Session {
       }
       if (this.lifecycleState !== "open") {
         throw new Error("session is shutting down");
+      }
+      if (opts.onAccepted !== undefined) {
+        await opts.onAccepted();
+        if (this.lifecycleState !== "open") {
+          throw new Error("session is shutting down");
+        }
       }
       await hooks.submit(message, opts);
     });

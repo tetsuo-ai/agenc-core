@@ -33,6 +33,8 @@ import PromptInput from "./PromptInput/PromptInput.js";
 import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { LedgerVerificationOverlay } from "./LedgerVerificationOverlay.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
+import { SessionUsageContext } from "../context/sessionUsageContext.js";
+import { StatusLineExecutionContext } from "../context/statusLineExecutionContext.js";
 import { WorkbenchLayout } from "../workbench/WorkbenchLayout.js";
 import { PredictionConsentOverlay } from "../workbench/PredictionConsentOverlay.js";
 import { ApprovalSurfaceBridge } from "../workbench/approvals/ApprovalSurfaceBridge.js";
@@ -5083,6 +5085,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         ? { configStore: props.session.services.configStore }
         : {}),
       appState: {
+        getSessionUsage: () => transcript.sessionUsage ?? null,
         getAppState: () => appStateStore.getState(),
         setModel,
         setAppState,
@@ -5104,6 +5107,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       availableTools,
       commandRegistry,
       props.session,
+      transcript.sessionUsage,
       setAppState,
       setModel,
       setToolJSX,
@@ -7366,7 +7370,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // size and the bottom slot has 0 height. KeybindingSetup must remain a
   // context provider, not a Box.
   const body = (
-    <>
+    <StatusLineExecutionContext value={props.session.executeDaemonStatusLine}>
+    <SessionUsageContext value={transcript.sessionUsage ?? null}>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers
         screen={screen as any}
@@ -7443,6 +7448,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           contextPctLabel={contextPctLabel}
           modelDisplayContext={remoteAuthSessionContext}
           sessionCostUsd={transcript.sessionCostUsd}
+          sessionCostUnknown={transcript.sessionUsage?.hasUnknownCost}
           onEditorInteraction={handleEditorInteraction}
           codePrediction={codePrediction}
           editorMutationBlockedReason={workspaceEditorBlockers.editor}
@@ -7481,7 +7487,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           onClose={handleCloseMessageSelector}
         />
       ) : null}
-    </>
+    </SessionUsageContext>
+    </StatusLineExecutionContext>
   );
   if (fullscreen) {
     return (

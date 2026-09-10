@@ -90,6 +90,28 @@ afterEach(async () => {
 });
 
 describe("live Cron tools drive the real scheduler", () => {
+  it("defaults to session-only storage and preserves delivery durability", async () => {
+    const tools = cronTools();
+    const localResult = await tools.get("CronCreate")!.execute({
+      cron: "*/5 * * * *", prompt: "session check",
+    });
+    const local = JSON.parse(String(localResult.content)).cron;
+    expect(local.durable).toBe(false);
+    expect(await listAllCronTasks(tempRoot)).toEqual([]);
+    expect(await listAllCronTasks(tempRoot, conversationId)).toContainEqual(
+      expect.objectContaining({ id: local.id, durable: false }),
+    );
+    const deliveryResult = await tools.get("CronCreate")!.execute({
+      cron: "*/5 * * * *", prompt: "delivery check", durable: false,
+      announceChannel: "stdio", announceTo: "test-recipient",
+    });
+    const delivery = JSON.parse(String(deliveryResult.content)).cron;
+    expect(delivery.durable).toBe(true);
+    expect(await listAllCronTasks(tempRoot)).toContainEqual(
+      expect.objectContaining({ id: delivery.id, deliver: { channel: "stdio", to: "test-recipient" } }),
+    );
+  });
+
   it("CronCreate persists into the scheduler's store; CronList/CronDelete round-trip", async () => {
     const tools = cronTools();
     const created = await tools.get("CronCreate")!.execute({

@@ -191,6 +191,8 @@ import {
   type SessionFileRewindParams,
   type SessionShellExecuteParams,
   type SessionShellExecuteResult,
+  type SessionStatusLineExecuteParams,
+  type SessionStatusLineExecuteResult,
   type SessionSetModelParams,
   type SessionSetPermissionModeParams,
   type SessionPermissionRuleMutationParams,
@@ -281,6 +283,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "session.mcp.status": 3,
   "session.permissions.mutateRule": 7,
   "session.shell.execute": 9,
+  "session.statusLine.execute": 11,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -462,6 +465,10 @@ function buildServerCapabilities(
       "rewindFilesToMessage",
     ),
     "session.shell.execute": hasMethod(agentManager, "executeSessionShell"),
+    "session.statusLine.execute": hasMethod(
+      agentManager,
+      "executeSessionStatusLine",
+    ),
     "session.setModel": hasMethod(agentManager, "setSessionModel"),
     "session.setPermissionMode": hasMethod(
       agentManager,
@@ -563,6 +570,7 @@ export interface AgenCDaemonDispatcherOptions {
   > & {
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
+    readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
   };
   readonly initializeAuthenticator?: (
@@ -671,6 +679,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   > & {
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
+    readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
   };
   readonly #initializeAuthenticator:
@@ -1471,6 +1480,19 @@ export class AgenCDaemonJsonRpcDispatcher {
             ),
           ),
         );
+      case "session.statusLine.execute": {
+        if (this.#agentManager.executeSessionStatusLine === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        const result = await this.#agentManager.executeSessionStatusLine(
+          validateSessionStatusLineExecuteParams(params),
+          signal,
+        );
+        return internalSuccessResponse(
+          id,
+          validateSessionStatusLineExecuteResult(result),
+        );
+      }
       case "session.shell.execute": {
         const validated = validateSessionShellExecuteParams(params);
         const result = await this.#agentManager.executeSessionShell(
@@ -2376,6 +2398,7 @@ function methodSupportsRequestCancellation(
     method === "session.partialCompactFromMessage" ||
     method === "session.rewindConversationToMessage" ||
     method === "session.shell.execute" ||
+    method === "session.statusLine.execute" ||
     method === "workspace.editor.predict" ||
     method === "message.stream" ||
     method === "message.send"
@@ -3506,6 +3529,69 @@ function validateSessionFileRewindParams(
     );
   }
   return validated as SessionFileRewindParams;
+}
+
+function validateSessionStatusLineExecuteParams(
+  params: JsonObject,
+): SessionStatusLineExecuteParams {
+  const methodName = "session.statusLine.execute";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId"],
+    objectFields: ["presentation"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  validateMaximumUtf8Bytes(validated.sessionId, methodName, "sessionId", 1_024);
+  if (validated.presentation !== undefined) {
+    const presentation = validateObjectShape(
+      validated.presentation as JsonObject,
+      {
+        methodName: `${methodName}.presentation`,
+        stringFields: ["vimMode"],
+      },
+    );
+    if (
+      presentation.vimMode !== undefined &&
+      presentation.vimMode !== "NORMAL" &&
+      presentation.vimMode !== "INSERT"
+    ) {
+      throw invalidParams(
+        `${methodName}.presentation vimMode must be NORMAL or INSERT`,
+      );
+    }
+  }
+  return validated as SessionStatusLineExecuteParams;
+}
+
+function validateSessionStatusLineExecuteResult(
+  value: unknown,
+): SessionStatusLineExecuteResult {
+  if (!isPlainJsonObject(value)) {
+    throw new Error("session.statusLine.execute returned a non-object result");
+  }
+  const allowedKeys = new Set(["status", "text", "reason"]);
+  if (
+    Object.keys(value).some((key) => !allowedKeys.has(key)) ||
+    !["rendered", "disabled", "blocked", "unavailable", "error"].includes(
+      String(value.status),
+    )
+  ) {
+    throw new Error("session.statusLine.execute returned an invalid result");
+  }
+  for (const field of ["text", "reason"] as const) {
+    if (
+      value[field] !== undefined &&
+      (typeof value[field] !== "string" ||
+        Buffer.byteLength(value[field], "utf8") >
+          (field === "text" ? 16_384 : 256))
+    ) {
+      throw new Error(`session.statusLine.execute returned invalid ${field}`);
+    }
+  }
+  if ((value.status === "rendered") !== (typeof value.text === "string")) {
+    throw new Error("session.statusLine.execute returned inconsistent text");
+  }
+  return value as unknown as SessionStatusLineExecuteResult;
 }
 
 function validateSessionShellExecuteParams(

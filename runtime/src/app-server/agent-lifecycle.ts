@@ -128,6 +128,8 @@ import type {
   SessionRewindFilesToMessageResult,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionStatusLineExecuteParams,
+  SessionStatusLineExecuteResult,
   SessionSetModelParams,
   SessionSetModelResult,
   SessionSetPermissionModeParams,
@@ -2796,6 +2798,23 @@ export class AgenCDaemonAgentManager {
     return { requestId: params.requestId, decision: "cancelled" };
   }
 
+  async executeSessionStatusLine(
+    params: SessionStatusLineExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionStatusLineExecuteResult> {
+    if (this.#runner?.executeAgentStatusLine === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.statusLine.execute requires a live daemon runtime",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowExecuteStatusLine: true },
+    );
+    return this.#runner.executeAgentStatusLine(agentId, params, signal);
+  }
+
   async executeSessionShell(
     params: SessionShellExecuteParams,
     signal?: AbortSignal,
@@ -3836,6 +3855,7 @@ export class AgenCDaemonAgentManager {
       readonly allowApplyConfig?: boolean;
       readonly allowCodePrediction?: boolean;
       readonly allowExecuteShell?: boolean;
+      readonly allowExecuteStatusLine?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -3910,6 +3930,9 @@ export class AgenCDaemonAgentManager {
     const hasExecuteShellRunner =
       options.allowExecuteShell === true &&
       this.#runner?.executeAgentShell !== undefined;
+    const hasExecuteStatusLineRunner =
+      options.allowExecuteStatusLine === true &&
+      this.#runner?.executeAgentStatusLine !== undefined;
     if (
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
@@ -3932,7 +3955,8 @@ export class AgenCDaemonAgentManager {
       !hasSetHooksDisabledRunner &&
       !hasApplyConfigRunner &&
       !hasCodePredictionRunner &&
-      !hasExecuteShellRunner
+      !hasExecuteShellRunner &&
+      !hasExecuteStatusLineRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",

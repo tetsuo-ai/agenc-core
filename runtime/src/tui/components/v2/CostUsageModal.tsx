@@ -112,7 +112,9 @@ export function CostUsageModal({
               key={`agent-${i}`}
               label={a.label}
               value={
-                a.estimatedCostUsd !== undefined
+                a.costUsd !== undefined
+                  ? formatUsdCost(a.costUsd)
+                  : a.estimatedCostUsd !== undefined
                   ? `${formatUsdCost(a.estimatedCostUsd)} est.`
                   : '—'
               }
@@ -122,7 +124,7 @@ export function CostUsageModal({
         )}
       </Box>
       <ThemedText color="muted3">
-        per-agent $ estimated from token totals; — = unknown
+        Recorded usage when available; estimates are marked est.
       </ThemedText>
     </Popup>
   )

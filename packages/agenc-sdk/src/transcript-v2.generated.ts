@@ -43,8 +43,37 @@ export interface SessionTranscriptV2TurnResult extends TranscriptV2JsonObject {
 export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
   readonly eventId: string;
   readonly committedSequence: number;
-  readonly type: "token_count" | "turn_failed" | "turn_aborted";
+  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted";
   readonly payload: {
+    readonly runId?: string;
+    readonly sequence?: number;
+    readonly costUsd?: number;
+    readonly heldCostUsd?: number;
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
+    readonly modelCalls?: number;
+    readonly hasUnknownCost?: boolean;
+    readonly models?: readonly {
+      readonly model: string;
+      readonly provider?: string;
+      readonly costUsd: number;
+      readonly heldCostUsd: number;
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly totalTokens: number;
+      readonly modelCalls: number;
+      readonly hasUnknownCost: boolean;
+    }[];
+    readonly agents?: readonly {
+      readonly runId: string;
+      readonly costUsd: number;
+      readonly heldCostUsd: number;
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly totalTokens: number;
+      readonly modelCalls: number;
+      readonly hasUnknownCost: boolean;
+    }[];
     readonly promptTokens?: number;
     readonly completionTokens?: number;
     readonly totalTokens?: number;

@@ -80,9 +80,13 @@ import {
   materializeAgentInvocationMessages,
 } from "../contracts/agent-invocation-envelope.js";
 import {
+  attachCompactionSession,
   createCompactionTransactionHarness,
   createProvider as createCompactionProvider,
 } from "../helpers/compaction-transaction-harness.js";
+import { sessionTranscriptV2FromRollout } from "../app-server/background-agent-runner/journal-reconstruction.js";
+import { daemonTranscriptSnapshotEvents } from "../tui/daemon-transcript-snapshot.js";
+import { adaptTranscriptEvents } from "../tui/session-transcript.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
 import {
   getSessionTempNamespaceName,
@@ -2381,8 +2385,9 @@ describe("Session.partialCompactFromMessage", () => {
         admissionRequired: true,
       },
     });
-    session.rolloutStore = harness.store;
+    attachCompactionSession(session, harness);
     try {
+      expect(session.eventLog.lastSeq).toBe(1);
       await session.state.with((state) => {
         state.history = sourceHistory;
       });
@@ -2420,6 +2425,18 @@ describe("Session.partialCompactFromMessage", () => {
           (message) => message.content === sourceHistory[2]?.content,
         ),
       ).toBe(false);
+      const items = harness.store.readAll();
+      const events = items.flatMap((item) => item.type === "event_msg" ? [item.payload] : []);
+      expect(events.map((event) => event.seq)).toEqual(events.map((_, index) => index + 1));
+      const usage = events.filter((event) => event.msg.type === "session_usage").at(-1)?.msg;
+      expect(usage).toMatchObject({ type: "session_usage", payload: {
+        runId: session.conversationId, modelCalls: 1, hasUnknownCost: false,
+      } });
+      if (usage?.type !== "session_usage") throw new Error("Missing compaction usage");
+      expect(usage.payload.costUsd).toBeGreaterThan(0);
+      const snapshot = sessionTranscriptV2FromRollout(items, session.conversationId, session.conversationId);
+      const restored = adaptTranscriptEvents(daemonTranscriptSnapshotEvents(snapshot, session.conversationId));
+      expect(restored.sessionCostUsd).toBe(usage.payload.costUsd);
     } finally {
       harness.close();
     }
@@ -2468,7 +2485,7 @@ describe("Session.partialCompactFromMessage", () => {
         admissionRequired: true,
       },
     });
-    session.rolloutStore = harness.store;
+    attachCompactionSession(session, harness);
     try {
       await session.state.with((state) => {
         state.history = sourceHistory;
@@ -2530,7 +2547,7 @@ describe("Session.partialCompactFromMessage", () => {
         admissionRequired: true,
       },
     });
-    session.rolloutStore = harness.store;
+    attachCompactionSession(session, harness);
     try {
       await session.state.with((state) => {
         state.history = sourceHistory;

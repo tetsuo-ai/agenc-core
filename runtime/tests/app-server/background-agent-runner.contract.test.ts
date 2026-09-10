@@ -1260,6 +1260,110 @@ function configureSessionShellHarness(
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("[status-line] reaches the bound deferred owner's executor without a model turn", async () => {
+    const agentId = "status-line-deferred-agent";
+    const sessionId = "status-line-bound-session";
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+      runtimeSimpleMode: true,
+    });
+    Object.assign(harness.session.services, {
+      mcpStartupCancellationToken: {
+        isCancelled: () => false,
+        signal: new AbortController().signal,
+      },
+    });
+    await harness.runner.startAgent({
+      objective: "defer status-line work",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await harness.runner.attachAgentSessionEvents(agentId, { sessionId, emit: async () => {} });
+    const trackOperation = vi.spyOn(harness.session, "trackDurableOperation");
+    try {
+      await expect(harness.runner.executeAgentStatusLine(agentId, { sessionId })).resolves.toEqual({
+        status: "disabled",
+        reason: "hooks_disabled",
+      });
+      expect(trackOperation).toHaveBeenCalledOnce();
+      expect(harness.control.sendInput).not.toHaveBeenCalled();
+      expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    } finally {
+      trackOperation.mockRestore();
+      await harness.runner.stopAgent(agentId);
+    }
+  });
+
+  it.each(["absent", "unbound", "mismatched"])("[status-line] rejects %s ownership before entering the executor", async (state) => {
+    const agentId = `status-line-${state}-agent`;
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    if (state !== "absent") {
+      await harness.runner.startAgent({
+        objective: "defer status-line work",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+    }
+    if (state === "mismatched") {
+      await harness.runner.attachAgentSessionEvents(agentId, {
+        sessionId: "different-owner",
+        emit: async () => {},
+      });
+    }
+    const trackOperation = vi.spyOn(harness.session, "trackDurableOperation");
+    try {
+      await expect(harness.runner.executeAgentStatusLine(agentId, { sessionId: agentId })).rejects.toThrow(
+        state === "absent" ? "not running" : "does not own this runtime session",
+      );
+      expect(trackOperation).not.toHaveBeenCalled();
+      expect(harness.control.sendInput).not.toHaveBeenCalled();
+      expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    } finally {
+      trackOperation.mockRestore();
+      await harness.runner.stopAgent(agentId);
+    }
+  });
+
+  it("[status-line] rejects closed ingress while the bound runtime is still draining", async () => {
+    const agentId = "status-line-draining-agent";
+    const shutdownEntered = Promise.withResolvers<void>();
+    const releaseShutdown = Promise.withResolvers<void>();
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+      bootstrapShutdown: vi.fn(async () => {
+        shutdownEntered.resolve();
+        await releaseShutdown.promise;
+      }),
+    });
+    await harness.runner.startAgent({
+      objective: "defer status-line work",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await harness.runner.attachAgentSessionEvents(agentId, { sessionId: agentId, emit: async () => {} });
+    const stopping = harness.runner.stopAgent(agentId);
+    const trackOperation = vi.spyOn(harness.session, "trackDurableOperation");
+    try {
+      await shutdownEntered.promise;
+      await expect(harness.runner.executeAgentStatusLine(agentId, { sessionId: agentId })).rejects.toThrow("not running");
+      expect(trackOperation).not.toHaveBeenCalled();
+      expect(harness.control.sendInput).not.toHaveBeenCalled();
+      expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    } finally {
+      releaseShutdown.resolve();
+      await stopping;
+      trackOperation.mockRestore();
+    }
+  });
+
   it("[managed-thread] runs a deferred session shell through the canonical live router authorities", async () => {
     const harness = makeTopLevelRunner({
       conversationId: "session-direct-shell-authorities",

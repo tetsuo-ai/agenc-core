@@ -20,6 +20,14 @@ export interface CompactionTransactionHarness {
   close(): void;
 }
 
+export function attachCompactionSession(session: Session, harness: CompactionTransactionHarness): void {
+  session.mountRolloutStore(harness.store);
+  session.eventLog.seedCanonicalHistory(harness.store.readAll().flatMap((item) =>
+    item.type === "event_msg" ? [item.payload] : [],
+  ));
+  harness.session.emit = session.emit.bind(session);
+}
+
 export function bindCompactionTransactionHarness(
   store: RolloutStore,
   options: {

@@ -63,6 +63,8 @@ import type {
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
   SessionShellExecuteResult,
+  SessionStatusLinePresentation,
+  SessionStatusLineExecuteResult,
 } from "../app-server/protocol/index.js";
 
 export interface AgenCCompactProgressControls {
@@ -89,6 +91,10 @@ export interface AgenCShellExecuteParams {
 }
 
 export interface AgenCBridgeSession extends AgenCCompactProgressControls {
+  executeDaemonStatusLine?(
+    presentation: SessionStatusLinePresentation,
+    signal?: AbortSignal,
+  ): Promise<SessionStatusLineExecuteResult>;
   readonly conversationId: string;
   /** Immutable role-discovery identity; execution cwd may move independently. */
   readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;

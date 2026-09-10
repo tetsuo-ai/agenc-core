@@ -64,7 +64,8 @@ export type CronEnqueue = (command: {
   isMeta: true;
   queueOwner: CronSessionQueueOwner;
   agentId?: string;
-}) => void;
+}, task: Readonly<CronTask>, firedAt: number) =>
+  void | Promise<void | "accepted" | "cancelled">;
 
 /**
  * Frozen authority for one scheduler lifetime. The process-wide scheduler is
@@ -491,13 +492,39 @@ export class CronScheduler {
         this.firedThrough.delete(task.id);
         continue;
       }
-      this.deps.enqueue({
+      const completion = this.deps.enqueue({
         value: task.prompt,
         mode: "task-notification",
         isMeta: true,
         queueOwner: { ...queueOwner },
         ...(task.agentId ? { agentId: task.agentId } : {}),
-      });
+      }, task, now);
+      if (completion !== undefined) {
+        let result: void | "accepted" | "cancelled";
+        try {
+          result = await completion;
+        } catch (error) {
+          this.stop(activation);
+          throw error;
+        } finally {
+          this.inFlightUntil.delete(task.id);
+        }
+        if (result === "cancelled") continue;
+        dispatched += 1;
+        if (result === "accepted") continue;
+        if (task.recurring) {
+          if (task.durable !== false) {
+            await markCronTasksFired([task.id], now, activation.workspaceRoot);
+          }
+        } else {
+          await removeCronTasks(
+            [task.id],
+            activation.workspaceRoot,
+            activation.queueOwner.conversationId,
+          );
+        }
+        continue;
+      }
       dispatched += 1;
 
       if (task.recurring) {

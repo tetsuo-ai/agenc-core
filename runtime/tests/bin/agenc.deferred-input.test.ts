@@ -477,6 +477,37 @@ function daemonHarness(
 }
 
 describe("deferred daemon input ownership", () => {
+  it("keeps cold status-line rendering unavailable without creating an agent or control client", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps });
+    const statusSession = session as typeof session & Pick<
+      import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession, "executeDaemonStatusLine"
+    >;
+    await expect(statusSession.executeDaemonStatusLine?.({ vimMode: "NORMAL" })).resolves.toEqual({
+      status: "unavailable", reason: "session_not_ready",
+    });
+    expect(harness.startPromptAgent).not.toHaveBeenCalled();
+    expect(harness.deps.createConnectedTuiClient).not.toHaveBeenCalled();
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it("forwards status-line requests after live activation without another model turn", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps });
+    await session.submit("first turn");
+    const messageRequestsBefore = harness.requests.filter(request => request.method === "message.send" || request.method === "message.stream").length;
+    const statusSession = session as typeof session & Pick<
+      import("../../src/tui/daemon-session.js").AgenCTuiBridgeSession, "executeDaemonStatusLine"
+    >;
+    const controller = new AbortController();
+    await statusSession.executeDaemonStatusLine?.({ vimMode: "INSERT" }, controller.signal);
+    expect(harness.client.request).toHaveBeenLastCalledWith("session.statusLine.execute", {
+      sessionId: "session-1", presentation: { vimMode: "INSERT" },
+    }, { signal: controller.signal });
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(harness.requests.filter(request => request.method === "message.send" || request.method === "message.stream")).toHaveLength(messageRequestsBefore);
+  });
+
   it.each(["emit", "slash"] as const)("rolls back failed subscriptions before local %s delivery", async delivery => {
     const harness = daemonHarness();
     const session = await createDeferredInputSession({

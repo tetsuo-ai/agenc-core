@@ -11,6 +11,7 @@ const DATA_BEARING_BUILTIN_TOOL_NAMES = new Set([
   "Write",
   "Edit",
   "NotebookEdit",
+  "CronCreate",
 ]);
 
 const SHELL_COMMAND_FRAGMENT = String.raw`[^;&|\n]*`;
@@ -37,6 +38,9 @@ export function classifyApprovalRisk(input: {
     typeof input.request?.ctx?.toolName === "string"
       ? input.request.ctx.toolName
       : undefined;
+  if (requestToolName === "CronDelete" || input.toolName === "CronDelete") {
+    return "destructive";
+  }
   const command = input.toolInput === undefined
     ? input.command
     : approvalActionText(input.toolInput, input.toolName ?? requestToolName);
@@ -75,6 +79,7 @@ export function typedConfirmationWordForRisk(input: {
   readonly toolInput?: unknown;
 }): string {
   if (input.risk !== "destructive") return "yes";
+  if (input.toolName === "CronDelete") return "delete";
   const command = input.toolInput === undefined
     ? input.command
     : approvalActionText(input.toolInput, input.toolName);

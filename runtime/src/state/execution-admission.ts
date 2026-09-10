@@ -10,6 +10,8 @@ import type {
   AdmissionReconcileResult,
   AdmissionRecoveryReport,
   AdmissionUsage,
+  AdmissionUsageSummary,
+  AdmissionUsageTotals,
   PersistedAdmissionRecord,
   PersistedAdmissionStatus,
   RuntimeAdmissionRequest,
@@ -270,6 +272,48 @@ interface ReservationRow {
   readonly updated_at: string;
 }
 
+interface UsageAggregateRow {
+  readonly run_id: string;
+  readonly kind: string;
+  readonly model: string | null;
+  readonly provider: string | null;
+  readonly input_tokens: number;
+  readonly output_tokens: number;
+  readonly total_tokens: number;
+  readonly cost_nanos: number;
+  readonly held_cost_nanos: number;
+  readonly model_calls: number;
+  readonly unknown_count: number;
+}
+
+function sumUsageRows(rows: readonly UsageAggregateRow[]): AdmissionUsageTotals {
+  let costNanos = 0;
+  let heldCostNanos = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let modelCalls = 0;
+  let hasUnknownCost = false;
+  for (const row of rows) {
+    costNanos += row.cost_nanos;
+    heldCostNanos += row.held_cost_nanos;
+    inputTokens += row.input_tokens;
+    outputTokens += row.output_tokens;
+    totalTokens += row.total_tokens;
+    modelCalls += row.model_calls;
+    hasUnknownCost ||= row.unknown_count > 0;
+  }
+  return {
+    costUsd: nanosToUsd(costNanos),
+    heldCostUsd: nanosToUsd(heldCostNanos),
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    modelCalls,
+    hasUnknownCost,
+  };
+}
+
 interface CancellationJobPreStateRow {
   readonly id: string;
   readonly admission_queue_sequence: number;
@@ -466,6 +510,47 @@ export class ExecutionAdmissionRepository {
           .run(effective ?? null, at, normalizedRunId);
       }
       return effective;
+    });
+  }
+
+  bindRunCostLimit(
+    ownerRunId: string,
+    scope: AdmissionBudgetScope,
+  ): number | undefined {
+    requireNonEmpty(ownerRunId, "bindRunCostLimit.ownerRunId");
+    const key = requireNonEmpty(scope.key, "bindRunCostLimit.scope.key");
+    const proposed =
+      scope.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
+    const now = this.#timestamp();
+    return this.#driver.transactionImmediate(() => {
+      const existing = this.#allocationLocked(key);
+      if (existing === undefined && proposed === undefined) return undefined;
+      if (
+        existing !== undefined &&
+        proposed !== undefined &&
+        (existing.max_cost_nanos === null || proposed < existing.max_cost_nanos)
+      ) {
+        this.#driver
+          .prepareState(
+            `UPDATE execution_admission_allocations
+             SET max_cost_nanos = ?, updated_at = ? WHERE scope_key = ?`,
+          )
+          .run(proposed, now, key);
+      }
+      const persisted = this.#allocationLocked(key)?.max_cost_nanos ?? proposed;
+      const allocation = this.#ensureAllocationLocked(
+        ownerRunId,
+        {
+          ...scope,
+          ...(persisted !== undefined
+            ? { maxCostUsd: nanosToUsd(persisted) }
+            : {}),
+        },
+        now,
+      );
+      return allocation.max_cost_nanos === null
+        ? undefined
+        : nanosToUsd(allocation.max_cost_nanos);
     });
   }
 
@@ -1473,6 +1558,75 @@ export class ExecutionAdmissionRepository {
     };
   }
 
+  getUsageSummary(runId: string, allocationKey: string): AdmissionUsageSummary {
+    requireNonEmpty(runId, "runId");
+    requireNonEmpty(allocationKey, "allocationKey");
+    return this.#driver.transaction(() => {
+      const sequence = this.#driver
+        .prepareState<[], { readonly sequence: number }>(
+          "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
+        )
+        .get()?.sequence ?? 0;
+      const rows = this.#driver
+        .prepareState<[string], UsageAggregateRow>(
+          `SELECT reservation.run_id, reservation.kind, reservation.model, reservation.provider,
+             COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
+               THEN COALESCE(reservation.actual_input_tokens, 0) ELSE 0 END), 0) AS input_tokens,
+             COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
+               THEN COALESCE(reservation.actual_output_tokens, 0) ELSE 0 END), 0) AS output_tokens,
+             COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
+               THEN COALESCE(reservation.actual_tokens, 0) ELSE 0 END), 0) AS total_tokens,
+             COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun')
+               THEN COALESCE(reservation.actual_cost_nanos, 0) ELSE 0 END), 0) AS cost_nanos,
+             COALESCE(SUM(CASE WHEN reservation.status IN ('reserved', 'dispatched', 'held_unknown') OR
+               (reservation.status = 'provider_overrun' AND reservation.actual_cost_nanos IS NULL)
+               THEN reservation.reserved_cost_nanos ELSE 0 END), 0) AS held_cost_nanos,
+             SUM(CASE WHEN reservation.kind = 'model_turn'
+               AND reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
+               AND reservation.actual_tokens IS NOT NULL THEN 1 ELSE 0 END) AS model_calls,
+             SUM(CASE WHEN reservation.status = 'held_unknown' OR
+               (reservation.status IN ('reconciled', 'provider_overrun') AND reservation.actual_cost_nanos IS NULL)
+               THEN 1 ELSE 0 END) AS unknown_count
+           FROM execution_admission_reservations AS reservation
+           JOIN execution_admission_reservation_allocations AS allocation
+             ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
+           WHERE reservation.status != 'voided'
+           GROUP BY reservation.run_id, reservation.kind, reservation.model, reservation.provider
+           ORDER BY reservation.run_id, reservation.kind, reservation.model, reservation.provider`,
+        )
+        .all(allocationKey);
+      const modelRows = new Map<string, UsageAggregateRow[]>();
+      const agentRows = new Map<string, UsageAggregateRow[]>();
+      for (const row of rows) {
+        if (row.kind === "model_turn") {
+          const key = JSON.stringify([row.provider, row.model]);
+          const group = modelRows.get(key) ?? [];
+          group.push(row);
+          modelRows.set(key, group);
+        }
+        if (row.run_id !== runId) {
+          const group = agentRows.get(row.run_id) ?? [];
+          group.push(row);
+          agentRows.set(row.run_id, group);
+        }
+      }
+      return {
+        runId,
+        sequence,
+        ...sumUsageRows(rows),
+        models: [...modelRows.values()].map((group) => ({
+          model: group[0]!.model ?? "unknown",
+          ...(group[0]!.provider !== null ? { provider: group[0]!.provider! } : {}),
+          ...sumUsageRows(group),
+        })),
+        agents: [...agentRows].map(([agentRunId, group]) => ({
+          runId: agentRunId,
+          ...sumUsageRows(group),
+        })),
+      };
+    });
+  }
+
   listAllocations(
     options: {
       readonly ownerRunId?: string;
@@ -1801,7 +1955,8 @@ export class ExecutionAdmissionRepository {
     }
     if (
       maxCostNanos !== undefined &&
-      existing.max_cost_nanos !== maxCostNanos
+      (existing.max_cost_nanos === null ||
+        maxCostNanos < existing.max_cost_nanos)
     ) {
       throw new AdmissionAllocationConflictError(key, "maxCostUsd");
     }

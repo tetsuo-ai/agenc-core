@@ -884,10 +884,10 @@ describe("strict canonical journal contract", () => {
   });
 
   it("keeps an exhaustive fail-closed schema for every known event discriminant", () => {
-    expect(KNOWN_EVENT_TYPES.size).toBe(83);
+    expect(KNOWN_EVENT_TYPES.size).toBe(84);
     expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual([...KNOWN_EVENT_TYPES].sort());
     expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual(
-      expect.arrayContaining(["run_suspended", "run_resumed"]),
+      expect.arrayContaining(["run_suspended", "run_resumed", "session_usage"]),
     );
     const eventsWithoutRequiredFields = new Set([
       "context_compacted",

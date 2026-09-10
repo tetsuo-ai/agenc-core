@@ -85,6 +85,28 @@ export interface AdmissionJournalEvent {
 
 export type AdmissionEventListener = (event: AdmissionJournalEvent) => void;
 
+export interface AdmissionUsageTotals {
+  readonly costUsd: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly modelCalls: number;
+  readonly hasUnknownCost: boolean;
+  readonly heldCostUsd: number;
+}
+
+export interface AdmissionUsageSummary extends AdmissionUsageTotals {
+  readonly runId: string;
+  readonly sequence: number;
+  readonly models: readonly (AdmissionUsageTotals & {
+    readonly model: string;
+    readonly provider?: string;
+  })[];
+  readonly agents: readonly (AdmissionUsageTotals & {
+    readonly runId: string;
+  })[];
+}
+
 /** Durable allow result produced by the SQLite repository. */
 export interface AdmissionGrant {
   readonly decision: "allow";

@@ -46,6 +46,7 @@ export interface SessionEditorInteraction {
 export interface SessionSubmitOptions {
   readonly clientMessageId?: string;
   readonly source?: SessionSubmitSource;
+  readonly onAccepted?: () => void | Promise<void>;
   /**
    * Transcript-facing input for this submission. `undefined` means render the
    * caller's submitted text, while `null` suppresses the user-message row for

@@ -74,6 +74,7 @@ type Props = {
   readonly modelDisplayContext?: ModelDisplayReadContext;
   /** Live cumulative spend projected from bridge `token_count` events. */
   readonly sessionCostUsd?: number;
+  readonly sessionCostUnknown?: boolean;
   readonly onEditorInteraction?: (intent: BufferIntegrationIntent) => void;
   readonly codePrediction?: BufferCodePredictionUi;
   readonly editorMutationBlockedReason?: string | null;
@@ -95,6 +96,7 @@ export function WorkbenchLayout({
   contextPctLabel = null,
   modelDisplayContext,
   sessionCostUsd = 0,
+  sessionCostUnknown = false,
   onEditorInteraction,
   codePrediction,
   editorMutationBlockedReason = null,
@@ -329,6 +331,7 @@ export function WorkbenchLayout({
                 focused={focusedPane === "agents"}
                 width={agentsWidth}
                 sessionCostUsd={sessionCostUsd}
+                sessionCostUnknown={sessionCostUnknown}
               />
             </NoSelect>
           ) : null}
@@ -386,6 +389,7 @@ export function WorkbenchLayout({
                 focused={true}
                 width={Math.min(34, frameColumns)}
                 sessionCostUsd={sessionCostUsd}
+                sessionCostUnknown={sessionCostUnknown}
               />
             </NoSelect>
           </Box>

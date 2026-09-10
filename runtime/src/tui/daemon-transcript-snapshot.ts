@@ -4,6 +4,7 @@ import type {
 } from "../app-server/protocol/index.js";
 import { isRecord } from "../utils/record.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
+import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 
 export function daemonTranscriptSnapshotEvents(
   snapshot: SessionTranscriptV2Result,
@@ -51,8 +52,11 @@ export function daemonTranscriptSnapshotEvents(
       !Number.isSafeInteger(notice.committedSequence) ||
       notice.committedSequence < 0 || notice.committedSequence > snapshot.asOfSequence ||
       !isRecord(notice.payload) ||
-      (notice.type !== "token_count" && notice.type !== "turn_failed" && notice.type !== "turn_aborted") ||
-      (notice.type !== "token_count" && classifyTurnTerminal(notice) === undefined)
+      (notice.type !== "token_count" && notice.type !== "session_usage" && notice.type !== "turn_failed" && notice.type !== "turn_aborted") ||
+      (notice.type === "session_usage" && (
+        !isAdmissionUsageSummary(notice.payload) || notice.payload.runId !== snapshot.runId
+      )) ||
+      (notice.type !== "token_count" && notice.type !== "session_usage" && classifyTurnTerminal(notice) === undefined)
     ) {
       throw new Error("Daemon returned an invalid transcript notice");
     }
@@ -100,13 +104,21 @@ export function daemonTranscriptSnapshotCoversEvent(
   if (params.runId !== undefined && params.runId !== snapshot.runId) return false;
   const sequence = params.sequence;
   if (
-    transcriptEvent.type === "token_count" || transcriptEvent.type === "turn_failed" ||
+    transcriptEvent.type === "token_count" || transcriptEvent.type === "session_usage" || transcriptEvent.type === "turn_failed" ||
     transcriptEvent.type === "turn_aborted" || transcriptEvent.type === "error"
   ) {
     if (sequence !== undefined && (
       typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 0 ||
       sequence > snapshot.asOfSequence
     )) return false;
+    if (transcriptEvent.type === "session_usage") {
+      const summary = transcriptEvent.payload;
+      if (!isAdmissionUsageSummary(summary) || summary.runId !== snapshot.runId) return false;
+      return snapshot.events?.some((notice) =>
+        notice.type === "session_usage" && isAdmissionUsageSummary(notice.payload) &&
+        notice.payload.runId === summary.runId && notice.payload.sequence >= summary.sequence,
+      ) ?? false;
+    }
     const eventId = params.eventId ?? transcriptEvent.eventId;
     if (snapshot.events?.some((notice) =>
       (typeof eventId === "string" && notice.eventId === eventId) ||

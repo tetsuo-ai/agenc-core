@@ -51,6 +51,9 @@ import type {
   SessionHooksStatusResult,
   SessionHooksSetDisabledParams,
   SessionHooksSetDisabledResult,
+  SessionStatusLinePresentation,
+  SessionStatusLineExecuteParams,
+  SessionStatusLineExecuteResult,
   SessionApplyConfigParams,
   SessionApplyConfigResult,
   SessionSnapshotResult,
@@ -320,6 +323,10 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     readonly rule: string;
   }): Promise<SessionPermissionRuleMutationResult>;
   getDaemonHooksStatus?(): Promise<SessionHooksStatusResult>;
+  executeDaemonStatusLine?(
+    presentation: SessionStatusLinePresentation,
+    signal?: AbortSignal,
+  ): Promise<SessionStatusLineExecuteResult>;
   setDaemonHooksDisabled?(
     disabled: boolean,
   ): Promise<SessionHooksSetDisabledResult>;
@@ -537,6 +544,11 @@ export interface AgenCDaemonTuiClient {
     params?: JsonObject,
     options?: { readonly signal?: AbortSignal },
   ): Promise<SessionHooksStatusResult>;
+  request(
+    method: "session.statusLine.execute",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionStatusLineExecuteResult>;
   request(
     method: "session.hooks.setDisabled",
     params?: JsonObject,
@@ -1628,6 +1640,24 @@ export function createDaemonTuiSession<
           );
         }
       }),
+    executeDaemonStatusLine: async (presentation, signal) => {
+      signal?.throwIfAborted();
+      try {
+        return await client.request("session.statusLine.execute", {
+          sessionId,
+          presentation: {
+            ...(presentation.vimMode !== undefined
+              ? { vimMode: presentation.vimMode }
+              : {}),
+          },
+        } satisfies SessionStatusLineExecuteParams, { signal });
+      } catch (error) {
+        signal?.throwIfAborted();
+        return error instanceof AgenCDaemonResponseError && error.code === -32601
+          ? { status: "unavailable", reason: "unsupported_method" }
+          : { status: "error", reason: "request_failed" };
+      }
+    },
     getDaemonHooksStatus: async () =>
       client.request("session.hooks.status", {
         sessionId,

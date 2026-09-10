@@ -22,7 +22,7 @@ export type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.10.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.11.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =

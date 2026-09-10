@@ -4600,6 +4600,7 @@ export async function startCronSchedulerRunner(opts: {
   readonly conversationId: string;
   readonly workspaceRoot: string;
   readonly signal?: AbortSignal;
+  readonly session?: Session;
 }): Promise<void> {
   opts.signal?.throwIfAborted();
   if (opts.conversationId.trim().length === 0) {
@@ -4608,11 +4609,22 @@ export async function startCronSchedulerRunner(opts: {
   if (opts.workspaceRoot.trim().length === 0) {
     throw new Error("Cron scheduler requires an owning workspace root");
   }
+  if (opts.session !== undefined && opts.session.conversationId !== opts.conversationId) {
+    throw new Error("Cron scheduler session does not match the owning conversation");
+  }
   const { setScheduledTasksEnabled } = await import("../bootstrap/state.js");
   opts.signal?.throwIfAborted();
   const { getCronScheduler } = await import("../utils/cronScheduler.js");
   opts.signal?.throwIfAborted();
   setScheduledTasksEnabled(true);
+  if (typeof opts.session?.submit === "function") {
+    const { startSessionCronScheduler } =
+      await import("../session/session-cron-scheduler.js");
+    opts.signal?.throwIfAborted();
+    await startSessionCronScheduler(opts.session, opts.workspaceRoot);
+    opts.signal?.throwIfAborted();
+    return;
+  }
   const scheduler = getCronScheduler();
   scheduler.start({
     queueOwner: {
@@ -4650,7 +4662,11 @@ function createCronAndWorkflowTools(
             description:
               "true (default) reschedules after each fire; false fires once and deletes itself.",
           },
-          durable: { type: "boolean" },
+          durable: {
+            type: "boolean",
+            description:
+              "false (default) keeps the job in this session; true persists it across restarts. Delivery-routed jobs are always durable.",
+          },
           announceChannel: {
             type: "string",
             description:
@@ -4671,7 +4687,8 @@ function createCronAndWorkflowTools(
         additionalProperties: false,
       },
       execute: async (args) => {
-        const conversationId = opts.getSession()?.conversationId;
+        const session = opts.getSession();
+        const conversationId = session?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
           return refusal({ error: "CronCreate requires an active owning conversation" });
         }
@@ -4706,7 +4723,7 @@ function createCronAndWorkflowTools(
         // Delivery-routed jobs are executed by the gateway from the persisted
         // task file — they must be durable or the gateway can never see them.
         const durable =
-          deliver !== undefined ? true : (boolValue(args.durable) ?? true);
+          deliver !== undefined ? true : (boolValue(args.durable) ?? false);
         const id = await addCronTask(
           schedule,
           prompt,
@@ -4723,6 +4740,7 @@ function createCronAndWorkflowTools(
         await startCronSchedulerRunner({
           conversationId,
           workspaceRoot: opts.workspaceRoot,
+          session: session ?? undefined,
         });
         return json({
           cron: {
@@ -4752,7 +4770,8 @@ function createCronAndWorkflowTools(
         additionalProperties: false,
       },
       execute: async (args) => {
-        const conversationId = opts.getSession()?.conversationId;
+        const session = opts.getSession();
+        const conversationId = session?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
           return refusal({ error: "CronDelete requires an active owning conversation" });
         }
@@ -4766,8 +4785,11 @@ function createCronAndWorkflowTools(
         );
         const existed = before.some((task) => task.id === id);
         await removeCronTasks([id], opts.workspaceRoot, conversationId);
-        const { getCronScheduler } = await import("../utils/cronScheduler.js");
-        await getCronScheduler().reschedule();
+        await startCronSchedulerRunner({
+          conversationId,
+          workspaceRoot: opts.workspaceRoot,
+          session: session ?? undefined,
+        });
         return json({ deleted: existed, id });
       },
     },
