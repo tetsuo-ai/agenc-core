@@ -19,6 +19,15 @@ for messages with matching provider and model provenance. Tool arguments
 must finish streaming before execution. Images remain unsupported on these
 two text model entries.
 
+On Node, native DeepSeek uses HTTP/1.1 through the existing dispatcher without
+changing its TLS or proxy policy. The HTTP/2 fetch path can queue a POST body
+behind another streaming response: a Low request was observed waiting 44 seconds
+before its body was sent while a High conversation ran. The provider-scoped
+transport lets separate conversations use concurrent HTTPS connections. Explicit
+`fetchImpl` transports remain authoritative, and Bun keeps its native stack.
+The regression test keeps one verified HTTPS response open and requires a second
+POST to finish before the first is released.
+
 Desktop can send the internal `session.applyConfig` request with an exclusive
 `reasoningEffort` field before a turn. It validates the selected model's
 native levels, rejects a running turn, records the durable runtime setting,
