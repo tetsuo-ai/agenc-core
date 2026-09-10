@@ -396,6 +396,15 @@ describe("attachmentsToMessages", () => {
     expect(content.match(/<\/system-reminder>/g)).toHaveLength(1);
   });
 
+  test.each(["skill_listing", "skill_relevance"] as const)("%s explains conditional Skill discovery without promising availability", kind => {
+    const content = attachmentsToMessages([{ kind, content: "- parser-tests: Write parser tests" }])[0]?.content;
+    expect(content).toContain("use Skill when it is callable");
+    expect(content).toContain("if system.searchTools is callable, find and select Skill there");
+    expect(content).toContain("wait for its schema before invoking it");
+    expect(content).toContain("Never call a listed skill name as a tool");
+    expect(content).not.toContain("invoke the Skill tool before responding");
+  });
+
   test("renders agent_listing_delta in initial vs delta modes", () => {
     const initial = attachmentsToMessages([
       {

@@ -64,6 +64,8 @@ import {
   authorizeBypassPermissionsConsent,
   canonicalizeBypassPermissionsCwd,
   loadBypassPermissionsConsent,
+  prepareBypassPermissionsConsent,
+  type PreparedBypassPermissionsConsent,
 } from "../permissions/bypass-consent-state.js";
 import {
   isPermissionMode,
@@ -3523,6 +3525,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
         let transitionContext = liveCurrent;
         let workspacePath: string | undefined;
+        let preparedBypassConsent: PreparedBypassPermissionsConsent | undefined;
         if (target === "bypassPermissions") {
           try {
             const canonicalCwd = canonicalizeBypassPermissionsCwd(
@@ -3544,8 +3547,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               }
             }
             if (params.bypassAuthority === "operator_tool_approval") {
+              if (stateRepository === undefined) {
+                throw new Error("Explicit bypass consent requires runtime-state persistence");
+              }
               transitionContext = authorizeBypassPermissionsConsent(
                 transitionContext,
+                canonicalCwd,
+              );
+              // The user's live permission choice must survive cold restore.
+              // Publish durable exact-cwd consent with the permission registry,
+              // never as an eager write or an implicit restore-time grant.
+              preparedBypassConsent = prepareBypassPermissionsConsent(
+                stateRepository,
                 canonicalCwd,
               );
             }
@@ -3593,6 +3606,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           sameModeAutoAuthorityRevoked || liveCurrent.mode !== target;
         return {
           next: nextCtx,
+          ...(preparedBypassConsent !== undefined
+            ? { preparedUpdate: preparedBypassConsent }
+            : {}),
           metadata: {
             runtimeSettings: {
               reason: "permission_mode_changed",

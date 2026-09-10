@@ -317,6 +317,31 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       },
     );
 
+    test("ollama takes the reduced tool catalog without the grammar gate", () => {
+      // Ollama serves the same 7-32B model class, so it needs the small
+      // catalog. It is not grammar-constrained: it accepts the full JSON
+      // Schema dialect, so schema rewriting and the /no_think suffix stay
+      // off until they are measured against it.
+      expect(usesLocalToolProfile("ollama")).toBe(true);
+
+      const hints = chatCompletionsCapabilityHintsForProvider(
+        "ollama",
+        "qwen2.5-coder:7b",
+      );
+      expect(hints.requiresGrammarSafeToolSchemas).toBe(false);
+      expect(hints.outputTokensCeiling).toBeUndefined();
+      expect(hints.reasoningSoftSwitchSuffix).toBeUndefined();
+    });
+
+    test("a local qwen3 on ollama still gets no prompt-level think switch", () => {
+      const hints = chatCompletionsCapabilityHintsForProvider(
+        "ollama",
+        "qwen3:8b",
+      );
+      expect(hints.reasoningSoftSwitchSuffix).toBeUndefined();
+      expect(hints.requiresGrammarSafeToolSchemas).toBe(false);
+    });
+
     test("only local qwen3 models receive the no-think prompt switch", () => {
       expect(
         chatCompletionsCapabilityHintsForProvider(

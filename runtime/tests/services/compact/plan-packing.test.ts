@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { LLMMessage } from "../../../src/llm/types.js";
+import { conservativeBytesPerToken } from "../../../src/llm/token-accounting.js";
 import {
   accountCompactionCall,
   buildCompactionMapReducePlan,
@@ -23,11 +24,16 @@ const SOURCE_BINDING = "rollout:/packing-regression#epoch:1";
 const DIGEST = "a".repeat(64);
 const CONTEXT_WINDOW_TOKENS = 65_536;
 const OUTPUT_RESERVE_TOKENS = 256;
-// Sized so one semantic unit nearly fills a chunk under the accounting
-// catalogued Grok bytes-per-token divisor. Calibrated in bytes, not tokens: the
-// packing geometry this test pins (one unit per chunk, 63 chunks, 3 levels)
-// only holds while a unit stays just under the per-chunk budget.
-const UNIT_TEXT_BYTES = 200_000;
+const PROVIDER = "grok";
+const MODEL = "grok-4.5";
+// Fill 80% of the available input estimate, leaving room for framing and its
+// safety margin while preventing two units from fitting. Derive bytes from
+// the real endpoint estimator: a fixed byte fixture stopped exercising the
+// 63-chunk boundary when accounting adopted catalogued tokenizer ratios.
+const UNIT_TEXT_BYTES = Math.floor(
+  (CONTEXT_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS) * 0.8 *
+    conservativeBytesPerToken(PROVIDER, MODEL),
+);
 const NEAR_MAXIMUM_CHUNKS = MAX_COMPACTION_CHUNKS - 1;
 const STRUCTURED_TRANSCRIPT_VERSION = 1;
 const STRUCTURED_TRANSCRIPT_KIND = "untrusted_compaction_transcript";
@@ -172,8 +178,8 @@ function packingOptions(
     } as CompactContext,
     source,
     systemPrompts: SYSTEM_PROMPTS,
-    providerName: "grok",
-    model: "grok-4.5",
+    providerName: PROVIDER,
+    model: MODEL,
     messageSourceRefs: refs,
   };
 }

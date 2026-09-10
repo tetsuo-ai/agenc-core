@@ -255,6 +255,20 @@ const GRAMMAR_CONSTRAINED_TOOL_PROVIDERS = new Set([
   "openai-compatible",
 ]);
 
+// Providers that serve small local models and therefore get the
+// reduced tool catalog (see LOCAL_PROFILE_TOOL_NAMES). This is a
+// separate axis from the grammar constraint above: a server can need
+// a smaller catalog without compiling tool schemas into a GBNF
+// grammar. Ollama is the common case — it accepts the full JSON
+// Schema dialect, so it must not inherit the grammar-safe rewrite or
+// the /no_think prompt suffix, but its models are the same 7-32B
+// class that the frontier catalog drowns.
+const LOCAL_TOOL_PROFILE_PROVIDERS = new Set([
+  "lmstudio",
+  "openai-compatible",
+  "ollama",
+]);
+
 /**
  * Lightweight test for the upstream-provider reasoning model family.
  * Mirrors the regex in `capabilities.ts:isOpenAIReasoningModel` so we
@@ -351,13 +365,14 @@ const LOCAL_PROFILE_TOOL_NAMES = new Set([
 
 /**
  * Whether the provider gets the reduced local tool catalog. Keyed on
- * the same set as the grammar constraints: these are the providers
- * that serve small local models.
+ * its own provider set, not on the grammar constraints: the catalog
+ * size and the wire-schema dialect are independent properties of a
+ * local server.
  */
 export function usesLocalToolProfile(
   providerName: string | undefined,
 ): boolean {
-  return GRAMMAR_CONSTRAINED_TOOL_PROVIDERS.has(
+  return LOCAL_TOOL_PROFILE_PROVIDERS.has(
     normalizeProviderIdentity(providerName, "local tool profile") ?? "",
   );
 }

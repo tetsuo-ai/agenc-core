@@ -15,6 +15,7 @@ import { openStateDatabases, type StateSqliteDriver } from "../../src/state/sqli
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import type { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { isWorkflowApprovalSession } from "../../src/permissions/approval-failure.js";
+import { approvalResponseKey } from "../../src/permissions/approval-response-key.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -76,6 +77,36 @@ function ask(owner: Session, requesting: Session, callId = "call_1", signal?: Ab
 }
 
 describe("live workflow approvals", () => {
+  it.each([false, true])("separates sequential scopes without changing response routing (workflow=%s)", async (workflow) => {
+    const broker = new LiveApprovalBroker();
+    const owner = sessionFixture("scope-owner");
+    cleanups.push(broker.register(owner, { workflow, isActive: () => true }));
+    const first = ask(owner, owner, "same-call");
+    await Promise.resolve();
+    const firstPending = broker.list(owner.conversationId)[0]!;
+    const responseKey = broker.pending(owner.conversationId, firstPending.requestId)!.responseKey;
+    expect(responseKey).toBe(approvalResponseKey(owner, "same-call"));
+    expect(firstPending.requestId).not.toBe("same-call");
+    expect(broker.resolve(owner.conversationId, firstPending.requestId, { kind: "approved" })).toBe(true);
+    expect((await first).decision.kind).toBe("approved");
+
+    const second = requestApproval({
+      ctx: { ...context(owner, "same-call"), toolName: "exec_command" },
+      resolver: owner.services.approvalResolver,
+      args: { command: "git status", network: ["new.example"] },
+    });
+    await Promise.resolve();
+    const secondPending = broker.list(owner.conversationId)[0]!;
+    expect(secondPending.requestId).not.toBe(firstPending.requestId);
+    expect(broker.pending(owner.conversationId, secondPending.requestId)!.responseKey).toBe(responseKey);
+    expect(broker.resolve(owner.conversationId, firstPending.requestId, { kind: "approved" })).toBe(false);
+    expect(broker.resolve(owner.conversationId, "same-call", { kind: "approved" })).toBe(false);
+    expect(broker.list(owner.conversationId)).toHaveLength(1);
+    expect(broker.resolve(owner.conversationId, secondPending.requestId, { kind: "denied" })).toBe(true);
+    expect((await second).decision.kind).toBe("denied");
+    expect(approvalResponseKey(owner, "same-call")).toBe("same-call");
+  });
+
   it("installs the resolver at workflow bootstrap and resumes exactly one accepted action through lifecycle RPC", async () => {
     const directory = mkdtempSync(join(tmpdir(), "agenc-live-approval-"));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));

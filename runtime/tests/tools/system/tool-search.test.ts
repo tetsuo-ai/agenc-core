@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ToolCatalogEntry } from "../types.js";
 import { encodeMcpToolNameForWire } from "../../llm/wire/mcp-tool-naming.js";
 import { createToolSearchTool } from "./tool-search.js";
+import { SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./coding-common.js";
 
 function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
   return {
@@ -58,6 +59,90 @@ describe("system.searchTools", () => {
     });
   });
 
+  test.each([
+    { select: "mcp.qa-helper.lookup_marker" },
+    { query: "select:mcp.qa-helper.lookup_marker" },
+    { select: "mcp.qa-helper.lookup_marker", query: " ", maxResults: 1 },
+  ])("select-only loading does not dump an unrelated 123-tool catalog (%j)", async args => {
+    const selectedName = "mcp.qa-helper.lookup_marker";
+    const catalog = [deferredCatalogEntry(selectedName), ...Array.from({ length: 122 }, (_, i) => ({
+      ...deferredCatalogEntry(`unrelated.tool${i}`), description: "Unrelated schema documentation. ".repeat(30),
+    }))];
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(), getToolCatalog: () => catalog,
+      onDiscoverTools: names => discovered.push([...names]),
+    });
+    const result = await tool.execute({ ...args, [SESSION_ADVERTISED_TOOL_NAMES_ARG]: ["system.searchTools"] });
+    const payload = JSON.parse(result.content);
+    expect(payload.totalCatalogSize).toBe(123);
+    expect(payload.loaded).toEqual([selectedName]);
+    expect(payload.missingSelections).toEqual([]);
+    expect(payload.results).toHaveLength(1);
+    expect(payload.results[0]).toMatchObject({ name: selectedName, advertised: false, selected: true });
+    expect(payload.results[0].loadHint).toBeUndefined();
+    expect(payload.results[0].useHint).toContain("mcp__qa-helper__lookup_marker");
+    expect(discovered).toEqual([[selectedName]]);
+    expect(result.content.length).toBeLessThan(2_000);
+    expect(result.content).not.toContain("unrelated.tool");
+  });
+
+  test("deduplicates canonical selection aliases and reports missing identities without browsing", async () => {
+    const name = "mcp.qa-helper.lookup_marker";
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => [deferredCatalogEntry(name), deferredCatalogEntry("system.other")],
+      onDiscoverTools: names => discovered.push([...names]),
+    });
+    const payload = JSON.parse((await tool.execute({
+      select: [name, encodeMcpToolNameForWire(name), "qa-helper", "missing.exact"],
+      [SESSION_ADVERTISED_TOOL_NAMES_ARG]: [name],
+    })).content);
+    expect(payload.loaded).toEqual([name]);
+    expect(discovered).toEqual([[name]]);
+    expect(payload.missingSelections).toEqual(["missing.exact"]);
+    expect(payload.results.map((entry: { name: string }) => entry.name)).toEqual([name]);
+    expect(payload.results[0]).toMatchObject({ advertised: true, selected: true });
+    const missing = JSON.parse((await tool.execute({ select: "missing.exact" })).content);
+    expect(missing.loaded).toEqual([]);
+    expect(missing.missingSelections).toEqual(["missing.exact"]);
+    expect(missing.results).toEqual([]);
+  });
+
+  test("empty requests still browse and maxResults does not hide explicitly loaded tools", async () => {
+    const catalog = Array.from({ length: 70 }, (_, i) => deferredCatalogEntry(`system.tool${String(i).padStart(2, "0")}`));
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(), getToolCatalog: () => catalog,
+      onDiscoverTools: () => {},
+    });
+    expect(JSON.parse((await tool.execute({})).content).results).toHaveLength(50);
+    expect(JSON.parse((await tool.execute({ maxResults: 2 })).content).results).toHaveLength(2);
+    const selected = JSON.parse((await tool.execute({ select: [catalog[0]!.name, catalog[1]!.name], maxResults: 1 })).content);
+    expect(selected.loaded).toEqual([catalog[0]!.name, catalog[1]!.name]);
+    expect(selected.results).toHaveLength(2);
+  });
+
+  test.each([
+    { query: "browser" }, { family: "browser" }, { source: "plugin" }, { profile: "operator" },
+    { includeHidden: true }, { advertisedOnly: true },
+  ])("selection with an explicit search/filter preserves matching behavior (%j)", async filter => {
+    const selected = deferredCatalogEntry("system.selected");
+    const other = { ...deferredCatalogEntry("browser.inspect"), metadata: {
+      ...deferredCatalogEntry().metadata, family: "browser", source: "plugin", preferredProfiles: ["operator"],
+    } };
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(), getToolCatalog: () => [selected, other],
+      onDiscoverTools: () => {},
+    });
+    const payload = JSON.parse((await tool.execute({ select: selected.name, ...filter,
+      [SESSION_ADVERTISED_TOOL_NAMES_ARG]: [other.name],
+    })).content);
+    expect(payload.loaded).toEqual([selected.name]);
+    expect(payload.results.map((entry: { name: string }) => entry.name)).toEqual([selected.name, other.name]);
+    expect(payload.results[1]).toMatchObject({ advertised: true, selected: false });
+  });
+
   test("MCP search results tell the model to use the encoded provider function", async () => {
     const tool = createToolSearchTool({
       allowedPaths: [process.cwd()],
@@ -78,6 +163,26 @@ describe("system.searchTools", () => {
     expect(payload.results[0].useHint).toContain("Do not use exec_command");
     expect(payload.results[0].useHint).toContain("echo");
     expect(payload.results[0].useHint).toContain("Skill");
+  });
+
+  test("a search match does not claim a deferred MCP function is already callable", async () => {
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      getToolCatalog: () => [deferredCatalogEntry("mcp.qa-helper.lookup_marker")],
+      onDiscoverTools: names => discovered.push([...names]),
+    });
+    const searched = JSON.parse((await tool.execute({query:"qa-helper"})).content);
+    expect(searched.loaded).toEqual([]);
+    expect(discovered).toEqual([]);
+    expect(searched.results[0]).toMatchObject({advertised:false,selected:false});
+    expect(searched.results[0].useHint).toContain("not loaded yet");
+    expect(searched.results[0].useHint).toContain('{"select":"mcp.qa-helper.lookup_marker"}');
+    expect(searched.results[0].useHint).not.toContain("now available");
+    const loaded = JSON.parse((await tool.execute({select:"mcp.qa-helper.lookup_marker"})).content);
+    expect(loaded.results[0].useHint).toContain("now available");
+    expect(loaded.results[0].loadHint).toBeUndefined();
+    expect(discovered).toEqual([["mcp.qa-helper.lookup_marker"]]);
   });
 
   test("resolves a long hashed MCP selection through the live catalog", async () => {
@@ -137,6 +242,8 @@ describe("system.searchTools", () => {
       getToolCatalog: () => [
         deferredCatalogEntry("mcp.game-helper.game_tip"),
         deferredCatalogEntry("mcp.game-helper.score"),
+        deferredCatalogEntry("mcp.other-server.unrelated"),
+        deferredCatalogEntry("system.unrelated"),
       ],
       onDiscoverTools: () => {},
     });
@@ -150,6 +257,11 @@ describe("system.searchTools", () => {
       "mcp.game-helper.game_tip",
       "mcp.game-helper.score",
     ]);
+    expect(payload.results.every((entry: { selected: boolean }) => !entry.selected)).toBe(true);
+    const limited = JSON.parse((await tool.execute({ select: "game-helper", maxResults: 1 })).content);
+    expect(limited.results).toHaveLength(1);
+    expect(limited.loaded).toEqual([]);
+    expect(limited.missingSelections).toEqual(["game-helper"]);
   });
 
   test("sanitizes model-facing catalog result text without changing search matching", async () => {

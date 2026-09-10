@@ -326,13 +326,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     case "skill_listing": {
       const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
-        wrapSystemReminder(`${SKILL_LISTING_REMINDER_HEADER}\n\n${content}`),
+        wrapSystemReminder(`${SKILL_LISTING_REMINDER_HEADER} ${SKILL_LOADING_GUIDANCE}\n\n${content}`),
       );
     }
     case "skill_relevance": {
       const content = sanitizeSystemReminderContent(attachment.content);
       return userContextMessage(
-        wrapSystemReminder(`${SKILL_RELEVANCE_REMINDER_HEADER}\n\n${content}`),
+        wrapSystemReminder(`${SKILL_RELEVANCE_REMINDER_HEADER} ${SKILL_LOADING_GUIDANCE}\n\n${content}`),
       );
     }
     case "instruction_update": {
@@ -361,7 +361,7 @@ export const INSTRUCTION_UPDATE_MEMORY_HEADER =
 
 /** Opening sentence of the per-request `skill_relevance` reminder. */
 export const SKILL_RELEVANCE_REMINDER_HEADER =
-  "Skills relevant to this request that the listing above did not include. Invoke the Skill tool with the name when one fits:";
+  "Skills relevant to this request that the listing above did not include.";
 
 /**
  * Opening sentence of the rendered `skill_listing` reminder. The producer
@@ -369,7 +369,10 @@ export const SKILL_RELEVANCE_REMINDER_HEADER =
  * already in front of the model on this request.
  */
 export const SKILL_LISTING_REMINDER_HEADER =
-  "The following skills are available for use with the Skill tool. If a skill matches the user's request, invoke the Skill tool before responding.";
+  "The following skills are available for use with the Skill tool.";
+
+const SKILL_LOADING_GUIDANCE =
+  "If a skill fits, use Skill when it is callable. Otherwise, if system.searchTools is callable, find and select Skill there, then wait for its schema before invoking it. Never call a listed skill name as a tool or invent an unavailable call.";
 
 function permissionModeMessage(
   permissionModeReminder: NonNullable<LLMMessage["runtimeOnly"]>["permissionModeReminder"],

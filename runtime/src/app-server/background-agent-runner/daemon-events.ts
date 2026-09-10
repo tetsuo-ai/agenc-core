@@ -280,12 +280,24 @@ export function notificationFromDaemonEvent(
     isJsonObject(payload) &&
     typeof payload.callId === "string"
   ) {
+    if (event.sequence !== undefined &&
+        (typeof event.eventId !== "string" || event.eventId.length === 0)) {
+      throw new Error("canonical permission request has no event identity");
+    }
     return {
       jsonrpc: JSON_RPC_VERSION,
       method: "event.permission_request",
       params: {
         ...base,
-        requestId: payload.callId,
+        // Child forwarding supplies its namespaced occurrence ID. Canonical
+        // events use their immutable journal receipt; only unsequenced legacy
+        // notifications retain the historical invocation-ID contract.
+        requestId: typeof payload.requestId === "string"
+          ? payload.requestId
+          : event.sequence !== undefined
+            ? event.eventId!
+            : payload.callId,
+        callId: payload.callId,
         ...(typeof payload.toolName === "string"
           ? { toolName: payload.toolName }
           : {}),

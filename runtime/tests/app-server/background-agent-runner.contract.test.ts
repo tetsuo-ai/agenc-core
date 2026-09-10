@@ -71,6 +71,7 @@ import {
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
 import type { Session } from "../session/session.js";
+import type { JsonRecord } from "../config/json.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
@@ -451,6 +452,7 @@ function makeTopLevelRunner(opts: {
     next: ToolPermissionContext,
     current: ToolPermissionContext,
     metadata: unknown,
+    transactionPreparedUpdate?: PermissionContextPreparedUpdate,
   ): Promise<void> => {
     await opts.permissionBeforeUpdateGate?.(next, current);
     const preparedResult = await permissionBeforeUpdate?.(
@@ -458,23 +460,26 @@ function makeTopLevelRunner(opts: {
       current,
       metadata,
     );
-    const prepared =
+    const ownerPrepared =
       typeof preparedResult === "function"
         ? { commit: preparedResult }
         : preparedResult;
+    const preparedUpdates = [ownerPrepared, transactionPreparedUpdate].filter(
+      (update): update is PermissionContextPreparedUpdate => update !== undefined,
+    );
     let state: "prepared" | "committed" | "rolled_back" = "prepared";
     const publication: PermissionContextPublication = {
       commit: async () => {
         if (opts.canonicalRuntimeSettings !== false) permissionContext = next;
         try {
-          await prepared?.commit();
+          for (const update of preparedUpdates) await update.commit();
           state = "committed";
         } catch (error) {
           if (opts.canonicalRuntimeSettings !== false) {
             permissionContext = current;
           }
           state = "rolled_back";
-          await prepared?.rollback?.();
+          for (const update of [...preparedUpdates].reverse()) await update.rollback?.();
           throw error;
         }
       },
@@ -483,7 +488,7 @@ function makeTopLevelRunner(opts: {
         if (opts.canonicalRuntimeSettings !== false)
           permissionContext = current;
         state = "rolled_back";
-        await prepared?.rollback?.();
+        for (const update of [...preparedUpdates].reverse()) await update.rollback?.();
       },
     };
     try {
@@ -501,7 +506,7 @@ function makeTopLevelRunner(opts: {
       await publication.rollback();
       throw error;
     } finally {
-      await prepared?.settle?.();
+      for (const update of [...preparedUpdates].reverse()) await update.settle?.();
     }
     permissionUpdates.push(next);
   };
@@ -520,6 +525,7 @@ function makeTopLevelRunner(opts: {
         transaction: (current: ToolPermissionContext) => Promise<{
           readonly next: ToolPermissionContext | null;
           readonly metadata?: unknown;
+          readonly preparedUpdate?: PermissionContextPreparedUpdate;
           readonly result: () => T;
         }>,
       ): Promise<T> =>
@@ -534,6 +540,7 @@ function makeTopLevelRunner(opts: {
               mutation.next,
               current,
               mutation.metadata,
+              mutation.preparedUpdate,
             );
           }
           return mutation.result();
@@ -616,10 +623,11 @@ function makeTopLevelRunner(opts: {
   // tests can still pass an explicit invalid workspaceRoot.
   const workspaceRoot = opts.workspaceRoot ?? process.cwd();
   const persistedBypassConsent = new Set(opts.persistedBypassConsent ?? []);
+  const runtimeStateNamespaces = new Map<string, JsonRecord>();
   const stateRepository = {
     reload: vi.fn(() => ({})),
-    getNamespace: vi.fn((namespace: string) =>
-      namespace === "permissions" && persistedBypassConsent.size > 0
+    getNamespace: vi.fn((namespace: string): JsonRecord =>
+      runtimeStateNamespaces.get(namespace) ?? (namespace === "permissions" && persistedBypassConsent.size > 0
         ? {
             bypassPermissionsAcceptedByCwd: Object.fromEntries(
               [...persistedBypassConsent].map((cwd) => {
@@ -637,8 +645,13 @@ function makeTopLevelRunner(opts: {
               }),
             ),
           }
-        : {},
+        : {}),
     ),
+    updateNamespace: vi.fn((namespace: string, update: (current: JsonRecord) => JsonRecord) => {
+      const next = update(stateRepository.getNamespace(namespace));
+      runtimeStateNamespaces.set(namespace, next);
+      return next;
+    }),
   };
   const configPublicationOptions: unknown[] = [];
   const configStore = {
@@ -4437,7 +4450,7 @@ describe("AgenC delegate background-agent runner", () => {
           method: "event.session_event",
           params: expect.objectContaining({ event: expect.objectContaining({
             type: "permission_decision",
-            payload: expect.objectContaining({ callId: requestId, decision }),
+            payload: expect.objectContaining({ requestId, decision }),
           }) }),
         })));
       };
@@ -4455,11 +4468,24 @@ describe("AgenC delegate background-agent runner", () => {
       expect(prompt.params).not.toHaveProperty("sequence");
       const memoryRequestId = requestIdFor(memory.child.conversationId, "memory-glob");
       expect(memoryRequestId).not.toBe("memory-glob");
+      expect(prompt.params.callId).toBe("memory-glob");
+      expect(memoryRequestId).toBe(prompt.params.eventId);
       expect(await runner.resolveToolDecision(agentId, { requestId: memoryRequestId, decision: { kind: decisionKind } })).toBe(true);
       await expect(pending).resolves.toMatchObject({ decision: { kind: decisionKind }, source: "resolver" });
       await expectDecision(memoryRequestId, decisionKind);
       expect(childEvents).toEqual(["request_permissions", "permission_decision"]);
       expect(await runner.getAgentSnapshot(agentId)).toMatchObject({ status: "running" });
+
+      // A second scope on this invocation must not reuse the first answer.
+      notifications.length = 0;
+      const repeated = makeRequest(memory.child, "memory-glob");
+      await vi.waitFor(() => requestIdFor(memory.child.conversationId, "memory-glob"));
+      const repeatedRequestId = requestIdFor(memory.child.conversationId, "memory-glob");
+      expect(repeatedRequestId).not.toBe(memoryRequestId);
+      expect(await runner.resolveToolDecision(agentId, { requestId: memoryRequestId, decision: { kind: "approved" } })).toBe(false);
+      expect(await runner.resolveToolDecision(agentId, { requestId: repeatedRequestId, decision: { kind: "denied" } })).toBe(true);
+      await expect(repeated).resolves.toMatchObject({ decision: { kind: "denied" } });
+      await expectDecision(repeatedRequestId, "denied");
 
       const forged = makeChild(agentId);
       await expect(makeRequest(forged.child, "forged")).resolves.toMatchObject({ decision: { kind: "denied" } });
@@ -4562,16 +4588,22 @@ describe("AgenC delegate background-agent runner", () => {
         expect.objectContaining({
           method: "event.permission_request",
           params: expect.objectContaining({
-            requestId: "permission-call-1",
+            callId: "permission-call-1",
+            requestId: expect.any(String),
             eventId: expect.any(String),
             sequence: expect.any(Number),
           }),
         }),
       ),
     );
+    const permissionPrompt = emitted.find((event) =>
+      (event as { method?: string }).method === "event.permission_request",
+    ) as { params: { requestId: string; eventId: string } };
+    expect(permissionPrompt.params.requestId).toBe(permissionPrompt.params.eventId);
+    expect(permissionPrompt.params.requestId).not.toBe("permission-call-1");
     expect(
       await runner.resolveToolDecision("session-durable-permission", {
-        requestId: "permission-call-1",
+        requestId: permissionPrompt.params.requestId,
         decision: { kind: "approved" },
       }),
     ).toBe(true);
@@ -4629,6 +4661,69 @@ describe("AgenC delegate background-agent runner", () => {
         },
       },
     });
+  });
+
+  it("binds distinct scopes of one invocation to distinct occurrences and rejects stale replies", async () => {
+    const agentId = "session-permission-occurrences";
+    const { runner, session } = makeTopLevelRunner({ conversationId: agentId });
+    const emitted: unknown[] = [];
+    await runner.startAgent({ objective: "permission occurrences", unattendedAllow: [], unattendedDeny: [] });
+    await runner.attachAgentSessionEvents(agentId, { sessionId: "attached", emit: (event) => { emitted.push(event); } });
+    const resolver = (session.services as { approvalResolver: ApprovalResolver }).approvalResolver;
+    const ctx = {
+      invocation: {
+        session, turn: { subId: "turn-scopes" }, callId: "shared-call",
+        toolName: { name: "request_permissions" },
+        payload: { kind: "function", arguments: "{}" }, source: "direct",
+      } as never,
+      callId: "shared-call", toolName: "request_permissions", turnId: "turn-scopes",
+    };
+    // A real journaled session cannot silently downgrade to legacy call IDs.
+    await expect(resolver.request(ctx)).resolves.toMatchObject({ kind: "denied" });
+    const prompts = () => emitted.filter((event) =>
+      (event as { method?: string }).method === "event.permission_request",
+    ) as { params: { requestId: string; eventId: string; callId: string; input: unknown } }[];
+    try {
+      const first = requestApproval({ ctx, args: { network: ["first.example"] }, resolver });
+      await vi.waitFor(() => expect(prompts()).toHaveLength(1));
+      const firstId = prompts()[0]!.params.requestId;
+      expect(await runner.resolveToolDecision(agentId, { requestId: firstId, decision: { kind: "approved" } })).toBe(true);
+      await expect(first).resolves.toMatchObject({ decision: { kind: "approved" } });
+
+      let secondSettled = false;
+      const second = requestApproval({ ctx, args: { network: ["second.example"] }, resolver }).then((result) => {
+        secondSettled = true;
+        return result;
+      });
+      await vi.waitFor(() => expect(prompts()).toHaveLength(2));
+      const secondId = prompts()[1]!.params.requestId;
+      expect(secondId).not.toBe(firstId);
+      for (const prompt of prompts()) {
+        expect(prompt.params.requestId).toBe(prompt.params.eventId);
+        expect(prompt.params.callId).toBe("shared-call");
+      }
+      expect(prompts().map((prompt) => prompt.params.input)).toEqual([
+        { network: ["first.example"] }, { network: ["second.example"] },
+      ]);
+      for (const requestId of [firstId, "shared-call"]) {
+        for (const kind of ["approved", "denied"] as const) {
+          expect(await runner.resolveToolDecision(agentId, { requestId, decision: { kind } })).toBe(false);
+        }
+        expect(await runner.cancelTool(agentId, { requestId })).toBe(false);
+      }
+      expect(secondSettled).toBe(false);
+      expect(await runner.resolveToolDecision(agentId, { requestId: secondId, decision: { kind: "denied" } })).toBe(true);
+      await expect(second).resolves.toMatchObject({ decision: { kind: "denied" } });
+
+      const third = requestApproval({ ctx, args: { filesystem: ["/new-scope"] }, resolver });
+      await vi.waitFor(() => expect(prompts()).toHaveLength(3));
+      const thirdId = prompts()[2]!.params.requestId;
+      expect(await runner.cancelTool(agentId, { requestId: thirdId })).toBe(true);
+      await expect(third).resolves.toMatchObject({ decision: { kind: "abort" } });
+      expect(await runner.resolveToolDecision(agentId, { requestId: thirdId, decision: { kind: "approved" } })).toBe(false);
+    } finally {
+      await runner.stopAgent(agentId, "test_cleanup");
+    }
   });
 
   it("aborts and journals a pending permission before stop seals the terminal tail", async () => {
@@ -6563,7 +6658,7 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("setAgentPermissionMode binds exact cwd for explicit tool approval", async () => {
-    const { runner, permissionUpdates } = makeTopLevelRunner({
+    const { runner, permissionUpdates, stateRepository } = makeTopLevelRunner({
       conversationId: "parent-session-tool-approval",
       argv: ["node", "agenc"],
       canonicalRuntimeSettings: true,
@@ -6585,6 +6680,96 @@ describe("AgenC delegate background-agent runner", () => {
       mode: "bypassPermissions",
       bypassPermissionsAcceptedIn: [process.cwd()],
     });
+    const cwd = realpathSync(process.cwd());
+    const identity = statSync(cwd);
+    expect(stateRepository.getNamespace("permissions")).toEqual({
+      bypassPermissionsAcceptedByCwd: {
+        [cwd]: { version: 1, canonicalCwd: cwd, dev: String(identity.dev), ino: String(identity.ino) },
+      },
+    });
+  });
+
+  it("cold-restores user-selected bypass using consent persisted by the live switch", async () => {
+    const agentId = "live-bypass-cold-restore";
+    const cwd = realpathSync(process.cwd());
+    const live = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    await live.runner.startAgent({ objective: "work", cwd });
+    expect(live.stateRepository.getNamespace("permissions")).toEqual({});
+    await live.runner.setAgentPermissionMode(agentId, {
+      sessionId: agentId, mode: "bypassPermissions", bypassAuthority: "operator_tool_approval",
+    });
+    const persisted = structuredClone(live.stateRepository.getNamespace("permissions"));
+    const settings = { ...bypassRestoreSettings("bypassPermissions", cwd), autoModeAvailable: false };
+    expect(recordedRuntimeSettingsEvents(live.rolloutItems).at(-1)?.msg?.payload).toMatchObject(settings);
+
+    // A new registry starts without in-memory consent. Only the state written
+    // by the first runner crosses this simulated process boundary.
+    const cold = makeTopLevelRunner({
+      conversationId: agentId, canonicalRuntimeSettings: true,
+      rolloutItems: [runtimeSettingsRolloutItem(agentId, settings)],
+    });
+    cold.stateRepository.getNamespace.mockImplementation(namespace => namespace === "permissions" ? persisted : {});
+    expect(cold.permissionModeRegistry.current().bypassPermissionsAcceptedIn ?? []).toEqual([]);
+    await expect(cold.runner.restoreAgent({
+      agentId, objective: "work", explicitColdResume: true, runtimeSettings: settings,
+    })).resolves.toBe(true);
+    expect(cold.permissionModeRegistry.current()).toMatchObject({
+      mode: "bypassPermissions", bypassPermissionsAcceptedIn: [cwd],
+    });
+    expect(cold.stateRepository.updateNamespace).not.toHaveBeenCalled();
+  });
+
+  it("does not persist live bypass consent if runtime settings preparation fails", async () => {
+    const agentId = "live-bypass-settings-failure";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const previous = h.permissionModeRegistry.current();
+    h.session.prepareEmit.mockImplementationOnce(() => { throw new Error("injected settings append failure"); });
+    await expect(h.runner.setAgentPermissionMode(agentId, {
+      sessionId: agentId, mode: "bypassPermissions", bypassAuthority: "operator_tool_approval",
+    })).rejects.toThrow("injected settings append failure");
+    expect(h.permissionModeRegistry.current()).toBe(previous);
+    expect(h.stateRepository.updateNamespace).not.toHaveBeenCalled();
+    expect(h.stateRepository.getNamespace("permissions")).toEqual({});
+  });
+
+  it.each([false, true])("rolls back a partially failed live consent write and preserves prior consent (prior=%s)", async priorConsent => {
+    const agentId = `live-bypass-consent-write-failure-${priorConsent}`;
+    const cwd = realpathSync(process.cwd());
+    const h = makeTopLevelRunner({
+      conversationId: agentId, canonicalRuntimeSettings: true,
+      ...(priorConsent ? { persistedBypassConsent: [cwd] } : {}),
+    });
+    await h.runner.startAgent({ objective: "work", cwd });
+    const previous = h.permissionModeRegistry.current();
+    const previousState = structuredClone(h.stateRepository.getNamespace("permissions"));
+    const update = h.stateRepository.updateNamespace.getMockImplementation()!;
+    h.stateRepository.updateNamespace.mockImplementationOnce((namespace, mutate) => {
+      update(namespace, mutate);
+      throw new Error("injected consent persistence failure");
+    });
+    await expect(h.runner.setAgentPermissionMode(agentId, {
+      sessionId: agentId, mode: "bypassPermissions", bypassAuthority: "operator_tool_approval",
+    })).rejects.toThrow("injected consent persistence failure");
+    expect(h.permissionModeRegistry.current()).toBe(previous);
+    expect(h.stateRepository.getNamespace("permissions")).toEqual(previousState);
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload).toMatchObject({
+      reason: "compensating_rollback", permissionMode: "default",
+    });
+  });
+
+  it("does not grant live bypass consent when managed policy disables it", async () => {
+    const agentId = "live-bypass-policy-disabled";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    h.forcePermissionContextForTesting({
+      ...h.permissionModeRegistry.current(), bypassPermissionsModeDisabledByPolicy: true,
+    });
+    await expect(h.runner.setAgentPermissionMode(agentId, {
+      sessionId: agentId, mode: "bypassPermissions", bypassAuthority: "operator_tool_approval",
+    })).rejects.toThrow(/requires explicit consent/u);
+    expect(h.stateRepository.updateNamespace).not.toHaveBeenCalled();
+    expect(h.permissionModeRegistry.current().mode).not.toBe("bypassPermissions");
   });
 
   it("serializes a default request behind bypass durability without a stale no-op", async () => {

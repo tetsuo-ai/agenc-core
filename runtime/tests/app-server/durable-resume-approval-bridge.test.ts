@@ -17,6 +17,7 @@ import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
 } from "../../src/bin/bootstrap.js";
+import { requestApproval } from "../../src/permissions/guardian/arbiter.js";
 import type { ReviewDecision } from "../../src/permissions/review-decision.js";
 import { resolveUnattendedPermissionDecision } from "../../src/permissions/unattended-policy.js";
 import { computeCheckpointPrefixHashV3 } from "../../src/session/durable-checkpoint-reader.js";
@@ -53,7 +54,7 @@ import { VERSION } from "../../src/version.js";
 
 const CONVERSATION_ID = "session-durable-resume-approval";
 const TURN_ID = "orphan-turn-2239";
-const APPROVAL_REQUEST_ID = "resume-approval-probe";
+const APPROVAL_CALL_ID = "resume-approval-probe";
 
 interface ResumeObservation {
   readonly resume: boolean;
@@ -650,22 +651,46 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
 
     const runner = makeRunner();
     let approvalProbe: Promise<ReviewDecision> | undefined;
+    let approvalRequestId: string | undefined;
     const resumeDriven = Promise.withResolvers<void>();
     const observations = recordResumeObservations((session) => {
       // Ask for approval exactly the way `execute-tools` does, from inside the
       // resumed turn. This is the property the issue is about: the request must
       // become a pending decision the daemon can deliver to a client, not an
       // instant refusal.
-      approvalProbe = (
-        session.services as {
-          approvalResolver?: {
-            request: (ctx: unknown) => Promise<ReviewDecision>;
-          };
+      const unsubscribe = session.eventLog.subscribe((event) => {
+        if (
+          event.msg.type === "request_permissions" &&
+          event.msg.payload.callId === APPROVAL_CALL_ID
+        ) {
+          approvalRequestId = event.eventId;
         }
-      ).approvalResolver?.request({
-        callId: APPROVAL_REQUEST_ID,
-        invocation: { session },
       });
+      approvalProbe = requestApproval({
+        ctx: {
+          callId: APPROVAL_CALL_ID,
+          toolName: "Glob",
+          turnId: TURN_ID,
+          invocation: {
+            session,
+            turn: {
+              subId: TURN_ID,
+              cwd: workspace,
+              approvalPolicy: { value: "on_request" },
+              sandboxPolicy: { value: "workspace_write" },
+            },
+            callId: APPROVAL_CALL_ID,
+            toolName: { name: "Glob" },
+            payload: { kind: "function", arguments: '{"pattern":"**/*"}' },
+            source: "direct",
+          } as never,
+        },
+        args: { pattern: "**/*" },
+        resolver: session.services.approvalResolver,
+        // The runTurn stub above does not install a real active-turn cell.
+        // Supply its fixed turn identity while exercising the real arbiter.
+        getActiveTurnId: () => TURN_ID,
+      }).then((result) => result.decision).finally(unsubscribe);
       resumeDriven.resolve();
     });
 
@@ -691,9 +716,9 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     ]);
 
     // The approval is pending on the daemon, not denied: a client answer
-    // reaches it. `#requestDaemonToolDecision` returns DENIED outright when
-    // the agent is absent from `#active`, so this also proves the agent was
-    // registered before the resumed turn ran.
+    // reaches it through the broker's journaled occurrence ID, not its call ID.
+    // This also proves the runner registered the recovered session before the
+    // resumed turn asked for approval.
     expect(approvalProbe).toBeDefined();
     let settled = false;
     void approvalProbe?.then(() => {
@@ -701,10 +726,20 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     });
     await new Promise((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
+    expect(approvalRequestId).toEqual(expect.any(String));
+    expect(approvalRequestId).not.toBe(APPROVAL_CALL_ID);
 
     await expect(
       runner.resolveToolDecision(CONVERSATION_ID, {
-        requestId: APPROVAL_REQUEST_ID,
+        requestId: APPROVAL_CALL_ID,
+        decision: { kind: "approved" },
+      }),
+    ).resolves.toBe(false);
+    expect(settled).toBe(false);
+
+    await expect(
+      runner.resolveToolDecision(CONVERSATION_ID, {
+        requestId: approvalRequestId!,
         decision: { kind: "approved" },
       }),
     ).resolves.toBe(true);

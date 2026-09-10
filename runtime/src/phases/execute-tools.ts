@@ -393,11 +393,12 @@ export function ensureStreamingToolExecutor(
 
   const runtime = createToolExecutionRuntime();
   const router = routerFromRegistry(session.services.registry);
-  const liveDispatchOptions = buildLiveToolDispatchOptions(
-    ctx,
-    session,
-    signal,
-  );
+  const liveDispatchOptions: LiveToolDispatchOptions = {
+    ...buildLiveToolDispatchOptions(ctx, session, signal),
+    ...(state.samplingRequestToolNames !== undefined
+      ? { advertisedToolNames: Object.freeze([...state.samplingRequestToolNames]) }
+      : {}),
+  };
 
   // Optional-chained: session shims in tests (and older embedders) may not
   // carry an activeTurn slot at all.

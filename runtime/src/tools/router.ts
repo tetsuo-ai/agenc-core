@@ -195,6 +195,8 @@ export interface LiveToolDispatchOptions {
   readonly permissionContext?: ToolEvaluatorContext | null;
   readonly modeChangeRegistry?: PermissionModeRegistry;
   readonly discoveredToolNames?: ReadonlySet<string>;
+  /** Exact request catalog for discovery hints only, not execution permission. */
+  readonly advertisedToolNames?: readonly string[];
   readonly agencHome?: string;
   readonly onProgress?: ToolProgressCallback;
   readonly onHookError?: (
@@ -1801,6 +1803,9 @@ function rawDispatchOptions(
     ...(opts.discoveredToolNames !== undefined
       ? { discoveredToolNames: opts.discoveredToolNames }
       : {}),
+    ...(opts.advertisedToolNames !== undefined
+      ? { advertisedToolNames: opts.advertisedToolNames }
+      : {}),
     ...(opts.preHookPermissionDecision !== undefined
       ? { preHookPermissionDecision: opts.preHookPermissionDecision }
       : {}),
@@ -1868,10 +1873,11 @@ function approvalRequestFromResolver(
   invocation: ToolInvocation,
   resolver: ApprovalResolver,
 ): ApprovalRequestFn {
-  return async ({ currentTurnId, signal }): Promise<ModalDecision> => {
+  return async ({ currentTurnId, signal, requestEventId }): Promise<ModalDecision> => {
     const reviewDecision = await resolver.request({
       invocation,
       callId: invocation.callId,
+      ...(requestEventId !== undefined ? { requestEventId } : {}),
       toolName: nameDisplay(invocation.toolName),
       turnId: currentTurnId,
       ...networkPolicyInterfacesFromTurn(invocation.turn),

@@ -7,10 +7,14 @@
 
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { compactConversation } from "./compact.js";
+import { readCompactionTransactionAdapter } from "./transaction.js";
 import { isTransientProviderError } from "../../recovery/api-errors.js";
 import {
   CompactionCannotReduceError,
+  CompactionFailurePersistenceError,
   CompactionReconstructionRequiredError,
+  CompactionSummaryRejectedError,
+  CompactionTransactionError,
 } from "./transaction-types.js";
 import {
   estimateMessagesTokens,
@@ -21,6 +25,7 @@ import {
 } from "./_deps/runtime.js";
 import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
 import type { ProviderEnvironment } from "../../llm/provider-options.js";
+import { usesLocalToolProfile } from "../../llm/wire/capability-gating.js";
 
 export type AutoCompactTrackingState = {
   readonly compacted?: boolean;
@@ -119,6 +124,8 @@ export async function autoCompactIfNeeded(
    */
   readonly skippedReason?: string;
   readonly skippedCode?: CompactionCannotReduceError["code"];
+  /** Proven terminal summary rejection with unchanged canonical history. */
+  readonly advisoryFailure?: "summary_rejected";
 }> {
   if (querySource === "compact" || querySource === "session_memory") {
     return { wasCompacted: false };
@@ -135,7 +142,14 @@ export async function autoCompactIfNeeded(
   }
   const tokenCount = Math.max(
     0,
-    estimateMessagesTokens(messages, context) - snipTokensFreed,
+    estimateMessagesTokens(messages, context, {
+      // Local admission already fits the output reservation to remaining room.
+      // The proactive threshold separately reserves context headroom; charging
+      // the nominal output again can compact a single short first message.
+      // Forced/reactive and model-downshift paths retain their full accounting.
+      inputOnly: options.force !== true && querySource !== "model_downshift" &&
+        usesLocalToolProfile(context.provider?.name),
+    }) - snipTokensFreed,
   );
   if (options.force !== true && tokenCount < autoCompactThreshold(context)) {
     return { wasCompacted: false, consecutiveFailures: 0 };
@@ -160,6 +174,10 @@ export async function autoCompactIfNeeded(
       // auto-compaction for the rest of the turn on benign cancels).
       if (
         error instanceof CompactionReconstructionRequiredError ||
+        error instanceof CompactionFailurePersistenceError ||
+        (error instanceof CompactionTransactionError &&
+          (["intent_failed", "commit_failed", "recovery_interrupted"].includes(error.reason) ||
+            (error.reason === "pin_failed" && readCompactionTransactionAdapter(context) !== undefined))) ||
         isAbortError(context, error)
       ) {
         throw error;
@@ -178,6 +196,9 @@ export async function autoCompactIfNeeded(
         consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1,
         ...(error instanceof CompactionCannotReduceError
           ? { skippedCode: error.code }
+          : {}),
+        ...(error instanceof CompactionSummaryRejectedError
+          ? { advisoryFailure: "summary_rejected" as const }
           : {}),
         skippedReason:
           error instanceof Error && error.message.trim().length > 0

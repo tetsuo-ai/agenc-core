@@ -608,10 +608,11 @@ async function authorizeMcpClientToolCall(
 }
 
 /** Reuse only the executor's exact, already-approved invocation. JSON/model
- * arguments cannot mint the private runtime-context marker. The Desktop bridge
- * otherwise asks twice with the same call ID, leaving SDK clients waiting on a
- * duplicate approval they have correctly deduplicated. */
-function exactDesktopInvocation(
+ * arguments cannot mint the private runtime-context marker. Rechecking the
+ * same approval in an MCP bridge otherwise asks twice with the same call ID,
+ * leaving clients waiting on a duplicate approval they have deduplicated.
+ * This does not authorize other arguments, turns, sessions, or permissions. */
+function exactMcpInvocation(
   args: Record<string, unknown>,
   callId: string,
   toolName: string,
@@ -639,7 +640,7 @@ const DESKTOP_IDEMPOTENT_INSPECTIONS = new Set([
 ]);
 function nativeDesktopTerminalAllowed(args: Record<string, unknown>, callId: string,
   toolName: string, options: MCPToolBridgePermissionOptions | undefined): boolean {
-  const context = exactDesktopInvocation(args, callId, toolName, options);
+  const context = exactMcpInvocation(args, callId, toolName, options);
   const broker = readSandboxExecutionBroker(args);
   // The existing Electron PTY is not a child of Core's sandbox. Neither an
   // ordinary tool approval nor a one-shot escalation can sandbox that process.
@@ -652,7 +653,7 @@ function nativeDesktopTerminalAllowed(args: Record<string, unknown>, callId: str
 
 function desktopRoutineMutationAllowed(args: Record<string, unknown>, callId: string,
   toolName: string, options: MCPToolBridgePermissionOptions | undefined): boolean {
-  const context = exactDesktopInvocation(args, callId, toolName, options);
+  const context = exactMcpInvocation(args, callId, toolName, options);
   const broker = readSandboxExecutionBroker(args);
   // A routine does not inherit a one-shot escalation or the parent's bypass.
   // Its separate child policy cannot be used to escape a read-only parent.
@@ -1054,8 +1055,8 @@ export async function createToolBridge(
         const startedAtMs = Date.now();
 
         try {
-          const authorization: PermissionResolution = (desktopClass !== undefined || nativeTerminal) &&
-            exactDesktopInvocation(args, callId, namespacedName, options.permissions)?.approvalResolved === true
+          const authorization: PermissionResolution =
+            exactMcpInvocation(args, callId, namespacedName, options.permissions)?.approvalResolved === true
             ? { ok: true, args }
             : await authorizeMcpClientToolCall(
             bridgeTool,

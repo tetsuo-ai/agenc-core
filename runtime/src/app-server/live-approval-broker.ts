@@ -62,6 +62,9 @@ export class LiveApprovalBroker {
     const subscriptions = new Set<() => void>();
     const requestIds = new WeakMap<Session, Map<string, string>>();
     const watchSession = (requestingSession: Session): (() => void) => {
+      // Source event IDs are session-local; namespace forwarded occurrences
+      // so siblings (and replacement child sessions) cannot collide.
+      const eventNamespace = `child-approval:${randomUUID()}`;
       const unmark = owner.workflow ? markWorkflowApprovalSession(requestingSession) : () => {};
       const ids = new Map<string, string>();
       requestIds.set(requestingSession, ids);
@@ -74,25 +77,33 @@ export class LiveApprovalBroker {
         const projected = daemonEventFromUnboundSessionEvent(event);
         const callId = projected?.payload?.callId;
         if (projected === null || typeof callId !== "string") return;
-        let requestId = ids.get(callId);
+        const sourceRequestId = event.msg.type === "request_permissions"
+          ? projected.eventId
+          : projected.payload?.requestEventId;
+        if (typeof sourceRequestId !== "string" || sourceRequestId.length === 0) return;
+        let requestId = ids.get(sourceRequestId);
         if (event.msg.type === "request_permissions") {
           if (
             !owner.isActive() ||
             !isApprovalSessionOwnedBy(requestingSession, session)
           ) return;
-          requestId = requestingSession === session && !owner.workflow
-            ? callId
-            : `child-approval:${randomUUID()}`;
-          ids.set(callId, requestId);
+          requestId ??= `${eventNamespace}:${sourceRequestId}`;
+          ids.set(sourceRequestId, requestId);
         } else {
           if (requestId === undefined) return;
-          ids.delete(callId);
+          ids.delete(sourceRequestId);
         }
         if (requestingSession !== session || owner.workflow) {
           options.onEvent?.({
             id: `${requestId}:${projected.type}`,
+            eventId: `${eventNamespace}:${projected.eventId}`,
             type: projected.type,
-            payload: { ...projected.payload, callId: requestId },
+            payload: {
+              ...projected.payload,
+              requestId,
+              sourceEventId: projected.eventId!,
+              sourceConversationId: requestingSession.conversationId,
+            },
             statusProjection: "session_only",
           });
         }
@@ -110,8 +121,14 @@ export class LiveApprovalBroker {
     const unsubscribeChildren = observeChildApprovalSessions(session, watchSession);
     const resolver: ApprovalResolver = {
       request: (ctx) => {
-        const requestId = requestIds.get(ctx.invocation.session)?.get(ctx.callId) ??
-          (ctx.invocation.session === session && !owner.workflow ? ctx.callId : undefined);
+        const requestId = ctx.invocation.session === session && !owner.workflow
+          ? ctx.requestEventId ?? (
+              // Only structural legacy embeddings lack a canonical journal.
+              !("rolloutStore" in ctx.invocation.session) ? ctx.callId : undefined
+            )
+          : ctx.requestEventId === undefined
+            ? undefined
+            : requestIds.get(ctx.invocation.session)?.get(ctx.requestEventId);
         return this.#request(owner, ctx, requestId, options.timeoutMs);
       },
     };
@@ -187,7 +204,11 @@ export class LiveApprovalBroker {
       !owner.isActive() ||
       !isApprovalSessionOwnedBy(requestingSession, owner.session) ||
       requestId === undefined ||
-      owner.pending.has(requestId)
+      owner.pending.has(requestId) ||
+      // Preserve the old one-pending-decision-per-invocation invariant even
+      // though sequential scopes now use distinct occurrence IDs.
+      [...owner.pending.values()].some((pending) =>
+        pending.ctx.invocation.session === requestingSession && pending.ctx.callId === ctx.callId)
     ) {
       return Promise.resolve(DENIED);
     }

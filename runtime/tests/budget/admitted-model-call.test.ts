@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
+import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
 import type {
   AdmissionAcquireInput,
   ExecutionAdmissionClient,
@@ -9,8 +9,9 @@ import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
+import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
 import { FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
-import type { ProviderTokenCountCapability } from "../../src/llm/token-accounting.js";
+import type { ProviderTokenCountCapability, TokenAccountingRequest } from "../../src/llm/token-accounting.js";
 import type {
   LLMChatOptions,
   LLMProvider,
@@ -164,6 +165,79 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test("counts Ollama's pinned text protocol before acquiring the actual wire lease", async () => {
+    const state = harness({ maxTokens: 4_096, hasHardTokenCap: true });
+    const tools = [{ type: "function" as const, function: { name: "FileRead", description: "read", parameters: { type: "object" } } }];
+    const provider = new OllamaProvider({ model: "deepseek-r1:7b", numCtx: 4_096, tools });
+    const wire = vi.fn(async (_params: Record<string, unknown>) => response({ model: "deepseek-r1:7b" }));
+    const countTokens = vi.fn(async (request: TokenAccountingRequest) => {
+      expect(request.options.tools).toEqual([]);
+      expect(request.options.systemPrompt).toContain(JSON.stringify(tools));
+      expect(request.options.systemPrompt).toContain("Tool calling protocol");
+      expect(wire).not.toHaveBeenCalled();
+      return { inputTokens: 200, complete: true, confidence: "exact" as const, countedComponents: ["system", "messages", "tools", "provider_framing"] as const };
+    });
+    Object.assign(provider, {
+      client: { show: async () => ({ capabilities: ["completion", "thinking"] }), chat: wire, list: async () => ({ models: [] }) },
+      tokenCountCapability: { capabilityVersion: "ollama-text-protocol-v1", adapterRevision: "test", configurationRevision: "text", countTokens },
+    });
+    await runAdmittedModelCall({
+      session: state.session, provider, messages: [{ role: "user", content: "hello" }],
+      options: { tools, maxOutputTokens: 512 }, stepId: "ollama-projection:1", model: "deepseek-r1:7b", providerName: "ollama",
+      invoke: options => provider.chat([{ role: "user", content: "hello" }], options),
+    });
+    expect(countTokens).toHaveBeenCalledOnce();
+    expect(state.acquire.mock.calls[0]?.[0]).toMatchObject({ maxInputTokens: 200, maxOutputTokens: 512 });
+    expect(wire).toHaveBeenCalledOnce();
+    expect(wire.mock.calls[0]?.[0]).not.toHaveProperty("tools");
+  });
+  test.each([
+    { input: 14_451, requested: 16_384, admitted: 16_384 },
+    { input: 14_800, requested: 16_384, admitted: 16_329 },
+    { input: 30_105, requested: 16_384, admitted: 1_024 },
+    { input: 30_106, requested: 16_384, admitted: undefined },
+    { input: 30_617, requested: 512, admitted: 512 },
+    { input: 30_618, requested: 512, admitted: undefined },
+  ])("shares exact output-fit policy with preflight for $input input and $requested output", async ({ input, requested, admitted }) => {
+    const state = harness({ maxTokens: 31_129, hasHardTokenCap: true });
+    Object.assign(state.provider, {
+      tokenCountCapability: {
+        capabilityVersion: "shared-context-fit",
+        adapterRevision: "1",
+        configurationRevision: `${input}-${requested}`,
+        countTokens: async () => ({
+          inputTokens: input,
+          complete: true,
+          confidence: "exact" as const,
+          countedComponents: ["system", "messages", "tools", "provider_framing"] as const,
+        }),
+      },
+    });
+    expect(fitOutputReservationToContext({
+      admissible: true, inputTokens: input, totalTokens: input + requested,
+    }, 31_129, requested)).toBe(admitted);
+    const invoke = vi.fn(async () => response());
+    const call = callOptions(state, { contextWindowTokens: 31_129, maxOutputTokens: requested }, invoke);
+    if (admitted === undefined) {
+      await expect(call).rejects.toMatchObject({ reason: "context_window_exceeded" });
+      expect(invoke).not.toHaveBeenCalled();
+    } else {
+      await call;
+      expect(state.acquire).toHaveBeenCalledWith(expect.objectContaining({
+        maxInputTokens: input,
+        maxOutputTokens: admitted,
+      }), undefined);
+      expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ maxOutputTokens: admitted }));
+      expect(input + admitted).toBeLessThanOrEqual(31_129);
+    }
+  });
+
+  test("context-fit preflight cannot authorize uncertain token accounting", () => {
+    expect(fitOutputReservationToContext({
+      admissible: false, inputTokens: 100, totalTokens: 200,
+    }, 31_129, 100)).toBeUndefined();
+  });
+
   test("accounts for canonical Gemini cached content before admission", async () => {
     const state = harness({});
     const countTokens = vi.fn(async (request) => {

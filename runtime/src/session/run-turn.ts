@@ -69,11 +69,14 @@ import {
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import {
   accountingOptionsForProvider,
+  fitOutputReservationToContext,
+  projectProviderAccountingRequest,
   providerLocalModelSlug,
   providerNativeToolsForAccounting,
 } from "../budget/admitted-model-call.js";
 import { buildProviderOptions } from "../phases/stream-model.js";
 import { discardExecutorForMaxOutputTokens } from "../recovery/max-output-tokens.js";
+import { clearTextToolCallCorrectionPrompt, currentTextToolCallCorrectionPrompt, injectTextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
 import { commit } from "../phases/commit.js";
 import {
   continuationNudge,
@@ -931,7 +934,9 @@ async function tryRunSamplingRequest(
     state.pendingBudgetDecision = undefined;
     const lastAssistant = state.assistantMessages.at(-1);
     const blockedRecovery =
-      state.transition !== undefined
+      state.pendingTextToolCallCorrection !== undefined
+        ? "text_tool_call_correction"
+        : state.transition !== undefined
         ? `transition:${state.transition.reason}`
         : lastAssistant !== undefined && isWithheld413Message(lastAssistant)
           ? "context_window"
@@ -980,7 +985,9 @@ async function tryRunSamplingRequest(
   // Phase 4: continuation nudge. Editor interactions never inject an
   // Agent-side nudge/resample; their provider response is accepted as-is or
   // failed closed by the Editor contract.
-  if (ctx.editorInteraction === undefined && !unrecoveredMaxOutputTokens) {
+  if (ctx.editorInteraction === undefined && !unrecoveredMaxOutputTokens &&
+      state.textToolCallCorrectionFailure === undefined &&
+      state.transition?.reason !== "text_tool_call_correction") {
     await continuationNudge(state, ctx, session, signal);
   }
 
@@ -1002,6 +1009,12 @@ async function tryRunSamplingRequest(
       terminal: {
         reason: "model_error" as const,
         error: new Error("The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete."),
+      },
+    } : {}),
+    ...(state.textToolCallCorrectionFailure !== undefined ? {
+      terminal: {
+        reason: "model_error" as const,
+        error: new Error(state.textToolCallCorrectionFailure),
       },
     } : {}),
   };
@@ -1202,11 +1215,12 @@ async function preparedRequestFitsContext(
   const providerNativeTools = providerNativeToolsForAccounting(
     provider, providerName, model, factoryOptions.extra ?? {}, accountingOptions,
   );
+  const accountingProjection = projectProviderAccountingRequest(provider, request.input, accountingOptions);
   const accounting = await tokenAccountingService.count(createTokenAccountingRequest({
     provider: providerName,
     model,
-    messages: request.input,
-    options: accountingOptions,
+    messages: accountingProjection.messages,
+    options: accountingProjection.options,
     ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),
     endpointIdentity: factoryOptions.baseURL,
     configurationRevision: createTokenAccountingConfigurationRevision({
@@ -1225,7 +1239,10 @@ async function preparedRequestFitsContext(
       : {}),
     signal,
   });
-  return accounting.admissible && accounting.totalTokens <= window;
+  // Admission may lower the output ceiling while retaining every input token.
+  // Checking the nominal ceiling here would force compaction on requests the
+  // actual provider boundary can safely admit, notably small Ollama windows.
+  return fitOutputReservationToContext(accounting, window, maxOutputTokens) !== undefined;
 }
 
 function isTransientSamplingError(err: unknown): boolean {
@@ -1497,6 +1514,8 @@ function restoreModelSampleResumePrompt(state: TurnState): void {
     injectNudgeMessage(state);
   } else if (state.modelSampleResumePrompt === "empty_response") {
     injectEmptyResponseRetryMessage(state);
+  } else if (state.modelSampleResumePrompt === "text_tool_call_correction") {
+    injectTextToolCallCorrection(state);
   }
 }
 
@@ -2274,7 +2293,7 @@ async function* runTurnKernelInner(
   // today).
   let deferredCompaction = false;
   let requiredCompactionAttempted = false;
-  const deferNoShrink = (): void => {
+  const deferCompactionRefusal = (): void => {
     deferredCompaction = true;
     session.emit({
       id: session.nextInternalSubId(),
@@ -2282,14 +2301,14 @@ async function* runTurnKernelInner(
         type: "warning",
         payload: {
           cause: "auto_compact_deferred",
-          message: "Compaction did not reduce enough history. Continuing only while the next full request fits the context window.",
+          message: "Compaction could not safely reduce history. Continuing with the unchanged history only while the next full request fits the context window.",
         },
       },
     });
   };
   try {
     await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
-      onNoShrink: deferNoShrink,
+      onAdvisoryRefusal: deferCompactionRefusal,
     });
   } catch (error) {
     const underlying = compactFailureError(error);
@@ -2597,6 +2616,7 @@ async function* runTurnKernelInner(
       if (ctx.editorInteraction !== undefined) {
         editorSamplingIterations += 1;
       }
+      const consumedCorrection = currentTextToolCallCorrectionPrompt(state);
       const result = await runSamplingRequest(
         state,
         ctx,
@@ -2647,6 +2667,10 @@ async function* runTurnKernelInner(
       // sampling request so the terminal turn_complete event carries
       // cumulative token consumption across continuation iterations.
       usage = cumulativeUsage(usage, result.usage);
+      const removedCorrectionIndex = clearTextToolCallCorrectionPrompt(state, consumedCorrection);
+      if (removedCorrectionIndex !== undefined && removedCorrectionIndex < persistedMessageCount) {
+        persistedMessageCount -= 1;
+      }
       // A sample that came back is forward progress. The recovery re-entry
       // cap exists to stop a turn that keeps failing without getting
       // anywhere; it was never brought back down, so five transient
@@ -2675,6 +2699,8 @@ async function* runTurnKernelInner(
       advanceModelSampleOrdinal(state);
       if (state.transition?.reason === "continuation_nudge") {
         state.modelSampleResumePrompt = "continuation_nudge";
+      } else if (state.transition?.reason === "text_tool_call_correction") {
+        state.modelSampleResumePrompt = "text_tool_call_correction";
       }
     } catch (error) {
       await drainInFlight(state, ctx, session);
@@ -2886,7 +2912,7 @@ async function* runTurnKernelInner(
             querySource: turnQuerySource,
             durableMessageCount: compactionDurableCount(),
             onDurableHistoryReplaced: onCompactionReplacedHistory,
-            onNoShrink: deferNoShrink,
+            onAdvisoryRefusal: deferCompactionRefusal,
           },
         );
       } catch (error) {
@@ -3234,7 +3260,7 @@ async function* runTurnKernelInner(
           querySource: turnQuerySource,
           durableMessageCount: compactionDurableCount(),
           onDurableHistoryReplaced: onCompactionReplacedHistory,
-          onNoShrink: deferNoShrink,
+          onAdvisoryRefusal: deferCompactionRefusal,
         },
       );
       if (midTurnCompacted) {

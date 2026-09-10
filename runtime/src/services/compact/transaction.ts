@@ -75,7 +75,9 @@ import {
   type CompactionTransactionLease,
   type CompactionTransactionMetadataV1,
   CompactionCannotReduceError,
+  CompactionFailurePersistenceError,
   CompactionReconstructionRequiredError,
+  CompactionSummaryRejectedError,
   CompactionTransactionError,
 } from "./transaction-types.js";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
@@ -427,7 +429,16 @@ async function compactConversationTransactionBody(
   let intentCommitted = false;
   let transactionCommitted = false;
   try {
-    adapter.pinAndRecordIntent(intent, sourcePayloadBundles);
+    try {
+      adapter.pinAndRecordIntent(intent, sourcePayloadBundles);
+    } catch (error) {
+      if (error instanceof CompactionTransactionError) throw error;
+      throw new CompactionTransactionError(
+        "intent_failed",
+        "durable compaction intent failed",
+        { cause: error },
+      );
+    }
     intentCommitted = true;
     deadline.assertActive();
     const run = await deadline.wait(runSummaryTree({
@@ -574,8 +585,10 @@ async function compactConversationTransactionBody(
       transaction,
     };
   } catch (error) {
+    if (transactionCommitted) {
+      throw new CompactionReconstructionRequiredError(attemptId, { cause: error });
+    }
     if (
-      transactionCommitted ||
       !intentCommitted ||
       error instanceof CompactionReconstructionRequiredError
     ) {
@@ -598,11 +611,28 @@ async function compactConversationTransactionBody(
     try {
       adapter.recordFailure(failure);
     } catch (recordError) {
-      throw new CompactionTransactionError(
+      throw new CompactionFailurePersistenceError(
         reason,
-        "compaction failed and its terminal failure event could not be committed; source remains pinned for startup reconciliation",
         { cause: new AggregateError([error, recordError]) },
       );
+    }
+    // Reject invalid model output without replacing a byte of source history.
+    // Do not turn arbitrary provider, budget, storage, or cancellation errors
+    // into advisory outcomes. The failure record must succeed first.
+    if (
+      error instanceof CompactionTransactionError &&
+      [
+        "provider_non_stop",
+        "provider_empty",
+        "output_invalid_json",
+        "output_schema_invalid",
+        "output_limit_exceeded",
+        "provenance_invalid",
+        "digest_invalid",
+        "injection_marker_leakage",
+      ].includes(error.reason)
+    ) {
+      throw new CompactionSummaryRejectedError(reason, error.message, { cause: error });
     }
     throw error;
   }

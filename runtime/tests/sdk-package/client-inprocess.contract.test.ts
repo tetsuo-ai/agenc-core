@@ -480,6 +480,45 @@ describe("agenc-sdk client over the in-process transport", () => {
     await daemon.close();
   });
 
+  it("deduplicates retransmission but answers distinct occurrences on the same tool call", async () => {
+    const seen: AgencPermissionRequest[] = [];
+    const daemon = await createFakeDaemon({
+      onPermissionRequest: (request) => {
+        seen.push(request);
+        return { behavior: "allow", scope: "once" };
+      },
+      onStreamMessage: async (fake, params) => {
+        const sessionId = String(params.sessionId);
+        for (const ordinal of [1, 1, 2, 2]) {
+          await fake.broadcast(sessionId, {
+            jsonrpc: JSON_RPC_VERSION, method: "event.permission_request",
+            params: { sessionId, requestId: `occurrence-${ordinal}`, eventId: `occurrence-${ordinal}`,
+              callId: "same-tool-call", sequence: ordinal, toolName: "request_permissions",
+              permissions: ["tool.use"], input: { network: [`scope-${ordinal}.example`] } },
+          });
+        }
+      },
+      onApproveTool: (fake, params) => {
+        if (params.requestId === "occurrence-2") {
+          void fake.broadcast(String(params.sessionId), statusNotification(String(params.sessionId), "completed", "done"));
+        }
+      },
+    });
+    try {
+      await daemon.client.initialize();
+      const session = await daemon.client.createSession({ pluginStorageRoot: daemon.pluginStorageRoot });
+      const result = await session.prompt("request scopes").result();
+      expect(result.stopReason).toBe("completed");
+      expect(seen.map(({ requestId, callId }) => ({ requestId, callId }))).toEqual([
+        { requestId: "occurrence-1", callId: "same-tool-call" },
+        { requestId: "occurrence-2", callId: "same-tool-call" },
+      ]);
+      expect(daemon.calls.approved.map((call) => call.requestId)).toEqual(["occurrence-1", "occurrence-2"]);
+    } finally {
+      await daemon.close();
+    }
+  });
+
   it("denies permission requests when no handler is registered (never hangs)", async () => {
     const cwd = await workspaces.create();
     const daemon = await createFakeDaemon({

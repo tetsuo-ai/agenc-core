@@ -138,10 +138,15 @@ export interface CodeModeNestedToolDispatch {
   readonly abortSignal?: AbortSignal;
 }
 
+export interface ToolRegistryDispatchOptions {
+  /** Request-scoped discovery metadata; does not grant execution permission. */
+  readonly advertisedToolNames?: readonly string[];
+}
+
 export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
-  dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
+  dispatch(toolCall: LLMToolCall, options?: ToolRegistryDispatchOptions): Promise<ToolDispatchResult>;
   /**
    * Returns the exact runtime-owned built-in authorized for an Editor
    * interaction. Callers must compare object identity; tool metadata is
@@ -1071,9 +1076,18 @@ export function buildToolRegistry(
   }
 
   function buildRouter(): ToolRouter {
-    const baseSpecs =
-      preserveTrustedRuntimeOwnedTools(staticTools).map(specForTool);
     const mcpTools = preserveTrustedRuntimeOwnedTools(currentMcpTools());
+    // A live manager owns its qualified MCP names. ToolRouter intentionally
+    // allows later dynamic/discoverable entries to override ordinary names,
+    // but allowing that for MCP would let a plugin borrow a real server's
+    // discovery/authentication while supplying its own schema and executor.
+    // Apply the ownership boundary once here so catalog and dispatch agree.
+    const managedMcpNames = new Set(
+      mcpTools.filter(tool => tool.name.startsWith("mcp.")).map(tool => tool.name),
+    );
+    const withoutManagedMcpCollisions = (tools: readonly Tool[]): Tool[] =>
+      preserveTrustedRuntimeOwnedTools(tools).filter(tool => !managedMcpNames.has(tool.name));
+    const baseSpecs = withoutManagedMcpCollisions(staticTools).map(specForTool);
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,
     );
@@ -1084,10 +1098,10 @@ export function buildToolRegistry(
       baseSpecs,
       mcpTools: toolMap(directMcpTools),
       deferredMcpTools: toolMap(deferredMcpTools),
-      discoverableTools: preserveTrustedRuntimeOwnedTools(
+      discoverableTools: withoutManagedMcpCollisions(
         currentDiscoverableTools(),
       ),
-      dynamicTools: preserveTrustedRuntimeOwnedTools([
+      dynamicTools: withoutManagedMcpCollisions([
         ...currentDynamicTools(),
         ...currentDeferredTools(),
       ]),
@@ -1113,7 +1127,7 @@ export function buildToolRegistry(
     spec: ConfiguredToolSpec,
     callId: string,
     args: Record<string, unknown>,
-    opts: { readonly abortSignal?: AbortSignal } = {},
+    opts: ToolRegistryDispatchOptions & { readonly abortSignal?: AbortSignal } = {},
   ): Promise<ToolDispatchResult> {
     Object.defineProperty(args, "__callId", {
       value: callId,
@@ -1129,7 +1143,7 @@ export function buildToolRegistry(
     }
     if (spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME) {
       Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
-        value: visibleSpecs().map((visible) => visible.tool.name),
+        value: Object.freeze([...(opts.advertisedToolNames ?? visibleSpecs().map((visible) => visible.tool.name))]),
         enumerable: false,
         configurable: true,
       });
@@ -1203,7 +1217,7 @@ export function buildToolRegistry(
     discoverToolNames(toolNames: readonly string[]): void {
       markDiscovered(toolNames);
     },
-    async dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult> {
+    async dispatch(toolCall: LLMToolCall, dispatchOptions?: ToolRegistryDispatchOptions): Promise<ToolDispatchResult> {
       const router = buildRouter();
       const spec = router.findSpec(toolCall.name);
       if (!spec) {
@@ -1233,7 +1247,7 @@ export function buildToolRegistry(
             isError: true,
           };
         }
-        return await executeConfiguredTool(spec, toolCall.id, parseResult.args);
+        return await executeConfiguredTool(spec, toolCall.id, parseResult.args, dispatchOptions);
       } catch (error) {
         return {
           content: safeStringify({
