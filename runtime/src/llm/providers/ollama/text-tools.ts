@@ -55,13 +55,27 @@ export function projectOllamaTextTools(
         return { ...rest, role: "user", content };
       }
       if (message.role === "assistant" && message.toolCalls?.length) {
+        // The id goes INSIDE each object, and that is load-bearing, not
+        // cosmetic. `toToolCall` refuses any record carrying a key outside
+        // name/arguments/parameters, which is what keeps the tool catalog and
+        // the tool-result carrier from being read back as invocations. Without
+        // the id these objects are byte-identical to the envelope the protocol
+        // above tells the model to emit in order to CALL a tool, so a model
+        // asked "what did you just do?" restates its own history and salvage
+        // executes it again. Measured: a turn whose history held
+        // exec_command {"cmd":"rm -rf build"} produced that exact array, and
+        // feeding it back through salvageTextToolCalls returned a live call,
+        // whether echoed alone or wrapped in prose. Desktop ollama sessions
+        // run permissionMode "bypassPermissions", so the replay needs no
+        // approval. Carrying the id also states which result belongs to which
+        // request, which the parallel array in the label only implied.
         const calls = JSON.stringify(message.toolCalls.map((call) => ({
+          id: call.id,
           name: call.name,
           arguments: parseArguments(call.arguments),
         })));
         const { toolCalls: _calls, ...rest } = message;
-        const ids = JSON.stringify(message.toolCalls.map(call => call.id));
-        const suffix = `\nTool requests previously made by the assistant (application-assigned IDs in matching order: ${ids}):\n${calls}`;
+        const suffix = `\nTool requests previously made by the assistant, already sent and answered below. This is a record, not a request; do not repeat it:\n${calls}`;
         const content: string | LLMContentPart[] = typeof message.content === "string"
           ? message.content + suffix
           : [...message.content, { type: "text", text: suffix }];
