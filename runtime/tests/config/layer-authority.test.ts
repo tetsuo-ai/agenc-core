@@ -13,6 +13,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import {
   assertConfigPatchAuthority,
+  assertUserConfigDocumentAuthority,
   configAuthorityClass,
   MANAGED_ONLY_CONFIG_KEYS,
   OPERATOR_ONLY_CONFIG_KEYS,
@@ -595,5 +596,39 @@ describe("canonical config layer authority", () => {
     ]));
     expect(JSON.stringify(loaded.ignored)).not.toContain("secret-value");
     expect(JSON.stringify(project)).not.toContain("sensitive-");
+  });
+
+  test("lists rejected keys in code-unit order without mutating the caller's objects", () => {
+    const registries = {
+      managed: [...MANAGED_ONLY_CONFIG_KEYS],
+      operator: [...OPERATOR_ONLY_CONFIG_KEYS],
+    };
+    const userDocument = {
+      pluginTrustMessage: "Approved sources only.",
+      availableModels: ["grok-4.6"],
+    };
+    const projectPatch = {
+      minimumVersion: "99.0.0",
+      gateway: { defaultAgent: "project" },
+    };
+
+    expect(() => assertUserConfigDocumentAuthority(userDocument)).toThrow(
+      /managed-only keys availableModels, pluginTrustMessage.*managed config\.toml/u,
+    );
+    expect(() => assertConfigPatchAuthority("user", {
+      pluginTrustMessage: "x",
+      availableModels: ["grok-4.6"],
+    })).toThrow(/managed-only keys availableModels, pluginTrustMessage/u);
+    expect(() => assertConfigPatchAuthority("project", projectPatch)).toThrow(
+      /operator-only keys gateway, minimumVersion/u,
+    );
+
+    expect(Object.keys(userDocument)).toEqual([
+      "pluginTrustMessage",
+      "availableModels",
+    ]);
+    expect(Object.keys(projectPatch)).toEqual(["minimumVersion", "gateway"]);
+    expect([...MANAGED_ONLY_CONFIG_KEYS]).toEqual(registries.managed);
+    expect([...OPERATOR_ONLY_CONFIG_KEYS]).toEqual(registries.operator);
   });
 });
