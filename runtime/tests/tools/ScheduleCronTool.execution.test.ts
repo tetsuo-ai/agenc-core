@@ -77,3 +77,16 @@ test("ScheduleCron tools create, list, and delete a session cron job", async () 
   const afterDelete = await CronListTool.call({}, toolContext);
   expect(afterDelete.data.jobs).toEqual([]);
 });
+
+test("ScheduleCron defaults to session-only jobs while delivery forces durability", async () => {
+  await setTempProjectRoot();
+  const local = await CronCreateTool.call({
+    cron: "*/5 * * * *", prompt: "local default",
+  }, toolContext);
+  expect(local.data.durable).toBe(false);
+  const delivery = await CronCreateTool.call({
+    cron: "*/5 * * * *", prompt: "delivery default", durable: false,
+    announceChannel: "stdio", announceTo: "test-recipient",
+  }, toolContext);
+  expect(delivery.data.durable).toBe(true);
+});

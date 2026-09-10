@@ -448,7 +448,7 @@ function legacyAdmissionFields(payload: JsonObject): Partial<RunJournalEvent> {
 
 function categoryFor(type: string): RunJournalCategory {
   if (type === "execution_admission") return "admission";
-  if (type === "token_count") return "budget";
+  if (type === "token_count" || type === "session_usage") return "budget";
   if (type === "request_permissions" || type.startsWith("permission_")) {
     return "permission";
   }

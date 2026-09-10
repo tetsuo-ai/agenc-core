@@ -188,6 +188,25 @@ is skipped (`no_heartbeat_file`) — no model call.
 
 ---
 
+## Session cron
+
+`CronCreate` defaults to `durable: false`. Session-only jobs disappear when
+their owning session closes. Set `durable: true` to retain unaccepted jobs
+across restarts. Delivery-routed jobs are always durable.
+
+The daemon starts a due prompt through the owning session's serialized turn
+driver, including its normal permission and budget checks. Busy sessions
+queue the prompt. `CronDelete` cancels it if deletion wins before acceptance.
+Startup recovery waits for ordinary Agent startup and an installed turn driver.
+
+Acceptance claims the exact occurrence under the task-store lock. A one-shot
+is removed and a recurring job's fire time advances before model or tool work
+starts. Accepted occurrences are not replayed after failure, interruption, or
+restart. This is at-most-once acceptance, not lossless execution: a crash after
+the claim but before execution can consume an occurrence without running it.
+Deleting an already accepted job cannot undo its work. Delivery jobs use the
+separate receipt and retry policy below.
+
 ## Cron delivery (`runtime/src/gateway/cron-delivery.ts`)
 
 Runs **delivery-tagged** cron tasks (`CronTask.deliver` set) in isolated

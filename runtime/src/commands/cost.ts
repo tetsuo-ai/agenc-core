@@ -28,6 +28,7 @@ import {
   formatUsdCost,
 } from "../session/cost.js";
 import { asRecord } from "../utils/record.js";
+import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 import {
   safeExecute,
@@ -46,6 +47,8 @@ export interface CostModelRow {
 
 /** One per-agent row. Tokens are real; cost is an estimate (or unknown). */
 export interface CostAgentRow {
+  readonly runId?: string;
+  readonly costUsd?: number;
   readonly label: string;
   readonly status: string;
   readonly tokenCount?: number;
@@ -96,9 +99,9 @@ function readCostSidecar(session: unknown): CostSidecarLike | null {
   return asRecord(sidecar) as CostSidecarLike | null;
 }
 
-function callNumber(fn: (() => number) | undefined): number | undefined {
+function callNumber(fn: (() => number) | undefined, receiver: CostSidecarLike): number | undefined {
   if (typeof fn !== "function") return undefined;
-  const value = fn();
+  const value = fn.call(receiver);
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
@@ -124,17 +127,17 @@ function readSessionTotals(sidecar: CostSidecarLike | null): {
     }),
   );
   return {
-    ...(callNumber(sidecar.getTotalCostUsd) !== undefined
-      ? { totalCostUsd: callNumber(sidecar.getTotalCostUsd) }
+    ...(callNumber(sidecar.getTotalCostUsd, sidecar) !== undefined
+      ? { totalCostUsd: callNumber(sidecar.getTotalCostUsd, sidecar) }
       : {}),
-    ...(callNumber(sidecar.getTotalInputTokens) !== undefined
-      ? { inputTokens: callNumber(sidecar.getTotalInputTokens) }
+    ...(callNumber(sidecar.getTotalInputTokens, sidecar) !== undefined
+      ? { inputTokens: callNumber(sidecar.getTotalInputTokens, sidecar) }
       : {}),
-    ...(callNumber(sidecar.getTotalOutputTokens) !== undefined
-      ? { outputTokens: callNumber(sidecar.getTotalOutputTokens) }
+    ...(callNumber(sidecar.getTotalOutputTokens, sidecar) !== undefined
+      ? { outputTokens: callNumber(sidecar.getTotalOutputTokens, sidecar) }
       : {}),
-    ...(callNumber(sidecar.getTotalTurns) !== undefined
-      ? { turns: callNumber(sidecar.getTotalTurns) }
+    ...(callNumber(sidecar.getTotalTurns, sidecar) !== undefined
+      ? { turns: callNumber(sidecar.getTotalTurns, sidecar) }
       : {}),
     hasUnknownCost:
       typeof sidecar.hasUnknownModelCost === "function"
@@ -171,6 +174,7 @@ function readAgentRows(appState: unknown): CostAgentRow[] {
           : "agent";
     const role = typeof task.agentType === "string" ? task.agentType : "agent";
     rows.push({
+      ...(typeof task.agentId === "string" ? { runId: task.agentId } : {}),
       label: `${truncate(name, 40)} · ${role}`,
       status: typeof task.status === "string" ? task.status : "unknown",
       ...(tokenCount !== undefined ? { tokenCount } : {}),
@@ -192,48 +196,48 @@ function truncate(value: string, max: number): string {
  * — exported so tests can feed known usage and assert the rendered numbers.
  */
 export function buildCostReport(ctx: SlashCommandContext): CostReport {
-  const sidecar = readCostSidecar(ctx.session);
-  const totals = readSessionTotals(sidecar);
   const getAppState = ctx.appState?.getAppState;
   const agents =
     typeof getAppState === "function" ? readAgentRows(getAppState()) : [];
 
-  // Fallback session total: when the sidecar reports no real session figure
-  // (e.g. a local/self-hosted model with no cost tracking), the bulk of a
-  // fan-out's cost still lives in the per-agent rows we already estimated.
-  // Summing them answers "how much is this costing" with an explicit estimate
-  // rather than a useless "—". The real-sidecar path is left untouched.
-  const agentCostUsd = agents.reduce(
-    (sum, a) => sum + (a.estimatedCostUsd ?? 0),
-    0,
-  );
-  const anyAgentCost = agents.some((a) => a.estimatedCostUsd !== undefined);
-  const agentTokens = agents.reduce((sum, a) => sum + (a.tokenCount ?? 0), 0);
+  const usage = ctx.appState?.getSessionUsage?.() ??
+    ctx.session.services?.executionAdmission?.getUsageSummary?.();
+  if (isAdmissionUsageSummary(usage)) {
+    return {
+      totalCostUsd: usage.costUsd,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      hasUnknownCost: usage.hasUnknownCost,
+      models: usage.models.map((model) => ({
+        label: model.provider ? `${model.provider}/${model.model}` : model.model,
+        inputTokens: model.inputTokens,
+        outputTokens: model.outputTokens,
+        costUsd: model.costUsd,
+      })),
+      agents: usage.agents.map((agent) => {
+        const metadata = agents.find((row) => row.runId === agent.runId);
+        return {
+          runId: agent.runId,
+          label: metadata?.label ?? agent.runId,
+          status: metadata?.status ?? "recorded",
+          tokenCount: agent.totalTokens,
+          costUsd: agent.costUsd,
+          ...(metadata?.toolUseCount !== undefined ? { toolUseCount: metadata.toolUseCount } : {}),
+        };
+      }),
+    };
+  }
 
-  const realTotalCost = totals.totalCostUsd;
-  const realTotalTokens =
+  const totals = readSessionTotals(readCostSidecar(ctx.session));
+  const totalCostUsd = totals.totalCostUsd;
+  const totalTokens =
     totals.inputTokens !== undefined && totals.outputTokens !== undefined
       ? totals.inputTokens + totals.outputTokens
       : undefined;
 
-  const totalCostUsd =
-    realTotalCost !== undefined
-      ? realTotalCost
-      : anyAgentCost
-        ? agentCostUsd
-        : undefined;
-  const totalTokens =
-    realTotalTokens !== undefined
-      ? realTotalTokens
-      : agentTokens > 0
-        ? agentTokens
-        : undefined;
-  const totalIsEstimated =
-    realTotalCost === undefined && (anyAgentCost || agentTokens > 0);
-
   return {
     ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
-    ...(totalIsEstimated ? { totalIsEstimated: true } : {}),
     ...(totals.inputTokens !== undefined
       ? { inputTokens: totals.inputTokens }
       : {}),
@@ -242,7 +246,7 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
       : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(totals.turns !== undefined ? { turns: totals.turns } : {}),
-    hasUnknownCost: totals.hasUnknownCost,
+    hasUnknownCost: totals.hasUnknownCost || agents.length > 0,
     models: totals.models,
     agents,
   };
@@ -289,7 +293,9 @@ export function formatCostReport(report: CostReport): string {
       const tokens =
         a.tokenCount !== undefined ? `${formatTokenCount(a.tokenCount)} tokens` : "—";
       const spend =
-        a.estimatedCostUsd !== undefined
+        a.costUsd !== undefined
+          ? formatUsdCost(a.costUsd)
+          : a.estimatedCostUsd !== undefined
           ? `${formatUsdCost(a.estimatedCostUsd)} est.`
           : "—";
       lines.push(`  ${a.status} ${a.label}: ${tokens} · ${spend}`);
@@ -297,7 +303,7 @@ export function formatCostReport(report: CostReport): string {
   } else {
     lines.push("Agents: none active");
   }
-  lines.push("  • per-agent $ is estimated from token totals; — = unknown.");
+  lines.push("Agent costs use recorded usage when available; estimates are marked est.");
   return lines.join("\n");
 }
 

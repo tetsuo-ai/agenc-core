@@ -179,23 +179,18 @@ describe("/cost", () => {
     );
   });
 
-  it("falls back to an ESTIMATED session total from agents when the sidecar reports none", () => {
-    // The local-model case: no cost sidecar, but spawned agents carry real
-    // token counts. The session line must answer "how much is this costing"
-    // with an explicit estimate, not a useless "—".
+  it("does not label a partial agent estimate as the session total", () => {
     const report = buildCostReport(contextWith({ appState: AGENT_APP_STATE }));
-    // Runner agent has 40K tokens (opus) -> a positive estimate; main-session skipped.
     expect(report.agents).toHaveLength(1);
     const agentEstimate = report.agents[0]!.estimatedCostUsd;
     expect(agentEstimate).toBeGreaterThan(0);
-    expect(report.totalCostUsd).toBeCloseTo(agentEstimate!, 6);
-    expect(report.totalIsEstimated).toBe(true);
-    expect(report.totalTokens).toBe(40_000);
+    expect(report.totalCostUsd).toBeUndefined();
+    expect(report.totalIsEstimated).toBeUndefined();
+    expect(report.totalTokens).toBeUndefined();
 
     const out = formatCostReport(report);
-    expect(out).toContain("est. (from agent tokens)");
-    expect(out).not.toContain("cost tracking unavailable");
-    expect(out).toContain("40.0K total est.");
+    expect(out).toContain("cost tracking unavailable");
+    expect(out).not.toContain("40.0K total est.");
   });
 
   it("opens the cost modal when the interactive TUI surface is available", async () => {

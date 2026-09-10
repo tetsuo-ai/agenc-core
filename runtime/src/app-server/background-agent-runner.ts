@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { withLocalMcpAccess } from "../mcp-client/local-control.js";
+import { executeSessionStatusLine } from "../hooks/status-line-executor.js";
 import {
   CompletedAgentEventCache,
   completedEventReplayRequired,
@@ -139,6 +140,8 @@ import type {
   SessionPermissionRuleMutationParams,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionStatusLineExecuteParams,
+  SessionStatusLineExecuteResult,
 } from "./protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
 import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
@@ -2126,6 +2129,25 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       pruneMessageSubmissionCache(active.messageSubmissionsById);
     });
     return promise;
+  }
+
+  async executeAgentStatusLine(
+    agentId: string,
+    params: SessionStatusLineExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionStatusLineExecuteResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    if (active.sessionBinding?.sessionId !== params.sessionId) {
+      throw new Error("Status line request does not own this runtime session");
+    }
+    return executeSessionStatusLine(
+      active.bootstrap.session,
+      params.presentation,
+      signal,
+    );
   }
 
   async executeAgentShell(

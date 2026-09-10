@@ -1569,6 +1569,9 @@ async function bootstrapLocalRuntimeSessionScoped(
       runId: conversationId,
       sessionId: conversationId,
       autonomous: executionAdmissionAutonomous,
+      ...(maxBudgetUsdFromAgenCConfig(startup.config) !== undefined
+        ? { maxCostUsd: maxBudgetUsdFromAgenCConfig(startup.config) }
+        : {}),
     },
     budget: resolveExecutionAdmissionBudgetPolicy({
       budget: startup.config.budget,
@@ -2150,6 +2153,7 @@ async function bootstrapLocalRuntimeSessionScoped(
                   conversationId: s.conversationId,
                   workspaceRoot,
                   signal: startupSignal,
+                  session: s,
                 });
               }
             } catch {

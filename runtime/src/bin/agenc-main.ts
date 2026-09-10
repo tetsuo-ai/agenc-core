@@ -2571,6 +2571,7 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
 
 type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
   executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
+  executeDaemonStatusLine?: AgenCTuiBridgeSession["executeDaemonStatusLine"];
   readonly services?: {
     readonly mcpManager?: NonNullable<Session["services"]["mcpManager"]>;
     readonly [key: string]: unknown;
@@ -3951,6 +3952,13 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // `/hooks` reads the daemon session's REAL configured-hooks runtime
     // through liveSession.getDaemonHooksStatus. Hooks live on the daemon
     // agent session, so there is nothing to inspect pre-first-turn.
+    executeDaemonStatusLine: async (presentation, signal) => {
+      signal?.throwIfAborted();
+      if (liveSession?.executeDaemonStatusLine === undefined) {
+        return { status: "unavailable", reason: "session_not_ready" };
+      }
+      return liveSession.executeDaemonStatusLine(presentation, signal);
+    },
     getDaemonHooksStatus: async () => {
       if (liveSession === null) {
         throw new Error(

@@ -3054,6 +3054,47 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("sends only owned status-line identity and presentation with transport cancellation", async () => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockResolvedValue({ status: "rendered", text: "daemon-cost" });
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const controller = new AbortController();
+    await expect(session.executeDaemonStatusLine?.({
+      vimMode: "NORMAL", sessionId: "foreign-session", command: "never-send", cost: 100,
+    }, controller.signal)).resolves.toEqual({ status: "rendered", text: "daemon-cost" });
+    expect(request).toHaveBeenCalledWith("session.statusLine.execute", {
+      sessionId: "session_1", presentation: { vimMode: "NORMAL" },
+    }, { signal: controller.signal });
+    request.mockRestore();
+  });
+
+  it.each([
+    [new AgenCDaemonResponseError({ code: -32601, message: "unsupported" }), "unavailable", "unsupported_method"],
+    [new Error("private transport detail"), "error", "request_failed"],
+  ] as const)("does not retry status-line transport failure %s", async (error, status, reason) => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockRejectedValue(error);
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    await expect(session.executeDaemonStatusLine?.({})).resolves.toEqual({ status, reason });
+    expect(request).toHaveBeenCalledOnce();
+    request.mockRestore();
+  });
+
+  it("does not dispatch a status-line request with an already cancelled signal", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled status"));
+    await expect(session.executeDaemonStatusLine?.({}, controller.signal)).rejects.toThrow("cancelled status");
+    expect(client.requests).toHaveLength(0);
+  });
+
   it("forwards setDaemonHooksDisabled to the daemon session.hooks.setDisabled RPC", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({

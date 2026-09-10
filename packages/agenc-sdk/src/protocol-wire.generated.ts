@@ -25,7 +25,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.10.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.11.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -821,6 +821,7 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
     "session.permissions.mutateRule",
     "session.hooks.status",
     "session.hooks.setDisabled",
+    "session.statusLine.execute",
     "session.applyConfig",
     "session.mcp.reconnectServer",
     "session.mcp.enableServer",
@@ -1622,8 +1623,37 @@ export interface SessionTranscriptV2TurnResult extends JsonObject {
 export interface SessionTranscriptV2Event extends JsonObject {
     readonly eventId: string;
     readonly committedSequence: number;
-    readonly type: "token_count" | "turn_failed" | "turn_aborted";
+    readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted";
     readonly payload: {
+        readonly runId?: string;
+        readonly sequence?: number;
+        readonly costUsd?: number;
+        readonly heldCostUsd?: number;
+        readonly inputTokens?: number;
+        readonly outputTokens?: number;
+        readonly modelCalls?: number;
+        readonly hasUnknownCost?: boolean;
+        readonly models?: readonly {
+            readonly model: string;
+            readonly provider?: string;
+            readonly costUsd: number;
+            readonly heldCostUsd: number;
+            readonly inputTokens: number;
+            readonly outputTokens: number;
+            readonly totalTokens: number;
+            readonly modelCalls: number;
+            readonly hasUnknownCost: boolean;
+        }[];
+        readonly agents?: readonly {
+            readonly runId: string;
+            readonly costUsd: number;
+            readonly heldCostUsd: number;
+            readonly inputTokens: number;
+            readonly outputTokens: number;
+            readonly totalTokens: number;
+            readonly modelCalls: number;
+            readonly hasUnknownCost: boolean;
+        }[];
         readonly promptTokens?: number;
         readonly completionTokens?: number;
         readonly totalTokens?: number;

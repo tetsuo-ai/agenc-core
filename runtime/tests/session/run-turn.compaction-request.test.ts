@@ -7,7 +7,10 @@ import { buildSamplingRequestContract } from "../../src/session/run-turn-samplin
 import { buildInitialTurnState } from "../../src/session/turn-state.js";
 import { toAgenCRuntimeMessages } from "../../src/session/runtime-message-conversion.js";
 import { mkCtx, mkSession } from "../fixtures.js";
-import { createCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
+import {
+  attachCompactionSession,
+  createCompactionTransactionHarness,
+} from "../helpers/compaction-transaction-harness.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -31,7 +34,7 @@ describe("automatic compaction sampling request accounting", () => {
         executionAdmission: harness.session.services.executionAdmission,
       },
     });
-    session.mountRolloutStore(harness.store);
+    attachCompactionSession(session, harness);
     Object.assign(harness.provider, { tokenCountCapability: undefined });
     vi.spyOn(session.services.registry, "toLLMTools").mockReturnValue([
       {

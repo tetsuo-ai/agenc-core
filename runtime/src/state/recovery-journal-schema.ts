@@ -18,6 +18,7 @@ import {
   type CompactionRolloutType,
 } from "../session/compaction-event-reader.js";
 import { validatePendingAdmissionFallbackSlice } from "../session/turn-checkpoint-slice.js";
+import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 
 type KnownRolloutItem = Exclude<RolloutItem, { readonly type: "unknown" }>;
 type KnownRolloutType = KnownRolloutItem["type"];
@@ -681,6 +682,11 @@ const isTurnCheckpoint: Validator<
   AllKeys<TurnCheckpointPayload>
 > = (value): value is TurnCheckpointPayload => isTurnCheckpointShape(value);
 
+const isSessionUsage: Validator<
+  EventPayload<"session_usage">,
+  AllKeys<EventPayload<"session_usage">>
+> = isAdmissionUsageSummary;
+
 const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   session_meta: objectShape(
     {
@@ -1183,6 +1189,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       details: isRecord,
     },
   ),
+  session_usage: isSessionUsage,
   guardian_assessment: objectShape(
     {
       id: isString,

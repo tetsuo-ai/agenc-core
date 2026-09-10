@@ -8,6 +8,7 @@ import type {
   AdmissionLease,
   AdmissionReconcileResult,
   AdmissionUsage,
+  AdmissionUsageSummary,
   PersistedAdmissionRecord,
   RuntimeAdmissionRequest,
 } from "./admission-types.js";
@@ -60,6 +61,12 @@ interface WorkspaceBinding {
   readonly repository: ExecutionAdmissionRepository;
   readonly aliases: Set<string>;
   lastJournalSequence: number;
+}
+
+interface UsageSubscription {
+  readonly binding: ClientBinding;
+  readonly listener: (summary: AdmissionUsageSummary) => void;
+  signature: string;
 }
 
 interface ActiveCapacity {
@@ -197,6 +204,7 @@ export class ExecutionAdmissionKernel {
     string,
     Set<(event: AdmissionJournalEvent) => void>
   >();
+  readonly #usageListeners = new Map<WorkspaceBinding, Set<UsageSubscription>>();
   #limits: AdmissionConcurrencyLimits;
   #drainScheduled = false;
   #closed = false;
@@ -346,8 +354,21 @@ export class ExecutionAdmissionKernel {
     if (deadlineAt !== undefined && deadlineAt <= this.#timestamp()) {
       this.cancelRun(options.scope.runId, "deadline_expired");
     }
-    const budget = rootBudgetState(scope, options.budget);
-    return new KernelAdmissionClient(this, { workspace, scope, budget });
+    const proposedBudget = rootBudgetState(scope, options.budget);
+    const maxCostUsd = workspace.repository.bindRunCostLimit(
+      scope.runId,
+      proposedBudget.scopes[0]!,
+    );
+    const effectiveScope: AdmissionClientScope = {
+      ...scope,
+      ...(maxCostUsd !== undefined ? { maxCostUsd, hasHardCostCap: true } : {}),
+    };
+    const budget = rootBudgetState(effectiveScope, options.budget);
+    return new KernelAdmissionClient(this, {
+      workspace,
+      scope: effectiveScope,
+      budget,
+    });
   }
 
   updateLimits(limits: AdmissionConcurrencyLimits): void {
@@ -625,6 +646,33 @@ export class ExecutionAdmissionKernel {
     });
   }
 
+  getUsageSummary(binding: ClientBinding): AdmissionUsageSummary {
+    this.#assertOpen();
+    return binding.workspace.repository.getUsageSummary(
+      binding.scope.runId,
+      binding.budget.runAllocationKey,
+    );
+  }
+
+  subscribeUsage(
+    binding: ClientBinding,
+    listener: (summary: AdmissionUsageSummary) => void,
+  ): () => void {
+    const summary = this.getUsageSummary(binding);
+    const subscription: UsageSubscription = {
+      binding,
+      listener,
+      signature: JSON.stringify({ ...summary, sequence: 0 }),
+    };
+    const listeners = this.#usageListeners.get(binding.workspace) ?? new Set();
+    listeners.add(subscription);
+    this.#usageListeners.set(binding.workspace, listeners);
+    return () => {
+      listeners.delete(subscription);
+      if (listeners.size === 0) this.#usageListeners.delete(binding.workspace);
+    };
+  }
+
   subscribe(
     runId: string,
     listener: (event: AdmissionJournalEvent) => void,
@@ -850,6 +898,7 @@ export class ExecutionAdmissionKernel {
     this.#active.clear();
     this.#listeners.clear();
     this.#criticalListeners.clear();
+    this.#usageListeners.clear();
     for (const binding of this.#byStatePath.values()) {
       binding.driver.close();
     }
@@ -1326,6 +1375,18 @@ export class ExecutionAdmissionKernel {
     return found;
   }
 
+  #publishUsage(binding: WorkspaceBinding): void {
+    for (const subscription of this.#usageListeners.get(binding) ?? []) {
+      try {
+        const summary = this.getUsageSummary(subscription.binding);
+        const signature = JSON.stringify({ ...summary, sequence: 0 });
+        if (signature === subscription.signature) continue;
+        subscription.listener(summary);
+        subscription.signature = signature;
+      } catch {}
+    }
+  }
+
   #publishNewJournal(binding: WorkspaceBinding): void {
     while (true) {
       const events = binding.repository.listJournal({
@@ -1356,6 +1417,7 @@ export class ExecutionAdmissionKernel {
             // Observers never get to roll back a committed admission event.
           }
         }
+        this.#publishUsage(binding);
       }
       if (events.length < JOURNAL_PAGE_SIZE) return;
     }
@@ -1437,6 +1499,14 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   subscribe(listener: (event: AdmissionJournalEvent) => void): () => void {
     return this.kernel.subscribe(this.scope.runId, listener);
+  }
+
+  getUsageSummary(): AdmissionUsageSummary {
+    return this.kernel.getUsageSummary(this.binding);
+  }
+
+  subscribeUsage(listener: (summary: AdmissionUsageSummary) => void): () => void {
+    return this.kernel.subscribeUsage(this.binding, listener);
   }
 
   subscribeCritical(

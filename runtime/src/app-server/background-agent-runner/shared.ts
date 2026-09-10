@@ -60,6 +60,8 @@ import type {
   SessionPermissionRuleMutationResult,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionStatusLineExecuteParams,
+  SessionStatusLineExecuteResult,
 } from "../protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "../realtime.js";
 import type { AgenCRealtimeCallClient } from "../realtime-transport.js";
@@ -510,6 +512,11 @@ export interface AgenCBackgroundAgentRunner {
     params: SessionShellExecuteParams,
     signal?: AbortSignal,
   ): Promise<SessionShellExecuteResult>;
+  executeAgentStatusLine?(
+    agentId: string,
+    params: SessionStatusLineExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionStatusLineExecuteResult>;
   /** Resolve the live route without exposing the primary provider to callers. */
   resolveCodePredictionSource?(
     agentId: string,

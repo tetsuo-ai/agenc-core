@@ -83,8 +83,14 @@ export function summarizeGitStatus(params: {
   readonly branch: GitCommandResult;
   readonly porcelain: GitCommandResult;
 }): GitStatusSummary {
-  if (params.insideWorkTree.code !== 0) {
-    return { state: "not-repo", message: "Run /status inside a git work tree for branch state." };
+  if (params.insideWorkTree.code !== 0 || params.insideWorkTree.stdout.trim() !== "true") {
+    if (
+      params.insideWorkTree.code === 0 ||
+      /^fatal: not a git repository \(or any /m.test(params.insideWorkTree.stderr)
+    ) {
+      return { state: "not-repo", message: "Run /status inside a git work tree for branch state." };
+    }
+    return { state: "error", message: params.insideWorkTree.stderr || "git repository discovery failed" };
   }
   if (params.branch.code !== 0 || params.porcelain.code !== 0) {
     return {
@@ -107,17 +113,22 @@ async function collectGitStatus(
   git: GitRunner = runGit,
 ): Promise<GitStatusSummary> {
   const insideWorkTree = await git(["rev-parse", "--is-inside-work-tree"], cwd);
-  if (insideWorkTree.code !== 0) {
+  if (insideWorkTree.code !== 0 || insideWorkTree.stdout.trim() !== "true") {
     return summarizeGitStatus({
       insideWorkTree,
       branch: { stdout: "", stderr: "", code: 0 },
       porcelain: { stdout: "", stderr: "", code: 0 },
     });
   }
-  const [branch, porcelain] = await Promise.all([
-    git(["rev-parse", "--abbrev-ref", "HEAD"], cwd),
+  const [symbolicBranch, porcelain] = await Promise.all([
+    git(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd),
     git(["status", "--porcelain"], cwd),
   ]);
+  let branch = symbolicBranch;
+  if (symbolicBranch.code === 1) {
+    const head = await git(["rev-parse", "--verify", "HEAD"], cwd);
+    branch = head.code === 0 ? { ...head, stdout: "" } : head;
+  }
   return summarizeGitStatus({ insideWorkTree, branch, porcelain });
 }
 

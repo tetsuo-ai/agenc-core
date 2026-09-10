@@ -325,7 +325,24 @@ describe('in-process teammate canonical rollout ownership', () => {
       ).toHaveLength(1)
 
       const parentJournalAfter = harness.store.readAll()
-      expect(parentJournalAfter).toEqual(parentJournalBefore)
+      expect(parentJournalAfter.slice(0, parentJournalBefore.length)).toEqual(parentJournalBefore)
+      const addedUsage = parentJournalAfter.slice(parentJournalBefore.length)
+      expect(addedUsage.length).toBeGreaterThan(0)
+      for (const item of addedUsage) {
+        expect(item).toMatchObject({
+          type: 'event_msg',
+          payload: { msg: { type: 'session_usage', payload: { runId: parent.conversationId } } },
+        })
+      }
+      const lastUsage = addedUsage.at(-1)
+      if (lastUsage?.type !== 'event_msg' || lastUsage.payload.msg.type !== 'session_usage') {
+        throw new Error('missing parent usage snapshot')
+      }
+      expect(lastUsage.payload.msg.payload).toEqual(rootAdmission.getUsageSummary?.())
+      expect(lastUsage.payload.msg.payload).toMatchObject({
+        inputTokens: 128, outputTokens: 128, modelCalls: 1, heldCostUsd: 0, hasUnknownCost: false,
+      })
+      expect(lastUsage.payload.msg.payload.costUsd).toBeGreaterThan(0)
       expect(JSON.stringify(parentJournalAfter)).not.toContain(
         'teammate-tool-1',
       )

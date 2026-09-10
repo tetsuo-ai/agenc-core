@@ -1,7 +1,8 @@
 /** Canonical rollout projection for execution-admission transitions. */
 
+import { randomUUID } from "node:crypto";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
-import type { AdmissionJournalEvent } from "../budget/admission-types.js";
+import type { AdmissionJournalEvent, AdmissionUsageSummary } from "../budget/admission-types.js";
 import type { Event } from "./event-log.js";
 import type { RolloutStore } from "./rollout-store.js";
 import type { Session } from "./session.js";
@@ -24,6 +25,7 @@ export function bindExecutionAdmissionJournal(
   };
   const unsubscribe =
     admission.subscribeCritical?.(append) ?? admission.subscribe(append);
+  let unsubscribeUsage: (() => void) | undefined;
   try {
     // Subscribe first, then converge the durable pre-bind history. JavaScript
     // cannot interleave another admission mutation during this synchronous
@@ -63,11 +65,25 @@ export function bindExecutionAdmissionJournal(
       }
       if (page.length < EXECUTION_ADMISSION_CATCHUP_PAGE_SIZE) break;
     }
+    let lastUsageSequence = -1;
+    const appendUsage = (summary: AdmissionUsageSummary): void => {
+      if (summary.sequence <= lastUsageSequence) return;
+      if (typeof session.conversationId === "string" && summary.runId !== session.conversationId) return;
+      session.emit({ id: `usage:${summary.runId}:${summary.sequence}`, eventId: randomUUID(), msg: { type: "session_usage", payload: summary } }, { durable: true });
+      lastUsageSequence = summary.sequence;
+    };
+    unsubscribeUsage = admission.subscribeUsage?.(appendUsage);
+    const usage = admission.getUsageSummary?.();
+    if (usage !== undefined) appendUsage(usage);
   } catch (error) {
+    unsubscribeUsage?.();
     unsubscribe();
     throw error;
   }
-  return unsubscribe;
+  return () => {
+    unsubscribeUsage?.();
+    unsubscribe();
+  };
 }
 
 /**

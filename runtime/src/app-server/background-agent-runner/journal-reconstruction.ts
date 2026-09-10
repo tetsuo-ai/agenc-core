@@ -8,6 +8,7 @@ import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { Event } from "../../session/event-log.js";
 import { classifyTurnTerminal, type TurnTerminal } from "../../contracts/turn-terminal.js";
 import type { RolloutItem } from "../../session/rollout-item.js";
+import { isAdmissionUsageSummary } from "../../session/usage-summary.js";
 import {
   reconstructFromRollout,
 } from "../../session/rollout-reconstruction.js";
@@ -207,8 +208,11 @@ function closedTurnResult(
 function transcriptNoticesFromRollout(
   items: readonly RolloutItem[],
   boundaryIndex: number,
+  runId: string,
 ): readonly SessionTranscriptV2Event[] {
   const notices: SessionTranscriptV2Event[] = [];
+  let usageNotice: SessionTranscriptV2Event | undefined;
+  let usageSequence = -1;
   const seenEventIds = new Set<string>();
   const closedTurnIds = new Set<string>();
   let currentTurnId: string | undefined;
@@ -221,6 +225,24 @@ function transcriptNoticesFromRollout(
       : `legacy-notice:${index}:${event.id}`);
     if (seenEventIds.has(eventId)) continue;
     seenEventIds.add(eventId);
+    if (event.msg.type === "session_usage") {
+      const summary = event.msg.payload;
+      if (!isAdmissionUsageSummary(summary)) {
+        throw new Error("Canonical session usage payload is invalid");
+      }
+      if (summary.runId === runId && summary.sequence > usageSequence) {
+        usageSequence = summary.sequence;
+        usageNotice = {
+          eventId, committedSequence, type: "session_usage",
+          payload: {
+            ...summary,
+            models: summary.models.map((model) => ({ ...model })),
+            agents: summary.agents.map((agent) => ({ ...agent })),
+          },
+        };
+      }
+      continue;
+    }
     if (event.msg.type === "token_count") {
       notices.push({ eventId, committedSequence, type: "token_count", payload: { ...event.msg.payload } });
       continue;
@@ -251,6 +273,7 @@ function transcriptNoticesFromRollout(
       });
     }
   }
+  if (usageNotice !== undefined) notices.push(usageNotice);
   return notices;
 }
 
@@ -467,7 +490,7 @@ export function sessionTranscriptV2FromRollout(
     historyEpoch: historyEpochForBoundary(runId, boundaryId),
     asOfSequence,
     messages,
-    events: transcriptNoticesFromRollout(items, boundaryIndex),
+    events: transcriptNoticesFromRollout(items, boundaryIndex, runId),
     ...(activeTurn !== undefined ? { activeTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
   };

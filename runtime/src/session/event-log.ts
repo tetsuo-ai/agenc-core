@@ -21,7 +21,7 @@
 
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import type { AgentStatus } from "../agents/status.js";
-import type { AdmissionJournalEvent } from "../budget/admission-types.js";
+import type { AdmissionJournalEvent, AdmissionUsageSummary } from "../budget/admission-types.js";
 import type {
   EffectBoundary,
   EffectNoEffectProof,
@@ -1225,6 +1225,10 @@ export type EventMsg =
       readonly payload: AdmissionJournalEvent;
     }
   | {
+      readonly type: "session_usage";
+      readonly payload: AdmissionUsageSummary;
+    }
+  | {
       readonly type: "guardian_assessment";
       readonly payload: GuardianAssessmentEvent;
     }
@@ -1453,6 +1457,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "run_cancel_requested",
     "recovery_decision",
     "execution_admission",
+    "session_usage",
     "guardian_assessment",
     "review_delegate_started",
     "review_delegate_completed",
