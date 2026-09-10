@@ -33,6 +33,7 @@ import {
 import {
   withSignedAllowedRoots,
 } from "../agents/_deps/filesystem-args.js";
+import { matchesSessionPlanFile, type SessionPlanFileAuthority } from "../planning/session-plan-authority.js";
 import type {
   PermissionDecisionReason,
   PermissionResult,
@@ -61,6 +62,7 @@ export interface ResolvedPathCheckResult extends PathCheckResult {
 
 export interface ValidatePathOptions {
   readonly extraWorkingDirectories?: readonly string[];
+  readonly planFileAuthority?: SessionPlanFileAuthority | null;
 }
 
 export interface ToolPathPermissionOptions {
@@ -71,6 +73,7 @@ export interface ToolPathPermissionOptions {
   readonly context: ToolPermissionContext;
   readonly operationType: FileOperationType;
   readonly extraWorkingDirectories?: readonly string[];
+  readonly planFileAuthority?: SessionPlanFileAuthority | null;
 }
 
 export function formatDirectoryList(directories: string[]): string {
@@ -377,6 +380,18 @@ export function isPathAllowed(
     };
   }
 
+  if (matchesSessionPlanFile(resolvedPath, options.planFileAuthority)) {
+    const askRule = matchingRuleForPath(
+      resolvedPath, context, operationType, "ask",
+    );
+    return askRule === null
+      ? {
+          allowed: true,
+          decisionReason: { type: "other", reason: "owning session plan file" },
+        }
+      : { allowed: false, decisionReason: { type: "rule", rule: askRule } };
+  }
+
   if (operationType !== "read") {
     const safetyCheck = checkPathSafetyForAutoEdit(
       resolvedPath,
@@ -646,7 +661,12 @@ export function checkToolPathPermission(
     opts.cwd,
     opts.context,
     opts.operationType,
-    { extraWorkingDirectories: opts.extraWorkingDirectories },
+    {
+      extraWorkingDirectories: opts.extraWorkingDirectories,
+      planFileAuthority: matchesSessionPlanFile(
+        opts.path, opts.planFileAuthority, opts.cwd,
+      ) ? opts.planFileAuthority : null,
+    },
   );
   if (result.allowed) {
     return {
@@ -686,7 +706,10 @@ export function checkToolPathPermission(
   // bypass.
   if (
     opts.context.mode === "bypassPermissions" &&
-    decisionReason?.type !== "safetyCheck"
+    decisionReason?.type !== "safetyCheck" &&
+    !(decisionReason?.type === "rule" &&
+      decisionReason.rule.ruleBehavior === "ask" &&
+      matchesSessionPlanFile(opts.path, opts.planFileAuthority, opts.cwd))
   ) {
     return {
       behavior: "allow",

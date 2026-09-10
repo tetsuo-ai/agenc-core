@@ -82,6 +82,15 @@ export function recordUnconstructedChildRunTerminal(
       agencVersion: parentRollout.store.agencVersion,
       model: options.model,
       modelProvider: options.modelProvider,
+      ...(services?.executionAdmission !== undefined
+        ? {
+            admissionOwner: {
+              workspaceId: services.executionAdmission.scope.workspaceId,
+              runId: options.childRunId,
+              parentRunId: services.executionAdmission.scope.runId,
+            },
+          }
+        : {}),
     });
     let lastSequenceBeforeTerminal = store
       .readAll()
@@ -168,6 +177,9 @@ export function mountChildRunJournal(
   const { parent, child } = options;
   const parentRollout = parent.rolloutStore;
   const admission = child.services.executionAdmission;
+  if (admission !== undefined && admission.scope.runId !== child.conversationId) {
+    throw new AdmissionDeniedError("child_run_journal_identity_conflict");
+  }
   const requiresCanonicalJournal =
     admission !== undefined || child.services.admissionRequired !== false;
   if (parentRollout === null) {
@@ -198,6 +210,17 @@ export function mountChildRunJournal(
     modelProvider:
       readProviderIdentity(child.services.provider) ??
       child.services.provider.name,
+    ...(admission !== undefined
+      ? {
+          admissionOwner: {
+            workspaceId: admission.scope.workspaceId,
+            runId: admission.scope.runId,
+            ...(admission.scope.parentRunId !== undefined
+              ? { parentRunId: admission.scope.parentRunId }
+              : {}),
+          },
+        }
+      : {}),
   });
 
   try {

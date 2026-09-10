@@ -420,8 +420,6 @@ const ZERO_ESTIMATE = {
   maxOutputTokens: 0,
   maxCostUsd: 0,
 } as const;
-const SPAWN_ESTIMATE_INPUT_TOKENS = 1_000_000;
-const SPAWN_ESTIMATE_OUTPUT_TOKENS = 200_000;
 const EVIDENCE_MESSAGE_LIMIT = 20_000;
 
 // ---------------------------------------------------------------------------
@@ -1319,11 +1317,7 @@ export class VerifiedChangeWorkflowController {
             canonicalizeJson({ stepId, childRunId, reviewer: ctx.spec.reviewerModel }),
           ),
           childRunId,
-          estimate: {
-            maxInputTokens: SPAWN_ESTIMATE_INPUT_TOKENS,
-            maxOutputTokens: SPAWN_ESTIMATE_OUTPUT_TOKENS,
-            maxCostUsd: ctx.spec.budget.maxCostUsd ?? null,
-          },
+          estimate: ZERO_ESTIMATE,
           ...(ctx.spec.reviewerModel !== undefined
             ? { model: ctx.spec.reviewerModel }
             : {}),
@@ -1683,14 +1677,7 @@ export class VerifiedChangeWorkflowController {
     if (verification === undefined || review === undefined) {
       throw new Error("record assembly requires verification and review context");
     }
-    const usage = ctx.usage.any
-      ? {
-          inputTokens: ctx.usage.input,
-          outputTokens: ctx.usage.output,
-          totalTokens: ctx.usage.input + ctx.usage.output,
-          costUsd: ctx.usage.cost,
-        }
-      : null;
+    const usage = this.#canonicalUsage(ctx);
     return assembleVerifiedChangeRecord({
       runId: ctx.runId,
       specDigest: ctx.specDigest,
@@ -1758,11 +1745,6 @@ export class VerifiedChangeWorkflowController {
           : outcome.status === "cancelled"
             ? "cancelled"
             : "failed";
-      // The child's usage is already reconciled at its durable source (the
-      // child run's own admission reservations charge the shared allocation
-      // scopes), so it rides `rollupUsage` — accumulated into the run's
-      // terminal usage rollup, never re-reconciled against the parent spawn
-      // reservation (that would double-charge the budget).
       const rollupUsage =
         outcome.usage === null
           ? undefined
@@ -1792,11 +1774,7 @@ export class VerifiedChangeWorkflowController {
         }),
       ),
       childRunId: input.childRunId,
-      estimate: {
-        maxInputTokens: SPAWN_ESTIMATE_INPUT_TOKENS,
-        maxOutputTokens: SPAWN_ESTIMATE_OUTPUT_TOKENS,
-        maxCostUsd: spec.budget.maxCostUsd ?? null,
-      },
+      estimate: ZERO_ESTIMATE,
       ...(spec.model !== undefined ? { model: spec.model } : {}),
       ...(spec.provider !== undefined ? { provider: spec.provider } : {}),
       beforeCommitFailpoints: input.beforeCommitFailpoints ?? [
@@ -2428,14 +2406,14 @@ export class VerifiedChangeWorkflowController {
       }
     }
     try {
-      const usage = ctx.usage.any
-        ? {
-            inputTokens: ctx.usage.input,
-            outputTokens: ctx.usage.output,
-            totalTokens: ctx.usage.input + ctx.usage.output,
-            costUsd: ctx.usage.cost,
-          }
-        : null;
+      let usage: RunUsageTotals | null = null;
+      try {
+        usage = this.#canonicalUsage(ctx);
+      } catch (error) {
+        this.#deps.warn(
+          `workflow ${ctx.runId} canonical usage is unavailable: ${errorMessage(error)}`,
+        );
+      }
       const terminalEvent = ctx.journal.appendTerminal({
         status: terminal.status,
         stopReason: terminal.stopReason,
@@ -2466,6 +2444,20 @@ export class VerifiedChangeWorkflowController {
         `workflow ${ctx.runId} failed to record its terminal result: ${errorMessage(error)}`,
       );
     }
+  }
+
+  #canonicalUsage(ctx: RunContext): RunUsageTotals | null {
+    const summary = ctx.admission.getUsageSummary?.();
+    if (summary !== undefined && summary.runId !== ctx.runId) {
+      throw new Error(`canonical usage belongs to ${summary.runId}, not workflow ${ctx.runId}`);
+    }
+    if (summary === undefined || summary.hasUnknownCost) return null;
+    return {
+      inputTokens: summary.inputTokens,
+      outputTokens: summary.outputTokens,
+      totalTokens: summary.totalTokens,
+      costUsd: summary.costUsd,
+    };
   }
 
   // -------------------------------------------------------------------------

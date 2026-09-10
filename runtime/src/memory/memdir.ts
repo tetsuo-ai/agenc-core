@@ -12,6 +12,8 @@
 import { feature } from 'bun:bundle'
 import { join } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
+import { resolveAutoMemoryDirectory, resolveGlobalMemoryDirectory, type ResolveAutoMemoryDirectoryOptions } from '../services/extractMemories/memory-paths.js'
+import { getProjectDir as getCanonicalProjectDir } from '../session/session-store.js'
 import {
   getAutoMemPath,
   getGlobalMemoryPath,
@@ -157,12 +159,12 @@ export function buildSessionMemoryLayerLines(): string[] {
   ]
 }
 
-export function buildMemoryLayerLines(projectMemoryDir = getProjectMemoryPath()): string[] {
+export function buildMemoryLayerLines(projectMemoryDir = getProjectMemoryPath(), globalMemoryDir = getGlobalMemoryPath(), projectInstructionPath = getProjectInstructionPath()): string[] {
   return [
     '## Memory layers',
     '',
-    `- Global memory: durable user-level memory shared across projects at \`${getGlobalMemoryPath()}\`.`,
-    `- Project memory: durable project-level memory at \`${projectMemoryDir}\` plus project instructions from \`${getProjectInstructionPath()}\`.`,
+    `- Global memory: durable user-level memory shared across projects at \`${globalMemoryDir}\`.`,
+    `- Project memory: durable project-level memory at \`${projectMemoryDir}\` plus project instructions from \`${projectInstructionPath}\`.`,
     '- Session memory: in-conversation state for this current thread. Use plans, tasks, and normal conversation context for information that only matters during this session.',
     '',
   ]
@@ -223,11 +225,12 @@ export function buildMemoryInstructionLines(): string[] {
 export function buildMemoryDirectoryLines(
   projectMemoryDir = getProjectMemoryPath(),
   extraGuidelines?: readonly string[],
+  globalMemoryDir = getGlobalMemoryPath(),
 ): string[] {
   return [
     '# Memory directories',
     '',
-    `- Global memory (user-level, shared across projects): \`${getGlobalMemoryPath()}\``,
+    `- Global memory (user-level, shared across projects): \`${globalMemoryDir}\``,
     `- Project memory (this repository, shared by its git worktrees): \`${projectMemoryDir}\``,
     '- Session memory is the current conversation: use plans and tasks for state that only matters in this session.',
     '',
@@ -247,9 +250,7 @@ export function buildMemoryDirectoryLines(
  * files + MEMORY.md. MEMORY.md is still loaded into context (via agencmd.ts)
  * as the distilled index — this prompt only changes where NEW memories go.
  */
-function buildAssistantDailyLogPrompt(skipIndex = false): string {
-  const projectMemoryDir = getAutoMemPath()
-  const globalMemoryDir = getGlobalMemoryPath()
+function buildAssistantDailyLogPrompt(skipIndex = false, projectMemoryDir = getAutoMemPath(), globalMemoryDir = getGlobalMemoryPath(), owner?: { projectInstructionPath: string; transcriptDir: string }): string {
   // Describe the path as a pattern rather than inlining today's literal path:
   // this prompt is cached by systemPromptSection('memory', ...) and NOT
   // invalidated on date change. The model derives the current date from the
@@ -269,7 +270,7 @@ function buildAssistantDailyLogPrompt(skipIndex = false): string {
     '',
     `You have persistent, file-based memory directories: global memory at \`${globalMemoryDir}\` and project memory at \`${projectMemoryDir}\`. ${DIRS_EXIST_GUIDANCE}`,
     '',
-    ...buildMemoryLayerLines(projectMemoryDir),
+    ...buildMemoryLayerLines(projectMemoryDir, globalMemoryDir, owner?.projectInstructionPath),
     '## Where to save memories',
     '',
     `- Save user-level memories (preferences, corrections, cross-project facts) in global memory at \`${globalMemoryDir}\`. Update that directory's \`${ENTRYPOINT_NAME}\` index when you add, rename, or remove a global memory topic file.`,
@@ -300,7 +301,7 @@ function buildAssistantDailyLogPrompt(skipIndex = false): string {
           `The project \`${ENTRYPOINT_NAME}\` is the distilled index maintained nightly from project logs and is loaded into your context automatically. Read it for orientation, but do not edit the project index directly — record new project information in today's log instead. Global memory has its own \`${ENTRYPOINT_NAME}\`; update the global index when you save global user-level topic files.`,
           '',
         ]),
-    ...buildSearchingPastContextSection([globalMemoryDir, projectMemoryDir]),
+    ...buildSearchingPastContextSection([globalMemoryDir, projectMemoryDir], owner?.transcriptDir),
   ]
 
   return lines.join('\n')
@@ -311,8 +312,8 @@ function buildAssistantDailyLogPrompt(skipIndex = false): string {
  */
 export function buildSearchingPastContextSection(
   durableMemoryDirs: string | readonly string[],
+  projectDir = getProjectDir(getOriginalCwd()),
 ): string[] {
-  const projectDir = getProjectDir(getOriginalCwd())
   const memoryDirs = Array.from(
     new Set(
       (Array.isArray(durableMemoryDirs)
@@ -371,9 +372,14 @@ function quoteShellPath(path: string): string {
  * stays readable and writable as ordinary project memory. Returns null when
  * auto memory is disabled.
  */
-export async function loadMemoryPrompt(): Promise<MemoryPromptSections | null> {
-  const autoEnabled = isAutoMemoryEnabled()
-  if (!autoEnabled) return null
+export async function loadMemoryPrompt(owner?: ResolveAutoMemoryDirectoryOptions): Promise<MemoryPromptSections | null> {
+  const resolved = owner === undefined ? undefined : await resolveAutoMemoryDirectory(owner)
+  if (resolved === undefined ? !isAutoMemoryEnabled() : !resolved.enabled || resolved.path === undefined) return null
+  const autoDir = owner === undefined ? getAutoMemPath() : resolved?.path
+  const globalDir = owner === undefined ? getGlobalMemoryPath() : await resolveGlobalMemoryDirectory(owner)
+  if (autoDir === undefined || globalDir === undefined) return null
+  await ensureMemoryDirExists(globalDir)
+  await ensureMemoryDirExists(autoDir)
 
   const skipIndex = false
 
@@ -382,26 +388,26 @@ export async function loadMemoryPrompt(): Promise<MemoryPromptSections | null> {
   if (feature('KAIROS') && getKairosActive()) {
     return {
       instructions: '',
-      directories: buildAssistantDailyLogPrompt(skipIndex),
+      directories: buildAssistantDailyLogPrompt(skipIndex, autoDir, globalDir,
+        owner?.configStore === undefined || owner.cwd === undefined ? undefined : {
+          projectInstructionPath: join(owner.configStore.projectRoot, 'AGENC.md'),
+          transcriptDir: getCanonicalProjectDir(owner.cwd, undefined, owner.configStore.homeContext.path),
+        }),
     }
   }
 
   // Cowork injects memory-policy text via env var; it is per-session, so it
   // rides with the directory block.
-  const coworkExtraGuidelines = getSessionCoworkMemoryExtraGuidelines()
+  const coworkExtraGuidelines = owner === undefined ? getSessionCoworkMemoryExtraGuidelines() : owner.runtimeOptions?.coworkMemoryExtraGuidelines
   const extraGuidelines =
     coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
       ? [coworkExtraGuidelines]
       : undefined
 
-  const autoDir = getAutoMemPath()
-  const globalDir = getGlobalMemoryPath()
   // Harness guarantees the directories exist so the model can write without
   // checking. The prompt text reflects this ("already exist").
-  await ensureMemoryDirExists(globalDir)
-  await ensureMemoryDirExists(autoDir)
   return {
     instructions: buildMemoryInstructionLines().join('\n'),
-    directories: buildMemoryDirectoryLines(autoDir, extraGuidelines).join('\n'),
+    directories: buildMemoryDirectoryLines(autoDir, extraGuidelines, globalDir).join('\n'),
   }
 }

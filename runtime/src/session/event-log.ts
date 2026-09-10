@@ -121,6 +121,11 @@ export interface SessionMetaLine {
   readonly modelProvider?: string;
   /** Upstream thread memory mode persisted by metadata-update rows. */
   readonly memoryMode?: string;
+  readonly admissionOwner?: {
+    readonly workspaceId: string;
+    readonly runId: string;
+    readonly parentRunId?: string;
+  };
 }
 
 export interface TurnStartedEvent {

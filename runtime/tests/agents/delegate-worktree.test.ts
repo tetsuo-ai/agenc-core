@@ -26,6 +26,7 @@ import { runAgent } from "./run-agent.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentMetadata } from "./registry.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import * as worktreeModule from "./worktree.js";
 
 const mockRunAgent = vi.mocked(runAgent);
 const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
@@ -118,6 +119,58 @@ function gatedRun(): {
 }
 
 describe("delegate worktree isolation (real git)", () => {
+  it.each([false, true])("keeps post-creation failures uncertain even when cleanup fails: %s", async (cleanupFails) => {
+    const repo = initRepo();
+    const cleanup = vi.spyOn(worktreeModule, "removeAgentWorktree");
+    if (cleanupFails) cleanup.mockRejectedValueOnce(new Error("cleanup unavailable"));
+    try {
+      const result = await delegate({
+        parent: makeParentSession(repo) as never,
+        parentPath: "/root",
+        control: { spawn: vi.fn(async () => { throw new Error("child creation failed"); }) } as never,
+        registry: {} as never,
+        taskPrompt: "write files",
+        isolation: "worktree",
+        worktreeSlug: "failed_worker",
+      });
+      expect(result).toMatchObject({ kind: "rejected", code: "AGENT_SPAWN_REJECTED" });
+      expect(result).not.toHaveProperty("effectDisposition");
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(existsSync(join(repo, ".agenc-worktrees", "failed_worker"))).toBe(cleanupFails);
+    } finally {
+      cleanup.mockRestore();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unborn base before mutations and preserves the no-effect evidence", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "agenc-unborn-worktree-"));
+    git(repo, "init", "-b", "main");
+    const control = { spawn: vi.fn() };
+    try {
+      const result = await delegate({
+        parent: makeParentSession(repo) as never,
+        parentPath: "/root",
+        control: control as never,
+        registry: {} as never,
+        taskPrompt: "write files",
+        isolation: "worktree",
+        worktreeSlug: "unborn_worker",
+      });
+      expect(result).toMatchObject({
+        kind: "rejected",
+        code: "WORKTREE_UNAVAILABLE",
+        effectDisposition: { disposition: "confirmed_no_effect", evidenceKind: "boundary_not_crossed" },
+      });
+      expect(control.spawn).not.toHaveBeenCalled();
+      expect(existsSync(join(repo, ".agenc-worktrees"))).toBe(false);
+      expect(git(repo, "for-each-ref", "--format=%(refname)")).toBe("");
+      expect(git(repo, "status", "--porcelain")).toBe("");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("gives two agents distinct worktrees; unchanged ones are removed, dirty ones kept", async () => {
     const repo = initRepo();
     try {

@@ -29,6 +29,7 @@ import { WorkbenchComposerFocusProvider } from "./composerFocusContext.js";
 import { visibleWorkbenchPane } from "./reducer.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "./state.js";
 import { WorkbenchTranscriptLayoutProvider } from "./transcriptLayoutContext.js";
+import { workbenchSurfacePadding } from "./surfaceGeometry.js";
 import type {
   WorkbenchLayoutSize,
   WorkbenchPane,
@@ -182,7 +183,10 @@ export function WorkbenchLayout({
       (showAgents ? agentsWidth : 0) -
       (showRail ? railWidth : 0),
   );
-  const surfaceContentWidth = Math.max(1, surfaceWidth - 2);
+  const surfaceContentWidth = Math.max(
+    1,
+    surfaceWidth - 2 * workbenchSurfacePadding(workbench.activeSurfaceMode),
+  );
   const visiblePanes = useMemo(
     () => visiblePaneList(showExplorer, showAgents, railAvailable),
     [railAvailable, showAgents, showExplorer],

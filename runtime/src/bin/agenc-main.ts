@@ -1124,7 +1124,7 @@ export async function prepareTurnRuntimeInputs(params: {
   readonly registry: { readonly tools: readonly { readonly name: string }[] };
 }): Promise<PreparedTurnRuntimeInputs> {
   const currentConfig = params.configStore.current();
-  const memory = await resolveMemoryPromptInputs();
+  const memory = await resolveMemoryPromptInputs(params.session, params.workspaceRoot);
 
   return {
     memoryPromptText: memory.memoryPrompt,

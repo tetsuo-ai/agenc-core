@@ -1098,16 +1098,12 @@ describe("tools/runtimes", () => {
           args,
         });
 
-      // The session's own plan-file family is admitted, including the
-      // per-agent spelling and a canonical alias of the plans directory.
       expect(attempt({ file_path: planPath })).not.toThrow();
-      expect(attempt({ file_path: agentPlanPath })).not.toThrow();
+      expect(attempt({ file_path: agentPlanPath })).toThrow(/workspace_write blocked/);
       expect(
         attempt({ file_path: join(aliasHome, "plans", basename(planPath)) }),
       ).not.toThrow();
 
-      // Without a bound home the preflight falls back to the runtime's own
-      // home resolver, the same one the plan attachment uses.
       const fallbackSessionId = "runtime-plan-fallback-session";
       const fallbackPlanPath = getPlanFilePath({ sessionId: fallbackSessionId });
       expect(
@@ -1115,9 +1111,8 @@ describe("tools/runtimes", () => {
           { file_path: fallbackPlanPath },
           { conversationId: fallbackSessionId, services: TEST_RUNTIME_SERVICES },
         ),
-      ).not.toThrow();
+      ).toThrow(/workspace_write blocked/);
 
-      // Everything else in the plans directory stays outside the workspace.
       expect(attempt({ file_path: join(plansDirectory, "other-plan.md") })).toThrow(
         /workspace_write blocked/,
       );

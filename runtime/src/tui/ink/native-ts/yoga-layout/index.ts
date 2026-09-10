@@ -1111,7 +1111,7 @@ function layoutNode(
     // Same-generation check covers fresh-mounted (dirty) nodes during
     // virtual scroll — the dirty chain invokes them ≥2^depth times, first
     // call writes cache, rest hit: 105k visits → ~10k for 1593-node tree.
-    if (node._cN > 0 && (sameGen || !node.isDirty_)) {
+    if (!performLayout && node._cN > 0 && (sameGen || !node.isDirty_)) {
       const cIn = node._cIn!
       for (let i = 0; i < node._cN; i++) {
         const o = i * 8
@@ -1184,13 +1184,7 @@ function layoutNode(
     node._mOW = ownerWidth
     node._mOH = ownerHeight
     node._hasM = true
-    // Don't clear isDirty_. For DIRTY nodes, invalidate _hasL so the upcoming
-    // performLayout=true call recomputes with the new child set (otherwise
-    // sticky-scroll never follows new content — the bug from 4557bc9f9c).
-    // Clean nodes keep _hasL: their layout from the previous generation is
-    // still valid, they're only here because an ancestor is dirty and called
-    // with different inputs than cached.
-    if (wasDirty) node._hasL = false
+    node._hasL = false
   }
 
   // Resolve padding/border/margin against ownerWidth (yoga uses ownerWidth for %)
@@ -1356,8 +1350,8 @@ function layoutNode(
   // values. Per CSS, a % width resolves against the parent's content-box
   // width. If this node's width is indefinite, children's % widths are also
   // indefinite — do NOT fall through to the grandparent's size.
-  const ownerW = isDefined(width) ? width : NaN
-  const ownerH = isDefined(height) ? height : NaN
+  const ownerW = isDefined(width) ? Math.max(0, width - paddingBorderWidth) : NaN
+  const ownerH = isDefined(height) ? Math.max(0, height - paddingBorderHeight) : NaN
   const isWrap = style.flexWrap !== Wrap.NoWrap
   const gapCross = resolveGap(
     style,

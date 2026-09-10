@@ -682,6 +682,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
     let thread: AgentThread | undefined;
+    let rejectedEffectDisposition: ToolResult["effectDisposition"];
     try {
       const childAgentPath = joinAgentPath(current.agentPath, taskName);
       const worktreeSlug =
@@ -719,6 +720,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           : {}),
       });
       if (outcome.kind === "rejected") {
+        rejectedEffectDisposition = outcome.effectDisposition;
         throw new Error(outcome.reason);
       }
       thread = outcome.thread;
@@ -744,7 +746,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           },
         },
       });
-      return json({ error: reason }, true);
+      return {
+        ...json({ error: reason }, true),
+        ...(rejectedEffectDisposition !== undefined
+          ? { effectDisposition: rejectedEffectDisposition }
+          : {}),
+      };
     }
     if (thread === undefined) {
       return json({ error: "spawn_agent did not return an agent thread" }, true);

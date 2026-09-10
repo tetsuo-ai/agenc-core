@@ -33,6 +33,8 @@
 
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { LLMToolCall } from "../../llm/types.js";
+import { signedSessionPlanFileArgs } from "../../agents/_deps/filesystem-args.js";
+import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import {
   getPlan,
   getPlanFilePath,
@@ -977,6 +979,7 @@ export class StreamingToolExecutor {
                 arguments: JSON.stringify(dispatchArgs),
               };
               return dispatchWithInjectedArgs(this.registry, dispatchCall, {
+                ...signedSessionPlanFileArgs(sessionPlanFileAuthority(session)),
                 __onProgress: onProgress,
                 __abortSignal: this.abortSignal,
                 __callId: tool.toolCall.id,

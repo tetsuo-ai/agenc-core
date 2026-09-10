@@ -189,10 +189,10 @@ test('maps less common style branches to layout node setters', () => {
   expect(node.setHeightAuto).toHaveBeenCalled()
   expect(node.setMinWidthPercent).toHaveBeenCalledWith(25)
   expect(node.setMinHeightPercent).toHaveBeenCalledWith(30)
-  expect(node.setMaxWidth).toHaveBeenCalledWith(0)
+  expect(node.setMaxWidth).toHaveBeenCalledWith(Number.NaN)
   expect(node.setMaxWidthPercent).toHaveBeenCalledWith(70)
   expect(node.setMaxHeightPercent).toHaveBeenCalledWith(80)
-  expect(node.setMaxHeight).toHaveBeenCalledWith(0)
+  expect(node.setMaxHeight).toHaveBeenCalledWith(Number.NaN)
   expect(node.setDisplay).toHaveBeenCalledWith(LayoutDisplay.Flex)
   expect(node.setDisplay).toHaveBeenCalledWith(LayoutDisplay.None)
 

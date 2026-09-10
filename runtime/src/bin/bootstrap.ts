@@ -1514,6 +1514,8 @@ async function bootstrapLocalRuntimeSessionScoped(
   const baseInstructions = await assembleBaseInstructionsForModel({
     session: {
       services: {
+        configStore,
+        userShell: commandExecutionAuthority,
         runtimeOptions,
         sandboxExecutionBroker,
         providerEnvironment,

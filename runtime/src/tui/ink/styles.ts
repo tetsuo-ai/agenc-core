@@ -668,7 +668,7 @@ const applyDimensionStyles = (node: LayoutNode, style: Styles): void => {
     if (typeof style.maxWidth === 'string') {
       node.setMaxWidthPercent(Number.parseInt(style.maxWidth, 10))
     } else {
-      node.setMaxWidth(style.maxWidth ?? 0)
+      node.setMaxWidth(style.maxWidth ?? Number.NaN)
     }
   }
 
@@ -676,7 +676,7 @@ const applyDimensionStyles = (node: LayoutNode, style: Styles): void => {
     if (typeof style.maxHeight === 'string') {
       node.setMaxHeightPercent(Number.parseInt(style.maxHeight, 10))
     } else {
-      node.setMaxHeight(style.maxHeight ?? 0)
+      node.setMaxHeight(style.maxHeight ?? Number.NaN)
     }
   }
 }

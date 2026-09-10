@@ -17,6 +17,7 @@
  */
 
 import type { Session } from "../session/session.js";
+import type { ToolEffectDispositionEvidence } from "../contracts/run-contracts.js";
 import type { LLMMessage } from "../llm/types.js";
 import type { LLMContentPart } from "../llm/types.js";
 import {
@@ -50,6 +51,7 @@ import {
   hasWorktreeChanges,
   captureBaseCommit,
   removeAgentWorktree,
+  WorktreePreconditionError,
 } from "./worktree.js";
 import { runAgent } from "./run-agent.js";
 import { ResumeManager } from "./resume.js";
@@ -134,6 +136,7 @@ export type DelegateOutcome =
         | "retryable_capacity"
         | "spawn_failed";
       readonly reason: string;
+      readonly effectDisposition?: ToolEffectDispositionEvidence;
     };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -148,9 +151,13 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     code: Extract<DelegateOutcome, { kind: "rejected" }>["code"],
     category: Extract<DelegateOutcome, { kind: "rejected" }>["category"],
     reason: string,
+    effectDisposition?: ToolEffectDispositionEvidence,
   ): Extract<DelegateOutcome, { kind: "rejected" }> => {
     opts.capacityPermit?.cancel();
-    return { kind: "rejected", code, category, reason };
+    return {
+      kind: "rejected", code, category, reason,
+      ...(effectDisposition !== undefined ? { effectDisposition } : {}),
+    };
   };
 
   if (opts.invocationEnvelope !== undefined) {
@@ -194,10 +201,14 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       process.cwd();
     const canonicalGitRoot = findGitRoot(workspaceRoot);
     if (!canonicalGitRoot) {
+      const refusal = new WorktreePreconditionError(
+        "worktree isolation requested but cwd is not inside a git repository",
+      );
       return reject(
         "WORKTREE_UNAVAILABLE",
         "environment",
-        "worktree isolation requested but cwd is not inside a git repository",
+        refusal.message,
+        refusal.effectDisposition,
       );
     }
     try {
@@ -218,10 +229,30 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         worktreeSandboxExecutionBroker,
       );
     } catch (err) {
+      if (worktree?.created) {
+        try {
+          await removeAgentWorktree({
+            path: worktree.path,
+            branch: worktree.branch,
+            gitRoot: worktree.gitRoot,
+            sandboxExecutionBroker: worktreeSandboxExecutionBroker!,
+          });
+        } catch (cleanupError) {
+          emitWarning(
+            opts.parent.eventLog,
+            opts.parent.nextInternalSubId(),
+            "delegate_worktree_cleanup_failed",
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          );
+        }
+      }
       return reject(
         "WORKTREE_UNAVAILABLE",
         "environment",
         `worktree setup failed: ${err instanceof Error ? err.message : String(err)}`,
+        worktree === undefined && err instanceof WorktreePreconditionError
+          ? err.effectDisposition
+          : undefined,
       );
     }
   }
@@ -254,7 +285,14 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
             opts.parent,
             worktree.gitRoot,
           ),
-      }).catch(() => {});
+      }).catch((cleanupError) => {
+        emitWarning(
+          opts.parent.eventLog,
+          opts.parent.nextInternalSubId(),
+          "delegate_worktree_cleanup_failed",
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        );
+      });
     }
     const reason = err instanceof Error ? err.message : String(err);
     if (err instanceof AgentConcurrencyLimitError) {

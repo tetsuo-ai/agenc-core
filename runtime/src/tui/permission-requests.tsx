@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
@@ -416,6 +416,7 @@ function PlanApprovalContainer({
   readonly request: PendingRequest;
 }) {
   useRegisterKeybindingContext("Confirmation");
+  const settled = useRef(false);
 
   const planContent =
     request.ctx.planContent ??
@@ -428,6 +429,8 @@ function PlanApprovalContainer({
 
   const onApprove = useCallback(
     (mode: "acceptEdits" | "default") => {
+      if (settled.current) return;
+      settled.current = true;
       setPlanApprovalChoice(request.id, {
         action: "approve",
         mode,
@@ -439,6 +442,8 @@ function PlanApprovalContainer({
   );
 
   const onKeepPlanning = useCallback(() => {
+    if (settled.current) return;
+    settled.current = true;
     setPlanApprovalChoice(request.id, { action: "revise" });
     request.resolve(APPROVED);
   }, [request]);
@@ -446,6 +451,8 @@ function PlanApprovalContainer({
   useKeybindings(
     {
       "app:interrupt": () => {
+        if (settled.current) return;
+        settled.current = true;
         request.resolve(ABORT);
       },
     },

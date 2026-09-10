@@ -11,6 +11,7 @@ import { useWorkbenchState } from "../state.js";
 import { useBufferStore } from "../buffer/useBufferStore.js";
 import { bufferKeybindingContext } from "../buffer/keybindingContext.js";
 import { WorkbenchTranscriptLayoutProvider } from "../transcriptLayoutContext.js";
+import { workbenchSurfacePadding } from "../surfaceGeometry.js";
 import type { ActiveSurfaceMode, WorkbenchState } from "../types.js";
 import { AgentSurface } from "./AgentSurface.js";
 import {
@@ -240,7 +241,7 @@ export function ActiveWorkSurface({
         flexBasis={0}
         minHeight={0}
         overflow="hidden"
-        paddingX={isTranscript ? 3 : 1}
+        paddingX={workbenchSurfacePadding(descriptor.mode)}
         paddingTop={isTranscript ? 1 : 0}
       >
         {isTranscript ? (

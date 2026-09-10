@@ -43,6 +43,9 @@ import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
+  sessionPlanFileAuthority,
+} from "../../planning/session-plan-authority.js";
+import {
   getSessionReadSnapshot,
   recordSessionRead,
   resolveSessionId,
@@ -875,6 +878,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         context: context.getAppState().toolPermissionContext,
         operationType: asString(args.old_string) === "" ? "create" : "write",
         extraWorkingDirectories: config.allowedPaths,
+        planFileAuthority: sessionPlanFileAuthority(context.session),
       });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
@@ -1250,6 +1254,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         context: context.getAppState().toolPermissionContext,
         operationType: firstOldString === "" ? "create" : "write",
         extraWorkingDirectories: config.allowedPaths,
+        planFileAuthority: sessionPlanFileAuthority(context.session),
       });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {

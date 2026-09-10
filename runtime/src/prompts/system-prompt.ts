@@ -41,6 +41,8 @@ import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
 import type { ToolPermissionContext } from "../permissions/types.js";
+import type { ConfigStore } from "../config/store.js";
+import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { gitChildEnvironment } from "../sandbox/git-environment.js";
 import { hardenGitWorktreeMutationArgs } from "../sandbox/worktree-permissions.js";
@@ -412,12 +414,19 @@ function getMemoryInstructionsSection(
  * when the memory directories or settings authority cannot be resolved, so a
  * memory misconfiguration never blocks prompt assembly.
  */
-export async function resolveMemoryPromptInputs(): Promise<{
+export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnapshot, cwd: string): Promise<{
   readonly memoryInstructions: string;
   readonly memoryPrompt: string;
 }> {
   try {
-    const prompt = await loadMemoryPrompt();
+    const configStore = session.services?.configStore;
+    if (configStore === undefined) return { memoryInstructions: "", memoryPrompt: "" };
+    const prompt = await loadMemoryPrompt({
+      cwd,
+      configStore,
+      env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
+      runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
+    });
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
@@ -659,7 +668,9 @@ Do not narrate each step, list every file you read, or explain routine actions. 
 
 export interface SystemPromptSessionSnapshot {
   readonly services?: {
-    readonly runtimeOptions?: { readonly simpleMode?: boolean };
+    readonly runtimeOptions?: Partial<AgentRuntimeOptions>;
+    readonly configStore?: ConfigStore;
+    readonly userShell?: { readonly childEnvironment: NodeJS.ProcessEnv };
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly providerEnvironment?: ProviderEnvironment;
   };
@@ -827,7 +838,7 @@ export async function assembleBaseInstructionsForModel(params: {
   const enabledToolNames = new Set(
     params.registry.tools.map((tool) => tool.name),
   );
-  const memory = await resolveMemoryPromptInputs();
+  const memory = await resolveMemoryPromptInputs(params.session, params.ctx.cwd);
   const snapshot = await assembleSystemPromptSnapshot({
     profile: params.profile,
     session: params.session,

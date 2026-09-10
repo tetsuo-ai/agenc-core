@@ -1,21 +1,9 @@
 import { memoizeWithLRU } from './memoize.js'
+import { convertWindowsPathToPosix } from './windows-path-conversion.js'
 
 /** Convert a Windows path to a POSIX path using pure JS. */
 export const windowsPathToPosixPath = memoizeWithLRU(
-  (windowsPath: string): string => {
-    // Handle UNC paths: \\server\share -> //server/share
-    if (windowsPath.startsWith('\\\\')) {
-      return windowsPath.replace(/\\/g, '/')
-    }
-    // Handle drive letter paths: C:\Users\foo -> /c/Users/foo
-    const match = windowsPath.match(/^([A-Za-z]):[/\\]/)
-    if (match) {
-      const driveLetter = match[1]!.toLowerCase()
-      return '/' + driveLetter + windowsPath.slice(2).replace(/\\/g, '/')
-    }
-    // Already POSIX or relative — just flip slashes
-    return windowsPath.replace(/\\/g, '/')
-  },
+  convertWindowsPathToPosix,
   (p: string) => p,
   500,
 )

@@ -59,7 +59,7 @@ import {
   validationErrorToolResult,
 } from "../results.js";
 import { runSandboxedToolCommand } from "./coding-common.js";
-import { verifiedPlanFileContextFromArgs } from "./filesystem.js";
+import { verifiedSessionContextFromArgs } from "./filesystem.js";
 import {
   hardenGitWorktreeMutationArgs,
   worktreeCheckoutPermissions,
@@ -376,7 +376,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as ToolExecutionInjectedArgs & { name?: unknown };
-      const planContext = verifiedPlanFileContextFromArgs(rawArgs);
+      const planContext = verifiedSessionContextFromArgs(rawArgs);
       if (planContext === null || planContext.sessionId === undefined) {
         return refuse(
           "EnterWorktree",
@@ -643,7 +643,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         action?: unknown;
         discard_changes?: unknown;
       };
-      const planContext = verifiedPlanFileContextFromArgs(rawArgs);
+      const planContext = verifiedSessionContextFromArgs(rawArgs);
       if (planContext === null || planContext.sessionId === undefined) {
         return refuse(
           "ExitWorktree",

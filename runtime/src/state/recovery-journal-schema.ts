@@ -687,6 +687,9 @@ const isSessionUsage: Validator<
   AllKeys<EventPayload<"session_usage">>
 > = isAdmissionUsageSummary;
 
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
 const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   session_meta: objectShape(
     {
@@ -703,6 +706,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       model: isString,
       modelProvider: isString,
       memoryMode: isString,
+      admissionOwner: objectShape(
+        { workspaceId: isNonEmptyString, runId: isNonEmptyString },
+        { parentRunId: isNonEmptyString },
+      ),
     },
   ),
   session_configured: objectShape(

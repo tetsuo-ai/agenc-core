@@ -13,6 +13,7 @@ import { AgentRoleCatalog } from "../role-catalog.js";
 import { signSessionId } from "../_deps/filesystem-args.js";
 import { StaticModelsManager } from "../../../src/llm/models-manager.js";
 import { defaultConfig } from "../../../src/config/schema.js";
+import { validationErrorToolResult } from "../../../src/tools/results.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
 const ROLE_CATALOG = new AgentRoleCatalog(ROLE_WORKSPACE);
@@ -107,6 +108,24 @@ function makeOptions(
 describe("spawn_agent isolation", () => {
   beforeEach(() => {
     mockDelegate.mockReset();
+  });
+
+  it.each([true, false])("preserves only authoritative delegate refusal evidence: %s", async (confirmed) => {
+    const evidence = validationErrorToolResult("worktree:precondition", "invalid HEAD").effectDisposition;
+    mockDelegate.mockResolvedValue({
+      kind: "rejected",
+      code: "WORKTREE_UNAVAILABLE",
+      category: "environment",
+      reason: "invalid HEAD",
+      ...(confirmed ? { effectDisposition: evidence } : {}),
+    });
+    const result = await createSpawnAgentTool(makeOptions(makeSession())).execute({
+      message: "write files",
+      task_name: "worker",
+      __callId: "spawn-precondition",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition).toEqual(confirmed ? evidence : undefined);
   });
 
   it.each(["override", "role"] as const)("validates Gemini %s effort against real model metadata", async (source) => {

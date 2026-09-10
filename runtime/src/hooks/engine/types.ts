@@ -37,6 +37,7 @@ export interface IndividualHookConfig {
 }
 
 export interface CommandRunResult {
+  readonly processStarted?: boolean;
   readonly status: HookRunStatus;
   readonly exitCode?: number;
   readonly stdout: string;

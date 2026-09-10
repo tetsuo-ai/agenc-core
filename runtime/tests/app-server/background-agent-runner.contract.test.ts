@@ -67,10 +67,17 @@ import {
 import {
   clearCurrentRuntimeSession,
   peekScopedRuntimeSession,
+  runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
 import type { Session } from "../session/session.js";
-import { EventLog } from "../../src/session/event-log.js";
+import { EventLog, type Event } from "../../src/session/event-log.js";
+import { openStateDatabases } from "../../src/state/sqlite-driver.js";
+import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
+import { createOperatorEffectReviewResolution } from "../../src/state/effect-review.js";
+import { listUnresolvedUnknownOutcomeEffects } from "../../src/state/unknown-outcome-gate.js";
+import { recordInFlightToolCallUnknownOutcome } from "../../src/state/tool-output-rotation.js";
+import { seedPendingEffectReview } from "../state/helpers/effect-review-fixture.js";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "../../src/agents/child-approval-context.js";
 import type { ApprovalResolver } from "../../src/permissions/guardian/arbiter.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -2385,6 +2392,72 @@ describe("AgenC delegate background-agent runner", () => {
     } finally {
       releaseSendInput.resolve();
       clearCurrentRuntimeSession();
+    }
+  });
+
+  it("resolves live effect evidence under its owning session and home across ambiguous or conflicting scopes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-live-review-owner-"));
+    const cwd = join(root, "workspace");
+    const home = join(root, "owner");
+    const otherHome = join(root, "other");
+    mkdirSync(cwd);
+    const sessionId = "live-review-shared-session";
+    const recordedAt = "2026-09-10T00:00:00.000Z";
+    const target = makeTopLevelRunner({ conversationId: sessionId, workspaceRoot: cwd,
+      rolloutItems: [{ type: "event_msg", timestamp: recordedAt, payload: {
+        eventId: "unknown-1", id: "unknown-1", seq: 2, msg: { type: "effect_unknown_outcome", payload: {
+          runId: sessionId, stepId: "tool:step-1", callId: "call-1", toolName: "exec_command",
+          recoveryCategory: "side-effecting", reason: "tool_error_result_without_authoritative_effect_disposition",
+          requiresReview: true, recordedAt,
+        } },
+      } }],
+    });
+    const other = makeTopLevelRunner({ conversationId: sessionId, workspaceRoot: cwd });
+    Object.assign(target.configStore, { homeContext: { path: home } });
+    Object.assign(other.configStore, { homeContext: { path: otherHome } });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    const otherDriver = openStateDatabases({ cwd, agencHome: otherHome });
+    const effects = new StateRunDurabilityRepository(driver);
+    const projectedScopes: Array<Session | null> = [];
+    Object.assign(target.rolloutStore, { recordEffectEvent: (event: Event) => {
+      projectedScopes.push(peekScopedRuntimeSession());
+      if (event.msg.type !== "effect_review_resolved") throw new Error("unexpected review event");
+      effects.resolveEffectReview({ ...event.msg.payload, eventId: event.eventId! });
+    } });
+    const resolution = createOperatorEffectReviewResolution({
+      disposition: "confirmed_no_effect", actorId: "operator", evidenceRef: "test:verified-no-effect",
+      evidenceSha256: "a".repeat(64), reviewedAt: recordedAt,
+    });
+    clearCurrentRuntimeSession();
+    try {
+      for (const database of [driver, otherDriver]) {
+        seedPendingEffectReview(database, sessionId, recordedAt);
+        recordInFlightToolCallUnknownOutcome(database, { sessionId, agentId: sessionId,
+          toolCallId: "call-1", toolName: "exec_command", observedAt: recordedAt, recoveryCategory: "side-effecting" });
+      }
+      await target.runner.startAgent({ objective: "idle review owner", deferInitialTurn: true });
+      await other.runner.startAgent({ objective: "idle other owner", deferInitialTurn: true });
+      setCurrentRuntimeSession(target.session as unknown as Session);
+      setCurrentRuntimeSession(other.session as unknown as Session);
+      const params = { sessionId, toolCallId: "call-1", resolution };
+      await expect(target.runner.resolveLiveEffectReview(sessionId, params))
+        .resolves.toMatchObject({ kind: "resolved", durable: true });
+      await expect(runWithCurrentRuntimeSession(other.session as unknown as Session,
+        () => target.runner.resolveLiveEffectReview(sessionId, params)))
+        .resolves.toMatchObject({ kind: "already_resolved", durable: true });
+      expect(projectedScopes).toEqual([target.session, target.session]);
+      expect(listUnresolvedUnknownOutcomeEffects(driver, sessionId)).toHaveLength(0);
+      expect(listUnresolvedUnknownOutcomeEffects(otherDriver, sessionId)).toHaveLength(1);
+      expect(new StateRunDurabilityRepository(otherDriver).getEffect(sessionId, "tool:step-1")?.reviewStatus).toBe("pending");
+      expect(target.rolloutItems.filter((item) => (item as { payload?: { msg?: { type?: string } } }).payload?.msg?.type === "effect_review_resolved")).toHaveLength(1);
+      await expect(target.runner.resolveLiveEffectReview(sessionId, { ...params, sessionId: "wrong-owner" })).rejects.toThrow("does not own session");
+    } finally {
+      clearCurrentRuntimeSession();
+      await target.runner.stopAgent(sessionId);
+      await other.runner.stopAgent(sessionId);
+      driver.close();
+      otherDriver.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

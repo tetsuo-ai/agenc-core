@@ -71,6 +71,7 @@ import {
   unattendedPolicyForContext,
 } from "./unattended-policy.js";
 import type { Session } from "../session/session.js";
+import { isSessionPlanMutation } from "../planning/session-plan-authority.js";
 import {
   classifyYoloAction,
   isAutoModeAllowlistedTool,
@@ -298,7 +299,8 @@ export async function checkRuleBasedPermissions(
     appState.autoModeActive !== true &&
     !toolDoesNotRequireApproval(tool) &&
     !SAFE_YOLO_ALLOWLISTED_TOOLS.has(tool.name) &&
-    !planModeReadOnlyShellCommand(tool, input)
+    !planModeReadOnlyShellCommand(tool, input) &&
+    !isSessionPlanMutation(tool, input, context.session)
   ) {
     const message = planModeDenyMessage(tool.name);
     return Object.freeze({
