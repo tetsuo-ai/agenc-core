@@ -3,7 +3,8 @@
  * session environment, BYOK state, local health probes, and auth backend.
  */
 
-import type { AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
+import type { AuthAgencModel, AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
+import { accountDefaultModel, readAccountModelAccess } from "../../auth/account-access.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import { readProviderConfig } from "../../config/resolve-provider.js";
 import type { AgenCConfig } from "../../config/schema.js";
@@ -23,7 +24,7 @@ import {
   resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../provider.js";
-import { resolveProviderCredentialAuthority } from "../provider-options.js";
+import { assertHostedAgencModelAuthority, resolveProviderCredentialAuthority } from "../provider-options.js";
 
 export type ProviderAvailabilityStatus = "usable" | "unusable";
 export type ProviderCredentialStatus =
@@ -49,6 +50,7 @@ const HOSTED_AGENC_DELEGATE_PROVIDERS = new Set<ProviderName>([
   "nvidia-nim",
   "minimax",
   "github",
+  "qwen",
 ]);
 
 const DEFAULT_LOCAL_PROVIDER_PROBE_TIMEOUT_MS = 750;
@@ -57,6 +59,7 @@ const PROVIDER_CHECK_SESSION_ID = "cli";
 export interface ProviderAvailabilityEntry {
   readonly provider: ProviderName;
   readonly model: string;
+  readonly models?: readonly AuthAgencModel[];
   readonly status: ProviderAvailabilityStatus;
   readonly usable: boolean;
   readonly credentialStatus: ProviderCredentialStatus;
@@ -257,25 +260,20 @@ async function resolveProviderAvailabilityEntry(params: {
       : { localStatus: "n/a" as const };
 
   if (params.provider === "agenc") {
-    const hostedRoute = paidSubscription
-      ? await verifyHostedAgencRoute({
+    const hostedRoute = await verifyHostedAgencRoute({
           authBackend: params.authBackend,
           model,
           subscriptionTier,
-        })
-      : {
-          usable: false,
-          detail: "requires paid AgenC subscription",
-        };
-    return buildEntry({
+        });
+    return { ...buildEntry({
       provider: params.provider,
-      model,
+      model: hostedRoute.model ?? model,
       credentialStatus: "not-required",
       localProbe,
       subscription: params.subscription,
       usable: hostedRoute.usable,
       detail: hostedRoute.detail,
-    });
+    }), ...(hostedRoute.models === undefined ? {} : { models: hostedRoute.models }) };
   }
 
   if (localUrl !== undefined) {
@@ -611,17 +609,41 @@ async function verifyHostedAgencRoute(params: {
   readonly authBackend: AuthBackend | undefined;
   readonly model: string;
   readonly subscriptionTier: AuthSubscriptionTier | undefined;
-}): Promise<{ readonly usable: boolean; readonly detail: string }> {
+}): Promise<{ readonly usable: boolean; readonly detail: string; readonly model?: string; readonly models?: readonly AuthAgencModel[] }> {
   if (params.authBackend === undefined) {
     return {
       usable: false,
       detail: "hosted AgenC routing unavailable: no auth backend configured",
     };
   }
+  if (params.authBackend.kind !== "remote" && !isPaidSubscriptionTier(params.subscriptionTier)) {
+    return { usable: false, detail: "requires paid AgenC subscription" };
+  }
+  let requestedModel = params.model;
+  let models: readonly AuthAgencModel[] | undefined;
+  if (params.authBackend.kind === "remote" && !isPaidSubscriptionTier(params.subscriptionTier)) {
+    const access = await readAccountModelAccess(params.authBackend);
+    const authorizedModel = accountDefaultModel(access, requestedModel);
+    if (authorizedModel === undefined) return {
+      usable: false, models: [],
+      detail: !access.authenticated ? "Sign in with AgenC to check model access." :
+        access.unavailable ? "AgenC model access could not be verified. Refresh to try again." :
+          "No active AgenC model credits are available for this account.",
+    };
+    requestedModel = authorizedModel;
+    models = access.models;
+  }
   try {
+    if (models === undefined) await assertHostedAgencModelAuthority({
+      provider: "agenc",
+      authBackend: params.authBackend,
+      model: requestedModel,
+      sessionId: PROVIDER_CHECK_SESSION_ID,
+      subscriptionTier: params.subscriptionTier,
+    });
     const inferred = await params.authBackend.inferAgencModel({
       provider: "agenc",
-      requestedModel: params.model,
+      requestedModel,
       sessionId: PROVIDER_CHECK_SESSION_ID,
       ...(params.subscriptionTier !== undefined
         ? { subscriptionTier: params.subscriptionTier }
@@ -652,6 +674,9 @@ async function verifyHostedAgencRoute(params: {
         detail: "hosted AgenC routing unavailable: empty inferred model",
       };
     }
+    if (models !== undefined && model !== requestedModel) {
+      return { usable: false, models: [], detail: "AgenC returned a different model from the authorized selection." };
+    }
     const managedKey = await verifyManagedProviderKey({
       authBackend: params.authBackend,
       provider,
@@ -665,12 +690,15 @@ async function verifyHostedAgencRoute(params: {
     }
     return {
       usable: true,
-      detail: `hosted AgenC routing verified via ${provider}/${model}`,
+      model: requestedModel,
+      ...(models === undefined ? {} : { models }),
+      detail: "AgenC model access verified. Usage is charged to your account credits.",
     };
   } catch (error) {
     return {
       usable: false,
-      detail: `hosted AgenC routing unavailable: ${errorMessage(error)}`,
+      models: [],
+      detail: `AgenC model access is unavailable: ${errorMessage(error)}`,
     };
   }
 }

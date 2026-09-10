@@ -19,6 +19,7 @@ import {
   createAuthBackend,
   resolveAuthManagedKeysEnabled,
 } from "../auth/selection.js";
+import { accountDefaultModel, readAccountModelAccess } from "../auth/account-access.js";
 import type {
   AuthIdentity,
   AuthSubscriptionTier,
@@ -187,6 +188,7 @@ export type AgenCAccountLoginResult =
       readonly ok: true;
       readonly accountLabel: string;
       readonly subscriptionTier: AuthSubscriptionTier;
+      readonly managedModel?: string;
     }
   | { readonly ok: false; readonly message: string };
 
@@ -360,10 +362,16 @@ async function defaultRunAgenCAccountLogin(
     const subscriptionTier = await backend.getSubscriptionTier({
       sessionId: "tui",
     });
+    const access = await readAccountModelAccess(backend);
+    const managedModel = accountDefaultModel(access);
+    if (subscriptionTier === "free" && managedModel === undefined) {
+      return { ok: false, message: "Signed in to AgenC. No active model credits are available right now. Refresh access or choose another model connection." };
+    }
     return {
       ok: true,
       accountLabel: authIdentityLabel(login.identity),
       subscriptionTier,
+      ...(managedModel === undefined ? {} : { managedModel }),
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -1626,15 +1634,15 @@ export async function submitFirstRunOnboardingInput(
             };
           }
           const hostedProvider = resolveBuiltInProviderSlug(
-            SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+            result.managedModel === undefined ? SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER : "agenc",
           );
           const hostedModel =
-            hostedProvider === undefined
+            result.managedModel ?? (hostedProvider === undefined
               ? undefined
               : subscriptionManagedDefaultModelForTier(
                   hostedProvider,
                   result.subscriptionTier,
-                );
+                ));
           if (hostedProvider === undefined || hostedModel === undefined) {
             return {
               state: {

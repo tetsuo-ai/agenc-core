@@ -6728,6 +6728,7 @@ snapshot_max_bytes = 64
         unattendedPolicy: {
           allowlist: ["FileRead"],
           denylist: ["system.bash"],
+          readOnly: false,
         },
       }),
     );

@@ -16,6 +16,9 @@ import {
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
+import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
+import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
+import { AGENC_DEEPSEEK_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "./agenc-deepseek.js";
 import {
   GEMINI_THINKING_MODELS,
   resolveGeminiThinkingModel,
@@ -507,6 +510,81 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     })),
     ...qwenCloudCatalogEntries(),
+    // Reviewed AgenC route metadata; account discovery still controls access.
+    // Backend: docs/operations/deepseek-policy-refresh-20260910.md.
+    {
+      provider: "agenc",
+      model: AGENC_DEEPSEEK_MODEL,
+      displayName: "DeepSeek V4 Flash 0731",
+      contextWindow: 1_048_576,
+      maxContextWindow: 1_048_576,
+      maxOutputTokens: 8_192,
+      maxOutputTokensUpperLimit: 384_000,
+      maxOutputTokensCappedDefault: true,
+      inputModalities: TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: false,
+      supportsStructuredOutput: true,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: AGENC_DEEPSEEK_REASONING_LEVELS,
+      defaultReasoningLevel: "medium",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 0,
+      visibility: "none",
+    },
+    // Metadata only: exposing this private route requires configured model access.
+    // https://huggingface.co/Qwen/Qwen3.8-Flash-Next/tree/de4b8e4d43b917e7706784d8bb445c9af86a3540
+    ...["agenc", "qwen"].map((provider): RegisteredModelCatalogEntry => ({
+      provider,
+      model: QWEN_FLASH_NEXT_MODEL,
+      displayName: "Qwen Flash Next",
+      contextWindow: 262_144,
+      maxContextWindow: 262_144,
+      maxOutputTokens: 16_384,
+      maxOutputTokensUpperLimit: 32_768,
+      inputModalities: TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: QWEN_38_REASONING_LEVELS,
+      defaultReasoningLevel: "xhigh",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 0,
+      visibility: "none",
+    })),
+    // Private pilot metadata; output budgets are pilot policy caps, not model limits.
+    // https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/tree/b2cff646eb4bb1d68355c01b18ae02e7cf42d120
+    ...["agenc", "qwen"].map((provider): RegisteredModelCatalogEntry => ({
+      provider,
+      model: QWEN_CODER_30B_MODEL,
+      displayName: "Qwen Coder 30B",
+      contextWindow: 262_144,
+      maxContextWindow: 262_144,
+      maxOutputTokens: 16_384,
+      maxOutputTokensUpperLimit: 32_768,
+      inputModalities: TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: NO_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 0,
+      visibility: "none",
+    })),
     {
       provider: "cerebras",
       model: "gpt-oss-120b",

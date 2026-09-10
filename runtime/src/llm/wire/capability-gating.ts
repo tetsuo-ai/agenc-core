@@ -31,6 +31,9 @@ import {
 import type { ProviderReasoningProvenance } from "../types.js";
 import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "../registry/openai-reasoning-models.js";
+import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
+import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
+import { AGENC_DEEPSEEK_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "../registry/agenc-deepseek.js";
 
 export interface ChatCompletionsCapabilityHints {
   /**
@@ -84,6 +87,10 @@ export interface ChatCompletionsCapabilityHints {
   readonly replaysReasoningContent?: boolean;
   /** Provider-specific assistant reasoning field used for parse and replay. */
   readonly reasoningContentField?: "reasoning_content" | "reasoning";
+  /** Older compatible runtimes may emit the legacy name while replay uses canonical. */
+  readonly reasoningContentFallbackField?: "reasoning_content" | "reasoning";
+  /** vLLM receives Jinja thinking controls inside chat_template_kwargs. */
+  readonly usesVllmThinkingTemplate?: boolean;
   /**
    * Replay provider-owned reasoning only for the complete assistant-tool/result
    * group immediately preceding this request. Z.AI requires that state for a
@@ -372,8 +379,11 @@ export function filterToolsForLocalProfile<
 export function chatCompletionsCapabilityHintsForProvider(
   providerName: string | undefined,
   model: string | undefined,
+  options: { readonly managedGateway?: boolean } = {},
 ): ChatCompletionsCapabilityHints {
   const slug = normalizeProviderIdentity(providerName, "capability gate") ?? "";
+  const isManagedDeepSeek = options.managedGateway === true &&
+    slug === "openrouter" && model === AGENC_DEEPSEEK_MODEL;
   const normalizedModel = model?.trim().toLowerCase() ?? "";
   const reasoningContentProvenance =
     slug.length > 0 && normalizedModel.length > 0
@@ -394,7 +404,9 @@ export function chatCompletionsCapabilityHintsForProvider(
     /(?:^|[/:])glm-(?:5(?:\.(?:1|2|3))?|4\.(?:6|7))(?:$|[-_.:])/i.test(
       model ?? "",
     );
-  const isQwenCloud = slug === "qwen" || slug === "qwen-token-plan";
+  const isQwenCloud = (slug === "qwen" || slug === "qwen-token-plan") &&
+    !isQwenCoder30BModel(model);
+  const isQwenFlashNext = slug === "qwen" && isQwenFlashNextModel(model);
   const preservesThinkingHistory =
     (slug === "qwen" &&
       /(?:^|[/:])qwen3\.(?:7-(?:max|plus|flash)|6-(?:max-preview|plus|flash))(?:$|[-_.:])/i.test(
@@ -411,7 +423,10 @@ export function chatCompletionsCapabilityHintsForProvider(
   // branding-scan: allow factual reference to real provider in routing comment
   let acceptsReasoningEffort = false;
   let reasoningEffortAllowedValues: ReadonlySet<string> | undefined;
-  if (slug === "openai") {
+  if (isManagedDeepSeek) {
+    acceptsReasoningEffort = true;
+    reasoningEffortAllowedValues = new Set(AGENC_DEEPSEEK_REASONING_LEVELS);
+  } else if (slug === "openai") {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {
     acceptsReasoningEffort = supportsXaiReasoningEffortParam(model);
@@ -493,6 +508,16 @@ export function chatCompletionsCapabilityHintsForProvider(
 
   return {
     acceptsReasoningEffort,
+    ...(isManagedDeepSeek ? {
+      acceptsParallelToolCalls: false,
+      acceptsDirectImageInput: false,
+      toolResultImagePolicy: "strip" as const,
+      replaysReasoningContent: true,
+      reasoningContentField: "reasoning" as const,
+      reasoningContentFallbackField: "reasoning_content" as const,
+      replaysReasoningContentOnlyForAdjacentToolContinuation: true,
+      maxToolDefinitions: 100,
+    } : {}),
     ...(reasoningEffortAllowedValues !== undefined
       ? { reasoningEffortAllowedValues }
       : {}),
@@ -563,6 +588,13 @@ export function chatCompletionsCapabilityHintsForProvider(
             ? { preservesThinkingHistory: true }
             : {}),
           disablesThinkingForForcedToolChoice: true,
+        }
+      : {}),
+    ...(isQwenFlashNext
+      ? {
+          reasoningContentField: "reasoning" as const,
+          reasoningContentFallbackField: "reasoning_content" as const,
+          usesVllmThinkingTemplate: true,
         }
       : {}),
     ...(slug === "cerebras"

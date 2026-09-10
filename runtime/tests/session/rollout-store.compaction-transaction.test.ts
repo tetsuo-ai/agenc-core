@@ -1,6 +1,7 @@
 import {
   existsSync,
   fsyncSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -594,7 +595,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("keeps newer source work on reopen and materializes an exact reviewed target", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const sourceSessionId = "reviewed-source-reopen";
     const targetSessionId = "reviewed-target-reopen";
@@ -631,6 +632,7 @@ describe("RolloutStore transactional compaction", () => {
     }
 
     const target = new SessionStore({
+      agencHome: temporaryHome,
       cwd,
       sessionId: targetSessionId,
       agencVersion: "0.13.0",
@@ -671,7 +673,7 @@ describe("RolloutStore transactional compaction", () => {
   }
 
   it("repairs a reserved reviewed target after a crash following source rollback fsync", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const sourceSessionId = "reviewed-crash-source";
     const targetSessionId = "reviewed-crash-target";
@@ -712,6 +714,7 @@ describe("RolloutStore transactional compaction", () => {
       reopened.close();
     }
     const targetStore = new SessionStore({
+      agencHome: temporaryHome,
       cwd,
       sessionId: targetSessionId,
       agencVersion: "0.13.0",
@@ -723,12 +726,13 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("does not create a reviewed target before source rollback fsync succeeds", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const sourceSessionId = "reviewed-fsync-source";
     const targetSessionId = "reviewed-fsync-target";
     const source = openStore(sourceSessionId, {}, cwd);
     const targetProbe = new SessionStore({
+      agencHome: temporaryHome,
       cwd,
       sessionId: targetSessionId,
       agencVersion: "0.13.0",
@@ -767,10 +771,11 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("rejects a conflicting reviewed target before appending source rollback", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const targetSessionId = "reviewed-conflict-target";
     const target = new SessionStore({
+      agencHome: temporaryHome,
       cwd,
       sessionId: targetSessionId,
       agencVersion: "0.13.0",
@@ -836,7 +841,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("resolves write-success/fsync-failure as one committed terminal", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const store = openStore("ambiguous-fsync", {}, cwd);
     try {
@@ -919,7 +924,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("rejects a valid-JSON mutation of committed replacement history on restart", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const store = openStore("commit-tamper", {}, cwd);
     const rolloutPath = store.rolloutPath;
@@ -941,7 +946,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("rejects valid-JSON rollback source-history tampering on restart", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const store = openStore("rollback-tamper", {}, cwd);
     const rolloutPath = store.rolloutPath;
@@ -967,7 +972,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("binds a persisted rollback to the hydrated canonical commit digest", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const sessionId = "rollback-commit-binding";
     const store = openStore(sessionId, {}, cwd);
@@ -1034,7 +1039,7 @@ describe("RolloutStore transactional compaction", () => {
 
   for (const corruption of ["foreign", "out-of-range", "gap", "overlap"] as const) {
     it(`rejects a valid-rehashed ${corruption} summary leaf on restart`, () => {
-      const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+      const cwd = createTestWorkspace();
       temporaryWorkspaces.push(cwd);
       const sessionId = `leaf-${corruption}`;
       const store = openStore(sessionId, {}, cwd);
@@ -1128,7 +1133,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("downshifts 100 logical messages from one prior commit record and reopens", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const sessionId = "logical-submessage-downshift";
     const store = openStore(sessionId, {}, cwd);
@@ -1261,7 +1266,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("persists an operator rollback extension across restart before release", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     let nowMs = Date.now();
     const sessionId = "retention-extension-restart";
@@ -1309,7 +1314,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("rebuilds a rollback extension from canonical after SQLite loss", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     let nowMs = Date.now();
     const sessionId = "retention-extension-db-loss";
@@ -1350,7 +1355,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("blocks the exact first ordinal after a physically deleted source row", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     let nowMs = Date.now();
     const store = openStore("deleted-plus-one", { nowMilliseconds: () => nowMs }, cwd);
@@ -1376,7 +1381,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("does not overblock an active ordinal strictly before deleted rows", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     let nowMs = Date.now();
     const store = openStore("before-deleted-row", { nowMilliseconds: () => nowMs }, cwd);
@@ -1403,7 +1408,7 @@ describe("RolloutStore transactional compaction", () => {
 
   it("blocks A pruning when C retains a post-A ordinal after B was released", () => {
     let nowMs = Date.now();
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const store = openStore("transitive-ordinal-prune", {
       nowMilliseconds: () => nowMs,
@@ -1490,7 +1495,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("rebuilds canonical compaction authority after complete SQLite loss", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     let nowMs = Date.now();
     const sessionId = "canonical-db-rebuild";
@@ -1585,7 +1590,7 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("garbage-collects source history after a reviewed rollback owner is released", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
     const sessionId = "released-reviewed-rollback-source";
     const targetSessionId = "released-reviewed-rollback-target";
@@ -1662,6 +1667,14 @@ describe("RolloutStore transactional compaction", () => {
   });
 });
 
+function createTestWorkspace(): string {
+  const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+  // The harness creates this marker too. Pin the project boundary before any
+  // SessionStore opens so subsequent reads and reopens use the same storage.
+  mkdirSync(join(cwd, ".git"));
+  return cwd;
+}
+
 function openStore(
   sessionId: string,
   options: {
@@ -1673,9 +1686,10 @@ function openStore(
   } = {},
   existingCwd?: string,
 ): RolloutStore {
-  const cwd = existingCwd ?? mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+  const cwd = existingCwd ?? createTestWorkspace();
   if (existingCwd === undefined) temporaryWorkspaces.push(cwd);
   const store = new RolloutStore({
+    agencHome: temporaryHome,
     cwd,
     sessionId,
     agencVersion: "0.13.0",
@@ -1700,7 +1714,7 @@ function committedStructuredFixture(
   leafCount: number,
   fanIn: number,
 ): { readonly cwd: string; readonly rolloutPath: string; readonly sessionId: string } {
-  const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+  const cwd = createTestWorkspace();
   temporaryWorkspaces.push(cwd);
   const store = openStore(sessionId, {}, cwd);
   const rolloutPath = store.rolloutPath;
@@ -2650,7 +2664,7 @@ function seedOrdinalGuardPin(
   sequence: number,
 ): void {
   const digest = "a".repeat(64);
-  const driver = openStateDatabases({ cwd });
+  const driver = openStateDatabases({ cwd, agencHome: temporaryHome });
   try {
     new CompactionRetentionRepository(driver).createPreparingPin({
       ...sourceIntent,
@@ -2684,7 +2698,7 @@ function seedOrdinalGuardPin(
 }
 
 function removeStateDatabase(cwd: string): void {
-  const { stateDbPath } = resolveStateDatabasePaths({ cwd });
+  const { stateDbPath } = resolveStateDatabasePaths({ cwd, agencHome: temporaryHome });
   unlinkSync(stateDbPath);
   for (const suffix of ["-wal", "-shm"]) {
     try {

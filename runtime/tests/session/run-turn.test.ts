@@ -1182,7 +1182,9 @@ describe("daemon-owned scheduled turns", () => {
       expect(await readCronTasks(workspaceRoot)).toEqual([]);
       await add(second, { durable: true });
       await start(second);
-      first.abortController.abort();
+      // Shutdown awaits the ownership-transfer finalizer. Draining only the
+      // previous timer tick can race the successor's asynchronous reschedule.
+      await first.shutdown();
       await firstScheduler.drain();
       await advance();
       await secondScheduler.drain();
