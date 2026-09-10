@@ -81,6 +81,20 @@ function parseInputEvent(sequence: string): InputEvent {
 }
 
 describe("KeybindingProviderSetup", () => {
+  test("leaves destructive confirmation letters alone while keeping the explicit diff chord", () => {
+    const bindings = parseBindings(DEFAULT_BINDINGS);
+    for (const character of "delete") {
+      expect(resolveKeyWithChordState(character, key(), ["Confirmation"], bindings, null).type).toBe("none");
+    }
+    const prefix = resolveKeyWithChordState("w", key({ ctrl: true }), ["Confirmation"], bindings, null);
+    expect(prefix.type).toBe("chord_started");
+    if (prefix.type !== "chord_started") throw new Error("expected the full-diff chord prefix");
+    expect(resolveKeyWithChordState("d", key(), ["Confirmation"], bindings, prefix.pending)).toEqual({
+      type: "match",
+      action: "workbench:openDiff",
+    });
+  });
+
   test("summarizes warning counts without upstream utility dependencies", () => {
     expect(
       formatKeybindingWarningSummary([

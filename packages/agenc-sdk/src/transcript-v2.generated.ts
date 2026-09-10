@@ -40,6 +40,27 @@ export interface SessionTranscriptV2TurnResult extends TranscriptV2JsonObject {
   readonly provider?: string;
 }
 
+export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
+  readonly eventId: string;
+  readonly committedSequence: number;
+  readonly type: "token_count" | "turn_failed" | "turn_aborted";
+  readonly payload: {
+    readonly promptTokens?: number;
+    readonly completionTokens?: number;
+    readonly totalTokens?: number;
+    readonly cachedInputTokens?: number;
+    readonly cacheCreationInputTokens?: number;
+    readonly reasoningOutputTokens?: number;
+    readonly webSearchRequests?: number;
+    readonly model?: string;
+    readonly provider?: string;
+    readonly turnId?: string;
+    readonly code?: string;
+    readonly message?: string;
+    readonly reason?: string;
+  };
+}
+
 export interface SessionTranscriptV2Result extends TranscriptV2JsonObject {
   readonly schemaVersion: 2;
   readonly sessionId: string;
@@ -49,4 +70,5 @@ export interface SessionTranscriptV2Result extends TranscriptV2JsonObject {
   readonly messages: readonly SessionTranscriptV2Message[];
   readonly activeTurn?: SessionTranscriptV2ActiveTurn;
   readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
+  readonly events?: readonly SessionTranscriptV2Event[];
 }

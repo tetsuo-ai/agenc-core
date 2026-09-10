@@ -745,6 +745,7 @@ export class ToolRouter {
               invoke: ({ signal, abortController, crossEffectBoundary }) =>
                 executeToolDispatch({
                   rawArgs: dispatchRawArgs,
+                  parsedArgs: dispatchArgs,
                   signal,
                   currentTurnId: directDispatchTurnId(invocation),
                   eventLog: invocation.session.eventLog,
@@ -1326,6 +1327,7 @@ export class ToolRouter {
                       : opts,
                   ),
                   tool: spec.tool,
+                  parsedArgs: dispatchArgs,
                   invocation: dispatchInvocation,
                   preHooks: [],
                   ...(preHookPermissionDecision !== undefined
@@ -1607,8 +1609,11 @@ function buildPayloadForArgs(
 }
 
 function stringifyToolArgsWithBigInt(args: Record<string, unknown>): string {
-  return JSON.stringify(args, (_key, value) =>
-    typeof value === "bigint" ? `__bigint__${value.toString()}` : value,
+  const { rawJSON } = JSON as typeof JSON & {
+    rawJSON: (text: string) => unknown;
+  };
+  return JSON.stringify(args, (_key, value: unknown) =>
+    typeof value === "bigint" ? rawJSON(value.toString()) : value,
   );
 }
 
@@ -1740,6 +1745,7 @@ function rawDispatchOptions(
   rawArgs: string,
   opts: LiveToolDispatchOptions & {
     readonly tool: Tool;
+    readonly parsedArgs: Readonly<Record<string, unknown>>;
     readonly invocation: ToolInvocation;
     readonly abortController: AbortController;
     readonly subId: string;
@@ -1753,6 +1759,7 @@ function rawDispatchOptions(
   const contextWindowTokens = effectiveContextWindowTokens(opts.turn);
   return {
     rawArgs,
+    parsedArgs: opts.parsedArgs,
     signal: opts.abortController.signal,
     currentTurnId: opts.turn.subId,
     eventLog: opts.session.eventLog,

@@ -13,6 +13,7 @@ import {
 } from "../../session/rollout-reconstruction.js";
 import type {
   JsonObject,
+  SessionTranscriptV2Event,
   SessionTranscriptV2Result,
   SessionTranscriptV2TurnResult,
 } from "../protocol/index.js";
@@ -201,6 +202,56 @@ function closedTurnResult(
     ...(open.model !== undefined ? { model: open.model } : {}),
     ...(open.provider !== undefined ? { provider: open.provider } : {}),
   };
+}
+
+function transcriptNoticesFromRollout(
+  items: readonly RolloutItem[],
+  boundaryIndex: number,
+): readonly SessionTranscriptV2Event[] {
+  const notices: SessionTranscriptV2Event[] = [];
+  const seenEventIds = new Set<string>();
+  const closedTurnIds = new Set<string>();
+  let currentTurnId: string | undefined;
+  for (const [index, item] of items.entries()) {
+    if (item.type !== "event_msg") continue;
+    const event = item.payload;
+    const committedSequence = positiveSequence(event.seq) ?? 0;
+    const eventId = event.eventId ?? (committedSequence > 0
+      ? canonicalEventId(event)
+      : `legacy-notice:${index}:${event.id}`);
+    if (seenEventIds.has(eventId)) continue;
+    seenEventIds.add(eventId);
+    if (event.msg.type === "token_count") {
+      notices.push({ eventId, committedSequence, type: "token_count", payload: { ...event.msg.payload } });
+      continue;
+    }
+    if (index <= boundaryIndex) continue;
+    if (event.msg.type === "turn_started") {
+      currentTurnId = event.msg.payload.turnId;
+      continue;
+    }
+    const terminal = classifyTurnTerminal(event.msg, {
+      expectedTurnId: currentTurnId,
+      legacyJournal: true,
+    });
+    if (terminal === undefined) continue;
+    const turnId = terminal.turnId ?? currentTurnId;
+    if (turnId !== undefined && closedTurnIds.has(turnId)) continue;
+    if (turnId !== undefined) closedTurnIds.add(turnId);
+    currentTurnId = undefined;
+    if (terminal.outcome === "errored") {
+      notices.push({
+        eventId, committedSequence, type: "turn_failed",
+        payload: { turnId, code: terminal.failureCode, message: terminal.message ?? "" },
+      });
+    } else if (terminal.outcome === "aborted") {
+      notices.push({
+        eventId, committedSequence, type: "turn_aborted",
+        payload: { ...(turnId !== undefined ? { turnId } : {}), ...(terminal.message !== undefined ? { reason: terminal.message } : {}) },
+      });
+    }
+  }
+  return notices;
 }
 
 export function sessionTranscriptV2FromRollout(
@@ -416,6 +467,7 @@ export function sessionTranscriptV2FromRollout(
     historyEpoch: historyEpochForBoundary(runId, boundaryId),
     asOfSequence,
     messages,
+    events: transcriptNoticesFromRollout(items, boundaryIndex),
     ...(activeTurn !== undefined ? { activeTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
   };

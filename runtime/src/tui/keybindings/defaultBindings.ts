@@ -140,7 +140,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       down: "confirm:next",
       tab: "confirm:nextField",
       space: "confirm:toggle",
-      d: "workbench:openDiff",
+      "ctrl+w d": "workbench:openDiff",
       // Toggle permission explanation in permission dialogs
       "ctrl+e": "confirm:toggleExplanation",
       // Toggle permission debug info

@@ -1560,6 +1560,20 @@ export function formatStructuredToolResult(
   }
 
   if (toolName === "FileRead") {
+    if (typeof result === "string") {
+      const metadata = metadataRecord(payload);
+      const count = metadata.numLines;
+      const numberedLines = result.split("\n").filter((line) => /^\s*\d+→/u.test(line)).length;
+      const lineCount = typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+        ? count
+        : numberedLines;
+      if (lineCount > 0) {
+        return [{ type: "text", text: `<read-lines>1-${lineCount}</read-lines>` }];
+      }
+      if (count === 0 || result.length === 0) {
+        return [{ type: "text", text: "<read-content></read-content>" }];
+      }
+    }
     if (
       result &&
       typeof result === "object" &&

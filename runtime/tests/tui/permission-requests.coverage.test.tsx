@@ -109,6 +109,36 @@ function createPendingRequest(
 }
 
 describe("permission request overlay coverage", () => {
+  test.each(["delete", "del", "delete extra"])("handles a confirmation input chunk %s without premature approval", async (chunk) => {
+    const resolved: ReviewDecision[] = [];
+    const request = createPendingRequest(decision => resolved.push(decision), {
+      input: { command: "rm -rf /tmp/agenc-confirmation-fixture" },
+      description: "Remove a disposable fixture",
+    });
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+    try {
+      root.render(<AgenCPermissionOverlay request={request} tools={[{ name: "Bash" }]} />);
+      await sleep();
+      stdin.write(chunk);
+      await sleep();
+      expect(stripAnsi(output())).toContain(chunk === "del" ? "del" : "delete");
+      expect(resolved).toEqual([]);
+      stdin.write("\r");
+      await sleep();
+      expect(resolved).toEqual(chunk === "delete" ? [APPROVED] : []);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
+
   test("requires the typed high-risk confirmation word before approving", async () => {
     const resolved: ReviewDecision[] = [];
     const request = createPendingRequest(decision => {

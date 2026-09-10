@@ -12,7 +12,11 @@
  * @module
  */
 
-import type { Event, EventLog } from "../../session/event-log.js";
+import type {
+  Event,
+  EventLog,
+  FileWriteApprovalPreview,
+} from "../../session/event-log.js";
 import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
 import { asRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
@@ -262,6 +266,7 @@ export interface ApprovalCtx {
   readonly availableDecisions?: readonly AvailableApprovalDecision[];
   readonly planContent?: string;
   readonly planFilePath?: string;
+  readonly fileWritePreview?: FileWriteApprovalPreview;
 }
 
 export interface ApprovalResolver {
@@ -452,6 +457,15 @@ export function requestApproval(
 async function resolveAndJournalApproval(
   opts: RequestApprovalOpts,
 ): Promise<RequestApprovalResult> {
+  if (opts.ctx.toolName === "Write") {
+    const { buildFileWriteApprovalPreview } =
+      await import("../file-write-preview.js");
+    const fileWritePreview = await buildFileWriteApprovalPreview(
+      opts.ctx.invocation,
+      opts.args ?? approvalInputFromInvocation(opts.ctx.invocation),
+    );
+    opts = { ...opts, ctx: { ...opts.ctx, fileWritePreview } };
+  }
   const journal = beginDurableApprovalJournal(opts);
   const result = await resolveApproval(opts);
   if (journal !== null) {
@@ -692,6 +706,9 @@ function beginDurableApprovalJournal(
           input,
           ...(planContent !== undefined ? { planContent } : {}),
           ...(planFilePath !== undefined ? { planFilePath } : {}),
+          ...(opts.ctx.fileWritePreview !== undefined
+            ? { fileWritePreview: opts.ctx.fileWritePreview }
+            : {}),
           recordedAt: new Date().toISOString(),
         },
       },

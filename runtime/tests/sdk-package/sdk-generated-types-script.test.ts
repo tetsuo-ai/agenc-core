@@ -86,6 +86,11 @@ export interface SessionTranscriptV2TurnResult extends JsonObject {
   readonly outcome: "completed" | "aborted";
 }
 
+export interface SessionTranscriptV2Event extends JsonObject {
+  readonly eventId: string;
+  readonly type: "token_count" | "turn_failed" | "turn_aborted";
+}
+
 export interface SessionTranscriptV2Result extends JsonObject {
   readonly messages: readonly SessionTranscriptV2Message[];
 }
