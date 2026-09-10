@@ -343,6 +343,15 @@ function isSameModelIdentity(reported: string, requested: string): boolean {
   return normalize(reported) === normalize(requested);
 }
 
+/**
+ * Smallest answer worth admitting a turn for.
+ *
+ * Below this the window is genuinely spent: the reply would be truncated into
+ * uselessness and the turn is better refused with a reason than answered with
+ * a fragment. Compaction is the path back from here, not a smaller ceiling.
+ */
+const MIN_ADMISSIBLE_OUTPUT_TOKENS = 1_024;
+
 export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
@@ -495,6 +504,10 @@ export async function runAdmittedModelCall(
   });
   let accountingResult: TokenAccountingResult | undefined;
   let accountingFailureReason: string | undefined;
+  // Reduced below when the prompt leaves less room than the reservation asks
+  // for. Everything downstream — cost ceiling, lease, provider request — reads
+  // the admitted value, so the reservation and the wire request cannot drift.
+  let admittedMaxOutputTokens = maxOutputTokens;
   try {
     accountingResult = await tokenAccountingService.count(accountingRequest, {
       ...(params.provider.tokenCountCapability !== undefined
@@ -505,7 +518,21 @@ export async function runAdmittedModelCall(
     if (!accountingResult.admissible) {
       accountingFailureReason = "token_accounting_uncertain";
     } else if (accountingResult.totalTokens > contextWindowTokens) {
-      accountingFailureReason = "context_window_exceeded";
+      // The prompt and the reservation share one window, and only the prompt
+      // is fixed. Denying here throws away a turn the model could still have
+      // answered, just more briefly, so spend what the prompt left instead.
+      //
+      // The reservation is a ceiling on the answer, not a promise of one, and
+      // it only ever shrinks on this path: a caller cannot widen its budget by
+      // sending a longer prompt. Deny remains for the case that is genuinely
+      // unanswerable, where the prompt alone leaves less room than a usable
+      // reply needs.
+      const roomLeftByPrompt = contextWindowTokens - accountingResult.inputTokens;
+      if (roomLeftByPrompt >= MIN_ADMISSIBLE_OUTPUT_TOKENS) {
+        admittedMaxOutputTokens = Math.min(maxOutputTokens, roomLeftByPrompt);
+      } else {
+        accountingFailureReason = "context_window_exceeded";
+      }
     }
   } catch (error) {
     if (params.signal?.aborted === true) {
@@ -540,7 +567,7 @@ export async function runAdmittedModelCall(
     effectiveModel,
     effectiveProvider,
     maxInputTokens,
-    maxOutputTokens,
+    admittedMaxOutputTokens,
     accountingOptions,
   );
   const denialReason =
@@ -604,7 +631,7 @@ export async function runAdmittedModelCall(
         model: effectiveModel,
         provider: effectiveProvider,
         maxInputTokens,
-        maxOutputTokens,
+        maxOutputTokens: admittedMaxOutputTokens,
         maxCostUsd: maximumCost,
         ...(denialReason !== undefined ? { denialReason } : {}),
       },
@@ -648,7 +675,7 @@ export async function runAdmittedModelCall(
               routedFromProvider: params.providerName,
             }
           : {}),
-        maxOutputTokens,
+        maxOutputTokens: admittedMaxOutputTokens,
         tokenAccountingSource: accountingResult?.source,
         tokenAccountingConfidence: accountingResult?.confidence,
         tokenAccountingCoverageComplete: accountingResult?.coverage.complete,
@@ -670,7 +697,7 @@ export async function runAdmittedModelCall(
       // The admitted maximum is the provider-facing maximum. A caller cannot
       // raise it after reservation by mutating/rebuilding options.
       maxOutputTokens: Math.min(
-        maxOutputTokens,
+        admittedMaxOutputTokens,
         lease.request.estimate.maxOutputTokens,
       ),
       // The lease signal also carries parent cancellation, deadline expiry,
