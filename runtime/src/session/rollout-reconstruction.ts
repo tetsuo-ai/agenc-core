@@ -795,10 +795,13 @@ export function reconstructFromRollout(
   const turnBuildIds = new Map<string, string | undefined>();
   const turnStartedIndexes = new Map<string, number>();
   let latestUserStopIndex = -1;
+  let userStopHeld = false;
+  let hasExplicitUserStop = false;
+  const reconstructionRunId = reconstructionSessionId ?? opts.checkpointProjection?.expectedRunId;
   const resolverDeniedTurns = new Set<string>();
   const highestCheckpointByTurn = new Map<
     string,
-    { readonly checkpoint: TurnCheckpointEvent; readonly rolloutIndex: number }
+    { readonly checkpoint: TurnCheckpointEvent; readonly rolloutIndex: number; readonly userStopHeld: boolean }
   >();
   for (
     let rolloutIndex = 0;
@@ -806,13 +809,34 @@ export function reconstructFromRollout(
     rolloutIndex += 1
   ) {
     const item = rolloutItems[rolloutIndex];
-    if (item !== undefined && readPersistedUserStopState(item)?.stopped === true) latestUserStopIndex = rolloutIndex;
+    const persistedUserStop = item === undefined ? undefined : readPersistedUserStopState(item);
+    if (persistedUserStop !== undefined) {
+      hasExplicitUserStop = true;
+      userStopHeld = persistedUserStop.stopped;
+      if (userStopHeld) latestUserStopIndex = rolloutIndex;
+    }
     if (item?.type !== "event_msg") continue;
+    const event = item.payload.msg;
     if (
-      item.payload.msg.type === "permission_decision" &&
-      item.payload.msg.payload.decision === "denied" &&
-      item.payload.msg.payload.source === "resolver"
-    ) resolverDeniedTurns.add(item.payload.msg.payload.turnId);
+      event.type === "permission_decision" &&
+      event.payload.decision === "denied" &&
+      event.payload.source === "resolver"
+    ) {
+      resolverDeniedTurns.add(event.payload.turnId);
+      if (reconstructionRunId === undefined || event.payload.runId === reconstructionRunId) {
+        userStopHeld = true;
+        latestUserStopIndex = rolloutIndex;
+      }
+    } else if (event.type === "turn_aborted" && event.payload.reason === "interrupted") {
+      userStopHeld = true;
+      latestUserStopIndex = rolloutIndex;
+    } else if (
+      !hasExplicitUserStop &&
+      (event.type === "user_message" || event.type === "message_submission") &&
+      typeof event.payload.messageId === "string" &&
+      typeof event.payload.acceptedAt === "string" &&
+      event.payload.streamId !== "session.shell.execute"
+    ) userStopHeld = false;
     const inner = item.payload.msg as { type?: string; payload?: unknown };
     if (inner.type === "turn_started") {
       const payload = inner.payload as { turnId?: string; buildId?: string };
@@ -843,6 +867,7 @@ export function reconstructFromRollout(
       highestCheckpointByTurn.set(checkpoint.turnId, {
         checkpoint,
         rolloutIndex,
+        userStopHeld,
       });
     }
   }
@@ -981,7 +1006,8 @@ export function reconstructFromRollout(
       // a descriptor whose gates pass.
       const checkpointRecord = highestCheckpointByTurn.get(turnId);
       if (
-        checkpointRecord !== undefined && !resolverDeniedTurns.has(turnId) &&
+        checkpointRecord !== undefined && !userStopHeld && !checkpointRecord.userStopHeld &&
+        !resolverDeniedTurns.has(turnId) &&
         (turnStartedIndexes.get(turnId) ?? -1) > latestUserStopIndex
       ) {
         const { checkpoint, rolloutIndex } = checkpointRecord;

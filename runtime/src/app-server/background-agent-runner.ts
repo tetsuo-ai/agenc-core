@@ -388,6 +388,11 @@ export {
   planApprovalPayloadFields,
 } from "./background-agent-runner/tool-recovery.js";
 
+const DAEMON_USER_STOP_GENERATION: unique symbol = Symbol("agenc.daemon-user-stop-generation");
+type DaemonHumanSessionSubmitOptions = DaemonSessionSubmitOptions & {
+  readonly [DAEMON_USER_STOP_GENERATION]?: number;
+};
+
 /**
  * A routine invocation, which is the one agent kind that runs with nobody
  * attached to answer an approval. Both keys are required: the routine service
@@ -2064,6 +2069,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       );
     }
 
+    const userStopGenerationToRelease = active.bootstrap.session.userStopGeneration;
     let resolveSubmission!: (result: AgenCBackgroundAgentMessageResult) => void;
     let rejectSubmission!: (error: unknown) => void;
     const promise = new Promise<AgenCBackgroundAgentMessageResult>(
@@ -2096,6 +2102,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             agentId,
             params,
             submission,
+            userStopGenerationToRelease,
           );
         } finally {
           if (active.messageSubmission === submission) {
@@ -2449,6 +2456,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     agentId: string,
     params: AgenCBackgroundAgentMessageParams,
     submission: ActiveMessageSubmission,
+    userStopGenerationToRelease: number,
   ): Promise<AgenCBackgroundAgentMessageResult> {
     let input = messageContentToAgentInput(params.content);
     if (params.editorInteraction === undefined) {
@@ -2508,7 +2516,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         },
       });
     }
-    const submitOptions: DaemonSessionSubmitOptions = {
+    const submitOptions: DaemonHumanSessionSubmitOptions = {
+      [DAEMON_USER_STOP_GENERATION]: userStopGenerationToRelease,
       [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
       ...(params.editorInteraction === undefined
         ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
@@ -2521,7 +2530,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? { editorInteraction: params.editorInteraction }
         : {}),
     };
-    active.bootstrap.session.clearUserStop?.();
     if (typeof input === "string") {
       await active.control.sendInput(agentId, input, submitOptions);
     } else {
@@ -5398,7 +5406,7 @@ function installDaemonTurnDriverHooks(
       installTurnDriverHooks?: (hooks: {
         readonly submit: (
           message: string | readonly LLMContentPart[],
-          opts?: DaemonSessionSubmitOptions,
+          opts?: DaemonHumanSessionSubmitOptions,
         ) => Promise<void>;
         readonly flushEventLog?: () => Promise<void> | void;
       }) => void;
@@ -5467,6 +5475,9 @@ function installDaemonTurnDriverHooks(
           // excluded by rootHumanTurnText below.
           querySource: "sdk",
           displayUserMessage: null,
+          ...(opts?.[DAEMON_USER_STOP_GENERATION] !== undefined
+            ? { userStopGenerationToRelease: opts[DAEMON_USER_STOP_GENERATION] }
+            : {}),
           ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
           ...(opts?.editorInteraction !== undefined
             ? {

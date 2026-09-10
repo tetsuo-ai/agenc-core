@@ -84,6 +84,37 @@ describe("durable user-stop authority", () => {
     expect(state.restored().userStopGeneration).toBe(2);
   });
 
+  it.each(["user_message", "message_submission"] as const)("does not release an explicit stop for a merely journaled %s", (eventType) => {
+    const state = fixture();
+    state.session.markStoppedByUser();
+    const admission = {
+      type: "event_msg", payload: { id: "unadmitted", msg: { type: eventType, payload: {
+        message: "continue", contentFingerprint: "test-fingerprint", messageId: "unadmitted",
+        streamId: "stream_1", acceptedAt: "2026-09-10T00:00:00.000Z",
+      } } },
+    } as unknown as RolloutItem;
+    const restored = state.restored();
+    restored.restoreUserStopFromRollout([...state.read(), admission]);
+    expect(restored.stoppedByUserSinceLastPrompt).toBe(true);
+    expect(restored.userStopGeneration).toBe(1);
+    state.session.clearUserStop();
+    restored.restoreUserStopFromRollout([...state.read(), admission]);
+    expect(restored.stoppedByUserSinceLastPrompt).toBe(false);
+  });
+
+  it("retains implicit human release for legacy journals without explicit stop state", () => {
+    const state = fixture();
+    const items = [
+      { type: "event_msg", payload: { id: "stop", msg: { type: "turn_aborted", payload: { reason: "interrupted" } } } },
+      { type: "event_msg", payload: { id: "human", msg: { type: "user_message", payload: {
+        message: "continue", messageId: "human", streamId: "stream_1", acceptedAt: "2026-09-10T00:00:00.000Z",
+      } } } },
+    ] as unknown as RolloutItem[];
+    state.session.restoreUserStopFromRollout(items);
+    expect(state.session.stoppedByUserSinceLastPrompt).toBe(false);
+    expect(state.session.userStopGeneration).toBe(1);
+  });
+
   it.each(["stop", "clear"])("keeps a stop effective when its %s durability boundary fails", (operation) => {
     const state = fixture();
     if (operation === "clear") state.session.markStoppedByUser();

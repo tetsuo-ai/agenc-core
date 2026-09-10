@@ -5307,6 +5307,7 @@ export class Session {
   restoreUserStopFromRollout(items: readonly RolloutItem[]): void {
     let stopped = false;
     let generation = 0;
+    let hasExplicitUserStopState = false;
     for (const item of items) {
       let state;
       try {
@@ -5317,6 +5318,7 @@ export class Session {
         throw error;
       }
       if (state !== undefined) {
+        hasExplicitUserStopState = true;
         stopped = state.stopped;
         generation = state.generation;
         continue;
@@ -5336,6 +5338,7 @@ export class Session {
         stopped = true;
       }
       else if (
+        !hasExplicitUserStopState &&
         (event.type === "user_message" || event.type === "message_submission") &&
         typeof event.payload.messageId === "string" &&
         typeof event.payload.acceptedAt === "string" &&

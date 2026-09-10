@@ -3800,9 +3800,12 @@ export async function* runAgent(
           : {}),
         ...(live.role.config.systemPrompt || live.metadata.executionConstraint !== undefined
           ? {
-              systemPrompt: live.metadata.executionConstraint !== undefined
-                ? READ_ONLY_DELEGATION_PROMPT
-                : live.role.config.systemPrompt,
+              systemPrompt: [
+                live.role.config.systemPrompt,
+                live.metadata.executionConstraint !== undefined
+                  ? READ_ONLY_DELEGATION_PROMPT
+                  : undefined,
+              ].filter(Boolean).join("\n\n"),
               systemPromptTrust: "workspace_role" as const,
             }
           : {}),

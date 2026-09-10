@@ -3472,6 +3472,42 @@ describe("runAgent", () => {
     expect(allowed.isError).toBe(false);
   });
 
+  it.each(["Plan", "scanner", "verification", "custom-inspector"])(
+    "preserves constrained %s role instructions alongside read-only authority",
+    async (roleName) => {
+      registerAgentRole(ROLE_WORKSPACE, {
+        name: "custom-inspector",
+        config: { systemPrompt: "CUSTOM_INSPECTOR_SENTINEL: report timestamp edge cases." },
+      });
+      const provider = makeProvider([{ content: "inspection complete" }]);
+      const session = makeStubSession({
+        services: {
+          provider,
+          permissionModeRegistry: new PermissionModeRegistry(
+            createEmptyToolPermissionContext({ mode: "plan" }),
+          ),
+        },
+      });
+      const { live } = await spawnLive(session, roleName);
+      const rolePrompt = live.role.config.systemPrompt;
+      expect(rolePrompt).toBeTruthy();
+      expect(live.metadata.executionConstraint).toMatchObject({ kind: "read-only" });
+
+      const { result } = await collectRun(runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "Inspect without changing files." }],
+        taskPrompt: "Inspect without changing files.",
+      }));
+
+      expect(result.outcome).toBe("completed");
+      const options = vi.mocked(provider.chatStream).mock.calls[0]?.[2];
+      expect(options?.systemPrompt).toContain(rolePrompt);
+      expect(options?.systemPrompt).toContain("permanent read-only execution authority");
+      expect(options?.systemPrompt).toContain('<workspace_agent_role trust="untrusted" authority="guidance_only">');
+    },
+  );
+
   it("a live read-only role spawn (Plan) strips mutating tools end-to-end", async () => {
     // Drives the real wiring: control.spawn -> role resolution (Plan carries the
     // read-only disallowlist) -> buildChildSession reads role.config.disallowlist
