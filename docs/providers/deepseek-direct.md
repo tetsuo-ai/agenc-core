@@ -43,6 +43,16 @@ The managed wire tests cover streaming and complete responses at Low/High/Max,
 with both runtime reminders and subsequent user requests between calls.
 This follows the [OpenRouter reasoning continuity contract](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#preserving-reasoning).
 
+Generated context following a tool result is included in that result's wire
+message for managed DeepSeek. A standalone user-role reminder started a new
+turn on the hosted route and the model repeatedly abandoned the actual task.
+Only the runtime's `user_context` marker permits this projection; user-authored
+reminder text remains a user message. The context is never promoted to system
+authority. Canonical history, original tool evidence, and other providers keep
+their existing representation. Tests use the actual attachment renderer for
+deferred MCP discovery and check that subsequent human instructions remain
+separate.
+
 Desktop can send the internal `session.applyConfig` request with an exclusive
 `reasoningEffort` field before a turn. It validates the selected model's
 native levels, rejects a running turn, records the durable runtime setting,

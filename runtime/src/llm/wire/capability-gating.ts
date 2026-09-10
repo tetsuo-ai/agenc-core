@@ -82,6 +82,8 @@ export interface ChatCompletionsCapabilityHints {
    * to the original tool call.
    */
   readonly toolResultImagePolicy?: "relay_as_user" | "strip";
+  /** Keep runtime context after a tool result inside that tool continuation. */
+  readonly runtimeContextInToolResults?: boolean;
   /**
    * Replay the provider-owned reasoning_content field on assistant messages.
    * Qwen's thinking-mode function calling requires this value to be echoed
@@ -545,6 +547,7 @@ export function chatCompletionsCapabilityHintsForProvider(
       acceptsParallelToolCalls: false,
       acceptsDirectImageInput: false,
       toolResultImagePolicy: "strip" as const,
+      runtimeContextInToolResults: true,
       replaysReasoningContent: true,
       reasoningContentField: "reasoning" as const,
       reasoningContentFallbackField: "reasoning_content" as const,

@@ -444,6 +444,40 @@ function assertStrictToolResultSequence(
   }
 }
 
+/**
+ * A user-role reminder after a tool result starts a new turn on some hosted
+ * DeepSeek templates. Keep runtime-generated context in the tool continuation
+ * instead. Only runtime metadata authorizes this projection: text resembling a
+ * reminder in an actual user message must remain a user message. Context stays
+ * below system authority, and neither canonical history nor tool evidence is
+ * mutated.
+ */
+function projectRuntimeContextIntoToolResults(
+  messages: readonly LLMMessage[],
+): readonly LLMMessage[] {
+  const projected: LLMMessage[] = [];
+  for (const message of messages) {
+    const previous = projected.at(-1);
+    if (
+      previous?.role === "tool" &&
+      message.role === "user" &&
+      message.runtimeOnly?.mergeBoundary === "user_context" &&
+      typeof message.content === "string"
+    ) {
+      const context = `\n\n<runtime-context>\n${message.content}\n</runtime-context>`;
+      projected[projected.length - 1] = {
+        ...previous,
+        content: typeof previous.content === "string"
+          ? previous.content + context
+          : [...previous.content, { type: "text", text: context }],
+      };
+    } else {
+      projected.push(message);
+    }
+  }
+  return projected;
+}
+
 export function buildChatCompletionsRequest(
   input: ChatCompletionsRequestOptions,
 ): Record<string, unknown> {
@@ -472,10 +506,13 @@ export function buildChatCompletionsRequest(
     input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
     zaiJsonSchemaInstruction,
   ].filter((value): value is string => value !== undefined).join("\n");
-  const normalizedMessages = prepareMessagesForWire(
+  const preparedMessages = prepareMessagesForWire(
     input.messages,
     input.options,
   );
+  const normalizedMessages = input.providerCapabilityHints?.runtimeContextInToolResults
+    ? projectRuntimeContextIntoToolResults(preparedMessages)
+    : preparedMessages;
   const replayOnlyAdjacentToolContinuation =
     input.providerCapabilityHints
       ?.replaysReasoningContentOnlyForAdjacentToolContinuation === true;
