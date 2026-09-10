@@ -731,7 +731,9 @@ export class OpenAIProvider implements LLMProvider {
           options,
         });
         const providerCapabilityHints =
-          chatCompletionsCapabilityHintsForProvider(this.name, model);
+          chatCompletionsCapabilityHintsForProvider(this.name, model, {
+            managedGateway: this.config.managedRequestId,
+          });
         const response = await session.requestJson<Record<string, unknown>>({
           api: "chat_completions",
           headers,
@@ -1016,6 +1018,7 @@ export class OpenAIProvider implements LLMProvider {
     const providerCapabilityHints = chatCompletionsCapabilityHintsForProvider(
       this.name,
       args.model,
+      { managedGateway: this.config.managedRequestId },
     );
     const request = buildChatCompletionsRequest({
       model: args.model,
@@ -1325,6 +1328,7 @@ export class OpenAIProvider implements LLMProvider {
     const streamCapabilityHints = chatCompletionsCapabilityHintsForProvider(
       this.name,
       requestModel,
+      { managedGateway: this.config.managedRequestId },
     );
     const requestOptions = {
       model: requestModel,
@@ -1514,10 +1518,13 @@ export class OpenAIProvider implements LLMProvider {
               onChunk({ content: "", done: false });
             }
           }
-          const reasoningDelta =
+          const primaryReasoningDelta =
             streamCapabilityHints.reasoningContentField === "reasoning"
               ? delta.reasoning
               : delta.reasoning_content;
+          const fallbackReasoningField = streamCapabilityHints.reasoningContentFallbackField;
+          const reasoningDelta = primaryReasoningDelta ??
+            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined);
           if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
             reasoningContent += reasoningDelta;
             onChunk({

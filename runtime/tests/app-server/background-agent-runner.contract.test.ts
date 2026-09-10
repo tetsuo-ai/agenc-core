@@ -2815,13 +2815,23 @@ describe("AgenC delegate background-agent runner", () => {
       expectedMode: "plan" as const,
       expectedSettingsEvents: 2,
     },
+    {
+      label: "with native Max reasoning",
+      permissionMode: undefined,
+      expectedMode: "default" as const,
+      expectedSettingsEvents: 1,
+      reasoningEffort: "max" as const,
+    },
   ])(
     "keeps a fresh default run cold-resumable $label",
-    async ({ permissionMode, expectedMode, expectedSettingsEvents }) => {
+    async ({ permissionMode, expectedMode, expectedSettingsEvents, reasoningEffort }) => {
       const runId = `session-default-cold-${expectedMode}`;
       const harness = makeTopLevelRunner({
         conversationId: runId,
         canonicalRuntimeSettings: true,
+      });
+      Object.assign(harness.sessionState.sessionConfiguration.collaborationMode, {
+        reasoningEffort,
       });
       const baseline: RunRuntimeSettingsSnapshot = {
         permissionMode: "default",
@@ -2834,7 +2844,7 @@ describe("AgenC delegate background-agent runner", () => {
         model: "base-model",
         provider: "grok",
         profile: null,
-        reasoningEffort: null,
+        reasoningEffort: reasoningEffort ?? null,
         modelVerbosity: null,
         serviceTier: null,
         hooksDisabled: false,
@@ -6003,6 +6013,18 @@ describe("AgenC delegate background-agent runner", () => {
     expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(
       beforeEvents,
     );
+  });
+
+  it.each(["low", "high", "max"] as const)("persists native %s reasoning when creating a run", async (reasoningEffort) => {
+    const agentId = `native-effort-${reasoningEffort}`;
+    const { runner, sessionState, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(sessionState.sessionConfiguration.collaborationMode, { reasoningEffort });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    expect((await runner.getAgentSnapshot(agentId))?.runtimeSettings).toMatchObject({ reasoningEffort });
+    expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload).toMatchObject({ reasoningEffort });
   });
 
   it.each([undefined, null])("normalizes absent optional runtime settings from %s", async (absent) => {

@@ -16,7 +16,7 @@ import {
   type AskUserQuestionInput,
   type AskUserQuestionPlanInterviewAction,
 } from "../tools/ask-user-question/tool.js";
-import { makeToolUseMessage } from "./session-transcript.js";
+import { makeToolUseMessage } from "./synthetic-assistant-message.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
@@ -290,12 +290,14 @@ export function usePermissionRequests(
 export function AgenCPermissionOverlay({
   request,
   tools,
+  onDismiss,
 }: {
   readonly request: PendingRequest | undefined;
   readonly tools: readonly any[];
   readonly mcpClients?: readonly unknown[];
   readonly isNonInteractiveSession?: boolean;
   readonly debug?: boolean;
+  readonly onDismiss?: () => void;
 }) {
   // Register the whole approval family as a modal overlay: without this the
   // GLOBAL turn-cancel (useCancelRequest) treats esc as "cancel the turn"
@@ -333,7 +335,7 @@ export function AgenCPermissionOverlay({
   }, [request]);
 
   if (request !== undefined && isExitPlanMode) {
-    return <PlanApprovalContainer key={request.id} request={request} />;
+    return <PlanApprovalContainer key={request.id} request={request} onDismiss={onDismiss} />;
   }
 
   if (
@@ -346,7 +348,7 @@ export function AgenCPermissionOverlay({
         key={request.id}
         input={askUserQuestionInput}
         onSubmit={(updatedInput) => toolUseConfirm.onAllow(updatedInput, [])}
-        onSkip={() =>
+        onSkip={onDismiss ?? (() =>
           // esc is a deliberate skip, not a denial: approve with an empty
           // answer set flagged skipped — the tool then tells the model to
           // proceed with best judgment instead of erroring into a re-ask loop.
@@ -361,7 +363,7 @@ export function AgenCPermissionOverlay({
             },
             [],
           )
-        }
+        )}
       />
     );
   }
@@ -374,6 +376,7 @@ export function AgenCPermissionOverlay({
       key={request.id}
       request={request}
       toolUseConfirm={toolUseConfirm}
+      onDismiss={onDismiss}
     />
   );
 }
@@ -412,8 +415,10 @@ function AskUserQuestionApprovalContainer({
 
 function PlanApprovalContainer({
   request,
+  onDismiss,
 }: {
   readonly request: PendingRequest;
+  readonly onDismiss?: () => void;
 }) {
   useRegisterKeybindingContext("Confirmation");
   const settled = useRef(false);
@@ -466,6 +471,7 @@ function PlanApprovalContainer({
         {...(planFilePath !== undefined ? { planFilePath } : {})}
         onApprove={onApprove}
         onKeepPlanning={onKeepPlanning}
+        onDismiss={onDismiss}
       />
     </Box>
   );
@@ -509,9 +515,11 @@ function approvalCommandIsShell(
 function AgenCApprovalOverlay({
   request,
   toolUseConfirm,
+  onDismiss,
 }: {
   readonly request: PendingRequest;
   readonly toolUseConfirm: ProjectedToolUseConfirm;
+  readonly onDismiss?: () => void;
 }) {
   const command = approvalInputText(toolUseConfirm.input, { prettyJson: true });
   const fileWritePreview = request.ctx.fileWritePreview;
@@ -579,8 +587,9 @@ function AgenCApprovalOverlay({
     toolUseConfirm.onReject();
   }, [toolUseConfirm]);
   const abort = useCallback(() => {
-    toolUseConfirm.onAbort();
-  }, [toolUseConfirm]);
+    if (onDismiss !== undefined) onDismiss();
+    else toolUseConfirm.onAbort();
+  }, [onDismiss, toolUseConfirm]);
 
   const confirmSelection = useCallback(
     (index: number) => {
@@ -602,10 +611,12 @@ function AgenCApprovalOverlay({
       "confirm:yes": () => {
         if (destructive) return false;
         approve();
+        return undefined;
       },
       "confirm:no": () => {
         if (destructive) return false;
         reject();
+        return undefined;
       },
       "app:interrupt": abort,
     },
@@ -659,7 +670,8 @@ function AgenCApprovalOverlay({
         return;
       }
       if (key.escape) {
-        reject();
+        if (onDismiss !== undefined) onDismiss();
+        else reject();
         return;
       }
       if (key.backspace || key.delete) {
@@ -687,6 +699,7 @@ function AgenCApprovalOverlay({
         title={`tool · ${name} · ${title}`}
         command={command.length > 0 ? command : toolUseConfirm.description}
         commandIsShell={approvalCommandIsShell(toolUseConfirm)}
+        confirmLabel={destructive ? `type ${requiredWord}` : "enter"}
         facts={[
           { label: "tool", value: name },
           {

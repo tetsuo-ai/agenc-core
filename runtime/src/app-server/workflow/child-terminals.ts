@@ -50,7 +50,7 @@ export function recordWorkflowChildTerminal(
       runId: childRunId,
       status: outcome.status,
       exitCode: outcome.status === "completed" ? 0 : 1,
-      stopReason: null,
+      stopReason: outcome.stopReason ?? null,
       finalMessage: outcome.finalMessage,
       usage: outcome.usage,
       lastSequence: null,
@@ -73,6 +73,9 @@ export function inspectWorkflowChildTerminal(
   if (terminal === undefined) return undefined;
   return {
     status: terminal.status,
+    ...(terminal.stopReason === "approval_required" || terminal.stopReason === "policy_denied"
+      ? { stopReason: terminal.stopReason }
+      : {}),
     finalMessage: terminal.finalMessage,
     usage: terminal.usage,
   };

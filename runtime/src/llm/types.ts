@@ -103,6 +103,7 @@ export interface LLMMessage {
    */
   runtimeOnly?: {
     readonly mergeBoundary?: "user_context";
+    readonly permissionModeReminder?: "plan" | "plan_exit" | "auto" | "auto_exit";
     readonly excludeFromDurableHistory?: true;
     /**
      * For user messages: the event id of the `user_message` event

@@ -99,7 +99,7 @@ import type {
   WorkspaceEditorTopologyReserveParams,
   WorkspaceEditorTopologyReserveResult,
 } from "../app-server/protocol/index.js";
-import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
+import type { ApprovalResolver } from "../tools/orchestrator.js";
 import {
   reviewDecisionIsAllow,
   type ReviewDecision,
@@ -138,6 +138,8 @@ import type {
 } from "../session/session.js";
 import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
 import { takePlanApprovalChoice } from "./plan-approval-choice.js";
+import { createWorkflowApprovalControls, type WorkflowApprovalControls } from "./workflow-approval-controls.js";
+import { buildDaemonApprovalCtx, daemonFileWritePreview } from "./daemon-approval-context.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import {
   createRealtimeTuiControls,
@@ -436,6 +438,7 @@ export type AgenCDaemonBackedTuiSession<
   | "subscribeToEvents"
 > & {
   readonly conversationId: string;
+  readonly workflowApprovalControls: WorkflowApprovalControls;
   getInitialTranscriptEvents(): readonly unknown[];
   subscribeToEvents(cb: (event: unknown) => void): () => void;
   submit(
@@ -1163,6 +1166,7 @@ export function createDaemonTuiSession<
   return {
     ...daemonSessionBase,
     conversationId,
+    workflowApprovalControls: createWorkflowApprovalControls(client),
     services,
     mcpSurfaceSnapshot: () => mcpProjection.snapshot(),
     refreshMcpSurface: () => mcpProjection.refresh(),
@@ -2860,64 +2864,6 @@ async function maybeBridgeDaemonElicitation(
       );
     }
   }
-}
-
-function daemonFileWritePreview(value: unknown): NonNullable<ApprovalCtx["fileWritePreview"]> | undefined {
-  if (!isJsonObject(value)) return undefined;
-  if (value.kind === "missing") return { kind: "missing" };
-  if (value.kind === "existing" && typeof value.content === "string" &&
-    Buffer.byteLength(value.content, "utf8") <= 256 * 1024) {
-    return { kind: "existing", content: value.content };
-  }
-  if (value.kind === "unavailable" && typeof value.reason === "string") {
-    return { kind: "unavailable", reason: value.reason.slice(0, 200) };
-  }
-  return undefined;
-}
-
-function buildDaemonApprovalCtx(
-  session: AgenCTuiBridgeSession,
-  payload: JsonObject,
-  toolName: string,
-  signal: AbortSignal,
-): ApprovalCtx {
-  const callId = payload.callId as string;
-  const input = isJsonObject(payload.input) ? payload.input : {};
-  const fileWritePreview = daemonFileWritePreview(payload.fileWritePreview);
-  return {
-    invocation: {
-      session,
-      turn: {
-        subId: typeof payload.turnId === "string" ? payload.turnId : callId,
-      },
-      tracker: {
-        appendFileDiff() {},
-        snapshot: () => [],
-        clear() {},
-      },
-      callId,
-      toolName: { name: toolName },
-      payload: {
-        kind: "function",
-        arguments: JSON.stringify(input),
-      },
-      source: "direct",
-    } as unknown as ApprovalCtx["invocation"],
-    callId,
-    toolName,
-    signal,
-    ...(fileWritePreview === undefined ? {} : { fileWritePreview }),
-    turnId: typeof payload.turnId === "string" ? payload.turnId : callId,
-    ...(typeof payload.reason === "string"
-      ? { retryReason: payload.reason }
-      : {}),
-    ...(typeof payload.planContent === "string"
-      ? { planContent: payload.planContent }
-      : {}),
-    ...(typeof payload.planFilePath === "string"
-      ? { planFilePath: payload.planFilePath }
-      : {}),
-  };
 }
 
 function baseInitialTranscriptEvents(

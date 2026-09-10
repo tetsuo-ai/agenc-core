@@ -479,6 +479,22 @@ Remember: DO NOT write or edit any files except the plan file.`,
     },
   };
 
+  const preflightExitPlan: NonNullable<Tool["preflight"]> = () => {
+    const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
+    if (registry === null) {
+      return {
+        code: "registry-unavailable",
+        message: "permission mode registry is not available for workflow tools",
+      };
+    }
+    if (registry.current().mode !== "plan") {
+      return {
+        code: "not-in-plan-mode",
+        message: "You are not in plan mode. This tool is only for exiting plan mode after writing a plan. If your plan was already approved, continue with implementation.",
+      };
+    }
+    return null;
+  };
   const exitPlanTool: Tool = {
     name: "ExitPlanMode",
     description:
@@ -486,6 +502,7 @@ Remember: DO NOT write or edit any files except the plan file.`,
     metadata: metadata("ExitPlanMode", { mutating: true, virtualNoFsWrites: true }),
     requiresApproval: true,
     recoveryCategory: "interactive",
+    preflight: preflightExitPlan,
     inputSchema: {
       type: "object",
       properties: {
@@ -515,17 +532,11 @@ Remember: DO NOT write or edit any files except the plan file.`,
       additionalProperties: true,
     },
     async execute(args) {
-      const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
-      if (!registry) {
+      const preflight = preflightExitPlan(args);
+      if (preflight !== null) {
         return validationErrorToolResult(
-          "tool:system.exit-plan-mode:registry-unavailable",
-          "permission mode registry is not available for workflow tools",
-        );
-      }
-      if (registry.current().mode !== "plan") {
-        return validationErrorToolResult(
-          "tool:system.exit-plan-mode:not-in-plan-mode",
-          "You are not in plan mode. This tool is only for exiting plan mode after writing a plan. If your plan was already approved, continue with implementation.",
+          `tool:system.exit-plan-mode:${preflight.code}`,
+          preflight.message,
         );
       }
       const approval = consumeExitPlanModeApproval(args);

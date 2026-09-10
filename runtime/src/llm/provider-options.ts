@@ -47,6 +47,7 @@ import {
 import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { isGrokComposerModel } from "./providers/grok/acp-adapter.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
+import { hasActivePilotModelAccess } from "../auth/pilot-access.js";
 
 export type ProviderEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -827,6 +828,31 @@ export function assertHostedAgencSubscriptionAuthority(params: {
   }
 }
 
+/** A remote authority may grant one expiring pilot model without changing tier. */
+export async function assertHostedAgencModelAuthority(params: {
+  readonly provider: ProviderName;
+  readonly model?: string;
+  readonly sessionId?: string;
+  readonly authBackend: AuthBackend | undefined;
+  readonly subscriptionTier: AuthSubscriptionTier | undefined;
+}): Promise<void> {
+  if (params.provider === "agenc" && params.authBackend?.kind === "remote" &&
+      !isEntitledSubscription(params.subscriptionTier)) {
+    try {
+      const usage = await params.authBackend.getLlmUsage({ sessionId: params.sessionId });
+      if (hasActivePilotModelAccess(usage, params.model)) return;
+    } catch {
+      // An unavailable or malformed entitlement cannot grant hosted access.
+    }
+    if (params.model !== undefined && params.model !== "agenc") {
+      throw new Error(
+        "This AgenC model is unavailable. Check your model access and server readiness.",
+      );
+    }
+  }
+  assertHostedAgencSubscriptionAuthority(params);
+}
+
 function withRuntimeAuthExtra(
   provider: ProviderName,
   options: ProviderFactoryOptions,
@@ -907,8 +933,10 @@ export async function resolveProviderRuntimeAuthority(
       "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
     );
   }
-  assertHostedAgencSubscriptionAuthority({
+  await assertHostedAgencModelAuthority({
     provider,
+    model: requested.model,
+    sessionId,
     authBackend: runtime.authBackend,
     subscriptionTier: runtime.subscriptionTier,
   });

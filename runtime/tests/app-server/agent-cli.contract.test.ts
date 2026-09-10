@@ -1122,6 +1122,7 @@ autostart = false
         messageId: "message_socket",
         streamId: "stream_socket",
         acceptedAt: "2026-05-01T12:00:03.500Z",
+        localMcpAccess: true,
       },
     ]);
     await expect(sessionManager.getSession("session_1")).resolves.toMatchObject(

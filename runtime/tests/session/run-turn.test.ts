@@ -49,6 +49,7 @@ vi.mock("../memory/session/sessionMemory.js", () => ({
   },
 }));
 import { AsyncQueue } from "../utils/async-queue.js";
+import { markWorkflowApprovalSession, WorkflowApprovalFailure } from "../permissions/approval-failure.js";
 import {
   getAllowedSettingSources,
   setAllowedSettingSources,
@@ -1182,7 +1183,9 @@ describe("daemon-owned scheduled turns", () => {
       expect(await readCronTasks(workspaceRoot)).toEqual([]);
       await add(second, { durable: true });
       await start(second);
-      first.abortController.abort();
+      // Shutdown awaits the ownership-transfer finalizer. Draining only the
+      // previous timer tick can race the successor's asynchronous reschedule.
+      await first.shutdown();
       await firstScheduler.drain();
       await advance();
       await secondScheduler.drain();
@@ -2241,6 +2244,50 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(seenMessages).toHaveLength(1);
     expect(yielded.some((event) => event.type === "tool_result")).toBe(true);
     expect(yielded.at(-1)?.type).toBe("turn_complete");
+  });
+
+  test.each(["default_deny", "resolver", "policy"])("workflow approval failure %s reaches the kernel terminal without a retry sample", async (source) => {
+    const { provider, calls } = mkSingleToolFollowUpProvider({ seenMessages: [] });
+    const failed = {
+      content: "Approval unavailable", isError: true, preventContinuation: true,
+      metadata: { approvalFailure: { decision: "denied", source } },
+    };
+    const registry = mkStaticToolRegistry();
+    registry.dispatch = async () => failed;
+    registry.tools[0]!.execute = async () => failed;
+    const { session } = mkSession({ provider, registry });
+    const unmark = markWorkflowApprovalSession(session);
+    try {
+      const yielded = await drain(session.runTurn("start", { ctx: mkCtx() }));
+      expect(calls()).toBe(1);
+      const terminal = yielded.filter((event) => event.type === "turn_complete");
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ stopReason: "error", error: expect.any(WorkflowApprovalFailure) });
+      expect(terminal[0]).toMatchObject({ error: { stopReason: source === "default_deny" ? "approval_required" : "policy_denied" } });
+    } finally {
+      unmark();
+    }
+  });
+
+  test("a real workflow approval rejection preserves its typed cause through streaming execution", async () => {
+    const { provider, calls } = mkSingleToolFollowUpProvider({ seenMessages: [] });
+    const registry = mkStaticToolRegistry();
+    registry.tools[0]!.requiresApproval = true;
+    const dispatched = vi.spyOn(registry.tools[0]!, "execute");
+    const { session } = mkSession({ provider, registry });
+    const unmark = markWorkflowApprovalSession(session);
+    try {
+      const yielded = await drain(session.runTurn("start", {
+        ctx: { ...mkCtx(), approvalPolicy: { value: "on-request" } },
+      }));
+      expect(calls()).toBe(1);
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(yielded.find((event) => event.type === "turn_complete")).toMatchObject({
+        stopReason: "error", error: expect.any(WorkflowApprovalFailure),
+      });
+    } finally {
+      unmark();
+    }
   });
 
   test("a call that keeps failing the same way ends the turn as a no-progress stop", async () => {
@@ -5054,6 +5101,9 @@ describe("runTurn — live sampling request contract", () => {
         ].join(""),
       }),
       registry: mkRegistry(),
+      permissionModeRegistry: new PermissionModeRegistry({
+        ...createEmptyToolPermissionContext(), mode: "plan",
+      }),
     });
 
     const yielded: Array<{ type: string; content?: string }> = [];
@@ -5146,7 +5196,9 @@ describe("runTurn — live sampling request contract", () => {
         return { content: "exited", isError: false };
       },
     } as ToolRegistry;
-    const { session } = mkSession({ provider, registry });
+    const { session } = mkSession({ provider, registry, permissionModeRegistry: new PermissionModeRegistry({
+      ...createEmptyToolPermissionContext(), mode: "plan",
+    }) });
 
     await drain(session.runTurn("plan this", { ctx }));
 

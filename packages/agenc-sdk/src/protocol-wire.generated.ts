@@ -25,7 +25,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.11.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.12.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -917,6 +917,7 @@ export const RUN_RUNTIME_REASONING_EFFORTS = [
     "medium",
     "high",
     "xhigh",
+    "max",
     "none",
 ] as const;
 
@@ -1020,6 +1021,29 @@ export interface AgentLogsResult extends JsonObject {
     readonly toolOutputs?: readonly AgentToolOutputLog[];
 }
 
+export type FileWriteApprovalPreview = {
+    readonly kind: "existing";
+    readonly content: string;
+} | {
+    readonly kind: "missing";
+} | {
+    readonly kind: "unavailable";
+    readonly reason: string;
+};
+
+export interface PendingToolApproval extends JsonObject {
+    readonly requestId: string;
+    readonly ownerRunId: string;
+    readonly sessionId: string;
+    readonly toolName: string;
+    readonly input?: JsonObject;
+    readonly turnId?: string;
+    readonly reason?: string;
+    readonly planContent?: string;
+    readonly planFilePath?: string;
+    readonly fileWritePreview?: FileWriteApprovalPreview;
+}
+
 export interface RunDurableRecord extends JsonObject {
     readonly objective: string;
     readonly status: string;
@@ -1105,12 +1129,14 @@ export interface RunWorkflowStatusStep extends JsonObject {
  */
 export interface RunWorkflowStatus extends JsonObject {
     readonly steps: readonly RunWorkflowStatusStep[];
+    readonly effectivePermissionMode?: RunStartParams["permissionMode"];
     /** Present when the run terminated with a frozen workflow stop reason. */
     readonly stopReason?: string;
 }
 
 export interface RunStatusResult extends JsonObject {
     readonly runId: string;
+    readonly pendingRequests?: readonly PendingToolApproval[];
     readonly status: string;
     /** Terminal is true only for the current lifecycle epoch. */
     readonly terminal: boolean;
@@ -1327,6 +1353,7 @@ export interface RunStartResult extends JsonObject {
     /** Exact base commit recorded before any work began. */
     readonly baseCommit: string;
     readonly baseDirty: RunStartBaseDirty;
+    readonly effectivePermissionMode?: RunStartParams["permissionMode"];
 }
 
 export interface RoutineCapabilities extends JsonObject {
@@ -1804,6 +1831,7 @@ export interface PermissionGrant extends JsonObject {
 
 export interface PermissionListResult extends JsonObject {
     readonly permissions: readonly PermissionGrant[];
+    readonly pendingRequests?: readonly PendingToolApproval[];
 }
 
 export interface FuzzyFileSearchResult extends JsonObject {

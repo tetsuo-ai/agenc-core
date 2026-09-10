@@ -28,6 +28,8 @@ import {
 } from "./editor-interaction.js";
 import { EDITOR_PROPOSAL_TOOL_NAME } from "../tools/system/editor-proposal.js";
 import { messageText } from "./run-turn-messages.js";
+import type { ToolPermissionContext } from "../permissions/types.js";
+import { getSessionPermissionInstructions } from "./permission-instructions.js";
 
 const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
 
@@ -199,7 +201,9 @@ function buildSamplingRequestContract(
   state: TurnState,
   session: Session,
   ctx: TurnContext,
+  permissionContext: ToolPermissionContext = session.permissionModeRegistry.current(),
 ): StreamModelRequestContract {
+  const samplingContext = { ...ctx, permissionMode: permissionContext.mode };
   let messageStart = 0;
   const leadingSystemParts: string[] = [];
   while (state.messagesForQuery[messageStart]?.role === "system") {
@@ -224,7 +228,11 @@ function buildSamplingRequestContract(
           ...uniqueDurableSystemHistory,
           "</durable_system_history>",
         ].join("\n\n");
-  const instructionParts = [framedDurableSystemHistory, currentInstructions]
+  const instructionParts = [
+    framedDurableSystemHistory,
+    currentInstructions,
+    getSessionPermissionInstructions(session, samplingContext, permissionContext),
+  ]
     .map((part) => part.trim())
     .filter(
       (part, index, all) => part.length > 0 && all.indexOf(part) === index,
@@ -232,13 +240,13 @@ function buildSamplingRequestContract(
   const baseInstructions = instructionParts.join("\n\n");
   const request = buildPrompt(
     state.messagesForQuery.slice(messageStart),
-    builtTools(session, ctx),
-    ctx,
+    builtTools(session, samplingContext),
+    samplingContext,
     baseInstructions,
   );
   return {
     ...request,
-    ...(planModeHelpers.isPlanMode(ctx) && request.tools.length > 0
+    ...(planModeHelpers.isPlanMode(samplingContext) && request.tools.length > 0
       ? { toolChoice: "required" as const }
       : {}),
     ...(state.maxOutputTokensOverride !== undefined
@@ -289,8 +297,10 @@ function enforcePlanModeToolBoundary(
   state: TurnState,
   ctx: TurnContext,
   request: StreamModelRequestContract,
+  currentPermissionMode = ctx.permissionMode,
 ): void {
   if (!planModeHelpers.isPlanMode(ctx)) return;
+  if (currentPermissionMode !== "plan") return;
   if (request.tools.length === 0) return;
   if (state.toolUseBlocks.length > 0) {
     state.planToolRequiredRetryCount = 0;

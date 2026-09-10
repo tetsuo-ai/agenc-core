@@ -14,6 +14,7 @@
  * @module
  */
 
+import { registerChildApprovalSession, revokeChildApprovalSession } from "../agents/child-approval-context.js";
 import { createHash } from "node:crypto";
 
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
@@ -951,6 +952,7 @@ export async function spawnAgenCDelegateThread(
       modelInfo: reviewerModelInfo,
       agentStatus: { status: "pending_init" },
     });
+    registerChildApprovalSession(childSession, parent);
     mountChildRunJournal({
       parent,
       child: childSession,
@@ -989,6 +991,7 @@ export async function spawnAgenCDelegateThread(
     removeLeaseAbortListener?.();
     if (childSession !== undefined) {
       try {
+        revokeChildApprovalSession(childSession);
         await childSession.shutdown();
       } catch {
         // Preserve the admission/setup failure.
@@ -1132,6 +1135,7 @@ export async function spawnAgenCDelegateThread(
       rxEvent.close();
       txSub.close();
       try {
+        revokeChildApprovalSession(activeChildSession);
         await activeChildSession.shutdown();
       } catch (error) {
         runError ??= error instanceof Error ? error : new Error(String(error));

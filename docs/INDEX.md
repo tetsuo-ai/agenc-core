@@ -29,6 +29,7 @@ history; the linked pages below are current product truth.
 | [gateway.md](gateway.md) | Channel gateway: Telegram, Discord, Slack, WebChat, stdio; pairing; heartbeat/hooks |
 | [remote-control.md](remote-control.md) | Pair host with AgenC phone app (`agenc remote`) |
 | [managed-openrouter.md](managed-openrouter.md) | Hosted OpenRouter / managed keys via remote auth |
+| [agenc-account-model-access.md](agenc-account-model-access.md) | Account-scoped models after login, sponsored credits and the reviewed DeepSeek route |
 | [grok-oauth.md](grok-oauth.md) | Sign in with X for Grok subscription access without an API key (`agenc grok-login` + TUI) |
 | [deploy/vps.md](deploy/vps.md) | Run the daemon on a VPS (installer or Docker) |
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |

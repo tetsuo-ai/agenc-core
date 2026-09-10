@@ -40,6 +40,7 @@
  * @module
  */
 
+import { isWorkflowApprovalSession, workflowApprovalFailureFromMetadata } from "../permissions/approval-failure.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -646,6 +647,7 @@ type PreparedSamplingRequestBoundary =
   | {
       readonly kind: "request";
       readonly request: StreamModelRequestContract;
+      readonly samplingContext: TurnContext;
     }
   | {
       readonly kind: "terminal";
@@ -708,6 +710,11 @@ async function prepareSamplingRequestBoundary(
   }
   const agencHome = attachmentConfigStore.homeContext.path;
   const currentConfig = attachmentConfigStore.current();
+  const permissionContext = session.permissionModeRegistry.current();
+  const samplingContext: TurnContext = Object.freeze({
+    ...ctx,
+    permissionMode: permissionContext.mode,
+  });
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
   // Retained attachments first: producers see what the model already has in
   // front of it, and the bytes sent on earlier requests keep their place.
@@ -720,6 +727,7 @@ async function prepareSamplingRequestBoundary(
     state.messagesForQuery = projectRetainedAttachments(
       state.messagesForQuery,
       retention,
+      permissionContext.mode,
     ).messages;
   }
   const userInput = extractLastUserText(state.messagesForQuery);
@@ -752,7 +760,7 @@ async function prepareSamplingRequestBoundary(
     discoveredToolNames:
       session.services.registry.getDiscoveredToolNames?.() ?? new Set(),
     messages: state.messagesForQuery,
-    permissionContext: session.permissionModeRegistry.current(),
+    permissionContext,
     cwd: ctx.cwd,
     ...(session.services.sandboxExecutionBroker !== undefined
       ? {
@@ -787,17 +795,18 @@ async function prepareSamplingRequestBoundary(
   }
   if (retention !== undefined) state.attachmentsAnchoredForTurn = true;
 
-  const request = buildSamplingRequestContract(state, session, ctx);
+  const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
   const swarmToolChoice = claimRequiredSwarmToolChoice({
     trackingState: getAttachmentTrackingState(session),
     turnId: ctx.subId,
     subagentDepth: ctx.depth,
-    planMode: planModeHelpers.isPlanMode(ctx),
+    planMode: planModeHelpers.isPlanMode(samplingContext),
     toolNames: request.tools.map((tool) => tool.function.name),
   });
 
   return {
     kind: "request",
+    samplingContext,
     request: snapshotSamplingRequestContract({
       ...request,
       ...(swarmToolChoice !== undefined ? { toolChoice: swarmToolChoice } : {}),
@@ -857,7 +866,7 @@ async function tryRunSamplingRequest(
       signal,
       assistantOutputSink,
     );
-    enforcePlanModeToolBoundary(state, ctx, request);
+    enforcePlanModeToolBoundary(state, ctx, request, session.permissionModeRegistry.current().mode);
   } catch (error) {
     if (error instanceof StreamModelError) {
       streamModelError = error;
@@ -1066,6 +1075,7 @@ async function runSamplingRequest(
     }
   }
   const request = prepared.request;
+  const samplingContext = prepared.samplingContext;
 
   const outage = providerOutagePolicy(session);
   let waitedMs = 0;
@@ -1082,7 +1092,7 @@ async function runSamplingRequest(
       attempt: () =>
         tryRunSamplingRequest(
           state,
-          ctx,
+          samplingContext,
           session,
           request,
           signal,
@@ -3131,6 +3141,20 @@ async function* runTurnKernelInner(
       );
       yield limited.event;
       return limited.terminal;
+    }
+    const workflowApprovalFailure = isWorkflowApprovalSession(session)
+      ? state.completedToolResults
+          .filter((result) => result.isError === true)
+          .map((result) => workflowApprovalFailureFromMetadata(result.metadata?.approvalFailure))
+          .find((failure) => failure !== undefined)
+      : undefined;
+    if (workflowApprovalFailure !== undefined) {
+      lastContent = workflowApprovalFailure.message;
+      state.messages.push({ role: "assistant", content: lastContent });
+      await syncSessionState();
+      emitTurnComplete(lastContent, "error", workflowApprovalFailure);
+      yield { type: "turn_complete", content: lastContent, usage, stopReason: "error", error: workflowApprovalFailure };
+      return { reason: "aborted_tools", error: workflowApprovalFailure };
     }
     if (state.preventContinuation) {
       state.toolUseBlocks = [];

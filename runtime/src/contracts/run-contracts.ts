@@ -121,6 +121,7 @@ export const RUN_RUNTIME_REASONING_EFFORTS = [
   "medium",
   "high",
   "xhigh",
+  "max",
   "none",
 ] as const;
 export type RunRuntimeReasoningEffort =

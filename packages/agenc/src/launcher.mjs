@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveAgenCHome } from "../lib/home-authority.mjs";
+import { preflightStartupArguments } from "../generated/startup-preflight.mjs";
 
 export { resolveAgenCHome } from "../lib/home-authority.mjs";
 
@@ -398,6 +399,14 @@ export async function main(
     userHome = homedir(),
   } = {},
 ) {
+  const startupFailure = preflightStartupArguments(argv, {
+    isTTY: Boolean(process.stdin.isTTY),
+    isStdoutTTY: Boolean(process.stdout.isTTY),
+  });
+  if (startupFailure !== null) {
+    process.stderr.write(`${startupFailure.message}\n`);
+    return startupFailure.exitCode;
+  }
   // Resolve (and, in a published install, download + verify) the runtime before
   // anything tries to spawn it. Sync default is avoided: it returns null when
   // runtime isn't an npm dep, which is the normal published case.

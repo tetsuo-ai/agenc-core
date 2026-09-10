@@ -31,6 +31,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
+import { isWorkflowApprovalSession } from "../../permissions/approval-failure.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { LLMToolCall } from "../../llm/types.js";
 import { signedSessionPlanFileArgs } from "../../agents/_deps/filesystem-args.js";
@@ -452,7 +453,7 @@ function withPlanApprovalPreview(
   };
 }
 
-function approvalRejectedResult(err: ApprovalRejectedError): ToolDispatchResultLike {
+function approvalRejectedResult(err: ApprovalRejectedError, session?: object): ToolDispatchResultLike {
   const decision = reviewDecisionOpaqueString(err.decision);
   return {
     content: JSON.stringify({
@@ -460,8 +461,12 @@ function approvalRejectedResult(err: ApprovalRejectedError): ToolDispatchResultL
       approvalDecision: decision,
     }),
     isError: true,
-    ...(approvalDenialEndsTurn(err)
-      ? { preventContinuation: true, metadata: { approvalDenied: true } }
+    metadata: {
+      approvalFailure: { decision: err.decision.kind, source: err.source ?? "policy" },
+      ...(approvalDenialEndsTurn(err) ? { approvalDenied: true } : {}),
+    },
+    ...(approvalDenialEndsTurn(err) || isWorkflowApprovalSession(session)
+      ? { preventContinuation: true }
       : {}),
   };
 }
@@ -997,7 +1002,7 @@ export class StreamingToolExecutor {
           });
         } catch (err) {
           dispatchResult = err instanceof ApprovalRejectedError
-            ? approvalRejectedResult(err)
+            ? approvalRejectedResult(err, this.liveOptions?.session)
             : {
                 content: err instanceof Error ? err.message : String(err),
                 isError: true,

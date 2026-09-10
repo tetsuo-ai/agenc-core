@@ -13,8 +13,11 @@ import type { AuthBackend, AuthIdentity } from "../auth/backend.js";
 import type { RemoteAuthBackendOptions } from "../auth/backends/remote.js";
 import { loadCanonicalConfig } from "../config/repository.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
+import { readAccountModelAccess } from "../auth/account-access.js";
+import { saveAccountDefaultModel } from "../auth/account-default.js";
 
 export type AgenCAuthCliCommand =
+  | { readonly kind: "account-access" }
   | { readonly kind: "login" }
   | { readonly kind: "logout" }
   | { readonly kind: "whoami" }
@@ -47,6 +50,7 @@ export function formatAgenCAuthCliHelpText(): string {
     "  login     Sign in using the configured AgenC auth backend",
     "  logout    Clear the current AgenC auth session",
     "  whoami    Show the current AgenC auth identity",
+    "  account-access --json  Show current AgenC model access and credits (may claim an eligible promotion)",
     "",
     "Examples:",
     "  agenc login",
@@ -60,6 +64,10 @@ export function parseAgenCAuthCliArgs(
   argv: readonly string[],
 ): AgenCAuthCliCommand | null {
   const action = argv[0];
+  if (action === "account-access") {
+    if (argv.length === 2 && argv[1] === "--json") return { kind: "account-access" };
+    return { kind: "error", message: "Usage: agenc account-access --json" };
+  }
   if (action !== "login" && action !== "logout" && action !== "whoami") {
     return null;
   }
@@ -87,6 +95,17 @@ export async function runAgenCAuthCli(
     openUrl: openUrlInBrowser,
   };
   switch (command.kind) {
+    case "account-access": {
+      try {
+        const backend = await resolveAgenCAuthBackend(options, io);
+        const access = await readAccountModelAccess(backend);
+        io.stdout.write(`${JSON.stringify(access)}\n`);
+        return 0;
+      } catch {
+        io.stdout.write(`${JSON.stringify({ authenticated: false, unavailable: true, models: [] })}\n`);
+        return 1;
+      }
+    }
     case "help":
       io.stdout.write(`${command.text}\n`);
       return 0;
@@ -113,6 +132,21 @@ async function runAuthBackendCommand(
       io.stdout.write(
         `Logged in as ${formatAgenCAuthIdentity(result.identity)}\n`,
       );
+      // Authentication succeeds independently of campaign availability. Keep
+      // configured BYOK defaults, but make a fresh account ready for AgenC.
+      if (backend.kind === "remote") {
+        const access = await readAccountModelAccess(backend);
+        if (access.models.length > 0) {
+          const ingress = captureSecureStorageIngress(options.env ?? process.env, options.agencHome);
+          try {
+            const selected = saveAccountDefaultModel(ingress.home.path, access);
+            io.stdout.write(selected ? "AgenC model access is ready for new sessions.\n" :
+              "AgenC model access is ready. Your current provider was kept.\n");
+          } catch {
+            io.stderr.write("Signed in. Select AgenC in Providers to finish model setup.\n");
+          }
+        }
+      }
       return 0;
     }
     if (action === "logout") {

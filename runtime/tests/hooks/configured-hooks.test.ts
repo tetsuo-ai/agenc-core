@@ -2360,7 +2360,8 @@ describe("configured hook execution authority", () => {
   test("automation authority permits an untrusted PermissionRequest command decision", async () => {
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
-      env: {},
+      // Node may be installed outside the shell's default system PATH.
+      env: { PATH: process.env.PATH },
       agencHome: "/tmp/agenc-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
       executionAuthority: testHookExecutionAuthority({

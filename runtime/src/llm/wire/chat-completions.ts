@@ -571,7 +571,13 @@ export function buildChatCompletionsRequest(
       : parseOpenAIToolChoice(requestedToolChoice);
   }
   if (disablesThinkingForForcedToolChoice) {
-    body.enable_thinking = false;
+    if (input.providerCapabilityHints?.usesVllmThinkingTemplate === true) {
+      body.chat_template_kwargs = { enable_thinking: false, preserve_thinking: true };
+    } else {
+      body.enable_thinking = false;
+    }
+  } else if (input.providerCapabilityHints?.usesVllmThinkingTemplate === true) {
+    body.chat_template_kwargs = { preserve_thinking: true };
   } else if (
     input.providerCapabilityHints?.preservesThinkingHistory === true
   ) {
@@ -830,7 +836,9 @@ export function parseChatCompletionsResponse(
   const reasoningContentField =
     request.providerCapabilityHints?.reasoningContentField ??
     "reasoning_content";
-  const rawProviderReasoningContent = message[reasoningContentField];
+  const fallbackReasoningField = request.providerCapabilityHints?.reasoningContentFallbackField;
+  const rawProviderReasoningContent = message[reasoningContentField] ??
+    (fallbackReasoningField !== undefined ? message[fallbackReasoningField] : undefined);
   const providerReasoningContent =
     typeof rawProviderReasoningContent === "string" &&
       rawProviderReasoningContent.length > 0
