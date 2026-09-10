@@ -403,9 +403,19 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknow
 }
 
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
+  const preflight: NonNullable<Tool["preflight"]> = (args) => {
+    for (const key of ["message", "task_name"]) {
+      if (typeof args[key] !== "string" || args[key].trim().length === 0) {
+        return { code: `missing-${key}`, message: `${key} is required` };
+      }
+    }
+    return null;
+  };
   const execute = async (
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
+    const preflightFailure = preflight(args);
+    if (preflightFailure !== null) return spawnValidationError(preflightFailure.message);
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) {
       return confirmedNoSpawn(sessionOrError);
@@ -878,6 +888,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }),
     requiresApproval: true,
     recoveryCategory: "side-effecting",
+    preflight,
     admissionEstimate: localZeroAdmissionEstimate,
     get inputSchema(): Record<string, unknown> {
       return buildSpawnAgentSchema(opts);

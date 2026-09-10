@@ -84,7 +84,9 @@ export function recordExitPlanModeApproval(
 export function consumeExitPlanModeApproval(
   args: Record<string, unknown>,
 ): ExitPlanModeApproval | null {
-  const callId = typeof args[CALL_ID_ARG] === "string" ? args[CALL_ID_ARG] : "";
+  const callId = typeof args.__agencApprovalResponseKey === "string"
+    ? args.__agencApprovalResponseKey
+    : typeof args[CALL_ID_ARG] === "string" ? args[CALL_ID_ARG] : "";
   if (callId.length === 0) return null;
   const approval = approvals.get(callId);
   approvals.delete(callId);

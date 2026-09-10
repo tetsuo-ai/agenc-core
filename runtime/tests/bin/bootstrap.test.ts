@@ -663,6 +663,8 @@ describe("bootstrapLocalRuntimeSession", () => {
       shutdown = boot.shutdown;
 
       expect(boot.agencHome).toBe(home);
+      expect(boot.initialState.sessionConfiguration.permissionInstructionsDeferred).toBe(true);
+      expect(boot.initialState.sessionConfiguration.baseInstructions).not.toContain("# Permission Mode:");
       expect(
         boot.initialState.sessionConfiguration.baseInstructions,
       ).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);

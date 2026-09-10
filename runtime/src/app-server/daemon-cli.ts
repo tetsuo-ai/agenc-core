@@ -6,6 +6,7 @@
  * later daemon rows.
  */
 
+import { LiveApprovalBroker } from "./live-approval-broker.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
 import { randomUUID } from "node:crypto";
@@ -3461,9 +3462,11 @@ async function runAgenCDaemonForegroundLocked(
       },
     );
     let runner = options.runner;
+    const approvalBroker = new LiveApprovalBroker();
     let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
     if (runner === undefined) {
       configuredRunner = new AgenCDelegateBackgroundAgentRunner({
+        approvalBroker,
         ...(activeConfig.daemon?.agent_stop_timeout_ms !== undefined
           ? { agentStopTimeoutMs: activeConfig.daemon.agent_stop_timeout_ms }
           : {}),
@@ -3510,6 +3513,7 @@ async function runAgenCDaemonForegroundLocked(
     let remote: RemoteService | undefined;
     let ownerTelegram: OwnerTelegramService | undefined;
     const agentManager = new AgenCDaemonAgentManager({
+      approvalBroker,
       agencHome: authStartup.daemonHome,
       runner,
       sessionManager,
@@ -3699,6 +3703,7 @@ async function runAgenCDaemonForegroundLocked(
     // startup journal recovery so adopted/re-executed effects observe fully
     // recovered budget state.
     const workflowWiring = createDaemonWorkflowController({
+      approvalBroker,
       agencHome: authStartup.daemonHome,
       primaryCwd,
       kernel: executionAdmissionKernel,
@@ -3713,9 +3718,7 @@ async function runAgenCDaemonForegroundLocked(
           primaryCwd,
         ),
     });
-    cleanup.register("daemon-workflow-controller", () => {
-      workflowWiring.close();
-    });
+    cleanup.register("daemon-workflow-controller", () => workflowWiring.close());
     void workflowWiring.resumeOpenWorkflows().catch((error) => {
       io.stderr.write(
         `agenc: workflow startup recovery failed: ${formatCleanupError(error)}\n`,
@@ -3906,6 +3909,7 @@ async function runAgenCDaemonForegroundLocked(
       realtime,
       whisper: new LocalWhisperService({ home: authStartup.daemonHome, env: host.env }),
       runInspection: new AgenCDaemonRunInspectionService({
+        pendingApprovals: (runId) => approvalBroker.list(runId),
         stateDatabasePaths: () =>
           discoverAgenCDaemonStateDatabasePaths(
             authStartup.daemonHome,

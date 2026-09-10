@@ -27,7 +27,10 @@ session when those flags are set). A positional prompt without `--print` /
 `--no-tui` still goes through the normal startup path.
 
 Unknown options before the positional prompt exit with code 2 without starting
-a model call. Use `--` when literal prompt text starts with a dash:
+a model call. The public npm launcher also rejects these arguments before
+installing a runtime, starting a daemon, or creating runtime state. Command
+arguments remain the responsibility of each command's parser. Use `--` when
+literal prompt text starts with a dash:
 
 ```bash
 agenc --print -- "--max-budget-usd is not a supported option; explain this error"
@@ -359,6 +362,30 @@ policy and model rather than the daemon default. The CLI has no
 model name can be overridden per child. The command returns after the
 durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
 then tails the run journal until the terminal result.
+
+Workflow runs default to `acceptEdits` when `--permission-mode` is omitted.
+Use `--permission-mode default` for normal per-tool approval checks. `run start`
+and workflow `run status` show the effective mode from the frozen spec; their
+JSON responses expose `effectivePermissionMode` on the start result and inside
+the status `workflow` block.
+
+When a tool needs approval, its active call waits for an operator decision.
+`run status` and `--follow` show pending requests and
+commands to approve once or deny them. `--follow` observes the run; it does not
+approve requests. In another terminal, inspect and resolve the request:
+
+```bash
+agenc permissions list --session <owner-run-id>
+agenc permissions approve --session <owner-run-id> --scope once <request-id>
+agenc permissions revoke --session <owner-run-id> <request-id>
+```
+
+The `ownerRunId` in the request identifies the approval owner. Use it for
+`--session`, not the requesting child's `sessionId`. A connected TUI can also
+open `/permissions <owner-run-id>`. Waiting requests survive client reconnects,
+but not a daemon restart. Approval IDs are live-only; a stale ID cannot resume
+or authorize a recovered run. Denial ends the affected workflow step instead
+of asking the model to repeat the same request.
 
 Child agents register under `workflowChildAgentName(childRunId)`: the run id
 is lowercased and every character outside `[a-z0-9_]` is folded to `_`.
@@ -729,6 +756,17 @@ agenc permissions revoke --session <id> [--reason <text>] <request-id>
 ```
 
 List, update permission rules, or resolve live permission requests.
+
+Without a target, `list` reads the current workspace's persisted rules. With
+`--session` or `--agent`, it also lists the target's live pending requests,
+separately from granted permissions. JSON responses add `pendingRequests`;
+each entry includes the request ID, approval owner run, requesting session,
+tool, and available input or review details. Plain output includes once-only
+approval and denial commands. A pending request is not a grant.
+
+`--scope once` approves only that request. Broader scopes require an explicit
+operator choice. Use the listed owner run ID for `--session` when approving or
+revoking a child request; the child's session ID is shown for identification.
 
 ```bash
 agenc permissions list

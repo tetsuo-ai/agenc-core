@@ -34,11 +34,12 @@
     "lib/sqlite-lock.d.mts",
     "lib/sqlite-lock.mjs",
     "scripts/postinstall.mjs",
-    "generated/agenc-runtime-manifest-v2.json"
+    "generated/agenc-runtime-manifest-v2.json",
+    "generated/startup-preflight.mjs"
   ],
   "scripts": {
     "postinstall": "node ./scripts/postinstall.mjs",
-    "prepack": "node ./scripts/check-package-ready.mjs && node ../../scripts/canonicalize-package-modes.mjs .",
+    "prepack": "node ../../runtime/scripts/check-launcher-preflight.mjs --check && node ./scripts/check-package-ready.mjs && node ../../scripts/canonicalize-package-modes.mjs .",
     "build:runtime-tarball": "node ./scripts/build-runtime-tarball.mjs",
     "gen:manifest": "node ./scripts/gen-manifest.mjs",
     "test": "node --test test/*.test.mjs"

@@ -3280,6 +3280,7 @@ export class Session {
             model: prepared.provider.binding.model,
           },
           baseInstructions: prepared.baseInstructions,
+          permissionInstructionsDeferred: true,
         } as unknown as SessionConfiguration;
         (this as { modelInfo: ModelInfo }).modelInfo = prepared.modelInfo;
         (this as { config: Config }).config = {

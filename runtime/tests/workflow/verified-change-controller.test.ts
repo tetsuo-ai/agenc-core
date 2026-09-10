@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
+import { WorkflowApprovalFailure } from "../../src/permissions/approval-failure.js";
 
 import {
   resolveWorkflowPermissionMode,
@@ -17,7 +18,7 @@ import {
   type WorkflowStartParams,
   type WorkflowWorktreeBroker,
 } from "../../src/app-server/workflow/verified-change-controller.js";
-import { inspectWorkflowChildTerminal } from "../../src/app-server/workflow/child-terminals.js";
+import { inspectWorkflowChildTerminal, recordWorkflowChildTerminal } from "../../src/app-server/workflow/child-terminals.js";
 import { AdmissionDeniedError, type ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
 import { M5WorkflowFailpointError } from "../../src/durability/failpoints.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
@@ -661,19 +662,19 @@ describe("retry prompts", () => {
 });
 
 describe("permission mode at start", () => {
-  // Desktop soak F63: a goal started from the app in default mode planned, then
-  // both implement attempts died because no approver existed for the headless
-  // children and every Edit, Write and command was refused.
-  it("runs a default-mode or unset request under the workflow's own default", () => {
-    expect(resolveWorkflowPermissionMode("default")).toBe("acceptEdits");
+  it("preserves an explicit default mode and retains the omitted-mode default", () => {
+    expect(resolveWorkflowPermissionMode("default")).toBe("default");
     expect(resolveWorkflowPermissionMode(undefined)).toBe("acceptEdits");
     expect(resolveWorkflowPermissionMode("plan")).toBe("plan");
     expect(resolveWorkflowPermissionMode("bypassPermissions")).toBe("bypassPermissions");
   });
 
-  it("warns once when a run asked for default mode, and still completes", async () => {
+  it("freezes explicit default without promoting or warning", async () => {
     await runToTerminal(harness, { permissionMode: "default" });
-    expect(harness.warnings.filter((w) => /default permission mode/.test(w))).toHaveLength(1);
+    expect(harness.warnings).toEqual([]);
+    expect(harness.repo.getEffect(RUN_ID, "workflow.intake")?.evidence).toMatchObject({
+      spec: { permissionMode: "default" },
+    });
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "completed" });
   });
 });
@@ -977,6 +978,32 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
 });
 
 describe("VerifiedChangeWorkflowController — prerequisite gating", () => {
+  it("does not retry a reviewer whose approval was permanently denied", async () => {
+    harness.reviewer.errors.push(new ReviewInvocationError("review failed", {
+      cause: new WorkflowApprovalFailure({ decision: "denied", source: "resolver" }),
+    }));
+    await runToTerminal(harness);
+    expect(harness.reviewer.invocations).toHaveLength(1);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "policy_denied" });
+    expect(inspectWorkflowChildTerminal(harness.repo, `${RUN_ID}:review#1`)).toMatchObject({ status: "failed", stopReason: "policy_denied" });
+  });
+
+  it.each(["plan", "implement"] as const)("does not retry a permanent %s approval failure", async (kind) => {
+    harness.spawner.queue(kind, {
+      status: "failed",
+      finalMessage: "The required approval was denied.",
+      usage: DEFAULT_USAGE,
+      stopReason: "policy_denied",
+    });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed",
+      stopReason: "policy_denied",
+    });
+    expect(harness.spawner.spawns.filter((spawn) => spawn.kind === kind)).toHaveLength(1);
+    expect(harness.commands.executed).toHaveLength(0);
+  });
+
   it("verify never starts when implement failed terminally", async () => {
     harness.spawner.queue("implement", {
       status: "failed",
@@ -1003,6 +1030,23 @@ describe("VerifiedChangeWorkflowController — prerequisite gating", () => {
 });
 
 describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
+  it("adopts a permanent child failure after a crash without spawning its stage again", async () => {
+    const outcome: WorkflowChildOutcome = {
+      status: "failed", stopReason: "policy_denied", finalMessage: "operator denied", usage: DEFAULT_USAGE,
+    };
+    harness.spawner.queue("plan", outcome);
+    armFailpoint("after_spawn_before_effect_result");
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+    disarmFailpoint();
+    recordWorkflowChildTerminal(harness.repo, `${RUN_ID}:plan#1`, outcome);
+    harness.spawner.inspections.clear();
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "policy_denied" });
+    expect(harness.spawner.spawns.filter((spawn) => spawn.kind === "plan")).toHaveLength(1);
+  });
+
   it("an interrupted idempotent step re-executes under the same durable key", async () => {
     armFailpoint("before_worktree_provision");
     const started = await harness.controller.start(startParams(harness));

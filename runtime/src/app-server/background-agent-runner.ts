@@ -7,6 +7,7 @@
  * response is returned.
  */
 
+import { LiveApprovalBroker } from "./live-approval-broker.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join as joinPath } from "node:path";
@@ -36,7 +37,6 @@ import { ConversationThreadManager } from "../conversation/thread-manager.js";
 import type { RunAgentProgressEvent } from "../agents/run-agent.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
-import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { routerFromRegistry } from "../tools/router.js";
 import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
@@ -84,11 +84,6 @@ import {
   resolveProviderModelSelection,
 } from "../session/provider-model-selection.js";
 import { applyProviderSwitch } from "../commands/provider.js";
-import {
-  isApprovalSessionOwnedBy,
-  observeChildApprovalSessions,
-  childApprovalRevocationSignal,
-} from "../agents/child-approval-context.js";
 import { resolveProfile } from "../config/profiles.js";
 import {
   resolveLiveEffectPoison,
@@ -105,9 +100,6 @@ import {
 } from "../permissions/permission-grants.js";
 import {
   ABORT,
-  DENIED,
-  TIMED_OUT,
-  type ReviewDecision,
 } from "../permissions/review-decision.js";
 import type {
   McpServerMutationResult,
@@ -431,10 +423,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   readonly #pendingExplicitRestores = new Set<string>();
   readonly #pendingEvents = new CompletedAgentEventCache();
   readonly #assistantTextByAgent = new Map<string, string>();
-  readonly #pendingToolDecisions = new Map<
-    string,
-    Map<string, (decision: ReviewDecision) => void>
-  >();
+  readonly #approvalBroker: LiveApprovalBroker;
   #onActiveAgentTerminated:
     | ((
         agentId: string,
@@ -443,6 +432,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     | undefined;
 
   constructor(options: AgenCDelegateBackgroundAgentRunnerOptions = {}) {
+    this.#approvalBroker = options.approvalBroker ?? new LiveApprovalBroker();
     this.#agentStopTimeoutMs = options.agentStopTimeoutMs ?? DAEMON_AGENT_STOP_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#agentStopTimeoutMs) || this.#agentStopTimeoutMs <= 0 || this.#agentStopTimeoutMs > 2_147_483_647) {
       throw new RangeError("agentStopTimeoutMs must be a positive timer interval");
@@ -922,6 +912,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       permissions: permissionGrantsFromToolPermissionContext(
         active.bootstrap.session.permissionModeRegistry.current(),
       ),
+      pendingRequests: this.#approvalBroker.list(agentId),
     };
   }
 
@@ -1841,7 +1832,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       hasRuntimeActiveTurn(active.bootstrap.session) ||
       hasOpenAgentDescendants(active.control, active.thread.threadId) ||
       active.activeToolCallIds.size !== 0 ||
-      this.#pendingToolDecisions.has(agentId)
+      this.#approvalBroker.hasPending(agentId)
     ) {
       return false;
     }
@@ -4230,17 +4221,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     agentId: string,
     params: AgenCBackgroundAgentToolDecisionParams,
   ): Promise<boolean> {
-    const active = this.#active.get(agentId);
-    if (active !== undefined && !isRunnableActiveAgent(active)) return false;
-    const pendingForAgent = this.#pendingToolDecisions.get(agentId);
-    const resolve = pendingForAgent?.get(params.requestId);
-    if (resolve === undefined) return false;
-    pendingForAgent!.delete(params.requestId);
-    if (pendingForAgent!.size === 0) {
-      this.#pendingToolDecisions.delete(agentId);
-    }
-    resolve(params.decision);
-    return true;
+    return this.#approvalBroker.resolve(agentId, params.requestId, params.decision);
   }
 
   async cancelTool(
@@ -4539,76 +4520,19 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   #installDaemonApprovalBridge(
     session: LocalRuntimeBootstrap["session"],
   ): () => void {
-    const services = (
-      session as {
-        services?: {
-          approvalResolver?: ApprovalResolver;
-        };
-      }
-    ).services;
-    if (services === undefined) return () => {};
-    const previousResolver = services.approvalResolver;
-    const childSubscriptions = new Set<() => void>();
-    const childRequestIds = new WeakMap<LocalRuntimeBootstrap["session"], Map<string, string>>();
-    const unsubscribeChildren = observeChildApprovalSessions(session, (child) => {
-      const requestIds = new Map<string, string>();
-      childRequestIds.set(child, requestIds);
-      const unsubscribe = child.eventLog.subscribe((event) => {
-        if (
-          event.msg.type !== "request_permissions" &&
-          event.msg.type !== "permission_decision"
-        ) return;
+    if (session.services === undefined) return () => {};
+    return this.#approvalBroker.register(session, {
+      isActive: () => {
+        const active = this.#active.get(session.conversationId);
+        return active?.bootstrap.session === session && isRunnableActiveAgent(active);
+      },
+      timeoutMs: resolvePermissionDecisionTimeoutMs(),
+      onEvent: (event) => {
         const active = this.#active.get(session.conversationId);
         if (active?.bootstrap.session !== session || !isRunnableActiveAgent(active)) return;
-        const projected = daemonEventFromUnboundSessionEvent(event);
-        if (projected === null) return;
-        const callId = projected.payload?.callId;
-        if (typeof callId !== "string") return;
-        let requestId = requestIds.get(callId);
-        if (event.msg.type === "request_permissions") {
-          if (!isApprovalSessionOwnedBy(child, session)) return;
-          requestId = `child-approval:${randomUUID()}`;
-          requestIds.set(callId, requestId);
-        } else {
-          if (requestId === undefined) return;
-          requestIds.delete(callId);
-        }
-        void this.#emitOrBufferEvent(active, {
-          id: `${requestId}:${projected.type}`,
-          type: projected.type,
-          payload: { ...projected.payload, callId: requestId },
-          statusProjection: "session_only",
-        }).catch(() => {});
-      });
-      childSubscriptions.add(unsubscribe);
-      return () => {
-        unsubscribe();
-        childRequestIds.delete(child);
-        childSubscriptions.delete(unsubscribe);
-      };
+        void this.#emitOrBufferEvent(active, event).catch(() => {});
+      },
     });
-    const resolver: ApprovalResolver = {
-      request: (ctx) => this.#requestDaemonToolDecision(
-        ctx,
-        session,
-        ctx.invocation.session === session
-          ? ctx.callId
-          : childRequestIds.get(ctx.invocation.session)?.get(ctx.callId),
-      ),
-    };
-    services.approvalResolver = resolver;
-    return () => {
-      unsubscribeChildren();
-      for (const unsubscribe of childSubscriptions) unsubscribe();
-      childSubscriptions.clear();
-      if (services.approvalResolver === resolver) {
-        if (previousResolver === undefined) {
-          delete services.approvalResolver;
-        } else {
-          services.approvalResolver = previousResolver;
-        }
-      }
-    };
   }
 
   #installDurableTerminalFinalizer(
@@ -4646,7 +4570,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             this.#now(),
           );
         }
-        if (this.#pendingToolDecisions.has(agentId)) {
+        if (this.#approvalBroker.hasPending(agentId)) {
           const error = new Error(
             `cannot finalize run ${agentId} while permission decisions remain pending`,
           );
@@ -4759,64 +4683,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
   }
 
-  async #requestDaemonToolDecision(
-    ctx: ApprovalCtx,
-    owner: LocalRuntimeBootstrap["session"],
-    requestId: string | undefined,
-  ): Promise<ReviewDecision> {
-    const requestingSession = ctx.invocation.session;
-    if (!isApprovalSessionOwnedBy(requestingSession, owner)) return DENIED;
-    const agentId = owner.conversationId;
-    const active = this.#active.get(agentId);
-    if (active?.bootstrap.session !== owner || !isRunnableActiveAgent(active)) return DENIED;
-    const ownershipSignal = childApprovalRevocationSignal(requestingSession);
-    if (ctx.signal?.aborted || ownershipSignal?.aborted) return ABORT;
-    if (requestId === undefined) return DENIED;
-    if (this.#pendingToolDecisions.get(agentId)?.has(requestId)) return DENIED;
-    const timeoutMs = resolvePermissionDecisionTimeoutMs();
-    const decision = new Promise<ReviewDecision>((resolve) => {
-      let pendingForAgent = this.#pendingToolDecisions.get(agentId);
-      if (pendingForAgent === undefined) {
-        pendingForAgent = new Map();
-        this.#pendingToolDecisions.set(agentId, pendingForAgent);
-      }
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const settle = (value: ReviewDecision): void => {
-        if (settled) return;
-        settled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        ctx.signal?.removeEventListener("abort", abort);
-        ownershipSignal?.removeEventListener("abort", abort);
-        pendingForAgent!.delete(requestId);
-        if (pendingForAgent!.size === 0) {
-          this.#pendingToolDecisions.delete(agentId);
-        }
-        resolve(isApprovalSessionOwnedBy(requestingSession, owner) ? value : ABORT);
-      };
-      pendingForAgent.set(requestId, (value) => settle(value));
-      const abort = (): void => {
-        settle(ABORT);
-      };
-      ctx.signal?.addEventListener("abort", abort, { once: true });
-      ownershipSignal?.addEventListener("abort", abort, { once: true });
-      if (timeoutMs !== undefined) {
-        timer = setTimeout(() => {
-          settle(TIMED_OUT);
-        }, timeoutMs);
-      }
-    });
-    return decision;
-  }
-
-  /** Force-resolve all pending permission decisions for an agent (todo-109). */
   #abortPendingToolDecisions(agentId: string): void {
-    const pending = this.#pendingToolDecisions.get(agentId);
-    if (pending === undefined) return;
-    for (const resolve of pending.values()) {
-      resolve(ABORT);
-    }
-    this.#pendingToolDecisions.delete(agentId);
+    this.#approvalBroker.abort(agentId);
   }
 
   #trackAgentStatus(active: ActiveBackgroundAgent): void {

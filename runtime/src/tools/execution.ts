@@ -109,6 +109,8 @@ import {
   getSchemaValidationErrorOverride,
 } from "./schema-errors.js";
 import { buildRecoverableToolFailureMetadata } from "./result-metadata.js";
+import { validationErrorToolResult } from "./results.js";
+import { approvalResponseKey } from "../permissions/approval-response-key.js";
 // Inline copies of donor TS `utils/messages.ts` constants. The full
 // messages.ts is a heavy port that pulls in `bun:bundle`,
 // and the entire session service graph; importing two constants from
@@ -1017,6 +1019,48 @@ export function validateToolArgs(
   return { valid: errors.length === 0, errors };
 }
 
+export function validateToolPreflight(
+  tool: Tool,
+  args: Record<string, unknown>,
+  options: {
+    readonly skipArgValidation?: boolean;
+    readonly discoveredToolNames?: ReadonlySet<string>;
+  } = {},
+): ToolDispatchResult | null {
+  let message: string | undefined;
+  let code = "schema_validation_failed";
+  if (!options.skipArgValidation) {
+    const validation = validateToolArgs(
+      tool.inputSchema as Record<string, unknown> | undefined,
+      stripAgenCInternalArgsForValidation(args),
+    );
+    if (!validation.valid) {
+      const prose = getSchemaValidationErrorOverride(tool, args) ??
+        formatSchemaValidationError(tool.name, validation.errors);
+      message = `${prose}${buildSchemaNotSentHint(tool, options.discoveredToolNames) ?? ""}`;
+    }
+  }
+  if (message === undefined) {
+    try {
+      const failure = tool.preflight?.(args);
+      if (failure !== undefined && failure !== null) {
+        message = failure.message;
+        code = failure.code;
+      }
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+      code = "preflight_failed";
+    }
+  }
+  return message === undefined ? null : {
+    ...validationErrorToolResult(
+      `tool:${tool.name}:${code}`,
+      `<tool_use_error>InputValidationError: ${message}</tool_use_error>`,
+    ),
+    metadata: { ...buildRecoverableToolFailureMetadata("input_validation"), preflightCode: code },
+  };
+}
+
 function validateNode(
   schema: SchemaObj,
   value: unknown,
@@ -1598,36 +1642,21 @@ export async function runToolUse(
   // view. They ride alongside model args via the ChildToolPolicy /
   // agent run-loop transport but are not part of the public schema.
   // See services/tools/toolExecution.ts for the parallel implementation.
-  if (!opts.skipArgValidation) {
-    const validatorArgs = stripAgenCInternalArgsForValidation(parsedArgs);
-    const validation = validateToolArgs(
-      tool.inputSchema as Record<string, unknown> | undefined,
-      validatorArgs,
-    );
-    if (!validation.valid) {
-      const override = getSchemaValidationErrorOverride(tool, parsedArgs);
-      const prose =
-        override ??
-        formatSchemaValidationError(
-          toolNameDisplay(invocation.toolName),
-          validation.errors,
-        );
-      const hint = buildSchemaNotSentHint(tool, opts.discoveredToolNames);
-      const body = hint ? `${prose}${hint}` : prose;
-      const message = `InputValidationError: ${body}`;
-      if (opts.eventLog) {
-        emitErrorEvent(opts.eventLog, subId, {
-          cause: "schema_validation_failed",
-          message,
-        });
-      }
-      return errorOutput({
-        invocation,
-        content: `<tool_use_error>${message}</tool_use_error>`,
-        elapsedMs: performance.now() - startedAt,
-        metadata: buildRecoverableToolFailureMetadata("input_validation"),
+  const initialPreflight = validateToolPreflight(tool, parsedArgs, opts);
+  if (initialPreflight !== null) {
+    if (opts.eventLog) {
+      emitErrorEvent(opts.eventLog, subId, {
+        cause: "schema_validation_failed",
+        message: initialPreflight.content,
       });
     }
+    return errorOutput({
+      invocation,
+      content: initialPreflight.content,
+      elapsedMs: performance.now() - startedAt,
+      metadata: initialPreflight.metadata,
+      effectDisposition: initialPreflight.effectDisposition,
+    });
   }
 
   // Step 3: PreToolUse hooks — BEFORE the permission gate.
@@ -1738,6 +1767,17 @@ export async function runToolUse(
       PREVENT_CONTINUATION_OUTPUTS.add(output);
       return output;
     }
+  }
+
+  const rewrittenPreflight = validateToolPreflight(tool, args, opts);
+  if (rewrittenPreflight !== null) {
+    return errorOutput({
+      invocation,
+      content: rewrittenPreflight.content,
+      elapsedMs: performance.now() - startedAt,
+      metadata: rewrittenPreflight.metadata,
+      effectDisposition: rewrittenPreflight.effectDisposition,
+    });
   }
 
   // Step 4: permission gate. Merge hook result with rule/evaluator.
@@ -1884,6 +1924,17 @@ export async function runToolUse(
     }
   }
 
+  const approvalPreflight = validateToolPreflight(tool, inputForTool, opts);
+  if (approvalPreflight !== null) {
+    return errorOutput({
+      invocation,
+      content: approvalPreflight.content,
+      elapsedMs: performance.now() - startedAt,
+      metadata: approvalPreflight.metadata,
+      effectDisposition: approvalPreflight.effectDisposition,
+    });
+  }
+
   // Step 4b: compatibility approval-modal fallback.
   //
   // If the evaluator path is wired, it already decided allow/deny/ask.
@@ -1990,6 +2041,17 @@ export async function runToolUse(
         elapsedMs: performance.now() - startedAt,
       });
     }
+  }
+
+  const executionPreflight = validateToolPreflight(tool, inputForTool, opts);
+  if (executionPreflight !== null) {
+    return errorOutput({
+      invocation,
+      content: executionPreflight.content,
+      elapsedMs: performance.now() - startedAt,
+      metadata: executionPreflight.metadata,
+      effectDisposition: executionPreflight.effectDisposition,
+    });
   }
 
   const transactionGuardContext =
@@ -2102,6 +2164,12 @@ export async function runToolUse(
     }
     Object.defineProperty(argsForTool, "__callId", {
       value: invocation.callId,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+    Object.defineProperty(argsForTool, "__agencApprovalResponseKey", {
+      value: approvalResponseKey(invocation.session, invocation.callId),
       enumerable: false,
       writable: false,
       configurable: true,
@@ -2651,8 +2719,9 @@ function errorOutput(opts: {
   readonly content: string;
   readonly elapsedMs: number;
   readonly metadata?: Record<string, unknown>;
+  readonly effectDisposition?: ToolDispatchResult["effectDisposition"];
 }): ToolOutput {
-  return functionToolOutput({
+  const output = functionToolOutput({
     callId: opts.invocation.callId,
     toolName: opts.invocation.toolName,
     payload: opts.invocation.payload,
@@ -2661,6 +2730,10 @@ function errorOutput(opts: {
     durationMs: opts.elapsedMs,
     ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
   });
+  if (opts.effectDisposition !== undefined) {
+    EFFECT_DISPOSITIONS.set(output, opts.effectDisposition);
+  }
+  return output;
 }
 
 async function recordRunToolPolicyAudit(

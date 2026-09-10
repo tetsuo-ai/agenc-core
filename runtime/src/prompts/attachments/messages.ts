@@ -57,7 +57,7 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       const planFilePath = sanitizeSystemReminderContent(
         attachment.planFilePath,
       );
-      return userContextMessage(
+      return permissionModeMessage("plan",
         `<system-reminder>\n${planModeBody(attachment.variant, planFilePath, attachment.planExists)}\n</system-reminder>`,
       );
     }
@@ -65,7 +65,7 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       const planFilePath = sanitizeSystemReminderContent(
         attachment.planFilePath,
       );
-      return userContextMessage(
+      return permissionModeMessage("plan",
         `<system-reminder>\n${planModeReentryBody(planFilePath, attachment.planExists)}\n</system-reminder>`,
       );
     }
@@ -73,7 +73,7 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       const planFilePath = sanitizeSystemReminderContent(
         attachment.planFilePath,
       );
-      return userContextMessage(
+      return permissionModeMessage("plan_exit",
         `<system-reminder>\n${planModeExitBody(planFilePath, attachment.planExists)}\n</system-reminder>`,
       );
     }
@@ -85,12 +85,12 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       );
     }
     case "auto_mode": {
-      return userContextMessage(
+      return permissionModeMessage("auto",
         `<system-reminder>\n${autoModeBody(attachment.variant)}\n</system-reminder>`,
       );
     }
     case "auto_mode_exit": {
-      return userContextMessage(
+      return permissionModeMessage("auto_exit",
         `<system-reminder>\n## Exited Auto Mode\n\nYou have exited auto mode. The user may now want to interact more directly. You should ask clarifying questions when the approach is ambiguous rather than making assumptions.\n</system-reminder>`,
       );
     }
@@ -370,6 +370,16 @@ export const SKILL_RELEVANCE_REMINDER_HEADER =
  */
 export const SKILL_LISTING_REMINDER_HEADER =
   "The following skills are available for use with the Skill tool. If a skill matches the user's request, invoke the Skill tool before responding.";
+
+function permissionModeMessage(
+  permissionModeReminder: NonNullable<LLMMessage["runtimeOnly"]>["permissionModeReminder"],
+  text: string,
+): LLMMessage {
+  return {
+    ...userContextMessage(text),
+    runtimeOnly: { mergeBoundary: "user_context", permissionModeReminder },
+  };
+}
 
 function userContextMessage(text: string): LLMMessage {
   return {

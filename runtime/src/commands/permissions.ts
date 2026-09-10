@@ -810,6 +810,10 @@ export const permissionsCommand: SlashCommand = {
   userInvocable: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
+      if (/^wf-[A-Za-z0-9_-]+$/u.test(ctx.argsRaw.trim())) {
+        const { openWorkflowPermissions } = await import("./workflow-permissions.js");
+        return openWorkflowPermissions(ctx, ctx.argsRaw.trim());
+      }
       const registry = findPermissionRegistry(ctx.session);
       if (!registry) {
         return {

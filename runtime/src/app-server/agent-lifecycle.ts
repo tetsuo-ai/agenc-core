@@ -26,6 +26,8 @@ import {
   resolve,
 } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { LiveApprovalBroker } from "./live-approval-broker.js";
+import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   validateAndDedupeAdditionalWorkingDirectoryInputs,
@@ -271,6 +273,7 @@ export function __setAgentLifecycleResumeSourceTestHooksForTest(
 }
 
 export interface AgenCDaemonAgentManagerOptions {
+  readonly approvalBroker?: LiveApprovalBroker;
   /** Canonical daemon home captured at process ingress. */
   readonly agencHome?: string;
   /**
@@ -480,6 +483,7 @@ function isEvidenceToolCallResolution(
 const AGENT_LIFECYCLE_OPERATION_TIMEOUT_MS = 30_000;
 
 export class AgenCDaemonAgentManager {
+  readonly #approvalBroker: LiveApprovalBroker | undefined;
   readonly #agencHome: string;
   readonly #now: () => string;
   readonly #runner: AgenCBackgroundAgentRunner | undefined;
@@ -553,6 +557,7 @@ export class AgenCDaemonAgentManager {
   });
 
   constructor(options: AgenCDaemonAgentManagerOptions = {}) {
+    this.#approvalBroker = options.approvalBroker;
     void options.defaultCwd; // DAE-02: ignored — create requires absolute cwd
     this.#agencHome = getAgencHomeDir(options.agencHome);
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -2403,6 +2408,17 @@ export class AgenCDaemonAgentManager {
   async listPermissions(
     params: PermissionListParams = {},
   ): Promise<PermissionListResult> {
+    const ownerRunId = params.sessionId ?? params.agentId;
+    if (ownerRunId !== undefined && this.#approvalBroker?.isWorkflowOwner(ownerRunId)) {
+      if (params.agentId !== undefined && params.sessionId !== undefined && params.agentId !== params.sessionId) {
+        throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Conflicting workflow approval owner identifiers");
+      }
+      const owner = this.#approvalBroker.getOwner(ownerRunId)!;
+      return {
+        permissions: permissionGrantsFromToolPermissionContext(owner.permissionModeRegistry.current()),
+        pendingRequests: this.#approvalBroker.list(ownerRunId),
+      };
+    }
     if (this.#runner?.listPermissions === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
@@ -2421,9 +2437,13 @@ export class AgenCDaemonAgentManager {
   }
 
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
+    if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
+      return this.#approveWorkflowTool(params);
+    }
     const agentId = await this.#resolveActiveAgentIdForSession(
       params.sessionId,
     );
+    const responseKey = this.#approvalBroker?.pending(agentId, params.requestId)?.responseKey ?? params.requestId;
     const allowAllToolsForSession = params.allowAllToolsForSession === true;
     if (allowAllToolsForSession && params.scope !== "session") {
       throw new AgenCDaemonAgentLifecycleError(
@@ -2446,7 +2466,7 @@ export class AgenCDaemonAgentManager {
     // tool's __callId end-to-end (both are invocation.callId).
     if (params.exitPlan !== undefined) {
       const approval = toExitPlanModeApproval(params.exitPlan);
-      recordExitPlanModeApproval(params.requestId, approval);
+      recordExitPlanModeApproval(responseKey, approval);
     }
     // Same side-channel for AskUserQuestion: the TUI's picker records the
     // user's answers client-side and ships the merged input with
@@ -2462,7 +2482,7 @@ export class AgenCDaemonAgentManager {
           `tool.approve param 'askUserQuestionInput' is invalid: ${parsed.error}`,
         );
       }
-      recordAskUserQuestionResponse(params.requestId, parsed.input);
+      recordAskUserQuestionResponse(responseKey, parsed.input);
     }
     // `tool.approve` is a preemptive daemon RPC. Apply the real session mode
     // inside this same request before releasing the currently-blocked tool so
@@ -2503,10 +2523,10 @@ export class AgenCDaemonAgentManager {
       // not leak permanently into the module-global approvals Map (consume's
       // delete is the only production removal path).
       if (params.exitPlan !== undefined) {
-        consumeExitPlanModeApproval({ __callId: params.requestId });
+        consumeExitPlanModeApproval({ __callId: responseKey });
       }
       if (params.askUserQuestionInput !== undefined) {
-        dropAskUserQuestionResponse(params.requestId);
+        dropAskUserQuestionResponse(responseKey);
       }
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
@@ -2527,8 +2547,45 @@ export class AgenCDaemonAgentManager {
     });
     return { requestId: params.requestId, decision: "approved" };
   }
+  async #approveWorkflowTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
+    const broker = this.#approvalBroker!;
+    const pending = broker.pending(params.sessionId, params.requestId);
+    if (pending === undefined) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
+    }
+    if (params.allowAllToolsForSession === true) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Workflow permission mode is frozen; approve the requested tool without promoting the run mode");
+    }
+    if (params.exitPlan !== undefined && pending.ctx.toolName !== "ExitPlanMode") {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Plan response does not match the pending tool");
+    }
+    if (params.askUserQuestionInput !== undefined && pending.ctx.toolName !== "AskUserQuestion") {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Question response does not match the pending tool");
+    }
+    const question = params.askUserQuestionInput === undefined ? undefined : parseAskUserQuestionInput(params.askUserQuestionInput);
+    if (question !== undefined && !question.ok) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `Invalid question response: ${question.error}`);
+    }
+    if (params.exitPlan !== undefined) recordExitPlanModeApproval(pending.responseKey, toExitPlanModeApproval(params.exitPlan));
+    if (question?.ok) recordAskUserQuestionResponse(pending.responseKey, question.input);
+    const resolved = broker.resolve(params.sessionId, params.requestId,
+      params.scope === "session" || params.scope === "agent" ? APPROVED_FOR_SESSION : APPROVED);
+    if (!resolved) {
+      consumeExitPlanModeApproval({ __callId: pending.responseKey });
+      dropAskUserQuestionResponse(pending.responseKey);
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
+    }
+    await this.#recordToolDecisionAudit({
+      decision: "approved", sessionId: params.sessionId, agentId: params.sessionId,
+      requestId: params.requestId,
+      reasonCode: params.scope === "session" || params.scope === "agent"
+        ? "rpc_approved_for_scope"
+        : "rpc_approved_once",
+      ...(params.scope !== undefined ? { scope: params.scope } : {}),
+    });
+    return { requestId: params.requestId, decision: "approved" };
+  }
 
-  /** Undo a mode promotion if the pending request disappeared mid-approval. */
   async #rollbackAllToolsPermissionMode(
     agentId: string,
     sessionId: string,
@@ -2558,6 +2615,16 @@ export class AgenCDaemonAgentManager {
   }
 
   async denyTool(params: ToolDenyParams): Promise<ToolDecisionResult> {
+    if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
+      if (!this.#approvalBroker.resolve(params.sessionId, params.requestId, DENIED)) {
+        throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
+      }
+      await this.#recordToolDecisionAudit({
+        decision: "denied", sessionId: params.sessionId, agentId: params.sessionId,
+        requestId: params.requestId, reasonCode: "rpc_denied",
+      });
+      return { requestId: params.requestId, decision: "denied" };
+    }
     const agentId = await this.#resolveActiveAgentIdForSession(
       params.sessionId,
     );

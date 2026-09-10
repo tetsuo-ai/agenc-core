@@ -70,6 +70,7 @@ import {
 import { runWithBootstrapSessionScope } from "../../session/current-session.js";
 import { createPlatformProtectionVerifier } from "../../eval-contract/platform-protection.js";
 import { getSelectedProviderModel } from "../../utils/model/providers.js";
+import type { LiveApprovalBroker } from "../live-approval-broker.js";
 
 const WORKFLOW_TASK_ID = "verified-change";
 const WORKFLOW_SYSTEM_ID = "agenc.workflow.m5";
@@ -307,7 +308,7 @@ export interface DaemonWorkflowWiring {
    * the daemon's primary one).
    */
   resumeOpenWorkflows(): Promise<readonly string[]>;
-  close(): void;
+  close(): Promise<void>;
 }
 
 /**
@@ -331,6 +332,7 @@ export function resolveDaemonDefaultReviewerModel(
 }
 
 export function createDaemonWorkflowController(options: {
+  readonly approvalBroker?: LiveApprovalBroker;
   readonly agencHome: string;
   readonly primaryCwd: string;
   readonly kernel: ExecutionAdmissionKernel;
@@ -446,6 +448,7 @@ export function createDaemonWorkflowController(options: {
   const seams =
     options.sessionSeams ??
     createWorkflowSessionSeams({
+      approvalBroker: options.approvalBroker,
       agencHome: options.agencHome,
       env: options.env,
       argv: options.argv,
@@ -522,14 +525,14 @@ export function createDaemonWorkflowController(options: {
       }
       return resumed;
     },
-    close: () => {
-      void seams.close().catch((error) => {
-        options.warn(
-          `workflow session seams close failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
+    close: async () => {
+      const runIds = controller.activeRunIds();
+      for (const runId of runIds) {
+        options.approvalBroker?.abort(runId);
+        options.kernel.cancelRun(runId, "daemon_shutdown");
+      }
+      await Promise.all(runIds.map((runId) => controller.awaitRun(runId)));
+      await seams.close();
       for (const entry of opened.values()) {
         entry.driver.close();
       }

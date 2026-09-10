@@ -76,6 +76,7 @@ import {
   type ApprovalRequestFn,
   type ModalDecision,
   parseToolArgsWithBigInt,
+  validateToolPreflight,
   type ToolProgressCallback,
 } from "./execution.js";
 import type {
@@ -87,6 +88,8 @@ import type {
   PreToolUseHook,
 } from "./hooks.js";
 import { runPreToolUseHooks } from "./hooks.js";
+import { isWorkflowApprovalSession } from "../permissions/approval-failure.js";
+import { clearApprovalResponseKey } from "../permissions/approval-response-key.js";
 import {
   recordPermissionAuditEvent,
   type PermissionAuditErrorHandler,
@@ -564,6 +567,8 @@ export class ToolRouter {
       // and must never be supplied by the model; runtime values are
       // merged in later (execution.ts / withApprovedFilesystemRoot).
       let executionArgs = stripModelSuppliedAgenCInternalArgs(args);
+      const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
+      if (initialPreflight !== null) return initialPreflight;
       let forcedApprovalReason: string | undefined;
       let permissionAlreadyAllowed = false;
       if (
@@ -580,6 +585,7 @@ export class ToolRouter {
           return {
             content: permissionDecision.message ?? "Permission denied",
             isError: true,
+            ...workflowPolicyDenial(invocation.session, permissionDecision.source),
           };
         }
         if (permissionDecision.kind === "ask") {
@@ -591,6 +597,8 @@ export class ToolRouter {
           permissionAlreadyAllowed = true;
         }
       }
+      const approvalPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
+      if (approvalPreflight !== null) return approvalPreflight;
       const effectiveApprovalPolicy = permissionAlreadyAllowed
         ? "never"
         : forcedApprovalReason !== undefined
@@ -674,6 +682,8 @@ export class ToolRouter {
           : {}),
         dispatch: async (sandbox, dispatchContext) => {
           directDispatchAttempt += 1;
+          const executionPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
+          if (executionPreflight !== null) return executionPreflight;
           const dispatchArgs = dispatchContext.approvalResolved
             ? withApprovedFilesystemRoot(
                 nameDisplay(invocation.toolName),
@@ -773,12 +783,9 @@ export class ToolRouter {
         },
       });
     } catch (err) {
-      return {
-        content: JSON.stringify({
-          error: err instanceof Error ? err.message : String(err),
-        }),
-        isError: true,
-      };
+      return toolDispatchErrorResult(err, invocation.session);
+    } finally {
+      clearApprovalResponseKey(invocation.session, invocation.callId);
     }
   }
 
@@ -954,6 +961,8 @@ export class ToolRouter {
     // the allowed roots that reach tool.execute. (The validator-only
     // strip in execution.ts left the tool body exposed.)
     let executionArgs = stripModelSuppliedAgenCInternalArgs(parsedArgs);
+    const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
+    if (initialPreflight !== null) return initialPreflight;
     let forcedApprovalReason: string | undefined;
     let preHookPermissionDecision: MergedHookPermissionDecision | undefined;
     let hookPermissionResult: HookPermissionResult | undefined;
@@ -1035,6 +1044,7 @@ export class ToolRouter {
         return {
           content: `<tool_use_error>${message}</tool_use_error>`,
           isError: true,
+          ...workflowPolicyDenial(opts.session, "pre-tool-use-hook"),
         };
       }
       if (preDecision.kind === "skip" && preDecision.synthResult) {
@@ -1057,6 +1067,8 @@ export class ToolRouter {
       }
     }
 
+    const rewrittenPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
+    if (rewrittenPreflight !== null) return rewrittenPreflight;
     const shouldArbitratePermission =
       hookPermissionResult !== undefined ||
       (opts.canUseTool !== undefined &&
@@ -1104,7 +1116,8 @@ export class ToolRouter {
                 : "permission_denied:permission_mode",
             message,
           });
-          return { content: message, isError: true };
+          return { content: message, isError: true,
+            ...workflowPolicyDenial(opts.session, guardianPermissionDecision.source) };
         }
         if (guardianPermissionDecision.kind === "ask") {
           const merged = guardianPermissionDecision.mergedDecision;
@@ -1134,6 +1147,8 @@ export class ToolRouter {
       }
     }
 
+    const approvalPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
+    if (approvalPreflight !== null) return approvalPreflight;
     const executionPayload = buildPayloadForArgs(routed.payload, executionArgs);
     const executionInvocation: ToolInvocation = {
       ...invocation,
@@ -1276,6 +1291,8 @@ export class ToolRouter {
         },
         dispatch: async (sandbox, dispatchContext) => {
           orchestrateDispatchAttempt += 1;
+          const executionPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
+          if (executionPreflight !== null) return executionPreflight;
           const dispatchArgs = dispatchContext.approvalResolved
             ? withApprovedFilesystemRoot(toolCall.name, executionArgs)
             : executionArgs;
@@ -1361,9 +1378,10 @@ export class ToolRouter {
       ) {
         opts.abortController.abort(err.message);
       }
-      return toolDispatchErrorResult(err);
+      return toolDispatchErrorResult(err, opts.session);
     } finally {
       opts.signal?.removeEventListener("abort", forwardAbort);
+      clearApprovalResponseKey(opts.session, toolCall.id);
     }
   }
 
@@ -1903,7 +1921,30 @@ function readSessionId(session: Session): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function toolDispatchErrorResult(err: unknown): ToolDispatchResult {
+function preflightToolCall(
+  tool: Tool,
+  args: Record<string, unknown>,
+  invocation: ToolInvocation,
+  options: { readonly discoveredToolNames?: ReadonlySet<string> } = {},
+): ToolDispatchResult | null {
+  const result = validateToolPreflight(tool, args, options);
+  if (result !== null) {
+    emitErrorEvent(invocation.session.eventLog, invocation.callId, {
+      cause: "schema_validation_failed",
+      message: result.content,
+    });
+  }
+  return result;
+}
+
+function workflowPolicyDenial(session: Session, source: string): Partial<ToolDispatchResult> {
+  return isWorkflowApprovalSession(session) ? {
+    preventContinuation: true,
+    metadata: { approvalFailure: { decision: "denied", source } },
+  } : {};
+}
+
+function toolDispatchErrorResult(err: unknown, session?: Session): ToolDispatchResult {
   if (err instanceof ApprovalRejectedError) {
     return {
       content: JSON.stringify({ error: err.message }),
@@ -1911,9 +1952,14 @@ function toolDispatchErrorResult(err: unknown): ToolDispatchResult {
       // A resolver denial ends the turn after this batch so the model
       // cannot re-issue the same call (observed: 8 identical retries until
       // the no-progress backstop).
-      ...(approvalDenialEndsTurn(err)
-        ? { preventContinuation: true, metadata: { approvalDenied: true } }
+      ...((approvalDenialEndsTurn(err) ||
+          (isWorkflowApprovalSession(session) && err.decision.kind !== "abort"))
+        ? { preventContinuation: true }
         : {}),
+      metadata: {
+        ...(approvalDenialEndsTurn(err) ? { approvalDenied: true } : {}),
+        approvalFailure: { decision: err.decision.kind, source: err.source ?? "policy" },
+      },
     };
   }
   return {

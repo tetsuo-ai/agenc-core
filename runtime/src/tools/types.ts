@@ -134,7 +134,13 @@ export interface ToolExecutionInjectedArgs {
   }) => void;
   readonly __abortSignal?: AbortSignal;
   readonly __callId?: string;
+  readonly __agencApprovalResponseKey?: string;
   readonly __toolRuntimeContext?: import("./runtimes/context.js").ToolRuntimeAttemptContext;
+}
+
+export interface ToolPreflightFailure {
+  readonly code: string;
+  readonly message: string;
 }
 
 /**
@@ -151,6 +157,9 @@ export interface Tool {
   readonly description: string;
   /** JSON Schema describing the input parameters */
   readonly inputSchema: JSONSchema;
+  readonly preflight?: (
+    args: Readonly<Record<string, unknown>>,
+  ) => ToolPreflightFailure | null;
   /** Optional discovery/routing metadata. */
   readonly metadata?: ToolMetadata;
   /** Execute the tool with the given arguments */

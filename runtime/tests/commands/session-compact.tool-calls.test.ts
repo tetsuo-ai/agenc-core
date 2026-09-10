@@ -22,7 +22,10 @@ vi.mock("../../src/services/compact/compact.js", async (importOriginal) => ({
   manualCompactCall: summarizer.manualCompactCall,
 }));
 
-import { compactCommand } from "../../src/commands/session-compact.js";
+import { compactCommand, contextCommand } from "../../src/commands/session-compact.js";
+import * as systemPrompt from "../../src/prompts/system-prompt.js";
+import * as permissionInstructions from "../../src/session/permission-instructions.js";
+import * as outputStyles from "../../src/constants/outputStyles.js";
 
 const TOOL_CALL_ID = "toolu_compact_1792";
 const TOOL_ARGUMENTS = JSON.stringify({ command: "pwd" });
@@ -75,6 +78,51 @@ function expectEveryToolResultToFollowItsCall(messages: readonly LLMMessage[]): 
 describe("/compact keeps retained assistant tool calls", () => {
   afterEach(() => {
     summarizer.manualCompactCall.mockReset();
+    vi.restoreAllMocks();
+  });
+
+  test("context display composes the same deferred permission section from current authority", async () => {
+    const { session } = mkSession();
+    await session.permissionModeRegistry.update({ ...session.permissionModeRegistry.current(), mode: "acceptEdits" });
+    vi.spyOn(session, "newDefaultTurnWithSubId").mockReturnValue(mkCtx({
+      baseInstructions: "STABLE_BASE",
+      permissionInstructionsDeferred: true,
+      permissionMode: "plan",
+      modelProviderId: "grok",
+    }));
+    const assemble = vi.spyOn(systemPrompt, "assembleSystemPrompt");
+    vi.spyOn(outputStyles, "getOutputStyleConfig").mockResolvedValue(null);
+    const permission = vi.spyOn(permissionInstructions, "getSessionPermissionInstructions");
+
+    const result = await contextCommand.execute({ ...commandContext(session), env: {}, providerEnvironment: {} } as never);
+    expect(result).toMatchObject({ kind: "text" });
+
+    expect(assemble).toHaveBeenCalledWith(expect.objectContaining({ deferPermissionInstructions: true, permissionContext: expect.objectContaining({ mode: "acceptEdits" }) }));
+    expect(permission).toHaveBeenCalledTimes(2);
+    for (const result of permission.mock.results) {
+      expect(result.value).toContain("# Permission Mode: acceptEdits");
+      expect(result.value).not.toContain("# Permission Mode: plan");
+    }
+  });
+
+  test("manual compaction includes current permission guidance instead of the stale turn mode", async () => {
+    summarizer.manualCompactCall.mockImplementation(keepRecentTail);
+    const { session } = mkSession({ history: [{ role: "user", content: "First request." }, { role: "assistant", content: "First answer." }] });
+    await session.permissionModeRegistry.update({ ...session.permissionModeRegistry.current(), mode: "acceptEdits" });
+    vi.spyOn(session, "newDefaultTurnWithSubId").mockReturnValue(mkCtx({
+      baseInstructions: "STABLE_BASE",
+      permissionInstructionsDeferred: true,
+      permissionMode: "plan",
+      modelProviderId: "grok",
+    }));
+
+    const result = await compactCommand.execute(commandContext(session));
+
+    expect(result).toMatchObject({ kind: "compact" });
+    const systemPrompt = summarizer.manualCompactCall.mock.calls[0]?.[1]?.options?.systemPrompt;
+    expect(systemPrompt).toContain("STABLE_BASE");
+    expect(systemPrompt).toContain("# Permission Mode: acceptEdits");
+    expect(systemPrompt).not.toContain("# Permission Mode: plan");
   });
 
   test.each(["ollama", "grok", "lmstudio"])(
