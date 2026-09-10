@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod/v4";
 
 import type {
@@ -40,7 +40,14 @@ import {
   enqueue,
   resetCommandQueueForTesting,
 } from "../utils/messageQueueManager.js";
-import { execAgentHook } from "../utils/hooks/execAgentHook.js";
+import { parseRuleString } from "../permissions/rules.js";
+import { checkToolPathPermission } from "../permissions/path-validation.js";
+import { FILE_READ_TOOL_NAME } from "../tools/FileReadTool/prompt.js";
+import {
+  buildHookTranscriptFileReadGrant,
+  execAgentHook,
+} from "../utils/hooks/execAgentHook.js";
+import { getTranscriptPath } from "../utils/sessionStorage.js";
 import type { Tool, ToolUseContext } from "../tools/Tool.js";
 import type { Message } from "../types/message.js";
 import { createAttachmentMessage } from "../utils/attachments.js";
@@ -752,7 +759,8 @@ describe("execAgentHook run-turn integration", () => {
     });
 
     const firstRequest = provider.chatStream.mock.calls[0]?.[0] as
-      LLMMessage[] | undefined;
+      | LLMMessage[]
+      | undefined;
     const rendered = firstRequest
       ?.map((message) =>
         typeof message.content === "string" ? message.content : "",
@@ -1782,6 +1790,134 @@ describe("execAgentHook run-turn integration", () => {
       }),
     ).toThrow("provider exploded");
   });
+
+  test("serializes transcript FileRead grants without a leading slash or unescaped parens", () => {
+    const paths = [
+      "/tmp/agent (hook)/t.jsonl",
+      "C:\\Users\\me\\agent (hook)\\t.jsonl",
+    ];
+    for (const transcriptPath of paths) {
+      const grant = buildHookTranscriptFileReadGrant(transcriptPath);
+      const parsed = parseRuleString(grant);
+      expect(grant.startsWith(`${FILE_READ_TOOL_NAME}(`)).toBe(true);
+      expect(grant.startsWith("Read(")).toBe(false);
+      expect(parsed?.toolName).toBe(FILE_READ_TOOL_NAME);
+      expect(parsed?.ruleContent).toBe(transcriptPath);
+    }
+  });
+
+  test("grants FileRead of the hook transcript under dontAsk and denies unrelated paths", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-hook-ws-"));
+    const outside = await mkdtemp(join(tmpdir(), "agenc-hook-out-"));
+    testCleanup.push(() => rm(workspace, { recursive: true, force: true }));
+    testCleanup.push(() => rm(outside, { recursive: true, force: true }));
+    const unrelated = join(outside, "secret(name).txt");
+    await writeFile(unrelated, "do not read\n");
+
+    const permissionProbe: Array<{
+      path: string;
+      behavior: string;
+      sessionRules: string[];
+    }> = [];
+    const fileRead = fileReadPermissionProbeTool(workspace, permissionProbe);
+
+    let transcriptPath = "";
+    const provider = providerWithResponses([
+      {
+        content: "reading transcript",
+        toolCalls: [
+          {
+            id: "read-transcript",
+            name: FILE_READ_TOOL_NAME,
+            arguments: JSON.stringify({ file_path: "__transcript__" }),
+          },
+        ],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      },
+      {
+        content: "reading secret",
+        toolCalls: [
+          {
+            id: "read-secret",
+            name: FILE_READ_TOOL_NAME,
+            arguments: JSON.stringify({ file_path: unrelated }),
+          },
+        ],
+        usage: { promptTokens: 2, completionTokens: 1, totalTokens: 3 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      },
+      {
+        content: "done",
+        toolCalls: [
+          {
+            id: "done",
+            name: "StructuredOutput",
+            arguments: JSON.stringify({ ok: true }),
+          },
+        ],
+        usage: { promptTokens: 3, completionTokens: 1, totalTokens: 4 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      },
+    ]);
+    const originalChatStream = provider.chatStream.getMockImplementation()!;
+    provider.chatStream = vi.fn(
+      async (messages: LLMMessage[], onChunk: (chunk: unknown) => void) => {
+        const response = await originalChatStream(messages, onChunk);
+        const toolCall = response.toolCalls?.[0];
+        if (toolCall?.id === "read-transcript") {
+          toolCall.arguments = JSON.stringify({ file_path: transcriptPath });
+        }
+        return response;
+      },
+    );
+    const parent = createParentSession(
+      provider,
+      createAgentRoleWorkspace(workspace),
+    );
+    setCurrentRuntimeSession(parent);
+    transcriptPath = getTranscriptPath();
+    await mkdir(dirname(transcriptPath), { recursive: true });
+    await writeFile(transcriptPath, '{"type":"user","message":"plan done"}\n');
+
+    const result = await execAgentHook(
+      { type: "agent", prompt: "verify $ARGUMENTS" } as never,
+      "Stop",
+      "Stop" as never,
+      JSON.stringify({ plan: "done" }),
+      new AbortController().signal,
+      createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+        tools: [fileRead],
+      }),
+      undefined,
+      [],
+    );
+
+    expect(result.outcome).toBe("success");
+    const transcriptDecision = permissionProbe.find(
+      (entry) => entry.path === transcriptPath,
+    );
+    const unrelatedDecision = permissionProbe.find(
+      (entry) => entry.path === unrelated,
+    );
+    expect(transcriptDecision?.behavior).toBe("allow");
+    expect(unrelatedDecision?.behavior).toBe("ask");
+    const sessionRules = transcriptDecision?.sessionRules ?? [];
+    expect(sessionRules.some((rule) => rule.startsWith("Read("))).toBe(false);
+    expect(
+      sessionRules.some((rule) => rule.startsWith(`${FILE_READ_TOOL_NAME}(`)),
+    ).toBe(true);
+    const grant = sessionRules.find((rule) =>
+      rule.startsWith(`${FILE_READ_TOOL_NAME}(`),
+    )!;
+    const parsed = parseRuleString(grant);
+    expect(parsed?.toolName).toBe(FILE_READ_TOOL_NAME);
+    expect(parsed?.ruleContent).toBe(transcriptPath);
+  });
 });
 
 function llmMessageText(message: LLMMessage): string {
@@ -1862,6 +1998,56 @@ function providerWithResponses(
     ),
     healthCheck: vi.fn(async () => true),
   } as unknown as LLMProvider & { chatStream: ReturnType<typeof vi.fn> };
+}
+
+function fileReadPermissionProbeTool(
+  workspace: string,
+  probe: Array<{ path: string; behavior: string; sessionRules: string[] }>,
+): Tool {
+  return {
+    name: FILE_READ_TOOL_NAME,
+    recoveryCategory: "idempotent",
+    inputSchema: z.object({ file_path: z.string() }),
+    inputJSONSchema: {
+      type: "object",
+      properties: { file_path: { type: "string" } },
+      required: ["file_path"],
+      additionalProperties: false,
+    },
+    async prompt() {
+      return "Read a file";
+    },
+    checkPermissions(input: { file_path: string }, context: ToolUseContext) {
+      const sessionRules =
+        context.getAppState().toolPermissionContext.alwaysAllowRules.session ??
+        [];
+      const result = checkToolPathPermission({
+        toolName: FILE_READ_TOOL_NAME,
+        input: input as unknown as Record<string, unknown>,
+        path: input.file_path,
+        cwd: workspace,
+        context: context.getAppState().toolPermissionContext,
+        operationType: "read",
+        extraWorkingDirectories: [workspace],
+      });
+      probe.push({
+        path: input.file_path,
+        behavior: result.behavior,
+        sessionRules: [...sessionRules],
+      });
+      return result;
+    },
+    async call(input: { file_path?: string }) {
+      return { data: `read:${input.file_path ?? ""}` };
+    },
+    mapToolResultToToolResultBlockParam(content: string, toolUseID: string) {
+      return {
+        type: "tool_result",
+        tool_use_id: toolUseID,
+        content,
+      };
+    },
+  } as unknown as Tool;
 }
 
 function echoTool(): Tool {
