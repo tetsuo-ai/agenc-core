@@ -40,7 +40,7 @@ describe("strict schema-v2 validation coverage", () => {
     ["model", { model: 42 }, /Invalid model/u],
     ["approval policy", { approval_policy: "sometimes" }, /approval_policy/u],
     ["sandbox mode", { sandbox_mode: "container" }, /sandbox_mode/u],
-    ["reasoning effort", { reasoning_effort: "max" }, /reasoning_effort/u],
+    ["reasoning effort", { reasoning_effort: "unlimited" }, /reasoning_effort/u],
     ["agent threads", { agent_max_threads: 0 }, /agent_max_threads/u],
     ["agent depth", { agent_max_depth: -1 }, /agent_max_depth/u],
     ["project markers", { project_root_markers: [".git", 4] }, /project_root_markers/u],
@@ -56,12 +56,12 @@ describe("strict schema-v2 validation coverage", () => {
     expect(() => validateAgenCConfigBlocks(malformed(config))).toThrow(error);
   });
 
-  test("accepts the Meta-compatible minimal reasoning effort", () => {
+  test.each(["minimal", "max"])("accepts native %s reasoning in root and profile settings", effort => {
     expect(() =>
       validateAgenCConfigBlocks(
         malformed({
-          reasoning_effort: "minimal",
-          profiles: { meta: { reasoning_effort: "minimal" } },
+          reasoning_effort: effort,
+          profiles: { native: { reasoning_effort: effort } },
         }),
       ),
     ).not.toThrow();

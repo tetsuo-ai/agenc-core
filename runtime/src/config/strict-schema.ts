@@ -554,7 +554,7 @@ const ROOT_FIELD_VALIDATORS = {
   sandbox_mode: enumValidator("sandbox_mode", ["read-only", "workspace-write", "danger-full-access"]),
   sandbox: delegatedObjectValidator("sandbox"),
   shell_environment_policy: validateShellEnvironmentPolicy,
-  reasoning_effort: enumValidator("reasoning_effort", ["minimal", "low", "medium", "high", "xhigh", "none"]),
+  reasoning_effort: enumValidator("reasoning_effort", ["minimal", "low", "medium", "high", "xhigh", "max", "none"]),
   reasoning_summary: enumValidator("reasoning_summary", ["auto", "concise", "detailed", "none"]),
   approvals_reviewer: enumValidator("approvals_reviewer", ["user", "auto_review"]),
   model_verbosity: enumValidator("model_verbosity", ["low", "medium", "high"]),

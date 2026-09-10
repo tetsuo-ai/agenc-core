@@ -6,7 +6,7 @@ import { deriveFlatCatalog, resolveRegisteredModelCatalogEntry } from "../../../
 import { chatCompletionsCapabilityHintsForProvider } from "../../../../src/llm/wire/capability-gating.js";
 
 describe("AgenC DeepSeek promotion wire", () => {
-  it.each([false, true])("completes a tool round trip within the reviewed gateway contract (stream=%s)", async stream => {
+  it.each([false, true].flatMap(stream => (["low", "high", "max"] as const).map(effort => ({ stream, effort }))))("preserves $effort through a tool round trip (stream=$stream)", async ({ stream, effort }) => {
     const bodies: Record<string, any>[] = [];
     const allowed = new Set(["model", "messages", "stream", "stream_options", "max_tokens", "temperature",
       "top_p", "stop", "frequency_penalty", "presence_penalty", "top_k", "seed", "response_format",
@@ -17,7 +17,7 @@ describe("AgenC DeepSeek promotion wire", () => {
       const body = JSON.parse(String(init?.body));
       bodies.push(body);
       expect(Object.keys(body).filter(key => !allowed.has(key))).toEqual([]);
-      if (body.reasoning_effort !== undefined) expect(body.reasoning_effort).toBe("medium");
+      expect(body.reasoning_effort).toBe(effort);
       const first = bodies.length === 1;
       const message = first
         ? { role: "assistant", content: null, reasoning: "Read the synthetic marker.", tool_calls: [
@@ -50,7 +50,7 @@ describe("AgenC DeepSeek promotion wire", () => {
       const run: typeof provider.chat = (messages, options) => stream
         ? provider.chatStream(messages, () => {}, options) : provider.chat(messages, options);
       const first = await run([{ role: "user", content: "Read marker" }], {
-        reasoningEffort: "medium", parallelToolCalls: true, toolChoice: "required", maxOutputTokens: 256,
+        reasoningEffort: effort, parallelToolCalls: true, toolChoice: "required", maxOutputTokens: 256,
       });
       expect(first.toolCalls).toEqual([{ id: "call_marker", name: "read_marker", arguments: "{}" }]);
       const final = await run([
@@ -59,10 +59,10 @@ describe("AgenC DeepSeek promotion wire", () => {
           providerReasoningContent: first.providerReasoningContent,
           providerReasoningProvenance: first.providerReasoningProvenance },
         { role: "tool", content: "marker", toolCallId: "call_marker", toolName: "read_marker" },
-      ], { reasoningEffort: "xhigh", parallelToolCalls: true, maxOutputTokens: 256 });
+      ], { reasoningEffort: effort, parallelToolCalls: true, maxOutputTokens: 256 });
       expect(final.content).toBe("marker");
-      expect(bodies[0]).toMatchObject({ model, max_tokens: 256, reasoning_effort: "medium" });
-      expect(bodies[1].reasoning_effort).toBeUndefined();
+      expect(bodies[0]).toMatchObject({ model, max_tokens: 256, reasoning_effort: effort });
+      expect(bodies[1].reasoning_effort).toBe(effort);
       expect(bodies[1].messages.find((row: any) => row.role === "assistant").reasoning).toBe("Read the synthetic marker.");
       expect(bodies[1].messages.find((row: any) => row.role === "tool").tool_call_id).toBe("call_marker");
       expect(bodies).toHaveLength(2);
@@ -72,7 +72,7 @@ describe("AgenC DeepSeek promotion wire", () => {
   it("keeps route metadata hidden and does not change direct OpenRouter capabilities", () => {
     expect(resolveRegisteredModelCatalogEntry({ provider: "agenc", model })).toMatchObject({
       contextWindow: 1_048_576, maxOutputTokens: 8_192, maxOutputTokensUpperLimit: 384_000,
-      supportedReasoningLevels: ["medium"], defaultReasoningLevel: "medium", visibility: "none",
+      supportedReasoningLevels: ["low", "high", "max"], defaultReasoningLevel: "high", visibility: "none",
     });
     expect(deriveFlatCatalog().agenc ?? []).not.toContain(model);
     expect(chatCompletionsCapabilityHintsForProvider("openrouter", model).acceptsParallelToolCalls).toBeUndefined();

@@ -3381,7 +3381,7 @@ export function validateProfilesConfig(
     validateEnumValue(
       profile.reasoning_effort,
       `${name}.reasoning_effort`,
-      ["minimal", "low", "medium", "high", "xhigh", "none"],
+      ["minimal", "low", "medium", "high", "xhigh", "max", "none"],
       makeError,
     );
     validateEnumValue(

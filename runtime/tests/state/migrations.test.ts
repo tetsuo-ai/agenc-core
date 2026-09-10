@@ -58,7 +58,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -93,6 +93,7 @@ describe("state migration registry", () => {
       "runtime_settings_permission_capabilities",
       "runtime_settings_minimal_effort",
       "drop_threads_last_item_index",
+      "runtime_settings_max_effort",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -143,6 +144,7 @@ describe("state migration registry", () => {
       "030_runtime_settings_permission_capabilities.ts",
       "031_runtime_settings_minimal_effort.ts",
       "032_drop_threads_last_item_index.ts",
+      "033_runtime_settings_max_effort.ts",
     ]);
   });
 
@@ -287,6 +289,34 @@ describe("state migration registry", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("preserves settings history while adding durable Max reasoning", () => {
+    const db = new Database(":memory:");
+    try {
+      db.pragma("foreign_keys = ON");
+      applyMigrations(db, STATE_DB_MIGRATIONS.filter(migration => migration.version <= 32));
+      db.exec(`
+        INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at)
+        VALUES ('max-run', 1, '2026-09-10T00:00:00.000Z');
+        INSERT INTO run_runtime_settings (
+          run_id, epoch, settings_event_id, settings_sequence, reason, changed_at,
+          permission_mode, auto_mode_active, auto_mode_available,
+          bypass_permissions_mode_available, model, provider, reasoning_effort, hooks_disabled
+        ) VALUES ('max-run', 1, 'settings-1', 1, 'initial', '2026-09-10T00:00:00.000Z',
+          'default', 0, 0, 0, 'deepseek/deepseek-v4-flash-0731', 'agenc', 'high', 0);
+      `);
+      const before = db.prepare("SELECT * FROM run_runtime_settings").all();
+      const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='run_runtime_settings' ORDER BY name").all();
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      expect(db.prepare("SELECT * FROM run_runtime_settings").all()).toEqual(before);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='run_runtime_settings' ORDER BY name").all()).toEqual(indexes);
+      expect(() => db.exec("UPDATE run_runtime_settings SET reasoning_effort='max'")).not.toThrow();
+      expect(db.prepare("SELECT reasoning_effort FROM run_runtime_settings").get()).toEqual({ reasoning_effort: "max" });
+      expect(() => db.exec("UPDATE run_runtime_settings SET reasoning_effort='unlimited'")).toThrow();
+      expect(() => db.exec("DELETE FROM run_lifecycle_epochs WHERE run_id='max-run'")).toThrow();
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally { db.close(); }
   });
 
   it("adds durable CSV writer anchor state without backfilling legacy intents", () => {

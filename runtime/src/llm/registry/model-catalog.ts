@@ -531,7 +531,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsReasoningSummaries: false,
       defaultReasoningSummary: "none",
       supportedReasoningLevels: AGENC_DEEPSEEK_REASONING_LEVELS,
-      defaultReasoningLevel: "medium",
+      defaultReasoningLevel: "high",
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 0,
       visibility: "none",
