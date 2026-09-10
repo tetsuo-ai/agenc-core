@@ -23,7 +23,12 @@ function parseMetadata(result: { metadata?: unknown }): Record<string, unknown> 
 describe("bash shell-mode output cap — M-EXEC-2", () => {
   it("truncates large shell-mode output to the byte cap with the marker", async () => {
     const maxOutputBytes = 2000;
-    const tool = createBashTool({ maxOutputBytes });
+    const tool = createBashTool({
+      maxOutputBytes,
+      // Standalone tools intentionally do not inherit the host environment.
+      // Capture the test PATH so the emitter also works with an NVM install.
+      env: { PATH: process.env.PATH ?? "" },
+    });
     // A pipe forces shell mode (runSpawnedCommand). Emit ~500KB — far beyond the
     // 2x retention cap — and confirm the result is cleanly truncated, not corrupt.
     const result = await tool.execute({

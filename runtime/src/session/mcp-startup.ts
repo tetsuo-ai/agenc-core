@@ -1553,7 +1553,7 @@ export function createSessionMcpService(
     }
     const { args: inputArgs, ...inputConfig } = config;
     let desktopAuthorityGrant;
-    try { desktopAuthorityGrant = await verifyDesktopAuthority(config, options.environment.AGENC_HOME); }
+    try { desktopAuthorityGrant = await verifyDesktopAuthority(config, options.authority.homeContext.path); }
     catch (error) { return mcpMutationFailure(config.name, error); }
     const candidate: MCPServerConfig = {
       ...inputConfig,
