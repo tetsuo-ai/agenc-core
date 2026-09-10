@@ -2081,11 +2081,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       promise,
       settled: false,
     };
-    // The user speaks again: child receipts held since a stop may now start
-    // follow-up turns (#2236). Only an admitted message counts — a refused one
-    // never reaches the session, so releasing the latch there let a receipt
-    // restart the very work the user stopped (#2201).
-    active.bootstrap.session.clearUserStop?.();
     active.messageSubmissionsById.set(params.messageId, submission);
     active.pendingMessageSubmissionCount += 1;
 
@@ -2526,6 +2521,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? { editorInteraction: params.editorInteraction }
         : {}),
     };
+    active.bootstrap.session.clearUserStop?.();
     if (typeof input === "string") {
       await active.control.sendInput(agentId, input, submitOptions);
     } else {
@@ -4278,21 +4274,24 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isInterruptibleActiveAgent(active))
       return false;
     // A client asked for the stop; hold child receipts until the next prompt.
-    active.bootstrap.session.markStoppedByUser?.();
     try {
-      await active.bootstrap.session.abortAllTasks("interrupted");
-    } catch {
-      /* interrupt delivery still falls through the managed thread path */
+      active.bootstrap.session.markStoppedByUser?.();
+    } finally {
+      try {
+        await active.bootstrap.session.abortAllTasks("interrupted");
+      } catch {
+        /* interrupt delivery still falls through the managed thread path */
+      }
+      void active.thread.submit({ type: "interrupt", reason }).catch(() => {
+        /* interrupt delivery surfaces via session events */
+      });
+      for (const [childThreadId] of active.control.openThreadSpawnChildren(
+        active.thread.threadId,
+      )) {
+        active.control.interrupt(childThreadId, reason);
+      }
+      active.lastActiveAt = this.#now();
     }
-    void active.thread.submit({ type: "interrupt", reason }).catch(() => {
-      /* interrupt delivery surfaces via session events */
-    });
-    for (const [childThreadId] of active.control.openThreadSpawnChildren(
-      active.thread.threadId,
-    )) {
-      active.control.interrupt(childThreadId, reason);
-    }
-    active.lastActiveAt = this.#now();
     return true;
   }
 
@@ -4334,13 +4333,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(turnAfterAttempt !== expectedTurnId ? { stale: true } : {}),
       };
     }
-    active.bootstrap.session.markStoppedByUser?.();
-    for (const [childThreadId] of active.control.openThreadSpawnChildren(
-      active.thread.threadId,
-    )) {
-      active.control.interrupt(childThreadId, reason);
+    try {
+      active.bootstrap.session.markStoppedByUser?.();
+    } finally {
+      for (const [childThreadId] of active.control.openThreadSpawnChildren(
+        active.thread.threadId,
+      )) {
+        active.control.interrupt(childThreadId, reason);
+      }
+      active.lastActiveAt = this.#now();
     }
-    active.lastActiveAt = this.#now();
     return { cancelled: true, activeTurnId: expectedTurnId };
   }
 

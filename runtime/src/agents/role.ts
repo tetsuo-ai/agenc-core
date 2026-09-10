@@ -71,6 +71,7 @@ export type AgentReasoningEffort =
   | "xhigh";
 
 export interface AgentRoleConfig {
+  readonly executionConstraint?: "read-only";
   readonly description?: string;
   /** AgenC-shaped role layer file. Built-ins resolve against embedded
    *  TOML content; user-defined roles read the path from disk. */
@@ -315,6 +316,7 @@ const SCANNER_ROLE: AgentRole = freezeRole({
   source: "built-in",
   config: {
     description: SCANNER_DESCRIPTION,
+    executionConstraint: "read-only",
     configFile: "scanner.toml",
     systemPrompt: SCANNER_SYSTEM_PROMPT,
     disallowlist: BUILTIN_READONLY_DISALLOWLIST,
@@ -335,6 +337,7 @@ const PLAN_ROLE: AgentRole = freezeRole({
   source: "built-in",
   config: {
     description: PLAN_WHEN_TO_USE,
+    executionConstraint: "read-only",
     systemPrompt: PLAN_SYSTEM_PROMPT,
     disallowlist: BUILTIN_READONLY_DISALLOWLIST,
   },

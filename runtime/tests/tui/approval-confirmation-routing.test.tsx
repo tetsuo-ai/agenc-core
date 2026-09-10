@@ -12,6 +12,7 @@ vi.mock("../../src/tui/ink.js", async (importOriginal) => ({
   useInput: () => {},
 }));
 vi.mock("../../src/tui/keybindings/useKeybinding.js", () => ({
+  useInputCapture: () => {},
   useKeybindings: (handlers: Record<string, () => unknown>) => { bindings.handlers = handlers; },
 }));
 

@@ -462,7 +462,13 @@ function approvalRejectedResult(err: ApprovalRejectedError, session?: object): T
     }),
     isError: true,
     metadata: {
-      approvalFailure: { decision: err.decision.kind, source: err.source ?? "policy" },
+      approvalFailure: {
+        decision: err.decision.kind,
+        source: err.source ?? "policy",
+        ...(err.decision.kind === "denied" && err.decision.reason !== undefined
+          ? { reason: err.decision.reason }
+          : {}),
+      },
       ...(approvalDenialEndsTurn(err) ? { approvalDenied: true } : {}),
     },
     ...(approvalDenialEndsTurn(err) || isWorkflowApprovalSession(session)

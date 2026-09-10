@@ -167,6 +167,48 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
 }
 
 describe("reconstruction durable resume descriptors", () => {
+  test.each([false, true])("an owner stop invalidates its existing turn even after later human release (%s)", (clearStop) => {
+    const buildId = pinBuild("build-owner-stop");
+    const items = orphanWithCheckpoint({ turnId: "before-stop", buildId, prefix: [{ role: "user", content: "Inspect with a child" }] });
+    items.push({ type: "session_state", payload: { userStop: { stopped: true, generation: 1 } } });
+    if (clearStop) {
+      items.push({ type: "session_state", payload: { userStop: { stopped: false, generation: 1 } } });
+      const laterCheckpoint = orphanWithCheckpoint({ turnId: "before-stop", buildId, prefix: [{ role: "user", content: "Inspect with a child" }], checkpointSeq: 2 }).at(-1)!;
+      items.push(laterCheckpoint);
+    }
+    const reconstruction = reconstruct(items);
+    expect(reconstruction.resumableTurns).toEqual([]);
+    expect(reconstruction.orphanedTurnIds).toEqual(["before-stop"]);
+  });
+
+  test("a distinct human turn after release can resume without reviving the denied turn", () => {
+    const buildId = pinBuild("build-owner-stop");
+    const items = orphanWithCheckpoint({ turnId: "before-stop", buildId, prefix: [{ role: "user", content: "Old instructions" }] });
+    items.push({ type: "session_state", payload: { userStop: { stopped: true, generation: 1 } } });
+    items.push({ type: "session_state", payload: { userStop: { stopped: false, generation: 1 } } });
+    const resumedItems = orphanWithCheckpoint({ turnId: "after-stop", buildId, prefix: [
+      { role: "user", content: "Old instructions" },
+      { role: "user", content: "New instructions" },
+    ] });
+    items.push(...resumedItems.filter((item) => item.type !== "response_item" || item.payload.content !== "Old instructions"));
+    const reconstruction = reconstruct(items);
+    expect(reconstruction.resumableTurns.map((turn) => turn.turnId)).toEqual(["after-stop"]);
+    expect(reconstruction.resumableTurns[0]).toMatchObject({ buildMatches: true, historyPrefixValid: true });
+    expect(reconstruction.orphanedTurnIds).toEqual(expect.arrayContaining(["before-stop", "after-stop"]));
+  });
+
+  test("does not resume a checkpoint after a durable resolver denial without a terminal", () => {
+    const buildId = pinBuild("build-denied");
+    const items = orphanWithCheckpoint({ turnId: "denied-turn", buildId, prefix: [{ role: "user", content: "Run the command" }] });
+    items.push({ type: "event_msg", payload: { id: "denied-decision", seq: 3, msg: { type: "permission_decision", payload: {
+      runId: "test-run", callId: "denied-call", toolName: "exec_command", turnId: "denied-turn", requestEventId: "approval-request", requestEventSeq: 2,
+      decision: "denied", source: "resolver", recordedAt: new Date().toISOString(),
+    } } } });
+    const reconstruction = reconstruct(items);
+    expect(reconstruction.resumableTurns).toEqual([]);
+    expect(reconstruction.orphanedTurnIds).toEqual(["denied-turn"]);
+  });
+
   test("orphan + valid checkpoint + matching build → resumable, gates pass", () => {
     const buildId = pinBuild("build-A");
     const prefix: ResponseItem[] = [

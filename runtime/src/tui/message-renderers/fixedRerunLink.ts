@@ -1,4 +1,5 @@
 import type { MessageLookups } from '../../utils/messages.js'
+import { shellOperationIdentity } from '../shell-operation-identity.js'
 
 /**
  * "Fixed re-run" linkage detection for command-bearing tool rows (Run/Bash).
@@ -27,11 +28,6 @@ import type { MessageLookups } from '../../utils/messages.js'
  *     prior tool-use's resolution/error state.
  *
  * Matching rules (kept minimal + robust):
- *   - Only command-bearing tool-uses participate: the input must carry a string
- *     `command` field. Write/Edit (file_path/content) never match, so there are
- *     no false positives from non-command tools.
- *   - Identity is `(tool name, trimmed command string)`. Two runs link only when
- *     both the tool name and the normalized command are identical.
  *   - "First success after a failure" scoping: we inspect the MOST RECENT prior
  *     RESOLVED occurrence of the same command. If that most recent resolved
  *     occurrence ERRORED, this passing row is the fix → annotate. If it
@@ -45,14 +41,6 @@ type CommandToolUse = {
   readonly command: string
 }
 
-/** Normalize a command string for cross-run identity (trim only — preserve
- * internal whitespace so genuinely different commands stay distinct). */
-function normalizeCommand(command: string): string {
-  return command.trim()
-}
-
-/** Extract the command-bearing identity of a tool-use, or null if it carries no
- * string `command` (e.g. Write/Edit/Read), so non-command tools never match. */
 function asCommandToolUse(
   param: { id?: unknown; name?: unknown; input?: unknown } | undefined | null,
 ): CommandToolUse | null {
@@ -61,12 +49,9 @@ function asCommandToolUse(
   const name = (param as { name?: unknown }).name
   const input = (param as { input?: unknown }).input
   if (typeof id !== 'string' || typeof name !== 'string') return null
-  if (!input || typeof input !== 'object') return null
-  const command = (input as { command?: unknown }).command
-  if (typeof command !== 'string') return null
-  const normalized = normalizeCommand(command)
-  if (normalized.length === 0) return null
-  return { id, name, command: normalized }
+  const command = shellOperationIdentity(name, input)
+  if (command === null) return null
+  return { id, name, command }
 }
 
 /**

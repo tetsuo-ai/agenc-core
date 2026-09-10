@@ -767,6 +767,10 @@ approval and denial commands. A pending request is not a grant.
 `--scope once` approves only that request. Broader scopes require an explicit
 operator choice. Use the listed owner run ID for `--session` when approving or
 revoking a child request; the child's session ID is shown for identification.
+Conversation owner IDs (`conv-*`) resolve consistently for list, approve, and
+revoke. Workflow owner IDs (`wf-*`) remain scoped to their workflow.
+`--reason` carries denial feedback to the requesting turn. It does not change
+the denial classification or grant permission to retry.
 
 ```bash
 agenc permissions list

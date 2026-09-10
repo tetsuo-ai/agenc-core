@@ -40,6 +40,7 @@ import type {
   RolloutItem,
   TurnContextItem,
 } from "./rollout-item.js";
+import { readPersistedUserStopState } from "./rollout-item.js";
 import { isAgentInvocationTurnBoundary } from "../contracts/agent-invocation-envelope.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import {
@@ -792,6 +793,9 @@ export function reconstructFromRollout(
   // validating every superseded checkpoint would repeatedly rescan growing
   // prefixes. Only an orphan's highest checkpoint can authorize execution.
   const turnBuildIds = new Map<string, string | undefined>();
+  const turnStartedIndexes = new Map<string, number>();
+  let latestUserStopIndex = -1;
+  const resolverDeniedTurns = new Set<string>();
   const highestCheckpointByTurn = new Map<
     string,
     { readonly checkpoint: TurnCheckpointEvent; readonly rolloutIndex: number }
@@ -802,13 +806,20 @@ export function reconstructFromRollout(
     rolloutIndex += 1
   ) {
     const item = rolloutItems[rolloutIndex];
+    if (item !== undefined && readPersistedUserStopState(item)?.stopped === true) latestUserStopIndex = rolloutIndex;
     if (item?.type !== "event_msg") continue;
+    if (
+      item.payload.msg.type === "permission_decision" &&
+      item.payload.msg.payload.decision === "denied" &&
+      item.payload.msg.payload.source === "resolver"
+    ) resolverDeniedTurns.add(item.payload.msg.payload.turnId);
     const inner = item.payload.msg as { type?: string; payload?: unknown };
     if (inner.type === "turn_started") {
       const payload = inner.payload as { turnId?: string; buildId?: string };
       if (typeof payload?.turnId === "string") {
         seenStarted.add(payload.turnId);
         turnBuildIds.set(payload.turnId, payload.buildId);
+        if (!turnStartedIndexes.has(payload.turnId)) turnStartedIndexes.set(payload.turnId, rolloutIndex);
       }
       continue;
     }
@@ -969,7 +980,10 @@ export function reconstructFromRollout(
       // gate) is byte-identical to today; only the resume CONSUMER acts on
       // a descriptor whose gates pass.
       const checkpointRecord = highestCheckpointByTurn.get(turnId);
-      if (checkpointRecord !== undefined) {
+      if (
+        checkpointRecord !== undefined && !resolverDeniedTurns.has(turnId) &&
+        (turnStartedIndexes.get(turnId) ?? -1) > latestUserStopIndex
+      ) {
         const { checkpoint, rolloutIndex } = checkpointRecord;
         const buildId = turnBuildIds.get(turnId);
         const buildMatches = buildId === expectedBuildId;

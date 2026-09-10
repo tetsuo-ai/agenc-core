@@ -16,6 +16,7 @@ function makeSession() {
     conversationId: "root-thread",
     agentStatus: { value: { status: "pending_init" } },
     submit: vi.fn(async () => {}),
+    submitChildFollowup: vi.fn(async () => true),
     shutdown: vi.fn(async () => {}),
     abortTerminal: vi.fn(),
     abortAllTasks: vi.fn(async () => {}),
@@ -170,9 +171,8 @@ describe("ThreadManager", () => {
       direction: "up",
       metadata: { kind: "inter_agent_communication" },
     });
-    expect(session.submit).toHaveBeenCalledWith("", {
-      displayUserMessage: null,
-    });
+    expect(session.submitChildFollowup).toHaveBeenCalledOnce();
+    expect(session.submit).not.toHaveBeenCalled();
   });
 
   it("owns agent spawning when bound to AgentControl", async () => {

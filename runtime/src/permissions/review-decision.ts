@@ -66,7 +66,7 @@ export type ReviewDecision =
       readonly kind: "network_policy_amendment";
       readonly amendment: NetworkPolicyAmendment;
     }
-  | { readonly kind: "denied" }
+  | { readonly kind: "denied"; readonly reason?: string }
   | { readonly kind: "timed_out" }
   | { readonly kind: "abort" };
 

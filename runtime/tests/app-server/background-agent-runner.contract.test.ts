@@ -8695,7 +8695,7 @@ describe("AgenC delegate background-agent runner", () => {
         ? { blockingError: { blockingError: "follow-up prompt denied" } }
         : {},
     );
-    const { runner, control, stub } = makeTopLevelRunner({
+    const { runner, control, stub, session } = makeTopLevelRunner({
       conversationId: "session-follow-up-prompt-survives-block",
       userPromptSubmitHooks: [blockHook],
     });
@@ -8705,6 +8705,8 @@ describe("AgenC delegate background-agent runner", () => {
       unattendedAllow: [],
       unattendedDeny: [],
     });
+    session.markStoppedByUser();
+    session.clearUserStop.mockClear();
 
     await expect(
       runner.submitAgentMessage("session-follow-up-prompt-survives-block", {
@@ -8718,6 +8720,8 @@ describe("AgenC delegate background-agent runner", () => {
     ).rejects.toMatchObject({
       code: "PROMPT_BLOCKED",
     });
+    expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+    expect(session.clearUserStop).not.toHaveBeenCalled();
     const snapshot = await runner.getAgentSnapshot(
       "session-follow-up-prompt-survives-block",
     );
@@ -8734,7 +8738,20 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).resolves.toMatchObject({ disposition: "started" });
     expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(session.stoppedByUserSinceLastPrompt).toBe(false);
+    expect(session.clearUserStop).toHaveBeenCalledOnce();
     expect(stub.thread.submit).not.toHaveBeenCalled();
+    session.markStoppedByUser();
+    await expect(runner.submitAgentMessage("session-follow-up-prompt-survives-block", {
+      sessionId: "session_1",
+      content: "allowed follow-up prompt",
+      originalContent: "allowed follow-up prompt",
+      messageId: "allowed-follow-up-after-block",
+      streamId: "duplicate-stream",
+      acceptedAt: "2026-08-25T00:00:02.000Z",
+    })).resolves.toMatchObject({ disposition: "duplicate" });
+    expect(session.stoppedByUserSinceLastPrompt).toBe(true);
+    expect(session.clearUserStop).toHaveBeenCalledOnce();
   });
 
   it("[managed-thread] replays a legacy hook-block error as session-only after attach", async () => {
@@ -10896,6 +10913,32 @@ describe("AgenC delegate background-agent runner", () => {
       type: "interrupt",
       reason: "user_cancel",
     });
+  });
+
+  it.each([false, true])("cancels the whole active subtree when durable stop recording fails (scoped=%s)", async (scoped) => {
+    const { runner, session, stub, control, setActiveTurn, abortTurnIfActive } = makeTopLevelRunner({
+      conversationId: "session-stop-persistence-failure",
+      scopedTurnCancellation: scoped,
+    });
+    await runner.startAgent({ objective: "hi", unattendedAllow: [], unattendedDeny: [] });
+    setActiveTurn("turn-stop-persistence-failure");
+    control.openThreadSpawnChildren.mockReturnValue([
+      ["child-agent", { agentId: "child-agent", agentPath: "/root/worker", depth: 1 }],
+    ]);
+    stub.thread.submit.mockClear();
+    session.markStoppedByUser.mockImplementationOnce(() => { throw new Error("stop fsync failed"); });
+
+    const cancellation = scoped
+      ? runner.interruptAgentTurnIfMatches("session-stop-persistence-failure", "user_cancel", "turn-stop-persistence-failure")
+      : runner.interruptAgentTurn("session-stop-persistence-failure", "user_cancel");
+    await expect(cancellation).rejects.toThrow("stop fsync failed");
+    if (scoped) {
+      expect(abortTurnIfActive).toHaveBeenCalledWith("turn-stop-persistence-failure", "interrupted");
+    } else {
+      expect(session.abortAllTasks).toHaveBeenCalledWith("interrupted");
+      expect(stub.thread.submit).toHaveBeenCalledWith({ type: "interrupt", reason: "user_cancel" });
+    }
+    expect(control.interrupt).toHaveBeenCalledWith("child-agent", "user_cancel");
   });
 
   it("[managed-thread] interruptAgentTurn cascades cancellation to live child agents", async () => {

@@ -1,4 +1,5 @@
 import type { ToolResult } from "../../tools/types.js";
+import { readOnlyCoordinationRefusal } from "../readonly-delegation.js";
 import {
   AgentAssignmentRejectedError,
   type AgentAssignmentRejectionCode,
@@ -90,6 +91,8 @@ export async function handleMessageStringTool(
   const callId = callIdFromArgs(args, "message");
   const live = control.getLive(agentId);
   const metadata = control.getAgentMetadata(agentId);
+  const coordinationRefusal = readOnlyCoordinationRefusal(sessionOrError, current.agentPath, metadata ?? live?.metadata, control.getAgentMetadata(current.threadId)?.executionConstraint);
+  if (coordinationRefusal !== undefined) return agentValidationError(coordinationRefusal);
   const receiverAgentPath = metadata?.agentPath ?? live?.agentPath;
   if (!receiverAgentPath) {
     return agentValidationError("target agent is missing an agent_path");

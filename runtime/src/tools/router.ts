@@ -1964,7 +1964,13 @@ function toolDispatchErrorResult(err: unknown, session?: Session): ToolDispatchR
         : {}),
       metadata: {
         ...(approvalDenialEndsTurn(err) ? { approvalDenied: true } : {}),
-        approvalFailure: { decision: err.decision.kind, source: err.source ?? "policy" },
+        approvalFailure: {
+          decision: err.decision.kind,
+          source: err.source ?? "policy",
+          ...(err.decision.kind === "denied" && err.decision.reason !== undefined
+            ? { reason: err.decision.reason }
+            : {}),
+        },
       },
     };
   }

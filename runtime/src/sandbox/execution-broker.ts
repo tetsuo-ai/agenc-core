@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   canWritePathWithCwd,
+  restrictedFileSystemPolicy,
+  resolvePermissionPath,
   SandboxManager,
   type AdditionalPermissionProfile,
   type PermissionProfile,
@@ -165,6 +167,7 @@ export interface SandboxExecutionBrokerLike {
   isClosedAfterLifecycleAuthorityFailure?(): boolean;
   /** Fork an independent boundary for a child session or worktree. */
   forkForCwd(cwd: string): SandboxExecutionBrokerLike;
+  forkForReadOnlyInspection?(cwd: string, deniedReadPatterns?: readonly string[]): SandboxExecutionBrokerLike;
   status(): SandboxExecutionStatus;
   assertReady(surface: SandboxExecutionSurface): SandboxExecutionStatus;
   runtimeSandbox(
@@ -921,6 +924,56 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
             ),
           }
         : {}),
+      platform: this.#platform,
+      sandboxManager: this.#sandboxManager,
+      probe: this.#probe,
+      planLandlockPolicy: this.#planLandlockPolicy,
+      forkDepth: this.forkDepth + 1,
+      lifecycleLeaseDrainTimeoutMs: this.#lifecycleLeaseDrainTimeoutMs,
+    });
+  }
+
+  forkForReadOnlyInspection(cwd: string, deniedReadPatterns: readonly string[] = []): SandboxExecutionBroker {
+    this.#assertLifecycleAuthorityOpen("child_agent");
+    const base = this.#permissionProfile ?? permissionProfileForSandboxMode(this.mode, { cwd: this.#cwd });
+    if (base.fileSystem.kind === "external_sandbox") {
+      throw new Error("Read-only inspection requires an enforceable managed sandbox, not an external sandbox declaration");
+    }
+    const fileSystem = base.fileSystem;
+    const permissionProfile: PermissionProfile = {
+      fileSystem: fileSystem.kind === "restricted"
+        ? restrictedFileSystemPolicy(fileSystem.entries.map((entry) => {
+            const resolved = resolvePermissionPath(entry.path, this.#cwd, this.#sessionTempRoot);
+            return {
+              path: entry.path.kind === "glob"
+                ? { kind: "glob" as const, pattern: path.resolve(this.#cwd, entry.path.pattern) }
+                : resolved === null ? entry.path : { kind: "path" as const, path: resolved },
+              access: entry.access === "write" ? "read" as const : entry.access,
+            };
+          }), {
+            ...(fileSystem.globScanMaxDepth !== undefined ? { globScanMaxDepth: fileSystem.globScanMaxDepth } : {}),
+            ...(fileSystem.includePlatformDefaults !== undefined ? { includePlatformDefaults: fileSystem.includePlatformDefaults } : {}),
+            ...(fileSystem.reservedReadOnlyPaths !== undefined ? { reservedReadOnlyPaths: fileSystem.reservedReadOnlyPaths } : {}),
+          })
+        : restrictedFileSystemPolicy([{ path: { kind: "special", value: { kind: "root" } }, access: "read" }], { includePlatformDefaults: true }),
+      network: "disabled",
+      ...(base.enforcement !== undefined ? { enforcement: base.enforcement } : {}),
+    };
+    const deniedEntries = deniedReadPatterns.map((pattern) => {
+      if (/[\[\]{}]/u.test(pattern) || /(?:[^/]\*\*|\*\*[^/])/u.test(pattern)) throw new Error("Read-only inspection cannot safely lower this read-denial pattern to platform isolation");
+      const target = pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern;
+      return { path: /[*?]/u.test(target) ? { kind: "glob" as const, pattern: target } : { kind: "path" as const, path: target }, access: "none" as const };
+    });
+    return new SandboxExecutionBroker({
+      mode: "read_only",
+      cwd,
+      env: this.#env,
+      sessionTempRoot: this.#sessionTempRoot,
+      ...(this.#explicitLinuxHelper !== undefined ? { agencLinuxSandboxExe: this.#explicitLinuxHelper } : {}),
+      windowsSandboxLevel: this.#windowsSandboxLevel,
+      windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
+      allowGpu: false,
+      permissionProfile: { ...permissionProfile, fileSystem: { ...permissionProfile.fileSystem, entries: [...permissionProfile.fileSystem.entries, ...deniedEntries] } },
       platform: this.#platform,
       sandboxManager: this.#sandboxManager,
       probe: this.#probe,

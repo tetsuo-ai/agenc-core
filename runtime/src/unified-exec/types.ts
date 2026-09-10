@@ -1,4 +1,5 @@
 import type { ToolExecutionInjectedArgs } from "../tools/types.js";
+import type { ReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
 import type {
   AdditionalPermissionProfile,
   NetworkProxyConfig,
@@ -79,6 +80,7 @@ export interface UnifiedExecManagerOptions {
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
+  readonly directInvocation?: ReadOnlyInspectionInvocation;
   readonly callId?: string;
   readonly cmd: string;
   readonly workdir?: string;

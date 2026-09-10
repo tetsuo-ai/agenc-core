@@ -33,6 +33,34 @@ in `runtime/src/bin/model-facing-tools.ts`, not inside `v2/index.ts`.
 | `show_csv_job_review` | Read one bounded review record |
 | `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence |
 
+### Read-only planning workers
+
+Plan mode can spawn workers with `isolation: "none"`. AgenC assigns those
+workers a permanent read-only constraint, regardless of the requested role.
+The built-in `Plan` and `scanner` roles have that constraint in every mode.
+Their descendants inherit it, including after reconnect or restoration.
+
+Constrained workers can read and search files, run supported literal
+inspection commands, and coordinate their own constrained descendants. They
+cannot edit files, create worktrees, schedule work, request wider permissions,
+or direct writable workers. Shell inspection uses direct arguments, a
+sanitized environment, and required read-only process isolation with network
+access disabled. If that isolation is unavailable, the command is refused.
+Constrained shell inspection is unavailable on Windows; native file reads
+and searches remain available within the worker's read permissions.
+
+Constrained workers reject `git status` and `git diff`, which can invoke
+repository-configured conversion filters. Object-only Git inspection is
+available when no read-path denial applies; Git objects can otherwise reveal
+denied file contents. PDF reads that require an external converter are also
+unavailable to these workers. These restrictions do not change ordinary
+coding or verification workers.
+
+Changing the parent to YOLO does not make existing planning workers writable.
+Spawn a new coding or verification worker after leaving plan mode when the
+task requires edits, builds, or tests. Ordinary workers keep the parent's
+authorized permission behavior.
+
 ### CSV job contract
 
 CSV fan-out keeps three identities separate. A configured `source_id` is exact
@@ -203,11 +231,13 @@ prompt; consumed or indeterminate outcomes are not duplicated. Per model
 turn, agent projection is capped at 32 records / 128 KiB. Oversized first
 records are visibly truncated for forward progress; only deferred triggers
 schedule autonomous follow-up turns, while passive context waits for the next
-human/root turn. A user Stop holds even the deferred triggers: until the user
+human/root turn. A user Stop or explicit approval denial holds deferred
+triggers: until the user
 speaks again, a child receipt stays in the mailbox instead of starting a parent
 turn, so stopping a turn does not let its verifiers resume it. Only a message
 the daemon admits counts as speaking again; a prompt refused while the stop is
-still unwinding leaves the hold in place.
+still unwinding leaves the hold in place. The hold survives session recovery;
+queued child receipts cannot clear it or restart the denied turn.
 
 `wait_agent` drains all currently delivered updates, not one named worker. It
 is therefore mutating and intentionally has no target filter. Use

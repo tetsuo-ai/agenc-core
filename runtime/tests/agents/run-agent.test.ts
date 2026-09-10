@@ -23,6 +23,8 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
+import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
+import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
 import { AgentRegistry } from "./registry.js";
 import {
@@ -585,7 +587,10 @@ function mkNamedTool(name: string): ToolRegistry["tools"][number] {
 }
 
 function mkNamedRegistry(names: readonly string[]): ToolRegistry {
-  const tools = names.map(mkNamedTool);
+  const tools = names.map((name) => ({
+    ...mkNamedTool(name),
+    metadata: { source: "builtin" as const },
+  }));
   return {
     tools,
     toLLMTools: () =>
@@ -2493,6 +2498,38 @@ describe("runAgent", () => {
     expect(session.mailbox.hasPending()).toBe(false);
   });
 
+  it("schedules a fresh receipt after a user stop supersedes an older coalescing window", async () => {
+    vi.useFakeTimers();
+    const session = makeStubSession({ services: { provider: makeProvider([{ content: "first receipt" }, { content: "second receipt" }]) } });
+    const submit = vi.fn(async () => { session.drainPendingInputMessages(); });
+    session.installTurnDriverHooks({ submit });
+    const first = await spawnLive(session);
+    await collectRun(runAgent({ live: first.live, parent: session, initialMessages: [{ role: "user", content: "first" }], taskPrompt: "first" }));
+    session.markStoppedByUser();
+    session.clearUserStop();
+    const second = await spawnLive(session);
+    await collectRun(runAgent({ live: second.live, parent: session, initialMessages: [{ role: "user", content: "second" }], taskPrompt: "second" }));
+    await vi.advanceTimersByTimeAsync(200);
+    expect(submit).toHaveBeenCalledOnce();
+    expect(session.mailbox.hasPending()).toBe(false);
+  });
+
+  it("does not retry closed-parent admission while a child receipt remains queued", async () => {
+    vi.useFakeTimers();
+    const session = makeStubSession({ services: { provider: makeProvider([{ content: "completed receipt" }]) } });
+    const submit = vi.fn(async () => {});
+    session.installTurnDriverHooks({ submit });
+    const submitChildFollowup = vi.spyOn(session, "submitChildFollowup");
+    const { live } = await spawnLive(session);
+    await collectRun(runAgent({ live, parent: session, initialMessages: [{ role: "user", content: "finish" }], taskPrompt: "finish" }));
+    expect(session.mailbox.hasPending()).toBe(true);
+    session.beginShutdown();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(submitChildFollowup).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
+    expect(session.mailbox.hasPending()).toBe(true);
+  });
+
   it("durably NACKs an accepted assignment that teardown prevents from starting", async () => {
     const provider = makeProvider([{ content: "initial result" }]);
     const session = makeStubSession({ services: { provider } });
@@ -3460,15 +3497,7 @@ describe("runAgent", () => {
         },
       ),
     } satisfies LLMProvider;
-    const parentRegistry = mkNamedRegistry([
-      "Edit",
-      "MultiEdit",
-      "Write",
-      "NotebookEdit",
-      "apply_patch",
-      "spawn_agent",
-      "Read",
-    ]);
+    const parentRegistry = buildProductionToolRegistry({ workspaceRoot: process.cwd(), requireAdmission: false });
     const session = makeStubSession({
       services: { provider, registry: parentRegistry },
     });
@@ -3502,7 +3531,44 @@ describe("runAgent", () => {
     ]) {
       expect(advertised).not.toContain(denied);
     }
-    expect(advertised).toContain("Read");
+    expect(advertised).toContain("FileRead");
+  });
+
+  it("executes a planned child's real FileRead and stamped exec tools through the provider loop after parent YOLO", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-planned-provider-"));
+    writeFileSync(join(cwd, "README.md"), "readonly provider fixture\n");
+    const manager = new UnifiedExecProcessManager({ cwd });
+    const exec = vi.spyOn(manager, "execCommand").mockImplementation(async (request) => {
+      expect(request.directInvocation?.program).toMatch(/\/cat$/);
+      expect(request.directInvocation?.args).toEqual(["README.md"]);
+      expect(request.runtimeSandbox).toBe(request.directInvocation?.runtimeSandbox);
+      expect(request.runtimeSandbox).toMatchObject({ preference: "require", permissionProfile: { network: "disabled" } });
+      expect(request.runtimeSandbox?.permissionProfile.fileSystem.entries.every((entry) => entry.access !== "write")).toBe(true);
+      return { output: "readonly shell fixture", stdout: "readonly shell fixture", stderr: "", exitCode: 0, exit_code: 0, durationMs: 1, wall_time_seconds: 0.001, timedOut: false, truncated: false, original_token_count: 3 };
+    });
+    const provider = makeProvider([
+      { toolCalls: [{ id: "read-plan", name: "FileRead", arguments: JSON.stringify({ file_path: join(cwd, "README.md") }) }], finishReason: "tool_calls" },
+      { toolCalls: [{ id: "inspect-plan", name: "exec_command", arguments: JSON.stringify({ cmd: "cat README.md" }) }], finishReason: "tool_calls" },
+      { content: "inspected without editing", finishReason: "stop" },
+    ]);
+    const permissionModeRegistry = new PermissionModeRegistry(createEmptyToolPermissionContext({ mode: "plan" }));
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd, probe: (options) => ({ kind: "ready", mode: options.mode, platform: process.platform }) });
+    const session = makeStubSession({ sessionConfiguration: mkSessionConfiguration({ cwd, sandboxPolicy: { value: "danger_full_access" } }), services: { provider, permissionModeRegistry, sandboxExecutionBroker: broker, registry: buildProductionToolRegistry({ workspaceRoot: cwd, unifiedExecManager: manager, requireAdmission: false }) } });
+    const { live } = await spawnLive(session, "default");
+    expect(live.metadata.executionConstraint).toMatchObject({ kind: "read-only" });
+    await permissionModeRegistry.update({ ...permissionModeRegistry.current(), mode: "bypassPermissions", isBypassPermissionsModeAvailable: true, bypassPermissionsAcceptedIn: [cwd] });
+    try {
+      const { result } = await collectRun(runAgent({ live, parent: session, initialMessages: [{ role: "user", content: "Inspect README without changes" }], taskPrompt: "Inspect README without changes" }));
+      expect(result.outcome, String(result.error)).toBe("completed");
+      expect(exec).toHaveBeenCalledOnce();
+      const conversation = JSON.stringify(vi.mocked(provider.chatStream).mock.calls);
+      expect(conversation).toContain("readonly provider fixture");
+      expect(conversation).toContain("readonly shell fixture");
+    } finally {
+      exec.mockRestore();
+      await manager.closeAll();
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("strips model-supplied __agenc* keys before they reach a wrapped child tool", async () => {

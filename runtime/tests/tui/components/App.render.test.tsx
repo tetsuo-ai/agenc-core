@@ -4880,6 +4880,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
               { workspaceView: "agent" },
             );
             expect(session.submit).toHaveBeenCalledWith("", {
+              source: "user",
               clientMessageId: expect.any(String),
               displayUserMessage: input,
             });
@@ -5084,6 +5085,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         }),
       );
       expect(session.submit).toHaveBeenCalledWith("", {
+        source: "user",
         clientMessageId: expect.any(String),
         displayUserMessage: "$reviewer audit this",
       });
@@ -5231,6 +5233,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
 
         expect(session.submit).toHaveBeenCalledWith("inspect the project", {
+          source: "user",
           clientMessageId: expect.any(String),
           displayUserMessage: "inspect the project",
         });
@@ -6493,6 +6496,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
         expect(submit).toHaveBeenCalledTimes(1);
         expect(submit).toHaveBeenCalledWith("ordinary message", {
+          source: "user",
           clientMessageId: expect.any(String),
           displayUserMessage: "ordinary message",
         });
@@ -7105,6 +7109,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           1,
           "Fix the selected value.",
           expect.objectContaining({
+            source: "user",
             clientMessageId: expect.any(String),
             displayUserMessage: "Fix the selected value.",
             editorInteraction: expect.objectContaining({
@@ -7165,6 +7170,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         await staleEditorRenderSubmit!("Inspect the repository.", helpers);
 
         expect(submit).toHaveBeenCalledWith("Inspect the repository.", {
+          source: "user",
           clientMessageId: expect.any(String),
           displayUserMessage: "Inspect the repository.",
         });
@@ -7246,6 +7252,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           { workspaceView: "agent" },
         );
         expect(session.submit).toHaveBeenCalledWith("inspect this attachment", {
+          source: "user",
           clientMessageId: expect.any(String),
           displayUserMessage: "inspect this attachment",
         });
@@ -7381,6 +7388,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             expect(submit).toHaveBeenCalledWith(
               `queued from ${scenario.queuedView}`,
               {
+                source: "user",
                 clientMessageId: expect.any(String),
                 displayUserMessage: `queued from ${scenario.queuedView}`,
                 ...(scenario.queuedInteraction !== undefined
@@ -7715,6 +7723,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             expect.objectContaining({
               clientMessageId: expect.any(String),
               displayUserMessage: "Explain the delayed selection.",
+              source: "user",
               editorInteraction: expect.objectContaining({
                 kind: "ask",
                 policy: "read_only",
@@ -8777,6 +8786,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           });
           expect(readOnboardingState({ agencHome }).completed).toBe(true);
           expect(session.submit).toHaveBeenCalledTimes(1);
+          expect(session.submit).not.toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ source: "user" }),
+          );
           expect(output()).toContain("spinner:requesting:");
         },
       );

@@ -6,7 +6,7 @@ import { describe, expect, test, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   appState: {
-    fileHistory: { entries: [] },
+    fileHistory: { snapshots: [], trackedFiles: new Set(), snapshotSequence: 0 },
     settings: { fileCheckpointingEnabled: true },
   },
 }))

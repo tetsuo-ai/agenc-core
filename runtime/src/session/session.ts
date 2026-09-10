@@ -34,6 +34,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { readPersistedUserStopState, type RolloutItem } from "./rollout-item.js";
+import type { ReadOnlyDelegationConstraint } from "../agents/readonly-delegation.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   AsyncLock,
@@ -1355,6 +1358,7 @@ export interface StateDbContext {
 
 /** agenc runtime `SessionServices` — DI container of all session-scoped services. */
 export interface SessionServices {
+  readonly readOnlyDelegation?: ReadOnlyDelegationConstraint;
   /** Immutable operator policy captured for this session at creation time. */
   readonly runtimeOptions: AgentRuntimeOptions;
   readonly mcpConnectionManager: McpConnectionManager;
@@ -2612,6 +2616,10 @@ export class Session {
 
   /** Serialize submit calls so the session keeps a single active turn. */
   private submitQueue: Promise<void> = Promise.resolve();
+  private readonly childFollowupAdmission = new AsyncLocalStorage<{
+    readonly generation: number;
+    suppressed: boolean;
+  }>();
   private hasDeferredAgentMailboxProjection = false;
   private readonly idleInputAdmissions = new Map<string, ReadonlySet<number>>();
 
@@ -3417,6 +3425,7 @@ export class Session {
     userMessage: string | readonly LLMContentPart[],
     opts: SessionRunTurnOptions = {},
   ): AsyncGenerator<PhaseEvent, Terminal> {
+    if (!this.canAdmitCurrentChildFollowup()) return { reason: "cancelled" };
     this.assertProviderSwitchTransactionHealthy();
     this.rolloutStore?.assertCompactionProjectionReady();
     if (
@@ -3466,6 +3475,7 @@ export class Session {
     const { runTurnKernel } = await withTurnAuthority(
       () => import("./run-turn.js"),
     );
+    if (!this.canAdmitCurrentChildFollowup()) return { reason: "cancelled" };
     const history =
       runOpts.history ??
       normalizeHistoryMessages(this.state.unsafePeek().history);
@@ -3753,7 +3763,31 @@ export class Session {
     message: string | readonly LLMContentPart[],
     opts: SessionSubmitOptions = {},
   ): Promise<void> {
+    await this.enqueueSubmit(message, opts);
+  }
+
+  submitChildFollowup(generation = this.userStopGeneration): Promise<boolean> {
+    return this.enqueueSubmit("", { displayUserMessage: null }, generation);
+  }
+
+  private canAdmitCurrentChildFollowup(): boolean {
+    const admission = this.childFollowupAdmission.getStore();
+    if (admission === undefined) return true;
+    if (
+      this.lifecycleState !== "open" ||
+      this.stoppedByUserSinceLastPrompt ||
+      admission.generation !== this.userStopGeneration
+    ) admission.suppressed = true;
+    return !admission.suppressed;
+  }
+
+  private async enqueueSubmit(
+    message: string | readonly LLMContentPart[],
+    opts: SessionSubmitOptions,
+    generation?: number,
+  ): Promise<boolean> {
     if (this.lifecycleState !== "open") {
+      if (generation !== undefined) return false;
       throw new Error("session is shutting down");
     }
     const hooks = this.turnDriverHooks;
@@ -3762,8 +3796,12 @@ export class Session {
     }
     const run = this.submitQueue.then(async () => {
       if (this.lifecycleState !== "open") {
+        if (generation !== undefined) return false;
         throw new Error("session is shutting down");
       }
+      const permitted = (): boolean => generation === undefined ||
+        (!this.stoppedByUserSinceLastPrompt && generation === this.userStopGeneration);
+      if (!permitted()) return false;
       if (this.pendingCompactionCleanups.size > 0) {
         await this.repairPendingCompactionCleanups();
       }
@@ -3781,17 +3819,27 @@ export class Session {
         await this.flushDeferredOrdinarySubmitHooks();
       }
       if (this.lifecycleState !== "open") {
+        if (generation !== undefined) return false;
         throw new Error("session is shutting down");
       }
+      if (!permitted()) return false;
       if (opts.onAccepted !== undefined) {
         await opts.onAccepted();
         if (this.lifecycleState !== "open") {
+          if (generation !== undefined) return false;
           throw new Error("session is shutting down");
         }
       }
-      await hooks.submit(message, opts);
+      if (!permitted()) return false;
+      if (generation === undefined) {
+        await this.childFollowupAdmission.exit(() => hooks.submit(message, opts));
+        return true;
+      }
+      const admission = { generation, suppressed: false };
+      await this.childFollowupAdmission.run(admission, () => hooks.submit(message, opts));
+      return !admission.suppressed;
     });
-    this.submitQueue = run.catch(() => {
+    this.submitQueue = run.then(() => {}, () => {
       /* keep the queue alive for the next submit */
     });
     return run;
@@ -5218,6 +5266,7 @@ export class Session {
   }
 
   private stoppedByUserSinceLastPromptFlag = false;
+  private userStopGenerationValue = 0;
 
   /**
    * A user Stop holds the session quiet until the user speaks again: while
@@ -5228,14 +5277,74 @@ export class Session {
    */
   markStoppedByUser(): void {
     this.stoppedByUserSinceLastPromptFlag = true;
+    if (this.userStopGenerationValue >= Number.MAX_SAFE_INTEGER) {
+      throw new Error("User-stop generation is exhausted");
+    }
+    this.userStopGenerationValue += 1;
+    this.rolloutStore?.appendRollout({
+      type: "session_state",
+      payload: { userStop: { stopped: true, generation: this.userStopGenerationValue } },
+    }, { durable: true });
   }
 
   clearUserStop(): void {
+    if (!this.stoppedByUserSinceLastPromptFlag) return;
+    this.rolloutStore?.appendRollout({
+      type: "session_state",
+      payload: { userStop: { stopped: false, generation: this.userStopGenerationValue } },
+    }, { durable: true });
     this.stoppedByUserSinceLastPromptFlag = false;
   }
 
   get stoppedByUserSinceLastPrompt(): boolean {
     return this.stoppedByUserSinceLastPromptFlag;
+  }
+
+  get userStopGeneration(): number {
+    return this.userStopGenerationValue;
+  }
+
+  restoreUserStopFromRollout(items: readonly RolloutItem[]): void {
+    let stopped = false;
+    let generation = 0;
+    for (const item of items) {
+      let state;
+      try {
+        state = readPersistedUserStopState(item);
+        if (state !== undefined && state.generation < generation) throw new Error("Invalid persisted user-stop generation order");
+      } catch (error) {
+        this.stoppedByUserSinceLastPromptFlag = true;
+        throw error;
+      }
+      if (state !== undefined) {
+        stopped = state.stopped;
+        generation = state.generation;
+        continue;
+      }
+      if (item.type !== "event_msg") continue;
+      const event = item.payload.msg;
+      if (
+        event.type === "permission_decision" &&
+        event.payload.runId === this.conversationId &&
+        event.payload.decision === "denied" &&
+        event.payload.source === "resolver"
+      ) {
+        if (!stopped) generation += 1;
+        stopped = true;
+      } else if (event.type === "turn_aborted" && event.payload.reason === "interrupted") {
+        if (!stopped) generation += 1;
+        stopped = true;
+      }
+      else if (
+        (event.type === "user_message" || event.type === "message_submission") &&
+        typeof event.payload.messageId === "string" &&
+        typeof event.payload.acceptedAt === "string" &&
+        event.payload.streamId !== "session.shell.execute"
+      ) stopped = false;
+    }
+    if (generation < this.userStopGenerationValue) return;
+    this.stoppedByUserSinceLastPromptFlag = stopped;
+    this.userStopGenerationValue = generation;
   }
 
   hasDeferredAgentMailboxMessages(): boolean {
