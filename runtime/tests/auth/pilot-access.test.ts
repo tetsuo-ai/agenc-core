@@ -71,6 +71,8 @@ describe.each(["Qwen/Qwen3.8-Flash-Next", "Qwen/Qwen3-Coder-30B-A3B-Instruct"])(
       modelInferer: () => ({ provider: "qwen", model }),
       keyVendor: ({ provider, sessionId }) => ({ kind: "api-key", provider, sessionId, apiKey: "synthetic-relay-capability", baseUrl: "http://127.0.0.1:43187/v1" }),
     });
+    vi.spyOn(authBackend, "whoami").mockResolvedValue({ authenticated: true, provider: "remote" });
+    vi.spyOn(authBackend, "listAgencModels").mockResolvedValue([{ id: model, name: model }]);
     const report = await collectProviderAvailability({
       authBackend, checkLocal: false, env: {},
       config: { ...defaultConfig(), model_provider: "agenc", model, providers: { agenc: { default_model: model } } },

@@ -33,6 +33,7 @@ import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "../registry/openai-reasoning-models.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
+import { AGENC_DEEPSEEK_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "../registry/agenc-deepseek.js";
 
 export interface ChatCompletionsCapabilityHints {
   /**
@@ -378,8 +379,11 @@ export function filterToolsForLocalProfile<
 export function chatCompletionsCapabilityHintsForProvider(
   providerName: string | undefined,
   model: string | undefined,
+  options: { readonly managedGateway?: boolean } = {},
 ): ChatCompletionsCapabilityHints {
   const slug = normalizeProviderIdentity(providerName, "capability gate") ?? "";
+  const isManagedDeepSeek = options.managedGateway === true &&
+    slug === "openrouter" && model === AGENC_DEEPSEEK_MODEL;
   const normalizedModel = model?.trim().toLowerCase() ?? "";
   const reasoningContentProvenance =
     slug.length > 0 && normalizedModel.length > 0
@@ -419,7 +423,10 @@ export function chatCompletionsCapabilityHintsForProvider(
   // branding-scan: allow factual reference to real provider in routing comment
   let acceptsReasoningEffort = false;
   let reasoningEffortAllowedValues: ReadonlySet<string> | undefined;
-  if (slug === "openai") {
+  if (isManagedDeepSeek) {
+    acceptsReasoningEffort = true;
+    reasoningEffortAllowedValues = new Set(AGENC_DEEPSEEK_REASONING_LEVELS);
+  } else if (slug === "openai") {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {
     acceptsReasoningEffort = supportsXaiReasoningEffortParam(model);
@@ -501,6 +508,16 @@ export function chatCompletionsCapabilityHintsForProvider(
 
   return {
     acceptsReasoningEffort,
+    ...(isManagedDeepSeek ? {
+      acceptsParallelToolCalls: false,
+      acceptsDirectImageInput: false,
+      toolResultImagePolicy: "strip" as const,
+      replaysReasoningContent: true,
+      reasoningContentField: "reasoning" as const,
+      reasoningContentFallbackField: "reasoning_content" as const,
+      replaysReasoningContentOnlyForAdjacentToolContinuation: true,
+      maxToolDefinitions: 100,
+    } : {}),
     ...(reasoningEffortAllowedValues !== undefined
       ? { reasoningEffortAllowedValues }
       : {}),

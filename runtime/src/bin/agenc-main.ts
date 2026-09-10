@@ -391,6 +391,7 @@ export function formatCliHelpText(): string {
     "       agenc run <start|status|result|replay|evidence|cancel> [<run-id>] [options]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
+    "       agenc account-access --json",
     "       agenc <openai-login|openai-logout|openai-auth-status> [--json]",
     "       agenc <grok-login|grok-logout|grok-auth-status> [--json]",
     "       agenc openai-models [--json]",
@@ -493,6 +494,7 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "login":
     case "logout":
     case "whoami":
+    case "account-access":
       return formatAgenCAuthCliHelpText();
     case "openai-login":
     case "openai-logout":

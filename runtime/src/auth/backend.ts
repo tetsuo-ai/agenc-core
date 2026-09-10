@@ -129,6 +129,7 @@ export interface AuthLlmUsageAllowance extends AuthJsonObject {
   readonly resetsAt?: string;
   readonly status: AuthLlmUsageStatus;
   readonly usedUsd?: number;
+  readonly pendingUsd?: number;
 }
 
 export interface AuthLlmUsage extends AuthJsonObject {
@@ -145,8 +146,17 @@ export interface AuthPilotAccess extends AuthJsonObject {
   readonly expiresAt: string;
 }
 
+/** Public metadata only. A catalog entry is not an entitlement. */
+export interface AuthAgencModel extends AuthJsonObject {
+  readonly id: string;
+  readonly name: string;
+  readonly contextWindow?: number;
+  readonly maxOutputTokens?: number;
+}
+
 export interface AuthBackend {
   readonly kind?: AuthBackendKind;
+  readonly managedKeysEnabled?: boolean;
   login(params?: AuthLoginParams): AuthLoginResult | Promise<AuthLoginResult>;
   logout(
     params?: AuthLogoutParams,
@@ -164,6 +174,7 @@ export interface AuthBackend {
   getLlmUsage(
     params?: AuthSessionRef,
   ): AuthLlmUsage | Promise<AuthLlmUsage>;
+  listAgencModels?(): readonly AuthAgencModel[] | Promise<readonly AuthAgencModel[]>;
   getSubscriptionTier(
     params?: AuthSessionRef,
   ): AuthSubscriptionTier | Promise<AuthSubscriptionTier>;

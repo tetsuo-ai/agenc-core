@@ -1,7 +1,8 @@
 {
   "git": {
     "deploymentEnabled": {
-      "codex/flash-next-local": false
+      "codex/flash-next-local": false,
+      "feat/agenc-login-model-access-20260910": false
     }
   },
   "headers": [

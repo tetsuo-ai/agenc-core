@@ -114,6 +114,8 @@ describe("AgenC auth CLI", () => {
   it("persists remote login state through RemoteAuthBackend", async () => {
     const agencHome = await tempAgencHome();
     const backend = new RemoteAuthBackend({
+      llmUsageResolver: () => ({ managedModelsEnabled: false, subscriptionTier: "pro",
+        modelAllowance: { status: "unavailable", allowedModelCount: 0, duration: "monthly" } }),
       accountSnapshotResolver: () => ({
         authenticated: true,
         identity: {

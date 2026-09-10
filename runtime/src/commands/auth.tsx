@@ -1,5 +1,7 @@
 import type { AuthBackend, AuthIdentity, AuthLlmUsage } from "../auth/backend.js";
 import { createAuthBackend } from "../auth/selection.js";
+import { readAccountModelAccess } from "../auth/account-access.js";
+import { saveAccountDefaultModel } from "../auth/account-default.js";
 import { defaultConfig } from "../config/schema.js";
 import { Box, Text } from "../tui/ink.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
@@ -101,7 +103,14 @@ async function executeAuthCommand(
         clearLocalAuthNotice(ctx);
       }
       const tier = await resolveSubscriptionTier(backend);
-      const routeMessage = hostedSubscriptionRouteMessage(ctx, tier);
+      const access = backend.kind === "remote" ? await readAccountModelAccess(backend) : undefined;
+      if (access !== undefined && access.models.length > 0) {
+        saveAccountDefaultModel(requireCommandConfigStore(ctx).homeContext.path, access);
+      }
+      const routeMessage = access?.models.length ?
+        "AgenC model access is ready. Your current conversation was kept; run /provider agenc to choose it." :
+        backend.kind === "remote" && tier === "free" ? "Sign-in complete. Check your model credits in AgenC account settings." :
+          hostedSubscriptionRouteMessage(ctx, tier);
       return {
         kind: "text",
         text:
@@ -295,7 +304,7 @@ function formatSubscriptionStatus(tier: string | undefined): string {
   if (tier === "pro" || tier === "team" || tier === "enterprise") {
     return ` · plan=${tier} · managed keys available`;
   }
-  return ` · plan=${tier} · managed keys require Pro (https://id.agenc.ag/pricing)`;
+  return ` · plan=${tier} · check model credits (https://id.agenc.ag/account/credits)`;
 }
 
 export function formatSubscriptionCommandResult(tier: string | undefined): string {
