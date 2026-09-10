@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { createProvider } from "../../src/llm/provider.js";
 import type { LLMMessage } from "../../src/llm/types.js";
-import { LLMManagedAdmissionError } from "../../src/llm/errors.js";
+import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
 import { isTransientProviderError } from "../../src/recovery/api-errors.js";
 
 const baseURL = "https://id.agenc.ag/v1/auth/openrouter/v1";
@@ -26,6 +26,29 @@ function requestId(init: RequestInit | undefined) { return new Headers(init?.hea
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("managed paid request identity", () => {
+  test.each([false, true])("does not automatically retry a recorded failed attempt (stream=%s)", async (streaming) => {
+    for (const [status, code, state] of [[502, "provider_unavailable", "pending"], [409, "request_already_recorded", "uncertain"]] as const) {
+      const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => Response.json({error:{code}}, {
+        status, headers:{"x-agenc-request-id":requestId(init)!,"x-agenc-usage-status":state},
+      }));
+      const provider = managed(fetchImpl);
+      const error = await (streaming ? provider.chatStream(messages,()=>{},{singleWireAttempt:true}) : provider.chat(messages,{singleWireAttempt:true})).catch(error=>error);
+      expect(error).toBeInstanceOf(LLMManagedUsagePendingError);
+      expect(error).not.toBeInstanceOf(LLMManagedAdmissionError);
+      expect(isTransientProviderError(error)).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  });
+
+  test("does not treat an unrelated gateway response as evidence of recorded usage", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({error:{code:"provider_unavailable"}}, {
+      status:502, headers:{"x-agenc-request-id":"unrelated","x-agenc-usage-status":"pending"},
+    }));
+    const error = await managed(fetchImpl).chat(messages,{singleWireAttempt:true}).catch(error=>error);
+    expect(error).not.toBeInstanceOf(LLMManagedUsagePendingError);
+    expect(isTransientProviderError(error)).toBe(true);
+  });
+
   test.each([false,true])("recognizes a matching no-dispatch receipt without automatic recovery (stream=%s)", async (streaming) => {
     const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => Response.json({error:{code:"too_many_requests"}}, {
       status:429, headers:{"x-agenc-request-id":requestId(init)!,"x-agenc-usage-status":"not_started"},

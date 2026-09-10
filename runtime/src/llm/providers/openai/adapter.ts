@@ -25,6 +25,7 @@ import {
   LLMInvalidResponseError,
   LLMProviderError,
   LLMManagedAdmissionError,
+  LLMManagedUsagePendingError,
   LLMRateLimitError,
   LLMServerError,
   mapLLMError,
@@ -764,7 +765,7 @@ export class OpenAIProvider implements LLMProvider {
         throw error;
       }
       if (error instanceof ProviderHttpError) {
-        const admissionError = this.managedAdmissionError(error, headers);
+        const admissionError = this.managedRequestError(error, headers);
         if (admissionError) throw admissionError;
         throw mapOpenAIHttpFailureToError({
           providerName: this.name,
@@ -812,7 +813,7 @@ export class OpenAIProvider implements LLMProvider {
         throw error;
       }
       if (error instanceof ProviderHttpError) {
-        const admissionError = this.managedAdmissionError(error, headers);
+        const admissionError = this.managedRequestError(error, headers);
         if (admissionError) throw admissionError;
         throw mapOpenAIHttpFailureToError({
           providerName: this.name,
@@ -1070,13 +1071,18 @@ export class OpenAIProvider implements LLMProvider {
       : undefined;
   }
 
-  private managedAdmissionError(error: ProviderHttpError, headers: Readonly<Record<string, string>> | undefined): Error | undefined {
+  private managedRequestError(error: ProviderHttpError, headers: Readonly<Record<string, string>> | undefined): Error | undefined {
     const requestId = headers?.["Idempotency-Key"];
-    if (this.config.managedRequestId === true && requestId && error.status === 429 &&
-      error.headers.get("x-agenc-request-id") === requestId &&
-      error.headers.get("x-agenc-usage-status") === "not_started" &&
-      readNestedProviderCode(error.body) === "too_many_requests") {
+    if (this.config.managedRequestId !== true || !requestId ||
+      error.headers.get("x-agenc-request-id") !== requestId) return undefined;
+    const usageState = error.headers.get("x-agenc-usage-status");
+    const code = readNestedProviderCode(error.body);
+    if (error.status === 429 && usageState === "not_started" && code === "too_many_requests") {
       return new LLMManagedAdmissionError();
+    }
+    if ((error.status === 502 && usageState === "pending" && code === "provider_unavailable") ||
+      (error.status === 409 && ["pending", "started", "uncertain"].includes(usageState ?? "") && code === "request_already_recorded")) {
+      return new LLMManagedUsagePendingError();
     }
     return undefined;
   }

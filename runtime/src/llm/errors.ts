@@ -144,6 +144,14 @@ export class LLMManagedAdmissionError extends LLMProviderError {
   }
 }
 
+/** A recorded managed attempt must be reconciled, not automatically dispatched again. */
+export class LLMManagedUsagePendingError extends LLMProviderError {
+  constructor() {
+    super("agenc", "The model request was recorded, but no usable response was received. Credit usage is pending reconciliation. Retry to start a new request.", 502);
+    this.name = "LLMManagedUsagePendingError";
+  }
+}
+
 /**
  * Error thrown when local tool-turn/message protocol validation fails before
  * sending a request to an external provider.
