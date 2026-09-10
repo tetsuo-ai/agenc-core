@@ -28,6 +28,13 @@ transport lets separate conversations use concurrent HTTPS connections. Explicit
 The regression test keeps one verified HTTPS response open and requires a second
 POST to finish before the first is released.
 
+The same rule applies to DeepSeek through AgenC's managed gateway, constructed
+by `buildManagedGatewayProvider`, rather than the ordinary OpenRouter adapter.
+Its internal model key is prefixed `openrouter/deepseek/`. Both direct and
+managed construction paths are exercised against the verified HTTPS fixture.
+Managed admission, idempotency, credit reservations and route policy remain
+owned by the backend. This transport change does not relax those controls.
+
 Desktop can send the internal `session.applyConfig` request with an exclusive
 `reasoningEffort` field before a turn. It validates the selected model's
 native levels, rejects a running turn, records the durable runtime setting,
