@@ -636,10 +636,23 @@ async function runAutoCompact(
         },
       },
     });
+    // A compaction that committed nothing leaves the session exactly as it
+    // was, so its failure cannot have made the turn less valid than it
+    // already was, and killing the turn adds nothing but a dead end.
+    // Admission is the authority on whether the context fits; it now sizes
+    // the output reservation to the room the prompt left and denies with a
+    // reason when it genuinely cannot.
+    //
+    // This is what a small local model hits constantly. Compaction asks the
+    // session's own model for a structured summary, and a 7B answers with
+    // something that fails validation ("facts[0] cites an unplanned source
+    // ref") or with nothing worth keeping ("candidate saves -198 tokens").
+    // Propagating turned every one of those into `turn errored` with no
+    // reason shown, which is what a local model looked like on any real
+    // repository. The warning above still records it.
     if (
       committedAttemptId !== undefined ||
-      error instanceof CompactionReconstructionRequiredError ||
-      options.propagateErrors === true
+      error instanceof CompactionReconstructionRequiredError
     ) {
       throw error;
     }

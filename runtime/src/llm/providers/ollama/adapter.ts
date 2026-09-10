@@ -22,6 +22,7 @@ import type {
 } from "../../types.js";
 import { validateToolCall } from "../../types.js";
 import type { OllamaProviderConfig } from "./types.js";
+import { salvageTextToolCalls, streamableLength } from "./salvage-tool-calls.js";
 import { LLMProviderError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
@@ -599,6 +600,8 @@ export class OllamaProvider implements LLMProvider {
       options?.timeoutMs,
     );
     let content = "";
+    /** How much of `content` the caller has already been shown. */
+    let emittedLength = 0;
     let model = String(params.model ?? this.config.model);
     let toolCalls: LLMToolCall[] = [];
     let promptTokens = 0;
@@ -645,7 +648,17 @@ export class OllamaProvider implements LLMProvider {
 
               if (chunkContent) {
                 content += chunkContent;
-                onChunk({ content: chunkContent, done: false });
+                // Hold back anything that might turn out to be a tool call
+                // rather than prose. Released once the stream ends and
+                // salvage has decided; see streamableLength.
+                const safeLength = streamableLength(content);
+                if (safeLength > emittedLength) {
+                  onChunk({
+                    content: content.slice(emittedLength, safeLength),
+                    done: false,
+                  });
+                  emittedLength = safeLength;
+                }
               }
 
               toolCalls = [
@@ -677,6 +690,24 @@ export class OllamaProvider implements LLMProvider {
           }
         },
       });
+
+      // The model may have written its call into the reply instead of
+      // returning it. Only once the stream is done is there a whole value to
+      // read, so the recovery happens here rather than per chunk.
+      if (toolCalls.length === 0 && doneReason !== "length") {
+        const salvaged = salvageTextToolCalls(content, options?.tools);
+        if (salvaged.toolCalls.length > 0) {
+          toolCalls = [...salvaged.toolCalls];
+          content = salvaged.content;
+        }
+      }
+      // Whatever was held back and is still part of the answer goes out now.
+      // When the held text WAS the tool call, salvage removed it and there is
+      // nothing left to release, which is the point.
+      if (content.length > emittedLength) {
+        onChunk({ content: content.slice(emittedLength), done: false });
+        emittedLength = content.length;
+      }
 
       const finishReason: LLMResponse["finishReason"] =
         doneReason === "length"
@@ -1002,9 +1033,16 @@ export class OllamaProvider implements LLMProvider {
   private parseResponse(response: unknown, options?: LLMChatOptions): LLMResponse {
     const record = isRecord(response) ? response : {};
     const message = isRecord(record.message) ? record.message : {};
-    const content = readString(message.content);
+    const rawContent = readString(message.content);
     const truncated = record.done_reason === "length";
-    const toolCalls = truncated ? [] : normalizeOllamaToolCalls(message.tool_calls);
+    const reported = truncated ? [] : normalizeOllamaToolCalls(message.tool_calls);
+    // Same recovery as the streaming path: a reply that IS a call becomes one.
+    const salvaged =
+      reported.length === 0 && !truncated
+        ? salvageTextToolCalls(rawContent, options?.tools)
+        : { toolCalls: [], content: rawContent };
+    const toolCalls = salvaged.toolCalls.length > 0 ? [...salvaged.toolCalls] : reported;
+    const content = salvaged.toolCalls.length > 0 ? salvaged.content : rawContent;
 
     const promptTokens = readNonNegativeNumber(record.prompt_eval_count);
     const completionTokens = readNonNegativeNumber(record.eval_count);
