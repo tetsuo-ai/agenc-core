@@ -660,6 +660,9 @@ export function allWorkingDirectories(
 ): Set<string> {
   const additionalDirs =
     context.additionalWorkingDirectories as unknown as ReadonlyMap<string, unknown>
+  if (context.excludeProcessWorkingDirectory === true) {
+    return new Set(additionalDirs.keys())
+  }
   return new Set([getOriginalCwd(), ...additionalDirs.keys()])
 }
 
