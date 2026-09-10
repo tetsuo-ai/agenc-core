@@ -3671,6 +3671,7 @@ export class AgenCDaemonAgentManager {
     );
     const result = await this.#runner.applyAgentConfig(agentId, {
       sessionId: params.sessionId,
+      ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
       ...(params.reload !== undefined ? { reload: params.reload } : {}),
     });

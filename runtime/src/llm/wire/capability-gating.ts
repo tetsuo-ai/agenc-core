@@ -34,6 +34,7 @@ import { isVerifiedOpenAiReasoningModel } from "../registry/openai-reasoning-mod
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
 import { AGENC_DEEPSEEK_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "../registry/agenc-deepseek.js";
+import { DEEPSEEK_REASONING_LEVELS, isNativeDeepSeekModel } from "../registry/deepseek-models.js";
 
 export interface ChatCompletionsCapabilityHints {
   /**
@@ -58,6 +59,8 @@ export interface ChatCompletionsCapabilityHints {
    * unsupported mode while keeping the other explicit choices intact.
    */
   readonly toolChoicePolicy?: "auto_only" | "no_required" | "no_named";
+  /** Omit the field entirely for APIs whose thinking mode rejects it. */
+  readonly acceptsToolChoice?: boolean;
   /** Omit tool-selection controls when no tool definitions are attached. */
   readonly omitsToolControlsWithoutTools?: boolean;
   /** Whether the selected model accepts `parallel_tool_calls`. */
@@ -399,6 +402,7 @@ export function chatCompletionsCapabilityHintsForProvider(
   const slug = normalizeProviderIdentity(providerName, "capability gate") ?? "";
   const isManagedDeepSeek = options.managedGateway === true &&
     slug === "openrouter" && model === AGENC_DEEPSEEK_MODEL;
+  const isNativeDeepSeek = slug === "deepseek" && isNativeDeepSeekModel(model);
   const normalizedModel = model?.trim().toLowerCase() ?? "";
   const reasoningContentProvenance =
     slug.length > 0 && normalizedModel.length > 0
@@ -441,6 +445,9 @@ export function chatCompletionsCapabilityHintsForProvider(
   if (isManagedDeepSeek) {
     acceptsReasoningEffort = true;
     reasoningEffortAllowedValues = new Set(AGENC_DEEPSEEK_REASONING_LEVELS);
+  } else if (isNativeDeepSeek) {
+    acceptsReasoningEffort = true;
+    reasoningEffortAllowedValues = new Set(DEEPSEEK_REASONING_LEVELS);
   } else if (slug === "openai") {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {
@@ -523,6 +530,17 @@ export function chatCompletionsCapabilityHintsForProvider(
 
   return {
     acceptsReasoningEffort,
+    ...(isNativeDeepSeek ? {
+      acceptsToolChoice: false,
+      acceptsParallelToolCalls: false,
+      acceptsDirectImageInput: false,
+      toolResultImagePolicy: "strip" as const,
+      toolChoicePolicy: "auto_only" as const,
+      acceptsTemperature: false,
+      thinkingConfig: { type: "enabled" as const },
+      replaysReasoningContent: true,
+      reasoningContentField: "reasoning_content" as const,
+    } : {}),
     ...(isManagedDeepSeek ? {
       acceptsParallelToolCalls: false,
       acceptsDirectImageInput: false,

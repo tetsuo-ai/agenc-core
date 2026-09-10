@@ -16,6 +16,7 @@ import {
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
+import { DEEPSEEK_MODELS } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
 import { AGENC_DEEPSEEK_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "./agenc-deepseek.js";
@@ -510,6 +511,30 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     })),
     ...qwenCloudCatalogEntries(),
+    ...DEEPSEEK_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
+      provider: "deepseek",
+      model: entry.model,
+      displayName: entry.label,
+      contextWindow: entry.contextWindow,
+      maxContextWindow: entry.contextWindow,
+      maxOutputTokens: entry.maxOutputTokens,
+      maxOutputTokensUpperLimit: entry.maxOutputTokensUpperLimit,
+      inputModalities: TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: false,
+      supportsStructuredOutput: true,
+      supportsStructuredOutputWithTools: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: entry.efforts,
+      defaultReasoningLevel: entry.defaultEffort,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: index,
+      visibility: "list",
+    })),
     // Reviewed AgenC route metadata; account discovery still controls access.
     // Backend: docs/operations/deepseek-policy-refresh-20260910.md.
     {

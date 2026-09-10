@@ -439,6 +439,7 @@ export interface AgenCBackgroundAgentSetHooksDisabledResult {
 
 export interface AgenCBackgroundAgentApplyConfigParams {
   readonly sessionId: string;
+  readonly reasoningEffort?: string;
   readonly profile?: string;
   readonly reload?: boolean;
 }

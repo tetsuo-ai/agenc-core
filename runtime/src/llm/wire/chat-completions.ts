@@ -561,6 +561,7 @@ export function buildChatCompletionsRequest(
     tools.length === 0;
   if (
     requestedToolChoice !== undefined &&
+    input.providerCapabilityHints?.acceptsToolChoice !== false &&
     !omitToolsForChoice &&
     !omitToolControlsWithoutTools
   ) {
