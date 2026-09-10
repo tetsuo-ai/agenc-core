@@ -321,6 +321,13 @@ export interface ToolPermissionContext {
     string,
     AdditionalWorkingDirectory
   >;
+  /**
+   * When true, shell path checks use only `additionalWorkingDirectories`
+   * and do not treat the process working directory as an allowed root.
+   * The unattended grant sets this so a daemon-hosted routine cannot
+   * read the folder the daemon itself was started in.
+   */
+  readonly excludeProcessWorkingDirectory?: boolean;
   readonly alwaysAllowRules: ToolPermissionRulesBySource;
   readonly alwaysDenyRules: ToolPermissionRulesBySource;
   readonly alwaysAskRules: ToolPermissionRulesBySource;

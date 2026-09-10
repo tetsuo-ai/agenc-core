@@ -111,6 +111,50 @@ describe("read-only grant in a daemon-hosted run", () => {
     ).toEqual({ ok: false, reason: "it reads outside this project folder" });
   });
 
+  it("refuses reading the daemon process folder when that is not the run folder", () => {
+    const daemonFolder = resolve(process.cwd());
+    const daemonFile = join(daemonFolder, "package.json");
+    expect(runFolder).not.toBe(daemonFolder);
+    expect(
+      shellCallIsGranted(
+        "exec_command",
+        { cmd: `cat "${daemonFile}"` },
+        runFolder,
+        context,
+        deps,
+      ),
+    ).toEqual({ ok: false, reason: "it reads outside this project folder" });
+  });
+
+  it("still allows an extra directory the session itself declared", () => {
+    const extraFolder = resolve(mkdtempSync(join(tmpdir(), "readonly-grant-add-")));
+    writeFileSync(join(extraFolder, "notes.md"), "extra\n");
+    const granted = createEmptyToolPermissionContext({
+      mode: "unattended",
+      additionalWorkingDirectories: new Map([
+        [extraFolder, { path: extraFolder, source: "session" }],
+      ]),
+    });
+    expect(
+      shellCallIsGranted(
+        "exec_command",
+        { cmd: `cat "${join(extraFolder, "notes.md")}"` },
+        runFolder,
+        granted,
+        deps,
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      shellCallIsGranted(
+        "exec_command",
+        { cmd: `cat "${join(resolve(process.cwd()), "package.json")}"` },
+        runFolder,
+        granted,
+        deps,
+      ),
+    ).toEqual({ ok: false, reason: "it reads outside this project folder" });
+  });
+
   it("still refuses a workdir outside the run's folder", () => {
     expect(
       shellCallIsGranted(
