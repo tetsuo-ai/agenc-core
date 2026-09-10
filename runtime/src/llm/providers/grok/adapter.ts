@@ -360,6 +360,7 @@ async function nextStreamChunkWithTimeout<T>(
   // gaphunt3 #21: the caller's AbortSignal must keep teeing the open stream;
   // withTimeout detaches at stream-open, so the chunk loop re-supplies it here.
   externalSignal?: AbortSignal,
+  abortStream?: (reason?: unknown) => void,
 ): Promise<IteratorResult<T>> {
   const effectiveTimeoutMs =
     typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : undefined;
@@ -370,8 +371,10 @@ async function nextStreamChunkWithTimeout<T>(
   // gaphunt3 #21: already-aborted signals must reject before awaiting the next
   // chunk so a mid-stream cancel cannot block on a slow iterator.next().
   if (externalSignal?.aborted) {
+    const error = createStreamAbortError(providerName, externalSignal);
+    abortStream?.(error);
     await closeAsyncIterator(iterator);
-    throw createStreamAbortError(providerName, externalSignal);
+    throw error;
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -390,6 +393,7 @@ async function nextStreamChunkWithTimeout<T>(
   const interrupt = (error: Error): void => {
     if (interruption.error !== undefined) return;
     interruption.error = error;
+    abortStream?.(error);
     void (async () => {
       // `return()` requests teardown, but the AsyncIterator contract does not
       // guarantee that its resolution also settles an already-pending
@@ -1389,6 +1393,8 @@ export class GrokProvider implements LLMProvider {
       // forwarded under the call_id the tool-input session events key on.
       const functionCallItemIds = new Map<string, string>();
       let streamIterator: AsyncIterator<any> | null = null;
+      let abortStream: ((reason?: unknown) => void) | undefined;
+      let streamExhausted = false;
       let responseTracePayload: Record<string, unknown> | undefined;
       let streamResponseMeta: ProviderResponseTraceMeta | undefined;
       let completedResponseId: string | undefined;
@@ -1487,6 +1493,12 @@ export class GrokProvider implements LLMProvider {
         options?.tools,
       );
       const stream = result.data;
+      const streamController = (stream as { controller?: AbortController }).controller;
+      if (streamController !== undefined && typeof streamController.abort === "function") {
+        abortStream = (reason) => {
+          if (!streamController.signal.aborted) streamController.abort(reason);
+        };
+      }
       attemptPhaseTimeoutMs = streamTimeout.timeoutMs;
       streamResponseMeta = buildProviderResponseMeta({
         response: result.response,
@@ -1533,8 +1545,12 @@ export class GrokProvider implements LLMProvider {
           streamTimeout.timeoutMs,
           this.name,
           options?.signal,
+          abortStream,
         );
-        if (iterResult.done) break;
+        if (iterResult.done) {
+          streamExhausted = true;
+          break;
+        }
         const event = iterResult.value;
         streamEventIndex += 1;
         emitProviderTraceEvent(options, {
@@ -1969,6 +1985,7 @@ export class GrokProvider implements LLMProvider {
       }
       throw mappedError;
       } finally {
+      if (!streamExhausted) abortStream?.(options?.signal?.reason);
       if (streamIterator) await closeAsyncIterator(streamIterator);
       streamIterator = null;
     }
