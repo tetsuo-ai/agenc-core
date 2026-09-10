@@ -17,8 +17,9 @@ describe("R5 useSessionTranscript exposes streamingToolUses on transcript snapsh
       /const\s+adapted\s*=\s*adaptTranscriptEvents\s*\(\s*state\.events\s*,\s*startupMessages\s*\)/,
     );
     expect(source).toMatch(
-      /return\s+adapted\.sessionCostUsd\s*===\s*state\.sessionCostUsd\s*\?\s*adapted\s*:\s*\{\s*\.\.\.adapted\s*,\s*sessionCostUsd:\s*state\.sessionCostUsd\s*\}/s,
+      /return\s+\{\s*\.\.\.adapted\s*,\s*sessionCostUsd:\s*state\.sessionUsage\?\.costUsd\s*\?\?\s*state\.sessionCostUsd\s*,\s*sessionUsage:\s*state\.sessionUsage\s*,?\s*\}/s,
     );
+    expect(source).toMatch(/\[state\.events,\s*state\.sessionCostUsd,\s*state\.sessionUsage,\s*startupMessages\]/);
   });
 
   test("B5.6 the snapshot returned by adaptTranscriptEvents always has streamingToolUses, including in the no-events case the hook produces on first mount", () => {

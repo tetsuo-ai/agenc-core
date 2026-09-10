@@ -223,8 +223,9 @@ describe("workbench keybinding contract", () => {
       x: "agents:stop",
     });
     expect(byContext.get("Confirmation")).toMatchObject({
-      d: "workbench:openDiff",
+      "ctrl+w d": "workbench:openDiff",
     });
+    expect(byContext.get("Confirmation")).not.toHaveProperty("d");
   });
 
   it("keeps TEST surface footer hints aligned with surface navigation bindings", () => {

@@ -89,6 +89,11 @@ interface AgentRunRow {
 interface LocatedRun {
   readonly paths: StateDatabasePaths;
   readonly run?: AgentRunRow;
+  readonly admission?: {
+    readonly paths: StateDatabasePaths;
+    readonly summary: RunStatusResult["admission"];
+    readonly lastSequence: number;
+  };
 }
 
 interface RunTerminalRow {
@@ -231,7 +236,7 @@ export class AgenCDaemonRunInspectionService {
             usage: parseRunUsage(durableTerminal.usage_json),
             lastSequence: durableTerminal.last_sequence,
           },
-          source: runStateSource(located.paths),
+          source: runStateSource(located.paths, located.admission),
         };
       }
       if (run === undefined) {
@@ -254,7 +259,7 @@ export class AgenCDaemonRunInspectionService {
           available: false,
           reason: "terminal_output_not_persisted_in_existing_state",
         },
-        source: runStateSource(located.paths),
+        source: runStateSource(located.paths, located.admission),
       };
     });
   }
@@ -290,7 +295,7 @@ export class AgenCDaemonRunInspectionService {
             ? "admission_source_unavailable"
             : replay.gap !== null
               ? "journal_gap"
-            : afterSequence > 0 || replay.hasMore
+            : afterSequence > 0 || replay.hasMore || located.admission !== undefined
               ? "partial"
               : "complete";
         const bundleDocument = {
@@ -306,6 +311,9 @@ export class AgenCDaemonRunInspectionService {
           gap: replay.gap,
           gapSha256,
           eventHashes,
+          ...(located.admission !== undefined
+            ? { admissionSource: runStateSource(located.paths, located.admission) }
+            : {}),
         } as const;
         const bundle = workflowEvidenceBundle(this.#agencHome, db, runId);
         const result: RunEvidenceResult = {
@@ -315,6 +323,12 @@ export class AgenCDaemonRunInspectionService {
               ? "canonical_run_journal"
               : "existing_m3_admission_state",
             projectDir: located.paths.projectDir,
+            ...(located.admission !== undefined
+              ? {
+                  admissionProjectDir: located.admission.paths.projectDir,
+                  admissionLastSequence: located.admission.lastSequence,
+                }
+              : {}),
             admissionJournal: status.admission.sources.journal,
             workflowEvidenceIncluded: canonicalJournal,
             completeness,
@@ -343,18 +357,20 @@ export class AgenCDaemonRunInspectionService {
   }
 
   #locate(runId: string): LocatedRun {
-    const matches: LocatedRun[] = [];
+    const matches: (LocatedRun & { readonly canonical: boolean; readonly hasAdmission: boolean })[] = [];
+    const discovered: StateDatabasePaths[] = [];
     const seen = new Set<string>();
     for (const paths of this.#stateDatabasePaths()) {
       if (seen.has(paths.stateDbPath)) continue;
       seen.add(paths.stateDbPath);
       if (!existsSync(paths.stateDbPath)) continue;
+      discovered.push(paths);
       const match = withReadonlyStateDatabase(paths, (db) => {
         const run = readAgentRun(db, runId);
-        return run !== undefined ||
-          hasAdmissionState(db, runId) ||
-          hasCanonicalRunState(db, runId)
-          ? { paths, ...(run !== undefined ? { run } : {}) }
+        const canonical = hasCanonicalRunState(db, runId);
+        const hasAdmission = hasAdmissionState(db, runId);
+        return run !== undefined || hasAdmission || canonical
+          ? { paths, canonical, hasAdmission, ...(run !== undefined ? { run } : {}) }
           : undefined;
       });
       if (match !== undefined) matches.push(match);
@@ -365,14 +381,130 @@ export class AgenCDaemonRunInspectionService {
         `no durable run or admission state found for id: ${runId}`,
       );
     }
-    if (matches.length > 1) {
-      throw new AgenCDaemonRunInspectionError(
-        "RUN_ID_AMBIGUOUS",
-        `run id ${runId} exists in multiple project state databases`,
-      );
-    }
-    return matches[0]!;
+    const canonicalMatches = matches.filter((match) => match.canonical);
+    if (canonicalMatches.length === 0 && matches.length === 1) return matches[0]!;
+    if (canonicalMatches.length !== 1) throw ambiguousRunOwner(runId);
+    const canonical = canonicalMatches[0]!;
+    refreshRunJournalProjection(canonical.paths, runId);
+    const authority = withReadonlyStateDatabase(canonical.paths, (db) => readRunAdmissionAuthority(db, runId));
+    if (matches.length === 1 && authority.owner === undefined) return canonical;
+    const admissionMatches = matches.filter((match) => match.hasAdmission);
+    const declaredOwners = authority.owner === undefined ? [] : discovered.filter((paths) =>
+      paths.projectDir === authority.owner?.workspaceId || withReadonlyStateDatabase(paths, (db) =>
+        hasDeclaredAdmissionWorkspace(db, authority.owner!, runId),
+      ),
+    );
+    if (declaredOwners.length > 1) throw ambiguousRunOwner(runId);
+    const declaredOwnerPaths = declaredOwners[0];
+    const owner: LocatedRun | undefined = authority.owner === undefined
+      ? admissionMatches.length === 1 ? admissionMatches[0] : undefined
+      : declaredOwnerPaths === undefined ? undefined : { paths: declaredOwnerPaths };
+    if (owner === undefined || !authority.identitiesValid) throw ambiguousRunOwner(runId);
+    if (matches.some((match) => match.paths.stateDbPath !== canonical.paths.stateDbPath && match.paths.stateDbPath !== owner.paths.stateDbPath)) throw ambiguousRunOwner(runId);
+    const admission = withReadonlyStateDatabase(owner.paths, (db) => db.transaction(() => {
+      verifyRunAdmissionAuthority(db, authority, runId);
+      const runIds = collectRunTreeIds(db, runId);
+      const lastSequence = tableExists(db, "execution_admission_journal")
+        ? db.prepare<unknown[], { last_sequence: number | null }>(
+            `SELECT MAX(sequence) AS last_sequence FROM execution_admission_journal WHERE run_id IN (${placeholders(runIds.length)})`,
+          ).get(...runIds)?.last_sequence ?? 0
+        : 0;
+      return { paths: owner.paths, summary: admissionSummary(db, runId), lastSequence };
+    })());
+    return owner.paths.stateDbPath === canonical.paths.stateDbPath ? canonical : { ...canonical, admission };
   }
+}
+
+interface RunAdmissionAuthority {
+  readonly identitiesValid: boolean;
+  readonly owner?: { readonly workspaceId: string; readonly runId: string; readonly parentRunId?: string };
+  readonly events: readonly JsonObject[];
+}
+
+function ambiguousRunOwner(runId: string): AgenCDaemonRunInspectionError {
+  return new AgenCDaemonRunInspectionError(
+    "RUN_ID_AMBIGUOUS",
+    `run id ${runId} has conflicting or unproved journal/admission owners`,
+  );
+}
+
+function isRunAuthorityObject(value: JsonValue | undefined): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readRunAdmissionAuthority(db: BetterSqlite3.Database, runId: string): RunAdmissionAuthority {
+  if (!tableExists(db, "run_journal_bindings") || !tableExists(db, "thread_rollout_items")) {
+    return { identitiesValid: false, events: [] };
+  }
+  const bindings = db.prepare<[string], { child_run_id: string; session_id: string }>(
+    "SELECT child_run_id, session_id FROM run_journal_bindings WHERE run_id = ? LIMIT 33",
+  ).all(runId);
+  const identitiesValid = bindings.length > 0 && bindings.length <= 32 &&
+    bindings.every((binding) => binding.child_run_id === runId && binding.session_id === runId);
+  let owner: RunAdmissionAuthority["owner"];
+  const rows = db.prepare<[string], { item_type: string; payload_json: string }>(
+    `SELECT item_type, payload_json FROM thread_rollout_items
+     WHERE source_path IN (SELECT source_path FROM run_journal_bindings WHERE run_id = ?)
+       AND (item_type = 'session_meta' OR
+         (item_type = 'event_msg' AND json_extract(payload_json, '$.msg.type') = 'execution_admission'))
+     ORDER BY source_path, line_number LIMIT 100001`,
+  ).all(runId);
+  if (rows.length > 100000) throw ambiguousRunOwner(runId);
+  const events: JsonObject[] = [];
+  for (const row of rows) {
+    const payload = parseJsonObject(row.payload_json);
+    if (row.item_type === "session_meta") {
+      if (payload.sessionId !== runId) throw ambiguousRunOwner(runId);
+      if (payload.admissionOwner === undefined) continue;
+      const candidate = payload.admissionOwner;
+      if (!isRunAuthorityObject(candidate) ||
+          candidate.runId !== runId || typeof candidate.workspaceId !== "string" || candidate.workspaceId.length === 0 ||
+          (candidate.parentRunId !== undefined && (typeof candidate.parentRunId !== "string" || candidate.parentRunId.length === 0 || candidate.parentRunId === runId))) {
+        throw ambiguousRunOwner(runId);
+      }
+      const current = { workspaceId: candidate.workspaceId, runId, ...(typeof candidate.parentRunId === "string" ? { parentRunId: candidate.parentRunId } : {}) };
+      if (owner !== undefined && canonicalJson(owner) !== canonicalJson(current)) throw ambiguousRunOwner(runId);
+      owner = current;
+    } else {
+      const message = payload.msg;
+      const event = isRunAuthorityObject(message) ? message.payload : undefined;
+      if (!isRunAuthorityObject(event) || event.runId !== runId ||
+          typeof event.eventId !== "string" || event.eventId !== payload.eventId) throw ambiguousRunOwner(runId);
+      events.push(event);
+    }
+  }
+  return { identitiesValid, ...(owner !== undefined ? { owner } : {}), events };
+}
+
+function verifyRunAdmissionAuthority(db: BetterSqlite3.Database, authority: RunAdmissionAuthority, runId: string): void {
+  if (authority.owner === undefined && authority.events.length === 0) throw ambiguousRunOwner(runId);
+  if (authority.events.length > 0 && !tableExists(db, "execution_admission_journal")) throw ambiguousRunOwner(runId);
+  for (const event of authority.events) {
+    const row = db.prepare<[string], AdmissionJournalRow>(
+      "SELECT * FROM execution_admission_journal WHERE event_id = ?",
+    ).get(String(event.eventId));
+    if (row === undefined || row.run_id !== runId) throw ambiguousRunOwner(runId);
+    const { category: ignoredCategory, ...admissionEvent } = legacyJournalEventFromRow(row);
+    if (canonicalJson(admissionEvent) !== canonicalJson(event)) throw ambiguousRunOwner(runId);
+  }
+  if (authority.owner?.parentRunId !== undefined && tableExists(db, "agent_jobs") && columnExists(db, "agent_jobs", "admission_parent_run_id")) {
+    const parents = db.prepare<[string], { parent_run_id: string | null }>(
+      "SELECT DISTINCT admission_parent_run_id AS parent_run_id FROM agent_jobs WHERE admission_run_id = ?",
+    ).all(runId);
+    if (parents.some((parent) => parent.parent_run_id !== authority.owner?.parentRunId)) throw ambiguousRunOwner(runId);
+  }
+}
+
+function hasDeclaredAdmissionWorkspace(
+  db: BetterSqlite3.Database,
+  owner: NonNullable<RunAdmissionAuthority["owner"]>,
+  runId: string,
+): boolean {
+  if (!tableExists(db, "agent_jobs") || !columnExists(db, "agent_jobs", "admission_workspace_id")) return false;
+  return db.prepare<[string, string, string], { present: number }>(
+    `SELECT 1 AS present FROM agent_jobs
+     WHERE admission_workspace_id = ? AND admission_run_id IN (?, ?) LIMIT 1`,
+  ).get(owner.workspaceId, runId, owner.parentRunId ?? runId) !== undefined;
 }
 
 function hasCanonicalRunState(
@@ -401,7 +533,7 @@ function buildRunStatus(
   located: LocatedRun,
   runId: string,
 ): RunStatusResult {
-  const admission = admissionSummary(db, runId);
+  const admission = located.admission?.summary ?? admissionSummary(db, runId);
   const run = readAgentRun(db, runId) ?? located.run;
   const currentLifecycleEpoch = readCurrentLifecycleEpoch(db, runId);
   const durableTerminal = readCurrentTerminalResult(db, runId);
@@ -431,7 +563,7 @@ function buildRunStatus(
           : "agent_run",
     ...(run !== undefined ? { durableRun: durableRunFromRow(run) } : {}),
     admission,
-    source: runStateSource(located.paths),
+    source: runStateSource(located.paths, located.admission),
     ...(workflow !== undefined ? { workflow } : {}),
   };
 }
@@ -1232,10 +1364,13 @@ function terminalOutcome(status: string): RunResultResult["outcome"] {
   return "failed";
 }
 
-function runStateSource(paths: StateDatabasePaths): RunStatusResult["source"] {
+function runStateSource(paths: StateDatabasePaths, admission?: LocatedRun["admission"]): RunStatusResult["source"] {
   return {
     kind: "existing_state_database",
     projectDir: paths.projectDir,
+    ...(admission !== undefined
+      ? { admissionProjectDir: admission.paths.projectDir, admissionLastSequence: admission.lastSequence }
+      : {}),
     readonly: true,
   };
 }

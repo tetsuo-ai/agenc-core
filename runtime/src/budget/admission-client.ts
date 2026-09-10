@@ -6,6 +6,7 @@ import type {
   AdmissionLease,
   AdmissionReconcileResult,
   AdmissionUsage,
+  AdmissionUsageSummary,
 } from "./admission-types.js";
 
 export interface AdmissionClientScope {
@@ -133,6 +134,8 @@ export interface ExecutionAdmissionClient {
     readonly afterSequence?: number;
     readonly limit?: number;
   }): readonly AdmissionJournalEvent[];
+  getUsageSummary?(): AdmissionUsageSummary;
+  subscribeUsage?(listener: (summary: AdmissionUsageSummary) => void): () => void;
   subscribe(listener: (event: AdmissionJournalEvent) => void): () => void;
 }
 

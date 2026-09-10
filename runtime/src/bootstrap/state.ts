@@ -882,6 +882,7 @@ export type SessionCronTask = {
   prompt: string;
   createdAt: number;
   recurring?: boolean;
+  lastFiredAt?: number;
   /**
    * Exact conversation that created this in-memory task. Session cron tasks
    * share process-global bootstrap state, so they must never be runnable,

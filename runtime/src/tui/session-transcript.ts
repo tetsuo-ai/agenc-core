@@ -10,6 +10,8 @@ import {
   type ModelUsage,
 } from "../session/cost.js";
 import type { Event } from "../session/event-log.js";
+import type { AdmissionUsageSummary } from "../budget/admission-types.js";
+import { latestSessionUsage } from "../session/usage-summary.js";
 import type {
   HistoryReplacedEvent,
   RuntimeTranscriptMessage,
@@ -106,6 +108,7 @@ export interface AdaptedTranscript {
    * makes workbench chrome update on the same render as the completed turn.
    */
   readonly sessionCostUsd: number;
+  readonly sessionUsage?: AdmissionUsageSummary | null;
 }
 
 const SYNTHETIC_MODEL = "agenc";
@@ -1560,6 +1563,20 @@ export function formatStructuredToolResult(
   }
 
   if (toolName === "FileRead") {
+    if (typeof result === "string") {
+      const metadata = metadataRecord(payload);
+      const count = metadata.numLines;
+      const numberedLines = result.split("\n").filter((line) => /^\s*\d+→/u.test(line)).length;
+      const lineCount = typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+        ? count
+        : numberedLines;
+      if (lineCount > 0) {
+        return [{ type: "text", text: `<read-lines>1-${lineCount}</read-lines>` }];
+      }
+      if (count === 0 || result.length === 0) {
+        return [{ type: "text", text: "<read-content></read-content>" }];
+      }
+    }
     if (
       result &&
       typeof result === "object" &&
@@ -1840,6 +1857,7 @@ export function adaptTranscriptEvents(
   let turnStreamedChars = 0;
   let latestUsage: AdaptedTranscript["latestUsage"] = null;
   let sessionCostUsd = 0;
+  let sessionUsage: AdmissionUsageSummary | null = null;
   let streamingThinking:
     | {
         thinking: string;
@@ -1911,6 +1929,9 @@ export function adaptTranscriptEvents(
     const nextUuid = (): string => `${event.key}:${blockIndex++}`;
 
     switch (event.type) {
+      case "session_usage":
+        sessionUsage = latestSessionUsage(sessionUsage, event);
+        break;
       case "history_cleared":
         out.length = 0;
         seen.clear();
@@ -2982,7 +3003,8 @@ export function adaptTranscriptEvents(
     streamingThinking,
     turnStreamedChars,
     latestUsage,
-    sessionCostUsd,
+    sessionCostUsd: sessionUsage?.costUsd ?? sessionCostUsd,
+    sessionUsage,
   };
 }
 
@@ -2991,6 +3013,7 @@ interface TranscriptState {
   readonly keys: ReadonlySet<string>;
   readonly maxSeq: number | null;
   readonly sessionCostUsd: number;
+  readonly sessionUsage: AdmissionUsageSummary | null;
 }
 
 type TranscriptAction =
@@ -3104,6 +3127,7 @@ function buildTranscriptState(
   const events: SessionTranscriptEvent[] = [];
   let maxSeq: number | null = null;
   let sessionCostUsd = 0;
+  let sessionUsage: AdmissionUsageSummary | null = null;
 
   for (const event of orderSequencedEvents(unorderedEvents)) {
     const key = eventKey(event);
@@ -3119,13 +3143,14 @@ function buildTranscriptState(
     if (keys.has(key)) continue;
     keys.add(key);
     sessionCostUsd += tokenCountCostUsd(event);
+    sessionUsage = latestSessionUsage(sessionUsage, event);
     events.push(clampEventForStorage(event));
     maxSeq = maxEventSeq(maxSeq, event);
   }
 
   evictOldestEvents(events, keys);
 
-  return { events, keys, maxSeq, sessionCostUsd };
+  return { events, keys, maxSeq, sessionCostUsd, sessionUsage };
 }
 
 function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
@@ -3146,6 +3171,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
           ...rebuilt,
           sessionCostUsd:
             state.sessionCostUsd + tokenCountCostUsd(action.event),
+          sessionUsage: latestSessionUsage(state.sessionUsage, action.event),
         };
       }
 
@@ -3165,6 +3191,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         keys,
         maxSeq: seq === null ? state.maxSeq : maxEventSeq(state.maxSeq, action.event),
         sessionCostUsd: state.sessionCostUsd + tokenCountCostUsd(action.event),
+        sessionUsage: latestSessionUsage(state.sessionUsage, action.event),
       };
     }
     case "appendBatch": {
@@ -3187,35 +3214,40 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       ) {
         const knownKeys = new Set(state.keys);
         let addedCostUsd = 0;
+        let sessionUsage = state.sessionUsage;
         for (const event of action.events) {
           const key = eventKey(event);
           if (knownKeys.has(key)) continue;
           knownKeys.add(key);
           addedCostUsd += tokenCountCostUsd(event);
+          sessionUsage = latestSessionUsage(sessionUsage, event);
         }
         const rebuilt = buildTranscriptState([...state.events, ...action.events]);
         return {
           ...rebuilt,
           sessionCostUsd: state.sessionCostUsd + addedCostUsd,
+          sessionUsage,
         };
       }
       const keys = state.keys as Set<string>;
       const pending: SessionTranscriptEvent[] = [];
       let maxSeq = state.maxSeq;
       let sessionCostUsd = state.sessionCostUsd;
+      let sessionUsage = state.sessionUsage;
       for (const event of action.events) {
         const key = eventKey(event);
         if (keys.has(key)) continue;
         pending.push(clampEventForStorage(event));
         keys.add(key);
         sessionCostUsd += tokenCountCostUsd(event);
+        sessionUsage = latestSessionUsage(sessionUsage, event);
         const seq = eventSeq(event);
         maxSeq = seq === null ? maxSeq : maxEventSeq(maxSeq, event);
       }
       if (pending.length === 0) return state;
       const events = [...state.events, ...pending];
       evictOldestEvents(events, keys);
-      return { events, keys, maxSeq, sessionCostUsd };
+      return { events, keys, maxSeq, sessionCostUsd, sessionUsage };
     }
   }
 }
@@ -3224,7 +3256,7 @@ export function createSessionTranscriptStateForTesting(
   events: readonly SessionTranscriptEvent[],
 ): TranscriptState {
   return reducer(
-    { events: [], keys: new Set(), maxSeq: null, sessionCostUsd: 0 },
+    { events: [], keys: new Set(), maxSeq: null, sessionCostUsd: 0, sessionUsage: null },
     { kind: "reset", events },
   );
 }
@@ -3290,6 +3322,7 @@ export function useSessionTranscript(
     keys: new Set(),
     maxSeq: null,
     sessionCostUsd: 0,
+    sessionUsage: null,
   });
 
   useEffect(() => {
@@ -3371,8 +3404,10 @@ export function useSessionTranscript(
     // `state.sessionCostUsd` survives the event ring buffer and transcript
     // clear/replacement events; the adapter's local total covers standalone
     // callers and matches this value until old events are evicted.
-    return adapted.sessionCostUsd === state.sessionCostUsd
-      ? adapted
-      : { ...adapted, sessionCostUsd: state.sessionCostUsd };
-  }, [state.events, state.sessionCostUsd, startupMessages]);
+    return {
+      ...adapted,
+      sessionCostUsd: state.sessionUsage?.costUsd ?? state.sessionCostUsd,
+      sessionUsage: state.sessionUsage,
+    };
+  }, [state.events, state.sessionCostUsd, state.sessionUsage, startupMessages]);
 }

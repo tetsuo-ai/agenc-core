@@ -664,7 +664,7 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
         }
       ).approvalResolver?.request({
         callId: APPROVAL_REQUEST_ID,
-        invocation: { session: { conversationId: CONVERSATION_ID } },
+        invocation: { session },
       });
       resumeDriven.resolve();
     });

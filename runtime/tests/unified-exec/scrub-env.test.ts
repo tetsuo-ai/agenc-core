@@ -72,6 +72,8 @@ describe("scrubEnvForChildProcess (SEC-01)", () => {
         TMP: "C:\\ambient\\tmp",
         Temp: "mixed-case-must-not-survive",
         tmpdir: "lowercase-must-not-survive",
+        TMPPREFIX: "/ambient/zsh",
+        TmPpReFiX: "/mixed/zsh",
         PATH: "/usr/bin",
       },
       "/captured/session-temp",
@@ -82,15 +84,23 @@ describe("scrubEnvForChildProcess (SEC-01)", () => {
       TMPDIR: "/captured/session-temp",
       TEMP: "/captured/session-temp",
       TMP: "/captured/session-temp",
+      TMPPREFIX: "/captured/session-temp/zsh",
       PATH: "/usr/bin",
     });
     expect(env).not.toHaveProperty("Temp");
     expect(env).not.toHaveProperty("tmpdir");
+    expect(env).not.toHaveProperty("TmPpReFiX");
   });
 
   it("rejects a relative child temp authority", () => {
     expect(() => withChildTempAuthority({}, "relative/temp")).toThrow(
       "child process temp root must be a non-empty absolute path",
     );
+  });
+
+  it("keeps spaces and Unicode in the captured shell temp prefix", () => {
+    const env = withChildTempAuthority({ TMPPREFIX: "/untrusted" }, "/captured/temporary files/é/");
+    expect(env.TMPPREFIX).toBe("/captured/temporary files/é/zsh");
+    expect(withChildTempAuthority({}, "/").TMPPREFIX).toBe("/zsh");
   });
 });

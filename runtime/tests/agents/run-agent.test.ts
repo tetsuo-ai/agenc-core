@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
+import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
 import { AgentRegistry } from "./registry.js";
 import {
   buildFilteredRegistry,
@@ -1493,6 +1494,36 @@ describe("runAgent", () => {
     expect(events.some((e) => e.kind === "run_error")).toBe(true);
   });
 
+  it("registers silent child approval ownership before sampling and revokes it at shutdown", async () => {
+    const provider = makeProvider([{ content: "Memory extraction complete." }]);
+    const parent = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(parent);
+    let child: Session | undefined;
+    const unsubscribe = observeChildApprovalSessions(parent, (registered) => {
+      child = registered;
+      expect(isApprovalSessionOwnedBy(registered, parent)).toBe(true);
+      expect(provider.chatStream).not.toHaveBeenCalled();
+      registered.trackDurableOperation(new Promise<void>((resolve) => {
+        childApprovalRevocationSignal(registered)!.addEventListener("abort", () => resolve(), { once: true });
+      }));
+      return () => {};
+    });
+    try {
+      const { result } = await collectRun(runAgent({
+        live,
+        parent,
+        initialMessages: [{ role: "user", content: "Extract useful memory" }],
+        taskPrompt: "Extract useful memory",
+        silent: true,
+      }));
+      expect(result.outcome).toBe("completed");
+      expect(child?.conversationId).toBe(live.agentId);
+      expect(isApprovalSessionOwnedBy(child!, parent)).toBe(false);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("marks completed on success", async () => {
     const provider = makeProvider([{ content: "ok" }]);
     const session = makeStubSession({ services: { provider } });
@@ -2036,6 +2067,132 @@ describe("runAgent", () => {
     } finally {
       await stopKeepAliveRun(iter, live.abortController);
     }
+  });
+
+  it.each([
+    ["max_turns", "subagent exceeded maxTurns"],
+    ["max_budget_usd", "subagent reached the canonical session cost cap"],
+    ["no_progress", "Turn stopped because progress stalled."],
+    ["compact_failed", "compact request does not fit"],
+    ["empty_response", "subagent returned no assistant output after a retry"],
+  ] as const)("publishes an errored %s receipt and accepts the next assignment", async (stopReason, reason) => {
+    let turns = 0;
+    const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* () {
+      turns += 1;
+      const error = turns === 1 && stopReason === "compact_failed"
+        ? new Error("compact request does not fit")
+        : undefined;
+      yield {
+        type: "turn_complete",
+        content: turns > 1
+          ? "completed the follow-up"
+          : stopReason === "no_progress"
+            ? "Turn stopped because progress stalled."
+            : "Let me finish the implementation.",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: turns > 1 ? "completed" : stopReason,
+        ...(error !== undefined ? { error } : {}),
+      };
+      return { reason: "completed", ...(error !== undefined ? { error } : {}) };
+    });
+    const session = makeStubSession({ services: { provider: makeProvider([]) } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      taskId: "bounded-task",
+      keepAlive: true,
+    });
+
+    try {
+      const first = await nextProgressEvent(iter, "turn_complete");
+      expect(first.finalMessage).toBe(reason);
+      expect(live.status.value.status).toBe("idle");
+      const failedReceipt = session.mailbox.drain().find((message) =>
+        message.metadata?.lifecycle === "turn",
+      );
+      expect(failedReceipt?.metadata).toMatchObject({
+        outcome: "errored",
+        taskId: "bounded-task",
+        reason,
+      });
+      expect(failedReceipt?.content).toContain('"outcome":"errored"');
+
+      const next = nextProgressEvent(iter, "turn_complete");
+      control.assignTask(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "finish the remaining work",
+        taskId: "retry-task",
+      });
+      const completed = await next;
+      expect(completed.turnId).not.toBe(first.turnId);
+      expect(completed.finalMessage).toBe("completed the follow-up");
+      const completedReceipt = session.mailbox.drain().find((message) =>
+        message.metadata?.lifecycle === "turn",
+      );
+      expect(completedReceipt?.metadata).toMatchObject({
+        outcome: "completed",
+        taskId: "retry-task",
+      });
+    } finally {
+      try {
+        await stopKeepAliveRun(iter, live.abortController);
+      } finally {
+        turnSpy.mockRestore();
+      }
+    }
+  });
+
+  it("fails a one-shot worker after the empty-response retry is exhausted", async () => {
+    const provider = makeProvider([{ content: "" }, { content: "" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const { result } = await collectRun(runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "answer the question" }],
+      taskPrompt: "answer the question",
+      taskId: "empty-task",
+    }));
+
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: expect.objectContaining({
+        message: "subagent returned no assistant output after a retry",
+      }),
+    });
+    expect(session.mailbox.drain()).toContainEqual(expect.objectContaining({
+      metadata: expect.objectContaining({ outcome: "errored", taskId: "empty-task" }),
+    }));
+  });
+
+  it("retains a failed idle worker outcome when the worker closes", async () => {
+    const provider = makeProvider([{ content: "" }, { content: "" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "answer the question" }],
+      taskPrompt: "answer the question",
+      taskId: "empty-task",
+      keepAlive: true,
+    });
+    await nextProgressEvent(iter, "turn_complete");
+    const receipts = session.mailbox.drain();
+    live.abortController.abort("worker closed");
+    const { result } = await collectRun(iter);
+
+    expect(result.outcome).toBe("errored");
+    expect(live.status.value.status).toBe("errored");
+    expect(receipts.filter((message) => message.metadata?.lifecycle === "turn"))
+      .toHaveLength(1);
+    expect(session.mailbox.drain().filter((message) => message.metadata?.lifecycle === "turn"))
+      .toHaveLength(0);
   });
 
   it("closes an idle keep-alive worker as completed instead of failing its finished turn", async () => {

@@ -811,6 +811,19 @@ describe("AgenC TUI daemon session adapter", () => {
           runtimeSettingsEventId: "settings:agent_1:initial",
         } as never;
       }
+      if (method === "session.transcript.v2") {
+        return {
+          schemaVersion: 2,
+          sessionId: "session_1",
+          runId: "agent_runtime",
+          historyEpoch: "epoch_1",
+          asOfSequence: 20,
+          messages: [
+            { messageId: "user_1", commitEventId: "event:1", role: "user", text: "Build a notes CLI", committedSequence: 1 },
+            { messageId: "assistant_1", commitEventId: "event:19", role: "assistant", text: "The notes CLI passes its tests", committedSequence: 19 },
+          ],
+        } as never;
+      }
       return {} as never;
     };
 
@@ -835,11 +848,16 @@ describe("AgenC TUI daemon session adapter", () => {
     unsubscribe();
 
     expect(session.conversationId).toBe("agent_runtime");
+    expect(session.getInitialTranscriptEvents()).toEqual([
+      { id: "snapshot:epoch_1:user_1", type: "user_message", payload: { message: "Build a notes CLI" } },
+      { id: "snapshot:epoch_1:assistant_1", type: "agent_message", payload: { message: "The notes CLI passes its tests" } },
+    ]);
     expect(client.requests).toEqual([
       {
         method: "agent.attach",
         params: { agentId: "agent_1", clientId: "tui_1" },
       },
+      { method: "session.transcript.v2", params: { sessionId: "session_1" } },
     ]);
     expect(received).toEqual([{ type: "turn_delta", id: "turn_1" }]);
   });
@@ -3034,6 +3052,47 @@ describe("AgenC TUI daemon session adapter", () => {
         params: { sessionId: "session_1" },
       },
     ]);
+  });
+
+  it("sends only owned status-line identity and presentation with transport cancellation", async () => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockResolvedValue({ status: "rendered", text: "daemon-cost" });
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const controller = new AbortController();
+    await expect(session.executeDaemonStatusLine?.({
+      vimMode: "NORMAL", sessionId: "foreign-session", command: "never-send", cost: 100,
+    }, controller.signal)).resolves.toEqual({ status: "rendered", text: "daemon-cost" });
+    expect(request).toHaveBeenCalledWith("session.statusLine.execute", {
+      sessionId: "session_1", presentation: { vimMode: "NORMAL" },
+    }, { signal: controller.signal });
+    request.mockRestore();
+  });
+
+  it.each([
+    [new AgenCDaemonResponseError({ code: -32601, message: "unsupported" }), "unavailable", "unsupported_method"],
+    [new Error("private transport detail"), "error", "request_failed"],
+  ] as const)("does not retry status-line transport failure %s", async (error, status, reason) => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockRejectedValue(error);
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    await expect(session.executeDaemonStatusLine?.({})).resolves.toEqual({ status, reason });
+    expect(request).toHaveBeenCalledOnce();
+    request.mockRestore();
+  });
+
+  it("does not dispatch a status-line request with an already cancelled signal", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled status"));
+    await expect(session.executeDaemonStatusLine?.({}, controller.signal)).rejects.toThrow("cancelled status");
+    expect(client.requests).toHaveLength(0);
   });
 
   it("forwards setDaemonHooksDisabled to the daemon session.hooks.setDisabled RPC", async () => {

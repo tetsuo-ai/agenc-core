@@ -18,6 +18,7 @@
 
 import type { Session } from "../session/session.js";
 import type { ConfigStore } from "../config/store.js";
+import type { AdmissionUsageSummary } from "../budget/admission-types.js";
 
 export type SlashCommandSurface = "runtime" | "daemon-tui";
 
@@ -27,6 +28,7 @@ export type SlashCommandSurface = "runtime" | "daemon-tui";
  * waiting for a future turn boundary.
  */
 export interface SlashCommandAppStateBridge {
+  readonly getSessionUsage?: () => AdmissionUsageSummary | null;
   /** Read the live TUI app state for commands that report runtime surfaces. */
   readonly getAppState?: () => unknown;
   /** Update the model slug shown in the status bar. */

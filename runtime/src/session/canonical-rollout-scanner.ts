@@ -46,6 +46,7 @@ import {
 } from "../state/recovery-contract.js";
 import type { RolloutItem } from "./rollout-item.js";
 import type { ResponseItem } from "./rollout-item.js";
+import { isAdmissionUsageSummary } from "./usage-summary.js";
 import {
   emptyReducedState,
   reduce,
@@ -1401,6 +1402,7 @@ function nextPostCommitBookkeeping(
   current: PostCommitBookkeeping,
   expectedRunId: string | undefined,
 ): PostCommitBookkeeping | "later_work" {
+  if (isUsageObservation(item)) return current;
   if (
     item.type === "compaction_cleanup_pending" &&
     item.payload.attempt_id === committed.intent?.attempt_id
@@ -1433,6 +1435,11 @@ function isCausalAutoCompactionBoundary(item: RolloutItem): boolean {
       item.payload.msg.payload.summary,
     )
   );
+}
+
+function isUsageObservation(item: RolloutItem): boolean {
+  return item.type === "event_msg" && item.payload.msg.type === "session_usage" &&
+    isAdmissionUsageSummary(item.payload.msg.payload);
 }
 
 function strictOptions(
@@ -1488,6 +1495,7 @@ function observeAdmission(
 ): void {
   if (attempt.terminal) return;
   const item = record.item;
+  if (isUsageObservation(item)) return;
   if (
     (item.type === "compaction_committed" ||
       item.type === "compaction_failed") &&

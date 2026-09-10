@@ -122,6 +122,12 @@ import type { AgentId } from "../types/ids.js";
 import { StreamingToolExecutor as LiveStreamingToolExecutor } from "../phases/_deps/tool-runtime.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { SHARED_READ } from "../tools/concurrency.js";
+import { createModelFacingTools } from "../bin/model-facing-tools.js";
+import { __installDaemonTurnDriverHooksForTest } from "../app-server/background-agent-runner.js";
+import { startSessionCronScheduler } from "./session-cron-scheduler.js";
+import { resetCronSchedulerForTests } from "../utils/cronScheduler.js";
+import { addCronTask, listAllCronTasks, readCronTasks } from "../utils/cronTasks.js";
+import { resetStateForTests, setScheduledTasksEnabled } from "../bootstrap/state.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
@@ -463,6 +469,7 @@ function mkPersonalityModelMessages(): ModelMessages {
 }
 
 function mkSession(opts: {
+  readonly conversationId?: string;
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
   readonly codeModeService?: SessionServices["codeModeService"];
@@ -597,7 +604,7 @@ function mkSession(opts: {
       ? { initialModel: state.sessionConfiguration.collaborationMode.model }
       : {}),
     environment: providerEnvironment,
-    sessionId: "conv-test",
+    sessionId: opts.conversationId ?? "conv-test",
     resolvePreparationRequest: (selection) => ({
       requested: resolveProviderRuntimeRequest({
         provider: selection.provider,
@@ -610,7 +617,7 @@ function mkSession(opts: {
     }),
   });
   const session = new Session({
-    conversationId: "conv-test",
+    conversationId: opts.conversationId ?? "conv-test",
     services: { ...services, providerService },
     initialState: state as unknown as SessionOpts["initialState"],
     features: mkFeatures(),
@@ -761,6 +768,430 @@ function mkStaticToolRegistry(
     dispatch: async () => ({ content, isError: false }),
   } as unknown as ToolRegistry;
 }
+
+describe("daemon-owned scheduled turns", () => {
+  async function withCronSessions(
+    work: (fixture: {
+      readonly workspaceRoot: string;
+      readonly create: (conversationId?: string, provider?: LLMProvider, registry?: ToolRegistry) => ReturnType<typeof mkSession>;
+      readonly start: (session: Session) => Promise<Awaited<ReturnType<typeof startSessionCronScheduler>>>;
+      readonly add: (session: Session, options?: { recurring?: boolean; durable?: boolean }) => Promise<string>;
+      readonly advance: () => Promise<void>;
+    }) => Promise<void>,
+  ): Promise<void> {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-daemon-cron-turn-"));
+    const sessions: Session[] = [];
+    const schedulers = new Set<Awaited<ReturnType<typeof startSessionCronScheduler>>>();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    vi.setSystemTime(new Date("2026-09-09T12:00:30Z"));
+    setScheduledTasksEnabled(true);
+    try {
+      await work({
+        workspaceRoot,
+        create: (conversationId = "cron-owner", provider = mkProvider({ content: "scheduled result" }), registry = mkRegistry()) => {
+          const fixture = mkSession({
+            conversationId,
+            provider,
+            registry,
+            sessionConfiguration: { cwd: workspaceRoot },
+          });
+          sessions.push(fixture.session);
+          return fixture;
+        },
+        start: async (session) => {
+          const scheduler = await startSessionCronScheduler(session, workspaceRoot);
+          schedulers.add(scheduler);
+          return scheduler;
+        },
+        add: (session, options = {}) => addCronTask(
+          "* * * * *", "run the scheduled check", options.recurring ?? false,
+          options.durable ?? false, undefined, undefined,
+          { kind: "session", conversationId: session.conversationId }, workspaceRoot,
+        ),
+        advance: async () => {
+          await vi.advanceTimersByTimeAsync(60_000);
+          for (let round = 0; round < 25; round += 1) {
+            await new Promise<void>((resolveRound) => setImmediate(resolveRound));
+          }
+          await vi.advanceTimersByTimeAsync(0);
+        },
+      });
+    } finally {
+      for (const session of sessions) session.abortController.abort();
+      await Promise.all([...schedulers].map((scheduler) => scheduler.drain()));
+      await resetCronSchedulerForTests();
+      vi.useRealTimers();
+      resetStateForTests();
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  }
+
+  test("live CronCreate wakes an idle daemon driver and executes exactly one tool turn", async () => {
+    await withCronSessions(async ({ create, start, workspaceRoot, advance }) => {
+      const seenMessages: LLMMessage[][] = [];
+      const { provider, calls } = mkSingleToolFollowUpProvider({ seenMessages });
+      const tool = vi.fn(async () => ({ content: "CHECK_DONE", isError: false }));
+      const registry = mkStaticToolRegistry();
+      registry.tools[0]!.execute = tool;
+      const { session, events } = create("cron-owner", provider, registry);
+      __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
+      const submit = vi.spyOn(session, "submit");
+      const cronCreate = createModelFacingTools({ workspaceRoot, getSession: () => session })
+        .find((candidate) => candidate.name === "CronCreate")!;
+      const created = await cronCreate.execute({
+        cron: "* * * * *", prompt: "run the scheduled check", recurring: false, durable: false,
+      });
+      expect(created.isError).toBeUndefined();
+      expect(JSON.parse(String(created.content)).cron.durable).toBe(false);
+      expect(await readCronTasks(workspaceRoot)).toEqual([]);
+      expect(calls()).toBe(0);
+      await advance();
+      expect(submit).toHaveBeenCalledTimes(1);
+      await submit.mock.results[0]!.value;
+      const scheduler = await start(session);
+      await scheduler.drain();
+      expect(calls()).toBe(2);
+      expect(tool).toHaveBeenCalledTimes(1);
+      expect(events.filter((event) => event.msg.type === "turn_started")).toHaveLength(1);
+      expect(events.filter((event) => event.msg.type === "turn_complete")).toHaveLength(1);
+      expect(events.filter((event) => event.msg.type === "tool_call_started")).toHaveLength(1);
+      expect(getCommandQueueSnapshot()).toEqual([]);
+      expect(await listAllCronTasks(workspaceRoot, session.conversationId)).toEqual([]);
+      await advance();
+      await scheduler.drain();
+      expect(calls()).toBe(2);
+    });
+  });
+
+  test("busy turns retain one-shots until acceptance and serialize the attempt", async () => {
+    await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+      const { session } = create();
+      const busy = Promise.withResolvers<void>();
+      const scheduled = Promise.withResolvers<void>();
+      const calls: string[] = [];
+      session.installTurnDriverHooks({ submit: async (message) => {
+        calls.push(String(message));
+        await (message === "busy" ? busy.promise : scheduled.promise);
+      } });
+      const active = session.submit("busy");
+      try {
+        await add(session);
+        const scheduler = await start(session);
+        await advance();
+        expect(calls).toEqual(["busy"]);
+        expect(await listAllCronTasks(workspaceRoot, session.conversationId)).toHaveLength(1);
+        busy.resolve();
+        await active;
+        await advance();
+        expect(calls).toEqual(["busy", "run the scheduled check"]);
+        expect(await listAllCronTasks(workspaceRoot, session.conversationId)).toEqual([]);
+        scheduled.resolve();
+        await scheduler.drain();
+        expect(await listAllCronTasks(workspaceRoot, session.conversationId)).toEqual([]);
+      } finally {
+        busy.resolve();
+        scheduled.resolve();
+      }
+    });
+  });
+
+  test("CronDelete cancels a queued turn without suppressing another scheduled tool turn", async () => {
+    await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+      const busy = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      const seenMessages: LLMMessage[][] = [];
+      const scheduled = mkSingleToolFollowUpProvider({ seenMessages });
+      let samples = 0;
+      const provider: LLMProvider = {
+        ...mkProvider({}),
+        chatStream: async (messages, onChunk, options) => {
+          samples += 1;
+          if (samples === 1) {
+            started.resolve();
+            await busy.promise;
+            return mkProvider({ content: "busy turn finished" }).chatStream(messages, onChunk, options);
+          }
+          return scheduled.provider.chatStream(messages, onChunk, options);
+        },
+      };
+      const tool = vi.fn(async () => ({ content: "SURVIVOR_DONE", isError: false }));
+      const registry = mkStaticToolRegistry();
+      registry.tools[0]!.execute = tool;
+      const { session } = create("cron-delete", provider, registry);
+      __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
+      const active = session.submit("busy");
+      try {
+        await started.promise;
+        const cancelledId = await add(session, { durable: true });
+        await addCronTask("* * * * *", "survivor check", false, true, undefined, undefined,
+          { kind: "session", conversationId: session.conversationId }, workspaceRoot);
+        const scheduler = await start(session);
+        await advance();
+        expect(samples).toBe(1);
+        const cronDelete = createModelFacingTools({ workspaceRoot, getSession: () => session })
+          .find((candidate) => candidate.name === "CronDelete")!;
+        const result = await cronDelete.execute({ id: cancelledId });
+        expect(JSON.parse(String(result.content)).deleted).toBe(true);
+        busy.resolve();
+        await active;
+        await advance();
+        await scheduler.drain();
+        expect(tool).toHaveBeenCalledTimes(1);
+        expect(samples).toBe(3);
+        expect(seenMessages.flat().some((message) => testMessageText(message).includes("run the scheduled check"))).toBe(false);
+        expect(seenMessages.flat().some((message) => testMessageText(message).includes("survivor check"))).toBe(true);
+      } finally {
+        busy.resolve();
+        await active;
+      }
+    });
+  });
+
+  test("a durable claim is absent from a restarted reader before the first tool finishes", async () => {
+    await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+      const pending = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      const provider = mkSingleToolFollowUpProvider({ seenMessages: [] }).provider;
+      const tool = vi.fn(async () => {
+        started.resolve();
+        await pending.promise;
+        return { content: "committed side effect", isError: false };
+      });
+      const registry = mkStaticToolRegistry();
+      registry.tools[0]!.execute = tool;
+      const { session } = create("cron-durable-claim", provider, registry);
+      __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
+      try {
+        await add(session, { durable: true });
+        const scheduler = await start(session);
+        await advance();
+        await started.promise;
+        expect(await readCronTasks(workspaceRoot)).toEqual([]);
+        const replacement = create("cron-restarted-reader").session;
+        const replacementAttempt = vi.fn(async () => {});
+        replacement.installTurnDriverHooks({ submit: replacementAttempt });
+        const replacementScheduler = await start(replacement);
+        await advance();
+        await replacementScheduler.drain();
+        expect(replacementAttempt).not.toHaveBeenCalled();
+        expect(tool).toHaveBeenCalledTimes(1);
+        pending.resolve();
+        await scheduler.drain();
+      } finally {
+        pending.resolve();
+      }
+    });
+  });
+
+  test.each([false, true])("persisted rearm waits for a submit driver and respects closed=%s", async (closed) => {
+    await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+      const { session } = create();
+      await add(session, { durable: true });
+      const scheduler = await start(session);
+      await advance();
+      await scheduler.drain();
+      expect(await readCronTasks(workspaceRoot)).toHaveLength(1);
+      const attempt = vi.fn(async () => {});
+      if (closed) {
+        session.beginShutdown();
+        session.abortController.abort();
+      }
+      session.installTurnDriverHooks({ submit: attempt });
+      await advance();
+      await scheduler.drain();
+      expect(attempt).toHaveBeenCalledTimes(closed ? 0 : 1);
+      expect(await readCronTasks(workspaceRoot)).toHaveLength(closed ? 1 : 0);
+    });
+  });
+
+  test.each(["failed", "aborted"] as const)("an actual tool turn that ends %s consumes its one-shot without replay", async (outcome) => {
+    await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+      let session: Session;
+      let samples = 0;
+      const provider: LLMProvider = {
+        ...mkProvider({}),
+        chatStream: async () => {
+          samples += 1;
+          if (samples > 1) throw new LLMAuthenticationError("scheduled provider failure");
+          return {
+            content: "", toolCalls: [{ id: "scheduled_tool", name: "queue_tool", arguments: "{}" }],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model", finishReason: "tool_calls",
+          };
+        },
+      };
+      const registry = mkStaticToolRegistry();
+      const tool = vi.fn(async () => {
+        if (outcome === "aborted") await session.abortAllTasks("interrupted");
+        return { content: "side effect committed", isError: false };
+      });
+      registry.tools[0]!.execute = tool;
+      const fixture = create("cron-failure", provider, registry);
+      session = fixture.session;
+      __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
+      await add(session, { durable: true });
+      const scheduler = await start(session);
+      await advance();
+      await scheduler.drain();
+      expect(tool).toHaveBeenCalledTimes(1);
+      expect(fixture.events.filter((event) => event.msg.type === `turn_${outcome}`)).toHaveLength(1);
+      expect(await readCronTasks(workspaceRoot)).toEqual([]);
+      await advance();
+      await scheduler.drain();
+      expect(tool).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  test("queued shutdown preserves durable jobs that never crossed acceptance", async () => {
+    await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+      const { session } = create();
+      const busy = Promise.withResolvers<void>();
+      const calls: string[] = [];
+      session.installTurnDriverHooks({ submit: async (message) => {
+        calls.push(String(message));
+        await busy.promise;
+      } });
+      const active = session.submit("busy");
+      try {
+        await add(session, { durable: true });
+        const scheduler = await start(session);
+        await advance();
+        session.beginShutdown();
+        session.abortController.abort();
+        busy.resolve();
+        await active;
+        await scheduler.drain();
+        expect(calls).toEqual(["busy"]);
+        expect(await readCronTasks(workspaceRoot)).toHaveLength(1);
+      } finally {
+        busy.resolve();
+      }
+    });
+  });
+
+  test.each(["preparation failed", "unexpected driver failure"])(
+    "consumes an accepted failed one-shot without replay when %s",
+    async (message) => {
+      await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+        const { session, events } = create();
+        const attempt = vi.fn(async () => { throw new Error(message); });
+        session.installTurnDriverHooks({ submit: attempt });
+        await add(session, { durable: true });
+        const scheduler = await start(session);
+        await advance();
+        await scheduler.drain();
+        expect(attempt).toHaveBeenCalledTimes(1);
+        expect(await readCronTasks(workspaceRoot)).toEqual([]);
+        expect(events).toContainEqual(expect.objectContaining({ msg: {
+          type: "warning",
+          payload: expect.objectContaining({ cause: "scheduled_turn_failed", message: expect.stringContaining(message) }),
+        } }));
+        await advance();
+        expect(attempt).toHaveBeenCalledTimes(1);
+      });
+    },
+  );
+
+  test("recurring work does not overlap while an earlier attempt is still active", async () => {
+    await withCronSessions(async ({ create, add, start, advance }) => {
+      const { session } = create();
+      const pending = Promise.withResolvers<void>();
+      const attempt = vi.fn(async () => pending.promise);
+      session.installTurnDriverHooks({ submit: attempt });
+      try {
+        await add(session, { recurring: true });
+        const scheduler = await start(session);
+        await advance();
+        await advance();
+        await advance();
+        expect(attempt).toHaveBeenCalledTimes(1);
+        session.abortController.abort();
+        pending.resolve();
+        await scheduler.drain();
+      } finally {
+        pending.resolve();
+      }
+    });
+  });
+
+  test("a failed session-only recurring attempt does not replay its slot when rearmed", async () => {
+    await withCronSessions(async ({ create, add, start, advance }) => {
+      const { session } = create();
+      const attempt = vi.fn(async () => { throw new Error("scheduled attempt failed"); });
+      session.installTurnDriverHooks({ submit: attempt });
+      await add(session, { recurring: true });
+      const scheduler = await start(session);
+      await advance();
+      await scheduler.drain();
+      expect(attempt).toHaveBeenCalledTimes(1);
+      await start(session);
+      await vi.advanceTimersByTimeAsync(0);
+      await scheduler.drain();
+      expect(attempt).toHaveBeenCalledTimes(1);
+      await advance();
+      await scheduler.drain();
+      expect(attempt).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  test("abort during durable claim commit prevents dispatch after the claim", async () => {
+    await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+      const { session, events } = create();
+      const attempt = vi.fn(async () => {});
+      session.installTurnDriverHooks({ submit: attempt });
+      await add(session, { durable: true });
+      const cronTasks = await import("../utils/cronTasks.js");
+      const mutate = cronTasks.mutateCronFile;
+      const claim = vi.spyOn(cronTasks, "mutateCronFile").mockImplementation(async (directory, update) => {
+        const result = await mutate(directory, update);
+        session.abortController.abort(new Error("cancelled during durable claim"));
+        return result;
+      });
+      try {
+        const scheduler = await start(session);
+        await advance();
+        await scheduler.drain();
+        expect(attempt).not.toHaveBeenCalled();
+        expect(await readCronTasks(workspaceRoot)).toEqual([]);
+        expect(events).toContainEqual(expect.objectContaining({ msg: {
+          type: "warning",
+          payload: expect.objectContaining({ cause: "scheduled_turn_failed", message: expect.stringContaining("after acceptance") }),
+        } }));
+      } finally {
+        claim.mockRestore();
+      }
+    });
+  });
+
+  test("sibling sessions run their own jobs and share one durable owner with close-time handoff", async () => {
+    await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
+      const first = create("cron-first").session;
+      const second = create("cron-second").session;
+      const firstAttempt = vi.fn(async () => {});
+      const secondAttempt = vi.fn(async () => {});
+      first.installTurnDriverHooks({ submit: firstAttempt });
+      second.installTurnDriverHooks({ submit: secondAttempt });
+      await add(first, { durable: true });
+      await add(second);
+      const firstScheduler = await start(first);
+      const secondScheduler = await start(second);
+      await advance();
+      await Promise.all([firstScheduler.drain(), secondScheduler.drain()]);
+      expect(firstAttempt).toHaveBeenCalledTimes(1);
+      expect(secondAttempt).toHaveBeenCalledTimes(1);
+      expect(await readCronTasks(workspaceRoot)).toEqual([]);
+      await add(second, { durable: true });
+      await start(second);
+      first.abortController.abort();
+      await firstScheduler.drain();
+      await advance();
+      await secondScheduler.drain();
+      expect(firstAttempt).toHaveBeenCalledTimes(1);
+      expect(secondAttempt).toHaveBeenCalledTimes(2);
+      expect(await readCronTasks(workspaceRoot)).toEqual([]);
+    });
+  });
+});
 
 describe("runTurn — T6 gap #119 lifecycle emits", () => {
   test("stops before sampling when the canonical session cost cap is exhausted", async () => {
@@ -1866,7 +2297,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         return failure;
       },
     } as unknown as ToolRegistry;
-    const { session } = mkSession({ provider, registry });
+    const { session, events } = mkSession({ provider, registry });
 
     const yielded: PhaseEvent[] = [];
     for await (const event of session.runTurn("start", { ctx: mkCtx() })) {
@@ -1884,6 +2315,17 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       "Turn stopped by the no-progress backstop: the exact flaky_tool call failed 3 " +
         "times with the same error and was refused (count=3). No further progress " +
         "was being made. No task was completed.",
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_failed",
+          payload: expect.objectContaining({
+            code: "no_progress",
+            message: last.content,
+          }),
+        },
+      }),
     );
   });
 
@@ -2728,11 +3170,10 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         msg: {
-          type: "turn_complete",
+          type: "turn_failed",
           payload: expect.objectContaining({
-            lastAgentMessage: expect.stringContaining(
-              "Editor edit request incomplete",
-            ),
+            code: "editor_request_failed",
+            message: expect.stringContaining("Editor edit request incomplete"),
           }),
         },
       }),
@@ -7829,6 +8270,17 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         e.msg.payload.cause === "pre_sampling_compact_failed",
     );
     expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_failed",
+          payload: expect.objectContaining({
+            code: "compact_failed",
+            message: "compact-blew-up",
+          }),
+        },
+      }),
+    );
     expect(yielded).toContainEqual(
       expect.objectContaining({
         type: "turn_complete",

@@ -298,7 +298,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | Var | Typical use |
 | --- | --- |
 | `AGENC_DISABLE_AUTO_COMPACT` | Skip automatic compaction and its pre-sampling, mid-turn, and notice gates. `/compact` still runs |
-| `AGENC_DISABLE_COMPACT` | Make `autoCompactIfNeeded` return without compacting. This does not disable `/compact` or the mid-turn outer gate; if that gate requires a compact, the turn finishes with `warning` cause `mid_turn_compact_failed`, message beginning with `mid_turn_compact_skipped`, and `stopReason: "compact_failed"`. Keep-alive sessions stay promptable. The daemon-backed one-shot CLI currently exits 0 on the resulting `turn_complete`; the compatibility `runAgent` path fails. See [daemon.md](daemon.md#compact-skip-stays-per-turn) |
+| `AGENC_DISABLE_COMPACT` | Make `autoCompactIfNeeded` return without compacting. This does not disable `/compact` or the mid-turn outer gate. A resulting `compact_failed` stop emits canonical `turn_failed` and makes daemon-backed `--print` / `--no-tui` exit 1. Keep-alive sessions stay promptable, but the compatibility `runAgent` path with `keepAlive: false` fails. See [daemon.md](daemon.md#compact-skip-stays-per-turn) |
 | `AGENC_AUTO_COMPACT_WINDOW` | Positive integer context-window override used by compaction thresholds |
 | `AGENC_AUTOCOMPACT_PCT_OVERRIDE` | Percentage `1` to `100`; can only make automatic compaction fire earlier than the safety default |
 | `AGENC_DISABLE_LSP` | Do not start LSP |
@@ -449,7 +449,15 @@ Standard process and desktop discovery inputs:
 | --- | --- |
 | Home, user, temp, and application data | `APPDATA`, `FULLNAME`, `HOME`, `LOCALAPPDATA`, `LOGNAME`, `NAME`, `ProgramData`, `REALNAME`, `TEMP`, `TMPDIR`, `USER`, `USERNAME`, `USERPROFILE` |
 | Shell, editor, locale, and process execution | `BROWSER`, `ComSpec`, `EDITOR`, `LANG`, `LC_ALL`, `LC_TERMINAL`, `LC_TIME`, `MSYSTEM`, `NODE_ENV`, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `P4PORT`, `PATH`, `PATHEXT`, `SHELL`, `SystemRoot`, `VISUAL`, `VSCODE_GIT_ASKPASS_MAIN`, `VisualStudioVersion`, `WINDIR`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` |
+| Local graphical desktop | `DISPLAY`, `WAYLAND_DISPLAY` |
 | Terminal detection and styling | `ALACRITTY_LOG`, `BAT_THEME`, `COLORTERM`, `ConEmuANSI`, `ConEmuPID`, `ConEmuTask`, `GNOME_TERMINAL_SERVICE`, `ITERM_SESSION_ID`, `KITTY_WINDOW_ID`, `KONSOLE_VERSION`, `PTYXIS_VERSION`, `SSH_CLIENT`, `SSH_CONNECTION`, `SSH_TTY`, `STY`, `TERMINAL_EMULATOR`, `TERMINATOR_UUID`, `TERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TILIX_ID`, `TMUX`, `TMUX_PANE`, `VTE_VERSION`, `WSL_DISTRO_NAME`, `WT_SESSION`, `XTERM_VERSION`, `ZED_TERM`, `__CFBundleIdentifier` |
+
+OAuth browser opening uses a snapshot of the local TUI process environment,
+not a remote session's provider or home settings. On Linux, `DISPLAY` or
+`WAYLAND_DISPLAY` identifies a graphical desktop. When neither is set and
+`BROWSER` is empty, AgenC asks you to open the displayed sign-in URL manually.
+A failed browser launcher or a launch that takes more than five seconds also
+shows the manual-opening prompt.
 
 CI and hosting discovery inputs:
 

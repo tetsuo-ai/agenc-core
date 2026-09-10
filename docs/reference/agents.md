@@ -115,9 +115,12 @@ count; a tool-using task may make multiple provider calls. The originating
 `task_id` is the spawn/assignment call correlation ID.
 
 A keep-alive worker that hits `max_turns`, `max_budget_usd`, the
-no-progress backstop, or `compact_failed` returns to `idle` after that
-turn. The same bounded stop on a one-shot / compatibility agent is
-terminal (`errored` / failed run). Interactive session survival:
+no-progress backstop, `compact_failed`, or `empty_response` returns to
+`idle` after that failed turn. Its correlated task receipt has outcome
+`errored` and a failure reason; returning to idle does not mark the task
+successful. The canonical turn terminal is `turn_failed`. The same stop
+on a one-shot / compatibility agent is terminal (`errored` / failed run).
+Interactive session survival:
 [daemon.md](daemon.md#interactive-session-survival). Compact skip:
 [daemon.md](daemon.md#compact-skip-stays-per-turn).
 

@@ -24,9 +24,15 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
 import { SandboxExecutionBroker } from "../../../src/sandbox/execution-broker.js";
+import { ExecutionAdmissionKernel } from "../../../src/budget/execution-admission-kernel.js";
+import { createHookExecutionAuthority } from "../../../src/hooks/execution-authority.js";
+import { executeSessionStatusLine } from "../../../src/hooks/status-line-executor.js";
+import { UnifiedExecProcessManager } from "../../../src/unified-exec/process-manager.js";
 import { INHERITED_CWD_SANDBOX_PATH } from "../../../src/sandbox/linux-launcher/config.js";
 import { findSystemBubblewrapInPath } from "../../../src/sandbox/linux-launcher/launcher.js";
 import { bindWorkspaceDirectoryReadCapability } from "../../../src/workspace/file-mutation-transaction.js";
+import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
+import { createTestConfigStore, mkSession } from "../../fixtures.js";
 
 const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const launcherEntry = join(runtimeRoot, "bin", "agenc-linux-sandbox");
@@ -37,6 +43,97 @@ const builtLauncher = join(
   "linux-launcher",
   "main.js",
 );
+
+test("renders a status command with ordinary workspace-write isolation and a captured system PATH", { timeout: 30_000 }, async () => {
+  expect(process.platform).toBe("linux");
+  const home = realpathSync(mkdtempSync(join("/var/tmp", "agenc-status-kernel-")));
+  const cwd = join(home, "project");
+  mkdirSync(join(cwd, ".git"), { recursive: true });
+  const environment = { PATH: "/usr/bin:/bin", HOME: home, AGENC_HOME: home };
+  const kernel = new ExecutionAdmissionKernel({ agencHome: home });
+  try {
+    expect(findSystemBubblewrapInPath(environment.PATH)).toBe("/usr/bin/bwrap");
+    const admission = kernel.bindClient({ cwd, scope: { runId: "conv-test", sessionId: "conv-test", autonomous: false } });
+    const configStore = createTestConfigStore({ cwd, base: {
+      statusLine: { type: "command", command: "printf ordinary-sandbox-status" },
+    } });
+    await configStore.reload();
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd,
+      env: environment,
+      sessionTempRoot: home,
+      agencLinuxSandboxExe: launcherEntry,
+    });
+    expect(broker.status().kind).toBe("ready");
+    const { session } = mkSession({
+      cwd,
+      services: {
+        configStore,
+        executionAdmission: admission,
+        sandboxExecutionBroker: broker,
+        hookExecutionAuthority: createHookExecutionAuthority({
+          runtimeOptions: { simpleMode: false, allowUntrustedHooks: false },
+          isWorkspaceTrusted: () => true,
+        }),
+        userShell: {
+          path: "/bin/sh",
+          commandWrapperArgv: [],
+          childEnvironment: environment,
+          deriveExecArgs: (command) => ["-c", command],
+        },
+      },
+    });
+    expect(await executeSessionStatusLine(session))
+      .toEqual({ status: "rendered", text: "ordinary-sandbox-status" });
+    expect(admission.replayJournal?.().map((event) => event.event)).not.toContain("held_unknown");
+  } finally {
+    kernel.close();
+    workspaceMutationCoordinators.clearForTests();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("sandboxed zsh heredocs use captured temp authority while general tmp stays read-only", { timeout: 30_000 }, async () => {
+  const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-zsh-kernel-")));
+  const workspace = join(root, "workspace");
+  const sessionTempRoot = join(root, "temporary files");
+  mkdirSync(workspace);
+  mkdirSync(sessionTempRoot);
+  const environment = {
+    ...stringEnvironment(process.env),
+    TMPPREFIX: "/tmp/untrusted-zsh",
+    TmPpReFiX: "/tmp/mixed-zsh",
+  };
+  const broker = new SandboxExecutionBroker({
+    mode: "workspace_write",
+    cwd: workspace,
+    env: environment,
+    sessionTempRoot,
+    agencLinuxSandboxExe: launcherEntry,
+  });
+  const manager = new UnifiedExecProcessManager({ cwd: workspace, baseEnv: environment, sessionTempRoot });
+  const blockedPath = `/tmp/agenc-zsh-denied-${randomUUID()}`;
+  try {
+    expect(broker.status().kind).toBe("ready");
+    const payload = "heredoc-data-".repeat(1000);
+    const result = await manager.execCommand({
+      shell: "/bin/zsh",
+      login: false,
+      cmd: `printf '%s\\n' "$TMPPREFIX"\ncat <<'AGENC_DATA'\n${payload}\nAGENC_DATA\nif printf forbidden > '${blockedPath}'; then exit 91; fi`,
+      runtimeSandbox: broker.runtimeSandbox("tool"),
+      yield_time_ms: 10_000,
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`${sessionTempRoot}/zsh\n${payload}\n`);
+    expect(result.stderr).toMatch(/read-only file system|read-only filesystem|permission denied/iu);
+    expect(existsSync(blockedPath)).toBe(false);
+  } finally {
+    await manager.closeAll("test_cleanup");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(blockedPath, { force: true });
+  }
+});
 
 test("protects custom Desktop authority records and their ancestor namespace with the real Linux kernel", { timeout: 30_000 }, async () => {
   expect(process.platform).toBe("linux");

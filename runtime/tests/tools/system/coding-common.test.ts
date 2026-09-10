@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { resolveWorkspacePath } from "src/tools/system/coding-common.js";
 import { SESSION_AGENC_HOME_ARG } from "src/tools/system/filesystem.js";
+import { signedSessionPlanFileArgs } from "src/agents/_deps/filesystem-args.js";
+import { planFileAuthorityFromContext } from "src/planning/session-plan-authority.js";
 import {
   SESSION_ID_ARG,
   SESSION_ID_SIG_ARG,
@@ -130,6 +132,7 @@ describe("HMAC-signed session id (plan-file carve-out)", () => {
           {
             file_path: planFile,
             [SESSION_AGENC_HOME_ARG]: agencHome,
+            ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId: SESSION_ID })),
           },
           SESSION_ID,
         ),

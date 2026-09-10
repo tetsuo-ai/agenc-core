@@ -5648,7 +5648,7 @@ snapshot_max_bytes = 64
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("refuses to reinterpret daemon environment for a run without durable runtime options", async () => {
+  it.each(["runtime options", "command environment"] as const)("refuses to reinterpret daemon environment for a run without durable %s", async (missingAuthority) => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -5659,7 +5659,8 @@ snapshot_max_bytes = 64
       cwd: process.cwd(),
       runId,
       sessionId,
-      includeRuntimeOptions: false,
+      includeRuntimeOptions: missingAuthority !== "runtime options",
+      includeCommandEnvironment: missingAuthority !== "command environment",
     });
     const restoreAgent = vi.fn(async () => true);
     const runner: AgenCBackgroundAgentRunner = {
@@ -6973,6 +6974,7 @@ function seedRecoverableDaemonState(
     readonly status?: string;
     /** Set false only when exercising the fail-closed pre-contract recovery path. */
     readonly includeRuntimeOptions?: boolean;
+    readonly includeCommandEnvironment?: boolean;
   },
 ): string {
   const driver = openStateDatabases({
@@ -7008,6 +7010,9 @@ function seedRecoverableDaemonState(
           ...(params.includeRuntimeOptions === false
             ? {}
             : { runtimeOptions: TEST_RUNTIME_OPTIONS }),
+          ...(params.includeCommandEnvironment === false
+            ? {}
+            : { commandEnvironment: { PATH: "/usr/bin:/bin" } }),
         }),
       );
     driver
@@ -7226,6 +7231,7 @@ function seedRecoverableCompletedToolState(
         JSON.stringify({
           agentPath: `/root/${params.runId}`,
           runtimeOptions: TEST_RUNTIME_OPTIONS,
+          commandEnvironment: { PATH: "/usr/bin:/bin" },
         }),
       );
     driver

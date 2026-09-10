@@ -27,11 +27,14 @@
  */
 
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
+import type { SessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 
 export const SESSION_ID_ARG = "__agencSessionId";
 export const SESSION_ID_SIG_ARG = "__agencSessionIdSig";
 export const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
 export const SESSION_ALLOWED_ROOTS_SIG_ARG = "__agencSessionAllowedRootsSig";
+export const SESSION_PLAN_FILE_ARG = "__agencSessionPlanFile";
+export const SESSION_PLAN_FILE_SIG_ARG = "__agencSessionPlanFileSig";
 
 /**
  * Per-process secret keying the trusted-roots HMAC. Generated once at
@@ -40,6 +43,56 @@ export const SESSION_ALLOWED_ROOTS_SIG_ARG = "__agencSessionAllowedRootsSig";
  * same Node runtime, they share this secret and signatures verify.
  */
 const PROCESS_SECRET = randomBytes(32);
+
+function planFileSignature(authority: SessionPlanFileAuthority): string {
+  return createHmac("sha256", PROCESS_SECRET)
+    .update(JSON.stringify([
+      "session-plan-file-v1",
+      authority.sessionId,
+      authority.agencHome,
+      authority.planFilePath,
+      authority.agentId ?? null,
+    ]))
+    .digest("hex");
+}
+
+export function signedSessionPlanFileArgs(
+  authority: SessionPlanFileAuthority | null,
+): Record<string, unknown> {
+  return {
+    [SESSION_PLAN_FILE_ARG]: authority,
+    [SESSION_PLAN_FILE_SIG_ARG]: authority === null ? null : planFileSignature(authority),
+  };
+}
+
+export function verifySessionPlanFileArgs(
+  args: Record<string, unknown>,
+): SessionPlanFileAuthority | null {
+  const value = args[SESSION_PLAN_FILE_ARG];
+  const signature = args[SESSION_PLAN_FILE_SIG_ARG];
+  if (
+    value === null || typeof value !== "object" || Array.isArray(value) ||
+    typeof signature !== "string"
+  ) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.sessionId !== "string" ||
+    typeof candidate.agencHome !== "string" ||
+    typeof candidate.planFilePath !== "string"
+  ) return null;
+  if (candidate.agentId !== undefined && typeof candidate.agentId !== "string") return null;
+  const authority = {
+    sessionId: candidate.sessionId,
+    agencHome: candidate.agencHome,
+    planFilePath: candidate.planFilePath,
+    ...(typeof candidate.agentId === "string" ? { agentId: candidate.agentId } : {}),
+  };
+  const expected = Buffer.from(planFileSignature(authority), "hex");
+  const supplied = Buffer.from(signature, "hex");
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected)
+    ? Object.freeze(authority)
+    : null;
+}
 
 /**
  * Deterministic canonical serialization of a roots array: dedupe, sort,

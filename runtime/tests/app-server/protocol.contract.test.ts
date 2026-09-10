@@ -195,6 +195,7 @@ const expectedInternalMethods = [
   "session.permissions.mutateRule",
   "session.hooks.status",
   "session.hooks.setDisabled",
+  "session.statusLine.execute",
   "session.applyConfig",
   "session.mcp.reconnectServer",
   "session.mcp.enableServer",
@@ -239,7 +240,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.10.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.11.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",

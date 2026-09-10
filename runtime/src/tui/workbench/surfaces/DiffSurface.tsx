@@ -36,6 +36,7 @@ export function DiffSurface({
         request: pendingApproval,
         description: pendingApproval.description,
         command: approvalInputText(pendingApproval.input),
+        toolInput: pendingApproval.input,
       })
     : null;
 

@@ -41,6 +41,7 @@
  * @module
  */
 
+import { resolve } from "node:path";
 import {
   freshDenialTracking,
   handleDenialLimitExceeded,
@@ -70,6 +71,7 @@ import {
   unattendedPolicyForContext,
 } from "./unattended-policy.js";
 import type { Session } from "../session/session.js";
+import { isSessionPlanMutation } from "../planning/session-plan-authority.js";
 import {
   classifyYoloAction,
   isAutoModeAllowlistedTool,
@@ -297,7 +299,8 @@ export async function checkRuleBasedPermissions(
     appState.autoModeActive !== true &&
     !toolDoesNotRequireApproval(tool) &&
     !SAFE_YOLO_ALLOWLISTED_TOOLS.has(tool.name) &&
-    !planModeReadOnlyShellCommand(tool, input)
+    !planModeReadOnlyShellCommand(tool, input) &&
+    !isSessionPlanMutation(tool, input, context.session)
   ) {
     const message = planModeDenyMessage(tool.name);
     return Object.freeze({
@@ -475,15 +478,33 @@ const READ_ONLY_GRANT_DEPS: ShellGateDeps = {
 };
 
 /**
- * Where a relative path in a granted command resolves from. Containment itself
- * is decided by the context's working directories, not by this value; this only
- * has to name the folder the run was started in.
+ * The folder this run works in, or null when it cannot be named.
+ *
+ * This is the base every relative path argument resolves from and, via
+ * `withRunFolderAsRoot`, the folder the shell path gate contains to.
+ *
+ * It used to read the first key of `additionalWorkingDirectories`, falling
+ * back to `process.cwd()`. Neither is this run's folder. That Map holds only
+ * the extra directories settings and `--add-dir` declare (permissions/
+ * settings.ts), never the session's own; on the routine path it is reliably
+ * empty, because the executor passes a cwd and no addDirs (routines/
+ * daemon-executor.ts) so no `--add-dir` is emitted. The fallback then handed
+ * the gate the daemon's process directory, and a routine in its own project
+ * was refused its own folder.
+ *
+ * `sessionConfiguration.cwd` is the workspace root bootstrap started this
+ * session with (bin/bootstrap.ts, session/configuration.ts), it is per
+ * session rather than per process, and it follows the session into a
+ * worktree. Absent it there is no folder to measure against, so this returns
+ * null and the gate refuses rather than guessing.
  */
 function readOnlyGrantWorkingDirectory(
-  context: ToolPermissionContext,
-): string {
-  const [first] = context.additionalWorkingDirectories.keys();
-  return first ?? process.cwd();
+  context: ToolEvaluatorContext,
+): string | null {
+  const configured: unknown = context.session?.sessionConfiguration?.cwd;
+  return typeof configured === "string" && configured.length > 0
+    ? resolve(configured)
+    : null;
 }
 
 /**
@@ -520,7 +541,7 @@ async function decideReadOnlyGrant(
     const verdict = readOnlyGrantVerdict(
       tool,
       input,
-      readOnlyGrantWorkingDirectory(permissionContext),
+      readOnlyGrantWorkingDirectory(context),
       permissionContext,
       READ_ONLY_GRANT_DEPS,
     );

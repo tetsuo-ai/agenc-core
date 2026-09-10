@@ -107,4 +107,20 @@ describe('TodoWrite → task board bridge', () => {
     const text = JSON.stringify(result)
     expect(text).toContain('Todos have been modified successfully')
   })
+
+  it.each([
+    { contents: ['Implement the CLI', 'Write the README', 'Clean up files'], needsVerification: true },
+    { contents: ['Implement the CLI', 'Write the README', 'Run the tests'], needsVerification: false },
+    { contents: ['Implement the CLI', 'Write the README', 'Verify the behavior'], needsVerification: false },
+  ])('keeps verification guidance compatible with a no-delegation task: $contents', async ({ contents, needsVerification }) => {
+    const tool = findTodoWrite()
+    const result = await withHomeAuthority(() => tool.execute({
+      todos: contents.map(content => ({ content, status: 'completed', activeForm: content })),
+    }))
+
+    expect(result.isError).not.toBe(true)
+    expect(result.metadata?.verificationNudgeNeeded).toBe(needsVerification)
+    expect(result.content).not.toMatch(/spawn|sentinel|delegate|only .*verdict/i)
+    if (needsVerification) expect(result.content).toContain('Verify the changes')
+  })
 })

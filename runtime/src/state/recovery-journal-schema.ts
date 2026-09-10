@@ -18,6 +18,7 @@ import {
   type CompactionRolloutType,
 } from "../session/compaction-event-reader.js";
 import { validatePendingAdmissionFallbackSlice } from "../session/turn-checkpoint-slice.js";
+import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 
 type KnownRolloutItem = Exclude<RolloutItem, { readonly type: "unknown" }>;
 type KnownRolloutType = KnownRolloutItem["type"];
@@ -681,6 +682,14 @@ const isTurnCheckpoint: Validator<
   AllKeys<TurnCheckpointPayload>
 > = (value): value is TurnCheckpointPayload => isTurnCheckpointShape(value);
 
+const isSessionUsage: Validator<
+  EventPayload<"session_usage">,
+  AllKeys<EventPayload<"session_usage">>
+> = isAdmissionUsageSummary;
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
 const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   session_meta: objectShape(
     {
@@ -697,6 +706,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       model: isString,
       modelProvider: isString,
       memoryMode: isString,
+      admissionOwner: objectShape(
+        { workspaceId: isNonEmptyString, runId: isNonEmptyString },
+        { parentRunId: isNonEmptyString },
+      ),
     },
   ),
   session_configured: objectShape(
@@ -861,6 +874,11 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       input: isRecord,
       planContent: isString,
       planFilePath: isString,
+      fileWritePreview: either(
+        objectShape({ kind: literal("existing"), content: isString }),
+        objectShape({ kind: literal("missing") }),
+        objectShape({ kind: literal("unavailable"), reason: isString }),
+      ),
       recordedAt: isString,
     },
   ),
@@ -1178,6 +1196,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       details: isRecord,
     },
   ),
+  session_usage: isSessionUsage,
   guardian_assessment: objectShape(
     {
       id: isString,

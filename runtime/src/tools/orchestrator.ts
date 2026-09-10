@@ -812,13 +812,16 @@ export async function orchestrateToolCall<T>(
   }
 
   if (requirement.kind === "needs_approval") {
+    const approvalReason = requirement === toolRequirement
+      ? opts.approvalCtx.retryReason ?? requirement.reason
+      : requirement.reason;
     const approvalCtx: ApprovalCtx = {
       ...opts.approvalCtx,
       ...(opts.tool.requiresUserInteraction?.() === true
         ? { requiresUserInteraction: true }
         : {}),
-      ...(requirement.reason !== undefined
-        ? { retryReason: requirement.reason }
+      ...(approvalReason !== undefined
+        ? { retryReason: approvalReason }
         : {}),
       ...approvalContextForSandboxPermissions(normalizedSandboxPermissions),
     };

@@ -319,7 +319,7 @@ describe("BUFFER workbench rendering", () => {
     expect(allRenderedLinesFit(output, 148)).toBe(true);
     expect(provider.resize).toHaveBeenLastCalledWith({
       rows: 13,
-      columns: 116,
+      columns: 114,
     });
   });
 

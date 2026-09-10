@@ -64,12 +64,24 @@ describe("runtime tool projection", () => {
   it.each([
     "agents/run-agent.ts",
     "session/agenc-tool-use-context.ts",
-    "commands/session-compact.ts",
   ])("keeps %s wired to the shared projection with an explicit limit", (path) => {
     const source = readFileSync(new URL(`../../src/${path}`, import.meta.url), "utf8");
     expect(source).toContain('from "../llm/runtime-tool-projection.js"');
     expect(source).toMatch(/tools:\s*toRuntimeTools\([\s\S]*?DEFAULT_MAX_RESULT_SIZE_CHARS,?\s*\)/u);
     expect(source).not.toMatch(/function to(?:Agent|AgenC)RuntimeTools\(/u);
     expect(source).not.toContain('isMcp: name.startsWith("mcp__")');
+  });
+
+  it("uses the sampling catalog rather than runtime wrappers for manual compaction", () => {
+    const source = readFileSync(
+      new URL("../../src/commands/session-compact.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain('from "../session/run-turn-sampling-request.js"');
+    expect(source).toMatch(
+      /tools:\s*buildPrompt\(\[\], builtTools\(session, ctx\), ctx, systemPrompt\)\.tools/u,
+    );
+    expect(source).not.toContain("toRuntimeTools");
+    expect(source).not.toContain("runtime-tool-projection.js");
   });
 });

@@ -20,6 +20,7 @@ export type MemoryExtractionEnv = Readonly<Record<string, string | undefined>>;
 export interface MemoryExtractionVisibleRange {
   readonly visibleMessages: readonly LLMMessage[];
   readonly unprocessedMessages: readonly LLMMessage[];
+  readonly unprocessedVisibleCount: number;
   readonly currentVisibleCount: number;
 }
 
@@ -38,18 +39,28 @@ export function createMemoryExtractionTriggerState(): MemoryExtractionTriggerSta
 export function memoryExtractionVisibleRange(
   messages: readonly LLMMessage[],
   processedVisibleCount: number,
+  maxVisibleMessages = Number.POSITIVE_INFINITY,
 ): MemoryExtractionVisibleRange {
   const visibleMessages = messages.filter(
-    (message) => message.role === "user" || message.role === "assistant",
+    (message) => message.role === "user" || message.role === "assistant" || message.role === "tool",
   );
-  const currentVisibleCount = visibleMessages.length;
-  const unprocessedMessages =
+  const visibleOffsets = visibleMessages.flatMap((message, index) =>
+    message.role === "tool" ? [] : [index],
+  );
+  const currentVisibleCount = visibleOffsets.length;
+  const batchStart =
     currentVisibleCount < processedVisibleCount
-      ? visibleMessages
-      : visibleMessages.slice(processedVisibleCount);
+      ? 0
+      : processedVisibleCount;
+  const batchEnd = Math.min(currentVisibleCount, batchStart + maxVisibleMessages);
+  const unprocessedMessages = visibleMessages.slice(
+    visibleOffsets[batchStart] ?? visibleMessages.length,
+    visibleOffsets[batchEnd] ?? visibleMessages.length,
+  );
   return {
     visibleMessages,
     unprocessedMessages,
+    unprocessedVisibleCount: batchEnd - batchStart,
     currentVisibleCount,
   };
 }

@@ -6,10 +6,13 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import type { ApprovalCtx } from "../../src/tools/orchestrator.js";
 import type { ReviewDecision } from "../../src/permissions/review-decision.js";
-import { APPROVED } from "../../src/permissions/review-decision.js";
+import { ABORT, APPROVED } from "../../src/permissions/review-decision.js";
 import { createRoot } from "../../src/tui/ink.js";
 import type { PendingRequest } from "../../src/tui/permission-requests.js";
 import { AgenCPermissionOverlay } from "../../src/tui/permission-requests.js";
+import { KeybindingProvider } from "../../src/tui/keybindings/KeybindingContext.js";
+import { parseBindings } from "../../src/tui/keybindings/parser.js";
+import type { KeybindingContextName } from "../../src/tui/keybindings/types.js";
 import {
   AppStateProvider,
   getDefaultAppState,
@@ -94,6 +97,64 @@ function createExitPlanRequest(
 
 describe("permission-requests routes ExitPlanMode to PlanApprovalOverlay (contract #7)", () => {
   afterEach(() => clearPlanApprovalChoicesForTest());
+
+  test.each([
+    ["2\r", { action: "approve", mode: "default" }, APPROVED],
+    ["1\r", { action: "approve", mode: "acceptEdits", applyAllowedPrompts: true }, APPROVED],
+    ["3\r", { action: "revise" }, APPROVED],
+    ["\x1b", { action: "revise" }, APPROVED],
+    ["\x03", undefined, ABORT],
+  ])("settles only once for batched input %j", async (input, choice, decision) => {
+    const resolved: ReviewDecision[] = [];
+    const request = createExitPlanRequest((value) => resolved.push(value));
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      exitOnCtrlC: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+    try {
+      const activeContexts = new Set<KeybindingContextName>();
+      const renderRequest = (pending: PendingRequest) => root.render(
+        <AppStateProvider initialState={getDefaultAppState()}>
+          <KeybindingProvider
+            bindings={parseBindings([{ context: "Global", bindings: { "ctrl+c": "app:interrupt" } }])}
+            pendingChordRef={{ current: null }}
+            pendingChord={null}
+            setPendingChord={() => {}}
+            activeContexts={activeContexts}
+            registerActiveContext={(context) => { activeContexts.add(context); }}
+            unregisterActiveContext={(context) => { activeContexts.delete(context); }}
+            handlerRegistryRef={{ current: new Map() }}
+          >
+            <AgenCPermissionOverlay request={pending} tools={[]} />
+          </KeybindingProvider>
+        </AppStateProvider>,
+      );
+      renderRequest(request);
+      await sleep();
+      stdin.write(input);
+      await sleep(75);
+      stdin.write("\r1\r");
+      await sleep();
+      expect(resolved).toEqual([decision]);
+      expect(takePlanApprovalChoice(request.id)).toEqual(choice);
+
+      const nextRequest = { ...request, id: "call-next-plan" };
+      renderRequest(nextRequest);
+      await sleep();
+      stdin.write("2\r");
+      await sleep();
+      expect(resolved).toEqual([decision, APPROVED]);
+      expect(takePlanApprovalChoice(nextRequest.id)).toEqual({ action: "approve", mode: "default" });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
 
   test("renders the plan overlay (not ApprovalCard) and auto-accept sets the choice + resolves APPROVED", async () => {
     const resolved: ReviewDecision[] = [];

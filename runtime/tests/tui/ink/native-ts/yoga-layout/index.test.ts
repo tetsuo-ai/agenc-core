@@ -122,7 +122,7 @@ describe("yoga-layout TypeScript shim", () => {
       expect(root.getComputedBorder(Edge.Left)).toBe(4);
       expect(root.getComputedBorder(Edge.Bottom)).toBe(3);
       expect(child.getComputedMargin(Edge.Left)).toBe(3);
-      expect(child.getComputedMargin(Edge.End)).toBe(20);
+      expect(child.getComputedMargin(Edge.End)).toBeCloseTo(15.6);
       expect(child.getComputedMargin(99 as Edge)).toBe(3);
     } finally {
       root.freeRecursive();

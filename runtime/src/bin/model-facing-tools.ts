@@ -2758,6 +2758,7 @@ function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
 function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
   return {
     name: "Skill",
+    admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
     description:
       "Execute a skill within the main conversation. When a skill matches the user's request, call this tool before responding. Pass the skill name and optional arguments; available skills are listed in system reminders. Do not use this for MCP tools or names like mcp.server.tool; call MCP tools through their own tool function after system.searchTools discovery.",
     metadata: toolMetadata("skill", {
@@ -4600,6 +4601,7 @@ export async function startCronSchedulerRunner(opts: {
   readonly conversationId: string;
   readonly workspaceRoot: string;
   readonly signal?: AbortSignal;
+  readonly session?: Session;
 }): Promise<void> {
   opts.signal?.throwIfAborted();
   if (opts.conversationId.trim().length === 0) {
@@ -4608,11 +4610,22 @@ export async function startCronSchedulerRunner(opts: {
   if (opts.workspaceRoot.trim().length === 0) {
     throw new Error("Cron scheduler requires an owning workspace root");
   }
+  if (opts.session !== undefined && opts.session.conversationId !== opts.conversationId) {
+    throw new Error("Cron scheduler session does not match the owning conversation");
+  }
   const { setScheduledTasksEnabled } = await import("../bootstrap/state.js");
   opts.signal?.throwIfAborted();
   const { getCronScheduler } = await import("../utils/cronScheduler.js");
   opts.signal?.throwIfAborted();
   setScheduledTasksEnabled(true);
+  if (typeof opts.session?.submit === "function") {
+    const { startSessionCronScheduler } =
+      await import("../session/session-cron-scheduler.js");
+    opts.signal?.throwIfAborted();
+    await startSessionCronScheduler(opts.session, opts.workspaceRoot);
+    opts.signal?.throwIfAborted();
+    return;
+  }
   const scheduler = getCronScheduler();
   scheduler.start({
     queueOwner: {
@@ -4631,6 +4644,7 @@ function createCronAndWorkflowTools(
   return [
     {
       name: "CronCreate",
+      admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
       description:
         "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session. Delivery-routed jobs (announceChannel/webhook) instead run in an isolated gateway session and post their result to that channel/webhook — they require durable and a running `agenc gateway run`.",
       metadata: toolMetadata("workflow", {
@@ -4650,7 +4664,11 @@ function createCronAndWorkflowTools(
             description:
               "true (default) reschedules after each fire; false fires once and deletes itself.",
           },
-          durable: { type: "boolean" },
+          durable: {
+            type: "boolean",
+            description:
+              "false (default) keeps the job in this session; true persists it across restarts. Delivery-routed jobs are always durable.",
+          },
           announceChannel: {
             type: "string",
             description:
@@ -4671,7 +4689,8 @@ function createCronAndWorkflowTools(
         additionalProperties: false,
       },
       execute: async (args) => {
-        const conversationId = opts.getSession()?.conversationId;
+        const session = opts.getSession();
+        const conversationId = session?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
           return refusal({ error: "CronCreate requires an active owning conversation" });
         }
@@ -4706,7 +4725,7 @@ function createCronAndWorkflowTools(
         // Delivery-routed jobs are executed by the gateway from the persisted
         // task file — they must be durable or the gateway can never see them.
         const durable =
-          deliver !== undefined ? true : (boolValue(args.durable) ?? true);
+          deliver !== undefined ? true : (boolValue(args.durable) ?? false);
         const id = await addCronTask(
           schedule,
           prompt,
@@ -4723,6 +4742,7 @@ function createCronAndWorkflowTools(
         await startCronSchedulerRunner({
           conversationId,
           workspaceRoot: opts.workspaceRoot,
+          session: session ?? undefined,
         });
         return json({
           cron: {
@@ -4738,6 +4758,7 @@ function createCronAndWorkflowTools(
     },
     {
       name: "CronDelete",
+      admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
       description: "Delete a scheduled prompt job by id.",
       metadata: toolMetadata("workflow", {
         mutating: true,
@@ -4752,7 +4773,8 @@ function createCronAndWorkflowTools(
         additionalProperties: false,
       },
       execute: async (args) => {
-        const conversationId = opts.getSession()?.conversationId;
+        const session = opts.getSession();
+        const conversationId = session?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
           return refusal({ error: "CronDelete requires an active owning conversation" });
         }
@@ -4766,13 +4788,17 @@ function createCronAndWorkflowTools(
         );
         const existed = before.some((task) => task.id === id);
         await removeCronTasks([id], opts.workspaceRoot, conversationId);
-        const { getCronScheduler } = await import("../utils/cronScheduler.js");
-        await getCronScheduler().reschedule();
+        await startCronSchedulerRunner({
+          conversationId,
+          workspaceRoot: opts.workspaceRoot,
+          session: session ?? undefined,
+        });
         return json({ deleted: existed, id });
       },
     },
     {
       name: "CronList",
+      admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
       description:
         "List scheduled prompt jobs (id, cron expression, prompt, recurring).",
       metadata: toolMetadata("workflow", {

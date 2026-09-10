@@ -9,6 +9,10 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { AgenCDaemonResponseError, MAX_BUFFERED_SESSION_EVENTS_PER_SESSION } from "../app-server/agent-cli.js";
 import { DaemonEventReplay } from "./daemon-event-replay.js";
+import {
+  daemonTranscriptSnapshotCoversEvent,
+  daemonTranscriptSnapshotEvents,
+} from "./daemon-transcript-snapshot.js";
 import { classifyTurnTerminal, createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import type {
   AgentAttachParams,
@@ -47,9 +51,13 @@ import type {
   SessionHooksStatusResult,
   SessionHooksSetDisabledParams,
   SessionHooksSetDisabledResult,
+  SessionStatusLinePresentation,
+  SessionStatusLineExecuteParams,
+  SessionStatusLineExecuteResult,
   SessionApplyConfigParams,
   SessionApplyConfigResult,
   SessionSnapshotResult,
+  SessionTranscriptV2Result,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
   SessionResolveToolCallResult,
@@ -315,6 +323,10 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     readonly rule: string;
   }): Promise<SessionPermissionRuleMutationResult>;
   getDaemonHooksStatus?(): Promise<SessionHooksStatusResult>;
+  executeDaemonStatusLine?(
+    presentation: SessionStatusLinePresentation,
+    signal?: AbortSignal,
+  ): Promise<SessionStatusLineExecuteResult>;
   setDaemonHooksDisabled?(
     disabled: boolean,
   ): Promise<SessionHooksSetDisabledResult>;
@@ -533,6 +545,11 @@ export interface AgenCDaemonTuiClient {
     options?: { readonly signal?: AbortSignal },
   ): Promise<SessionHooksStatusResult>;
   request(
+    method: "session.statusLine.execute",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionStatusLineExecuteResult>;
+  request(
     method: "session.hooks.setDisabled",
     params?: JsonObject,
     options?: { readonly signal?: AbortSignal },
@@ -663,6 +680,7 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly realtimeWebrtcSessionFactory?: CreateRealtimeTuiControlsOptions["startWebrtcSession"];
   readonly realtimeAudioCaptureFactory?: StartRealtimeAudioCapture;
   readonly realtimeAudioPlayer?: RealtimeAudioPlayer;
+  readonly transcriptSnapshot?: SessionTranscriptV2Result;
   /** Snapshot cursor captured only after this socket's session route exists. */
   readonly runtimeSettingsCursor: {
     readonly eventId: string;
@@ -725,11 +743,16 @@ export async function attachDaemonAgentTuiSession<
     authorityCwd,
     attachment.runtimeSettings,
   );
+  const transcriptSnapshot = await options.client.request("session.transcript.v2", {
+    sessionId,
+  });
+  daemonTranscriptSnapshotEvents(transcriptSnapshot, sessionId);
   return createDaemonTuiSession({
     ...options,
     sessionId,
     conversationId: attachment.runtimeSessionId ?? options.agentId,
     realtimeThreadId: options.agentId,
+    transcriptSnapshot,
     runtimeSettingsCursor: {
       eventId: attachment.runtimeSettingsEventId,
       cwd: authorityCwd,
@@ -743,6 +766,9 @@ export function createDaemonTuiSession<
   options: AgenCDaemonTuiSessionOptions<Session>,
 ): AgenCDaemonBackedTuiSession<Session> {
   const { baseSession, client, sessionId, clientId } = options;
+  const restoredTranscriptEvents = options.transcriptSnapshot === undefined
+    ? undefined
+    : daemonTranscriptSnapshotEvents(options.transcriptSnapshot, sessionId);
   // These authenticated TUI-only methods are intentionally absent from the
   // public daemon method union. The transport accepts known internal methods;
   // keep the widening narrow so ordinary TUI calls remain contract-checked.
@@ -775,7 +801,8 @@ export function createDaemonTuiSession<
   };
   const queuedInputs: DaemonQueuedInput[] = [];
   const eventReplay = new DaemonEventReplay(MAX_BUFFERED_SESSION_EVENTS_PER_SESSION);
-  let activeTurnSnapshot: { readonly turnId: string } | null = null;
+  let activeTurnSnapshot: { readonly turnId: string } | null =
+    options.transcriptSnapshot?.activeTurn ?? null;
   let lastObservedTurnId: string | undefined;
   let daemonTurnStartGeneration = 0;
   let inFlightShellExecutionCount = 0;
@@ -1014,6 +1041,7 @@ export function createDaemonTuiSession<
       () => activeTurnSnapshot?.turnId === "daemon-turn"
         ? lastObservedTurnId
         : activeTurnSnapshot?.turnId ?? lastObservedTurnId,
+      options.transcriptSnapshot,
     );
     const currentConnectionState = client.getConnectionState?.();
     if (
@@ -1612,6 +1640,24 @@ export function createDaemonTuiSession<
           );
         }
       }),
+    executeDaemonStatusLine: async (presentation, signal) => {
+      signal?.throwIfAborted();
+      try {
+        return await client.request("session.statusLine.execute", {
+          sessionId,
+          presentation: {
+            ...(presentation.vimMode !== undefined
+              ? { vimMode: presentation.vimMode }
+              : {}),
+          },
+        } satisfies SessionStatusLineExecuteParams, { signal });
+      } catch (error) {
+        signal?.throwIfAborted();
+        return error instanceof AgenCDaemonResponseError && error.code === -32601
+          ? { status: "unavailable", reason: "unsupported_method" }
+          : { status: "error", reason: "request_failed" };
+      }
+    },
     getDaemonHooksStatus: async () =>
       client.request("session.hooks.status", {
         sessionId,
@@ -1751,7 +1797,7 @@ export function createDaemonTuiSession<
       };
     },
     getInitialTranscriptEvents: () => [
-      ...baseInitialTranscriptEvents(baseSession),
+      ...(restoredTranscriptEvents ?? baseInitialTranscriptEvents(baseSession)),
       ...connectionNoticeEvents(client.getConnectionState?.() ?? null),
     ],
   } as AgenCDaemonBackedTuiSession<Session>;
@@ -2527,8 +2573,10 @@ function subscribeToDaemonEvents(
   cb: (event: unknown) => void,
   runtimeSettingsReconciler?: RuntimeSettingsReconciler,
   activeTurnId?: () => string | undefined,
+  transcriptSnapshot?: SessionTranscriptV2Result,
 ): () => void {
   let replayingInitialEvents = true;
+  const pendingApprovals = new Map<string, AbortController>();
   const deliver = (event: JsonObject): void => {
     cb(event);
     void maybeBridgeDaemonApproval(
@@ -2537,6 +2585,7 @@ function subscribeToDaemonEvents(
       session,
       event,
       cb,
+      pendingApprovals,
     );
     void maybeBridgeDaemonElicitation(
       client,
@@ -2559,6 +2608,10 @@ function subscribeToDaemonEvents(
         return;
       }
       const transcriptEvent = toTranscriptEvent(event, activeTurnId?.());
+      if (
+        transcriptSnapshot !== undefined &&
+        daemonTranscriptSnapshotCoversEvent(transcriptSnapshot, event, transcriptEvent)
+      ) return;
       if (runtimeSettingsReconciler === undefined) {
         deliver(transcriptEvent);
       } else if (replayingInitialEvents) {
@@ -2588,6 +2641,8 @@ function subscribeToDaemonEvents(
     }
   });
   return () => {
+    for (const controller of pendingApprovals.values()) controller.abort();
+    pendingApprovals.clear();
     unsubscribeSession();
     unsubscribeRealtime?.();
     unsubscribeConnection?.();
@@ -2630,17 +2685,28 @@ async function maybeBridgeDaemonApproval(
   session: AgenCTuiBridgeSession,
   event: unknown,
   cb: (event: unknown) => void,
+  pendingApprovals: Map<string, AbortController>,
 ): Promise<void> {
-  if (!isJsonObject(event) || event.type !== "request_permissions") return;
+  if (!isJsonObject(event)) return;
   const payload = event.payload;
   if (!isJsonObject(payload) || typeof payload.callId !== "string") return;
+  if (event.type === "permission_decision" || event.type === "tool_call_completed") {
+    pendingApprovals.get(payload.callId)?.abort();
+    pendingApprovals.delete(payload.callId);
+    return;
+  }
+  if (event.type !== "request_permissions" || pendingApprovals.has(payload.callId)) return;
   const resolver = session.services.approvalResolver;
   if (resolver === undefined) return;
+  const controller = new AbortController();
+  pendingApprovals.set(payload.callId, controller);
   const toolName =
     typeof payload.toolName === "string" ? payload.toolName : "tool";
   const decision = await resolver
-    .request(buildDaemonApprovalCtx(session, payload, toolName))
+    .request(buildDaemonApprovalCtx(session, payload, toolName, controller.signal))
     .catch((): ReviewDecision => ({ kind: "denied" }));
+  if (controller.signal.aborted) return;
+  pendingApprovals.delete(payload.callId);
   // A transient daemon RPC failure here silently drops the user's
   // approve/deny decision and the tool call hangs forever. Catch and surface
   // it so the user gets feedback instead of an indefinite hang.
@@ -2796,13 +2862,28 @@ async function maybeBridgeDaemonElicitation(
   }
 }
 
+function daemonFileWritePreview(value: unknown): NonNullable<ApprovalCtx["fileWritePreview"]> | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (value.kind === "missing") return { kind: "missing" };
+  if (value.kind === "existing" && typeof value.content === "string" &&
+    Buffer.byteLength(value.content, "utf8") <= 256 * 1024) {
+    return { kind: "existing", content: value.content };
+  }
+  if (value.kind === "unavailable" && typeof value.reason === "string") {
+    return { kind: "unavailable", reason: value.reason.slice(0, 200) };
+  }
+  return undefined;
+}
+
 function buildDaemonApprovalCtx(
   session: AgenCTuiBridgeSession,
   payload: JsonObject,
   toolName: string,
+  signal: AbortSignal,
 ): ApprovalCtx {
   const callId = payload.callId as string;
   const input = isJsonObject(payload.input) ? payload.input : {};
+  const fileWritePreview = daemonFileWritePreview(payload.fileWritePreview);
   return {
     invocation: {
       session,
@@ -2824,6 +2905,8 @@ function buildDaemonApprovalCtx(
     } as unknown as ApprovalCtx["invocation"],
     callId,
     toolName,
+    signal,
+    ...(fileWritePreview === undefined ? {} : { fileWritePreview }),
     turnId: typeof payload.turnId === "string" ? payload.turnId : callId,
     ...(typeof payload.reason === "string"
       ? { retryReason: payload.reason }
@@ -2849,6 +2932,7 @@ function baseInitialTranscriptEvents(
 
 function transcriptEventFromPermissionRequest(params: JsonObject): JsonObject | null {
   if (typeof params.requestId !== "string") return null;
+  const fileWritePreview = daemonFileWritePreview(params.fileWritePreview);
   return {
     id: daemonTranscriptEventId(
       params,
@@ -2857,6 +2941,7 @@ function transcriptEventFromPermissionRequest(params: JsonObject): JsonObject | 
     type: "request_permissions",
     payload: {
       callId: params.requestId,
+      ...(fileWritePreview === undefined ? {} : { fileWritePreview }),
       ...(typeof params.toolName === "string"
         ? { toolName: params.toolName }
         : {}),

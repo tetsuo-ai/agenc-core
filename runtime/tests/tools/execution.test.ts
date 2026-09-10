@@ -85,6 +85,59 @@ describe("I-79 parseToolArgsWithBigInt", () => {
     expect(parsed!.n).toBe(12345);
   });
 
+  test.each([
+    'const record = {nextId:9007199254740992,bookmarks:[]};',
+    'const values = [9007199254740992, -9007199254740993];',
+    'const nested = "\\\"quoted\\\""; const record = {id:9007199254740992};',
+    '__bigint__9007199254740992',
+    '__bigint__not-a-number',
+  ])("preserves edit text without interpreting its contents: %s", (newString) => {
+    const input = {
+      file_path: "bookmarks.test.mjs",
+      old_string: "old",
+      new_string: newString,
+    };
+    expect(parseToolArgsWithBigInt(JSON.stringify(input))).toEqual(input);
+  });
+
+  test("preserves nested large integer tokens and literal marker strings", () => {
+    expect(
+      parseToolArgsWithBigInt(
+        '{"values":[9007199254740992,-9007199254740993,{"id":123456789012345678901234567890}],"__bigint__9007199254740992":"__bigint__9007199254740992","text":"{id:9007199254740992}"}',
+      ),
+    ).toEqual({
+      values: [
+        9007199254740992n,
+        -9007199254740993n,
+        { id: 123456789012345678901234567890n },
+      ],
+      __bigint__9007199254740992: "__bigint__9007199254740992",
+      text: "{id:9007199254740992}",
+    });
+  });
+
+  test("keeps decimal and exponent tokens as numbers", () => {
+    expect(
+      parseToolArgsWithBigInt(
+        '{"decimal":1234567890123456.5,"exponent":1234567890123456e2,"negativeZero":-0}',
+      ),
+    ).toEqual({
+      decimal: 1234567890123456.5,
+      exponent: 1234567890123456e2,
+      negativeZero: -0,
+    });
+  });
+
+  test.each([
+    '{"value":01234567890123456}',
+    '{"value":-01234567890123456}',
+    '{"value":+1234567890123456}',
+    '{"value":1234567890123456,}',
+    '{"value":1234567890123456e}',
+  ])("rejects malformed numeric JSON without repairing it: %s", (input) => {
+    expect(parseToolArgsWithBigInt(input)).toBeNull();
+  });
+
   test("malformed JSON returns null", () => {
     expect(parseToolArgsWithBigInt("{not json")).toBeNull();
   });
@@ -92,6 +145,53 @@ describe("I-79 parseToolArgsWithBigInt", () => {
   test("empty string returns empty object", () => {
     expect(parseToolArgsWithBigInt("")).toEqual({});
     expect(parseToolArgsWithBigInt("  ")).toEqual({});
+  });
+});
+
+describe("trusted parsed arguments", () => {
+  test("still validates runtime-supplied arguments before executing", async () => {
+    const execute = vi.fn(async () => ({ content: "unexpected" }));
+    const result = await runToolUse('{"count":1}', {
+      currentTurnId: "turn-typed-args",
+      invocation: makeInvocation("call-typed-args", "ArgumentEcho"),
+      parsedArgs: { count: "invalid" },
+      tool: {
+        name: "ArgumentEcho",
+        description: "",
+        isReadOnly: true,
+        inputSchema: {
+          type: "object",
+          properties: { count: { type: "number" } },
+          required: ["count"],
+          additionalProperties: false,
+        },
+        execute,
+      },
+    });
+    expect(result.isError).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("does not treat a model argument named parsedArgs as runtime authority", async () => {
+    const execute = vi.fn(async () => ({ content: "unexpected" }));
+    const result = await runToolUse('{"parsedArgs":{"count":1}}', {
+      currentTurnId: "turn-model-args",
+      invocation: makeInvocation("call-model-args", "ArgumentEcho"),
+      tool: {
+        name: "ArgumentEcho",
+        description: "",
+        isReadOnly: true,
+        inputSchema: {
+          type: "object",
+          properties: { count: { type: "number" } },
+          required: ["count"],
+          additionalProperties: false,
+        },
+        execute,
+      },
+    });
+    expect(result.isError).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
   });
 });
 

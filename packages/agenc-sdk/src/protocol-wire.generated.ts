@@ -25,7 +25,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.10.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.11.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -821,6 +821,7 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
     "session.permissions.mutateRule",
     "session.hooks.status",
     "session.hooks.setDisabled",
+    "session.statusLine.execute",
     "session.applyConfig",
     "session.mcp.reconnectServer",
     "session.mcp.enableServer",
@@ -1067,6 +1068,8 @@ export interface RunAdmissionSummary extends JsonObject {
 export interface RunStateSource extends JsonObject {
     readonly kind: "existing_state_database";
     readonly projectDir: string;
+    readonly admissionProjectDir?: string;
+    readonly admissionLastSequence?: number;
     readonly readonly: true;
 }
 
@@ -1245,6 +1248,8 @@ export type RunEvidenceCompleteness = "complete" | "partial" | "admission_source
 export interface RunEvidenceSource extends JsonObject {
     readonly kind: "canonical_run_journal" | "existing_m3_admission_state";
     readonly projectDir: string;
+    readonly admissionProjectDir?: string;
+    readonly admissionLastSequence?: number;
     readonly admissionJournal: boolean;
     readonly workflowEvidenceIncluded: boolean;
     readonly completeness: RunEvidenceCompleteness;
@@ -1619,6 +1624,56 @@ export interface SessionTranscriptV2TurnResult extends JsonObject {
     readonly provider?: string;
 }
 
+export interface SessionTranscriptV2Event extends JsonObject {
+    readonly eventId: string;
+    readonly committedSequence: number;
+    readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted";
+    readonly payload: {
+        readonly runId?: string;
+        readonly sequence?: number;
+        readonly costUsd?: number;
+        readonly heldCostUsd?: number;
+        readonly inputTokens?: number;
+        readonly outputTokens?: number;
+        readonly modelCalls?: number;
+        readonly hasUnknownCost?: boolean;
+        readonly models?: readonly {
+            readonly model: string;
+            readonly provider?: string;
+            readonly costUsd: number;
+            readonly heldCostUsd: number;
+            readonly inputTokens: number;
+            readonly outputTokens: number;
+            readonly totalTokens: number;
+            readonly modelCalls: number;
+            readonly hasUnknownCost: boolean;
+        }[];
+        readonly agents?: readonly {
+            readonly runId: string;
+            readonly costUsd: number;
+            readonly heldCostUsd: number;
+            readonly inputTokens: number;
+            readonly outputTokens: number;
+            readonly totalTokens: number;
+            readonly modelCalls: number;
+            readonly hasUnknownCost: boolean;
+        }[];
+        readonly promptTokens?: number;
+        readonly completionTokens?: number;
+        readonly totalTokens?: number;
+        readonly cachedInputTokens?: number;
+        readonly cacheCreationInputTokens?: number;
+        readonly reasoningOutputTokens?: number;
+        readonly webSearchRequests?: number;
+        readonly model?: string;
+        readonly provider?: string;
+        readonly turnId?: string;
+        readonly code?: string;
+        readonly message?: string;
+        readonly reason?: string;
+    };
+}
+
 export interface SessionTranscriptV2Result extends JsonObject {
     readonly schemaVersion: 2;
     readonly sessionId: string;
@@ -1628,6 +1683,7 @@ export interface SessionTranscriptV2Result extends JsonObject {
     readonly messages: readonly SessionTranscriptV2Message[];
     readonly activeTurn?: SessionTranscriptV2ActiveTurn;
     readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
+    readonly events?: readonly SessionTranscriptV2Event[];
 }
 
 export interface SessionCancelTurnResult extends JsonObject {

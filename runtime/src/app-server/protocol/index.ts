@@ -33,7 +33,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.10.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.11.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -192,6 +192,7 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
   "session.permissions.mutateRule",
   "session.hooks.status",
   "session.hooks.setDisabled",
+  "session.statusLine.execute",
   "session.applyConfig",
   "session.mcp.reconnectServer",
   "session.mcp.enableServer",
@@ -980,6 +981,14 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     result: "object",
     description:
       "TUI-internal request to enable/disable the daemon-owned session's hooks runtime for the session.",
+  },
+  "session.statusLine.execute": {
+    method: "session.statusLine.execute",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to render the configured status command under the daemon-owned session's authority.",
   },
   "session.applyConfig": {
     method: "session.applyConfig",
@@ -1818,6 +1827,21 @@ export interface SessionHooksStatusParams extends JsonObject {
 export interface SessionHooksSetDisabledParams extends JsonObject {
   readonly sessionId: string;
   readonly disabled: boolean;
+}
+
+export interface SessionStatusLinePresentation extends JsonObject {
+  readonly vimMode?: "NORMAL" | "INSERT";
+}
+
+export interface SessionStatusLineExecuteParams extends JsonObject {
+  readonly sessionId: string;
+  readonly presentation?: SessionStatusLinePresentation;
+}
+
+export interface SessionStatusLineExecuteResult extends JsonObject {
+  readonly status: "rendered" | "disabled" | "blocked" | "unavailable" | "error";
+  readonly text?: string;
+  readonly reason?: string;
 }
 
 /**
@@ -2743,6 +2767,8 @@ export interface RunDurableRecord extends JsonObject {
 export interface RunStateSource extends JsonObject {
   readonly kind: "existing_state_database";
   readonly projectDir: string;
+  readonly admissionProjectDir?: string;
+  readonly admissionLastSequence?: number;
   readonly readonly: true;
 }
 
@@ -2973,6 +2999,8 @@ export type RunEvidenceCompleteness =
 export interface RunEvidenceSource extends JsonObject {
   readonly kind: "canonical_run_journal" | "existing_m3_admission_state";
   readonly projectDir: string;
+  readonly admissionProjectDir?: string;
+  readonly admissionLastSequence?: number;
   readonly admissionJournal: boolean;
   readonly workflowEvidenceIncluded: boolean;
   readonly completeness: RunEvidenceCompleteness;
@@ -3208,6 +3236,56 @@ export interface SessionTranscriptV2TurnResult extends JsonObject {
   readonly provider?: string;
 }
 
+export interface SessionTranscriptV2Event extends JsonObject {
+  readonly eventId: string;
+  readonly committedSequence: number;
+  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted";
+  readonly payload: {
+    readonly runId?: string;
+    readonly sequence?: number;
+    readonly costUsd?: number;
+    readonly heldCostUsd?: number;
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
+    readonly modelCalls?: number;
+    readonly hasUnknownCost?: boolean;
+    readonly models?: readonly {
+      readonly model: string;
+      readonly provider?: string;
+      readonly costUsd: number;
+      readonly heldCostUsd: number;
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly totalTokens: number;
+      readonly modelCalls: number;
+      readonly hasUnknownCost: boolean;
+    }[];
+    readonly agents?: readonly {
+      readonly runId: string;
+      readonly costUsd: number;
+      readonly heldCostUsd: number;
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly totalTokens: number;
+      readonly modelCalls: number;
+      readonly hasUnknownCost: boolean;
+    }[];
+    readonly promptTokens?: number;
+    readonly completionTokens?: number;
+    readonly totalTokens?: number;
+    readonly cachedInputTokens?: number;
+    readonly cacheCreationInputTokens?: number;
+    readonly reasoningOutputTokens?: number;
+    readonly webSearchRequests?: number;
+    readonly model?: string;
+    readonly provider?: string;
+    readonly turnId?: string;
+    readonly code?: string;
+    readonly message?: string;
+    readonly reason?: string;
+  };
+}
+
 export interface SessionTranscriptV2Result extends JsonObject {
   readonly schemaVersion: 2;
   readonly sessionId: string;
@@ -3217,6 +3295,7 @@ export interface SessionTranscriptV2Result extends JsonObject {
   readonly messages: readonly SessionTranscriptV2Message[];
   readonly activeTurn?: SessionTranscriptV2ActiveTurn;
   readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
+  readonly events?: readonly SessionTranscriptV2Event[];
 }
 
 export interface SessionCancelTurnResult extends JsonObject {
@@ -3936,6 +4015,7 @@ export interface AgenCDaemonInternalResultByMethod {
   readonly "session.permissions.mutateRule": SessionPermissionRuleMutationResult;
   readonly "session.hooks.status": SessionHooksStatusResult;
   readonly "session.hooks.setDisabled": SessionHooksSetDisabledResult;
+  readonly "session.statusLine.execute": SessionStatusLineExecuteResult;
   readonly "session.applyConfig": SessionApplyConfigResult;
   readonly "session.mcp.reconnectServer": SessionMcpServerMutationResult;
   readonly "session.mcp.enableServer": SessionMcpServerMutationResult;

@@ -8,11 +8,13 @@ import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { Event } from "../../session/event-log.js";
 import { classifyTurnTerminal, type TurnTerminal } from "../../contracts/turn-terminal.js";
 import type { RolloutItem } from "../../session/rollout-item.js";
+import { isAdmissionUsageSummary } from "../../session/usage-summary.js";
 import {
   reconstructFromRollout,
 } from "../../session/rollout-reconstruction.js";
 import type {
   JsonObject,
+  SessionTranscriptV2Event,
   SessionTranscriptV2Result,
   SessionTranscriptV2TurnResult,
 } from "../protocol/index.js";
@@ -201,6 +203,78 @@ function closedTurnResult(
     ...(open.model !== undefined ? { model: open.model } : {}),
     ...(open.provider !== undefined ? { provider: open.provider } : {}),
   };
+}
+
+function transcriptNoticesFromRollout(
+  items: readonly RolloutItem[],
+  boundaryIndex: number,
+  runId: string,
+): readonly SessionTranscriptV2Event[] {
+  const notices: SessionTranscriptV2Event[] = [];
+  let usageNotice: SessionTranscriptV2Event | undefined;
+  let usageSequence = -1;
+  const seenEventIds = new Set<string>();
+  const closedTurnIds = new Set<string>();
+  let currentTurnId: string | undefined;
+  for (const [index, item] of items.entries()) {
+    if (item.type !== "event_msg") continue;
+    const event = item.payload;
+    const committedSequence = positiveSequence(event.seq) ?? 0;
+    const eventId = event.eventId ?? (committedSequence > 0
+      ? canonicalEventId(event)
+      : `legacy-notice:${index}:${event.id}`);
+    if (seenEventIds.has(eventId)) continue;
+    seenEventIds.add(eventId);
+    if (event.msg.type === "session_usage") {
+      const summary = event.msg.payload;
+      if (!isAdmissionUsageSummary(summary)) {
+        throw new Error("Canonical session usage payload is invalid");
+      }
+      if (summary.runId === runId && summary.sequence > usageSequence) {
+        usageSequence = summary.sequence;
+        usageNotice = {
+          eventId, committedSequence, type: "session_usage",
+          payload: {
+            ...summary,
+            models: summary.models.map((model) => ({ ...model })),
+            agents: summary.agents.map((agent) => ({ ...agent })),
+          },
+        };
+      }
+      continue;
+    }
+    if (event.msg.type === "token_count") {
+      notices.push({ eventId, committedSequence, type: "token_count", payload: { ...event.msg.payload } });
+      continue;
+    }
+    if (index <= boundaryIndex) continue;
+    if (event.msg.type === "turn_started") {
+      currentTurnId = event.msg.payload.turnId;
+      continue;
+    }
+    const terminal = classifyTurnTerminal(event.msg, {
+      expectedTurnId: currentTurnId,
+      legacyJournal: true,
+    });
+    if (terminal === undefined) continue;
+    const turnId = terminal.turnId ?? currentTurnId;
+    if (turnId !== undefined && closedTurnIds.has(turnId)) continue;
+    if (turnId !== undefined) closedTurnIds.add(turnId);
+    currentTurnId = undefined;
+    if (terminal.outcome === "errored") {
+      notices.push({
+        eventId, committedSequence, type: "turn_failed",
+        payload: { turnId, code: terminal.failureCode, message: terminal.message ?? "" },
+      });
+    } else if (terminal.outcome === "aborted") {
+      notices.push({
+        eventId, committedSequence, type: "turn_aborted",
+        payload: { ...(turnId !== undefined ? { turnId } : {}), ...(terminal.message !== undefined ? { reason: terminal.message } : {}) },
+      });
+    }
+  }
+  if (usageNotice !== undefined) notices.push(usageNotice);
+  return notices;
 }
 
 export function sessionTranscriptV2FromRollout(
@@ -416,6 +490,7 @@ export function sessionTranscriptV2FromRollout(
     historyEpoch: historyEpochForBoundary(runId, boundaryId),
     asOfSequence,
     messages,
+    events: transcriptNoticesFromRollout(items, boundaryIndex, runId),
     ...(activeTurn !== undefined ? { activeTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
   };

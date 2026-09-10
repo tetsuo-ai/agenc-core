@@ -7,8 +7,8 @@ import {
 } from "node:path";
 
 import {
-  isSessionPlanFile,
-} from "../../planning/plan-files.js";
+  matchesSessionPlanFile,
+} from "../../planning/session-plan-authority.js";
 import type { Logger } from "../../utils/logger.js";
 import type { RunCommandResult } from "../../utils/process.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
@@ -28,34 +28,13 @@ import {
   verifiedPlanFileContextFromArgs,
 } from "./filesystem.js";
 
-/**
- * Optional plan-file allowlist context derived from injected tool args.
- * When the dispatcher injects `__agencSessionId`, the filesystem tools
- * can resolve the active session's plan file path via plan-files.ts and
- * allowlist it regardless of the workspace allowlist — mirrors
- * AgenC's `checkEditableInternalPath` carve-out
- * (utils/permissions/filesystem.ts:1488-1506).
- *
- * SECURITY: this carve-out grants a WRITE target outside the workspace
- * allowlist, so the session id must come from a TRUSTED source. We verify
- * the HMAC signature the runtime attaches via
- * `withSignedSessionId`; an unsigned/forged `__agencSessionId` (e.g. a
- * model-supplied value) verifies as absent and yields no carve-out.
- */
-/**
- * True when `targetPath` belongs to the active session's plan-file
- * family AND the request carries enough session context to identify it.
- * Centralises the "is this a plan-file write that bypasses the
- * workspace allowlist" decision so writeFile / appendFile / editFile /
- * mkdir / delete / move all stay in sync.
- */
 function isPlanFileWriteAllowed(
   args: Record<string, unknown>,
   targetPath: string,
 ): boolean {
   const ctx = verifiedPlanFileContextFromArgs(args);
   if (ctx === null) return false;
-  return isSessionPlanFile(targetPath, ctx);
+  return matchesSessionPlanFile(targetPath, ctx);
 }
 
 export const SESSION_ADVERTISED_TOOL_NAMES_ARG = "__agencAdvertisedToolNames";

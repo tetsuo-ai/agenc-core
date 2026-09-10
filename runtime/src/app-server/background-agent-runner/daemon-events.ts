@@ -303,6 +303,9 @@ export function notificationFromDaemonEvent(
         ...(typeof payload.planFilePath === "string"
           ? { planFilePath: payload.planFilePath }
           : {}),
+        ...(payload.fileWritePreview !== undefined
+          ? { fileWritePreview: payload.fileWritePreview }
+          : {}),
       },
     };
   }
@@ -648,6 +651,7 @@ const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "request_permissions",
   "permission_decision",
   "execution_admission",
+  "session_usage",
   "artifact_intent",
   "artifact_committed",
   "recovery_decision",

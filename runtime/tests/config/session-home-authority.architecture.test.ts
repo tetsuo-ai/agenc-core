@@ -306,8 +306,9 @@ describe("session home authority architecture", () => {
 
     expect(filesystem).toContain("verifiedPlanFileContextFromArgs")
     expect(filesystem).toContain("SESSION_AGENC_HOME_ARG")
+    expect(codingCommon).toContain("verifiedPlanFileContextFromArgs")
+    expect(worktree).toContain("verifiedSessionContextFromArgs")
     for (const consumer of [codingCommon, worktree]) {
-      expect(consumer).toContain("verifiedPlanFileContextFromArgs")
       expect(consumer).not.toContain("resolveHomeContext(process.env)")
     }
   });

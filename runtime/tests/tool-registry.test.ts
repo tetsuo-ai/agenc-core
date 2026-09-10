@@ -1648,7 +1648,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(emittedPlans).toHaveLength(1);
   });
 
-  test("TodoWrite adds the verification-agent nudge when closing 3+ tasks without verification", async () => {
+  test("TodoWrite does not demand delegation after completed verification tasks", async () => {
     const emittedPlans: unknown[] = [];
     const registry = buildToolRegistry({
       workspaceRoot: "/tmp",
@@ -1684,10 +1684,8 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toContain(
-      'spawn the sentinel agent (agent_type="sentinel")',
-    );
-    expect(result.metadata).toMatchObject({ verificationNudgeNeeded: true });
+    expect(result.content).not.toMatch(/spawn|sentinel|delegate/i);
+    expect(result.metadata).toMatchObject({ verificationNudgeNeeded: false });
     expect(emittedPlans).toHaveLength(1);
     expect(emittedPlans[0]).toMatchObject({
       todos: [],

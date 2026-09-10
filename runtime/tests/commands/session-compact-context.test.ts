@@ -1,4 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ConfigStore } from "../../src/config/store.js";
+import * as memoryPrompt from "../../src/memory/memdir.js";
+import * as outputStyles from "../../src/constants/outputStyles.js";
 
 const { loadTieredInstructionsMock } = vi.hoisted(() => ({
   loadTieredInstructionsMock: vi.fn(async () => ({
@@ -424,6 +430,37 @@ describe("/context display: computeContextUsageBreakdown", () => {
 });
 
 describe("/context TUI bridge", () => {
+  test("counts memory from the captured session home and working directory", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-context-memory-owner-"));
+    const configStore = new ConfigStore({ home, cwd: home, env: { HOME: home, AGENC_HOME: home } });
+    await configStore.reload();
+    const load = vi.spyOn(memoryPrompt, "loadMemoryPrompt");
+    const style = vi.spyOn(outputStyles, "getOutputStyleConfig").mockResolvedValue(null);
+    const session = {
+      abortController: new AbortController(), conversationId: "context-memory-owner",
+      newDefaultTurnWithSubId: () => ({ cwd: home, config: {},
+        modelInfo: { slug: "grok-4", contextWindow: 200_000, effectiveContextWindowPercent: 100 },
+        modelProviderId: "grok", dynamicTools: [], options: {} }),
+      nextInternalSubId: () => "context-memory-1", snapshotHistoryMessages: () => [],
+      state: { unsafePeek: () => ({ totalTokenUsage: { promptTokens: 0 } }) },
+      permissionModeRegistry: { current: () => undefined },
+      services: { configStore, registry: { toLLMTools: () => [], allSpecs: () => [] },
+        permissionModeRegistry: { current: () => undefined }, providerEnvironment: {}, provider: {},
+        runtimeOptions: { simpleMode: false, remoteMode: false } },
+      emit: vi.fn(), clearProviderResponseId: vi.fn(),
+    };
+    try {
+      await contextCommand.execute({ session: session as never, argsRaw: "", cwd: home, home,
+        appState: { setToolJSX: vi.fn() } });
+      expect(load).toHaveBeenCalledWith(expect.objectContaining({ cwd: home, configStore }));
+      expect((await load.mock.results[0]?.value)?.directories).toContain(join(home, "memory"));
+    } finally {
+      load.mockRestore();
+      style.mockRestore();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("loads managed policy from the session's captured authority", async () => {
     const capturedManagedPath = "/captured/policy/AGENC.md";
     const ambientManagedPath = "/ambient/policy/AGENC.md";
@@ -444,7 +481,8 @@ describe("/context TUI bridge", () => {
             contextWindow: 200_000,
             effectiveContextWindowPercent: 100,
           },
-          modelProviderId: "xai",
+          modelProviderId: "grok",
+          dynamicTools: [],
           options: {},
         }),
         nextInternalSubId: () => "sub-1",
@@ -511,7 +549,8 @@ describe("/context TUI bridge", () => {
           contextWindow: 200_000,
           effectiveContextWindowPercent: 100,
         },
-        modelProviderId: "xai",
+        modelProviderId: "grok",
+        dynamicTools: [],
         options: {},
       }),
       nextInternalSubId: () => "sub-1",
@@ -578,7 +617,8 @@ describe("/context TUI bridge", () => {
             contextWindow: 200_000,
             effectiveContextWindowPercent: 100,
           },
-          modelProviderId: "xai",
+          modelProviderId: "grok",
+          dynamicTools: [],
           options: {},
         }),
         nextInternalSubId: () => "sub-1",

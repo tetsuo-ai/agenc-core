@@ -9,6 +9,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { signedSessionPlanFileArgs } from "../../../src/agents/_deps/filesystem-args.js";
+import { planFileAuthorityFromContext } from "../../../src/planning/session-plan-authority.js";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -881,6 +883,7 @@ describe("FileRead tool", () => {
         __agencSessionId: sessionId,
         __agencSessionIdSig: signSessionId(sessionId),
         [SESSION_AGENC_HOME_ARG]: agencHome,
+        ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId })),
       });
 
       expect(result.isError).toBeUndefined();

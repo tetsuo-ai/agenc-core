@@ -67,9 +67,19 @@ import {
 import {
   clearCurrentRuntimeSession,
   peekScopedRuntimeSession,
+  runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
 import type { Session } from "../session/session.js";
+import { EventLog, type Event } from "../../src/session/event-log.js";
+import { openStateDatabases } from "../../src/state/sqlite-driver.js";
+import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
+import { createOperatorEffectReviewResolution } from "../../src/state/effect-review.js";
+import { listUnresolvedUnknownOutcomeEffects } from "../../src/state/unknown-outcome-gate.js";
+import { recordInFlightToolCallUnknownOutcome } from "../../src/state/tool-output-rotation.js";
+import { seedPendingEffectReview } from "../state/helpers/effect-review-fixture.js";
+import { registerChildApprovalSession, revokeChildApprovalSession } from "../../src/agents/child-approval-context.js";
+import type { ApprovalResolver } from "../../src/permissions/guardian/arbiter.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { readToolRuntimeContext } from "../tools/runtimes/context.js";
@@ -1257,6 +1267,110 @@ function configureSessionShellHarness(
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("[status-line] reaches the bound deferred owner's executor without a model turn", async () => {
+    const agentId = "status-line-deferred-agent";
+    const sessionId = "status-line-bound-session";
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+      runtimeSimpleMode: true,
+    });
+    Object.assign(harness.session.services, {
+      mcpStartupCancellationToken: {
+        isCancelled: () => false,
+        signal: new AbortController().signal,
+      },
+    });
+    await harness.runner.startAgent({
+      objective: "defer status-line work",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await harness.runner.attachAgentSessionEvents(agentId, { sessionId, emit: async () => {} });
+    const trackOperation = vi.spyOn(harness.session, "trackDurableOperation");
+    try {
+      await expect(harness.runner.executeAgentStatusLine(agentId, { sessionId })).resolves.toEqual({
+        status: "disabled",
+        reason: "hooks_disabled",
+      });
+      expect(trackOperation).toHaveBeenCalledOnce();
+      expect(harness.control.sendInput).not.toHaveBeenCalled();
+      expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    } finally {
+      trackOperation.mockRestore();
+      await harness.runner.stopAgent(agentId);
+    }
+  });
+
+  it.each(["absent", "unbound", "mismatched"])("[status-line] rejects %s ownership before entering the executor", async (state) => {
+    const agentId = `status-line-${state}-agent`;
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    if (state !== "absent") {
+      await harness.runner.startAgent({
+        objective: "defer status-line work",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+    }
+    if (state === "mismatched") {
+      await harness.runner.attachAgentSessionEvents(agentId, {
+        sessionId: "different-owner",
+        emit: async () => {},
+      });
+    }
+    const trackOperation = vi.spyOn(harness.session, "trackDurableOperation");
+    try {
+      await expect(harness.runner.executeAgentStatusLine(agentId, { sessionId: agentId })).rejects.toThrow(
+        state === "absent" ? "not running" : "does not own this runtime session",
+      );
+      expect(trackOperation).not.toHaveBeenCalled();
+      expect(harness.control.sendInput).not.toHaveBeenCalled();
+      expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    } finally {
+      trackOperation.mockRestore();
+      await harness.runner.stopAgent(agentId);
+    }
+  });
+
+  it("[status-line] rejects closed ingress while the bound runtime is still draining", async () => {
+    const agentId = "status-line-draining-agent";
+    const shutdownEntered = Promise.withResolvers<void>();
+    const releaseShutdown = Promise.withResolvers<void>();
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+      bootstrapShutdown: vi.fn(async () => {
+        shutdownEntered.resolve();
+        await releaseShutdown.promise;
+      }),
+    });
+    await harness.runner.startAgent({
+      objective: "defer status-line work",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await harness.runner.attachAgentSessionEvents(agentId, { sessionId: agentId, emit: async () => {} });
+    const stopping = harness.runner.stopAgent(agentId);
+    const trackOperation = vi.spyOn(harness.session, "trackDurableOperation");
+    try {
+      await shutdownEntered.promise;
+      await expect(harness.runner.executeAgentStatusLine(agentId, { sessionId: agentId })).rejects.toThrow("not running");
+      expect(trackOperation).not.toHaveBeenCalled();
+      expect(harness.control.sendInput).not.toHaveBeenCalled();
+      expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    } finally {
+      releaseShutdown.resolve();
+      await stopping;
+      trackOperation.mockRestore();
+    }
+  });
+
   it("[managed-thread] runs a deferred session shell through the canonical live router authorities", async () => {
     const harness = makeTopLevelRunner({
       conversationId: "session-direct-shell-authorities",
@@ -2278,6 +2392,72 @@ describe("AgenC delegate background-agent runner", () => {
     } finally {
       releaseSendInput.resolve();
       clearCurrentRuntimeSession();
+    }
+  });
+
+  it("resolves live effect evidence under its owning session and home across ambiguous or conflicting scopes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-live-review-owner-"));
+    const cwd = join(root, "workspace");
+    const home = join(root, "owner");
+    const otherHome = join(root, "other");
+    mkdirSync(cwd);
+    const sessionId = "live-review-shared-session";
+    const recordedAt = "2026-09-10T00:00:00.000Z";
+    const target = makeTopLevelRunner({ conversationId: sessionId, workspaceRoot: cwd,
+      rolloutItems: [{ type: "event_msg", timestamp: recordedAt, payload: {
+        eventId: "unknown-1", id: "unknown-1", seq: 2, msg: { type: "effect_unknown_outcome", payload: {
+          runId: sessionId, stepId: "tool:step-1", callId: "call-1", toolName: "exec_command",
+          recoveryCategory: "side-effecting", reason: "tool_error_result_without_authoritative_effect_disposition",
+          requiresReview: true, recordedAt,
+        } },
+      } }],
+    });
+    const other = makeTopLevelRunner({ conversationId: sessionId, workspaceRoot: cwd });
+    Object.assign(target.configStore, { homeContext: { path: home } });
+    Object.assign(other.configStore, { homeContext: { path: otherHome } });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    const otherDriver = openStateDatabases({ cwd, agencHome: otherHome });
+    const effects = new StateRunDurabilityRepository(driver);
+    const projectedScopes: Array<Session | null> = [];
+    Object.assign(target.rolloutStore, { recordEffectEvent: (event: Event) => {
+      projectedScopes.push(peekScopedRuntimeSession());
+      if (event.msg.type !== "effect_review_resolved") throw new Error("unexpected review event");
+      effects.resolveEffectReview({ ...event.msg.payload, eventId: event.eventId! });
+    } });
+    const resolution = createOperatorEffectReviewResolution({
+      disposition: "confirmed_no_effect", actorId: "operator", evidenceRef: "test:verified-no-effect",
+      evidenceSha256: "a".repeat(64), reviewedAt: recordedAt,
+    });
+    clearCurrentRuntimeSession();
+    try {
+      for (const database of [driver, otherDriver]) {
+        seedPendingEffectReview(database, sessionId, recordedAt);
+        recordInFlightToolCallUnknownOutcome(database, { sessionId, agentId: sessionId,
+          toolCallId: "call-1", toolName: "exec_command", observedAt: recordedAt, recoveryCategory: "side-effecting" });
+      }
+      await target.runner.startAgent({ objective: "idle review owner", deferInitialTurn: true });
+      await other.runner.startAgent({ objective: "idle other owner", deferInitialTurn: true });
+      setCurrentRuntimeSession(target.session as unknown as Session);
+      setCurrentRuntimeSession(other.session as unknown as Session);
+      const params = { sessionId, toolCallId: "call-1", resolution };
+      await expect(target.runner.resolveLiveEffectReview(sessionId, params))
+        .resolves.toMatchObject({ kind: "resolved", durable: true });
+      await expect(runWithCurrentRuntimeSession(other.session as unknown as Session,
+        () => target.runner.resolveLiveEffectReview(sessionId, params)))
+        .resolves.toMatchObject({ kind: "already_resolved", durable: true });
+      expect(projectedScopes).toEqual([target.session, target.session]);
+      expect(listUnresolvedUnknownOutcomeEffects(driver, sessionId)).toHaveLength(0);
+      expect(listUnresolvedUnknownOutcomeEffects(otherDriver, sessionId)).toHaveLength(1);
+      expect(new StateRunDurabilityRepository(otherDriver).getEffect(sessionId, "tool:step-1")?.reviewStatus).toBe("pending");
+      expect(target.rolloutItems.filter((item) => (item as { payload?: { msg?: { type?: string } } }).payload?.msg?.type === "effect_review_resolved")).toHaveLength(1);
+      await expect(target.runner.resolveLiveEffectReview(sessionId, { ...params, sessionId: "wrong-owner" })).rejects.toThrow("does not own session");
+    } finally {
+      clearCurrentRuntimeSession();
+      await target.runner.stopAgent(sessionId);
+      await other.runner.stopAgent(sessionId);
+      driver.close();
+      otherDriver.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -4170,6 +4350,151 @@ describe("AgenC delegate background-agent runner", () => {
     ]);
     expect(bootstrapShutdown).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["approved", "denied"] as const)(
+    "routes silent nested child approvals to the parent without granting them automatically: %s",
+    async (decisionKind) => {
+      const agentId = `parent-memory-${decisionKind}`;
+      const { runner, session } = makeTopLevelRunner({ conversationId: agentId });
+      const notifications: unknown[] = [];
+      await runner.startAgent({ objective: "memory approval", unattendedAllow: [], unattendedDeny: [] });
+      await runner.attachAgentSessionEvents(agentId, {
+        sessionId: "attached-parent",
+        emit: (notification) => { notifications.push(notification); },
+      });
+      const parent = session as unknown as Session;
+      const makeChild = (conversationId: string) => {
+        const eventLog = new EventLog();
+        const finalizers = new Set<() => void | Promise<void>>();
+        const durableOperations = new Set<Promise<unknown>>();
+        const child = {
+          ...session,
+          conversationId,
+          abortController: new AbortController(),
+          eventLog,
+          emit: (event: Parameters<EventLog["emit"]>[0]) => eventLog.emit(event),
+          trackDurableOperation: <Result>(operation: Promise<Result>) => {
+            durableOperations.add(operation);
+            void operation.then(() => durableOperations.delete(operation), () => durableOperations.delete(operation));
+            return operation;
+          },
+          onBeforeDurableClose: (callback: () => void | Promise<void>) => {
+            finalizers.add(callback);
+            return () => { finalizers.delete(callback); };
+          },
+        } as unknown as Session;
+        return { child, close: async () => {
+          revokeChildApprovalSession(child);
+          await Promise.all([...durableOperations]);
+          for (const callback of [...finalizers]) await callback();
+        } };
+      };
+      const intermediate = makeChild("child-intermediate");
+      registerChildApprovalSession(intermediate.child, parent);
+      const memory = makeChild("child-memory");
+      registerChildApprovalSession(memory.child, intermediate.child);
+      notifications.length = 0;
+      const childEvents: string[] = [];
+      memory.child.eventLog.subscribe((event) => childEvents.push(event.msg.type));
+      const resolver = (session.services as { approvalResolver: ApprovalResolver }).approvalResolver;
+      const makeRequest = (requestingSession: Session, callId: string, signal?: AbortSignal) => requestApproval({
+        ctx: {
+          invocation: {
+            session: requestingSession,
+            turn: { subId: "child-memory-turn" },
+            callId,
+            toolName: { name: "Glob" },
+            payload: { kind: "function", arguments: JSON.stringify({ pattern: callId, scope: requestingSession.conversationId }) },
+            source: "direct",
+          } as never,
+          callId,
+          toolName: "Glob",
+          turnId: "child-memory-turn",
+          ...(signal !== undefined ? { signal } : {}),
+        },
+        resolver,
+      });
+      const requestIdFor = (conversationId: string, callId: string): string => {
+        const prompt = notifications.find((notification) => {
+          const candidate = notification as { method?: string; params?: { input?: { pattern?: string; scope?: string } } };
+          return candidate.method === "event.permission_request" && candidate.params?.input?.pattern === callId && candidate.params.input.scope === conversationId;
+        }) as { params?: { requestId?: string } } | undefined;
+        expect(prompt?.params?.requestId).toEqual(expect.any(String));
+        return prompt!.params!.requestId!;
+      };
+      const expectDecision = async (requestId: string, decision: string) => {
+        await vi.waitFor(() => expect(notifications).toContainEqual(expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({ event: expect.objectContaining({
+            type: "permission_decision",
+            payload: expect.objectContaining({ callId: requestId, decision }),
+          }) }),
+        })));
+      };
+      let settled = false;
+      const pending = makeRequest(memory.child, "memory-glob").then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.waitFor(() => expect(notifications).toContainEqual(expect.objectContaining({
+        method: "event.permission_request",
+        params: expect.objectContaining({ sessionId: "attached-parent", toolName: "Glob" }),
+      })));
+      expect(settled).toBe(false);
+      const prompt = notifications.find((notification) => (notification as { method?: string }).method === "event.permission_request") as { params: Record<string, unknown> };
+      expect(prompt.params).not.toHaveProperty("sequence");
+      const memoryRequestId = requestIdFor(memory.child.conversationId, "memory-glob");
+      expect(memoryRequestId).not.toBe("memory-glob");
+      expect(await runner.resolveToolDecision(agentId, { requestId: memoryRequestId, decision: { kind: decisionKind } })).toBe(true);
+      await expect(pending).resolves.toMatchObject({ decision: { kind: decisionKind }, source: "resolver" });
+      await expectDecision(memoryRequestId, decisionKind);
+      expect(childEvents).toEqual(["request_permissions", "permission_decision"]);
+      expect(await runner.getAgentSnapshot(agentId)).toMatchObject({ status: "running" });
+
+      const forged = makeChild(agentId);
+      await expect(makeRequest(forged.child, "forged")).resolves.toMatchObject({ decision: { kind: "denied" } });
+      expect(await runner.resolveToolDecision(agentId, { requestId: "forged", decision: { kind: "approved" } })).toBe(false);
+
+      const closing = makeRequest(memory.child, "closing-child");
+      await vi.waitFor(() => requestIdFor(memory.child.conversationId, "closing-child"));
+      const closingRequestId = requestIdFor(memory.child.conversationId, "closing-child");
+      await memory.close();
+      await expect(closing).resolves.toMatchObject({ decision: { kind: "abort" } });
+      await expectDecision(closingRequestId, "abort");
+      await expect(makeRequest(memory.child, "stale-child")).resolves.toMatchObject({ decision: { kind: "denied" } });
+
+      const sibling = makeChild("child-sibling");
+      const grandchild = makeChild("child-grandchild");
+      registerChildApprovalSession(sibling.child, parent);
+      registerChildApprovalSession(grandchild.child, intermediate.child);
+      const siblingPending = makeRequest(sibling.child, "call_1");
+      const grandchildPending = makeRequest(grandchild.child, "call_1");
+      await vi.waitFor(() => {
+        requestIdFor(sibling.child.conversationId, "call_1");
+        requestIdFor(grandchild.child.conversationId, "call_1");
+      });
+      const siblingRequestId = requestIdFor(sibling.child.conversationId, "call_1");
+      const grandchildRequestId = requestIdFor(grandchild.child.conversationId, "call_1");
+      expect(siblingRequestId).not.toBe(grandchildRequestId);
+      expect(await runner.resolveToolDecision(agentId, { requestId: siblingRequestId, decision: { kind: "approved" } })).toBe(true);
+      await expect(siblingPending).resolves.toMatchObject({ decision: { kind: "approved" } });
+      await expectDecision(siblingRequestId, "approved");
+      await intermediate.close();
+      await expect(grandchildPending).resolves.toMatchObject({ decision: { kind: "abort" } });
+      await expectDecision(grandchildRequestId, "abort");
+      expect(await runner.resolveToolDecision(agentId, { requestId: grandchildRequestId, decision: { kind: "approved" } })).toBe(false);
+      await grandchild.close();
+
+      const abortController = new AbortController();
+      const aborting = makeRequest(sibling.child, "aborting-child", abortController.signal);
+      abortController.abort();
+      await expect(aborting).resolves.toMatchObject({ decision: { kind: "abort" } });
+      const stopping = makeRequest(sibling.child, "stopping-parent");
+      await runner.stopAgent(agentId, "test_cleanup");
+      await expect(stopping).resolves.toMatchObject({ decision: { kind: "abort" } });
+      await sibling.close();
+    },
+  );
 
   it("fsync-journals daemon permission requests and decisions before execution resumes", async () => {
     const { runner, session, rolloutItems } = makeTopLevelRunner({

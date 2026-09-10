@@ -26,6 +26,16 @@ With no subcommand, AgenC starts the interactive TUI (or continues/resumes a
 session when those flags are set). A positional prompt without `--print` /
 `--no-tui` still goes through the normal startup path.
 
+Unknown options before the positional prompt exit with code 2 without starting
+a model call. Use `--` when literal prompt text starts with a dash:
+
+```bash
+agenc --print -- "--max-budget-usd is not a supported option; explain this error"
+```
+
+Options after the first positional prompt token are prompt text. Set a session
+spending cap with `AGENC_MAX_BUDGET_USD`, not `--max-budget-usd`.
+
 ### Global / session options
 
 From `formatCliHelpText()`:
@@ -117,10 +127,10 @@ active turn.
   not skip mid-turn compact. The outer condition can still be met, auto returns
   `wasCompacted: false`, and the sampling loop emits `warning` cause
   `mid_turn_compact_failed`. Its message starts with
-  `mid_turn_compact_skipped`. The turn stop is `compact_failed`. Keep-alive
-  sessions stay promptable; daemon-backed `--print` reports the terminal
-  `turn_complete` and exits 0. The compatibility `runAgent` surface with
-  `keepAlive: false` still reports failure. See
+  `mid_turn_compact_skipped`. The turn emits `turn_failed` with code
+  `compact_failed`. Keep-alive sessions stay promptable. Daemon-backed
+  `--print` and `--no-tui` exit 1, and the compatibility `runAgent` surface
+  with `keepAlive: false` reports failure. See
   [daemon.md](daemon.md#compact-skip-stays-per-turn).
 
 ---
@@ -391,6 +401,14 @@ do not advance the returned cursor past a missing range. Pre-M4 runs can fall
 back to the project-database-scoped execution-admission journal, which is
 labeled as a compatibility source. An admission-only record is not presented
 as a fabricated terminal result.
+
+Worktree children can store their canonical journal separately from their
+admission accounting. In that case, `source.projectDir` identifies the journal,
+while `source.admissionProjectDir` and `source.admissionLastSequence` identify
+the accounting database and the latest admission event for the run subtree.
+The admission sequence is not a replay cursor. Evidence from separate databases
+is marked partial rather than claiming a single atomic snapshot. Conflicting
+owners still fail with `RUN_ID_AMBIGUOUS`; changing cwd does not select an owner.
 
 ---
 

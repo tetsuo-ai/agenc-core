@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 
 import {
   resolveWorkflowPermissionMode,
@@ -502,7 +503,10 @@ interface Harness {
 const RUN_ID = "run-wf-1";
 
 function makeHarness(
-  options: { readonly defaultReviewerModel?: () => string | undefined } = {},
+  options: {
+    readonly defaultReviewerModel?: () => string | undefined;
+    readonly admission?: () => ExecutionAdmissionClient;
+  } = {},
 ): Harness {
   const home = mkdtempSync(join(tmpdir(), "agenc-m5-controller-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "agenc-m5-controller-cwd-"));
@@ -529,6 +533,7 @@ function makeHarness(
       },
     },
     admission: ({ runId }) => {
+      if (options.admission !== undefined) return options.admission();
       admission.scope.runId = runId;
       return admission;
     },
@@ -745,7 +750,7 @@ describe("VerifiedChangeWorkflowController — happy path", () => {
     });
     expect(terminal!.finalMessage).toContain(HEAD_COMMIT);
     expect(terminal!.finalMessage).toContain("Consider renaming");
-    expect(terminal!.usage).not.toBeNull();
+    expect(terminal!.usage).toBeNull();
 
     // Admission gated EVERY step, exactly once each.
     expect(harness.admission.acquired).toEqual([
@@ -1335,7 +1340,7 @@ describe("VerifiedChangeWorkflowController — reviewer that never answered", ()
 });
 
 describe("VerifiedChangeWorkflowController — child usage rollup", () => {
-  it("the terminal usage reflects the children's reconciled sums exactly; holds are noted, never spent", async () => {
+  it("retains child evidence without presenting partial sums as canonical usage", async () => {
     harness.spawner.queue("plan", {
       status: "completed",
       finalMessage: "PLAN: make the edit",
@@ -1370,13 +1375,7 @@ describe("VerifiedChangeWorkflowController — child usage rollup", () => {
     await runToTerminal(harness);
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("completed");
-    // Exact reconciled sums: 10+100+7 / 5+50+3 / 0.25+0.5+0.125.
-    expect(terminal.usage).toEqual({
-      inputTokens: 117,
-      outputTokens: 58,
-      totalTokens: 175,
-      costUsd: 0.875,
-    });
+    expect(terminal.usage).toBeNull();
     // The durable child evidence carries the usage and NOTES the holds
     // (held_unknown spend is never summed into any total).
     const implement = harness.repo.getEffect(RUN_ID, "workflow.implement")!;
@@ -1392,7 +1391,7 @@ describe("VerifiedChangeWorkflowController — child usage rollup", () => {
     expect(child.usageHeldUnknown).toBe(2);
   });
 
-  it("adoption and replay carry durably recorded child usage into the post-restart terminal rollup", async () => {
+  it("adopts child evidence without fabricating usage when the canonical reader is absent", async () => {
     harness.spawner.queue("plan", {
       status: "completed",
       finalMessage: "PLAN: make the edit",
@@ -1445,14 +1444,105 @@ describe("VerifiedChangeWorkflowController — child usage rollup", () => {
 
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("completed");
-    // Replayed plan (10/5/0.25) + adopted implement (40/2/0.5) + fresh
-    // verify agent (7/3/0.125): the post-restart rollup keeps every child.
-    expect(terminal.usage).toEqual({
-      inputTokens: 57,
-      outputTokens: 10,
-      totalTokens: 67,
-      costUsd: 0.875,
+    expect(terminal.usage).toBeNull();
+  });
+});
+
+describe("VerifiedChangeWorkflowController — canonical capped accounting", () => {
+  it("admits all children under one cap and counts the reviewer once", async () => {
+    harness.cleanup();
+    let client: ExecutionAdmissionClient;
+    harness = makeHarness({ admission: () => client });
+    const kernel = new ExecutionAdmissionKernel({
+      agencHome: harness.home,
+      ownerId: "workflow-cap-test",
+      ownerPid: process.pid,
     });
+    try {
+      client = kernel.bindClient({
+        cwd: harness.cwd,
+        scope: { runId: RUN_ID, sessionId: RUN_ID, autonomous: true },
+        budget: { runMaxCostUsd: 1, runMaxTokens: 1000 },
+      });
+      const charges: string[] = [];
+      const chargeChild = async (childRunId: string): Promise<void> => {
+        const child = client.forSession({ runId: childRunId, sessionId: childRunId });
+        const lease = await child.acquire({
+          stepId: "model:1",
+          kind: "model_turn",
+          model: "test-model",
+          provider: "test-provider",
+          maxInputTokens: 10,
+          maxOutputTokens: 10,
+          maxCostUsd: 0.2,
+        });
+        child.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+        child.reconcile(lease.reservation.reservationId, { inputTokens: 8, outputTokens: 2, costUsd: 0.1 });
+        expect(child.reconcile(lease.reservation.reservationId, { inputTokens: 8, outputTokens: 2, costUsd: 0.1 }).applied).toBe(false);
+        child.acknowledgeCompletion(lease.reservation.reservationId);
+        charges.push(childRunId);
+      };
+      const spawn = harness.spawner.spawn.bind(harness.spawner);
+      vi.spyOn(harness.spawner, "spawn").mockImplementation(async (input) => {
+        await chargeChild(input.childRunId);
+        return spawn(input);
+      });
+      const review = harness.reviewer.invoke.bind(harness.reviewer);
+      vi.spyOn(harness.reviewer, "invoke").mockImplementation(async (input) => {
+        await chargeChild(`${RUN_ID}:actual-review`);
+        return review(input);
+      });
+      await runToTerminal(harness, { budget: { maxCostUsd: 1, maxTokens: 1000 } });
+      expect(charges).toHaveLength(4);
+      const usage = { inputTokens: 32, outputTokens: 8, totalTokens: 40, costUsd: 0.4 };
+      expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "completed", usage });
+      expect(harness.ledgers.get(RUN_ID)?.records[0]?.usage).toEqual(usage);
+      expect(client.getUsageSummary?.()).toMatchObject({ ...usage, heldCostUsd: 0, hasUnknownCost: false });
+      const rows = harness.driver.state.prepare("SELECT reserved_tokens, reserved_cost_nanos, actual_cost_nanos FROM execution_admission_reservations WHERE run_id = ?").all(RUN_ID);
+      expect(rows.length).toBeGreaterThan(3);
+      for (const row of rows) expect(row).toEqual({ reserved_tokens: 0, reserved_cost_nanos: 0, actual_cost_nanos: 0 });
+    } finally {
+      kernel.close();
+    }
+  });
+
+  it("does not publish partial child rollups when canonical accounting fails", async () => {
+    Object.assign(harness.admission, { getUsageSummary: () => { throw new Error("canonical accounting unavailable"); } });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", usage: null });
+    expect(harness.ledgers.get(RUN_ID)?.records).toHaveLength(0);
+    expect(harness.warnings.some((warning) => warning.includes("canonical usage is unavailable"))).toBe(true);
+  });
+
+  it("keeps unknown child holds after wrapper failure and persists them on close", async () => {
+    harness.cleanup();
+    let client: ExecutionAdmissionClient;
+    harness = makeHarness({ admission: () => client });
+    const kernel = new ExecutionAdmissionKernel({ agencHome: harness.home, ownerId: "workflow-unknown-test", ownerPid: process.pid });
+    try {
+      const bind = () => kernel.bindClient({ cwd: harness.cwd, scope: { runId: RUN_ID, sessionId: RUN_ID, autonomous: true }, budget: { runMaxCostUsd: 1 } });
+      client = bind();
+      vi.spyOn(harness.spawner, "spawn").mockImplementation(async (input) => {
+        const child = client.forSession({ runId: input.childRunId, sessionId: input.childRunId });
+        const lease = await child.acquire({ stepId: "model:unknown", kind: "model_turn", maxInputTokens: 10, maxOutputTokens: 10, maxCostUsd: 0.3 });
+        child.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+        child.holdUnknown(lease.reservation.reservationId, "provider_disconnected");
+        child.acknowledgeCompletion(lease.reservation.reservationId);
+        return { status: "unknown_outcome", finalMessage: null, usage: null };
+      });
+      await runToTerminal(harness, { budget: { maxCostUsd: 1 } });
+      expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "unknown_outcome", usage: null });
+      expect(client.getUsageSummary?.()).toMatchObject({ costUsd: 0, heldCostUsd: 0.3, hasUnknownCost: true });
+      await expect(client.acquire({ stepId: "after-unknown", kind: "model_turn", maxInputTokens: 1, maxOutputTokens: 1, maxCostUsd: 0.8 })).rejects.toMatchObject({ reason: "budget_exceeded" });
+    } finally {
+      kernel.close();
+    }
+    const reopened = openStateDatabases({ cwd: harness.cwd, agencHome: harness.home });
+    try {
+      expect(reopened.state.prepare("SELECT status, reserved_cost_nanos FROM execution_admission_reservations WHERE run_id = ?").all(`${RUN_ID}:plan#1`)).toEqual([{ status: "held_unknown", reserved_cost_nanos: 300000000 }]);
+    } finally {
+      reopened.close();
+    }
   });
 });
 

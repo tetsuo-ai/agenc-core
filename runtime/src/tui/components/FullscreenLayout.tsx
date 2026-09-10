@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
+import { useSessionUsage } from '../context/sessionUsageContext.js';
 import { ModalContext } from '../context/modalContext';
 import { PromptOverlayProvider } from '../context/promptOverlayContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
@@ -588,15 +589,22 @@ function useGitChromeLabel(): string | null {
 const SPEND_REFRESH_MS = 5_000;
 
 function useSessionSpendLabel(): string {
-  const [spend, setSpend] = useState(() => formatUsdCost(getTotalCost()));
+  const usage = useSessionUsage();
+  const hasUsageContext = usage !== undefined;
+  const [spend, setSpend] = useState(() => hasUsageContext ? '' : formatUsdCost(getTotalCost()));
   useEffect(() => {
-    const interval = setInterval(() => {
+    if (hasUsageContext) return;
+    const refresh = (): void => {
       const next = formatUsdCost(getTotalCost());
       setSpend(prev => (prev === next ? prev : next));
-    }, SPEND_REFRESH_MS);
+    };
+    refresh();
+    const interval = setInterval(refresh, SPEND_REFRESH_MS);
     interval.unref?.();
     return () => clearInterval(interval);
-  }, []);
+  }, [hasUsageContext]);
+  if (usage === null) return '—';
+  if (usage !== undefined) return `${formatUsdCost(usage.costUsd)}${usage.hasUnknownCost ? ' +?' : ''}`;
   return spend;
 }
 

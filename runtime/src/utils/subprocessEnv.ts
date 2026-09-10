@@ -2,12 +2,14 @@ import { isEnvTruthy } from './envBoolean.js'
 import { isSecretEnvKey } from './secretEnv.js'
 import { assertNoObsoleteConfigEnvironment } from '../config/env.js'
 import { isAbsolute, normalize } from 'node:path'
+import { convertWindowsPathToPosix } from './windows-path-conversion.js'
 
 const CHILD_TEMP_AUTHORITY_KEYS = new Set([
   'AGENC_TMPDIR',
   'TMPDIR',
   'TEMP',
   'TMP',
+  'TMPPREFIX',
 ])
 
 /** True when an environment key can select a child process's temp root. */
@@ -38,6 +40,8 @@ export function withChildTempAuthority(
   childEnvironment.TMPDIR = root
   childEnvironment.TEMP = root
   childEnvironment.TMP = root
+  const shellRoot = process.platform === 'win32' ? convertWindowsPathToPosix(root) : root
+  childEnvironment.TMPPREFIX = `${shellRoot.replace(/\/+$/u, '')}/zsh`
   return childEnvironment
 }
 

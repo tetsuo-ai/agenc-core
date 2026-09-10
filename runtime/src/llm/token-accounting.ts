@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
 import { LLMContextWindowExceededError } from "./errors.js";
+import { getTokenizerConfigForProvider } from "./token-estimation.js";
 import type { LLMChatOptions, LLMMessage, LLMTool } from "./types.js";
 import { chatCompletionsCapabilityHintsForProvider } from "./wire/capability-gating.js";
 import {
@@ -79,8 +80,43 @@ const TOKEN_ACCOUNTING_UTF8_WORST_CASE_BYTES_PER_TOKEN = 1;
  * 2 keeps a conservative floor — still below every catalogued ratio, so the
  * estimate stays an upper bound — without gating admission on a bound no
  * tokenizer can reach.
+ *
+ * It is only a floor. Where a tokenizer IS catalogued, that ratio is the
+ * better bound and `conservativeBytesPerToken` prefers it: 2 is what we use
+ * when nothing is known about the endpoint, not a ceiling on what we may know.
+ * Keeping the floor everywhere costs nothing on a large window and is fatal on
+ * a small one. Measured against a real 32k-window local model, the serialized
+ * prompt was 75,075 bytes; at 2 that reserves 42,214 tokens against a 31,129
+ * window and admission denies before the model is ever called, while the
+ * model's own tokenizer counts 15,055 — 4.99 bytes per token. A window under
+ * ~64k cannot absorb a 2.8x over-estimate, so on local runtimes the floor does
+ * not degrade admission, it removes it.
  */
 const TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN = 2;
+
+/**
+ * The bytes-per-token bound to estimate this request with.
+ *
+ * Prefers the catalogued tokenizer for the endpoint and falls back to the
+ * floor when the endpoint matches nothing. The catalogue is deliberately set
+ * below measured ratios (ollama is listed at 3.8 against 4.99 measured), so
+ * preferring it keeps the estimate an upper bound rather than abandoning one.
+ */
+export function conservativeBytesPerToken(
+  provider: string | undefined,
+  model: string | undefined,
+): number {
+  const config = getTokenizerConfigForProvider({
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+  });
+  // An unmatched endpoint tells us nothing, and DEFAULT_BYTES_PER_TOKEN is a
+  // guess, not a bound. Hold the floor for those.
+  if (config.modelFamily === "unknown") {
+    return TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN;
+  }
+  return Math.max(TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN, config.bytesPerToken);
+}
 const TOKEN_ACCOUNTING_MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const TOKEN_ACCOUNTING_METRICS_OVERFLOW_MODEL = "other";
 const TOKEN_ACCOUNTING_METRICS_OVERFLOW_PROVIDER = "other";
@@ -1022,7 +1058,7 @@ function conservativeFallbackResult(
   );
   const promptTokens = estimateUtf8TokenUnits(
     stableStringify(promptIdentity),
-    TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN,
+    conservativeBytesPerToken(request.provider, request.model),
   );
   const frameTokens =
     TOKEN_ACCOUNTING_REQUEST_FRAME_TOKENS +

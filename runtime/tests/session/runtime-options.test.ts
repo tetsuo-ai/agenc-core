@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { windowsPathToPosixPath } from "../../src/utils/windowsPaths.js";
 
 import {
   AgentRuntimeOptionsError,
@@ -93,6 +94,7 @@ describe("agent runtime options", () => {
         TMPDIR: "/ambient/posix",
         TEMP: "C:\\ambient\\temp",
         TMP: "C:\\ambient\\tmp",
+        TMPPREFIX: "/ambient/zsh",
       },
     );
 
@@ -105,6 +107,7 @@ describe("agent runtime options", () => {
         TMPDIR: sessionTempRoot,
         TEMP: sessionTempRoot,
         TMP: sessionTempRoot,
+        TMPPREFIX: `${process.platform === "win32" ? windowsPathToPosixPath(sessionTempRoot) : sessionTempRoot}/zsh`,
       },
     });
     expect(Object.isFrozen(authority)).toBe(true);

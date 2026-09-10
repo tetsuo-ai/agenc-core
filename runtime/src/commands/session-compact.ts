@@ -37,16 +37,15 @@ import {
 import type { TurnContext } from "../session/turn-context.js";
 import { modelContextWindow } from "../session/turn-context.js";
 import {
+  buildPrompt,
+  builtTools,
+} from "../session/run-turn-sampling-request.js";
+import {
   createEmptyToolPermissionContext,
   isPermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
 import { asRecord } from "../utils/record.js";
-import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
-import {
-  toRuntimeTools,
-  type RuntimeTool as AgenCRuntimeTool,
-} from "../llm/runtime-tool-projection.js";
 import {
   getAutoCompactThresholdForEnvironment,
   getEffectiveContextWindowSizeForEnvironment,
@@ -422,7 +421,7 @@ interface AgenCToolUseContext {
   readonly sessionId: string;
   readonly options: {
     readonly mainLoopModel: string;
-    readonly tools: readonly AgenCRuntimeTool[];
+    readonly tools: readonly LLMTool[];
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
@@ -505,10 +504,7 @@ function buildAgenCToolUseContext(
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,
-      tools: toRuntimeTools(
-        session.services.registry.toLLMTools(),
-        DEFAULT_MAX_RESULT_SIZE_CHARS,
-      ),
+      tools: buildPrompt([], builtTools(session, ctx), ctx, systemPrompt).tools,
       mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
       contextWindowTokens: model.contextWindowTokens,
       ...(model.maxOutputTokens !== undefined
@@ -984,7 +980,7 @@ async function buildSyntheticSystemMessage(opts: {
     // Mirror `prepareTurnRuntimeInputs`: the memory instructions and the
     // directory block are part of every turn's prompt when auto memory is
     // enabled, so /context must count them too.
-    const memory = await resolveMemoryPromptInputs();
+    const memory = await resolveMemoryPromptInputs(opts.session, opts.ctx.cwd);
     const assembled = await assembleSystemPrompt(
       buildAssembleSystemPromptOpts({
         session: opts.session,

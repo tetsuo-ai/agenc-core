@@ -31,6 +31,8 @@
  * @module
  */
 
+import { basename } from "node:path";
+
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type {
@@ -96,20 +98,40 @@ function cloneCompletedToolResult(
   };
 }
 
-function emitSavedMemoryMessage(
+/**
+ * Memory extraction is housekeeping, so it reports on the diagnostic
+ * channel the rest of the memory subsystem already uses
+ * (`emitExtractionWarning` in services/extractMemories, cause
+ * `memory_extraction_skipped`).
+ *
+ * It used to emit an `agent_message`, which is the channel the model's own
+ * text arrives on. A line reading `Saved memory: /private/tmp/…/projects/
+ * v2--Users-…/memory/user_language.md` therefore appeared in the chat as
+ * something the assistant had said, directly under its real answer. Being an
+ * assistant message it was also persisted into the transcript and replayed as
+ * conversation history, and the desktop builds turn notifications from that
+ * same event type.
+ *
+ * The file name says which memory was written; the absolute path was internal
+ * detail that only ever reached the user by mistake.
+ */
+function emitSavedMemoryNotice(
   session: Session,
   paths: readonly string[],
 ): void {
   if (paths.length === 0) return;
-  const message =
-    paths.length === 1
-      ? `Saved memory: ${paths[0]}`
-      : `Saved memories: ${paths.join(", ")}`;
+  const names = paths.map((path) => basename(path));
   session.emit({
     id: session.nextInternalSubId(),
     msg: {
-      type: "agent_message",
-      payload: { message },
+      type: "warning",
+      payload: {
+        cause: "memory_saved",
+        message:
+          names.length === 1
+            ? `Saved memory: ${names[0]}`
+            : `Saved memories: ${names.join(", ")}`,
+      },
     },
   });
 }
@@ -533,7 +555,7 @@ export async function commit(
             session,
             signal,
           },
-          (paths) => emitSavedMemoryMessage(session, paths),
+          (paths) => emitSavedMemoryNotice(session, paths),
         ).catch(() => {});
       }
     }

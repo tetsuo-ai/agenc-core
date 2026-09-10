@@ -17,10 +17,12 @@ export function AgentsRail({
   focused,
   width,
   sessionCostUsd = 0,
+  sessionCostUnknown = false,
 }: {
   readonly focused: boolean;
   readonly width: number;
   readonly sessionCostUsd?: number;
+  readonly sessionCostUnknown?: boolean;
 }): React.ReactElement {
   const tasks = useAppState((state) => state.tasks);
   const remoteCount = useAppState((state) => state.remoteBackgroundTaskCount);
@@ -99,17 +101,19 @@ export function AgentsRail({
           />
         ))}
       </Box>
-      <AgentRailSpend sessionCostUsd={sessionCostUsd} />
+      <AgentRailSpend sessionCostUsd={sessionCostUsd} sessionCostUnknown={sessionCostUnknown} />
     </Box>
   );
 }
 
 function AgentRailSpend({
   sessionCostUsd,
+  sessionCostUnknown = false,
 }: {
   readonly sessionCostUsd: number;
+  readonly sessionCostUnknown?: boolean;
 }): React.ReactElement {
-  const spend = formatUsdCost(sessionCostUsd);
+  const spend = `${formatUsdCost(sessionCostUsd)}${sessionCostUnknown ? "+?" : ""}`;
   return (
     <Box
       height={2}

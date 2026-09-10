@@ -20,6 +20,8 @@ vi.mock("../../services/lsp/fileNotifications.js", () => ({
 }));
 
 import type { ToolResult } from "../types.js";
+import { signedSessionPlanFileArgs } from "../../../src/agents/_deps/filesystem-args.js";
+import { planFileAuthorityFromContext } from "../../../src/planning/session-plan-authority.js";
 import { createFileWriteTool } from "./file-write.js";
 import {
   clearSessionReadState,
@@ -97,6 +99,7 @@ describe("Write tool", () => {
       const result = await tool.execute({
         file_path: planPath,
         content: "# Plan\n\n- [ ] Fix plan file writes\n",
+        ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId })),
         __agencSessionId: sessionId,
         __agencSessionIdSig: signSessionId(sessionId),
         [SESSION_AGENC_HOME_ARG]: agencHome,

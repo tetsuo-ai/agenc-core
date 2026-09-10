@@ -848,6 +848,43 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     expect(ran).toBe(1);
   });
 
+  test("preserves the permission evaluator reason for a forced approval", async () => {
+    const request = vi.fn(async () => ({ kind: "denied" as const }));
+    const dispatch = vi.fn(async () => "unexpected");
+    await expect(orchestrateToolCall({
+      tool: mkTool({ name: "spawn_agent", requiresApproval: true }),
+      approvalCtx: {
+        ...mkCtx(),
+        toolName: "spawn_agent",
+        retryReason: "Permission to use spawn_agent is required",
+      },
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      dispatch,
+      approvalResolver: { request },
+    })).rejects.toBeInstanceOf(ApprovalRejectedError);
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({
+      retryReason: "Permission to use spawn_agent is required",
+    }));
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  test("keeps sandbox escalation reasons ahead of a permission evaluator reason", async () => {
+    const request = vi.fn(async () => ({ kind: "denied" as const }));
+    await expect(orchestrateToolCall({
+      tool: mkTool(),
+      approvalCtx: { ...mkCtx(), retryReason: "Tool requires approval" },
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      approvalArgs: { sandbox_permissions: "require_escalated" },
+      dispatch: async () => "unexpected",
+      approvalResolver: { request },
+    })).rejects.toBeInstanceOf(ApprovalRejectedError);
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({
+      retryReason: expect.stringContaining("sandbox"),
+    }));
+  });
+
   test("sandbox_permissions=require_escalated: approval drives first attempt with sandbox off", async () => {
     const dispatches: string[] = [];
     const result = await orchestrateToolCall<string>({

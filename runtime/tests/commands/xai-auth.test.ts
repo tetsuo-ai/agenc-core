@@ -141,4 +141,26 @@ describe("xAI auth command authority", () => {
       expect(result.text).toContain("API key is also set");
     }
   });
+
+  test("keeps the authorization URL visible when the browser launcher fails", async () => {
+    const setToolJSX = vi.fn();
+    const context = commandContext(Object.freeze({}));
+    context.appState = { setToolJSX };
+    mocks.openUrlInBrowser.mockRejectedValueOnce(new Error("Browser launcher failed"));
+    mocks.runXaiBrowserLogin.mockImplementationOnce(async (options?: {
+      onAuthorizeUrl?: (url: string) => Promise<void>;
+    }) => {
+      await options?.onAuthorizeUrl?.("https://example.test/authorize");
+      const notices = JSON.stringify(setToolJSX.mock.calls);
+      expect(notices).toContain("Open this URL in your browser to sign in:");
+      expect(notices).toContain("https://example.test/authorize");
+      return {
+        identity: { sub: "xai-user" },
+        tokenEndpoint: "https://example.test/token",
+        tokens: { accessToken: "oauth-token" },
+      };
+    });
+    await expect(grokLoginCommand.execute(context)).resolves.toMatchObject({ kind: "text" });
+    expect(mocks.openUrlInBrowser).toHaveBeenCalledWith("https://example.test/authorize");
+  });
 });

@@ -227,7 +227,7 @@ describe("status git summary", () => {
   it("detects non-git directories", () => {
     expect(
       summarizeGitStatus({
-        insideWorkTree: { stdout: "", stderr: "fatal", code: 128 },
+        insideWorkTree: { stdout: "", stderr: "fatal: not a git repository (or any of the parent directories): .git", code: 128 },
         branch: { stdout: "", stderr: "", code: 0 },
         porcelain: { stdout: "", stderr: "", code: 0 },
       }).state,

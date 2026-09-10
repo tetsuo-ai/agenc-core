@@ -1124,7 +1124,7 @@ export async function prepareTurnRuntimeInputs(params: {
   readonly registry: { readonly tools: readonly { readonly name: string }[] };
 }): Promise<PreparedTurnRuntimeInputs> {
   const currentConfig = params.configStore.current();
-  const memory = await resolveMemoryPromptInputs();
+  const memory = await resolveMemoryPromptInputs(params.session, params.workspaceRoot);
 
   return {
     memoryPromptText: memory.memoryPrompt,
@@ -2470,6 +2470,7 @@ async function loadCreateDaemonTuiSession(): Promise<
     client: unknown;
     sessionId: string;
     conversationId?: string;
+    transcriptSnapshot?: import("../app-server/protocol/index.js").SessionTranscriptV2Result;
     clientId: string;
     runtimeSettingsCursor: { readonly eventId: string; readonly cwd: string };
   }) => Promise<unknown>
@@ -2480,6 +2481,7 @@ async function loadCreateDaemonTuiSession(): Promise<
       client: unknown;
       sessionId: string;
       conversationId?: string;
+      transcriptSnapshot?: import("../app-server/protocol/index.js").SessionTranscriptV2Result;
       clientId: string;
       runtimeSettingsCursor: {
         readonly eventId: string;
@@ -2569,6 +2571,7 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
 
 type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
   executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
+  executeDaemonStatusLine?: AgenCTuiBridgeSession["executeDaemonStatusLine"];
   readonly services?: {
     readonly mcpManager?: NonNullable<Session["services"]["mcpManager"]>;
     readonly [key: string]: unknown;
@@ -3949,6 +3952,13 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // `/hooks` reads the daemon session's REAL configured-hooks runtime
     // through liveSession.getDaemonHooksStatus. Hooks live on the daemon
     // agent session, so there is nothing to inspect pre-first-turn.
+    executeDaemonStatusLine: async (presentation, signal) => {
+      signal?.throwIfAborted();
+      if (liveSession?.executeDaemonStatusLine === undefined) {
+        return { status: "unavailable", reason: "session_not_ready" };
+      }
+      return liveSession.executeDaemonStatusLine(presentation, signal);
+    },
     getDaemonHooksStatus: async () => {
       if (liveSession === null) {
         throw new Error(
@@ -4932,6 +4942,7 @@ export async function attachAgentTuiEntry(
         `daemon agent runtime options disagree with the attaching client: ${args.agentId}`,
       );
     }
+    const attachedClient = daemonClient;
     return await runWithAgentRuntimeOptions(runtimeOptions, async () => {
       setIsRemoteMode(runtimeOptions.remoteMode);
       const sessionId = attachment.sessionIds[0];
@@ -5016,6 +5027,11 @@ export async function attachAgentTuiEntry(
       const attachProfile = liveSettings.profile ?? undefined;
       const attachConfigPath =
         startupLayers.flagConfigPath ?? retainedConfigPath;
+      const transcriptSnapshot = await attachedClient.request("session.transcript.v2", {
+        sessionId,
+      });
+      const { daemonTranscriptSnapshotEvents } = await import("../tui/daemon-transcript-snapshot.js");
+      daemonTranscriptSnapshotEvents(transcriptSnapshot, sessionId);
       const {
         workspaceRoot,
         baseSession,
@@ -5043,6 +5059,7 @@ export async function attachAgentTuiEntry(
         sessionId,
         conversationId: runtimeSessionId,
         clientId: args.clientId,
+        transcriptSnapshot,
         runtimeSettingsCursor: {
           eventId: attachment.runtimeSettingsEventId,
           cwd: bootstrapCwd,

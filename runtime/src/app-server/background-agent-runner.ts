@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { withLocalMcpAccess } from "../mcp-client/local-control.js";
+import { executeSessionStatusLine } from "../hooks/status-line-executor.js";
 import {
   CompletedAgentEventCache,
   completedEventReplayRequired,
@@ -83,6 +84,11 @@ import {
   resolveProviderModelSelection,
 } from "../session/provider-model-selection.js";
 import { applyProviderSwitch } from "../commands/provider.js";
+import {
+  isApprovalSessionOwnedBy,
+  observeChildApprovalSessions,
+  childApprovalRevocationSignal,
+} from "../agents/child-approval-context.js";
 import { resolveProfile } from "../config/profiles.js";
 import {
   resolveLiveEffectPoison,
@@ -134,6 +140,8 @@ import type {
   SessionPermissionRuleMutationParams,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionStatusLineExecuteParams,
+  SessionStatusLineExecuteResult,
 } from "./protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
 import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
@@ -290,7 +298,6 @@ import {
   replayRecoveredToolCalls,
   hydrateRecoveredSessionHistory,
   resolvePermissionDecisionTimeoutMs,
-  readApprovalAgentId,
 } from "./background-agent-runner/tool-recovery.js";
 import {
   configuredHookExecutionState,
@@ -2124,6 +2131,25 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return promise;
   }
 
+  async executeAgentStatusLine(
+    agentId: string,
+    params: SessionStatusLineExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionStatusLineExecuteResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    if (active.sessionBinding?.sessionId !== params.sessionId) {
+      throw new Error("Status line request does not own this runtime session");
+    }
+    return executeSessionStatusLine(
+      active.bootstrap.session,
+      params.presentation,
+      signal,
+    );
+  }
+
   async executeAgentShell(
     agentId: string,
     params: SessionShellExecuteParams,
@@ -2961,37 +2987,44 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         `AgenC daemon agent ${agentId} does not own session ${params.sessionId}`,
       );
     }
-    const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot });
-    try {
-      const outcome = resolveLiveDurableEffectReview(driver, params, {
-        readAll: () => active.bootstrap.rolloutStore.readAll(),
-        append: (eventId, payload) =>
-          active.bootstrap.session.emit(
-            {
-              eventId,
-              id: eventId,
-              msg: { type: "effect_review_resolved", payload },
-            },
-            { durable: true },
-          ),
-        project: (event) =>
-          active.bootstrap.rolloutStore.recordEffectEvent(event),
-      });
-      if (
-        outcome.kind !== "not_found" &&
-        outcome.durable &&
-        params.resolution.workflowStatus !== "pending"
-      ) {
-        resolveLiveEffectPoison(active.bootstrap.session, {
-          callId: params.toolCallId,
-          ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
-          ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
-        });
-      }
-      return outcome;
-    } finally {
-      driver.close();
+    const session = active.bootstrap.session;
+    const agencHome = session.services.configStore?.homeContext.path;
+    if (agencHome === undefined) {
+      throw new Error("Live effect review requires the owning session's configuration home");
     }
+    return runWithCurrentRuntimeSession(session, () => {
+      const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot, agencHome });
+      try {
+        const outcome = resolveLiveDurableEffectReview(driver, params, {
+          readAll: () => active.bootstrap.rolloutStore.readAll(),
+          append: (eventId, payload) =>
+            session.emit(
+              {
+                eventId,
+                id: eventId,
+                msg: { type: "effect_review_resolved", payload },
+              },
+              { durable: true },
+            ),
+          project: (event) =>
+            active.bootstrap.rolloutStore.recordEffectEvent(event),
+        });
+        if (
+          outcome.kind !== "not_found" &&
+          outcome.durable &&
+          params.resolution.workflowStatus !== "pending"
+        ) {
+          resolveLiveEffectPoison(session, {
+            callId: params.toolCallId,
+            ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
+            ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
+          });
+        }
+        return outcome;
+      } finally {
+        driver.close();
+      }
+    });
   }
 
   // Read the global session-level cache stats tracker (lives in the
@@ -4515,11 +4548,59 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     ).services;
     if (services === undefined) return () => {};
     const previousResolver = services.approvalResolver;
+    const childSubscriptions = new Set<() => void>();
+    const childRequestIds = new WeakMap<LocalRuntimeBootstrap["session"], Map<string, string>>();
+    const unsubscribeChildren = observeChildApprovalSessions(session, (child) => {
+      const requestIds = new Map<string, string>();
+      childRequestIds.set(child, requestIds);
+      const unsubscribe = child.eventLog.subscribe((event) => {
+        if (
+          event.msg.type !== "request_permissions" &&
+          event.msg.type !== "permission_decision"
+        ) return;
+        const active = this.#active.get(session.conversationId);
+        if (active?.bootstrap.session !== session || !isRunnableActiveAgent(active)) return;
+        const projected = daemonEventFromUnboundSessionEvent(event);
+        if (projected === null) return;
+        const callId = projected.payload?.callId;
+        if (typeof callId !== "string") return;
+        let requestId = requestIds.get(callId);
+        if (event.msg.type === "request_permissions") {
+          if (!isApprovalSessionOwnedBy(child, session)) return;
+          requestId = `child-approval:${randomUUID()}`;
+          requestIds.set(callId, requestId);
+        } else {
+          if (requestId === undefined) return;
+          requestIds.delete(callId);
+        }
+        void this.#emitOrBufferEvent(active, {
+          id: `${requestId}:${projected.type}`,
+          type: projected.type,
+          payload: { ...projected.payload, callId: requestId },
+          statusProjection: "session_only",
+        }).catch(() => {});
+      });
+      childSubscriptions.add(unsubscribe);
+      return () => {
+        unsubscribe();
+        childRequestIds.delete(child);
+        childSubscriptions.delete(unsubscribe);
+      };
+    });
     const resolver: ApprovalResolver = {
-      request: (ctx) => this.#requestDaemonToolDecision(ctx),
+      request: (ctx) => this.#requestDaemonToolDecision(
+        ctx,
+        session,
+        ctx.invocation.session === session
+          ? ctx.callId
+          : childRequestIds.get(ctx.invocation.session)?.get(ctx.callId),
+      ),
     };
     services.approvalResolver = resolver;
     return () => {
+      unsubscribeChildren();
+      for (const unsubscribe of childSubscriptions) unsubscribe();
+      childSubscriptions.clear();
       if (services.approvalResolver === resolver) {
         if (previousResolver === undefined) {
           delete services.approvalResolver;
@@ -4678,12 +4759,20 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
   }
 
-  async #requestDaemonToolDecision(ctx: ApprovalCtx): Promise<ReviewDecision> {
-    const agentId = readApprovalAgentId(ctx);
-    if (agentId === null) return DENIED;
+  async #requestDaemonToolDecision(
+    ctx: ApprovalCtx,
+    owner: LocalRuntimeBootstrap["session"],
+    requestId: string | undefined,
+  ): Promise<ReviewDecision> {
+    const requestingSession = ctx.invocation.session;
+    if (!isApprovalSessionOwnedBy(requestingSession, owner)) return DENIED;
+    const agentId = owner.conversationId;
     const active = this.#active.get(agentId);
-    if (active === undefined || !isRunnableActiveAgent(active)) return DENIED;
-    const requestId = ctx.callId;
+    if (active?.bootstrap.session !== owner || !isRunnableActiveAgent(active)) return DENIED;
+    const ownershipSignal = childApprovalRevocationSignal(requestingSession);
+    if (ctx.signal?.aborted || ownershipSignal?.aborted) return ABORT;
+    if (requestId === undefined) return DENIED;
+    if (this.#pendingToolDecisions.get(agentId)?.has(requestId)) return DENIED;
     const timeoutMs = resolvePermissionDecisionTimeoutMs();
     const decision = new Promise<ReviewDecision>((resolve) => {
       let pendingForAgent = this.#pendingToolDecisions.get(agentId);
@@ -4697,17 +4786,20 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         if (settled) return;
         settled = true;
         if (timer !== undefined) clearTimeout(timer);
+        ctx.signal?.removeEventListener("abort", abort);
+        ownershipSignal?.removeEventListener("abort", abort);
         pendingForAgent!.delete(requestId);
         if (pendingForAgent!.size === 0) {
           this.#pendingToolDecisions.delete(agentId);
         }
-        resolve(value);
+        resolve(isApprovalSessionOwnedBy(requestingSession, owner) ? value : ABORT);
       };
       pendingForAgent.set(requestId, (value) => settle(value));
       const abort = (): void => {
         settle(ABORT);
       };
       ctx.signal?.addEventListener("abort", abort, { once: true });
+      ownershipSignal?.addEventListener("abort", abort, { once: true });
       if (timeoutMs !== undefined) {
         timer = setTimeout(() => {
           settle(TIMED_OUT);

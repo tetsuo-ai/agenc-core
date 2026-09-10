@@ -85,6 +85,8 @@ import {
   toolNameDisplay,
 } from "./context.js";
 import type { Tool } from "./types.js";
+import { signedSessionPlanFileArgs } from "../agents/_deps/filesystem-args.js";
+import { sessionFilesystemContext, sessionPlanFileAuthority } from "../planning/session-plan-authority.js";
 import {
   SESSION_ID_SIG_ARG,
   signSessionId,
@@ -391,26 +393,17 @@ export interface ToolExecutionOverrides {
 // I-79: large-int JSON reviver
 // ─────────────────────────────────────────────────────────────────────
 
-const LARGE_INT_LITERAL_RE = /(:|,|\[|\{|\s)\s*(-?\d{16,})(\s*)(?=,|\}|\])/g;
-
-function wrapLargeInts(raw: string): string {
-  return raw.replace(
-    LARGE_INT_LITERAL_RE,
-    (_m, pre: string, digits: string, post: string) =>
-      `${pre}"__bigint__${digits}"${post}`,
-  );
-}
-
-const BIGINT_PREFIX = "__bigint__";
-
-function bigIntReviver(_key: string, value: unknown): unknown {
-  if (typeof value === "string" && value.startsWith(BIGINT_PREFIX)) {
-    const digits = value.slice(BIGINT_PREFIX.length);
-    try {
-      return BigInt(digits);
-    } catch {
-      return digits;
-    }
+function bigIntReviver(
+  _key: string,
+  value: unknown,
+  context?: { readonly source?: string },
+): unknown {
+  if (
+    typeof value === "number" &&
+    context?.source !== undefined &&
+    /^-?\d{16,}$/.test(context.source)
+  ) {
+    return BigInt(context.source);
   }
   return value;
 }
@@ -421,8 +414,7 @@ export function parseToolArgsWithBigInt(
   const trimmed = raw?.trim();
   if (!trimmed) return {};
   try {
-    const wrapped = wrapLargeInts(trimmed);
-    const parsed = JSON.parse(wrapped, bigIntReviver);
+    const parsed = JSON.parse(trimmed, bigIntReviver);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : null;
@@ -1327,6 +1319,7 @@ export type ToolProgressCallback = (event: ToolProgressEvent) => void;
 // ─────────────────────────────────────────────────────────────────────
 
 export interface RunToolUseOptions {
+  readonly parsedArgs?: Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
   readonly currentTurnId: string;
   readonly getActiveTurnId?: () => string | null;
@@ -1578,7 +1571,9 @@ export async function runToolUse(
   const startedAt = performance.now();
 
   // Step 1: I-79 arg parse.
-  const parsedArgs = parseToolArgsWithBigInt(rawArgs);
+  const parsedArgs = opts.parsedArgs === undefined
+    ? parseToolArgsWithBigInt(rawArgs)
+    : { ...opts.parsedArgs };
   if (parsedArgs === null) {
     const message = `invalid JSON arguments for tool ${toolNameDisplay(invocation.toolName)}`;
     if (opts.eventLog) {
@@ -2076,6 +2071,19 @@ export async function runToolUse(
   let argsForTool: Record<string, unknown> = inputForTool;
   if (progressCallback || effectiveSignal || invocation.callId.length > 0) {
     argsForTool = { ...inputForTool };
+    const filesystemContext = sessionFilesystemContext(invocation.session);
+    const planAuthority = sessionPlanFileAuthority(invocation.session);
+    if (filesystemContext === null) delete argsForTool.__agencHome;
+    for (const [key, value] of Object.entries({
+      ...signedSessionPlanFileArgs(planAuthority),
+      ...(filesystemContext !== null ? { __agencHome: filesystemContext.agencHome } : {}),
+    })) {
+      Object.defineProperty(argsForTool, key, {
+        value,
+        enumerable: false,
+        configurable: true,
+      });
+    }
     if (progressCallback) {
       Object.defineProperty(argsForTool, "__onProgress", {
         value: progressCallback,

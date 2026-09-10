@@ -47,6 +47,9 @@ import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
+  sessionPlanFileAuthority,
+} from "../../planning/session-plan-authority.js";
+import {
   getSessionReadSnapshot,
   hasSessionRead,
   recordSessionRead,
@@ -352,6 +355,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         context: context.getAppState().toolPermissionContext,
         operationType: "write",
         extraWorkingDirectories: allowedPaths,
+        planFileAuthority: sessionPlanFileAuthority(context.session),
       });
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {

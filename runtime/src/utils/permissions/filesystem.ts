@@ -40,7 +40,7 @@ import {
   expandPath,
   getDirectoryForPath,
 } from '../path.js'
-import { getPlanSlug, getPlansDirectory } from '../plans.js'
+import { matchesSessionPlanFile, sessionPlanFileAuthority } from '../../planning/session-plan-authority.js'
 import { getPlatform } from '../platform.js'
 import { getProjectDir } from '../sessionStorage.js'
 import { projectStorageKey } from '../project-storage-key.js'
@@ -268,15 +268,7 @@ function isAgenCConfigFilePath(filePath: string): boolean {
 
 // Check if file is the plan file for the current session
 function isSessionPlanFile(absolutePath: string): boolean {
-  // Check if path is a plan file for this session (main or agent-specific)
-  // Main plan file: {plansDir}/{planSlug}.md
-  // Agent plan file: {plansDir}/{planSlug}-agent-{agentId}.md
-  const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
-  // SECURITY: Normalize to prevent path traversal bypasses via .. segments
-  const normalizedPath = normalize(absolutePath)
-  return (
-    normalizedPath.startsWith(expectedPrefix) && normalizedPath.endsWith('.md')
-  )
+  return matchesSessionPlanFile(absolutePath, sessionPlanFileAuthority(peekAmbientRuntimeSession()))
 }
 
 /**

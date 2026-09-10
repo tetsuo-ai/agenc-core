@@ -393,11 +393,12 @@ instead of parking the approval. `[budget]`, `[heartbeat]`, `[browser]`, and
 `[transaction_guard]` apply their documented subsystem defaults when absent.
 
 On a keep-alive (interactive) session, hitting `max_turns`,
-`max_budget_usd`, the no-progress backstop, or `compact_failed` ends
-that **turn** only. Send another prompt; the session stays running.
-Daemon-backed one-shot agents (`--print` / `--no-tui`) report the terminal
-`turn_complete` and exit 0. The compatibility `runAgent` surface with
-`keepAlive: false` still reports failure. See
+`max_budget_usd`, the no-progress backstop, or `compact_failed` fails
+that turn only. An `empty_response` after the retry also fails the turn.
+Each emits canonical `turn_failed` with the stop reason as its code.
+Send another prompt; the session stays running. Daemon-backed one-shot
+agents (`--print` / `--no-tui`) exit 1. The compatibility `runAgent` surface
+with `keepAlive: false` also reports failure. See
 [daemon.md](daemon.md#interactive-session-survival). Compact skip:
 [daemon.md](daemon.md#compact-skip-stays-per-turn).
 
@@ -442,12 +443,24 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `max_output_tokens` | Positive global model-output limit. |
 | `capped_default_max_output_tokens` | Boolean capped-default/retry behavior. |
 | `max_turns` | Positive loop backstop. |
-| `max_budget_usd` | Positive session cost cap. |
+| `max_budget_usd` | Positive shared cost cap for the session and its child agents. |
 | `autonomous_mode` | Boolean autonomous runtime mode. |
 | `coordinator_mode` | Boolean coordinator-only main-session behavior. |
 | `stream_watchdog_timeout_ms` | Non-negative inter-chunk idle timeout; default `600000`, `0` disables. |
 | `provider_outage_wait_ms` | Non-negative total time a turn keeps waiting for a provider outage to end once the reconnect ladder is spent; default `1800000` (30 minutes), `0` ends the turn as soon as the ladder is exhausted. |
 | `provider_outage_retry_ms` | Positive first slow-retry delay during a provider outage, doubling up to ten times this value; default `30000`. |
+
+`max_budget_usd` limits the canonical admission ledger for the whole session,
+including concurrent child agents. Completed usage and outstanding reservations
+count against the same cap before new work starts. A stricter
+`agent.budget.dollar_cap` or enabled calendar budget still applies.
+
+Resuming a session preserves its recorded usage, reservations, and lowest bound
+cost cap. A lower configured cap tightens that limit; a higher or omitted cap
+does not increase the existing session's allowance. Start a new session to use
+a higher cap. Older sessions without a recorded cap acquire the configured
+limit on resume without resetting their spend. If existing usage and
+reservations already exceed the limit, new work is denied.
 
 Project-root discovery happens before project and local configuration can be
 loaded. Its marker authority is therefore limited to the built-in/plugin/user
@@ -707,6 +720,29 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `attribution`, `attribution.commit`, `attribution.pr` | Commit and pull-request attribution strings. |
 | `worktree`, `worktree.symlinkDirectories`, `worktree.sparsePaths` | Worktree directory/sparse-checkout arrays. |
 | `spinnerVerbs`, `spinnerVerbs.mode`, `spinnerVerbs.verbs` | `append`/`replace` verb customization. |
+
+Daemon-backed TUI status commands execute in the owning daemon session, using
+its operator configuration, workspace, shell environment, sandbox, and execution
+admission. The TUI cannot supply a command or override those permissions.
+Workspace trust, managed hook policy, disabled hooks, and `--bare` still apply.
+Commands have a five-second deadline including admission wait, accept at most
+64 KiB of input, and return at most 16 KiB of text. A session runs only one status
+command at a time. Cancelling a refresh or closing the session stops its process
+tree before releasing execution capacity. Before a live session exists, the
+custom status line remains unavailable; rendering never starts a model turn.
+Protected Editor workspaces block status commands. An executing command also
+blocks Editor acquisition until its process cleanup finishes.
+
+The daemon reports current context usage from its own token records. If no
+recent record is available, `context_window.current_usage`, both context
+percentages, and `exceeds_200k_tokens` are `null`. Clearing or replacing history
+invalidates that context sample without resetting cumulative spending.
+
+In the TUI, status-line commands receive shared session spending, including
+child agents, in `cost.total_cost_usd`. When `cost.has_unknown_cost` is true,
+that number is only the known subtotal; a pending initial snapshot also sets
+the flag. Child spending refreshes the status line without waiting for a new
+parent response.
 
 ```toml
 [tui]

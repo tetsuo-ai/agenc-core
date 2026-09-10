@@ -33,6 +33,8 @@
 
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { LLMToolCall } from "../../llm/types.js";
+import { signedSessionPlanFileArgs } from "../../agents/_deps/filesystem-args.js";
+import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import {
   getPlan,
   getPlanFilePath,
@@ -458,7 +460,9 @@ function approvalRejectedResult(err: ApprovalRejectedError): ToolDispatchResultL
       approvalDecision: decision,
     }),
     isError: true,
-    ...(approvalDenialEndsTurn(err) ? { preventContinuation: true } : {}),
+    ...(approvalDenialEndsTurn(err)
+      ? { preventContinuation: true, metadata: { approvalDenied: true } }
+      : {}),
   };
 }
 
@@ -975,6 +979,7 @@ export class StreamingToolExecutor {
                 arguments: JSON.stringify(dispatchArgs),
               };
               return dispatchWithInjectedArgs(this.registry, dispatchCall, {
+                ...signedSessionPlanFileArgs(sessionPlanFileAuthority(session)),
                 __onProgress: onProgress,
                 __abortSignal: this.abortSignal,
                 __callId: tool.toolCall.id,
@@ -991,15 +996,12 @@ export class StreamingToolExecutor {
             },
           });
         } catch (err) {
-          dispatchResult = {
-            content:
-              err instanceof ApprovalRejectedError
-                ? approvalRejectedResult(err).content
-                : err instanceof Error
-                  ? err.message
-                  : String(err),
-            isError: true,
-          };
+          dispatchResult = err instanceof ApprovalRejectedError
+            ? approvalRejectedResult(err)
+            : {
+                content: err instanceof Error ? err.message : String(err),
+                isError: true,
+              };
         }
       }
 
