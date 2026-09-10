@@ -31,6 +31,7 @@ import { terminalAgentRunReconciliationMigration } from "./029_terminal_agent_ru
 import { runtimeSettingsPermissionCapabilitiesMigration } from "./030_runtime_settings_permission_capabilities.js";
 import { runtimeSettingsMinimalEffortMigration } from "./031_runtime_settings_minimal_effort.js";
 import { dropThreadsLastItemIndexMigration } from "./032_drop_threads_last_item_index.js";
+import { runtimeSettingsMaxEffortMigration } from "./033_runtime_settings_max_effort.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -69,6 +70,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   runtimeSettingsPermissionCapabilitiesMigration,
   runtimeSettingsMinimalEffortMigration,
   dropThreadsLastItemIndexMigration,
+  runtimeSettingsMaxEffortMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

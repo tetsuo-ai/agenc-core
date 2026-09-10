@@ -115,8 +115,18 @@ describe("AgenC account model access", () => {
       if (provider) writeFileSync(join(home, "config.toml"), `config_version = 2\nmodel_provider = "${provider}"\nmodel = "previous-model"\nreasoning_effort = "xhigh"\n`);
       saveAccountDefaultModel(home, { authenticated: true, managedModelsEnabled: true, models: [{ id: AGENC_DEEPSEEK_MODEL, name: "DeepSeek" }] });
       const config = parseToml(readFileSync(join(home, "config.toml"), "utf8"));
-      expect(config.reasoning_effort).toBe(provider === "openai" ? "xhigh" : "medium");
+      expect(config.reasoning_effort).toBe(provider === "openai" ? "xhigh" : "high");
       expect(config.model_provider).toBe(provider === "openai" ? "openai" : "agenc");
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it.each(["medium", "low", "high", "max"])("migrates the old managed alias while preserving native effort %s", effort => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-account-native-effort-"));
+    try {
+      writeFileSync(join(home, "config.toml"), `config_version = 2\nmodel_provider = "agenc"\nmodel = "${AGENC_DEEPSEEK_MODEL}"\nreasoning_effort = "${effort}"\n`);
+      saveAccountDefaultModel(home, { authenticated: true, managedModelsEnabled: true, models: [{ id: AGENC_DEEPSEEK_MODEL, name: "DeepSeek" }] });
+      const config = parseToml(readFileSync(join(home, "config.toml"), "utf8"));
+      expect(config.reasoning_effort).toBe(effort === "medium" ? "high" : effort);
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 

@@ -1,6 +1,6 @@
 /** Exact model in the reviewed AgenC promotion, not a public entitlement. */
 export const AGENC_DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 
-// AgenC's endpoint review permits one explicit reasoning level. Other
-// OpenRouter routes for this model can have different capabilities.
-export const AGENC_DEEPSEEK_REASONING_LEVELS = ["medium"] as const;
+// Native levels published for this exact model. Medium is a legacy alias
+// for High, not a distinct reasoning level to offer in the selector.
+export const AGENC_DEEPSEEK_REASONING_LEVELS = ["low", "high", "max"] as const;
