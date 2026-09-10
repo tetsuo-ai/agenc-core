@@ -20,6 +20,8 @@ import {
 } from "../thread-store/store.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 
+// Bind fixture homes explicitly: production storage follows immutable session
+// authority instead of later process.env edits in a Vitest hook.
 let agencHome = "";
 let originalAgencHome = "";
 
@@ -29,6 +31,7 @@ function openStore(opts: {
   resume?: boolean;
 }): RolloutStore {
   const store = new RolloutStore({
+    agencHome,
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     agencVersion: "0.2.0",
@@ -68,8 +71,8 @@ function openForeignArchiveFixture(sessionId: string): {
 } {
   const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
   const rollout = openStore({ cwd, sessionId });
-  const owner = new FileThreadStore({ cwd });
-  const daemon = new FileThreadStore({ cwd });
+  const owner = new FileThreadStore({ agencHome, cwd });
+  const daemon = new FileThreadStore({ agencHome, cwd });
   owner.createThread({ threadId: sessionId, rolloutStore: rollout });
   owner.appendItems({ threadId: sessionId, items: [responseItem("a", "alpha")] });
   return {
@@ -96,6 +99,7 @@ beforeEach(() => {
   agencHome = mkdtempSync(join(tmpdir(), "agenc-thread-store-home-"));
   originalAgencHome = process.env.AGENC_HOME ?? "";
   process.env.AGENC_HOME = agencHome;
+
 });
 
 afterEach(() => {
@@ -109,7 +113,7 @@ describe("FileThreadStore.createThread", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "t1" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "t1", rolloutStore: rollout });
       expect(existsSync(join(dirname(store.registryFilePath), "agenc-state_1.sqlite"))).toBe(true);
 
@@ -132,7 +136,7 @@ describe("FileThreadStore.createThread", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "dup" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "dup", rolloutStore: rollout });
       expect(() =>
         store.createThread({ threadId: "dup", rolloutStore: rollout }),
@@ -147,7 +151,7 @@ describe("FileThreadStore.createThread", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "fork-child" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({
         threadId: "fork-child",
         forkedFromId: "parent",
@@ -181,7 +185,7 @@ describe("FileThreadStore.createThread", () => {
       },
     } satisfies ThreadSource;
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({
         threadId: "structured-source",
         source,
@@ -219,7 +223,7 @@ describe("FileThreadStore.discardThread", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "to-discard" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "to-discard", rolloutStore: rollout });
       store.discardThread("to-discard");
 
@@ -244,7 +248,7 @@ describe("FileThreadStore.appendItems / loadHistory", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "rt" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "rt", rolloutStore: rollout });
       store.appendItems({
         threadId: "rt",
@@ -271,7 +275,7 @@ describe("FileThreadStore.appendItems / loadHistory", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "disk-history" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "disk-history", rolloutStore: rollout });
       store.appendItems({
         threadId: "disk-history",
@@ -299,7 +303,7 @@ describe("FileThreadStore.appendItems / loadHistory", () => {
   it("appendItems on an unknown thread throws ThreadNotFoundError", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       expect(() =>
         store.appendItems({
           threadId: "nope",
@@ -318,7 +322,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const active = openStore({ cwd, sessionId: "active" });
     const archived = openStore({ cwd, sessionId: "archived" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "active", rolloutStore: active });
       store.createThread({ threadId: "archived", rolloutStore: archived });
       store.archiveThread({ threadId: "archived" });
@@ -340,7 +344,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "flip" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "flip", rolloutStore: rollout });
       store.archiveThread({ threadId: "flip" });
       expect(
@@ -364,7 +368,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "hidden" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "hidden", rolloutStore: rollout });
       store.archiveThread({ threadId: "hidden" });
 
@@ -394,7 +398,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const rollout = openStore({ cwd, sessionId: "move-archived" });
     const originalPath = rollout.rolloutPath;
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "move-archived", rolloutStore: rollout });
       store.appendItems({
         threadId: "move-archived",
@@ -435,7 +439,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const rollout = openStore({ cwd, sessionId: "live-archive" });
     const originalPath = rollout.rolloutPath;
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "live-archive", rolloutStore: rollout });
       store.archiveThread({ threadId: "live-archive" });
       expect(existsSync(originalPath)).toBe(true);
@@ -545,7 +549,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const first = openStore({ cwd, sessionId: "same-id" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "same-id", rolloutStore: first });
       store.shutdownThread("same-id");
       first.close();
@@ -583,7 +587,7 @@ describe("FileThreadStore.updateThreadMetadata", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "memmode" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "memmode", rolloutStore: rollout });
       const updated = store.updateThreadMetadata({
         threadId: "memmode",
@@ -616,7 +620,7 @@ describe("FileThreadStore.updateThreadMetadata", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "named" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "named", rolloutStore: rollout });
       store.updateThreadMetadata({
         threadId: "named",
@@ -639,7 +643,7 @@ describe("FileThreadStore.updateThreadMetadata", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "multi" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "multi", rolloutStore: rollout });
       expect(() =>
         store.updateThreadMetadata({
@@ -658,7 +662,7 @@ describe("FileThreadStore.updateThreadMetadata", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "git" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "git", rolloutStore: rollout });
       expect(() =>
         store.updateThreadMetadata({
@@ -677,7 +681,7 @@ describe("FileThreadStore.updateThreadMetadata", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "arch-update" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "arch-update", rolloutStore: rollout });
       store.archiveThread({ threadId: "arch-update" });
       expect(() =>
@@ -707,7 +711,7 @@ describe("FileThreadStore.resumeThread", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "resume" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "resume", rolloutStore: rollout });
       store.shutdownThread("resume");
       // After shutdown, resumeThread without includeArchived works.
@@ -735,7 +739,7 @@ describe("FileThreadStore.resumeThread", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "dup-resume" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "dup-resume", rolloutStore: rollout });
       expect(() =>
         store.resumeThread({ threadId: "dup-resume", rolloutStore: rollout }),
@@ -752,7 +756,7 @@ describe("FileThreadStore.shutdownThread", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "sd" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "sd", rolloutStore: rollout });
       store.appendItems({
         threadId: "sd",
@@ -779,7 +783,7 @@ describe("FileThreadStore.listThreads sort order", () => {
     const rolloutA = openStore({ cwd, sessionId: "s-a" });
     const rolloutB = openStore({ cwd, sessionId: "s-b" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "s-a", rolloutStore: rolloutA });
       // Force an ISO-timestamp difference.
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -804,7 +808,7 @@ describe("FileThreadStore.listThreads sort order", () => {
     const rolloutA = openStore({ cwd, sessionId: "p-a" });
     const rolloutB = openStore({ cwd, sessionId: "p-b" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "p-a", rolloutStore: rolloutA });
       store.createThread({ threadId: "p-b", rolloutStore: rolloutB });
       expect(
@@ -823,7 +827,7 @@ describe("FileThreadStore.listThreads sort order", () => {
       openStore({ cwd, sessionId }),
     );
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       for (const [index, rollout] of rollouts.entries()) {
         store.createThread({
           threadId: `k-${String.fromCharCode(97 + index)}`,
@@ -865,7 +869,7 @@ describe("FileThreadStore registry durability", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "atomic" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       store.createThread({ threadId: "atomic", rolloutStore: rollout });
 
       const registryDir = dirname(store.registryFilePath);
@@ -883,7 +887,7 @@ describe("FileThreadStore registry durability", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "corrupt" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       mkdirSync(dirname(store.registryFilePath), { recursive: true });
       writeFileSync(store.registryFilePath, "{not-json", "utf8");
 
@@ -913,7 +917,7 @@ describe("FileThreadStore registry durability", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "legacy" });
     try {
-      const store = new FileThreadStore({ cwd });
+      const store = new FileThreadStore({ agencHome, cwd });
       const imported = store.readThread({
         threadId: "legacy",
         includeArchived: false,
@@ -932,7 +936,7 @@ describe("FileThreadStore registry durability", () => {
 
 describe("FileThreadStore mirror keeps pace with live recorder flushes (#2028)", () => {
   function mirrorItemCount(cwd: string, threadId: string): number {
-    const driver = openStateDatabases({ cwd });
+    const driver = openStateDatabases({ cwd, agencHome });
     try {
       return (
         driver
@@ -947,7 +951,7 @@ describe("FileThreadStore mirror keeps pace with live recorder flushes (#2028)",
   }
 
   function threadsColumns(cwd: string): string[] {
-    const driver = openStateDatabases({ cwd });
+    const driver = openStateDatabases({ cwd, agencHome });
     try {
       return driver
         .prepareState<[], { name: string }>("PRAGMA table_info(threads)")
@@ -961,7 +965,7 @@ describe("FileThreadStore mirror keeps pace with live recorder flushes (#2028)",
   it("indexes appends that go through the live RolloutStore, not appendItems", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "drift" });
-    const store = new FileThreadStore({ cwd });
+    const store = new FileThreadStore({ agencHome, cwd });
     let closed = false;
     try {
       store.createThread({ threadId: "drift", rolloutStore: rollout });
@@ -985,7 +989,7 @@ describe("FileThreadStore mirror keeps pace with live recorder flushes (#2028)",
 
   it("does not expose vestigial threads.last_item_index", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
-    const store = new FileThreadStore({ cwd });
+    const store = new FileThreadStore({ agencHome, cwd });
     try {
       store.close();
       expect(threadsColumns(cwd)).not.toContain("last_item_index");
