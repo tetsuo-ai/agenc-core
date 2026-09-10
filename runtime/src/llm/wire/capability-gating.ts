@@ -548,7 +548,9 @@ export function chatCompletionsCapabilityHintsForProvider(
       replaysReasoningContent: true,
       reasoningContentField: "reasoning" as const,
       reasoningContentFallbackField: "reasoning_content" as const,
-      replaysReasoningContentOnlyForAdjacentToolContinuation: true,
+      // Runtime reminders may follow tool results as user-role messages.
+      // Preserve same-route reasoning across those boundaries and later turns;
+      // the wire builder still checks the original provider/model provenance.
       maxToolDefinitions: 100,
     } : {}),
     ...(reasoningEffortAllowedValues !== undefined

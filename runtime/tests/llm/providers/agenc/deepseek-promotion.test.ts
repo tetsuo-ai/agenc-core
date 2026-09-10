@@ -6,7 +6,9 @@ import { deriveFlatCatalog, resolveRegisteredModelCatalogEntry } from "../../../
 import { chatCompletionsCapabilityHintsForProvider } from "../../../../src/llm/wire/capability-gating.js";
 
 describe("AgenC DeepSeek promotion wire", () => {
-  it.each([false, true].flatMap(stream => (["low", "high", "max"] as const).map(effort => ({ stream, effort }))))("preserves $effort through a tool round trip (stream=$stream)", async ({ stream, effort }) => {
+  it.each([false, true].flatMap(stream => (["low", "high", "max"] as const).flatMap(effort =>
+    ["none", "reminder", "user"].map(tail => ({ stream, effort, tail })),
+  )))("preserves $effort through a tool round trip (stream=$stream, tail=$tail)", async ({ stream, effort, tail }) => {
     const bodies: Record<string, any>[] = [];
     const allowed = new Set(["model", "messages", "stream", "stream_options", "max_tokens", "temperature",
       "top_p", "stop", "frequency_penalty", "presence_penalty", "top_k", "seed", "response_format",
@@ -59,6 +61,9 @@ describe("AgenC DeepSeek promotion wire", () => {
           providerReasoningContent: first.providerReasoningContent,
           providerReasoningProvenance: first.providerReasoningProvenance },
         { role: "tool", content: "marker", toolCallId: "call_marker", toolName: "read_marker" },
+        ...(tail === "none" ? [] : [{ role: "user" as const, content: tail === "reminder"
+          ? "<system-reminder>Continue the current task using tool results.</system-reminder>"
+          : "Now verify the marker with the command tool." }]),
       ], { reasoningEffort: effort, parallelToolCalls: true, maxOutputTokens: 256 });
       expect(final.content).toBe("marker");
       expect(bodies[0]).toMatchObject({ model, max_tokens: 256, reasoning_effort: effort });

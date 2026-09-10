@@ -35,6 +35,14 @@ managed construction paths are exercised against the verified HTTPS fixture.
 Managed admission, idempotency, credit reservations and route policy remain
 owned by the backend. This transport change does not relax those controls.
 
+Managed DeepSeek also preserves its returned plaintext `reasoning` when runtime
+reminders or a later user message follow tool results. The earlier adjacent-only
+rule discarded it at those boundaries. Replay remains restricted to the same
+provider and exact model; it does not copy reasoning to another route.
+The managed wire tests cover streaming and complete responses at Low/High/Max,
+with both runtime reminders and subsequent user requests between calls.
+This follows the [OpenRouter reasoning continuity contract](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#preserving-reasoning).
+
 Desktop can send the internal `session.applyConfig` request with an exclusive
 `reasoningEffort` field before a turn. It validates the selected model's
 native levels, rejects a running turn, records the durable runtime setting,
