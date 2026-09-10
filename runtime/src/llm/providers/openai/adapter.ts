@@ -24,6 +24,7 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMProviderError,
+  LLMManagedAdmissionError,
   LLMRateLimitError,
   LLMServerError,
   mapLLMError,
@@ -763,6 +764,8 @@ export class OpenAIProvider implements LLMProvider {
         throw error;
       }
       if (error instanceof ProviderHttpError) {
+        const admissionError = this.managedAdmissionError(error, headers);
+        if (admissionError) throw admissionError;
         throw mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
@@ -809,6 +812,8 @@ export class OpenAIProvider implements LLMProvider {
         throw error;
       }
       if (error instanceof ProviderHttpError) {
+        const admissionError = this.managedAdmissionError(error, headers);
+        if (admissionError) throw admissionError;
         throw mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
@@ -1063,6 +1068,17 @@ export class OpenAIProvider implements LLMProvider {
     return this.config.managedRequestId === true
       ? { "Idempotency-Key": options?.managedRequestId ?? randomUUID() }
       : undefined;
+  }
+
+  private managedAdmissionError(error: ProviderHttpError, headers: Readonly<Record<string, string>> | undefined): Error | undefined {
+    const requestId = headers?.["Idempotency-Key"];
+    if (this.config.managedRequestId === true && requestId && error.status === 429 &&
+      error.headers.get("x-agenc-request-id") === requestId &&
+      error.headers.get("x-agenc-usage-status") === "not_started" &&
+      readNestedProviderCode(error.body) === "too_many_requests") {
+      return new LLMManagedAdmissionError();
+    }
+    return undefined;
   }
 
   private async streamResponses(

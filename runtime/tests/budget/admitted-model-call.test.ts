@@ -6,6 +6,7 @@ import type {
   ExecutionAdmissionClient,
 } from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
+import { LLMManagedAdmissionError } from "../../src/llm/errors.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
@@ -863,6 +864,18 @@ describe("runAdmittedModelCall", () => {
       }),
       undefined,
     );
+  });
+
+  test("settles zero only for a managed gateway no-dispatch receipt", async () => {
+    const state = harness({});
+    const error = new LLMManagedAdmissionError();
+    await expect(runAdmittedModelCall({session:state.session,provider:state.provider,messages:[],
+      options:{maxOutputTokens:200},stepId:"managed-rejected",model:"grok-4.5",providerName:"agenc",
+      invoke:async()=>{throw error;},
+    })).rejects.toBe(error);
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1",{inputTokens:0,outputTokens:0,costUsd:0});
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
 
   test("keeps the full reservation held when provider pricing is unknown", async () => {

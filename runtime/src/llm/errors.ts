@@ -136,6 +136,14 @@ export class LLMProviderError extends RuntimeError {
   }
 }
 
+/** An authenticated AgenC response bound to this attempt proves no dispatch. */
+export class LLMManagedAdmissionError extends LLMProviderError {
+  constructor() {
+    super("agenc", "Earlier model requests are still pending usage reconciliation. No new model request was started.", 429);
+    this.name = "LLMManagedAdmissionError";
+  }
+}
+
 /**
  * Error thrown when local tool-turn/message protocol validation fails before
  * sending a request to an external provider.

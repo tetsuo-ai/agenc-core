@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { createProvider } from "../../src/llm/provider.js";
 import type { LLMMessage } from "../../src/llm/types.js";
+import { LLMManagedAdmissionError } from "../../src/llm/errors.js";
+import { isTransientProviderError } from "../../src/recovery/api-errors.js";
 
 const baseURL = "https://id.agenc.ag/v1/auth/openrouter/v1";
 const model = "openai/gpt-5";
@@ -24,6 +26,27 @@ function requestId(init: RequestInit | undefined) { return new Headers(init?.hea
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("managed paid request identity", () => {
+  test.each([false,true])("recognizes a matching no-dispatch receipt without automatic recovery (stream=%s)", async (streaming) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => Response.json({error:{code:"too_many_requests"}}, {
+      status:429, headers:{"x-agenc-request-id":requestId(init)!,"x-agenc-usage-status":"not_started"},
+    }));
+    const provider = managed(fetchImpl);
+    const result = streaming ? provider.chatStream(messages,()=>{},{singleWireAttempt:true}) : provider.chat(messages,{singleWireAttempt:true});
+    const error = await result.catch(error=>error);
+    expect(error).toBeInstanceOf(LLMManagedAdmissionError);
+    expect(isTransientProviderError(error)).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  test.each(["different-request","pending"])("does not infer no usage from an unbound receipt (%s)", async (condition) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => Response.json({error:{code:"too_many_requests"}}, {
+      status:429, headers:{"x-agenc-request-id":condition==="different-request"?"unrelated":requestId(init)!,"x-agenc-usage-status":condition==="pending"?"pending":"not_started"},
+    }));
+    const error = await managed(fetchImpl).chat(messages,{singleWireAttempt:true}).catch(error=>error);
+    expect(error).not.toBeInstanceOf(LLMManagedAdmissionError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   test("keeps one UUID through lost responses and HTTP retries, then gives a new call its own identity", async () => {
     vi.useFakeTimers();
     const fetchImpl = vi.fn<typeof fetch>()

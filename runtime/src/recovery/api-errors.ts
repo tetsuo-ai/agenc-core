@@ -16,6 +16,7 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMMessageValidationError,
+  LLMManagedAdmissionError,
   LLMProviderError,
 } from "../llm/errors.js";
 import {
@@ -354,6 +355,7 @@ function isExplicitNonTransientProviderError(err: unknown): boolean {
     err instanceof LLMAuthenticationError ||
     err instanceof LLMContextWindowExceededError ||
     err instanceof LLMMessageValidationError ||
+    err instanceof LLMManagedAdmissionError ||
     err instanceof LLMCaptivePortalError ||
     err instanceof LLMCertificateError ||
     err instanceof LLMInvalidResponseError
