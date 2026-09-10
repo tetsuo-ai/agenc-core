@@ -2073,9 +2073,10 @@ export async function runToolUse(
     argsForTool = { ...inputForTool };
     const filesystemContext = sessionFilesystemContext(invocation.session);
     const planAuthority = sessionPlanFileAuthority(invocation.session);
+    if (filesystemContext === null) delete argsForTool.__agencHome;
     for (const [key, value] of Object.entries({
       ...signedSessionPlanFileArgs(planAuthority),
-      __agencHome: filesystemContext?.agencHome ?? null,
+      ...(filesystemContext !== null ? { __agencHome: filesystemContext.agencHome } : {}),
     })) {
       Object.defineProperty(argsForTool, key, {
         value,
