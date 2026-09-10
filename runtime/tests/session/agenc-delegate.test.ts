@@ -678,6 +678,9 @@ describe("review delegate spawn admission", () => {
       { cwd },
     );
     mountTestRollout(session);
+    const workspaceId = resolveStateDatabasePaths({ cwd, agencHome: requireTestConfigHome(session) }).projectDir;
+    Object.assign(admission.client.scope, { workspaceId });
+    Object.assign(admission.child.scope, { workspaceId });
     const req = mkOneShotRequest(session);
 
     await expect(

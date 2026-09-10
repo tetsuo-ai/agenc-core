@@ -13,7 +13,8 @@
  * provider + rollout on disk). These tests cover the extracted units
  * that back the integration.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import * as memoryPrompt from "../../src/memory/memdir.js";
 import { VERSION } from "../../src/version.js";
 import { lstat, mkdtemp, rm, writeFile, mkdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1435,8 +1436,15 @@ describe("prepareTurnRuntimeInputs", () => {
     await writeFile(memoryMdPath, "MEMORY-ONE\n", "utf8");
 
     let instructionText = "MCP-ONE";
+    const home = join(repoRoot, "session-home");
+    const store = new ConfigStore({ home, cwd: nested, env: { HOME: repoRoot, AGENC_HOME: home } });
+    await store.reload();
+    const load = vi.spyOn(memoryPrompt, "loadMemoryPrompt");
+    onTestFinished(() => load.mockRestore());
     const session = {
       services: {
+        configStore: store,
+        runtimeOptions: { simpleMode: false, remoteMode: false },
         mcpManager: {
           effectiveServers: vi.fn(
             async () =>
@@ -1450,9 +1458,6 @@ describe("prepareTurnRuntimeInputs", () => {
         },
       },
     } as unknown as Session;
-    const store = new ConfigStore({ env: {} });
-    await store.reload();
-
     const first = await prepareTurnRuntimeInputs({
       session,
       configStore: store,
@@ -1466,6 +1471,8 @@ describe("prepareTurnRuntimeInputs", () => {
     // per-session directory block both come out of the turn inputs.
     expect(first.memoryInstructionsText).toContain("# auto memory");
     expect(first.memoryPromptText).toContain("# Memory directories");
+    expect(first.memoryPromptText).toContain(join(home, "memory"));
+    expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: nested, configStore: store }));
     expect(first.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-ONE" },
     ]);
@@ -1485,6 +1492,7 @@ describe("prepareTurnRuntimeInputs", () => {
     expect(second).not.toHaveProperty("projectInstructions");
     expect(second.memoryInstructionsText).toContain("# auto memory");
     expect(second.memoryPromptText).toContain("# Memory directories");
+    expect(second.memoryPromptText).toContain(join(home, "memory"));
     expect(second.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-TWO" },
     ]);

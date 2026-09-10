@@ -145,6 +145,8 @@ async function executeDaemonStatusLineWhenReady(
 }
 
 function daemonStatusLineNotice(result: SessionStatusLineExecuteResult): string | undefined {
+  if (result.status === 'blocked' && result.reason === 'sandbox_policy_unexpressible') return 'status line command blocked: the session sandbox cannot represent this policy; on Linux, provide a trusted bubblewrap directory in the session PATH and run agenc doctor';
+  if (result.status === 'blocked' && result.reason?.startsWith('sandbox_')) return 'status line command blocked: session sandbox unavailable; run agenc doctor';
   if (result.status === 'blocked') return 'status line command blocked by session hook policy';
   if (result.reason === 'unsupported_method') return 'status line command is not supported by this daemon';
   if (result.reason === 'timeout') return 'status line command timed out';

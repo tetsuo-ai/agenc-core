@@ -26,6 +26,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { signedSessionPlanFileArgs } from "../../../src/agents/_deps/filesystem-args.js";
+import { planFileAuthorityFromContext } from "../../../src/planning/session-plan-authority.js";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -231,6 +233,7 @@ describe("Edit tool", () => {
         file_path: planPath,
         old_string: "Verify allowlist",
         new_string: "Verify plan edits",
+        ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId: SESSION_ID })),
         [SESSION_ID_ARG]: SESSION_ID,
         [SESSION_ID_SIG_ARG]: signSessionId(SESSION_ID),
         [SESSION_AGENC_HOME_ARG]: agencHome,

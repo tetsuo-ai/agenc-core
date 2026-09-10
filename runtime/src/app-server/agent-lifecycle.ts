@@ -2617,7 +2617,7 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon session has no working directory: ${params.sessionId}`,
       );
     }
-    const driver = openStateDatabases({ cwd: session.cwd });
+    const driver = openStateDatabases({ cwd: session.cwd, agencHome: this.#agencHome });
     try {
       const candidates =
         params.toolCallId !== undefined

@@ -559,6 +559,7 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
     TMPDIR: '/ambient/posix',
     TEMP: 'C:\\ambient\\temp',
     TMP: 'C:\\ambient\\tmp',
+    TMPPREFIX: '/ambient/zsh',
   })
   const runtimeOptions = (sessionTempRoot: string) => ({
     simpleMode: false,
@@ -586,6 +587,7 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
     TMPDIR: '/tmp/agenc-mcp-session-a',
     TEMP: '/tmp/agenc-mcp-session-a',
     TMP: '/tmp/agenc-mcp-session-a',
+    TMPPREFIX: '/tmp/agenc-mcp-session-a/zsh',
   })
   assert.deepEqual(fakeStdioTransports[1]?.env, {
     PATH: '/usr/bin',
@@ -593,6 +595,7 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
     TMPDIR: '/tmp/agenc-mcp-session-b',
     TEMP: '/tmp/agenc-mcp-session-b',
     TMP: '/tmp/agenc-mcp-session-b',
+    TMPPREFIX: '/tmp/agenc-mcp-session-b/zsh',
   })
 
   if (first.type === 'connected') await first.cleanup()

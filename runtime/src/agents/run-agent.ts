@@ -60,7 +60,11 @@ import {
 import {
   withSignedAllowedRoots,
   withSignedSessionId,
+  signedSessionPlanFileArgs,
+  SESSION_PLAN_FILE_ARG,
+  SESSION_PLAN_FILE_SIG_ARG,
 } from "./_deps/filesystem-args.js";
+import { sessionFilesystemContext, sessionPlanFileAuthority } from "../planning/session-plan-authority.js";
 import {
   Session as ChildSession,
   type InterAgentCommunication as SessionInterAgentCommunication,
@@ -2546,6 +2550,7 @@ export function injectChildToolArgs(
   opts: {
     readonly childConversationId: string;
     readonly worktree?: WorktreeHandle;
+    readonly getSession?: () => Session | null | undefined;
   },
 ): Record<string, unknown> {
   // NOTE: model-supplied `__agenc*` keys are stripped UPSTREAM
@@ -2564,6 +2569,20 @@ export function injectChildToolArgs(
     parsedArgs,
     opts.childConversationId,
   );
+  const childSession = opts.getSession?.();
+  const filesystemContext = sessionFilesystemContext(childSession);
+  const owner = sessionPlanFileAuthority(childSession);
+  const planAuthority = owner?.sessionId === opts.childConversationId ? owner : null;
+  if (filesystemContext?.sessionId === opts.childConversationId) {
+    injectedArgs.__agencHome = filesystemContext.agencHome;
+  }
+  if (planAuthority !== null) {
+    Object.assign(injectedArgs, signedSessionPlanFileArgs(planAuthority));
+    injectedArgs.__agencHome = planAuthority.agencHome;
+  } else {
+    delete injectedArgs[SESSION_PLAN_FILE_ARG];
+    delete injectedArgs[SESSION_PLAN_FILE_SIG_ARG];
+  }
   if (opts.worktree?.path) {
     injectedArgs = withSignedAllowedRoots(injectedArgs, [opts.worktree.path]);
   }
@@ -2627,6 +2646,7 @@ function wrapToolForChild(
     readonly worktree?: WorktreeHandle;
     readonly childToolPolicy?: ChildToolPolicy;
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+    readonly getSession?: () => Session | null | undefined;
   },
 ): Tool {
   return {
@@ -2648,6 +2668,7 @@ async function prepareChildToolCall(
     readonly worktree?: WorktreeHandle;
     readonly childToolPolicy?: ChildToolPolicy;
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+    readonly getSession?: () => Session | null | undefined;
   },
 ): Promise<
   | { readonly args: Record<string, unknown> }

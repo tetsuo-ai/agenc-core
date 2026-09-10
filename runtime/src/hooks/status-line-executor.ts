@@ -5,6 +5,7 @@ import type { SessionStatusLineExecuteResult as SessionStatusLineResult, Session
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import { mergeConfigLayerSnapshots } from "../config/repository.js";
 import { validateStatusLineConfig } from "../config/schema.js";
+import { SandboxExecutionError } from "../sandbox/execution-broker.js";
 import type { Session } from "../session/session.js";
 import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 import { VERSION } from "../version.js";
@@ -219,11 +220,6 @@ async function runSessionStatusLine(
         const freshInput = statusLineInput(session, presentation);
         if (freshInput === undefined) return { status: "unavailable", reason: "session_input_unavailable" };
         if (Buffer.byteLength(freshInput, "utf8") > MAX_INPUT_BYTES) return { status: "error", reason: "input_too_large" };
-        admission.markDispatched(reservationId, {
-          boundary: "tool_effect",
-          details: { hookEvent: "StatusLine" },
-        });
-        dispatched = true;
         const result = await runHookCommand({
           command: command.command,
           cwd: sessionConfig.cwd,
@@ -234,8 +230,17 @@ async function runSessionStatusLine(
           timeoutMs: TIMEOUT_MS,
           signal: effectSignal,
           sandboxExecutionBroker: broker,
+          beforeSpawn: () => {
+            admission.markDispatched(reservationId, {
+              boundary: "tool_effect",
+              details: { hookEvent: "StatusLine" },
+            });
+            dispatched = true;
+          },
         });
-        if (effectSignal.aborted || result.status === "timeout" || result.status === "skipped") {
+        if (!dispatched) {
+          admission.void(reservationId, "status_line_stopped_before_dispatch");
+        } else if (result.processStarted !== false && (effectSignal.aborted || result.status === "timeout" || result.status === "skipped")) {
           admission.holdUnknown(reservationId, "status_line_cancelled_after_dispatch");
         } else {
           admission.reconcile(reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
@@ -284,6 +289,7 @@ export function executeSessionStatusLine(
       if (combined.aborted) return { status: "unavailable", reason: "cancelled" };
       if (error instanceof AdmissionDeniedError) return { status: "blocked", reason: "admission_denied" };
       if (error instanceof WorkspaceMutationCoordinatorError) return { status: "blocked", reason: "editor_workspace_owned" };
+      if (error instanceof SandboxExecutionError) return { status: "blocked", reason: error.code };
       return { status: "error", reason: "execution_failed" };
     }).finally(() => {
       clearTimeout(timer);

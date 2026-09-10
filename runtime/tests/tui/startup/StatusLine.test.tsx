@@ -493,6 +493,8 @@ describe('StatusLine vim mode display', () => {
 
   test.each([
     [{ status: 'blocked', reason: 'untrusted_workspace' }, 'status line command blocked by session hook policy'],
+    [{ status: 'blocked', reason: 'sandbox_policy_unexpressible' }, 'status line command blocked: the session sandbox cannot represent this policy; on Linux, provide a trusted bubblewrap directory in the session PATH and run agenc doctor'],
+    [{ status: 'blocked', reason: 'sandbox_probe_failed' }, 'status line command blocked: session sandbox unavailable; run agenc doctor'],
     [{ status: 'error', reason: 'timeout' }, 'status line command timed out'],
     [{ status: 'unavailable', reason: 'unsupported_method' }, 'status line command is not supported by this daemon'],
   ] as const)('shows a static notice for daemon result %j', async (result, text) => {

@@ -39,6 +39,7 @@ import {
   utimesSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { AsyncLock } from "./_deps/async-lock.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
@@ -74,6 +75,21 @@ export interface GitResult {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
+}
+
+export class WorktreePreconditionError extends Error {
+  readonly effectDisposition;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "WorktreePreconditionError";
+    this.effectDisposition = createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: "worktree:precondition",
+      evidenceMaterial: message,
+    });
+  }
 }
 
 /**
@@ -329,7 +345,11 @@ export interface GetOrCreateOpts {
 export async function getOrCreateWorktree(
   opts: GetOrCreateOpts,
 ): Promise<WorktreeHandle> {
-  validateWorktreeSlug(opts.slug);
+  try {
+    validateWorktreeSlug(opts.slug);
+  } catch (error) {
+    throw new WorktreePreconditionError(error instanceof Error ? error.message : String(error));
+  }
   const branch = worktreeBranchName(opts.slug);
   const workspaceRoot =
     opts.workspaceRoot ?? join(opts.gitRoot, ".agenc-worktrees");
@@ -344,14 +364,14 @@ export async function getOrCreateWorktree(
         return { path, branch, gitRoot: opts.gitRoot, created: false };
       }
       if (existingGitRoot !== null) {
-        throw new Error(
+        throw new WorktreePreconditionError(
           `worktree path ${path} already belongs to ${existingGitRoot}, expected ${opts.gitRoot}`,
         );
       }
     }
 
     if (existsSync(path)) {
-      throw new Error(
+      throw new WorktreePreconditionError(
         `worktree path ${path} already exists but is not a worktree for ${opts.gitRoot}`,
       );
     }
@@ -359,12 +379,23 @@ export async function getOrCreateWorktree(
     // Worktree setup is deliberately local-only. Repository-controlled remotes,
     // credential helpers, and transport helpers are not an implicit capability.
     const base = opts.base ?? "HEAD";
+    const baseResult = await runGit(
+      ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`],
+      opts.gitRoot,
+      opts.sandboxExecutionBroker,
+    );
+    const baseCommit = baseResult.stdout.trim();
+    if (baseResult.code !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(baseCommit)) {
+      throw new WorktreePreconditionError(
+        `worktree base ${base} does not resolve to a commit; create a commit before requesting worktree isolation`,
+      );
+    }
 
     // Register metadata without materializing repository content. Checkout is
     // a second, narrowly granted phase so a configured filter cannot write the
     // common .git directory with Git's inherited authority.
     const addResult = await runGitMutation(
-      ["worktree", "add", "--no-checkout", "-B", branch, path, base],
+      ["worktree", "add", "--no-checkout", "-B", branch, path, baseCommit],
       opts.gitRoot,
       opts.sandboxExecutionBroker,
       opts.gitRoot,

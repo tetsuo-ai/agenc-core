@@ -1068,6 +1068,8 @@ export interface RunAdmissionSummary extends JsonObject {
 export interface RunStateSource extends JsonObject {
     readonly kind: "existing_state_database";
     readonly projectDir: string;
+    readonly admissionProjectDir?: string;
+    readonly admissionLastSequence?: number;
     readonly readonly: true;
 }
 
@@ -1246,6 +1248,8 @@ export type RunEvidenceCompleteness = "complete" | "partial" | "admission_source
 export interface RunEvidenceSource extends JsonObject {
     readonly kind: "canonical_run_journal" | "existing_m3_admission_state";
     readonly projectDir: string;
+    readonly admissionProjectDir?: string;
+    readonly admissionLastSequence?: number;
     readonly admissionJournal: boolean;
     readonly workflowEvidenceIncluded: boolean;
     readonly completeness: RunEvidenceCompleteness;

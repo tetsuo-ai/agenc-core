@@ -85,6 +85,8 @@ import {
   toolNameDisplay,
 } from "./context.js";
 import type { Tool } from "./types.js";
+import { signedSessionPlanFileArgs } from "../agents/_deps/filesystem-args.js";
+import { sessionFilesystemContext, sessionPlanFileAuthority } from "../planning/session-plan-authority.js";
 import {
   SESSION_ID_SIG_ARG,
   signSessionId,
@@ -2069,6 +2071,19 @@ export async function runToolUse(
   let argsForTool: Record<string, unknown> = inputForTool;
   if (progressCallback || effectiveSignal || invocation.callId.length > 0) {
     argsForTool = { ...inputForTool };
+    const filesystemContext = sessionFilesystemContext(invocation.session);
+    const planAuthority = sessionPlanFileAuthority(invocation.session);
+    if (filesystemContext === null) delete argsForTool.__agencHome;
+    for (const [key, value] of Object.entries({
+      ...signedSessionPlanFileArgs(planAuthority),
+      ...(filesystemContext !== null ? { __agencHome: filesystemContext.agencHome } : {}),
+    })) {
+      Object.defineProperty(argsForTool, key, {
+        value,
+        enumerable: false,
+        configurable: true,
+      });
+    }
     if (progressCallback) {
       Object.defineProperty(argsForTool, "__onProgress", {
         value: progressCallback,

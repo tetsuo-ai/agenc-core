@@ -114,6 +114,22 @@ accept `agentId`; use `attachAgent()` for an existing agent. The lower-level
 workspace and intends to permit command hook effects there. The field never
 permits HTTP, prompt, or agent hook effects.
 
+SDK sessions capture command environment values from `envOverrides`. An omitted
+`PATH` means an empty command search path, including after cold resume; it does
+not inherit the daemon's `PATH`. For a command-capable local session, pass the
+embedding application's intended path explicitly, for example
+`envOverrides: { PATH: process.env.PATH ?? "" }`. Do not forward the entire
+environment just to populate `PATH`.
+
+The public CLI supplies its captured command environment automatically. On
+Linux, a restrictive sandbox may need a trusted system directory containing
+`bubblewrap` in the session's `PATH`. If that environment cannot enforce the
+configured filesystem policy, a custom status command returns `blocked` with
+reason `sandbox_policy_unexpressible`; no process starts and its admission
+reservation is voided. Check the session environment and run `agenc doctor`
+rather than weakening the sandbox. Commands interrupted after they start still
+retain unknown-effect accounting until their outcome is established.
+
 `dangerouslyBypassApprovalsAndSandbox` defaults to `false`. Set it to `true`
 only when the embedding application deliberately grants both approval bypass
 and unrestricted OS execution to the new session. The daemon retains that

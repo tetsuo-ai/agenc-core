@@ -2758,6 +2758,7 @@ function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
 function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
   return {
     name: "Skill",
+    admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
     description:
       "Execute a skill within the main conversation. When a skill matches the user's request, call this tool before responding. Pass the skill name and optional arguments; available skills are listed in system reminders. Do not use this for MCP tools or names like mcp.server.tool; call MCP tools through their own tool function after system.searchTools discovery.",
     metadata: toolMetadata("skill", {
@@ -4643,6 +4644,7 @@ function createCronAndWorkflowTools(
   return [
     {
       name: "CronCreate",
+      admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
       description:
         "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session. Delivery-routed jobs (announceChannel/webhook) instead run in an isolated gateway session and post their result to that channel/webhook — they require durable and a running `agenc gateway run`.",
       metadata: toolMetadata("workflow", {
@@ -4756,6 +4758,7 @@ function createCronAndWorkflowTools(
     },
     {
       name: "CronDelete",
+      admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
       description: "Delete a scheduled prompt job by id.",
       metadata: toolMetadata("workflow", {
         mutating: true,
@@ -4795,6 +4798,7 @@ function createCronAndWorkflowTools(
     },
     {
       name: "CronList",
+      admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
       description:
         "List scheduled prompt jobs (id, cron expression, prompt, recurring).",
       metadata: toolMetadata("workflow", {

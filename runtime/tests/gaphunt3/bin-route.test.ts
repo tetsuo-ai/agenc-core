@@ -4,10 +4,7 @@
  * --approval-policy). Previously stripRoutingFlags removed each such flag AND
  * its following value before the residue became the prompt, so the user's
  * intent (e.g. the fork target) silently vanished with no behavior change and
- * no feedback. After the fix these flags fall through as visible prompt text.
- *
- * Each test below fails if the fix is reverted (the flag+value is swallowed,
- * leaving an empty prompt) and passes with it (the flag text is preserved).
+ * no feedback.
  */
 
 import { describe, expect, it } from "vitest";
@@ -34,29 +31,22 @@ describe("gaphunt3 #37: unconsumed value flags are no longer silently swallowed"
     expect(stripRoutingFlags([flag, value])).toEqual([flag, value]);
   });
 
-  it("classifyCLI('agenc --fork <id>') preserves the fork id as prompt text instead of dropping it", () => {
+  it("classifyCLI rejects unsupported fork options instead of sending a prompt", () => {
     const plan = classifyCLI({
       argv: [NODE, SCRIPT, "--fork", "conv-abc123"],
       isTTY: true,
       isStdoutTTY: true,
     });
-    // Must be a bootTUI plan that still carries the user's intent. Before the
-    // fix this was a bootTUI plan with NO initialPrompt (fork id swallowed).
-    expect(plan.kind).toBe("bootTUI");
-    if (plan.kind !== "bootTUI") throw new Error("expected bootTUI plan");
-    expect(plan.args.initialPrompt).toBe("--fork conv-abc123");
+    expect(plan).toMatchObject({ kind: "errorAndExit", exitCode: 2 });
   });
 
-  it("classifyCLI('agenc --sandbox strict \"do X\"') keeps both the flag/value and the real prompt", () => {
+  it("classifyCLI rejects unsupported sandbox options instead of sending a prompt", () => {
     const plan = classifyCLI({
       argv: [NODE, SCRIPT, "--sandbox", "strict", "do", "X"],
       isTTY: true,
       isStdoutTTY: true,
     });
-    expect(plan.kind).toBe("bootTUI");
-    if (plan.kind !== "bootTUI") throw new Error("expected bootTUI plan");
-    // Before the fix "--sandbox strict" was swallowed, leaving "do X".
-    expect(plan.args.initialPrompt).toBe("--sandbox strict do X");
+    expect(plan).toMatchObject({ kind: "errorAndExit", exitCode: 2 });
   });
 
   it("still strips genuinely-consumed value flags (--model, --provider, --config, --resume)", () => {

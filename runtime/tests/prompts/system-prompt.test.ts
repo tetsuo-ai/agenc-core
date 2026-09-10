@@ -29,7 +29,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test } from "vitest";
+import { ConfigStore } from "../../src/config/store.js";
 
 import type { TurnContext } from "../session/turn-context.js";
 import type { Session } from "../session/session.js";
@@ -764,10 +765,13 @@ describe("assembleSystemPrompt", () => {
   });
 
   test("base instructions carry the memory prompt when auto memory is enabled and drop it in simple mode", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-base-memory-owner-"));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const configStore = new ConfigStore({ home, cwd: home, env: { HOME: home, AGENC_HOME: home } });
     const registry = { tools: [{ name: "FileRead" }, { name: "Write" }] };
     const standard = await assembleBaseInstructionsForModel({
-      session: { services: { runtimeOptions: { simpleMode: false } } },
-      ctx: fakeCtx(),
+      session: { services: { configStore, runtimeOptions: { simpleMode: false } } },
+      ctx: fakeCtx({ cwd: home }),
       registry,
       provider: "grok",
       permissionContext: null,
@@ -775,6 +779,7 @@ describe("assembleSystemPrompt", () => {
     });
     expect(standard).toContain("# auto memory");
     expect(standard).toContain("# Memory directories");
+    expect(standard).toContain(join(home, "memory"));
     expect(standard.indexOf("# auto memory")).toBeLessThan(
       standard.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY),
     );
@@ -783,8 +788,8 @@ describe("assembleSystemPrompt", () => {
     );
 
     const simple = await assembleBaseInstructionsForModel({
-      session: { services: { runtimeOptions: { simpleMode: true } } },
-      ctx: fakeCtx(),
+      session: { services: { configStore, runtimeOptions: { simpleMode: true } } },
+      ctx: fakeCtx({ cwd: home }),
       registry,
       provider: "grok",
       permissionContext: null,

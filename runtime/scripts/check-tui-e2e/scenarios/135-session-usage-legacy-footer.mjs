@@ -6,7 +6,7 @@ import { waitForFrameText } from "../helpers/workbench-buffer-neovim.mjs";
 
 export const meta = {
   description: "The alternate footer, custom status-line command, and cost dialog receive canonical daemon usage.",
-  args: ["--dangerously-bypass-approvals-and-sandbox"],
+  args: [],
   env: { AGENC_TUI_WORKBENCH: "0" },
   slimCwd: true,
   timeoutMs: 90_000,
@@ -15,7 +15,7 @@ export const meta = {
 export default async function (session) {
   const configPath = join(session.gateState.agencHome, "config.toml");
   const scriptPath = join(session.gateState.agencHome, "status-line-135.mjs");
-  const receiptPath = join(session.gateState.agencHome, "status-line-135.jsonl");
+  const receiptPath = join(session.cwd, "status-line-135.jsonl");
   const existingConfig = await readFile(configPath, "utf8");
   assert.doesNotMatch(existingConfig, /^\[statusLine\]/mu);
   await writeFile(scriptPath, [

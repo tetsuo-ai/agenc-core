@@ -19,6 +19,7 @@
  */
 
 import {
+  CLI_VALUE_OPTIONS,
   STARTUP_VALUE_OPTIONS,
   tokenizeCliOptionRegion,
 } from "./cli-option-region.js";
@@ -96,17 +97,15 @@ const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "-c",
   "-p",
   "--print",
+  "--debug",
+  "-d",
+  "--debug-to-stderr",
+  "-d2e",
   AUTONOMOUS_FLAG,
   DANGEROUS_BYPASS_FLAG,
 ] as const);
 
-// gaphunt3 #37: only list value flags that a downstream consumer actually
-// honors. --fork/--sandbox/--approval-policy had no consumer
-// anywhere (classifyCLI/readStartupCliFlags/bootstrap), so stripping them
-// here silently swallowed the flag AND its value, dropping the user's
-// intent with no behavior and no feedback. Removing them lets the flag
-// text fall through as visible prompt content instead of vanishing.
-const STARTUP_VALUE_FLAGS = STARTUP_VALUE_OPTIONS;
+const STARTUP_VALUE_FLAGS = CLI_VALUE_OPTIONS;
 
 function shouldStripValueFlag(arg: string): boolean {
   return STARTUP_VALUE_FLAGS.some(
@@ -239,7 +238,7 @@ function findMissingHeadlessFormatValueFlag(
 }
 
 function shouldStripBooleanFlag(arg: string): boolean {
-  return ROUTING_BOOLEAN_FLAGS.includes(
+  return arg.startsWith("--debug=") || ROUTING_BOOLEAN_FLAGS.includes(
     arg as (typeof ROUTING_BOOLEAN_FLAGS)[number],
   ) ||
     STARTUP_BOOLEAN_FLAGS.includes(
@@ -347,6 +346,23 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     return {
       kind: "errorAndExit",
       message: `agenc: ${retiredStartupFlagError(retiredStartupFlag)}`,
+      exitCode: 2,
+    };
+  }
+
+  for (let optionIndex = 0; optionIndex < optionArgs.length; optionIndex += 1) {
+    const option = optionArgs[optionIndex]!;
+    if (shouldStripBooleanFlag(option)) continue;
+    if (shouldStripValueFlag(option)) {
+      if (!option.includes("=")) {
+        const value = optionArgs[optionIndex + 1];
+        if (value !== undefined && !value.startsWith("-")) optionIndex += 1;
+      }
+      continue;
+    }
+    return {
+      kind: "errorAndExit",
+      message: `agenc: unknown option '${option}'. Use '--' before literal prompt text that starts with '-'.`,
       exitCode: 2,
     };
   }

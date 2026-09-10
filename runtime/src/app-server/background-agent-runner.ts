@@ -2987,37 +2987,44 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         `AgenC daemon agent ${agentId} does not own session ${params.sessionId}`,
       );
     }
-    const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot });
-    try {
-      const outcome = resolveLiveDurableEffectReview(driver, params, {
-        readAll: () => active.bootstrap.rolloutStore.readAll(),
-        append: (eventId, payload) =>
-          active.bootstrap.session.emit(
-            {
-              eventId,
-              id: eventId,
-              msg: { type: "effect_review_resolved", payload },
-            },
-            { durable: true },
-          ),
-        project: (event) =>
-          active.bootstrap.rolloutStore.recordEffectEvent(event),
-      });
-      if (
-        outcome.kind !== "not_found" &&
-        outcome.durable &&
-        params.resolution.workflowStatus !== "pending"
-      ) {
-        resolveLiveEffectPoison(active.bootstrap.session, {
-          callId: params.toolCallId,
-          ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
-          ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
-        });
-      }
-      return outcome;
-    } finally {
-      driver.close();
+    const session = active.bootstrap.session;
+    const agencHome = session.services.configStore?.homeContext.path;
+    if (agencHome === undefined) {
+      throw new Error("Live effect review requires the owning session's configuration home");
     }
+    return runWithCurrentRuntimeSession(session, () => {
+      const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot, agencHome });
+      try {
+        const outcome = resolveLiveDurableEffectReview(driver, params, {
+          readAll: () => active.bootstrap.rolloutStore.readAll(),
+          append: (eventId, payload) =>
+            session.emit(
+              {
+                eventId,
+                id: eventId,
+                msg: { type: "effect_review_resolved", payload },
+              },
+              { durable: true },
+            ),
+          project: (event) =>
+            active.bootstrap.rolloutStore.recordEffectEvent(event),
+        });
+        if (
+          outcome.kind !== "not_found" &&
+          outcome.durable &&
+          params.resolution.workflowStatus !== "pending"
+        ) {
+          resolveLiveEffectPoison(session, {
+            callId: params.toolCallId,
+            ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
+            ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
+          });
+        }
+        return outcome;
+      } finally {
+        driver.close();
+      }
+    });
   }
 
   // Read the global session-level cache stats tracker (lives in the

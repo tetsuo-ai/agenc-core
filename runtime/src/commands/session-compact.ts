@@ -980,7 +980,7 @@ async function buildSyntheticSystemMessage(opts: {
     // Mirror `prepareTurnRuntimeInputs`: the memory instructions and the
     // directory block are part of every turn's prompt when auto memory is
     // enabled, so /context must count them too.
-    const memory = await resolveMemoryPromptInputs();
+    const memory = await resolveMemoryPromptInputs(opts.session, opts.ctx.cwd);
     const assembled = await assembleSystemPrompt(
       buildAssembleSystemPromptOpts({
         session: opts.session,

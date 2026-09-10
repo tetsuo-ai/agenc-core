@@ -5958,6 +5958,43 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("resolves legacy review rows only in the manager's captured home", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const otherHome = mkdtempSync(join(tmpdir(), "agenc-review-other-home-"));
+    const sessionId = "session_same_workspace_review";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => sessionId });
+    const ownerDriver = openStateDatabases({ cwd, agencHome: home });
+    const otherDriver = openStateDatabases({ cwd, agencHome: otherHome });
+    try {
+      await sessions.createSession({ cwd, agentId: "agent_review_owner" });
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, agencHome: home });
+      for (const driver of [ownerDriver, otherDriver]) {
+        recordInFlightToolCallUnknownOutcome(driver, {
+          sessionId,
+          agentId: "agent_review_owner",
+          toolCallId: "same_call_id",
+          toolName: "LegacyWrite",
+          observedAt: "2026-09-10T00:00:00.000Z",
+          recoveryCategory: "side-effecting",
+        });
+      }
+      process.env.AGENC_HOME = otherHome;
+      await expect(agents.resolveSessionToolCall({ sessionId, reviewer: "owner" }))
+        .resolves.toMatchObject({ resolved: [{ toolCallId: "same_call_id" }], remaining: 0 });
+      expect(listUnresolvedUnknownOutcomeEffects(ownerDriver, sessionId)).toHaveLength(0);
+      expect(listUnresolvedUnknownOutcomeEffects(otherDriver, sessionId)).toHaveLength(1);
+      await expect(agents.resolveSessionToolCall({ sessionId, reviewer: "owner" }))
+        .resolves.toMatchObject({ resolved: [], remaining: 0 });
+    } finally {
+      ownerDriver.close();
+      otherDriver.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(otherHome, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("stops a launched agent when lifecycle session creation fails", async () => {
     const stopAgent = vi.fn(async () => {});
     const agents = new AgenCDaemonAgentManager({

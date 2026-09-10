@@ -44,7 +44,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
-import { resolveHomeContext } from "../../config/home.js";
 // Imported from the defining module rather than the `memory/index.js` barrel.
 // The barrel re-exports the recall pipeline, which reaches `utils/ide.ts` and
 // `utils/envDynamic.ts`; that module calls `stat` at import time on Linux, so
@@ -64,9 +63,11 @@ function resolveSessionWorkspaceRoot(entry?: string): string {
   return getCurrentRuntimeSession()?.sessionConfiguration.cwd ?? getCwd();
 }
 import {
-  isSessionPlanFile,
-  type PlanFileContext,
-} from "../../planning/plan-files.js";
+  matchesSessionPlanFile,
+  planFileAuthorityFromContext,
+  type SessionPlanFileAuthority,
+} from "../../planning/session-plan-authority.js";
+import { resolveHomeContext } from "../../config/home.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ALLOWED_ROOTS_SIG_ARG,
@@ -75,6 +76,7 @@ import {
   signSessionId,
   verifyAllowedRoots,
   verifySessionId,
+  verifySessionPlanFileArgs,
   withSignedAllowedRoots,
   withSignedSessionId,
 } from "../../agents/_deps/filesystem-args.js";
@@ -1178,7 +1180,22 @@ function normalizeFilesystemUnicodeIdentity(path: string): string {
  */
 export function verifiedPlanFileContextFromArgs(
   args: Record<string, unknown> | undefined,
-): PlanFileContext | null {
+): SessionPlanFileAuthority | null {
+  const context = verifiedSessionContextFromArgs(args);
+  if (context === null || args === undefined) return null;
+  const authority = verifySessionPlanFileArgs(args);
+  if (authority === null || authority.sessionId !== context.sessionId) return null;
+  const current = planFileAuthorityFromContext({
+    ...context,
+    ...(authority.agentId !== undefined ? { agentId: authority.agentId } : {}),
+  });
+  return current !== null && current.agencHome === authority.agencHome &&
+    current.planFilePath === authority.planFilePath ? authority : null;
+}
+
+export function verifiedSessionContextFromArgs(
+  args: Record<string, unknown> | undefined,
+): { readonly sessionId: string; readonly agencHome: string } | null {
   if (!args) return null;
   // SECURITY: honor the session id (which unlocks the plan-file carve-out
   // OUTSIDE the workspace allowlist) ONLY when it carries a valid
@@ -1194,14 +1211,13 @@ export function verifiedPlanFileContextFromArgs(
       ? verified
       : null;
   if (sessionId === null) return null;
-  const ctx: PlanFileContext = { sessionId };
   const injectedAgencHome = args[SESSION_AGENC_HOME_ARG];
   if (
     typeof injectedAgencHome !== "string" ||
     injectedAgencHome.trim().length === 0
   ) return null;
   return {
-    ...ctx,
+    sessionId,
     agencHome: resolveHomeContext({ AGENC_HOME: injectedAgencHome }).path,
   };
 }
@@ -1221,7 +1237,7 @@ export async function safePathAllowingSessionPlanFile(
   if (planCtx !== null && !hasUnsafeShape(targetPath)) {
     try {
       const canonical = await canonicalize(targetPath);
-      if (isSessionPlanFile(canonical, planCtx)) {
+      if (matchesSessionPlanFile(targetPath, planCtx) && canonical === planCtx.planFilePath) {
         return { safe: true, resolved: canonical };
       }
     } catch {
@@ -1256,7 +1272,7 @@ async function validatePath(
   if (planCtx !== null && !hasUnsafeShape(input)) {
     try {
       const canonical = await canonicalize(input);
-      if (isSessionPlanFile(canonical, planCtx)) {
+      if (matchesSessionPlanFile(input, planCtx) && canonical === planCtx.planFilePath) {
         return [canonical, null];
       }
     } catch {

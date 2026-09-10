@@ -70,7 +70,7 @@ export interface ResolveAutoMemoryDirectoryOptions {
   readonly runtimeOptions?: Pick<
     AgentRuntimeOptions,
     "coworkMemoryPathOverride" | "remoteMode" | "remoteMemoryRoot"
-  >;
+  > & Partial<Pick<AgentRuntimeOptions, "simpleMode" | "coworkMemoryExtraGuidelines">>;
   readonly settings?: {
     readonly [K in PermissionRuleSource]?: AgenCConfig | null;
   };
@@ -100,7 +100,7 @@ function effectiveCwd(opts: ResolveAutoMemoryDirectoryOptions): string {
 }
 
 function effectiveHome(opts: ResolveAutoMemoryDirectoryOptions): string {
-  return opts.homeDir ?? homedir();
+  return opts.homeDir ?? (opts.env === undefined ? homedir() : opts.env.HOME ?? opts.env.USERPROFILE ?? "");
 }
 
 function resolveConfigHome(opts: ResolveAutoMemoryDirectoryOptions): string {
@@ -229,7 +229,7 @@ export async function resolveAutoMemoryDirectory(
 ): Promise<AutoMemoryPathResult> {
   const env = effectiveEnv(opts.env);
   const runtimeOptions = opts.runtimeOptions ?? getActiveAgentRuntimeOptions();
-  if (isBareMode()) {
+  if (opts.runtimeOptions === undefined ? isBareMode() : opts.runtimeOptions.simpleMode === true) {
     return { enabled: false, reason: "simple_mode" };
   }
   if (runtimeOptions?.remoteMode && !runtimeOptions.remoteMemoryRoot) {

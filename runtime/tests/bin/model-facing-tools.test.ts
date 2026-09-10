@@ -9,6 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
+import { EventLog, type Event } from "../session/event-log.js";
+import { resetCronSchedulerForTests } from "../utils/cronScheduler.js";
 import type { ProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
@@ -759,6 +763,43 @@ describe("model-facing tools", () => {
     expect(JSON.parse(removedAlias.content).error).toContain(
       "unknown field `max_workers`",
     );
+  });
+
+  it("admits local Skill and Cron effects under a hard cap without pricing remote tools as free", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-local-priced-tools-"));
+    const home = join(root, "home");
+    const kernel = new ExecutionAdmissionKernel({ agencHome: home, ownerId: "local-pricing", ownerPid: process.pid });
+    try {
+      const session = fakeSession(root);
+      const admission = kernel.bindClient({ cwd: root, scope: { runId: session.conversationId, sessionId: session.conversationId, autonomous: false }, budget: { runMaxCostUsd: 0.01 } });
+      const eventLog = new EventLog();
+      Object.assign(session, { eventLog, emit: (event: Event) => eventLog.emit(event), rolloutStore: { assertToolAdmissionAllowed: vi.fn() } });
+      Object.assign(session.services, { executionAdmission: admission, admissionRequired: true });
+      const registry = buildBootstrapToolRegistry({ workspaceRoot: root, agencHome: home, mcpManager: fakeMcpManager() as never, csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES, getSession: () => session, emitWarning: () => {} });
+      let callSequence = 0;
+      const call = async (name: string, args: Record<string, unknown>) => {
+        const tool = registry.tools.find((candidate) => candidate.name === name)!;
+        callSequence += 1;
+        return runAdmittedToolCall({ session, turnId: "turn-1", callId: `local-${callSequence}`, tool, args, invoke: async ({ crossEffectBoundary }) => { crossEffectBoundary(); return tool.execute(args); } });
+      };
+      expect((await call("Skill", { skill: "demo-skill" })).isError).not.toBe(true);
+      const created = await call("CronCreate", { cron: "0 0 1 1 *", prompt: "check the workspace", recurring: false, durable: false });
+      expect(created.isError).not.toBe(true);
+      const createdId = JSON.parse(created.content).cron.id;
+      expect(JSON.parse((await call("CronList", {})).content).crons).toEqual(expect.arrayContaining([expect.objectContaining({ id: createdId })]));
+      expect(JSON.parse((await call("CronDelete", { id: createdId })).content).deleted).toBe(true);
+      expect(admission.getUsageSummary?.()).toMatchObject({ costUsd: 0, heldCostUsd: 0, hasUnknownCost: false });
+      const unknown = registry.tools.find((tool) => tool.name === "WorkflowTool")!;
+      expect(unknown.admissionEstimate?.({})).toMatchObject({ maxCostUsd: null });
+      const invoke = vi.fn(async () => ({ content: "must not run" }));
+      await expect(runAdmittedToolCall({ session, turnId: "turn-1", callId: "unknown-priced", tool: unknown, args: {}, invoke })).rejects.toMatchObject({ reason: "unpriced_under_hard_cap" });
+      expect(invoke).not.toHaveBeenCalled();
+      await expect(admission.acquire({ stepId: "scheduled-model", kind: "model_turn", maxInputTokens: 10, maxOutputTokens: 10, maxCostUsd: 0.02 })).rejects.toMatchObject({ reason: "budget_exceeded" });
+    } finally {
+      await resetCronSchedulerForTests();
+      kernel.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps CSV review reads bounded and resolution approval-gated", () => {

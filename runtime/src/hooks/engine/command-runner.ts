@@ -8,7 +8,7 @@ import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
-import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
+import { runSupervisedProcess, throwIfPreparedSpawnCleanupUnproven } from "../../utils/supervisedProcess.js";
 import {
   commandShellArgs,
   wrapCommandForShell,
@@ -28,6 +28,7 @@ export interface RunHookCommandOptions {
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  readonly beforeSpawn?: () => void;
 }
 
 export async function runHookCommand(
@@ -41,6 +42,7 @@ export async function runHookCommand(
       stderr: "",
       durationMs: Date.now() - started,
       error: "hook aborted",
+      processStarted: false,
     };
   }
   const env = stringOnlyEnv(opts.env);
@@ -58,11 +60,19 @@ export async function runHookCommand(
     cwd: opts.cwd,
     env,
   });
-  const result = await runSupervisedProcess(preparedSpawn, {
-    timeoutMs: opts.timeoutMs,
-    maxOutputBytes: MAX_HOOK_OUTPUT_CHARS * 2,
-    stdin: opts.stdin,
-    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+  const result = await preparedSpawn.run(async (preparedCommand, lifecycleSignal) => {
+    const signal = opts.signal === undefined
+      ? lifecycleSignal
+      : AbortSignal.any([opts.signal, lifecycleSignal]);
+    if (!signal.aborted) opts.beforeSpawn?.();
+    const completed = await runSupervisedProcess(preparedCommand, {
+      timeoutMs: opts.timeoutMs,
+      maxOutputBytes: MAX_HOOK_OUTPUT_CHARS * 2,
+      stdin: opts.stdin,
+      signal,
+    });
+    throwIfPreparedSpawnCleanupUnproven(completed);
+    return completed;
   });
   const boundedStdout = appendBoundedOutput("", result.stdout.toString("utf8"));
   const boundedStderr = appendBoundedOutput("", result.stderr.toString("utf8"));
@@ -71,6 +81,7 @@ export async function runHookCommand(
     stdout: boundedStdout.value,
     stderr: boundedStderr.value,
     durationMs: Date.now() - started,
+    processStarted: result.processStarted,
   };
   if (result.stopReason === "timeout") {
     return {

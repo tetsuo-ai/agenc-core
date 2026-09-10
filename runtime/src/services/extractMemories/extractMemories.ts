@@ -1010,7 +1010,7 @@ export function initExtractMemories(
       ...(appendSavedMemories !== undefined ? { appendSavedMemories } : {}),
     };
     const pathResult = await (deps.resolveMemoryDirectory ?? resolveAutoMemoryDirectory)({
-      env: deps.env,
+      env: queued.context.session.services.userShell?.childEnvironment ?? deps.env,
       cwd: queued.context.ctx.cwd,
       configStore: queued.context.session.services?.configStore,
       runtimeOptions: queued.context.session.services.runtimeOptions,
@@ -1021,7 +1021,7 @@ export function initExtractMemories(
     // duplicating what is already there; it still writes only to this
     // session's project root.
     const globalMemoryRoot = await resolveGlobalMemoryDirectory({
-      env: deps.env,
+      env: queued.context.session.services.userShell?.childEnvironment ?? deps.env,
       cwd: queued.context.ctx.cwd,
       configStore: queued.context.session.services?.configStore,
       runtimeOptions: queued.context.session.services.runtimeOptions,

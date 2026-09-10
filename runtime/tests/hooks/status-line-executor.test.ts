@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -155,6 +155,72 @@ describe.skipIf(process.platform === "win32")("daemon-owned status-line executor
     Object.assign(second.session.services.userShell, { commandWrapperArgv: ["env", "AGENC_STATUS_WRAPPER=second", "/bin/sh", "-c"] });
     expect(await Promise.all([executeSessionStatusLine(first.session), executeSessionStatusLine(second.session)]))
       .toEqual([{ status: "rendered", text: `${first.configStore.projectRoot}:first` }, { status: "rendered", text: `${second.configStore.projectRoot}:second` }]);
+  });
+
+  test("does not dispatch or retain an unknown hold when sandbox preparation refuses", async () => {
+    const owner = await fixture();
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: owner.cwd,
+      env: { HOME: owner.home, AGENC_HOME: owner.home, PATH: "" },
+      sessionTempRoot: owner.home,
+      probe: () => ({
+        kind: "ready",
+        mode: "workspace_write",
+        platform: "linux",
+        landlock: "full",
+        landlockFallback: {
+          reason: "bubblewrap was not found in a trusted system directory",
+          remediation: "Provide a trusted bubblewrap directory in the session PATH.",
+        },
+      }),
+      platform: "linux",
+    });
+    Object.assign(owner.session.services, { sandboxExecutionBroker: broker });
+    const dispatched = vi.spyOn(owner.admission, "markDispatched");
+    const held = vi.spyOn(owner.admission, "holdUnknown");
+    const voided = vi.spyOn(owner.admission, "void");
+    const result = await executeSessionStatusLine(owner.session);
+    expect(result.status).toBe("blocked");
+    expect(result.reason).toContain("sandbox_policy_unexpressible");
+    expect(dispatched).not.toHaveBeenCalled();
+    expect(held).not.toHaveBeenCalled();
+    expect(voided).toHaveBeenCalledOnce();
+    expect(owner.admission.replayJournal?.().map((event) => event.event)).toContain("voided");
+  });
+
+  test("marks dispatch only after successful sandbox preparation", async () => {
+    const owner = await fixture();
+    const order: string[] = [];
+    const prepare = owner.broker.prepareSpawn.bind(owner.broker);
+    vi.spyOn(owner.broker, "prepareSpawn").mockImplementation((...args) => {
+      order.push("prepare");
+      return prepare(...args);
+    });
+    const dispatch = owner.admission.markDispatched.bind(owner.admission);
+    vi.spyOn(owner.admission, "markDispatched").mockImplementation((...args) => {
+      order.push("dispatch");
+      return dispatch(...args);
+    });
+    expect(await executeSessionStatusLine(owner.session)).toMatchObject({ status: "rendered" });
+    expect(order).toEqual(["prepare", "dispatch"]);
+  });
+
+  test("settles confirmed spawn failure as zero usage without an unknown hold", async () => {
+    const owner = await fixture();
+    const shellPath = join(owner.home, "removed-shell");
+    copyFileSync("/bin/sh", shellPath);
+    Object.assign(owner.session.services.userShell, { path: shellPath });
+    const dispatch = owner.admission.markDispatched.bind(owner.admission);
+    vi.spyOn(owner.admission, "markDispatched").mockImplementation((...args) => {
+      dispatch(...args);
+      rmSync(shellPath);
+    });
+    const held = vi.spyOn(owner.admission, "holdUnknown");
+    const reconcile = vi.spyOn(owner.admission, "reconcile");
+    expect(await executeSessionStatusLine(owner.session)).toEqual({ status: "error", reason: "command_failed" });
+    expect(held).not.toHaveBeenCalled();
+    expect(reconcile).toHaveBeenCalledWith(expect.any(String), { inputTokens: 0, outputTokens: 0, costUsd: 0 });
   });
 
   test("returns busy without cancelling another request and tracks physical work", async () => {
