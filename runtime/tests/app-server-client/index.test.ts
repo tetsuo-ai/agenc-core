@@ -549,7 +549,7 @@ describe("app-server-client daemon helpers", () => {
     }
   });
 
-  it("hydrates config-default bypass authority from the live attach snapshot", async () => {
+  it.each(["low", "high", "max"] as const)("hydrates bypass authority and native %s effort from the live attach snapshot", async (reasoningEffort) => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-live-bypass-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-live-bypass-workspace-"));
     writeFileSync(
@@ -593,7 +593,7 @@ describe("app-server-client daemon helpers", () => {
           provider: "grok",
           model: "grok-live-model",
           profile: "live",
-          reasoningEffort: "high",
+          reasoningEffort,
           modelVerbosity: "low",
           serviceTier: "flex",
           hooksDisabled: false,
@@ -613,7 +613,7 @@ describe("app-server-client daemon helpers", () => {
         provider: { slug: "grok" },
         collaborationMode: {
           model: "grok-live-model",
-          reasoningEffort: "high",
+          reasoningEffort,
         },
         modelVerbosity: "low",
         serviceTier: "flex",
