@@ -102,6 +102,40 @@ describe("agenc skills CLI", () => {
     );
   });
 
+  it("exposes English display labels separately from stable skill names, roots, and plugin identity", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-skills-label-home-"));
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skills-label-ws-"));
+    const pluginRoot = join(agencHome, "plugins", "forja");
+    await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), JSON.stringify({ name: "forja", skills: "./skills" }));
+    const roots = [
+      { root: join(pluginRoot, "skills"), name: "calidad", label: '"Code Quality"', origin: "plugin" },
+      { root: join(agencHome, "skills"), name: "notas", label: '"Notes"', origin: "personal" },
+      { root: join(agencHome, "skills"), name: "legacy", label: null, origin: "personal" },
+      { root: join(workspaceRoot, ".agenc", "skills"), name: "invalid", label: "123", origin: "project" },
+      { root: join(workspaceRoot, ".agenc", "skills"), name: "invalid-object", label: "{ label: invalid }", origin: "project" },
+    ];
+    for (const { root, name, label } of roots) {
+      await mkdir(join(root, name), { recursive: true });
+      await writeFile(join(root, name, "SKILL.md"), `---\n${label === null ? "" : `name: ${label}\n`}description: English description.\n---\n# English heading\n`);
+    }
+    await writeFile(join(agencHome, "config.toml"), "config_version = 2\n\n[plugins]\nenabled = true\n");
+    const inventory = await buildSkillsInventory({ agencHome, workspaceRoot,
+      pluginStorageRoot: join(agencHome, "plugins"), env: { AGENC_HOME: agencHome } });
+    const find = (origin: string, name: string) => inventory.skills.find(row => row.origin === origin && row.name === name);
+    expect(find("plugin", "calidad")).toMatchObject({ name: "calidad", displayName: "Code Quality", pluginRoot });
+    expect(find("personal", "notas")).toMatchObject({ name: "notas", displayName: "Notes" });
+    for (const { origin, name, root } of roots) {
+      const row = find(origin, name);
+      expect(row).toBeDefined();
+      expect(row?.root).toBe(root);
+      expect(row?.description).toBe("English description.");
+    }
+    expect(find("personal", "legacy")).not.toHaveProperty("displayName");
+    expect(find("project", "invalid")).not.toHaveProperty("displayName");
+    expect(find("project", "invalid-object")).not.toHaveProperty("displayName");
+  });
+
   it("reports roots holding more skills than the per-root cap", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-skills-cli-cap-"));
     const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skills-cli-cap-ws-"));

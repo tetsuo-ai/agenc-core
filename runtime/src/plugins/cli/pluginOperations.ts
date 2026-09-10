@@ -45,6 +45,7 @@ import {
   type ResolvedPluginSource,
 } from "../resolution.js";
 import { parsePluginIdentifier } from "../identifier.js";
+import { skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -66,6 +67,7 @@ export interface PluginOperationOptions {
 
 export interface PluginComponentRow {
   readonly name: string;
+  readonly displayName?: string;
   readonly description?: string;
 }
 
@@ -751,9 +753,9 @@ function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {
 /** Bounded frontmatter read: a skill listing must never slurp documents. */
 const SKILL_FRONTMATTER_MAX_BYTES = 8 * 1024;
 
-async function skillDescriptionAt(
+async function skillMetadataAt(
   skillDir: string,
-): Promise<string | undefined> {
+): Promise<Omit<PluginComponentRow, "name"> | undefined> {
   try {
     const handle = await open(join(skillDir, "SKILL.md"), "r");
     try {
@@ -761,7 +763,12 @@ async function skillDescriptionAt(
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       const head = buffer.subarray(0, bytesRead).toString("utf8");
       const match = /^description:\s*(.+)$/mu.exec(head);
-      return match?.[1]?.trim().slice(0, 280);
+      const description = match?.[1]?.trim().slice(0, 280);
+      const displayName = skillDisplayNameFromMarkdown(head);
+      return {
+        ...(description !== undefined ? { description } : {}),
+        ...(displayName !== undefined ? { displayName } : {}),
+      };
     } finally {
       await handle.close();
     }
@@ -777,13 +784,13 @@ async function describeSkills(
   // conventional `skills/` root whose child dirs are the skills.
   const rows: PluginComponentRow[] = [];
   const seen = new Set<string>();
-  const push = (name: string, description: string | undefined): void => {
+  const push = (name: string, metadata: Omit<PluginComponentRow, "name"> | undefined): void => {
     if (name.length === 0 || seen.has(name)) return;
     seen.add(name);
-    rows.push({ name, ...(description !== undefined ? { description } : {}) });
+    rows.push({ name, ...metadata });
   };
   for (const skillPath of skillsPaths) {
-    const direct = await skillDescriptionAt(skillPath);
+    const direct = await skillMetadataAt(skillPath);
     let directExists = direct !== undefined;
     if (!directExists) {
       try {
@@ -809,7 +816,7 @@ async function describeSkills(
       } catch {
         continue;
       }
-      push(child, await skillDescriptionAt(childDir));
+      push(child, await skillMetadataAt(childDir));
     }
   }
   return rows;
