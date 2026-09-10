@@ -19,6 +19,7 @@
 
 import { normalize } from "node:path";
 import { LRUCache } from "lru-cache";
+import { registerChildApprovalSession, revokeChildApprovalSession } from "./child-approval-context.js";
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
 import { createChildAbortController } from "../utils/abortController.js";
 import type {
@@ -3050,6 +3051,7 @@ function buildChildSession(
     }
   }
 
+  registerChildApprovalSession(childSession, params.parent);
   return childSession;
 }
 
@@ -4284,6 +4286,7 @@ export async function* runAgent(
     }
     if (childSession !== null) {
       try {
+        revokeChildApprovalSession(childSession);
         await childSession.shutdown();
       } catch (error) {
         durableCloseError = error;

@@ -37,6 +37,7 @@ import {
 } from "../state/runtime-settings-snapshot.js";
 
 import { AsyncLock } from "../utils/async-lock.js";
+import { captureRecoverableCommandEnvironment } from "./client-env-snapshot.js";
 import { withTimeout } from "../utils/sleep.js";
 import {
   DaemonOperationScope,
@@ -947,6 +948,7 @@ export class AgenCDaemonAgentManager {
         ...(permissionMode !== undefined ? { permissionMode } : {}),
         unattendedAllow,
         unattendedDeny,
+        commandEnvironment: captureRecoverableCommandEnvironment(params.envOverrides),
         // Session operator inputs are part of the durable run identity. A
         // daemon restart must restore the exact values captured at create
         // time, never reinterpret the daemon's current process environment.
@@ -1048,8 +1050,23 @@ export class AgenCDaemonAgentManager {
         );
       }
 
+      const recovery = metadata.recovery;
+      const retainedRecovery =
+        typeof recovery === "object" && recovery !== null && !Array.isArray(recovery)
+          ? recovery
+          : undefined;
       const agentMetadata: JsonObject = {
         ...metadata,
+        ...(resumeSessionId !== undefined &&
+        (retainedRecovery !== undefined || metadata.recovered === true)
+          ? {
+              recovery: {
+                ...retainedRecovery,
+                runnable: true,
+                runtimeRestore: "available",
+              },
+            }
+          : {}),
         ...(started.rolloutPath !== undefined
           ? { canonicalRolloutPath: started.rolloutPath }
           : {}),
@@ -1060,7 +1077,6 @@ export class AgenCDaemonAgentManager {
           ? { canonicalRolloutIno: started.rolloutIno }
           : {}),
       };
-
       const agent: MutableAgent = {
         agentId: started.agentId,
         ...(started.agentPath !== undefined
@@ -3987,7 +4003,13 @@ export class AgenCDaemonAgentManager {
       );
     }
     if (sessionId !== undefined) {
-      return this.#resolveActiveAgentIdForSession(sessionId, {
+      const daemonSessionId = await this.#state.with((state) => {
+        const canonicalAgent = state.agents.get(sessionId);
+        return canonicalAgent === undefined
+          ? sessionId
+          : latestSessionIdForAgentRun(canonicalAgent) ?? sessionId;
+      });
+      return this.#resolveActiveAgentIdForSession(daemonSessionId, {
         allowListPermissions: true,
       });
     }

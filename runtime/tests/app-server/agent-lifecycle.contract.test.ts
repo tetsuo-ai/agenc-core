@@ -35,6 +35,7 @@ import {
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { DAEMON_CLIENT_ENV_SNAPSHOT_KEYS } from "./client-env-snapshot.js";
+import { findAgenCDaemonAgentBySessionId } from "../../src/app-server-client/index.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
@@ -2528,6 +2529,7 @@ describe("AgenC background agent lifecycle", () => {
         addDirs: ["../shared workspace", "/tmp/shared"],
         unattendedAllow: [],
         unattendedDeny: [],
+        commandEnvironment: { PATH: "" },
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
       sessionId: "session_1",
@@ -2543,6 +2545,7 @@ describe("AgenC background agent lifecycle", () => {
           addDirs: ["../shared workspace", "/tmp/shared"],
           unattendedAllow: [],
           unattendedDeny: [],
+          commandEnvironment: { PATH: "" },
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
         unattendedAllow: [],
@@ -2566,6 +2569,7 @@ describe("AgenC background agent lifecycle", () => {
         source: "agent.start",
         unattendedAllow: [],
         unattendedDeny: [],
+        commandEnvironment: { PATH: "" },
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     });
@@ -2586,6 +2590,7 @@ describe("AgenC background agent lifecycle", () => {
             addDirs: ["../shared workspace", "/tmp/shared"],
             unattendedAllow: [],
             unattendedDeny: [],
+            commandEnvironment: { PATH: "" },
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
@@ -2618,6 +2623,7 @@ describe("AgenC background agent lifecycle", () => {
             source: "agent.start",
             unattendedAllow: [],
             unattendedDeny: [],
+            commandEnvironment: { PATH: "" },
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
           activeAttachmentIds: ["attachment_1"],
@@ -2921,6 +2927,7 @@ describe("AgenC background agent lifecycle", () => {
         permissionMode: "acceptEdits",
         unattendedAllow: [],
         unattendedDeny: [],
+        commandEnvironment: { PATH: "" },
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
       restoreAttemptId: expect.any(String),
@@ -2942,6 +2949,95 @@ describe("AgenC background agent lifecycle", () => {
         },
       },
     );
+  });
+
+  it.each(["/client/bin:/usr/bin", ""])("durably records fresh command authority when explicitly resuming a legacy run: %j", async (path) => {
+    const fixture = createResumeFixture("conv-legacy-command-authority");
+    const driver = openStateDatabases({ cwd: fixture.cwd, agencHome: process.env.AGENC_HOME });
+    const restoreAgent = vi.fn(async () => true);
+    const agents = new AgenCDaemonAgentManager({
+      runner: { startAgent: vi.fn(), restoreAgent },
+      recordAgentRun: (record) => { upsertAgentRun(driver, record); },
+    });
+    try {
+      await agents.restoreAgent({
+        agentId: "conv-legacy-command-authority",
+        objective: "retained canonical objective",
+        status: "idle",
+        createdAt: "2026-05-01T12:30:00.000Z",
+        startedAt: "2026-05-01T12:30:00.000Z",
+        lastActiveAt: "2026-05-01T12:31:00.000Z",
+        cwd: fixture.cwd,
+        sessionIds: [],
+        runtimeAvailable: false,
+        metadata: { agentPath: "/root", runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS },
+      });
+      await createTestAgent(agents, {
+        resumeSessionId: "conv-legacy-command-authority",
+        resumeRolloutPath: fixture.rolloutPath,
+        resumeSourceProof: fixture.sourceProof,
+        cwd: fixture.cwd,
+        envOverrides: { PATH: path, XAI_API_KEY: "fresh-client-secret" },
+      });
+      const row = driver.prepareState<[], { metadata_json: string }>(
+        "SELECT metadata_json FROM agent_runs WHERE id = 'conv-legacy-command-authority'",
+      ).get();
+      expect(row).toBeDefined();
+      expect(JSON.parse(row!.metadata_json)).toMatchObject({ commandEnvironment: { PATH: path } });
+      expect(row!.metadata_json).not.toContain("fresh-client-secret");
+      expect(restoreAgent).toHaveBeenCalledWith(expect.objectContaining({
+        envOverrides: { PATH: path, XAI_API_KEY: "fresh-client-secret" },
+        metadata: expect.objectContaining({ commandEnvironment: { PATH: path } }),
+      }));
+    } finally {
+      driver.close();
+    }
+  });
+
+  it.each([
+    { recovered: true },
+    { recovery: { runtimeRestore: "unavailable", runnable: false } },
+  ])("finds a warm attachment after explicitly resuming unavailable metadata %j", async (recoveryMetadata) => {
+    const sessionId = "conv-resume-then-reattach";
+    const fixture = createResumeFixture(sessionId);
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: new AgenCDaemonSessionManager(),
+      runner: { startAgent: vi.fn(), restoreAgent: vi.fn(async () => true) },
+    });
+    await agents.restoreAgent({
+      agentId: sessionId,
+      objective: "retained canonical objective",
+      status: "idle",
+      createdAt: "2026-05-01T12:30:00.000Z",
+      startedAt: "2026-05-01T12:30:00.000Z",
+      lastActiveAt: "2026-05-01T12:31:00.000Z",
+      cwd: fixture.cwd,
+      sessionIds: [],
+      runtimeAvailable: false,
+      metadata: { agentPath: "/root", runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS, ...recoveryMetadata },
+    });
+    const client = {
+      request: async () => agents.listAgents(),
+    } as Parameters<typeof findAgenCDaemonAgentBySessionId>[0];
+    await expect(findAgenCDaemonAgentBySessionId(client, sessionId)).resolves.toBeNull();
+    await createTestAgent(agents, {
+      resumeSessionId: sessionId,
+      resumeRolloutPath: fixture.rolloutPath,
+      resumeSourceProof: fixture.sourceProof,
+      cwd: fixture.cwd,
+      envOverrides: { PATH: "/resumed-client/bin:/usr/bin" },
+    });
+    await expect(findAgenCDaemonAgentBySessionId(client, sessionId)).resolves.toMatchObject({
+      agentId: sessionId,
+      status: "running",
+      metadata: { commandEnvironment: { PATH: "/resumed-client/bin:/usr/bin" } },
+    });
+    await expect(createTestAgent(agents, {
+      resumeSessionId: sessionId,
+      resumeRolloutPath: fixture.rolloutPath,
+      resumeSourceProof: fixture.sourceProof,
+      cwd: fixture.cwd,
+    })).rejects.toMatchObject({ code: "CANONICAL_SESSION_ALREADY_ACTIVE" });
   });
 
   it("restores retained additional directories on a flagless cold resume", async () => {
@@ -4521,6 +4617,7 @@ describe("AgenC background agent lifecycle", () => {
       metadata: {
         unattendedAllow: [],
         unattendedDeny: [],
+        commandEnvironment: { PATH: "" },
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     });
@@ -4856,6 +4953,7 @@ describe("AgenC background agent lifecycle", () => {
             metadata: {
               unattendedAllow: [],
               unattendedDeny: [],
+              commandEnvironment: { PATH: "" },
               runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
@@ -5045,6 +5143,7 @@ describe("AgenC background agent lifecycle", () => {
           metadata: {
             unattendedAllow: [],
             unattendedDeny: [],
+            commandEnvironment: { PATH: "" },
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
@@ -5059,6 +5158,7 @@ describe("AgenC background agent lifecycle", () => {
           metadata: {
             unattendedAllow: [],
             unattendedDeny: [],
+            commandEnvironment: { PATH: "" },
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
@@ -6201,6 +6301,7 @@ describe("AgenC background agent lifecycle", () => {
           addDirs: ["../shared workspace", "/tmp/shared"],
           unattendedAllow: [],
           unattendedDeny: [],
+          commandEnvironment: { PATH: "" },
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       },
@@ -6246,6 +6347,7 @@ describe("AgenC background agent lifecycle", () => {
               addDirs: ["../shared workspace", "/tmp/shared"],
               unattendedAllow: [],
               unattendedDeny: [],
+              commandEnvironment: { PATH: "" },
               runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
@@ -6876,6 +6978,7 @@ describe("AgenC background agent lifecycle", () => {
           source: "portal.dashboard",
           unattendedAllow: ["FileRead"],
           unattendedDeny: [],
+          commandEnvironment: { PATH: "" },
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
         unattendedAllow: ["FileRead"],

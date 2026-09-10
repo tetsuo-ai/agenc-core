@@ -861,6 +861,11 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       input: isRecord,
       planContent: isString,
       planFilePath: isString,
+      fileWritePreview: either(
+        objectShape({ kind: literal("existing"), content: isString }),
+        objectShape({ kind: literal("missing") }),
+        objectShape({ kind: literal("unavailable"), reason: isString }),
+      ),
       recordedAt: isString,
     },
   ),

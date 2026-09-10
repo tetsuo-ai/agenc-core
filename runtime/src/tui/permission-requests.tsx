@@ -507,21 +507,29 @@ function AgenCApprovalOverlay({
   readonly toolUseConfirm: ProjectedToolUseConfirm;
 }) {
   const command = approvalInputText(toolUseConfirm.input, { prettyJson: true });
-  // Build a bounded diff/content preview so a Write/Edit is not approved blind.
-  // Reuses the same diff engine + helper the post-approval DIFF card uses; it
-  // returns null for non-file-write tools (e.g. Bash), so those show no diff.
+  const fileWritePreview = request.ctx.fileWritePreview;
+  const writePreviewUnavailable = toolUseConfirm.tool.name === "Write" &&
+    (fileWritePreview === undefined || fileWritePreview.kind === "unavailable");
   const diffPreview = useMemo<ApprovalDiffPreview | undefined>(() => {
     try {
+      if (writePreviewUnavailable) return undefined;
+      const writeInput = toolUseConfirm.tool.name === "Write" &&
+        fileWritePreview?.kind === "existing" &&
+        toolUseConfirm.input !== null && typeof toolUseConfirm.input === "object"
+        ? {
+            ...toolUseConfirm.input,
+            old_string: fileWritePreview.content,
+            new_string: (toolUseConfirm.input as Record<string, unknown>).content,
+          }
+        : undefined;
       const built = buildEditDiffPreview(
-        toolUseConfirm.tool.name,
-        toolUseConfirm.input,
+        writeInput === undefined ? toolUseConfirm.tool.name : "Edit",
+        writeInput ?? toolUseConfirm.input,
       );
       if (built === null) return undefined;
-      // Label the inline diff the same way the post-approval TRANSCRIPT card
-      // does: a Write produces a brand-new file → CREATE; Edit/MultiEdit change
-      // an existing one → EDIT. Keeps the approval preview and the transcript in
-      // sync instead of showing a neutral DIFF here.
-      const op = toolUseConfirm.tool.name === "Write" ? "CREATE" : "EDIT";
+      const op = toolUseConfirm.tool.name === "Write" && fileWritePreview?.kind === "missing"
+        ? "CREATE"
+        : "EDIT";
       return {
         file: built.file,
         stats: built.stats,
@@ -534,7 +542,7 @@ function AgenCApprovalOverlay({
       // command-only card rather than throwing inside render.
       return undefined;
     }
-  }, [toolUseConfirm.tool.name, toolUseConfirm.input]);
+  }, [toolUseConfirm.tool.name, toolUseConfirm.input, fileWritePreview, writePreviewUnavailable]);
   const risk = classifyApprovalRisk({
     request,
     toolName: toolUseConfirm.tool.name,
@@ -588,7 +596,10 @@ function AgenCApprovalOverlay({
         if (destructive) return false;
         approve();
       },
-      "confirm:no": reject,
+      "confirm:no": () => {
+        if (destructive) return false;
+        reject();
+      },
       "app:interrupt": abort,
     },
     { context: "Confirmation" },
@@ -648,8 +659,8 @@ function AgenCApprovalOverlay({
         setTyped((value) => value.slice(0, -1));
         return;
       }
-      if (input.length === 1 && !key.ctrl && !key.meta) {
-        setTyped((value) => (value + input).slice(0, requiredWord.length));
+      if (input.length > 0 && !key.ctrl && !key.meta && !/[\u0000-\u001f\u007f]/u.test(input)) {
+        setTyped((value) => (value + input).slice(0, requiredWord.length + 1));
       }
     },
     { isActive: destructive },
@@ -686,7 +697,9 @@ function AgenCApprovalOverlay({
             value: destructive ? `type ${requiredWord}` : "enter",
           },
         ]}
-        note={toolUseConfirm.description}
+        note={writePreviewUnavailable
+          ? `Existing content unavailable; this write may overwrite a file. ${fileWritePreview?.kind === "unavailable" ? fileWritePreview.reason : ""}`.trim()
+          : toolUseConfirm.description}
         {...(diffPreview !== undefined ? { diffPreview } : {})}
         requestId={request.id}
         requireTypedConfirmation={destructive}

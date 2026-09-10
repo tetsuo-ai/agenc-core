@@ -369,6 +369,11 @@ export interface ExecApprovalRequestEvent {
   readonly reason?: string;
 }
 
+export type FileWriteApprovalPreview =
+  | { readonly kind: "existing"; readonly content: string }
+  | { readonly kind: "missing" }
+  | { readonly kind: "unavailable"; readonly reason: string };
+
 export interface RequestPermissionsEvent {
   readonly callId: string;
   readonly toolName: string;
@@ -378,6 +383,7 @@ export interface RequestPermissionsEvent {
   readonly input?: Readonly<Record<string, unknown>>;
   readonly planContent?: string;
   readonly planFilePath?: string;
+  readonly fileWritePreview?: FileWriteApprovalPreview;
   readonly recordedAt?: string;
 }
 

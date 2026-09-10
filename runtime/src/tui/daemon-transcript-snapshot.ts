@@ -3,6 +3,7 @@ import type {
   SessionTranscriptV2Result,
 } from "../app-server/protocol/index.js";
 import { isRecord } from "../utils/record.js";
+import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 
 export function daemonTranscriptSnapshotEvents(
   snapshot: SessionTranscriptV2Result,
@@ -19,7 +20,7 @@ export function daemonTranscriptSnapshotEvents(
   ) {
     throw new Error("Daemon returned an invalid transcript snapshot");
   }
-  const events = snapshot.messages.map((message) => {
+  const events: { readonly sequence: number; readonly event: JsonObject }[] = snapshot.messages.map((message) => {
     if (
       (message.role !== "user" && message.role !== "assistant") ||
       typeof message.text !== "string" ||
@@ -40,6 +41,33 @@ export function daemonTranscriptSnapshotEvents(
       } satisfies JsonObject,
     };
   });
+  if (snapshot.events !== undefined && !Array.isArray(snapshot.events)) {
+    throw new Error("Daemon returned invalid transcript notices");
+  }
+  const seenEventIds = new Set<string>();
+  for (const notice of snapshot.events ?? []) {
+    if (
+      typeof notice.eventId !== "string" || notice.eventId.length === 0 ||
+      !Number.isSafeInteger(notice.committedSequence) ||
+      notice.committedSequence < 0 || notice.committedSequence > snapshot.asOfSequence ||
+      !isRecord(notice.payload) ||
+      (notice.type !== "token_count" && notice.type !== "turn_failed" && notice.type !== "turn_aborted") ||
+      (notice.type !== "token_count" && classifyTurnTerminal(notice) === undefined)
+    ) {
+      throw new Error("Daemon returned an invalid transcript notice");
+    }
+    if (seenEventIds.has(notice.eventId)) continue;
+    seenEventIds.add(notice.eventId);
+    events.push({
+      sequence: notice.committedSequence,
+      event: {
+        id: `snapshot:${snapshot.historyEpoch}:event:${notice.eventId}`,
+        eventId: notice.eventId,
+        type: notice.type,
+        payload: notice.payload,
+      },
+    });
+  }
   events.sort((left, right) => left.sequence - right.sequence);
   const transcript: JsonObject[] = events.map((entry) => entry.event);
   if (snapshot.activeTurn !== undefined) {
@@ -71,6 +99,27 @@ export function daemonTranscriptSnapshotCoversEvent(
   if (!isRecord(params)) return false;
   if (params.runId !== undefined && params.runId !== snapshot.runId) return false;
   const sequence = params.sequence;
+  if (
+    transcriptEvent.type === "token_count" || transcriptEvent.type === "turn_failed" ||
+    transcriptEvent.type === "turn_aborted" || transcriptEvent.type === "error"
+  ) {
+    if (sequence !== undefined && (
+      typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 0 ||
+      sequence > snapshot.asOfSequence
+    )) return false;
+    const eventId = params.eventId ?? transcriptEvent.eventId;
+    if (snapshot.events?.some((notice) =>
+      (typeof eventId === "string" && notice.eventId === eventId) ||
+      (typeof sequence === "number" && sequence > 0 && notice.committedSequence === sequence),
+    )) return true;
+    if (snapshot.events === undefined || typeof sequence !== "number") return false;
+    const terminal = typeof transcriptEvent.type === "string"
+      ? classifyTurnTerminal({ type: transcriptEvent.type, payload: transcriptEvent.payload }, { legacyJournal: true })
+      : undefined;
+    return terminal !== undefined && (
+      snapshot.activeTurn === undefined || terminal.turnId !== snapshot.activeTurn.turnId
+    );
+  }
   if (typeof sequence !== "number" || !Number.isSafeInteger(sequence)) return false;
   if (sequence > snapshot.asOfSequence) return false;
   const payload = transcriptEvent.payload;

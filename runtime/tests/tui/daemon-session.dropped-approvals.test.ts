@@ -93,6 +93,107 @@ const flush = (): Promise<void> =>
   });
 
 describe("daemon approval/elicitation delivery never silently drops decisions", () => {
+  it.each([
+    { kind: "existing", content: "old contents\n" },
+    { kind: "missing" },
+    { kind: "unavailable", reason: "Read access requires approval." },
+  ])("forwards authoritative Write preview metadata through the approval context", async (fileWritePreview) => {
+    const client = createClient();
+    const contexts: import("../../src/tools/orchestrator.js").ApprovalCtx[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          approvalResolver: { request: async ctx => { contexts.push(ctx); return DENIED; } },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => {});
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: { type: "request_permissions", payload: { callId: "write_call", toolName: "Write", fileWritePreview } },
+    });
+    await flush();
+    expect(contexts[0]?.fileWritePreview).toEqual(fileWritePreview);
+    unsubscribe();
+  });
+
+  it("rejects oversized preview metadata without trusting tool-input hints", async () => {
+    const client = createClient();
+    const contexts: import("../../src/tools/orchestrator.js").ApprovalCtx[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          approvalResolver: { request: async ctx => { contexts.push(ctx); return DENIED; } },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => {});
+    client.emit("session_1", {
+      method: "event.permission_request",
+      params: {
+        requestId: "write_call",
+        toolName: "Write",
+        fileWritePreview: { kind: "existing", content: "x".repeat(256 * 1024 + 1) },
+        input: { file_path: "existing.txt", content: "replacement", fileWritePreview: { kind: "missing" } },
+      },
+    });
+    await flush();
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.fileWritePreview).toBeUndefined();
+    unsubscribe();
+  });
+
+  it.each(["permission_decision", "tool_call_completed"])("dismisses only the settled prompt on %s without sending another decision", async (type) => {
+    const client = createClient();
+    const contexts: import("../../src/tools/orchestrator.js").ApprovalCtx[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          approvalResolver: {
+            request: ctx => {
+              contexts.push(ctx);
+              return new Promise(resolve => {
+                ctx.signal?.addEventListener("abort", () => resolve(DENIED), { once: true });
+              });
+            },
+          },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => {});
+    for (const callId of ["cached_call", "pending_call"]) {
+      client.emit("session_1", {
+        type: "daemon.event",
+        msg: { type: "request_permissions", payload: { callId, toolName: "FileRead" } },
+      });
+    }
+    expect(contexts).toHaveLength(2);
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: { type, payload: { callId: "cached_call", decision: "approved_for_session", source: "cache" } },
+    });
+    await flush();
+    expect(contexts[0]?.signal?.aborted).toBe(true);
+    expect(contexts[1]?.signal?.aborted).toBe(false);
+    expect(client.requests).toEqual([]);
+    unsubscribe();
+  });
+
   it("surfaces a warning notice when tool.approve delivery fails", async () => {
     const client = createClient();
     client.failMethods.add("tool.approve");

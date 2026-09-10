@@ -2546,6 +2546,7 @@ function subscribeToDaemonEvents(
   transcriptSnapshot?: SessionTranscriptV2Result,
 ): () => void {
   let replayingInitialEvents = true;
+  const pendingApprovals = new Map<string, AbortController>();
   const deliver = (event: JsonObject): void => {
     cb(event);
     void maybeBridgeDaemonApproval(
@@ -2554,6 +2555,7 @@ function subscribeToDaemonEvents(
       session,
       event,
       cb,
+      pendingApprovals,
     );
     void maybeBridgeDaemonElicitation(
       client,
@@ -2609,6 +2611,8 @@ function subscribeToDaemonEvents(
     }
   });
   return () => {
+    for (const controller of pendingApprovals.values()) controller.abort();
+    pendingApprovals.clear();
     unsubscribeSession();
     unsubscribeRealtime?.();
     unsubscribeConnection?.();
@@ -2651,17 +2655,28 @@ async function maybeBridgeDaemonApproval(
   session: AgenCTuiBridgeSession,
   event: unknown,
   cb: (event: unknown) => void,
+  pendingApprovals: Map<string, AbortController>,
 ): Promise<void> {
-  if (!isJsonObject(event) || event.type !== "request_permissions") return;
+  if (!isJsonObject(event)) return;
   const payload = event.payload;
   if (!isJsonObject(payload) || typeof payload.callId !== "string") return;
+  if (event.type === "permission_decision" || event.type === "tool_call_completed") {
+    pendingApprovals.get(payload.callId)?.abort();
+    pendingApprovals.delete(payload.callId);
+    return;
+  }
+  if (event.type !== "request_permissions" || pendingApprovals.has(payload.callId)) return;
   const resolver = session.services.approvalResolver;
   if (resolver === undefined) return;
+  const controller = new AbortController();
+  pendingApprovals.set(payload.callId, controller);
   const toolName =
     typeof payload.toolName === "string" ? payload.toolName : "tool";
   const decision = await resolver
-    .request(buildDaemonApprovalCtx(session, payload, toolName))
+    .request(buildDaemonApprovalCtx(session, payload, toolName, controller.signal))
     .catch((): ReviewDecision => ({ kind: "denied" }));
+  if (controller.signal.aborted) return;
+  pendingApprovals.delete(payload.callId);
   // A transient daemon RPC failure here silently drops the user's
   // approve/deny decision and the tool call hangs forever. Catch and surface
   // it so the user gets feedback instead of an indefinite hang.
@@ -2817,13 +2832,28 @@ async function maybeBridgeDaemonElicitation(
   }
 }
 
+function daemonFileWritePreview(value: unknown): NonNullable<ApprovalCtx["fileWritePreview"]> | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (value.kind === "missing") return { kind: "missing" };
+  if (value.kind === "existing" && typeof value.content === "string" &&
+    Buffer.byteLength(value.content, "utf8") <= 256 * 1024) {
+    return { kind: "existing", content: value.content };
+  }
+  if (value.kind === "unavailable" && typeof value.reason === "string") {
+    return { kind: "unavailable", reason: value.reason.slice(0, 200) };
+  }
+  return undefined;
+}
+
 function buildDaemonApprovalCtx(
   session: AgenCTuiBridgeSession,
   payload: JsonObject,
   toolName: string,
+  signal: AbortSignal,
 ): ApprovalCtx {
   const callId = payload.callId as string;
   const input = isJsonObject(payload.input) ? payload.input : {};
+  const fileWritePreview = daemonFileWritePreview(payload.fileWritePreview);
   return {
     invocation: {
       session,
@@ -2845,6 +2875,8 @@ function buildDaemonApprovalCtx(
     } as unknown as ApprovalCtx["invocation"],
     callId,
     toolName,
+    signal,
+    ...(fileWritePreview === undefined ? {} : { fileWritePreview }),
     turnId: typeof payload.turnId === "string" ? payload.turnId : callId,
     ...(typeof payload.reason === "string"
       ? { retryReason: payload.reason }
@@ -2870,6 +2902,7 @@ function baseInitialTranscriptEvents(
 
 function transcriptEventFromPermissionRequest(params: JsonObject): JsonObject | null {
   if (typeof params.requestId !== "string") return null;
+  const fileWritePreview = daemonFileWritePreview(params.fileWritePreview);
   return {
     id: daemonTranscriptEventId(
       params,
@@ -2878,6 +2911,7 @@ function transcriptEventFromPermissionRequest(params: JsonObject): JsonObject | 
     type: "request_permissions",
     payload: {
       callId: params.requestId,
+      ...(fileWritePreview === undefined ? {} : { fileWritePreview }),
       ...(typeof params.toolName === "string"
         ? { toolName: params.toolName }
         : {}),

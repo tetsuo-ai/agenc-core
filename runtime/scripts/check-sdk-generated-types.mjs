@@ -66,6 +66,7 @@ const transcriptV2InterfaceNames = [
   "SessionTranscriptV2Message",
   "SessionTranscriptV2ActiveTurn",
   "SessionTranscriptV2TurnResult",
+  "SessionTranscriptV2Event",
   "SessionTranscriptV2Result",
 ];
 

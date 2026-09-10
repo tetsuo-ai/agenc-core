@@ -1357,7 +1357,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  test("dispatchModelToolCall preserves BigInt args after pre-hook rewrites", async () => {
+  test.each([0n, 123n, -123n, 900719925474099312345n])("dispatchModelToolCall preserves BigInt %s after pre-hook rewrites", async (rewrittenValue) => {
     let observedArgs: Record<string, unknown> | undefined;
     const execute = vi.fn(async (args: Record<string, unknown>) => {
       observedArgs = args;
@@ -1403,7 +1403,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         preHooks: [
           ({ args }) => ({
             kind: "continue" as const,
-            args: { ...args, path: "rewritten" },
+            args: { ...args, path: "rewritten", lamports: rewrittenValue },
           }),
         ],
       },
@@ -1412,7 +1412,62 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     expect(result.isError).toBeFalsy();
     expect(execute).toHaveBeenCalledOnce();
     expect(observedArgs).toMatchObject({ path: "rewritten" });
-    expect(observedArgs?.["lamports"]).toBe(900719925474099312345n);
+    expect(observedArgs?.["lamports"]).toBe(rewrittenValue);
+  });
+
+  test("dispatchModelToolCall preserves large integer literals inside edit arguments", async () => {
+    const input = {
+      file_path: "bookmarks.test.mjs",
+      edits: [
+        {
+          old_string: "old",
+          new_string: "const record = {nextId:9007199254740992,bookmarks:[]};",
+        },
+      ],
+    };
+    const execute = vi.fn(async () => ({ content: "ok" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "ArgumentEcho",
+          description: "",
+          inputSchema: {},
+          isReadOnly: true,
+          execute,
+        },
+        supportsParallelToolCalls: true,
+      },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-model-edit-literal",
+        name: "ArgumentEcho",
+        arguments: JSON.stringify(input),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
+        } as never,
+        turn: {
+          subId: "turn-model-edit-literal",
+          cwd: "/repo",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "read_only",
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(execute).toHaveBeenCalledExactlyOnceWith(input);
   });
 
   test("dispatchModelToolCall audits terminal pre-hook denials once", async () => {

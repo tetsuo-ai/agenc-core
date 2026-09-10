@@ -91,3 +91,24 @@ export function mergeDaemonClientEnvironment(
   }
   return merged
 }
+
+export function captureRecoverableCommandEnvironment(
+  overrides: Readonly<Record<string, string>> | undefined,
+): { readonly PATH: string } {
+  return { PATH: overrides?.PATH?.trim() ? overrides.PATH : "" }
+}
+
+export function readRecoverableCommandEnvironment(
+  value: unknown,
+): { readonly PATH: string } | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    !("PATH" in value) ||
+    typeof value.PATH !== "string" ||
+    value.PATH.includes("\0")
+  ) return undefined
+  return { PATH: value.PATH }
+}

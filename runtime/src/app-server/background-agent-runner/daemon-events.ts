@@ -303,6 +303,9 @@ export function notificationFromDaemonEvent(
         ...(typeof payload.planFilePath === "string"
           ? { planFilePath: payload.planFilePath }
           : {}),
+        ...(payload.fileWritePreview !== undefined
+          ? { fileWritePreview: payload.fileWritePreview }
+          : {}),
       },
     };
   }

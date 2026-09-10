@@ -157,6 +157,7 @@ import {
   type AgenCDaemonStartupGuardReceiver,
 } from "./daemon-startup-guard.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
+import { readRecoverableCommandEnvironment } from "./client-env-snapshot.js";
 import { loadCanonicalDaemonConfig } from "../config/repository.js";
 import { resolveProviderBaseURL } from "../config/env.js";
 import {
@@ -5442,7 +5443,10 @@ export async function restoreRecoveredAgentRuntime(
     resumeSource?.close();
     return { available: false };
   }
-  if (runtimeOptions === null) {
+  const commandEnvironment = readRecoverableCommandEnvironment(
+    run.metadata?.commandEnvironment,
+  );
+  if (runtimeOptions === null || commandEnvironment === undefined) {
     resumeSource.close();
     return { available: false };
   }
@@ -5465,6 +5469,7 @@ export async function restoreRecoveredAgentRuntime(
       explicitColdResume: true,
       restoreAttemptId,
       runtimeOptions,
+      envOverrides: commandEnvironment,
       ...(resumeSource.activeStartupActivationResumeEventId !== undefined
         ? { resumeStartupActivationPending: true }
         : {}),

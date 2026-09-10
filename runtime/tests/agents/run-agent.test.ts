@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
+import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
 import { AgentRegistry } from "./registry.js";
 import {
   buildFilteredRegistry,
@@ -1491,6 +1492,36 @@ describe("runAgent", () => {
     expect(result.outcome).toBe("errored");
     expect(provider.chatStream).not.toHaveBeenCalled();
     expect(events.some((e) => e.kind === "run_error")).toBe(true);
+  });
+
+  it("registers silent child approval ownership before sampling and revokes it at shutdown", async () => {
+    const provider = makeProvider([{ content: "Memory extraction complete." }]);
+    const parent = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(parent);
+    let child: Session | undefined;
+    const unsubscribe = observeChildApprovalSessions(parent, (registered) => {
+      child = registered;
+      expect(isApprovalSessionOwnedBy(registered, parent)).toBe(true);
+      expect(provider.chatStream).not.toHaveBeenCalled();
+      registered.trackDurableOperation(new Promise<void>((resolve) => {
+        childApprovalRevocationSignal(registered)!.addEventListener("abort", () => resolve(), { once: true });
+      }));
+      return () => {};
+    });
+    try {
+      const { result } = await collectRun(runAgent({
+        live,
+        parent,
+        initialMessages: [{ role: "user", content: "Extract useful memory" }],
+        taskPrompt: "Extract useful memory",
+        silent: true,
+      }));
+      expect(result.outcome).toBe("completed");
+      expect(child?.conversationId).toBe(live.agentId);
+      expect(isApprovalSessionOwnedBy(child!, parent)).toBe(false);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("marks completed on success", async () => {
