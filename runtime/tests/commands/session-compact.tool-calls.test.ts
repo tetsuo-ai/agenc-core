@@ -23,6 +23,7 @@ vi.mock("../../src/services/compact/compact.js", async (importOriginal) => ({
 }));
 
 import { compactCommand } from "../../src/commands/session-compact.js";
+import { usesLocalToolProfile } from "../../src/llm/wire/capability-gating.js";
 
 const TOOL_CALL_ID = "toolu_compact_1792";
 const TOOL_ARGUMENTS = JSON.stringify({ command: "pwd" });
@@ -109,7 +110,10 @@ describe("/compact keeps retained assistant tool calls", () => {
       expect(result).toMatchObject({ kind: "compact" });
       expect(summarizer.manualCompactCall).toHaveBeenCalledTimes(1);
       const compactContext = summarizer.manualCompactCall.mock.calls[0]?.[1];
-      const expectedNames = providerName === "lmstudio"
+      // The reduced catalog is keyed on LOCAL_TOOL_PROFILE_PROVIDERS, which
+      // ollama joined: a tool outside the local profile is not advertised to
+      // either local runtime. grok is a hosted provider and keeps everything.
+      const expectedNames = usesLocalToolProfile(providerName)
         ? ["FileRead"]
         : ["FileRead", "remote_tool"];
       expect(compactContext?.options?.tools).toEqual(

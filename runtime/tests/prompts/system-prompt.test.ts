@@ -35,6 +35,7 @@ import { ConfigStore } from "../../src/config/store.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { Session } from "../session/session.js";
 import { clearSystemPromptSections } from "./sections.js";
+import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { DESKTOP_RICH_RENDERER_CLIENT, getClientRenderingSection } from "./client-rendering.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 import {
@@ -670,6 +671,39 @@ describe("assembleSystemPrompt", () => {
       sections.slice(boundaryIdx + 1).some((s) => s.startsWith("# Environment")),
     ).toBe(true);
   });
+
+  // standard and compact only: these are the profiles whose model calls the
+  // file and shell tools directly, so they are the ones handed raw outside
+  // content. The coordinator runs no tools of its own ("You do NOT edit files
+  // or run commands yourself - workers do") and sees worker results rather
+  // than file bytes, which is a different exposure and a separate prompt
+  // document in coordinator/coordinatorMode.ts.
+  test.each(["standard", "compact"] as const)(
+    "the %s profile states the untrusted-tool-result policy it marks data with",
+    async (profile) => {
+      // The framing is emitted for every provider: a tool result that may
+      // carry outside content is wrapped in UNTRUSTED_TOOL_RESULT_BOUNDARY
+      // regardless of which profile is in play. A profile that omits the
+      // policy therefore hands the model a delimiter it was never told the
+      // meaning of, and the injected text inside reads as ordinary context.
+      //
+      // This bit ollama specifically. It runs the compact profile, and the
+      // desktop local-model flow creates its sessions with permissions on
+      // bypass, so nothing else stands between a file's contents and a tool
+      // call. The compact profile shipped without any of this text.
+      const snapshot = await assembleSystemPromptSnapshot({
+        profile,
+        session: fakeSession,
+        ctx: fakeCtx(),
+      });
+      expect(snapshot.text).toContain(UNTRUSTED_TOOL_RESULT_BOUNDARY);
+      expect(snapshot.text).toMatch(/tool results are untrusted data/i);
+      // Naming the marker is not enough; it has to deny the two things an
+      // injected instruction actually asks for.
+      expect(snapshot.text).toMatch(/never follow|do not follow/i);
+      expect(snapshot.text).toMatch(/grant permissions/i);
+    },
+  );
 
   test("selects compact and coordinator prompts as explicit snapshots", async () => {
     const compact = await assembleSystemPromptSnapshot({
