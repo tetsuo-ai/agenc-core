@@ -29,6 +29,7 @@ import {
   type AgenCRuntimeMessage,
 } from "../session/runtime-message-conversion.js";
 import type { Session } from "../session/session.js";
+import { getSessionPermissionInstructions } from "../session/permission-instructions.js";
 import { isAuthenticatedCompactionBoundary } from "../session/compaction-history-marker.js";
 import {
   llmMessageToReplacementResponseItem,
@@ -487,6 +488,7 @@ function buildAgenCToolUseContext(
     ctx.baseInstructions,
     ctx.developerInstructions,
     ctx.userInstructions,
+    getSessionPermissionInstructions(session, ctx),
   ]
     .filter(
       (value): value is string =>
@@ -981,8 +983,8 @@ async function buildSyntheticSystemMessage(opts: {
     // directory block are part of every turn's prompt when auto memory is
     // enabled, so /context must count them too.
     const memory = await resolveMemoryPromptInputs(opts.session, opts.ctx.cwd);
-    const assembled = await assembleSystemPrompt(
-      buildAssembleSystemPromptOpts({
+    const assembled = await assembleSystemPrompt({
+      ...buildAssembleSystemPromptOpts({
         session: opts.session,
         ctx: opts.ctx,
         projectInstructions: opts.projectInstructions,
@@ -995,12 +997,19 @@ async function buildSyntheticSystemMessage(opts: {
         autonomousMode,
         outputStyle,
       }),
-    );
+      deferPermissionInstructions: opts.ctx.permissionInstructionsDeferred === true,
+    });
+    const text = [
+      assembled.text,
+      ...(permissionContext === null ? [] : [
+        getSessionPermissionInstructions(opts.session, opts.ctx, permissionContext),
+      ]),
+    ].filter((section) => section.length > 0).join("\n\n");
     return {
       role: "system",
       type: "system",
-      content: assembled.text,
-      message: { role: "system", content: assembled.text },
+      content: text,
+      message: { role: "system", content: text },
     };
   } catch {
     return null;

@@ -9,6 +9,7 @@ export interface PlanApprovalOverlayProps {
   readonly planFilePath?: string;
   onApprove(mode: "acceptEdits" | "default"): void;
   onKeepPlanning(): void;
+  readonly onDismiss?: () => void;
 }
 
 interface PlanOption {
@@ -47,6 +48,7 @@ export function PlanApprovalOverlay({
   planFilePath,
   onApprove,
   onKeepPlanning,
+  onDismiss,
 }: PlanApprovalOverlayProps): React.ReactElement {
   const [selectedIndex, setSelectedIndex] = useState(0);
   // The plan can run 100+ rendered lines; dumping it whole pushes the
@@ -90,6 +92,10 @@ export function PlanApprovalOverlay({
     }
     if (input === "3" || key.escape) {
       event.stopImmediatePropagation();
+      if (key.escape && onDismiss !== undefined) {
+        onDismiss();
+        return;
+      }
       setSelectedIndex(2);
       onKeepPlanning();
       return;

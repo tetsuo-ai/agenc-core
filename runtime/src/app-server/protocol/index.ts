@@ -7,6 +7,7 @@
  */
 
 import type { RunRuntimeSettingsSnapshot } from "../../contracts/run-contracts.js";
+import type { FileWriteApprovalPreview } from "../../session/event-log.js";
 import type { WhisperStatus, WhisperTranscription } from "../../audio/whisper.js";
 export type { WhisperStatus, WhisperTranscription, WhisperInstallParams, WhisperTranscribeParams, WhisperLanguage, WhisperTask, WhisperCompute } from "../../audio/whisper.js";
 import type { ProviderModelSelectionOutcome } from "../../contracts/provider-model-selection.js";
@@ -33,7 +34,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.11.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.12.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -2588,6 +2589,7 @@ export interface RunStartResult extends JsonObject {
   /** Exact base commit recorded before any work began. */
   readonly baseCommit: string;
   readonly baseDirty: RunStartBaseDirty;
+  readonly effectivePermissionMode?: RunStartParams["permissionMode"];
 }
 
 export interface CsvJobReviewEvidenceProjection extends JsonObject {
@@ -2737,6 +2739,7 @@ export interface RunWorkflowStatusStep extends JsonObject {
  */
 export interface RunWorkflowStatus extends JsonObject {
   readonly steps: readonly RunWorkflowStatusStep[];
+  readonly effectivePermissionMode?: RunStartParams["permissionMode"];
   /** Present when the run terminated with a frozen workflow stop reason. */
   readonly stopReason?: string;
 }
@@ -2819,6 +2822,7 @@ export interface RunAdmissionSummary extends JsonObject {
 
 export interface RunStatusResult extends JsonObject {
   readonly runId: string;
+  readonly pendingRequests?: readonly PendingToolApproval[];
   readonly status: string;
   /** Terminal is true only for the current lifecycle epoch. */
   readonly terminal: boolean;
@@ -3746,6 +3750,20 @@ export interface PermissionGrant extends JsonObject {
 
 export interface PermissionListResult extends JsonObject {
   readonly permissions: readonly PermissionGrant[];
+  readonly pendingRequests?: readonly PendingToolApproval[];
+}
+
+export interface PendingToolApproval extends JsonObject {
+  readonly requestId: string;
+  readonly ownerRunId: string;
+  readonly sessionId: string;
+  readonly toolName: string;
+  readonly input?: JsonObject;
+  readonly turnId?: string;
+  readonly reason?: string;
+  readonly planContent?: string;
+  readonly planFilePath?: string;
+  readonly fileWritePreview?: FileWriteApprovalPreview;
 }
 
 export interface FuzzyFileSearchResult extends JsonObject {

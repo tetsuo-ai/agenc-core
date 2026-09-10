@@ -25,6 +25,8 @@ import {
 } from "./tool-result-denial.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import { escapeXml } from "../utils/xml.js";
+import { makeAssistantTextMessage, makeToolUseMessage } from "./synthetic-assistant-message.js";
+export { makeAssistantTextMessage, makeToolUseMessage } from "./synthetic-assistant-message.js";
 
 /**
  * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
@@ -496,36 +498,6 @@ export function makeUserMessage(content: unknown, uuid: string = randomUUID()): 
   };
 }
 
-export function makeAssistantTextMessage(
-  content: string,
-  uuid: string = randomUUID(),
-  messageTimestamp: string = timestamp(),
-): any {
-  return {
-    type: "assistant",
-    uuid,
-    timestamp: messageTimestamp,
-    message: {
-      id: randomUUID(),
-      container: null,
-      model: SYNTHETIC_MODEL,
-      role: "assistant",
-      stop_reason: "stop_sequence",
-      stop_sequence: "",
-      type: "message",
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
-      },
-      content: [{ type: "text", text: content.length > 0 ? content : "(no content)" }],
-      context_management: null,
-    },
-    requestId: undefined,
-  };
-}
-
 export function makeAssistantThinkingMessage(
   thinking: string,
   redacted: boolean = false,
@@ -556,22 +528,6 @@ export function makeAssistantThinkingMessage(
       context_management: null,
     },
     requestId: undefined,
-  };
-}
-
-export function makeToolUseMessage(
-  toolUseID: string,
-  name: string,
-  input: unknown,
-  uuid: string = randomUUID(),
-): any {
-  return {
-    ...makeAssistantTextMessage(""),
-    uuid,
-    message: {
-      ...makeAssistantTextMessage("").message,
-      content: [{ type: "tool_use", id: toolUseID, name, input }],
-    },
   };
 }
 

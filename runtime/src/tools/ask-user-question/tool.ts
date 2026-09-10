@@ -263,7 +263,9 @@ export function clearAskUserQuestionResponsesForTest(): void {
 function consumeAnsweredInput(
   args: Record<string, unknown>,
 ): AskUserQuestionInput | null {
-  const callId = typeof args[CALL_ID_ARG] === "string" ? args[CALL_ID_ARG] : "";
+  const callId = typeof args.__agencApprovalResponseKey === "string"
+    ? args.__agencApprovalResponseKey
+    : typeof args[CALL_ID_ARG] === "string" ? args[CALL_ID_ARG] : "";
   if (callId.length === 0) return null;
   const answered = answeredInputs.get(callId);
   answeredInputs.delete(callId);

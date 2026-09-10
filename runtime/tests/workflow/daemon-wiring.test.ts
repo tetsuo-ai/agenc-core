@@ -403,6 +403,49 @@ describe("createDaemonWorkflowController — reviewer model", () => {
 });
 
 describe("createDaemonWorkflowController — per-run durability resolution", () => {
+  it("cancels a waiting child and commits its terminal before closing workflow seams", async () => {
+    const admission = new FakeAdmission();
+    const baseSeams = makeSeams();
+    let childSettled = false;
+    let seamsClosed = false;
+    let signalStarted!: () => void;
+    const startedChild = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const runId = "wf-waiting-shutdown";
+    const wiring = createDaemonWorkflowController({
+      agencHome: home, primaryCwd: projectA.cwd, env: {}, argv: [], warn: () => {},
+      kernel: {
+        bindClient: () => admission,
+        cancelRun: () => { admission.abort.abort("daemon_shutdown"); },
+      } as unknown as ExecutionAdmissionKernel,
+      sessionSeams: {
+        ...baseSeams,
+        spawner: {
+          ...baseSeams.spawner,
+          spawn: async ({ signal }) => {
+            signalStarted();
+            if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+            childSettled = true;
+            return { status: "cancelled", finalMessage: "approval cancelled", usage: null };
+          },
+        },
+        close: async () => {
+          expect(childSettled).toBe(true);
+          expect(projectA.repo.getCurrentTerminalResult(runId)?.status).toBe("cancelled");
+          seamsClosed = true;
+        },
+      },
+    });
+    await wiring.controller.start({
+      runId, repoPath: projectA.cwd, goal: "wait for approval", reviewerModel: "reviewer",
+      requiredVerification: [{ label: "tests", script: "node --test" }],
+    });
+    await startedChild;
+    await wiring.close();
+    expect(childSettled).toBe(true);
+    expect(seamsClosed).toBe(true);
+    expect(wiring.controller.activeRunIds()).toEqual([]);
+  });
+
   it("journals a run into its own repository's project database and resolves status across projects", async () => {
     const { wiring } = makeWiring();
     const started = await wiring.controller.start({

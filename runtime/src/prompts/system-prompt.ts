@@ -602,7 +602,7 @@ Use this directory for temporary files instead of /tmp:
 The scratchpad is session-specific and isolated from the user's project.`;
 }
 
-function getAutonomousWorkSection(
+export function getAutonomousWorkSection(
   autonomousMode: boolean | undefined,
   permissionContext: ToolPermissionContext | null,
 ): string | null {
@@ -715,6 +715,7 @@ export interface AssembleSystemPromptOpts {
    */
   readonly permissionContext?: ToolPermissionContext | null;
   readonly autonomousMode?: boolean;
+  readonly deferPermissionInstructions?: boolean;
   /** Explicit test/embedder override; production reads the session option. */
   readonly simpleMode?: boolean;
 }
@@ -841,6 +842,7 @@ export async function assembleBaseInstructionsForModel(params: {
   const memory = await resolveMemoryPromptInputs(params.session, params.ctx.cwd);
   const snapshot = await assembleSystemPromptSnapshot({
     profile: params.profile,
+    deferPermissionInstructions: true,
     session: params.session,
     ctx: params.ctx,
     projectInstructions: "",
@@ -1042,18 +1044,22 @@ export async function assembleSystemPrompt(
     DANGEROUS_uncachedSystemPromptSection(
       "permissions",
       () =>
-        getPermissionsSection(opts.permissionContext ?? null, {
-          sandboxPolicy: opts.ctx.sandboxPolicy.value,
-          networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
-        }),
+        opts.deferPermissionInstructions === true
+          ? null
+          : getPermissionsSection(opts.permissionContext ?? null, {
+              sandboxPolicy: opts.ctx.sandboxPolicy.value,
+              networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
+            }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "autonomous_work",
-      () => getAutonomousWorkSection(
-        opts.autonomousMode,
-        opts.permissionContext ?? null,
-      ),
+      () => opts.deferPermissionInstructions === true
+        ? null
+        : getAutonomousWorkSection(
+            opts.autonomousMode,
+            opts.permissionContext ?? null,
+          ),
       "autonomous keepalive follows explicit session mode",
     ),
     DANGEROUS_uncachedSystemPromptSection(

@@ -25,6 +25,7 @@
 import { createHash } from "node:crypto";
 
 import type { LLMMessage } from "../llm/types.js";
+import type { PermissionMode } from "../permissions/types.js";
 
 export type RetainedPlacement = "before" | "after";
 
@@ -102,6 +103,7 @@ function resolveAnchor(
 export function projectRetainedAttachments(
   base: ReadonlyArray<LLMMessage>,
   ledger: AttachmentRetentionLedger,
+  permissionMode?: PermissionMode,
 ): { readonly messages: LLMMessage[]; readonly dropped: number } {
   if (ledger.blocks.length === 0) return { messages: [...base], dropped: 0 };
   const positions = new Map<string, number[]>();
@@ -117,16 +119,26 @@ export function projectRetainedAttachments(
   const kept: RetainedAttachmentBlock[] = [];
   let dropped = 0;
   for (const block of ledger.blocks) {
+    const retainedMessages = block.messages.filter((message) => {
+      if (permissionMode === undefined) return true;
+      switch (message.runtimeOnly?.permissionModeReminder) {
+        case "plan": return permissionMode === "plan";
+        case "plan_exit": return permissionMode !== "plan";
+        case "auto": return permissionMode === "auto";
+        case "auto_exit": return permissionMode !== "auto";
+        default: return true;
+      }
+    });
     const index = resolveAnchor(positions, block);
-    if (index < 0) {
+    if (index < 0 || retainedMessages.length === 0) {
       dropped += 1;
       continue;
     }
-    kept.push(block);
+    kept.push({ ...block, messages: retainedMessages });
     const slots = block.placement === "before" ? before : after;
     const slot = slots.get(index);
-    if (slot === undefined) slots.set(index, [...block.messages]);
-    else slot.push(...block.messages);
+    if (slot === undefined) slots.set(index, retainedMessages);
+    else slot.push(...retainedMessages);
   }
   ledger.blocks = kept;
   const messages: LLMMessage[] = [];

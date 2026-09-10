@@ -1190,6 +1190,8 @@ describe("Session.consumePendingProviderSwitch", () => {
     });
     expect(state.sessionConfiguration.provider).toEqual({ slug: "grok" });
     expect(state.sessionConfiguration.collaborationMode.model).toBe("grok-4.3");
+    expect(state.sessionConfiguration.permissionInstructionsDeferred).toBe(true);
+    expect(state.sessionConfiguration.baseInstructions).not.toContain("# Permission Mode:");
     expect(state.sessionConfiguration.baseInstructions).toContain(
       SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     );

@@ -821,6 +821,7 @@ function positiveInteger(value: unknown): number {
 }
 
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
+  readonly approvalBroker?: import("../live-approval-broker.js").LiveApprovalBroker;
   readonly agentStopTimeoutMs?: number;
   /**
    * Bound on the two waits a daemon restore adds around the durable-turn

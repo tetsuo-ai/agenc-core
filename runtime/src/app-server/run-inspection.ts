@@ -60,6 +60,7 @@ export class AgenCDaemonRunInspectionError extends Error {
 }
 
 export interface AgenCDaemonRunInspectionOptions {
+  readonly pendingApprovals?: (runId: string) => readonly import("./protocol/index.js").PendingToolApproval[];
   /**
    * Fresh discovery on every request keeps projects created after daemon
    * startup visible. Callers should return only state DBs owned by this
@@ -174,10 +175,12 @@ const MAX_RUN_TREE_IDS = 1_000;
  * a terminal assistant payload that was never persisted.
  */
 export class AgenCDaemonRunInspectionService {
+  readonly #pendingApprovals: AgenCDaemonRunInspectionOptions["pendingApprovals"];
   readonly #stateDatabasePaths: () => readonly StateDatabasePaths[];
   readonly #agencHome: string | undefined;
 
   constructor(options: AgenCDaemonRunInspectionOptions) {
+    this.#pendingApprovals = options.pendingApprovals;
     this.#stateDatabasePaths = options.stateDatabasePaths;
     this.#agencHome = options.agencHome;
   }
@@ -186,9 +189,13 @@ export class AgenCDaemonRunInspectionService {
     const runId = normalizeRunId(params.runId, "run.status");
     const located = this.#locate(runId);
     refreshRunJournalProjection(located.paths, runId);
-    return withReadonlyStateDatabase(located.paths, (db) =>
+    const result = withReadonlyStateDatabase(located.paths, (db) =>
       buildRunStatus(db, located, runId),
     );
+    return this.#pendingApprovals === undefined ? result : {
+      ...result,
+      pendingRequests: result.terminal ? [] : this.#pendingApprovals(runId),
+    };
   }
 
   replay(params: RunReplayParams): RunReplayResult {
@@ -713,6 +720,7 @@ function workflowStatusProjection(
         ? { artifacts: step.artifacts.map(workflowArtifactPointer) }
         : {}),
     })),
+    ...(projected.effectivePermissionMode !== undefined ? { effectivePermissionMode: projected.effectivePermissionMode } : {}),
     ...(projected.stopReason !== undefined
       ? { stopReason: projected.stopReason }
       : {}),

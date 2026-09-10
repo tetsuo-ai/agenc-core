@@ -26,6 +26,11 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { WorkflowApprovalFailure } from "../../permissions/approval-failure.js";
+import { markWorkflowApprovalSession } from "../../permissions/approval-failure.js";
+import { observeChildApprovalSessions } from "../../agents/child-approval-context.js";
+import type { LiveApprovalBroker } from "../live-approval-broker.js";
+import { resolvePermissionDecisionTimeoutMs } from "../background-agent-runner/tool-recovery.js";
 
 import type {
   AgenCBootstrapFunction,
@@ -112,6 +117,7 @@ export class WorkflowSessionSeamError extends Error {
 }
 
 export interface WorkflowSessionSeamsOptions {
+  readonly approvalBroker?: LiveApprovalBroker;
   readonly agencHome: string;
   readonly env: NodeJS.ProcessEnv;
   /** Executable and entrypoint coordinates; daemon launch flags are ignored. */
@@ -158,6 +164,7 @@ export interface WorkflowSessionSeams {
 }
 
 interface RunSessionEntry {
+  readonly unregisterApprovals: () => void;
   readonly runId: string;
   readonly repoPath: string;
   readonly bootstrap: LocalRuntimeBootstrap;
@@ -648,7 +655,17 @@ export function createWorkflowSessionSeams(
           resolvedPolicy,
         );
       }
+      const unregisterApprovals = options.approvalBroker?.register(boot.session, {
+        workflow: true,
+        isActive: () => entries.get(runId) === pending && !boot.session.abortController.signal.aborted,
+        timeoutMs: resolvePermissionDecisionTimeoutMs(),
+      }) ?? (() => {
+        const unmark = markWorkflowApprovalSession(boot.session);
+        const unsubscribe = observeChildApprovalSessions(boot.session, markWorkflowApprovalSession);
+        return () => { unsubscribe(); unmark(); };
+      })();
       return {
+        unregisterApprovals,
         runId,
         repoPath: resolvedRepoPath,
         bootstrap: boot,
@@ -670,6 +687,7 @@ export function createWorkflowSessionSeams(
     entries.delete(runId);
     try {
       const entry = await pending;
+      entry.unregisterApprovals();
       await entry.bootstrap.shutdown();
     } catch (error) {
       options.warn(
@@ -886,6 +904,9 @@ export function createWorkflowSessionSeams(
         }
         return {
           status,
+          ...(result.error instanceof WorkflowApprovalFailure
+            ? { stopReason: result.error.stopReason }
+            : {}),
           finalMessage:
             result.finalMessage ??
             workflowChildFailureMessage(input.kind, result),

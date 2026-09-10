@@ -40,6 +40,7 @@ import {
 } from "./types.js";
 import { parseRuleString, serializeRuleValue } from "./rules.js";
 import { permissionGrantsFromToolPermissionContext } from "./permission-grants.js";
+import { formatPendingToolApprovals } from "./pending-approval-display.js";
 
 export type AgenCPermissionsCliCommand =
   | {
@@ -179,13 +180,14 @@ export async function runAgenCPermissionsCli(
 export function formatAgenCPermissionGrantList(
   result: PermissionListResult,
 ): string {
-  if (result.permissions.length === 0) return "No permissions";
-  return [
+  const grants = result.permissions.length === 0 ? "No permissions" : [
     ["id", "subject", "action", "scope", "granted_at", "expires_at"].join(
       "\t",
     ),
     ...result.permissions.map(formatPermissionGrantRow),
   ].join("\n");
+  const pending = formatPendingToolApprovals(result.pendingRequests ?? []);
+  return pending.length === 0 ? grants : `${grants}\n\n${pending}`;
 }
 
 function parseListArgs(

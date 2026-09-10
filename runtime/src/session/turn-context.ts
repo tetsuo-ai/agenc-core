@@ -377,6 +377,7 @@ export interface SessionConfiguration {
   readonly provider?: LLMProvider;
   /** agenc runtime `base_instructions` — baseline system prompt for the session. */
   readonly baseInstructions?: string;
+  readonly permissionInstructionsDeferred?: boolean;
   /** agenc runtime `agenc runtime_home` — directory containing agent state for the session. */
   readonly agencHome?: string;
   /** agenc runtime `thread_name` — optional user-facing thread label. */
@@ -635,6 +636,7 @@ export interface TurnContext {
 
   /** Baseline system prompt for the active model/session. */
   readonly baseInstructions?: string;
+  readonly permissionInstructionsDeferred?: boolean;
 
   /** Developer instructions (separate from user instructions). */
   readonly developerInstructions?: string;
@@ -1295,6 +1297,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     timezone,
     appServerClientName: sc.appServerClientName,
     baseInstructions: sc.baseInstructions,
+    permissionInstructionsDeferred: sc.permissionInstructionsDeferred,
     developerInstructions: sc.developerInstructions,
     userInstructions: sc.userInstructions,
     collaborationMode: sc.collaborationMode,

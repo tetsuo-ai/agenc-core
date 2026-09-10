@@ -34,6 +34,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { workflowApprovalFailureCause } from "../../permissions/approval-failure.js";
 
 import {
   type AdmissionKind,
@@ -230,6 +231,7 @@ export type WorkflowSpawnKind = "plan" | "implement" | "verify_agent" | "review"
 
 export interface WorkflowChildOutcome {
   readonly status: RunTerminalStatus;
+  readonly stopReason?: "approval_required" | "policy_denied";
   readonly finalMessage: string | null;
   /**
    * Reconciled actual usage for the child's own admissions (null = nothing
@@ -369,6 +371,7 @@ export interface WorkflowStartParams {
 
 export interface WorkflowStartResult {
   readonly runId: string;
+  readonly effectivePermissionMode: WorkflowSpec["permissionMode"];
   readonly specDigest: Sha256Digest;
   readonly baseCommit: string;
   readonly baseDirty: WorkflowSpec["baseDirty"];
@@ -398,20 +401,10 @@ export class WorkflowIntakeError extends Error {
 const DEFAULT_MAX_IMPLEMENT_ATTEMPTS = 2;
 const DEFAULT_PERMISSION_MODE: WorkflowSpec["permissionMode"] = "acceptEdits";
 
-/**
- * The permission mode a workflow's children run under. A run's children are
- * headless sessions in the run's worktree: in `default` mode nothing can
- * approve them, so every edit, write and command is refused and the implement
- * step dies on the repeat-failure backstop (desktop soak F63, ten minutes and
- * three dollars for nothing). `default` and an unset mode both become the
- * workflow's own default; the other modes pass through.
- */
 export function resolveWorkflowPermissionMode(
   requested: WorkflowSpec["permissionMode"] | undefined,
 ): WorkflowSpec["permissionMode"] {
-  return requested === undefined || requested === "default"
-    ? DEFAULT_PERMISSION_MODE
-    : requested;
+  return requested ?? DEFAULT_PERMISSION_MODE;
 }
 /** Bounded per-stage retry budget for stage-level (non-verdict) failures. */
 const MAX_STAGE_ATTEMPTS = 2;
@@ -589,11 +582,6 @@ export class VerifiedChangeWorkflowController {
       );
     }
     const runId = params.runId ?? this.#newRunId();
-    if (params.permissionMode === "default") {
-      this.#deps.warn(
-        `workflow ${runId} was started in default permission mode, which has no approver for its headless children; running it with ${DEFAULT_PERMISSION_MODE}`,
-      );
-    }
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
     const journal = await this.#deps.journal.open(runId, {
       repoPath: params.repoPath,
@@ -668,12 +656,17 @@ export class VerifiedChangeWorkflowController {
       specDigest,
       baseCommit: spec.baseCommit,
       baseDirty: spec.baseDirty,
+      effectivePermissionMode: spec.permissionMode,
     };
   }
 
   /** Await the asynchronous pipeline for a started/resumed run (test hook). */
   awaitRun(runId: string): Promise<void> {
     return this.#active.get(runId) ?? Promise.resolve();
+  }
+
+  activeRunIds(): readonly string[] {
+    return [...this.#active.keys()];
   }
 
   /** Durable status projection — works after restart, no live state needed. */
@@ -1087,6 +1080,7 @@ export class VerifiedChangeWorkflowController {
         });
       }
       if (implement.outcome === "failed") {
+        this.#haltPermanentChildFailure(implement);
         if (attempt >= spec.maxImplementAttempts) {
           throw new WorkflowHaltError({
             status: "failed",
@@ -1228,6 +1222,7 @@ export class VerifiedChangeWorkflowController {
       });
     }
     if (agent.outcome === "failed") {
+      this.#haltPermanentChildFailure(agent);
       throw new WorkflowHaltError({
         status: "failed",
         stopReason: "step_retries_exhausted",
@@ -1366,6 +1361,22 @@ export class VerifiedChangeWorkflowController {
                 review.artifact,
               );
             } catch (error) {
+              const approvalFailure = workflowApprovalFailureCause(error);
+              if (approvalFailure !== undefined) {
+                this.#recordReviewChildTerminal(ctx, childRunId, {
+                  status: "failed",
+                  stopReason: approvalFailure.stopReason,
+                  finalMessage: approvalFailure.message,
+                  usage: null,
+                });
+                return {
+                  outcome: "failed",
+                  evidence: {
+                    stage: "workflow.review", attempt,
+                    failure: { reason: approvalFailure.stopReason, message: approvalFailure.message },
+                  },
+                };
+              }
               if (
                 error instanceof ReviewParseError ||
                 error instanceof ReviewInvocationError
@@ -1731,6 +1742,7 @@ export class VerifiedChangeWorkflowController {
         child: {
           childRunId: input.childRunId,
           status: outcome.status,
+          ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
           ...(truncate(outcome.finalMessage) !== undefined
             ? { finalMessage: truncate(outcome.finalMessage)! }
             : {}),
@@ -1811,6 +1823,7 @@ export class VerifiedChangeWorkflowController {
         if (input.decorate !== undefined && child !== undefined) {
           return toEvidence({
             status: child.status as RunTerminalStatus,
+            ...(child.stopReason !== undefined ? { stopReason: child.stopReason } : {}),
             finalMessage: child.finalMessage ?? null,
             usage: child.usage ?? null,
             ...(child.usageHeldUnknown !== undefined
@@ -1915,9 +1928,9 @@ export class VerifiedChangeWorkflowController {
         attempt,
         failure: {
           reason:
-            outcome.status === "cancelled"
+            outcome.stopReason ?? (outcome.status === "cancelled"
               ? "review_cancelled"
-              : "review_unparseable",
+              : "review_unparseable"),
           ...(outcome.finalMessage !== null
             ? { message: outcome.finalMessage }
             : {}),
@@ -1958,6 +1971,7 @@ export class VerifiedChangeWorkflowController {
         child: {
           childRunId,
           status: outcome.status,
+          ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
           ...(truncate(outcome.finalMessage) !== undefined
             ? { finalMessage: truncate(outcome.finalMessage)! }
             : {}),
@@ -2011,6 +2025,7 @@ export class VerifiedChangeWorkflowController {
           finalMessage: `${input.stage} attempt ${attempt} has an unresolved unknown outcome`,
         });
       }
+      this.#haltPermanentChildFailure(result);
       if (attempt >= input.maxAttempts) {
         throw new WorkflowHaltError({
           status: "failed",
@@ -2020,6 +2035,16 @@ export class VerifiedChangeWorkflowController {
       }
       attempt += 1;
     }
+  }
+
+  #haltPermanentChildFailure(result: EffectStepResult): void {
+    const stopReason = result.evidence.child?.stopReason ?? result.evidence.failure?.reason;
+    if (stopReason !== "approval_required" && stopReason !== "policy_denied") return;
+    throw new WorkflowHaltError({
+      status: "failed",
+      stopReason,
+      finalMessage: result.evidence.child?.finalMessage ?? result.evidence.failure?.message ?? "Workflow tool approval failed.",
+    });
   }
 
   /**

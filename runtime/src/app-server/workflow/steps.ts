@@ -158,6 +158,7 @@ export function finalizeIdempotencyKey(
 export interface WorkflowChildEvidence {
   readonly childRunId: string;
   readonly status: string;
+  readonly stopReason?: "approval_required" | "policy_denied";
   readonly finalMessage?: string;
   /**
    * Reconciled actual usage of the child's own admissions (absent =

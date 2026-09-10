@@ -1536,6 +1536,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   const sessionConfiguration = {
     ...authorizedSessionConfiguration,
     baseInstructions,
+    permissionInstructionsDeferred: true,
   } satisfies SessionConfiguration;
   let initialState: SessionState = {
     sessionConfiguration,

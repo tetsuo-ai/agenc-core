@@ -2,6 +2,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { formatPendingToolApprovals } from "../permissions/pending-approval-display.js";
 
 import type {
   AgenCDaemonMethod,
@@ -394,6 +395,9 @@ async function runStartCommand(
       [
         `run ${result.runId}`,
         `spec ${result.specDigest}`,
+        ...(result.effectivePermissionMode === undefined
+          ? []
+          : [`permission mode: ${result.effectivePermissionMode}`]),
         `base ${result.baseCommit}` +
           (result.baseDirty.dirty
             ? ` (checkout dirty: ${result.baseDirty.fileCount} file(s); recorded, never touched)`
@@ -417,6 +421,8 @@ async function followRun(
     options.sleep ??
     ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   let afterSequence = 0;
+  let previousPendingRequests = "[]";
+  let previousPermissionMode: RunStartResult["effectivePermissionMode"];
   for (;;) {
     const replay: RunReplayResult = await client.request("run.replay", {
       runId,
@@ -442,6 +448,19 @@ async function followRun(
       io.stdout.write(`run ${runId} terminal: ${status.status}\n`);
       return status.status === "completed" ? 0 : 1;
     }
+    const mode = status.workflow?.effectivePermissionMode;
+    if (mode !== undefined && mode !== previousPermissionMode) {
+      io.stdout.write(`permission mode: ${mode}\n`);
+      previousPermissionMode = mode;
+    }
+    const requests = status.pendingRequests ?? [];
+    const pendingRequests = JSON.stringify(requests);
+    if (pendingRequests !== previousPendingRequests) {
+      io.stdout.write(requests.length > 0
+        ? `run ${runId} waiting for approval\n${formatPendingToolApprovals(requests)}\n`
+        : `run ${runId} has no pending approvals\n`);
+      previousPendingRequests = pendingRequests;
+    }
     await sleep(FOLLOW_POLL_INTERVAL_MS);
   }
 }
@@ -462,6 +481,9 @@ export function formatWorkflowStatusTable(
 ): string {
   const lines = [
     `run ${result.runId} — ${result.status}${result.terminal ? " (terminal)" : ""}`,
+    ...(result.workflow.effectivePermissionMode === undefined
+      ? []
+      : [`permission mode: ${result.workflow.effectivePermissionMode}`]),
     "STAGE                 STATUS           ATTEMPTS  VERDICT",
   ];
   for (const step of result.workflow.steps) {
@@ -471,6 +493,9 @@ export function formatWorkflowStatusTable(
   }
   if (result.workflow.stopReason !== undefined) {
     lines.push(`stop reason: ${result.workflow.stopReason}`);
+  }
+  if ((result.pendingRequests?.length ?? 0) > 0) {
+    lines.push("waiting for approval", formatPendingToolApprovals(result.pendingRequests!));
   }
   return `${lines.join("\n")}\n`;
 }

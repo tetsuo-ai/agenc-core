@@ -42,7 +42,14 @@ describe("phase tool-runtime dependency executor", () => {
     for await (const completed of executor.getRemainingResults()) results.push(completed.result);
 
     expect(executed).toBe(0);
-    expect(results).toEqual([expect.objectContaining({ isError: true, preventContinuation: true, metadata: { approvalDenied: true } })]);
+    expect(results).toEqual([expect.objectContaining({
+      isError: true,
+      preventContinuation: true,
+      metadata: {
+        approvalDenied: true,
+        approvalFailure: { decision: "denied", source: "resolver" },
+      },
+    })]);
   });
 
   test("normalizes array-shaped parsed arguments before pre-hooks", async () => {

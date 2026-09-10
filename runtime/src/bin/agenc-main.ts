@@ -47,7 +47,7 @@ import {
   type ContinueTUIArgs,
   type ResumeTUIArgs,
 } from "./route.js";
-import { tokenizeCliOptionRegion } from "./cli-option-region.js";
+import { startupShortCircuitFlag } from "./startup-preflight.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import {
   normalizeUserImageInput,
@@ -354,30 +354,6 @@ export function __setDaemonCliDepsForTest(
 
 export { sessionConfigurationFromAgenCConfig } from "../session/configuration.js";
 
-/**
- * Detect whether one of the boolean short-circuit flags (`--help`, `-h`,
- * `--version`) appears as a REAL leading flag rather than as prompt text.
- *
- * A token only counts when it sits in the leading option region: before the
- * first positional/prompt token and before an end-of-options `--`. We walk
- * argv left-to-right, skipping the value consumed by a startup value flag
- * (e.g. the `gpt` in `--model gpt`) so it is not mistaken for a positional.
- * The first bare token that is neither a flag, a `--flag` option, nor a
- * value consumed by a preceding value flag ends the option region; anything
- * at or after it (including `--`) is prompt content and never short-circuits.
- *
- * This mirrors the `--image`/value-flag exemption already used elsewhere so
- * free-form prompts like `agenc what does --version mean` or
- * `agenc explain the --help flag` run the agent instead of printing help.
- */
-function leadingFlagBeforePrompt(
-  argv: readonly string[],
-  targets: readonly string[],
-): boolean {
-  const { optionArgs } = tokenizeCliOptionRegion(argv);
-  return optionArgs.some((arg) => targets.includes(arg));
-}
-
 export function formatCliHelpText(): string {
   return [
     "Usage: agenc [options] [PROMPT]",
@@ -582,10 +558,11 @@ export function detectStartupShortCircuit(
     }
     return { kind: "help", text };
   }
-  if (leadingFlagBeforePrompt(argv, ["--help", "-h"])) {
+  const shortCircuitFlag = startupShortCircuitFlag(argv);
+  if (shortCircuitFlag === "help") {
     return { kind: "help", text: formatCliHelpText() };
   }
-  if (leadingFlagBeforePrompt(argv, ["--version"])) {
+  if (shortCircuitFlag === "version") {
     return { kind: "version", text: `agenc ${VERSION}` };
   }
   return null;
@@ -1070,8 +1047,8 @@ export async function* runSingleTurn(
   // Adding a new required field here forces both sites to update at
   // compile time, preventing silent under-counts in the displayed
   // context size.
-  const assembled = await assemble(
-    buildAssembleSystemPromptOpts({
+  const assembled = await assemble({
+    ...buildAssembleSystemPromptOpts({
       session: opts.session,
       ctx: opts.ctx,
       // Session.runTurn is the sole owner of workspace instruction loading.
@@ -1087,7 +1064,8 @@ export async function* runSingleTurn(
         (opts.ctx.config as { readonly autonomousMode?: boolean } | undefined)
           ?.autonomousMode === true,
     }),
-  );
+    deferPermissionInstructions: opts.ctx.permissionInstructionsDeferred === true,
+  });
 
   const editorPolicyPrompt =
     opts.ctx.editorInteraction === undefined
