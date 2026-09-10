@@ -14,6 +14,7 @@
 
 import { loadCanonicalConfig } from "../config/repository.js";
 import type { AgenCConfig } from "../config/schema.js";
+import { normalizeSkillDisplayName } from "../plugins/skill-display-metadata.js";
 import {
   loadLocalSkillsSnapshot,
   type LocalSkillMetadata,
@@ -43,6 +44,7 @@ export type SkillInventoryOrigin =
 
 export interface SkillInventoryRow {
   readonly name: string;
+  readonly displayName?: string;
   readonly description?: string;
   /** When the model should reach for this skill, straight from the source. */
   readonly whenToUse?: string;
@@ -179,8 +181,10 @@ function rowOf(
   skill: LocalSkillMetadata,
   conditional: boolean,
 ): SkillInventoryRow {
+  const displayName = normalizeSkillDisplayName(skill.displayName);
   return {
     name: skill.name,
+    ...(displayName !== undefined ? { displayName } : {}),
     ...(skill.description.length > 0
       ? { description: skill.description }
       : {}),

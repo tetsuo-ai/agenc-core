@@ -160,7 +160,7 @@ export function parseSkillFrontmatterFields(
 
   return {
     displayName:
-      frontmatter.name != null ? String(frontmatter.name) : undefined,
+      typeof frontmatter.name === 'string' ? frontmatter.name : undefined,
     description,
     hasUserSpecifiedDescription: validatedDescription !== null,
     allowedTools: parseSlashCommandToolsFromFrontmatter(
