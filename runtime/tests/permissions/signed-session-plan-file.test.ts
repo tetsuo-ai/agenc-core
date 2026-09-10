@@ -27,6 +27,7 @@ import {
   getPlanFilePath,
   setPlanSlug,
 } from "../../src/planning/plan-files.js";
+import type { Tool } from "../../src/tools/Tool.js";
 
 describe("signed active-session plan file permissions", () => {
   const sessionId = "test-session-plan-perm";
@@ -80,6 +81,32 @@ describe("signed active-session plan file permissions", () => {
     } as ToolEvaluatorContext;
   }
 
+  async function markPlanRead(): Promise<void> {
+    const original = await readFile(planPath, "utf8");
+    const fileStats = await stat(planPath);
+    recordSessionRead(sessionId, planPath, {
+      content: original,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+  }
+
+  async function expectAllowThenExecute(
+    label: string,
+    tool: Tool,
+    args: Record<string, unknown>,
+    snippet: string,
+  ): Promise<void> {
+    const permission = tool.checkPermissions?.(args, evaluator());
+    expect(permission?.behavior, label).toBe("allow");
+    if (!permission || permission.behavior !== "allow") {
+      throw new Error(`expected ${label} allow`);
+    }
+    const result = await tool.execute(permission.updatedInput ?? args);
+    expect(result.isError, String(result.content)).toBeUndefined();
+    await expect(readFile(planPath, "utf8")).resolves.toContain(snippet);
+  }
+
   test("matchesVerifiedSessionPlanFile uses the same signed context as execute", () => {
     expect(
       matchesVerifiedSessionPlanFile(planPath, workspace, signedArgs()),
@@ -99,123 +126,64 @@ describe("signed active-session plan file permissions", () => {
     ).toBe(false);
   });
 
-  test("FileRead checkPermissions allows the signed plan then execute succeeds", async () => {
-    const tool = createFileReadTool({ allowedPaths: [workspace] });
-    const permission = tool.checkPermissions?.(signedArgs(), evaluator());
-    expect(permission?.behavior).toBe("allow");
-    if (!permission || permission.behavior !== "allow") {
-      throw new Error("expected FileRead allow");
-    }
-    const result = await tool.execute(permission.updatedInput ?? signedArgs());
-    expect(result.isError).toBeUndefined();
-    expect(String(result.content)).toContain("Ship signed path");
-  });
-
-  test("Write checkPermissions allows the signed plan then execute succeeds", async () => {
-    const original = await readFile(planPath, "utf8");
-    const fileStats = await stat(planPath);
-    recordSessionRead(sessionId, planPath, {
-      content: original,
-      timestamp: fileStats.mtimeMs,
-      viewKind: "full",
-    });
-    const tool = createFileWriteTool({ allowedPaths: [workspace] });
-    const args = signedArgs({ content: "# Plan\n\n- [x] Wrote\n" });
-    const permission = tool.checkPermissions?.(args, evaluator());
-    expect(permission?.behavior).toBe("allow");
-    if (!permission || permission.behavior !== "allow") {
-      throw new Error("expected Write allow");
-    }
-    const result = await tool.execute(permission.updatedInput ?? args);
-    expect(result.isError).toBeUndefined();
-    await expect(readFile(planPath, "utf8")).resolves.toContain("Wrote");
-  });
-
-  test("Edit checkPermissions allows the signed plan then execute succeeds", async () => {
-    const original = await readFile(planPath, "utf8");
-    const fileStats = await stat(planPath);
-    recordSessionRead(sessionId, planPath, {
-      content: original,
-      timestamp: fileStats.mtimeMs,
-      viewKind: "full",
-    });
-    const tool = createFileEditTool({ allowedPaths: [workspace] });
-    const args = signedArgs({
-      old_string: "Ship signed path",
-      new_string: "Ship edit",
-    });
-    const permission = tool.checkPermissions?.(args, evaluator());
-    expect(permission?.behavior).toBe("allow");
-    if (!permission || permission.behavior !== "allow") {
-      throw new Error("expected Edit allow");
-    }
-    const result = await tool.execute(permission.updatedInput ?? args);
-    expect(result.isError).toBeUndefined();
-    await expect(readFile(planPath, "utf8")).resolves.toContain("Ship edit");
-  });
-
-  test("MultiEdit checkPermissions allows the signed plan then execute succeeds", async () => {
-    const original = await readFile(planPath, "utf8");
-    const fileStats = await stat(planPath);
-    recordSessionRead(sessionId, planPath, {
-      content: original,
-      timestamp: fileStats.mtimeMs,
-      viewKind: "full",
-    });
-    const tool = createFileMultiEditTool({ allowedPaths: [workspace] });
-    const args = signedArgs({
-      edits: [
-        { old_string: "Ship signed path", new_string: "Ship multi-edit" },
-      ],
-    });
-    const permission = tool.checkPermissions?.(args, evaluator());
-    expect(permission?.behavior).toBe("allow");
-    if (!permission || permission.behavior !== "allow") {
-      throw new Error("expected MultiEdit allow");
-    }
-    const result = await tool.execute(permission.updatedInput ?? args);
-    expect(result.isError).toBeUndefined();
-    await expect(readFile(planPath, "utf8")).resolves.toContain(
+  test("FileRead/Write/Edit/MultiEdit allow the signed plan then execute", async () => {
+    await markPlanRead();
+    const allowed = [workspace];
+    await expectAllowThenExecute(
+      "FileRead",
+      createFileReadTool({ allowedPaths: allowed }),
+      signedArgs(),
+      "Ship signed path",
+    );
+    await expectAllowThenExecute(
+      "Write",
+      createFileWriteTool({ allowedPaths: allowed }),
+      signedArgs({ content: "# Plan\n\n- [x] Wrote\n" }),
+      "Wrote",
+    );
+    await markPlanRead();
+    await expectAllowThenExecute(
+      "Edit",
+      createFileEditTool({ allowedPaths: allowed }),
+      signedArgs({
+        old_string: "Wrote",
+        new_string: "Ship edit",
+      }),
+      "Ship edit",
+    );
+    await markPlanRead();
+    await expectAllowThenExecute(
+      "MultiEdit",
+      createFileMultiEditTool({ allowedPaths: allowed }),
+      signedArgs({
+        edits: [{ old_string: "Ship edit", new_string: "Ship multi-edit" }],
+      }),
       "Ship multi-edit",
     );
   });
 
-  test("apply_patch checkPermissions allows the signed plan then execute succeeds", async () => {
-    const original = await readFile(planPath, "utf8");
-    const fileStats = await stat(planPath);
-    recordSessionRead(sessionId, planPath, {
-      content: original,
-      timestamp: fileStats.mtimeMs,
-      viewKind: "full",
-    });
-    const tool = createApplyPatchTool({
-      cwd: workspace,
-      allowedPaths: [workspace],
-    });
-    const args = {
-      input: `*** Begin Patch
+  test("apply_patch allows the signed plan then execute succeeds", async () => {
+    await markPlanRead();
+    await expectAllowThenExecute(
+      "apply_patch",
+      createApplyPatchTool({ cwd: workspace, allowedPaths: [workspace] }),
+      {
+        input: `*** Begin Patch
 *** Update File: ${planPath}
 @@
 -# Plan
 +# Patched plan
 *** End Patch`,
-      cwd: workspace,
-      [SESSION_ID_ARG]: sessionId,
-      [SESSION_ID_SIG_ARG]: signSessionId(sessionId),
-      [SESSION_AGENC_HOME_ARG]: agencHome,
-    };
-    const permission = tool.checkPermissions?.(args, evaluator());
-    expect(permission?.behavior).toBe("allow");
-    if (!permission || permission.behavior !== "allow") {
-      throw new Error("expected apply_patch allow");
-    }
-    const result = await tool.execute(permission.updatedInput ?? args);
-    expect(result.isError, String(result.content)).toBeUndefined();
-    await expect(readFile(planPath, "utf8")).resolves.toContain("Patched plan");
+        cwd: workspace,
+        [SESSION_ID_ARG]: sessionId,
+        [SESSION_ID_SIG_ARG]: signSessionId(sessionId),
+        [SESSION_AGENC_HOME_ARG]: agencHome,
+      },
+      "Patched plan",
+    );
   });
 
   test("explicit deny still wins over the signed plan exception", () => {
-    const tool = createFileWriteTool({ allowedPaths: [workspace] });
     const denied = applyPermissionUpdate(
       createEmptyToolPermissionContext({ mode: "acceptEdits" }),
       {
@@ -225,7 +193,9 @@ describe("signed active-session plan file permissions", () => {
         rules: [{ toolName: "Write", ruleContent: planPath }],
       },
     );
-    const permission = tool.checkPermissions?.(
+    const permission = createFileWriteTool({
+      allowedPaths: [workspace],
+    }).checkPermissions?.(
       signedArgs({ content: "nope" }),
       evaluator("acceptEdits", denied),
     );
@@ -251,10 +221,11 @@ describe("signed active-session plan file permissions", () => {
         ctx,
       )?.behavior,
     ).toBe("ask");
-    const sibling = join(agencHome, "config.json");
     expect(
-      tool.checkPermissions?.(signedArgs({ file_path: sibling }), ctx)
-        ?.behavior,
+      tool.checkPermissions?.(
+        signedArgs({ file_path: join(agencHome, "config.json") }),
+        ctx,
+      )?.behavior,
     ).toBe("ask");
   });
 });
