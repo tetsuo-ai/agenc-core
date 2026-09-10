@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from "../../tools/types.js";
+import { readOnlyCoordinationRefusal } from "../readonly-delegation.js";
 import type { AgentStatus } from "../status.js";
 import {
   agentValidationError,
@@ -50,6 +51,8 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
     if (agentId === sessionOrError.conversationId) {
       return agentValidationError("root is not a spawned agent");
     }
+    const coordinationRefusal = readOnlyCoordinationRefusal(sessionOrError, current.agentPath, control.getAgentMetadata(agentId) ?? control.getLive(agentId)?.metadata, control.getAgentMetadata(current.threadId)?.executionConstraint);
+    if (coordinationRefusal !== undefined) return agentValidationError(coordinationRefusal);
     const callId = callIdFromArgs(args, "close");
     const receiverMetadata = receiverMetadataFor(sessionOrError, agentId, opts);
     emit(sessionOrError, {

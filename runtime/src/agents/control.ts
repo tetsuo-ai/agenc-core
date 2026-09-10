@@ -33,6 +33,7 @@
  */
 
 import { emitError, emitWarning } from "../session/event-log.js";
+import { childReadOnlyDelegation, normalizeReadOnlyDelegationConstraint } from "./readonly-delegation.js";
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
@@ -418,7 +419,7 @@ export class AgentControl {
   assertAgentMetadataRoleWorkspace(
     metadata: Pick<
       AgentMetadata,
-      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
     >,
   ): string {
     const normalized = normalizeAgentRoleMetadata(metadata);
@@ -463,7 +464,7 @@ export class AgentControl {
     /** Fail-closed role identity for restart/rehydration spawns. */
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
-      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
     >;
   }): Promise<LiveAgent> {
     if (this.threadManager) {
@@ -484,7 +485,7 @@ export class AgentControl {
     readonly capacityOwnerId?: string;
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
-      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
     >;
   }): Promise<LiveAgent> {
     const parentDepth = depthOfAgentPath(opts.parentPath);
@@ -516,6 +517,17 @@ export class AgentControl {
     const baseChildConfig = getChildBaseConfig(this.session) ?? {};
     void applyRoleToConfig(role, baseChildConfig);
     const roleFingerprint = this.roleCatalog.fingerprint(role);
+    const parentMetadata = this.registry.agentMetadataForThread(
+      this.registry.agentIdForPath(opts.parentPath) ?? this.session.conversationId,
+    );
+    const restoredConstraint = normalizeReadOnlyDelegationConstraint(
+      opts.expectedRoleProvenance?.executionConstraint,
+    );
+    const executionConstraint = childReadOnlyDelegation(
+      this.session,
+      role,
+      restoredConstraint ?? parentMetadata?.executionConstraint,
+    );
     if (
       expectedRoleProvenance !== undefined &&
       roleFingerprint !== expectedRoleProvenance.agentRoleFingerprint
@@ -657,6 +669,7 @@ export class AgentControl {
         role,
         roleWorkspaceId: this.roleWorkspace.id,
         roleFingerprint,
+        ...(executionConstraint !== undefined ? { executionConstraint } : {}),
         nickname,
         depth: childDepth,
         ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
@@ -976,7 +989,7 @@ export class AgentControl {
         spawnOpts as {
           expectedRoleProvenance?: Pick<
             AgentMetadata,
-            "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+            "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
           >;
         }
       ).expectedRoleProvenance = options.metadata;
@@ -2378,6 +2391,8 @@ function assertSameAgentIdentity(
       normalizedActual.agentRoleWorkspaceId ||
     normalizedExpected.agentRoleFingerprint !==
       normalizedActual.agentRoleFingerprint ||
+    JSON.stringify(normalizedExpected.executionConstraint) !==
+      JSON.stringify(normalizedActual.executionConstraint) ||
     normalizedExpected.depth !== normalizedActual.depth
   ) {
     throw new InvalidAgentMetadataError(

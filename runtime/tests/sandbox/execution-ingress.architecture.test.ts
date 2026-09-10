@@ -20,7 +20,7 @@ function productionMethodCalls(
   methods: readonly string[],
 ): string[] {
   const pattern = new RegExp(
-    `\\.(${methods.join("|")})\\s*\\(`,
+    `\\.(${methods.join("|")})\\s*(?:\\?\\.)?\\s*\\(`,
     "gu",
   );
   return sourceFiles(sourceRoot)
@@ -37,11 +37,13 @@ function productionMethodCalls(
 describe("sandbox execution ingress architecture", () => {
   test("enumerates every production command, runtime sandbox, and child-broker ingress", () => {
     expect(
-      productionMethodCalls(["prepareSpawn", "runtimeSandbox", "forkForCwd"]),
+      productionMethodCalls(["prepareSpawn", "runtimeSandbox", "forkForCwd", "forkForReadOnlyInspection"]),
     ).toEqual([
       "agents/delegate.ts:forkForCwd",
       "agents/delegate.ts:forkForCwd",
       "agents/run-agent.ts:forkForCwd",
+      "agents/run-agent.ts:forkForReadOnlyInspection",
+      "agents/run-agent.ts:runtimeSandbox",
       "agents/worktree.ts:prepareSpawn",
       "app-server/workflow/session-adapters.ts:forkForCwd",
       "app-server/workflow/session-adapters.ts:prepareSpawn",
@@ -57,6 +59,7 @@ describe("sandbox execution ingress architecture", () => {
       "session/agenc-delegate.ts:forkForCwd",
       "session/turn-compat.ts:forkForCwd",
       "tools/system/apply-runtime-sandbox.ts:prepareSpawn",
+      "tools/system/bash.ts:prepareSpawn",
       "tools/system/coding-common.ts:prepareSpawn",
       "tools/system/exec-command.ts:runtimeSandbox",
       "tools/worktree-sandbox-boundary.ts:prepareSpawn",

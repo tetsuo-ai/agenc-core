@@ -40,6 +40,7 @@ import {
 } from "./tools/system/coding.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "./tools/system/tool-search-name.js";
 import { createBashTool } from "./tools/system/bash.js";
+import { registerBuiltinTool } from "./tools/builtin-provenance.js";
 import { createExecCommandTool } from "./tools/system/exec-command.js";
 import { createWriteStdinTool } from "./tools/system/write-stdin.js";
 import { createKillProcessTool } from "./tools/system/kill-process.js";
@@ -930,6 +931,9 @@ export function buildToolRegistry(
       stringArgumentFields: modelFacingStringArgumentFields,
     },
   ];
+  for (const group of baseBuiltinSurfaceGroups) {
+    if (group.id !== "model-facing") group.tools.forEach(registerBuiltinTool);
+  }
   const baseBuiltinSurface = buildBuiltinToolSurface(baseBuiltinSurfaceGroups);
   const rawDefaultBuiltinTools = baseBuiltinSurface.tools;
   const configuredRawDefaultBuiltinTools = configuredTools(

@@ -304,6 +304,7 @@ import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
 import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
+import { createWorkflowApprovalControls, type WorkflowApprovalControls } from "../tui/workflow-approval-controls.js";
 
 type AgenCDaemonCliDeps = {
   readonly startPromptAgent: typeof startAgenCDaemonPromptAgent;
@@ -970,6 +971,7 @@ export interface RunSingleTurnOpts {
    * `null` suppresses the visible user-message event for internal meta turns.
    */
   readonly displayInput?: string | null;
+  readonly userStopGenerationToRelease?: number;
   /** T10: config snapshot + latch so `maybeReloadConfigBetweenTurns` can drain SIGUSR1. */
   readonly configStore: ConfigStore;
   readonly configReloadLatch: ConfigReloadLatch;
@@ -1077,6 +1079,7 @@ export async function* runSingleTurn(
       .join("\n\n"),
     systemPromptReplacesBase: true,
     displayUserMessage: opts.displayInput,
+    userStopGenerationToRelease: opts.userStopGenerationToRelease,
   });
   while (true) {
     const step = await iter.next();
@@ -1230,6 +1233,9 @@ function installTuiSessionContract(params: {
       submitOpts?: SessionSubmitOptions,
     ) => {
       const isAutonomousTick = submitOpts?.source === AUTONOMOUS_SUBMIT_SOURCE;
+      const userStopGenerationToRelease = submitOpts?.source === "user"
+        ? params.session.userStopGeneration
+        : undefined;
       if (!isAutonomousTick) autonomousKeepalive.cancel();
       if (
         isAutonomousTick &&
@@ -1290,6 +1296,7 @@ function installTuiSessionContract(params: {
           session: params.session,
           ctx,
           input: preparedPrompt.input,
+          userStopGenerationToRelease,
           displayInput:
             opts.displayInput !== undefined
               ? opts.displayInput
@@ -2550,6 +2557,7 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
 >;
 
 type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
+  readonly workflowApprovalControls?: WorkflowApprovalControls;
   executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
   executeDaemonStatusLine?: AgenCTuiBridgeSession["executeDaemonStatusLine"];
   readonly services?: {
@@ -2734,6 +2742,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     request<Method extends AgenCDaemonKnownMethod>(
       method: Method,
       params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
     ): Promise<AgenCDaemonKnownResultByMethod[Method]>;
   };
   let workspaceEditorControlClient: WorkspaceEditorControlClient | null = null;
@@ -3568,6 +3577,15 @@ async function createDeferredDaemonPromptTuiSession(params: {
   };
   const session: TuiSessionShape & Record<string, unknown> = {
     ...daemonSessionBase,
+    workflowApprovalControls: createWorkflowApprovalControls({
+      async request(method, requestParams, options) {
+        options.signal.throwIfAborted();
+        const client = await ensureWorkspaceEditorControlClient();
+        options.signal.throwIfAborted();
+        if (deferredSessionClosed) throw new Error("Deferred TUI session is already closed.");
+        return client.request(method, requestParams, options);
+      },
+    }),
     // The deferred TUI never owns an MCP runtime. This stable facade forwards
     // to the daemon-backed session after attach and exposes only empty passive
     // state before then; it intentionally replaces any bootstrap manager.

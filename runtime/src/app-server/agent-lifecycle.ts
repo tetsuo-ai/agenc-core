@@ -2440,9 +2440,7 @@ export class AgenCDaemonAgentManager {
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
       return this.#approveWorkflowTool(params);
     }
-    const agentId = await this.#resolveActiveAgentIdForSession(
-      params.sessionId,
-    );
+    const { agentId, sessionId } = await this.#resolvePermissionOwner(params.sessionId);
     const responseKey = this.#approvalBroker?.pending(agentId, params.requestId)?.responseKey ?? params.requestId;
     const allowAllToolsForSession = params.allowAllToolsForSession === true;
     if (allowAllToolsForSession && params.scope !== "session") {
@@ -2490,7 +2488,7 @@ export class AgenCDaemonAgentManager {
     // Plain scope=session intentionally retains its historic per-rule cache.
     const modeChange = allowAllToolsForSession
       ? await this.#runner!.setAgentPermissionMode!(agentId, {
-          sessionId: params.sessionId,
+          sessionId,
           mode: "bypassPermissions",
           bypassAuthority: "operator_tool_approval",
         })
@@ -2507,7 +2505,7 @@ export class AgenCDaemonAgentManager {
     } catch (error) {
       await this.#rollbackAllToolsPermissionMode(
         agentId,
-        params.sessionId,
+        sessionId,
         modeChange,
       );
       throw error;
@@ -2515,7 +2513,7 @@ export class AgenCDaemonAgentManager {
     if (!resolved) {
       await this.#rollbackAllToolsPermissionMode(
         agentId,
-        params.sessionId,
+        sessionId,
         modeChange,
       );
       // The request is no longer pending, so the deferred ExitPlanMode tool will
@@ -2615,8 +2613,10 @@ export class AgenCDaemonAgentManager {
   }
 
   async denyTool(params: ToolDenyParams): Promise<ToolDecisionResult> {
+    const reason = normalizeNonEmpty(params.reason);
+    const decision = reason === undefined ? DENIED : { kind: "denied" as const, reason };
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
-      if (!this.#approvalBroker.resolve(params.sessionId, params.requestId, DENIED)) {
+      if (!this.#approvalBroker.resolve(params.sessionId, params.requestId, decision)) {
         throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
       }
       await this.#recordToolDecisionAudit({
@@ -2625,12 +2625,10 @@ export class AgenCDaemonAgentManager {
       });
       return { requestId: params.requestId, decision: "denied" };
     }
-    const agentId = await this.#resolveActiveAgentIdForSession(
-      params.sessionId,
-    );
+    const { agentId } = await this.#resolvePermissionOwner(params.sessionId);
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
       requestId: params.requestId,
-      decision: DENIED,
+      decision,
     });
     if (!resolved) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -4094,15 +4092,7 @@ export class AgenCDaemonAgentManager {
       );
     }
     if (sessionId !== undefined) {
-      const daemonSessionId = await this.#state.with((state) => {
-        const canonicalAgent = state.agents.get(sessionId);
-        return canonicalAgent === undefined
-          ? sessionId
-          : latestSessionIdForAgentRun(canonicalAgent) ?? sessionId;
-      });
-      return this.#resolveActiveAgentIdForSession(daemonSessionId, {
-        allowListPermissions: true,
-      });
+      return (await this.#resolvePermissionOwner(sessionId, true)).agentId;
     }
     if (agentId === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -4127,6 +4117,27 @@ export class AgenCDaemonAgentManager {
       }
     });
     return agentId;
+  }
+
+  async #resolvePermissionOwner(
+    ownerId: string,
+    allowListPermissions = false,
+  ): Promise<{ readonly agentId: string; readonly sessionId: string }> {
+    const resolvedOwner = await this.#state.with((state) => {
+      const canonicalAgent = state.agents.get(ownerId);
+      if (canonicalAgent === undefined) return { sessionId: ownerId };
+      const latestSessionId = latestSessionIdForAgentRun(canonicalAgent);
+      if (latestSessionId === undefined) {
+        throw new AgenCDaemonAgentLifecycleError("AGENT_NOT_FOUND", `AgenC daemon session not found or closed: ${ownerId}`);
+      }
+      return { sessionId: latestSessionId, expectedAgentId: canonicalAgent.agentId };
+    });
+    const { sessionId } = resolvedOwner;
+    const agentId = await this.#resolveActiveAgentIdForSession(sessionId, { allowListPermissions });
+    if (resolvedOwner.expectedAgentId !== undefined && resolvedOwner.expectedAgentId !== agentId) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `Permission owner changed while resolving session: ${ownerId}`);
+    }
+    return { agentId, sessionId };
   }
 
   async #refreshAgentFromRunner(

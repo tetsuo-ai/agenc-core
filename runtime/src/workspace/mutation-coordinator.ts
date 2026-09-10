@@ -1520,6 +1520,7 @@ export class WorkspaceMutationCoordinator {
 
   authoritativeDirtySnapshotsUnderIdentity(
     path: string,
+    pathAllowed?: (path: string) => boolean,
   ): readonly WorkspaceAuthoritativeDirtySnapshot[] {
     this.#expireLeaseIfNeeded();
     const target = normalizePathIdentity(path);
@@ -1539,6 +1540,7 @@ export class WorkspaceMutationCoordinator {
     const snapshots: WorkspaceAuthoritativeDirtySnapshot[] = [];
     for (const state of this.#buffers.values()) {
       if (!isSameOrDescendantPath(target, state.path)) continue;
+      if (pathAllowed !== undefined && !pathAllowed(state.path)) continue;
       if (state.authority === "stale_dirty") {
         throw new WorkspaceMutationCoordinatorError(
           "EDITOR_LEASE_EXPIRED",
@@ -6940,7 +6942,7 @@ export interface WorkspaceAuthoritativeDirtySnapshotCapture {
 
 export function captureWorkspaceAuthoritativeDirtySnapshots(
   path: string,
-  options: { readonly includeDescendants?: boolean } = {},
+  options: { readonly includeDescendants?: boolean; readonly pathAllowed?: (path: string) => boolean } = {},
 ): WorkspaceAuthoritativeDirtySnapshotCapture {
   // Preserve the once-admitted identity across later rename/symlink exchange.
   const target = normalizePathIdentity(path);
@@ -6953,7 +6955,7 @@ export function captureWorkspaceAuthoritativeDirtySnapshots(
       return {
         coordinator,
         scope,
-        snapshots: coordinator.authoritativeDirtySnapshotsUnderIdentity(scope),
+        snapshots: coordinator.authoritativeDirtySnapshotsUnderIdentity(scope, options.pathAllowed),
       };
     });
   const snapshots = captures
@@ -6975,6 +6977,7 @@ export function captureWorkspaceAuthoritativeDirtySnapshots(
           capture.snapshots,
           capture.coordinator.authoritativeDirtySnapshotsUnderIdentity(
             capture.scope,
+            options.pathAllowed,
           ),
         ),
       ),

@@ -68,9 +68,25 @@ export interface SessionMemoryExtractionState {
 export interface SessionStateUpdate {
   readonly agentTask?: SessionAgentTask;
   readonly memoryExtraction?: SessionMemoryExtractionState;
+  readonly userStop?: {
+    readonly stopped: boolean;
+    readonly generation: number;
+  };
 }
 
 export type SessionStateSlot = keyof SessionStateUpdate;
+
+export function readPersistedUserStopState(item: RolloutItem): NonNullable<SessionStateUpdate["userStop"]> | undefined {
+  if (item.type !== "session_state" || !Object.hasOwn(item.payload, "userStop")) return undefined;
+  const state = item.payload.userStop;
+  if (
+    state === undefined || state === null || typeof state !== "object" ||
+    typeof state.stopped !== "boolean" || !Number.isSafeInteger(state.generation) ||
+    state.generation < 0 ||
+    Object.keys(state).some((key) => key !== "stopped" && key !== "generation")
+  ) throw new Error("Invalid persisted user-stop state");
+  return state;
+}
 
 /**
  * Whether a persisted `session_state` payload addresses `slot`.

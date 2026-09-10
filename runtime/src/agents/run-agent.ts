@@ -18,6 +18,8 @@
  */
 
 import { normalize } from "node:path";
+import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import { attachReadOnlyDelegationReadGuard } from "../permissions/readonly-read-guard.js";
 import { LRUCache } from "lru-cache";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "./child-approval-context.js";
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
@@ -43,6 +45,20 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  isReadOnlyCoordinationTool,
+  readOnlyDelegationToolAvailable,
+  readOnlyDelegationToolRefusal,
+  readOnlyDelegationPathAllowed,
+  readOnlyDelegationDeniedReadPatterns,
+  READ_ONLY_DELEGATION_PROMPT,
+  type ReadOnlyDelegationConstraint,
+} from "./readonly-delegation.js";
+import {
+  attachReadOnlyInspectionInvocation,
+  inspectReadOnlyCommand,
+  prepareReadOnlyInspectionInvocation,
+} from "../permissions/readonly-inspection.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
   toRuntimeTools,
@@ -129,6 +145,8 @@ import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
+
+const inspectionBrokers = new WeakMap<Session, Map<string, SandboxExecutionBrokerLike>>();
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -1565,6 +1583,7 @@ interface ParentFollowupState {
   transientFailureCount: number;
   transientFailureWarningReported: boolean;
   lastAuthor: string;
+  readonly generation: number;
 }
 
 const followupTurnStateByParent = new WeakMap<Session, ParentFollowupState>();
@@ -1593,7 +1612,10 @@ function requestParentFollowupTurn(params: {
   // parent context. Defer the submit by a short window so clustered
   // completions drain together in a single turn.
   const existing = followupTurnStateByParent.get(parent);
-  if (existing !== undefined) {
+  if (existing !== undefined && existing.generation !== parent.userStopGeneration) {
+    if (existing.timer !== null) clearTimeout(existing.timer);
+    followupTurnStateByParent.delete(parent);
+  } else if (existing !== undefined) {
     existing.lastAuthor = params.live.agentPath;
     // Requests that arrive inside the coalescing window are already covered by
     // the pending submit, which drains the entire burst. Only a receipt that
@@ -1611,20 +1633,24 @@ function requestParentFollowupTurn(params: {
     transientFailureCount: 0,
     transientFailureWarningReported: false,
     lastAuthor: params.live.agentPath,
+    generation: parent.userStopGeneration,
   };
   const schedule = (delayMs = PARENT_FOLLOWUP_COALESCE_MS): void => {
     state.timer = setTimeout(() => {
       state.timer = null;
+      if (followupTurnStateByParent.get(parent) !== state) return;
       // A stop that landed inside the coalescing window holds the burst too.
-      if (parent.stoppedByUserSinceLastPrompt === true) {
+      if (parent.stoppedByUserSinceLastPrompt === true || state.generation !== parent.userStopGeneration) {
         followupTurnStateByParent.delete(parent);
         return;
       }
       state.submitInFlight = true;
       let transientSubmitFailure = false;
+      let suppressed = false;
       void parent
-        .submit("", { displayUserMessage: null })
-        .then(() => {
+        .submitChildFollowup(state.generation)
+        .then((admitted) => {
+          suppressed = !admitted;
           state.transientFailureCount = 0;
           state.transientFailureWarningReported = false;
         })
@@ -1650,7 +1676,8 @@ function requestParentFollowupTurn(params: {
         })
         .finally(() => {
           state.submitInFlight = false;
-          if (parent.abortController.signal.aborted) {
+          if (followupTurnStateByParent.get(parent) !== state) return;
+          if (parent.abortController.signal.aborted || suppressed || parent.stoppedByUserSinceLastPrompt || state.generation !== parent.userStopGeneration) {
             followupTurnStateByParent.delete(parent);
             return;
           }
@@ -2168,6 +2195,7 @@ export function buildFilteredRegistry(
   opts: {
     readonly allowlist?: ReadonlyArray<string>;
     readonly childConversationId: string;
+    readonly executionConstraint?: ReadOnlyDelegationConstraint;
     readonly worktree?: WorktreeHandle;
     readonly disabledTools?: ReadonlySet<string>;
     readonly childToolPolicy?: ChildToolPolicy;
@@ -2183,7 +2211,11 @@ export function buildFilteredRegistry(
   const mcpOriginToolNames = new Set(
     base.tools.filter(isMcpOriginTool).map((tool) => tool.name),
   );
+  const constrainedTools = opts.executionConstraint === undefined ? undefined : new Set(
+    base.tools.filter(readOnlyDelegationToolAvailable).map((tool) => tool.name),
+  );
   const isEligible = (name: string): boolean =>
+    (constrainedTools === undefined || constrainedTools.has(name)) &&
     !disabled.has(name) &&
     !mcpOriginToolNames.has(name) &&
     !isMcpWireToolName(name) &&
@@ -2649,7 +2681,7 @@ function wrapToolForChild(
     readonly getSession?: () => Session | null | undefined;
   },
 ): Tool {
-  return {
+  return inheritBuiltinToolProvenance(tool, {
     ...tool,
     async execute(args) {
       const prepared = await prepareChildToolCall(tool, args, opts);
@@ -2657,7 +2689,7 @@ function wrapToolForChild(
         ? prepared.result
         : tool.execute(prepared.args);
     },
-  };
+  });
 }
 
 async function prepareChildToolCall(
@@ -2677,15 +2709,52 @@ async function prepareChildToolCall(
   // SECURITY: strip model-supplied `__agenc*` keys before the child
   // policy/injection runs (idempotent if the caller already stripped).
   const sanitizedArgs = stripModelSuppliedChildArgs(args);
+  const childSession = opts.getSession?.();
+  if (childSession !== undefined && childSession !== null) {
+    const refusal = readOnlyDelegationToolRefusal(childSession, tool, sanitizedArgs);
+    if (refusal !== undefined) {
+      return { result: { content: safeStringify({ error: refusal }), isError: true, metadata: { childPolicyDenied: true } } };
+    }
+  }
   const policyResult = await applyChildToolPolicy(tool, sanitizedArgs, opts);
   if ("result" in policyResult) return policyResult;
+  if (childSession !== undefined && childSession !== null) {
+    const refusal = readOnlyDelegationToolRefusal(childSession, tool, policyResult.args);
+    if (refusal !== undefined) {
+      return { result: { content: safeStringify({ error: refusal }), isError: true, metadata: { childPolicyDenied: true } } };
+    }
+  }
   const childArgs = injectChildToolArgs(policyResult.args, tool.name, opts);
+  if (childSession?.services.readOnlyDelegation !== undefined) {
+    attachReadOnlyDelegationReadGuard(childArgs, (target) => readOnlyDelegationPathAllowed(childSession, target));
+  }
   if (opts.sandboxExecutionBroker !== undefined) {
     attachSandboxExecutionBroker(
       childArgs,
       opts.sandboxExecutionBroker,
       "child_agent",
     );
+  }
+  if (childSession?.services.readOnlyDelegation !== undefined && !isReadOnlyCoordinationTool(tool)) {
+    let brokers = inspectionBrokers.get(childSession);
+    const deniedReadPatterns = readOnlyDelegationDeniedReadPatterns(childSession);
+    const authorityKey = JSON.stringify([deniedReadPatterns, opts.sandboxExecutionBroker?.executionAuthority?.()]);
+    let broker = brokers?.get(authorityKey);
+    if (broker === undefined && opts.sandboxExecutionBroker !== undefined) {
+      broker = opts.sandboxExecutionBroker.forkForReadOnlyInspection?.(childSession.sessionConfiguration.cwd, deniedReadPatterns);
+      if (broker === undefined) throw new Error("Read-only inspection requires a sandbox broker that can narrow execution authority");
+      brokers ??= new Map();
+      brokers.set(authorityKey, broker);
+      inspectionBrokers.set(childSession, brokers);
+    }
+    if (broker !== undefined) attachSandboxExecutionBroker(childArgs, broker, "child_agent");
+    if (tool.name !== "exec_command" && tool.name !== "system.bash") return { args: childArgs };
+    const inspected = inspectReadOnlyCommand(tool.name, childArgs, childSession.sessionConfiguration.cwd);
+    if (!inspected.allowed) return { result: { content: safeStringify({ error: inspected.reason }), isError: true, metadata: { childPolicyDenied: true } } };
+    if (broker === undefined) throw new Error("Read-only inspection requires a sandbox broker that can narrow execution authority");
+    const runtimeSandbox = broker.runtimeSandbox("child_agent");
+    if (runtimeSandbox === undefined) throw new Error("Read-only inspection requires platform isolation");
+    attachReadOnlyInspectionInvocation(childArgs, prepareReadOnlyInspectionInvocation(inspected.invocation, runtimeSandbox));
   }
   return { args: childArgs };
 }
@@ -2948,6 +3017,7 @@ function buildChildSession(
   }
   let childSession: ChildSession | undefined;
   const registry = buildFilteredRegistry(params.parent.services.registry, {
+    ...(params.live.metadata.executionConstraint !== undefined ? { executionConstraint: params.live.metadata.executionConstraint } : {}),
     allowlist:
       params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
     childConversationId: params.live.agentId,
@@ -2995,6 +3065,7 @@ function buildChildSession(
     mcpManagerOwnership: "borrowed",
     services: {
       ...params.parent.services,
+      readOnlyDelegation: params.live.metadata.executionConstraint,
       provider,
       // A provider service is session-owned. Do not let the parent's service
       // survive the spread above and silently override the forked provider in
@@ -3727,9 +3798,14 @@ export async function* runAgent(
         ...(firstTurn && userMessageRuntimeOnly !== undefined
           ? { seedUserMessageRuntimeOnly: userMessageRuntimeOnly }
           : {}),
-        ...(live.role.config.systemPrompt
+        ...(live.role.config.systemPrompt || live.metadata.executionConstraint !== undefined
           ? {
-              systemPrompt: live.role.config.systemPrompt,
+              systemPrompt: [
+                live.role.config.systemPrompt,
+                live.metadata.executionConstraint !== undefined
+                  ? READ_ONLY_DELEGATION_PROMPT
+                  : undefined,
+              ].filter(Boolean).join("\n\n"),
               systemPromptTrust: "workspace_role" as const,
             }
           : {}),
@@ -4366,6 +4442,17 @@ export async function* runAgent(
         await disposeSandboxExecutionBroker(childSandboxExecutionBroker);
       } catch (error) {
         cleanupErrors.push(error);
+      }
+    }
+    const childInspectionBrokers = childSession === null ? undefined : inspectionBrokers.get(childSession);
+    if (childInspectionBrokers !== undefined) {
+      inspectionBrokers.delete(childSession!);
+      for (const inspectionBroker of childInspectionBrokers.values()) {
+        try {
+          await disposeSandboxExecutionBroker(inspectionBroker);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
       }
     }
     if (ownedChildProvider !== null) {

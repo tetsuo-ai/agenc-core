@@ -331,6 +331,7 @@ export type McpFieldParseResult =
     };
 
 type LiveSubmitOptions = {
+  readonly automatic?: boolean;
   readonly fromQueue?: boolean;
   readonly workspaceViewOverride?: WorkspaceView;
   readonly pastedContentsOverride?: Record<number, any>;
@@ -5717,6 +5718,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         acknowledge: acknowledgeWorkbenchAttachments,
         value,
         options: {
+          ...(options?.automatic === true ? {} : { source: "user" as const }),
           clientMessageId,
           displayUserMessage: options?.displayUserMessage ?? value,
           ...(editorInteraction === undefined ? {} : { editorInteraction }),
@@ -5797,7 +5799,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               { content: loaded.blocks },
             ];
             submission.value = "";
-            submission.options = { clientMessageId, displayUserMessage: displayText };
+            submission.options = {
+              ...(options?.automatic === true ? {} : { source: "user" as const }),
+              clientMessageId,
+              displayUserMessage: displayText,
+            };
             const admissionToken = admitPendingInputs(submission.inputs);
             admissionLease = {
               commit: () => {
@@ -6294,6 +6300,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     onboardingWasActiveRef.current = false;
     void submit(
       "Introduce yourself in a sentence, then take a quick look at the current directory and suggest one useful thing you could help with here.",
+      { automatic: true },
     ).catch(logError);
   }, [
     onboarding.active,

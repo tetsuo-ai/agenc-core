@@ -21,9 +21,10 @@ import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
 import { approvalInputText } from "./approval-input-text.js";
-import { Box, useInput } from "./ink.js";
+import { Box, useInput, type Key } from "./ink.js";
+import type { InputEvent } from "./ink/events/input-event.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
-import { useKeybindings } from "./keybindings/useKeybinding.js";
+import { useInputCapture, useKeybindings } from "./keybindings/useKeybinding.js";
 import { useRegisterOverlay } from "./context/overlayContext.js";
 import { ApprovalCard, type ApprovalDiffPreview } from "./components/v2/primitives.js";
 import { buildEditDiffPreview } from "./edit-diff-preview.js";
@@ -574,22 +575,32 @@ function AgenCApprovalOverlay({
     toolInput: toolUseConfirm.input,
   });
   const [typed, setTyped] = useState("");
+  const typedRef = useRef("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const selectedIndexRef = useRef(0);
+  const settled = useRef(false);
   useRegisterKeybindingContext("Confirmation");
+  const settle = useCallback((decision: () => void) => {
+    if (settled.current || request.ctx.signal?.aborted === true) return;
+    settled.current = true;
+    decision();
+  }, [request]);
   const approve = useCallback(() => {
-    toolUseConfirm.onAllow(toolUseConfirm.input, []);
-  }, [toolUseConfirm]);
+    settle(() => toolUseConfirm.onAllow(toolUseConfirm.input, []));
+  }, [settle, toolUseConfirm]);
   const approveForSession = useCallback(() => {
     if (destructive) return;
-    toolUseConfirm.onAllowForSession(toolUseConfirm.input);
-  }, [destructive, toolUseConfirm]);
+    settle(() => toolUseConfirm.onAllowForSession(toolUseConfirm.input));
+  }, [destructive, settle, toolUseConfirm]);
   const reject = useCallback(() => {
-    toolUseConfirm.onReject();
-  }, [toolUseConfirm]);
+    settle(() => toolUseConfirm.onReject());
+  }, [settle, toolUseConfirm]);
   const abort = useCallback(() => {
-    if (onDismiss !== undefined) onDismiss();
-    else toolUseConfirm.onAbort();
-  }, [onDismiss, toolUseConfirm]);
+    settle(() => {
+      if (onDismiss !== undefined) onDismiss();
+      else toolUseConfirm.onAbort();
+    });
+  }, [onDismiss, settle, toolUseConfirm]);
 
   const confirmSelection = useCallback(
     (index: number) => {
@@ -605,6 +616,53 @@ function AgenCApprovalOverlay({
     },
     [approve, approveForSession, reject],
   );
+
+  const handleSelectionInput = useCallback(
+    (input: string, key: Key, event: InputEvent): boolean => {
+      if (input === "1") {
+        event.stopImmediatePropagation();
+        selectedIndexRef.current = 0;
+        setSelectedIndex(0);
+        approve();
+        return true;
+      }
+      if (input === "2") {
+        event.stopImmediatePropagation();
+        selectedIndexRef.current = 1;
+        setSelectedIndex(1);
+        approveForSession();
+        return true;
+      }
+      if (input === "3") {
+        event.stopImmediatePropagation();
+        selectedIndexRef.current = 2;
+        setSelectedIndex(2);
+        reject();
+        return true;
+      }
+      if (key.upArrow) {
+        event.stopImmediatePropagation();
+        selectedIndexRef.current = (selectedIndexRef.current + 2) % 3;
+        setSelectedIndex(selectedIndexRef.current);
+        return true;
+      }
+      if (key.downArrow) {
+        event.stopImmediatePropagation();
+        selectedIndexRef.current = (selectedIndexRef.current + 1) % 3;
+        setSelectedIndex(selectedIndexRef.current);
+        return true;
+      }
+      if (key.return) {
+        event.stopImmediatePropagation();
+        confirmSelection(selectedIndexRef.current);
+        return true;
+      }
+      return false;
+    },
+    [approve, approveForSession, confirmSelection, reject],
+  );
+  useInputCapture(handleSelectionInput, { context: "Modal", isActive: !destructive });
+  useInput(handleSelectionInput, { isActive: !destructive });
 
   useKeybindings(
     {
@@ -625,61 +683,25 @@ function AgenCApprovalOverlay({
 
   useInput(
     (input, key, event) => {
-      if (input === "1") {
-        event.stopImmediatePropagation();
-        setSelectedIndex(0);
-        approve();
-        return;
-      }
-      if (input === "2") {
-        event.stopImmediatePropagation();
-        setSelectedIndex(1);
-        approveForSession();
-        return;
-      }
-      if (input === "3") {
-        event.stopImmediatePropagation();
-        setSelectedIndex(2);
-        reject();
-        return;
-      }
-      if (key.upArrow) {
-        event.stopImmediatePropagation();
-        setSelectedIndex((index) => (index + 2) % 3);
-        return;
-      }
-      if (key.downArrow) {
-        event.stopImmediatePropagation();
-        setSelectedIndex((index) => (index + 1) % 3);
-        return;
-      }
-      if (key.return) {
-        event.stopImmediatePropagation();
-        confirmSelection(selectedIndex);
-      }
-    },
-    { isActive: !destructive },
-  );
-
-  useInput(
-    (input, key, event) => {
       if (!destructive) return;
       event.stopImmediatePropagation();
       if (key.return) {
-        if (typed === requiredWord) approve();
+        if (typedRef.current === requiredWord) approve();
         return;
       }
       if (key.escape) {
-        if (onDismiss !== undefined) onDismiss();
+        if (onDismiss !== undefined) abort();
         else reject();
         return;
       }
       if (key.backspace || key.delete) {
-        setTyped((value) => value.slice(0, -1));
+        typedRef.current = typedRef.current.slice(0, -1);
+        setTyped(typedRef.current);
         return;
       }
       if (input.length > 0 && !key.ctrl && !key.meta && !/[\u0000-\u001f\u007f]/u.test(input)) {
-        setTyped((value) => (value + input).slice(0, requiredWord.length + 1));
+        typedRef.current = (typedRef.current + input).slice(0, requiredWord.length + 1);
+        setTyped(typedRef.current);
       }
     },
     { isActive: destructive },

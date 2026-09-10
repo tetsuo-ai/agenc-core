@@ -77,6 +77,7 @@ const HOSTED_FND_TEST_FILES = [
 const KERNEL_TEST_FILES = [
   "tests/sandbox/landlock-seccomp.kernel.test.ts",
   "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
+  "tests/sandbox/readonly-delegation.kernel.test.ts",
 ] as const;
 
 const POWERSHELL_TEST_FILES = [

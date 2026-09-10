@@ -17,6 +17,7 @@
  */
 
 import type { Session } from "../session/session.js";
+import { childReadOnlyDelegation } from "./readonly-delegation.js";
 import type { ToolEffectDispositionEvidence } from "../contracts/run-contracts.js";
 import type { LLMMessage } from "../llm/types.js";
 import type { LLMContentPart } from "../llm/types.js";
@@ -185,6 +186,20 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       "INVALID_DELEGATE_REQUEST",
       "invalid_request",
       "worktree isolation requires a non-empty worktreeSlug",
+    );
+  }
+
+  const parentThreadId = opts.registry.agentIdForPath?.(opts.parentPath);
+  const readOnlyConstraint = childReadOnlyDelegation(
+    opts.parent,
+    opts.control.roleCatalog?.require(opts.role),
+    parentThreadId === undefined ? undefined : opts.registry.agentMetadataForThread?.(parentThreadId)?.executionConstraint,
+  );
+  if (readOnlyConstraint !== undefined && isolation === "worktree") {
+    return reject(
+      "INVALID_DELEGATE_REQUEST",
+      "invalid_request",
+      "Read-only delegation cannot create a worktree. Use isolation none.",
     );
   }
 

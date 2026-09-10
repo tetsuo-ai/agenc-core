@@ -19,7 +19,7 @@ type CapturedSelectProps = {
 
 const harness = vi.hoisted(() => ({
   appState: {
-    fileHistory: { entries: [] },
+    fileHistory: { snapshots: [{ messageId: 'user-1' }, { messageId: 'user-2' }], trackedFiles: new Set(), snapshotSequence: 2 },
     settings: { fileCheckpointingEnabled: true },
   },
   canRestore: true,

@@ -2,6 +2,7 @@ import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
+import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
@@ -115,6 +116,16 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",
+    preflight(args) {
+      const chars = asString(args.chars) ?? "";
+      if (chars.trim().length === 0) return null;
+      return preflightShellWorkspaceWritePolicy({
+        toolName: "write_stdin",
+        args: { command: chars, cwd: config?.cwd },
+        workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
+        ...shellWorkspaceMutationPermission(args),
+      });
+    },
     inputSchema: {
       type: "object",
       properties: {

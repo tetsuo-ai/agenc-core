@@ -395,6 +395,15 @@ current session and workspace; it does not write durable consent. The
 `--dangerously-bypass-approvals-and-sandbox` flag is the separate combined
 escape hatch for bypassed prompts and `danger-full-access`.
 
+Neither bypass setting removes a planning worker's permanent read-only
+constraint. See [read-only planning workers](agents.md#read-only-planning-workers).
+Normal coding and verification workers retain the configured bypass behavior.
+
+Shell tools reject deterministically invalid commands before asking for
+approval and recheck the command before execution. Approval cannot override
+protected-path or shell-write-policy refusals. Operations that need ordinary
+workspace deletion approval still use the configured permission mode.
+
 **Internal-only** (valid runtime state, not CLI defaults):
 
 | Mode | Intent |
@@ -403,8 +412,9 @@ escape hatch for bypassed prompts and `danger-full-access`.
 | `bubble` | Nested/child contexts that bubble denials to the parent |
 
 The daemon permission overlay classifies low / medium / destructive requests.
-Destructive requests require typed confirmation; low/medium use engine
-allow/reject callbacks and `confirm:yes` keybinding shortcuts.
+Destructive requests require typed confirmation. For low/medium requests,
+Enter applies the selected row, including deny or session approval. The
+explicit yes/no shortcuts remain available.
 
 ### Interactive tool prompts
 

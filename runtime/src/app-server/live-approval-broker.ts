@@ -182,6 +182,10 @@ export class LiveApprovalBroker {
   resolve(ownerRunId: string, requestId: string, decision: ReviewDecision): boolean {
     const pending = this.pending(ownerRunId, requestId);
     if (pending === undefined || pending.ctx.signal?.aborted) return false;
+    const owner = this.#owners.get(ownerRunId)!;
+    if (!owner.workflow && decision.kind === "denied") {
+      owner.session.markStoppedByUser?.();
+    }
     pending.settle(decision);
     return true;
   }

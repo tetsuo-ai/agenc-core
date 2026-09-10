@@ -249,7 +249,9 @@ export function AssistantToolUseMessage({
         ? baseReason
           ? `×${retriedFailureCount} (last: ${baseReason})`
           : `×${retriedFailureCount} attempts failed`
-        : `succeeded after ${retriedFailureCount} attempts`
+        : toolState === "done"
+          ? `succeeded after ${retriedFailureCount} attempts`
+          : `attempt ${retriedFailureCount} · ${toolState}`
       : baseReason;
   // Cross-turn "fixed re-run" linkage: when THIS command row passes (`●`) and
   // the identical command most-recently FAILED (`✕`) earlier in the session,

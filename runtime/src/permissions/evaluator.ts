@@ -42,6 +42,7 @@
  */
 
 import { resolve } from "node:path";
+import { isReadOnlyCoordinationName, isReadOnlyCoordinationTool, readOnlyDelegationToolRefusal, sessionReadOnlyDelegation } from "../agents/readonly-delegation.js";
 import {
   freshDenialTracking,
   handleDenialLimitExceeded,
@@ -163,7 +164,7 @@ export interface ToolLike {
   readonly name: string;
   readonly isReadOnly?: boolean;
   readonly requiresApproval?: boolean;
-  readonly metadata?: { readonly mutating?: boolean };
+  readonly metadata?: { readonly mutating?: boolean; readonly source?: string };
   checkPermissions?(
     input: unknown,
     context: ToolEvaluatorContext,
@@ -274,6 +275,17 @@ export async function checkRuleBasedPermissions(
 
   const appState = context.getAppState();
 
+  const delegatedRefusal = readOnlyDelegationToolRefusal(context.session, tool, input);
+  if (delegatedRefusal !== undefined) {
+    return Object.freeze({ behavior: "deny" as const, message: delegatedRefusal, decisionReason: { type: "other" as const, reason: delegatedRefusal } });
+  }
+  if (appState.toolPermissionContext.mode === "plan" && isReadOnlyCoordinationName(tool.name) && !isReadOnlyCoordinationTool(tool)) {
+    return Object.freeze({ behavior: "deny" as const, message: "Plan delegation requires the canonical runtime coordinator implementation.", decisionReason: { type: "other" as const, reason: "untrusted coordinator implementation" } });
+  }
+  const readOnlyCoordination = isReadOnlyCoordinationTool(tool) && (
+    appState.toolPermissionContext.mode === "plan" || sessionReadOnlyDelegation(context.session) !== undefined
+  );
+
   // 1a. Whole-tool deny rule.
   const denyRule = getDenyRuleForTool(
     appState.toolPermissionContext,
@@ -299,6 +311,7 @@ export async function checkRuleBasedPermissions(
     appState.autoModeActive !== true &&
     !toolDoesNotRequireApproval(tool) &&
     !SAFE_YOLO_ALLOWLISTED_TOOLS.has(tool.name) &&
+    !readOnlyCoordination &&
     !planModeReadOnlyShellCommand(tool, input) &&
     !isSessionPlanMutation(tool, input, context.session)
   ) {
@@ -394,6 +407,9 @@ export async function checkRuleBasedPermissions(
   // return here — they must continue into step 2/3.
   if (toolResult.behavior === "allow") {
     return toolResult as PermissionAllowDecision;
+  }
+  if (readOnlyCoordination && toolResult.behavior !== "ask") {
+    return { behavior: "allow", updatedInput: input !== null && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {}, decisionReason: { type: "other", reason: "Read-only agent coordination" } };
   }
   return null;
 }

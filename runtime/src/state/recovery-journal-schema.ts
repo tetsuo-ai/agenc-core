@@ -1487,6 +1487,7 @@ const ROLLOUT_PAYLOAD_VALIDATORS = defineRolloutPayloadValidators({
     {
       agentTask: isSessionAgentTask,
       memoryExtraction: isSessionMemoryExtractionState,
+      userStop: objectShape({ stopped: isBoolean, generation: isNonNegativeInteger }),
     },
   ),
   response_item: isResponseItem,

@@ -27,6 +27,7 @@ function makeSession(conversationId = "conv-resumed") {
     conversationId,
     state,
     emit: vi.fn(),
+    restoreUserStopFromRollout: vi.fn(),
     seedInternalSubId: vi.fn((next: number) => {
       subId = Math.max(subId, next);
     }),
