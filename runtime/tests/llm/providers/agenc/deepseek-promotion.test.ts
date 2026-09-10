@@ -118,4 +118,17 @@ describe("AgenC DeepSeek promotion wire", () => {
     expect(deriveFlatCatalog().agenc ?? []).not.toContain(model);
     expect(chatCompletionsCapabilityHintsForProvider("openrouter", model).acceptsParallelToolCalls).toBeUndefined();
   });
+
+  it("maps instruction and discovery names to the actual advertised callable aliases", () => {
+    const names = ["system.exec_command", "system.searchTools", "mcp.agenc-desktop-control.desktop_routine_list"];
+    const body = buildChatCompletionsRequest({ model, messages: [{ role: "user", content: "Run the skill and list routines." }],
+      tools: names.map(name => ({ type: "function", function: { name, parameters: { type: "object", properties: {} } } })),
+      providerCapabilityHints: chatCompletionsCapabilityHintsForProvider("openrouter", model, { managedGateway: true }),
+    });
+    const wire = body as { messages: Array<{ role: string; content: string }>; tools: Array<{ function: { name: string } }> };
+    expect(wire.messages[0]?.role).toBe("system");
+    for (const [index, name] of names.entries()) {
+      expect(wire.messages[0]?.content).toContain(`${JSON.stringify(name)} -> ${JSON.stringify(wire.tools[index]!.function.name)}`);
+    }
+  });
 });

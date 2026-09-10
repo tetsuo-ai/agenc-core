@@ -505,6 +505,18 @@ export function buildChatCompletionsRequest(
   const systemSuffix = [
     input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
     zaiJsonSchemaInstruction,
+    ...(input.providerCapabilityHints?.includeToolNameAliases === true && input.tools.length > 0
+      ? [
+          "Tool names in instructions, skills and discovery results are runtime names. " +
+          "Call the corresponding function name from your tool definitions. " +
+          "An encoded function name does not mean the tool is unavailable. " +
+          "Mapping (runtime name -> callable function name):\n" +
+          input.tools.map(tool => {
+            const name = tool.function.name;
+            return `${JSON.stringify(name)} -> ${JSON.stringify(encodeMcpToolNameForWire(name))}`;
+          }).join("\n"),
+        ]
+      : []),
   ].filter((value): value is string => value !== undefined).join("\n");
   const preparedMessages = prepareMessagesForWire(
     input.messages,
