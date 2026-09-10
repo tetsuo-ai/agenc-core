@@ -11,6 +11,10 @@ import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, existsSync: vi.fn(actual.existsSync) };
+});
 import {
   STALE_WORKTREE_AGE_MS,
   captureWorktreeTurnEvidence as captureWorktreeTurnEvidenceUnbound,
@@ -209,7 +213,11 @@ describe("findGitRoot", () => {
   });
 
   it("returns null when no .git ancestor", () => {
-    expect(findGitRoot(tmpRoot)).toBeNull();
+    // A developer may keep their temporary directory inside a checkout.
+    // This case specifically exercises walking to the root without a marker.
+    const probe = vi.mocked(existsSync).mockReturnValue(false);
+    try { expect(findGitRoot(tmpRoot)).toBeNull(); }
+    finally { probe.mockReset(); }
   });
 });
 
