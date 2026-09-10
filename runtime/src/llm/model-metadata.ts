@@ -954,6 +954,48 @@ function normalizePositiveInteger(value: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * Largest share of a context window an output reservation may claim.
+ *
+ * The reservation and the prompt come out of the same window, so a default
+ * that claims most of it leaves no room to be prompted at all.
+ */
+export const MAX_OUTPUT_TOKENS_WINDOW_FRACTION = 0.5;
+
+/**
+ * Hold an output reservation inside the window it has to share with a prompt.
+ *
+ * `getModelMaxOutputTokens` picks the reservation from the model name and
+ * never sees the context window, so an uncatalogued model takes the 32,000
+ * default whatever its window is. On a local runtime that window is routinely
+ * 32k, and admission compares prompt + reservation against it: 32,000 reserved
+ * against a measured 31,129-token window is refused before a single byte of
+ * prompt exists, so every turn is denied `context_window_exceeded` and no
+ * local model can answer at all.
+ *
+ * Half is the split, so the prompt always has as much of the window as the
+ * answer. Nothing catalogued moves: this only binds when the reservation is
+ * more than half the window, which for the 32,000 default means windows under
+ * 64k, and every catalogued hosted model is 128k or larger. It is the models
+ * with no catalogue entry, which is every local one, that this rescues.
+ */
+export function fitOutputTokensToContextWindow(
+  maxOutputTokens: number,
+  contextWindow: number | undefined,
+): number {
+  if (
+    contextWindow === undefined ||
+    !Number.isFinite(contextWindow) ||
+    contextWindow <= 0
+  ) {
+    return maxOutputTokens;
+  }
+  const cap = Math.floor(contextWindow * MAX_OUTPUT_TOKENS_WINDOW_FRACTION);
+  // A window too small to halve is already unusable; never return 0, which
+  // reads downstream as "no reservation configured" rather than a small one.
+  return Math.max(1, Math.min(maxOutputTokens, cap));
+}
+
 interface EffectiveOutputTokens {
   readonly maxOutputTokens: number;
   readonly maxOutputTokensUpperLimit: number;
@@ -973,15 +1015,16 @@ function resolveEffectiveOutputTokens(params: {
     metadata.maxOutputTokensUpperLimit ??
     metadata.maxOutputTokens ??
     DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT;
+  const fit = (tokens: number): number =>
+    fitOutputTokensToContextWindow(tokens, metadata.contextWindow);
 
   if (
     metadata.maxOutputTokens !== undefined &&
     metadata.maxOutputTokensExplicit === true
   ) {
     return {
-      maxOutputTokens: boundedOutputTokens(
-        metadata.maxOutputTokens,
-        metadataUpper,
+      maxOutputTokens: fit(
+        boundedOutputTokens(metadata.maxOutputTokens, metadataUpper),
       ),
       maxOutputTokensUpperLimit: metadataUpper,
       maxOutputTokensExplicit: true,
@@ -994,7 +1037,9 @@ function resolveEffectiveOutputTokens(params: {
   const explicitOverride = envOverride ?? configOverride;
   if (explicitOverride !== undefined) {
     return {
-      maxOutputTokens: boundedOutputTokens(explicitOverride, metadataUpper),
+      maxOutputTokens: fit(
+        boundedOutputTokens(explicitOverride, metadataUpper),
+      ),
       maxOutputTokensUpperLimit: metadataUpper,
       maxOutputTokensExplicit: true,
       maxOutputTokensCappedDefault: false,
@@ -1006,11 +1051,13 @@ function resolveEffectiveOutputTokens(params: {
     params.config.capped_default_max_output_tokens === true
   ) {
     return {
-      maxOutputTokens: boundedOutputTokens(
-        metadata.maxOutputTokensCappedDefault === true
-          ? metadataDefault
-          : CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
-        metadataUpper,
+      maxOutputTokens: fit(
+        boundedOutputTokens(
+          metadata.maxOutputTokensCappedDefault === true
+            ? metadataDefault
+            : CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
+          metadataUpper,
+        ),
       ),
       maxOutputTokensUpperLimit: metadataUpper,
       maxOutputTokensExplicit: false,
@@ -1019,7 +1066,7 @@ function resolveEffectiveOutputTokens(params: {
   }
 
   return {
-    maxOutputTokens: boundedOutputTokens(metadataDefault, metadataUpper),
+    maxOutputTokens: fit(boundedOutputTokens(metadataDefault, metadataUpper)),
     maxOutputTokensUpperLimit: metadataUpper,
     maxOutputTokensExplicit: false,
     maxOutputTokensCappedDefault: false,
