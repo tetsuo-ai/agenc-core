@@ -51,9 +51,23 @@ export const OFFICIAL_MARKETPLACE_URL =
   "https://agenc.tech/plugins/marketplace.json";
 
 /**
- * Register the official marketplace when the profile has none. Returns
- * true when it was added. Never throws: an offline first run must still
- * produce a catalog (an empty one), not a hard CLI failure.
+ * How long a cached copy of the official marketplace is served before it is
+ * fetched again.
+ *
+ * The marketplace was installed once, on first use, and then read from disk
+ * forever. A home that installed it on Sep 10 had a manifest with 5 plugins
+ * while the live one listed 11, and the desktop's Plugins pane, which is built
+ * from this catalog, showed the 5. Nothing refreshed it: the only way to see a
+ * plugin published after install was to remove and re-add the marketplace by
+ * hand. An hour keeps the pane current without a fetch on every open.
+ */
+export const OFFICIAL_MARKETPLACE_REFRESH_MS = 60 * 60_000;
+
+/**
+ * Register the official marketplace when the profile has none, and fetch it
+ * again once the cached copy is older than the refresh window. Returns true
+ * when it was added or refreshed. Never throws: an offline first run must
+ * still produce a catalog (an empty one), not a hard CLI failure.
  */
 export async function ensureOfficialMarketplace(
   options: MarketplaceOperationOptions,
@@ -65,13 +79,21 @@ export async function ensureOfficialMarketplace(
 ): Promise<boolean> {
   if (options.env?.AGENC_SKIP_OFFICIAL_MARKETPLACE === "1") return false;
   const index = await readMarketplaceIndex(options);
-  if (Object.keys(index.marketplaces).length > 0) return false;
+  const official = index.marketplaces[OFFICIAL_MARKETPLACE_NAME];
+  const hasAny = Object.keys(index.marketplaces).length > 0;
+  // A manifest older than the window is fetched again in place. Failure keeps
+  // the cached copy: a stale catalog is a catalog, an empty one is an outage.
+  const stale =
+    official !== undefined &&
+    (options.now ?? (() => new Date()))().getTime() - Date.parse(official.updatedAt) >
+      OFFICIAL_MARKETPLACE_REFRESH_MS;
+  if (hasAny && !stale) return false;
   try {
     await addMarketplace({
       ...options,
       source: OFFICIAL_MARKETPLACE_URL,
       name: OFFICIAL_MARKETPLACE_NAME,
-      force: false,
+      force: stale,
     });
     return true;
   } catch {
