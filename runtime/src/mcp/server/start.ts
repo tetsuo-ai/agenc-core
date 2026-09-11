@@ -230,20 +230,32 @@ export async function startMcpSseServe(
       });
       return () => transport.replaceServerFactory(replacementFactory);
     },
-    close: () =>
-      new Promise((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      }),
+    close: closeMcpSseHttpServer(server, transport),
     waitUntilClosed: () =>
       new Promise((resolve) => {
         server.once("close", resolve);
       }),
+  };
+}
+
+function closeMcpSseHttpServer(
+  server: Server,
+  transport: McpHttpSseServerTransport,
+): () => Promise<void> {
+  let closing: Promise<void> | undefined;
+  return () => {
+    closing ??= new Promise((resolve, reject) => {
+      transport.close();
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+      server.closeAllConnections();
+    });
+    return closing;
   };
 }
 
