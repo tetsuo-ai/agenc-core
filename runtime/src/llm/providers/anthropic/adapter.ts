@@ -460,7 +460,7 @@ export class AnthropicProvider implements LLMProvider {
     streamAttempts: while (true) {
       let content = "";
       let model = requestModel;
-      let finishReason: LLMResponse["finishReason"] = "stop";
+      let stopReason = "end_turn";
       let sawMessageStop = false;
       let usage: AnthropicUsageAccumulator = {
         input_tokens: 0,
@@ -718,23 +718,8 @@ export class AnthropicProvider implements LLMProvider {
               ? (event.data.delta as Record<string, unknown>)
               : {};
           usage = mergeAnthropicUsage(usage, event.data.usage);
-          switch (String(delta.stop_reason ?? "")) {
-            case "tool_use":
-              finishReason = "tool_calls";
-              break;
-            case "max_tokens":
-              finishReason = "length";
-              break;
-            case "content_filter":
-            case "refusal":
-              finishReason = "content_filter";
-              break;
-            case "error":
-              finishReason = "error";
-              break;
-            default:
-              finishReason = "stop";
-              break;
+          if (typeof delta.stop_reason === "string") {
+            stopReason = delta.stop_reason;
           }
           continue;
         }
@@ -822,16 +807,7 @@ export class AnthropicProvider implements LLMProvider {
                 }];
               }),
             ],
-            stop_reason:
-              finishReason === "tool_calls"
-                ? "tool_use"
-                : finishReason === "length"
-                  ? "max_tokens"
-                  : finishReason === "content_filter"
-                    ? "content_filter"
-                    : finishReason === "error"
-                      ? "error"
-                      : "end_turn",
+            stop_reason: stopReason,
             usage,
           },
           requestOptions,
