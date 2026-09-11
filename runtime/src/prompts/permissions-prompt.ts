@@ -303,7 +303,10 @@ export function getPermissionsSection(
       : "(none)";
     return [
       "# Permission Mode: unattended",
-      "This background agent runs without an attached human client. Tools on the unattended denylist are rejected automatically. Tools on the unattended allowlist are approved automatically. Any other tool pauses the agent and surfaces a permission request to an attached client.",
+      policy.readOnly
+        ? "This routine runs without an attached human client. Tools on the unattended denylist are rejected automatically. Tools on the unattended allowlist are approved automatically. Other calls may proceed only when Core verifies them as read-only and within the run's allowed scope. Calls that need approval are refused, not paused. Never request bypass permissions or retry a refused operation. Preserve partial findings and identify anything that could not be collected."
+        : "This background agent runs without an attached human client. Tools on the unattended denylist are rejected automatically. Tools on the unattended allowlist are approved automatically. Any other tool pauses the agent and surfaces a permission request to an attached client.",
+      ...(policy.readOnly ? ["For system diagnostics, use one bounded native command per call, without shell wrappers, substitutions, redirections or chaining. On macOS, prefer sw_vers, sysctl -n with specific hardware keys, vm_stat, df -h, top -l 1 -n 5 -stats pid,command,cpu,mem, pmset -g batt, and system_profiler SPPowerDataType -detailLevel mini -timeout 10. Use ifconfig or ipconfig getifaddr en0 for local network state. These queries do not authorize changing settings or reading arbitrary files outside the project."] : []),
       `Unattended allowlist: ${allow}`,
       `Unattended denylist: ${deny}`,
     ].join("\n\n");

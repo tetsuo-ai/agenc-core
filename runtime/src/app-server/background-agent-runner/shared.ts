@@ -764,6 +764,8 @@ interface ActiveMessageSubmission {
   terminal?: AgenCBackgroundAgentMessageTerminal;
   /** Owning phase outcome; conversational turn_complete alone also includes bounded failures. */
   terminalStopReason?: string;
+  /** A final answer after a permission refusal is not an unqualified routine success. */
+  permissionDenied?: boolean;
   readonly promise: Promise<AgenCBackgroundAgentMessageResult>;
   settled: boolean;
 }

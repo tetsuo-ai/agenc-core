@@ -1585,14 +1585,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       throw new Error("Cannot finish a routine while its Core session is busy or stopping.");
     }
     const stopReason = submission.terminalStopReason;
-    const code = stopReason === "cancelled" ? 130 : stopReason !== undefined && stopReason !== "completed" ? 1 : result.terminal?.code;
-    if (code === undefined) throw new Error("Cannot finish a routine without a terminal message outcome.");
+    const turnCode = stopReason === "cancelled" ? 130
+      : stopReason !== undefined && stopReason !== "completed" ? 1 : result.terminal?.code;
+    if (turnCode === undefined) throw new Error("Cannot finish a routine without a terminal message outcome.");
+    const code = turnCode === 0 && submission.permissionDenied === true ? 1 : turnCode;
     // Close ingress before selecting the canonical terminal. No caller-supplied
     // success flag can override the result recorded by the owning turn.
     active.ingressClosed = true;
     active.pendingTerminal = {
       runId: agentId, status: code === 0 ? "completed" : code === 130 ? "cancelled" : "failed",
-      exitCode: code, stopReason: code === 0 ? "routine_completed" : code === 130 ? "routine_cancelled" : "routine_failed",
+      exitCode: code, stopReason: code === 0 ? "routine_completed" : code === 130 ? "routine_cancelled"
+        : submission.permissionDenied === true ? "routine_permission_denied" : "routine_failed",
       finalMessage: this.#assistantTextByAgent.get(agentId) ?? null,
       usage: terminalUsageForActiveAgent(active), lastSequence: null, finishedAt: this.#now(),
     };
@@ -4700,6 +4703,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
   ): void {
+    if (event.type === "error" && typeof event.payload?.cause === "string" &&
+        event.payload.cause.startsWith("permission_denied:") &&
+        active.messageSubmission !== undefined &&
+        (event.clientMessageId === undefined || event.clientMessageId === active.messageSubmission.clientMessageId) &&
+        (event.turnId === undefined || active.messageSubmission.turnId === undefined || event.turnId === active.messageSubmission.turnId)) {
+      active.messageSubmission.permissionDenied = true;
+    }
     if (event.statusProjection === "session_only") return;
     const payload = event.payload;
     const terminal = classifyTurnTerminal(event, {

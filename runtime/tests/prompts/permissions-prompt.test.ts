@@ -230,6 +230,18 @@ describe("getPermissionsSection", () => {
     expect(out).toContain("Unattended denylist: (none)");
   });
 
+  test("routine read-only policy describes refusals and bounded diagnostics, not interactive approval", () => {
+    const context = createEmptyToolPermissionContext({ mode: "unattended",
+      unattendedPolicy: { allowlist: [], denylist: [], readOnly: true },
+    });
+    const out = getPermissionsSection(context, WORKSPACE_AUTHORITY)!;
+    expect(out).toContain("Calls that need approval are refused, not paused");
+    expect(out).toContain("one bounded native command per call");
+    expect(out).toContain("pmset -g batt");
+    expect(out).toContain("Never request bypass permissions");
+    expect(out).not.toContain("Any other tool pauses the agent");
+  });
+
   test("composition uses a blank line between heading, sandbox, and approval", () => {
     const out = permissionsSection("default");
     expect(out).not.toBeNull();
