@@ -48,8 +48,14 @@ describe("daemon lifecycle lock boundaries", () => {
         (error: unknown) => error,
       );
       try {
-        await entered.promise;
-        await vi.advanceTimersByTimeAsync(30_000);
+        if (method === "stopAgent") {
+          await entered.promise;
+          await vi.advanceTimersByTimeAsync(30_000);
+        } else {
+          // Global shutdown owns every retained runner and must reach it
+          // without first waiting for diagnostic snapshot availability.
+          await setImmediate();
+        }
         expect(stopAgent).toHaveBeenCalledWith(
           "stalled-snapshot",
           expect.any(String),

@@ -1367,7 +1367,9 @@ export class AgencClient {
     };
 
     const unsubscribe = this.onSessionNotification(sessionId, (message) => {
-      if (finishing) return;
+      // session.attach replays prior submissions before message.send can
+      // validate this one's content and identity. Replay is not its admission.
+      if (finishing || !submissionDispatched) return;
       const observedClientMessageId =
         userMessageClientMessageIdFromNotification(message);
       if (!submissionObserved) {

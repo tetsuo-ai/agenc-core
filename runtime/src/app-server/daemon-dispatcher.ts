@@ -586,6 +586,8 @@ export interface AgenCDaemonDispatcherOptions {
     | "detachClientFromSession"
     | "detachSession"
     | "registerClient"
+    | "rollbackClientAttachment"
+    | "removeClientIfUnused"
     | "terminateSession"
     | "removeClient"
   >;
@@ -640,7 +642,17 @@ export interface AgenCDaemonDispatcherOptions {
 export type AgenCDaemonInitializeAuthResult =
   boolean | AuthDaemonSocketIdentity | null | undefined;
 
+interface AttachmentClientOwnership {
+  pendingAttachments: number;
+  registeredHere: boolean;
+  registration: Promise<unknown>;
+}
+
 export class AgenCDaemonJsonRpcDispatcher {
+  readonly #attachmentClients = new WeakMap<
+    AgenCDaemonJsonRpcConnection,
+    Map<string, AttachmentClientOwnership>
+  >();
   readonly #agentManager: Pick<
     AgenCDaemonAgentManager,
     | "approveTool"
@@ -698,6 +710,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         | "detachClientFromSession"
         | "detachSession"
         | "registerClient"
+        | "rollbackClientAttachment"
+        | "removeClientIfUnused"
         | "terminateSession"
         | "removeClient"
       >
@@ -834,6 +848,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
   ): Promise<void> {
     return connection.runClose(async () => {
+      this.#attachmentClients.delete(connection);
       this.#routineSubscriptions.get(connection)?.();
       this.#routineSubscriptions.delete(connection);
       connection.cancelAllInFlightRequests("connection closed");
@@ -1815,8 +1830,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     const attachParams = validateAgentAttachParams(params);
     const result = await this.#agentManager.attachAgent(
       attachParams,
-      (sessionId) =>
-        this.#registerAttachedClient(connection, attachParams, sessionId),
+      (sessionId, attachmentOwner) =>
+        this.#registerAttachedClient(connection, attachParams, sessionId, attachmentOwner),
     );
     return successResponse(id, result);
   }
@@ -1891,16 +1906,14 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
     params: AgentAttachParams,
     sessionId: string,
+    attachmentOwner = Symbol("agent attachment"),
   ): Promise<() => Promise<void>> {
     const clientId = params.clientId;
-    const wasTracked =
-      clientId !== undefined && connection.trackedClientIds.includes(clientId);
-    let createdRoute = false;
     const attachment = await this.#attachTrackedClientToSession(
       connection,
       clientId,
       sessionId,
-      (created) => { createdRoute = created; },
+      attachmentOwner,
     );
     return async () => {
       if (
@@ -1910,15 +1923,10 @@ export class AgenCDaemonJsonRpcDispatcher {
       ) {
         return;
       }
-      if (!wasTracked) {
-        connection.untrackClientId(clientId);
-        await this.#clientMultiplexer.removeClient(clientId, connection.cancellationScope).catch(() => {});
-        return;
-      }
-      if (!createdRoute) return;
       await this.#clientMultiplexer
-        .detachClientFromSession(sessionId, clientId, connection.cancellationScope)
+        .rollbackClientAttachment(sessionId, clientId, attachmentOwner, connection.cancellationScope)
         .catch(() => {});
+      await this.#removeUnusedAttachmentClient(connection, clientId);
     };
   }
 
@@ -1983,7 +1991,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
     clientId: string | undefined,
     sessionId: string,
-    onAttached?: (created: boolean) => void,
+    attachmentOwner?: symbol,
   ): Promise<SessionAttachResult | undefined> {
     if (
       this.#clientMultiplexer === undefined ||
@@ -1993,44 +2001,79 @@ export class AgenCDaemonJsonRpcDispatcher {
       return undefined;
     }
     connection.assertOpen();
-    let registeredHere = false;
-    try {
+    let clients = this.#attachmentClients.get(connection);
+    if (clients === undefined) {
+      clients = new Map();
+      this.#attachmentClients.set(connection, clients);
+    }
+    let ownership = clients.get(clientId);
+    if (ownership === undefined) {
+      ownership = { pendingAttachments: 0, registeredHere: false, registration: Promise.resolve() };
+      clients.set(clientId, ownership);
       if (!connection.trackedClientIds.includes(clientId)) {
-        await this.#clientMultiplexer
-          .registerClient({
-            clientId,
-            deliveryKey: connection.cancellationScope,
-            send: (message) => connection.sendNotification!(message),
-            acceptsSessionEvent: (event) => connection.acceptsSessionEvent(event),
-            onRegistered: () => {
-              connection.trackClientId(clientId);
-              registeredHere = true;
-            },
-          })
-          .catch((error) => {
-            if ((error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED") {
-              throw invalidParams(`daemon client is already registered: ${clientId}`);
-            }
-            throw error;
-          });
-        registeredHere = true;
-        // Track ownership before attachment/replay yields, so close can detach
-        // it even if replay is backpressured indefinitely.
-        connection.trackClientId(clientId);
+        const registrationOwner = ownership;
+        // Concurrent attaches on one physical connection share registration.
+        // A logical id registered by another connection still rejects below.
+        ownership.registration = this.#clientMultiplexer.registerClient({
+          clientId,
+          deliveryKey: connection.cancellationScope,
+          send: (message) => connection.sendNotification!(message),
+          acceptsSessionEvent: (event) => connection.acceptsSessionEvent(event),
+          onRegistered: () => {
+            connection.trackClientId(clientId);
+            registrationOwner.registeredHere = true;
+          },
+        }).catch((error) => {
+          if ((error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED") {
+            throw invalidParams(`daemon client is already registered: ${clientId}`);
+          }
+          throw error;
+        });
       }
+    }
+    ownership.pendingAttachments += 1;
+    let failed = false;
+    try {
+      await ownership.registration;
       connection.assertOpen();
-      const result = await this.#clientMultiplexer.attachClientToSession(sessionId, clientId, onAttached);
+      const result = await this.#clientMultiplexer.attachClientToSession(sessionId, clientId, undefined, attachmentOwner);
       connection.assertOpen();
       return result;
     } catch (error) {
-      if (registeredHere) {
-        connection.untrackClientId(clientId);
-        // A reconnect may already have reused the logical id. Cleanup belongs
-        // only to this physical connection's registration.
-        await this.#clientMultiplexer.removeClient(clientId, connection.cancellationScope).catch(() => {});
+      failed = true;
+      if (attachmentOwner !== undefined) {
+        await this.#clientMultiplexer.rollbackClientAttachment(
+          sessionId, clientId, attachmentOwner, connection.cancellationScope,
+        ).catch(() => {});
       }
       throw error;
+    } finally {
+      ownership.pendingAttachments -= 1;
+      if (failed) await this.#removeUnusedAttachmentClient(connection, clientId);
     }
+  }
+
+  async #removeUnusedAttachmentClient(
+    connection: AgenCDaemonJsonRpcConnection,
+    clientId: string,
+  ): Promise<void> {
+    const clients = this.#attachmentClients.get(connection);
+    const ownership = clients?.get(clientId);
+    if (ownership === undefined || ownership.pendingAttachments > 0) return;
+    if (!ownership.registeredHere || connection.closed) {
+      clients!.delete(clientId);
+      return;
+    }
+    await this.#clientMultiplexer?.removeClientIfUnused(
+      clientId, connection.cancellationScope, () => {
+        // Check again under the routing lock: a new attach may have started
+        // while this cleanup waited. Release both owners without yielding.
+        if (ownership.pendingAttachments > 0 || clients!.get(clientId) !== ownership) return false;
+        clients!.delete(clientId);
+        connection.untrackClientId(clientId);
+        return true;
+      },
+    );
   }
 
   async #sendMessage(

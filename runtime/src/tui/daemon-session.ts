@@ -1423,13 +1423,17 @@ export function createDaemonTuiSession<
         // submit re-sends them.
         if (queuedEntries.length > 0) {
           const originalEntries = new Set(queuedInputsBeforeSubmission);
+          // Retained entries can be consumed or rolled back while this RPC is
+          // pending. Restore only this submission's entries, preserving the
+          // order of retained entries that still belong to the live queue.
+          const restorableEntries = new Set([...queuedInputs, ...queuedEntries]);
           const admittedAfterSubmission = queuedInputs.filter(
             (entry) => !originalEntries.has(entry),
           );
           queuedInputs.splice(
             0,
             queuedInputs.length,
-            ...queuedInputsBeforeSubmission,
+            ...queuedInputsBeforeSubmission.filter((entry) => restorableEntries.has(entry)),
             ...admittedAfterSubmission,
           );
           queuedInputCount += submittedInputCount;
