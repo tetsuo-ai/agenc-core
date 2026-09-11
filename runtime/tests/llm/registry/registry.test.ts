@@ -149,13 +149,20 @@ describe("LLM registry", () => {
       ...DONOR_MODEL_IDS,
     ]);
     for (const entry of entries) {
-      expect(entry.supportedReasoningLevels).toEqual([
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        ...(EXTENDED_REASONING_MODEL_IDS.includes(entry.model) ? ["max"] : []),
-      ]);
+      // gpt-5 predates the xhigh tier and keeps minimal as its floor
+      // (Responses API, probed 2026-09-11); every later generation runs
+      // low..xhigh, the 5.6 line and Astra add max.
+      expect(entry.supportedReasoningLevels).toEqual(
+        entry.model === "gpt-5"
+          ? ["minimal", "low", "medium", "high"]
+          : [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              ...(EXTENDED_REASONING_MODEL_IDS.includes(entry.model) ? ["max"] : []),
+            ],
+      );
       expect(entry.supportsVerbosity).toBe(true);
       expect(entry.supportsParallelToolCalls).toBe(true);
       expect(entry.supportsReasoningSummaries).toBe(true);

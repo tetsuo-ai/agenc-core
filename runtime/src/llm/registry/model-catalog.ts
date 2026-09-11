@@ -78,6 +78,15 @@ const OPENAI_REASONING_LEVELS = Object.freeze([
   "high",
   "xhigh",
 ] as const satisfies readonly ReasoningEffort[]);
+// GPT-5 predates the xhigh tier: the Responses API answers "'xhigh' is not
+// supported with the 'gpt-5' model. Supported values are: 'minimal', 'low',
+// 'medium', 'high'" (probed 2026-09-11; developers.openai.com/api/docs/models/gpt-5).
+const OPENAI_GPT5_REASONING_LEVELS = Object.freeze([
+  "minimal",
+  "low",
+  "medium",
+  "high",
+] as const satisfies readonly ReasoningEffort[]);
 const TEXT_IMAGE_MODALITIES = Object.freeze([
   "text",
   "image",
@@ -945,7 +954,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
+      supportedReasoningLevels: OPENAI_GPT5_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
       additionalSpeedTiers: FAST_SPEED_TIER,
       priority: -1,

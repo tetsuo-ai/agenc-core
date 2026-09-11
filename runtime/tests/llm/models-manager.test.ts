@@ -32,11 +32,13 @@ describe("StaticModelsManager", () => {
       truncationPolicy: "off",
       usedFallbackModelMetadata: false,
     });
+    // gpt-5's own ladder: minimal is its floor and xhigh is not accepted
+    // (Responses API, probed 2026-09-11).
     expect(info.supportedReasoningLevels).toEqual([
+      "minimal",
       "low",
       "medium",
       "high",
-      "xhigh",
     ]);
   });
 
