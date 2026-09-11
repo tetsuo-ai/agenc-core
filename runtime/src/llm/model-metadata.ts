@@ -97,8 +97,8 @@ export class ModelMetadataResolver {
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly timeoutMs: number;
   private readonly onWarn?: (msg: string) => void;
-  private readonly inFlightJson = new Map<string, Promise<unknown | undefined>>();
-  private readonly jsonCache = new Map<string, unknown | undefined>();
+  private readonly inFlightJson = new Map<string, Promise<unknown>>();
+  private readonly jsonCache = new Map<string, unknown>();
   private readonly warnedInvalidEnv = new Set<string>();
 
   constructor(options: ModelMetadataResolverOptions = {}) {
