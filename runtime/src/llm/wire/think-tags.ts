@@ -14,6 +14,12 @@
  * ends it. That is where every known chat template puts the block, and
  * it keeps a literal "<think>" later in an answer — likely when the
  * subject of the conversation is this very bug — visible text.
+ *
+ * One more shape is marker residue rather than a block: a provider that
+ * has already split the reasoning out of `content` (MiniMax with
+ * `reasoning_split`) can leave the bare closer behind, so `content`
+ * starts with `</think>` and nothing was ever opened. A closer with
+ * nothing open before it is never visible text; it is dropped.
  */
 
 interface ThinkMarkerPair {
@@ -42,6 +48,12 @@ export interface ThinkSplit {
 export function splitLeadingThinkBlock(content: string): ThinkSplit {
   const trimmed = content.trimStart();
   for (const marker of THINK_MARKERS) {
+    if (trimmed.startsWith(marker.close)) {
+      return {
+        text: trimmed.slice(marker.close.length).trimStart(),
+        reasoning: "",
+      };
+    }
     if (!trimmed.startsWith(marker.open)) continue;
     const body = trimmed.slice(marker.open.length);
     const closeAt = body.indexOf(marker.close);
@@ -71,6 +83,12 @@ export class ThinkTagStreamFilter {
   private state: "detect" | "inside" | "pass" = "detect";
   private buffer = "";
   private marker: ThinkMarkerPair | null = null;
+  /**
+   * After a marker resolves, the whitespace that separates it from the
+   * answer may arrive in a later chunk. Keep dropping it until the first
+   * visible character, the way the whole-message split does.
+   */
+  private trimLeading = false;
 
   push(input: string): ThinkSplit {
     if (input.length === 0) return { text: "", reasoning: "" };
@@ -83,15 +101,28 @@ export class ThinkTagStreamFilter {
       const opened = THINK_MARKERS.find((candidate) =>
         trimmed.startsWith(candidate.open),
       );
+      const residue = THINK_MARKERS.find((candidate) =>
+        trimmed.startsWith(candidate.close),
+      );
       if (opened !== undefined) {
         this.state = "inside";
         this.marker = opened;
         this.buffer = trimmed.slice(opened.open.length);
+      } else if (residue !== undefined) {
+        // A bare closer with nothing open: the provider split the block
+        // out already and left its marker behind. Drop it.
+        this.state = "pass";
+        this.trimLeading = true;
+        this.buffer = trimmed.slice(residue.close.length);
       } else if (
         trimmed.length === 0 ||
-        THINK_MARKERS.some((candidate) => candidate.open.startsWith(trimmed))
+        THINK_MARKERS.some(
+          (candidate) =>
+            candidate.open.startsWith(trimmed) ||
+            candidate.close.startsWith(trimmed),
+        )
       ) {
-        // Still ambiguous — could grow into an opener. Keep buffering.
+        // Still ambiguous — could grow into a marker. Keep buffering.
         return { text: "", reasoning: "" };
       } else {
         this.state = "pass";
@@ -106,11 +137,10 @@ export class ThinkTagStreamFilter {
       if (closeAt !== -1) {
         reasoning = this.buffer.slice(0, closeAt);
         this.state = "pass";
-        text = this.buffer
-          .slice(closeAt + this.marker.close.length)
-          .trimStart();
-        this.buffer = "";
+        this.trimLeading = true;
+        this.buffer = this.buffer.slice(closeAt + this.marker.close.length);
         this.marker = null;
+        text = this.takeText();
         return { text, reasoning };
       }
       // Hold back a possible partial closer; everything before it is
@@ -124,23 +154,32 @@ export class ThinkTagStreamFilter {
       return { text, reasoning };
     }
 
-    text = this.buffer;
-    this.buffer = "";
+    text = this.takeText();
     return { text, reasoning };
   }
 
   /** Drain whatever is still buffered when the stream ends. */
   flush(): ThinkSplit {
-    const remainder = this.buffer;
-    this.buffer = "";
-    if (remainder.length === 0) return { text: "", reasoning: "" };
     if (this.state === "inside") {
+      const remainder = this.buffer;
+      this.buffer = "";
       this.state = "pass";
       this.marker = null;
       return { text: "", reasoning: remainder };
     }
     this.state = "pass";
-    return { text: remainder, reasoning: "" };
+    return { text: this.takeText(), reasoning: "" };
+  }
+
+  /** Emit the buffer as visible text, minus the whitespace after a marker. */
+  private takeText(): string {
+    let text = this.buffer;
+    this.buffer = "";
+    if (this.trimLeading) {
+      text = text.trimStart();
+      if (text.length > 0) this.trimLeading = false;
+    }
+    return text;
   }
 
   /** Longest tail of the buffer that is a proper prefix of the closer. */
