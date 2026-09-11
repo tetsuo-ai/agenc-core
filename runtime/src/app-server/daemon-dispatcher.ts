@@ -833,20 +833,28 @@ export class AgenCDaemonJsonRpcDispatcher {
   async closeConnection(
     connection: AgenCDaemonJsonRpcConnection,
   ): Promise<void> {
-    this.#routineSubscriptions.get(connection)?.();
-    this.#routineSubscriptions.delete(connection);
-    connection.cancelAllInFlightRequests("connection closed");
-    if (this.#clientMultiplexer !== undefined) {
-      for (const clientId of connection.trackedClientIds) {
-        await this.#clientMultiplexer.removeClient(clientId).catch((error) => {
-          if ((error as { code?: string }).code === "CLIENT_NOT_FOUND") {
-            return;
+    return connection.runClose(async () => {
+      this.#routineSubscriptions.get(connection)?.();
+      this.#routineSubscriptions.delete(connection);
+      connection.cancelAllInFlightRequests("connection closed");
+      // One failed detach must not strand the other clients or command jobs.
+      const cleanup = await Promise.allSettled([
+        ...connection.trackedClientIds.map(async (clientId) => {
+          try {
+            await this.#clientMultiplexer?.removeClient(clientId, connection.cancellationScope);
+          } catch (error) {
+            if ((error as { code?: string }).code !== "CLIENT_NOT_FOUND") throw error;
+          } finally {
+            connection.untrackClientId(clientId);
           }
-          throw error;
-        });
+        }),
+        this.#commandExec.closeConnection(connection.cancellationScope),
+      ]);
+      const failures = cleanup.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        throw new AggregateError(failures.map((result) => result.reason), "daemon connection cleanup failed");
       }
-    }
-    await this.#commandExec.closeConnection(connection.cancellationScope);
+    });
   }
 
   async dispatchForConnection(
@@ -854,6 +862,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     message: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     const id = requestIdFromMessage(message);
+    if (connection.closed) return mapDispatchError(id, new AgenCDaemonConnectionClosedError());
     if (message.jsonrpc !== JSON_RPC_VERSION) {
       return errorResponse(id, -32600, "invalid JSON-RPC version");
     }
@@ -867,6 +876,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       try {
         const params = objectParams(message.params);
         await connection.remoteAccess.authorize(message.method, params);
+        connection.assertOpen();
         if (message.method !== "initialize" && !connection.initialized) throw new RemoteError("CONNECTION_NOT_INITIALIZED");
         if (message.method === "session.list") return successResponse(id, await connection.remoteAccess.sessions());
         if (message.method === "session.create") return successResponse(id, await connection.remoteAccess.createSession(params));
@@ -885,61 +895,67 @@ export class AgenCDaemonJsonRpcDispatcher {
     try {
       const params = objectParams(message.params);
       if (method === "initialize") {
-        const initializeParams = validateInitializeParams(connection.remoteAccess ? { protocol: params.protocol, capabilities: {} } : params);
-        if (connection.initialized) {
+        if (!connection.beginInitialization()) {
           return errorResponse(id, -32000, "Already initialized", {
             code: "CONNECTION_ALREADY_INITIALIZED",
           });
         }
-        const negotiated = negotiateInitializeProtocol(
-          initializeParams,
-          connection.remoteAccess ? {
-            ...this.#serverCapabilities,
-            [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
-          } : this.#serverCapabilities,
-        );
-        if (!negotiated.supported) {
-          return errorResponse(id, -32000, "Unsupported protocol version", {
-            code: "PROTOCOL_VERSION_UNSUPPORTED",
-            clientVersion: negotiated.clientVersion,
-            serverVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-          });
-        }
-        if (
-          this.#initializeAuthenticator !== undefined &&
-          connection.remoteAccess === undefined &&
-          connection.daemonSocketIdentity === undefined
-        ) {
-          const authResult =
-            await this.#initializeAuthenticator(initializeParams);
-          if (!authResult) {
-            return errorResponse(
-              id,
-              -32000,
-              "daemon connection authentication failed",
-              { code: "CONNECTION_AUTHENTICATION_FAILED" },
+        try {
+          const initializeParams = validateInitializeParams(connection.remoteAccess ? { protocol: params.protocol, capabilities: {} } : params);
+          const negotiated = negotiateInitializeProtocol(
+            initializeParams,
+            connection.remoteAccess ? {
+              ...this.#serverCapabilities,
+              [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
+            } : this.#serverCapabilities,
+          );
+          if (!negotiated.supported) {
+            return errorResponse(id, -32000, "Unsupported protocol version", {
+              code: "PROTOCOL_VERSION_UNSUPPORTED",
+              clientVersion: negotiated.clientVersion,
+              serverVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+            });
+          }
+          if (
+            this.#initializeAuthenticator !== undefined &&
+            connection.remoteAccess === undefined &&
+            connection.daemonSocketIdentity === undefined
+          ) {
+            const authResult =
+              await this.#initializeAuthenticator(initializeParams);
+            connection.assertOpen();
+            if (!authResult) {
+              return errorResponse(
+                id,
+                -32000,
+                "daemon connection authentication failed",
+                { code: "CONNECTION_AUTHENTICATION_FAILED" },
+              );
+            }
+            connection.markDaemonSocketIdentity(
+              authResult === true ? undefined : authResult,
             );
           }
-          connection.markDaemonSocketIdentity(
-            authResult === true ? undefined : authResult,
+          await this.#registerInitializedCapabilityClient(
+            connection,
+            negotiated.state.clientCapabilities,
           );
+          connection.markInitialized(negotiated.state);
+          return successResponse(id, {
+            type: "initialized",
+            protocolVersion: negotiated.state.serverProtocol.version,
+            protocol: negotiated.state.protocol,
+            capabilities: negotiated.state.serverCapabilities,
+            ...(connection.remoteAccess ? { remoteAccess: connection.remoteAccess.projection() } : {}),
+            ...(this.#daemonIdentity !== undefined && connection.remoteAccess === undefined
+              ? { daemonIdentity: this.#daemonIdentity }
+              : {}),
+          });
+        } finally {
+          connection.endInitialization();
         }
-        await this.#registerInitializedCapabilityClient(
-          connection,
-          negotiated.state.clientCapabilities,
-        );
-        connection.markInitialized(negotiated.state);
-        return successResponse(id, {
-          type: "initialized",
-          protocolVersion: negotiated.state.serverProtocol.version,
-          protocol: negotiated.state.protocol,
-          capabilities: negotiated.state.serverCapabilities,
-          ...(connection.remoteAccess ? { remoteAccess: connection.remoteAccess.projection() } : {}),
-          ...(this.#daemonIdentity !== undefined && connection.remoteAccess === undefined
-            ? { daemonIdentity: this.#daemonIdentity }
-            : {}),
-        });
       }
+
       if (!connection.initialized) {
         return errorResponse(id, -32000, "Not initialized", {
           code: "CONNECTION_NOT_INITIALIZED",
@@ -1879,10 +1895,12 @@ export class AgenCDaemonJsonRpcDispatcher {
     const clientId = params.clientId;
     const wasTracked =
       clientId !== undefined && connection.trackedClientIds.includes(clientId);
+    let createdRoute = false;
     const attachment = await this.#attachTrackedClientToSession(
       connection,
       clientId,
       sessionId,
+      (created) => { createdRoute = created; },
     );
     return async () => {
       if (
@@ -1894,11 +1912,12 @@ export class AgenCDaemonJsonRpcDispatcher {
       }
       if (!wasTracked) {
         connection.untrackClientId(clientId);
-        await this.#clientMultiplexer.removeClient(clientId).catch(() => {});
+        await this.#clientMultiplexer.removeClient(clientId, connection.cancellationScope).catch(() => {});
         return;
       }
+      if (!createdRoute) return;
       await this.#clientMultiplexer
-        .detachClientFromSession(sessionId, clientId)
+        .detachClientFromSession(sessionId, clientId, connection.cancellationScope)
         .catch(() => {});
     };
   }
@@ -1907,6 +1926,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
     capabilities: JsonObject,
   ): Promise<void> {
+    connection.assertOpen();
     if (capabilities["routine.updated.v1"] === true && this.#routines && connection.sendNotification && !this.#routineSubscriptions.has(connection)) {
       // Coalesce by routine while a client is slow, keeping at most 100 invalidations.
       const pending = new Map<string, RoutineUpdatedEvent>();
@@ -1943,19 +1963,27 @@ export class AgenCDaemonJsonRpcDispatcher {
       return;
     }
     const clientId = `initialized_${connection.cancellationScope}`;
-    await this.#clientMultiplexer.registerClient({
-      clientId,
-      deliveryKey: connection.cancellationScope,
-      send: (message) => connection.sendNotification!(message),
-      capabilities,
-    });
-    connection.trackClientId(clientId);
+    try {
+      await this.#clientMultiplexer.registerClient({
+        clientId,
+        deliveryKey: connection.cancellationScope,
+        send: (message) => connection.sendNotification!(message),
+        capabilities,
+        onRegistered: () => connection.trackClientId(clientId),
+      });
+      connection.assertOpen();
+    } catch (error) {
+      connection.untrackClientId(clientId);
+      await this.#clientMultiplexer.removeClient(clientId, connection.cancellationScope).catch(() => {});
+      throw error;
+    }
   }
 
   async #attachTrackedClientToSession(
     connection: AgenCDaemonJsonRpcConnection,
     clientId: string | undefined,
     sessionId: string,
+    onAttached?: (created: boolean) => void,
   ): Promise<SessionAttachResult | undefined> {
     if (
       this.#clientMultiplexer === undefined ||
@@ -1964,38 +1992,42 @@ export class AgenCDaemonJsonRpcDispatcher {
     ) {
       return undefined;
     }
+    connection.assertOpen();
     let registeredHere = false;
-    if (!connection.trackedClientIds.includes(clientId)) {
-      await this.#clientMultiplexer
-        .registerClient({
-          clientId,
-          deliveryKey: connection.cancellationScope,
-          send: (message) => connection.sendNotification!(message),
-          acceptsSessionEvent: (event) =>
-            connection.acceptsSessionEvent(event),
-        })
-        .catch((error) => {
-          if (
-            (error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED"
-          ) {
-            throw invalidParams(
-              `daemon client is already registered: ${clientId}`,
-            );
-          }
-          throw error;
-        });
-      registeredHere = true;
-    }
     try {
-      const result = await this.#clientMultiplexer.attachClientToSession(
-        sessionId,
-        clientId,
-      );
-      if (registeredHere) connection.trackClientId(clientId);
+      if (!connection.trackedClientIds.includes(clientId)) {
+        await this.#clientMultiplexer
+          .registerClient({
+            clientId,
+            deliveryKey: connection.cancellationScope,
+            send: (message) => connection.sendNotification!(message),
+            acceptsSessionEvent: (event) => connection.acceptsSessionEvent(event),
+            onRegistered: () => {
+              connection.trackClientId(clientId);
+              registeredHere = true;
+            },
+          })
+          .catch((error) => {
+            if ((error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED") {
+              throw invalidParams(`daemon client is already registered: ${clientId}`);
+            }
+            throw error;
+          });
+        registeredHere = true;
+        // Track ownership before attachment/replay yields, so close can detach
+        // it even if replay is backpressured indefinitely.
+        connection.trackClientId(clientId);
+      }
+      connection.assertOpen();
+      const result = await this.#clientMultiplexer.attachClientToSession(sessionId, clientId, onAttached);
+      connection.assertOpen();
       return result;
     } catch (error) {
       if (registeredHere) {
-        await this.#clientMultiplexer.removeClient(clientId).catch(() => {});
+        connection.untrackClientId(clientId);
+        // A reconnect may already have reused the logical id. Cleanup belongs
+        // only to this physical connection's registration.
+        await this.#clientMultiplexer.removeClient(clientId, connection.cancellationScope).catch(() => {});
       }
       throw error;
     }
@@ -2186,6 +2218,9 @@ export class AgenCDaemonJsonRpcConnection {
   readonly #inFlightRequests = new Map<string, AbortController>();
   readonly #limiter: AgenCDaemonConnectionLimiter;
   #initializeState: AgenCDaemonConnectionInitializeState | undefined;
+  #initializing = false;
+  #closed = false;
+  #closePromise: Promise<void> | undefined;
   #daemonSocketIdentity: AuthDaemonSocketIdentity | undefined;
 
   constructor(
@@ -2198,6 +2233,33 @@ export class AgenCDaemonJsonRpcConnection {
     this.#limiter = new AgenCDaemonConnectionLimiter(options.overloadLimits);
     nextConnectionId += 1;
     this.#cancellationScope = `connection_${nextConnectionId.toString(36)}`;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  assertOpen(): void {
+    if (this.#closed) throw new AgenCDaemonConnectionClosedError();
+  }
+
+  beginInitialization(): boolean {
+    this.assertOpen();
+    if (this.initialized || this.#initializing) return false;
+    this.#initializing = true;
+    return true;
+  }
+
+  endInitialization(): void {
+    this.#initializing = false;
+  }
+
+  runClose(cleanup: () => Promise<void>): Promise<void> {
+    if (this.#closePromise !== undefined) return this.#closePromise;
+    // Closing is terminal before any asynchronous cleanup starts.
+    this.#closed = true;
+    this.#closePromise = Promise.resolve().then(cleanup);
+    return this.#closePromise;
   }
 
   get initialized(): boolean {
@@ -2213,12 +2275,14 @@ export class AgenCDaemonJsonRpcConnection {
   }
 
   markInitialized(state: AgenCDaemonConnectionInitializeState): void {
+    this.assertOpen();
     this.#initializeState = state;
   }
 
   markDaemonSocketIdentity(
     identity: AuthDaemonSocketIdentity | undefined,
   ): void {
+    this.assertOpen();
     this.#daemonSocketIdentity = identity;
   }
 
@@ -2242,6 +2306,7 @@ export class AgenCDaemonJsonRpcConnection {
   }
 
   trackClientId(clientId: string): void {
+    this.assertOpen();
     this.#clientIds.add(clientId);
   }
 
@@ -2264,6 +2329,7 @@ export class AgenCDaemonJsonRpcConnection {
     id: RequestId,
     run: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
+    this.assertOpen();
     const key = requestIdKey(id);
     if (this.#inFlightRequests.has(key)) {
       throw invalidParams(`daemon request is already in flight: ${String(id)}`);
@@ -2332,6 +2398,7 @@ export class AgenCDaemonJsonRpcConnection {
   }
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
+    if (this.#closed) return mapDispatchError(requestIdFromMessage(message), new AgenCDaemonConnectionClosedError());
     const admission = this.#limiter.tryStart(message);
     if (!admission.admitted) {
       return admission.response!;
@@ -2367,6 +2434,13 @@ function requestIdFromMessage(message: JsonObject): RequestId | null {
 
 function requestIdKey(id: RequestId): string {
   return `${typeof id}:${String(id)}`;
+}
+
+class AgenCDaemonConnectionClosedError extends Error {
+  constructor() {
+    super("daemon connection closed");
+    this.name = "AgenCDaemonConnectionClosedError";
+  }
 }
 
 class AgenCDaemonRequestCancelledError extends Error {
@@ -5775,6 +5849,9 @@ function mapDispatchError(
   id: RequestId | null,
   error: unknown,
 ): AgenCDaemonResponse {
+  if (error instanceof AgenCDaemonConnectionClosedError) {
+    return errorResponse(id, -32000, error.message, { code: "CONNECTION_CLOSED" });
+  }
   if (error instanceof WhisperError) return errorResponse(id, error.code === "WHISPER_INVALID_ARGUMENT" ? -32602 : -32000, error.message, { code: error.code });
   if (error instanceof RemoteError) return errorResponse(id, -32000, error.code, { code: error.code });
   if (error instanceof RoutineError) return errorResponse(id, -32602, error.message, { code: error.code });

@@ -806,7 +806,23 @@ export function createDaemonTuiSession<
   const eventReplay = new DaemonEventReplay(MAX_BUFFERED_SESSION_EVENTS_PER_SESSION);
   let activeTurnSnapshot: { readonly turnId: string } | null =
     options.transcriptSnapshot?.activeTurn ?? null;
-  let lastObservedTurnId: string | undefined;
+  let lastObservedTurnId = options.transcriptSnapshot?.activeTurn?.turnId;
+  type PendingDaemonSubmission = {
+    readonly clientMessageId: string;
+    dispatched: boolean;
+    cancellation?: { readonly reason?: string };
+  };
+  const pendingSubmissions = new Map<string, PendingDaemonSubmission>();
+  let observedSubmission: PendingDaemonSubmission | undefined;
+  const activeDaemonTurnId = (): string | undefined => {
+    const turnId = activeTurnSnapshot?.turnId === "daemon-turn"
+      ? lastObservedTurnId
+      : activeTurnSnapshot?.turnId;
+    return turnId !== undefined && turnId !== "daemon-turn" &&
+      !pendingSubmissions.has(turnId) && turnId === lastObservedTurnId
+      ? turnId
+      : undefined;
+  };
   let daemonTurnStartGeneration = 0;
   let inFlightShellExecutionCount = 0;
   const inFlightShellCommandIds = new Set<string>();
@@ -831,6 +847,49 @@ export function createDaemonTuiSession<
   >();
   let unsubscribeDaemonEvents: (() => void) | null = null;
   let runtimeSettingsAuthorityError: Error | null = null;
+  const cancelDaemonTurn = async (expectedTurnId: string, reason?: string): Promise<void> => {
+    try {
+      await client.request("session.cancelTurn", {
+        sessionId,
+        expectedTurnId,
+        ...(reason !== undefined ? { reason } : {}),
+      }, { signal: AbortSignal.timeout(5_000) });
+    } catch (error) {
+      const timedOut = error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError");
+      if (timedOut) {
+        broadcastDaemonEvent({
+          id: `agenc-daemon-cancel-unacked-${Date.now()}`,
+          type: "warning",
+          payload: {
+            cause: "daemon_delivery_failed",
+            action: "session.cancelTurn",
+            message:
+              "interrupt not acknowledged by the daemon (it may be unresponsive) — try ESC again, or restart the daemon",
+          },
+        });
+      }
+    }
+  };
+  const flushSubmissionCancellation = (event: unknown): void => {
+    if (isJsonObject(event)) {
+      const payload = isJsonObject(event.payload) ? event.payload : {};
+      const clientMessageId = event.clientMessageId ?? payload.clientMessageId;
+      if (clientMessageId !== undefined) {
+        observedSubmission = [...pendingSubmissions.values()].find(
+          (submission) => submission.clientMessageId === clientMessageId,
+        );
+      }
+    }
+    const turnId = activeDaemonTurnId();
+    if (
+      turnId === undefined || !observedSubmission?.dispatched ||
+      observedSubmission.cancellation === undefined
+    ) return;
+    const { reason } = observedSubmission.cancellation;
+    delete observedSubmission.cancellation;
+    void cancelDaemonTurn(turnId, reason);
+  };
   const markDaemonActivityActive = (event: unknown): void => {
     if (terminalDaemonTurnObserved) return;
     const payload = (event as { readonly payload?: unknown }).payload;
@@ -841,13 +900,23 @@ export function createDaemonTuiSession<
         ? payload.turnId
         : (activeTurnSnapshot?.turnId ?? "daemon-turn");
     activeTurnSnapshot = { turnId };
-    if (turnId !== "daemon-turn") lastObservedTurnId = turnId;
+    if (turnId !== "daemon-turn" && !pendingSubmissions.has(turnId)) {
+      lastObservedTurnId = turnId;
+    }
   };
   const noteDaemonActivity = (event: unknown): void => {
     if (typeof event !== "object" || event === null) {
       return;
     }
     const eventType = (event as { readonly type?: unknown }).type;
+    if (eventType === "user_message") {
+      const value = event as JsonObject;
+      const payload = isJsonObject(value.payload) ? value.payload : {};
+      const clientMessageId = value.clientMessageId ?? payload.messageId;
+      observedSubmission = [...pendingSubmissions.values()].find(
+        (submission) => submission.clientMessageId === clientMessageId,
+      );
+    }
     const terminal = typeof eventType === "string"
       ? classifyTurnTerminal({
           type: eventType,
@@ -861,12 +930,14 @@ export function createDaemonTuiSession<
     if (terminal !== undefined) {
       activeTurnSnapshot = null;
       terminalDaemonTurnObserved = true;
+      observedSubmission = undefined;
       return;
     }
     if (eventType === "turn_start" || eventType === "turn_started") {
       daemonTurnStartGeneration += 1;
       terminalDaemonTurnObserved = false;
       markDaemonActivityActive(event);
+      flushSubmissionCancellation(event);
       return;
     }
     if (
@@ -895,7 +966,17 @@ export function createDaemonTuiSession<
     const status = (payload as { readonly status?: unknown }).status;
     const turnId = (payload as { readonly turnId?: unknown }).turnId;
     if (typeof status !== "string") return;
+    const expectedTurnId = activeDaemonTurnId();
+    if (
+      expectedTurnId !== undefined &&
+      typeof turnId === "string" && turnId !== expectedTurnId &&
+      (status === "idle" || status === "completed" || status === "failed" ||
+        status === "error" || status === "cancelled" || status === "canceled")
+    ) return;
     if (status === "idle") {
+      if (typeof turnId === "string" && !pendingSubmissions.has(turnId)) {
+        lastObservedTurnId = turnId;
+      }
       activeTurnSnapshot = null;
       return;
     }
@@ -908,6 +989,7 @@ export function createDaemonTuiSession<
     ) {
       activeTurnSnapshot = null;
       terminalDaemonTurnObserved = true;
+      observedSubmission = undefined;
       return;
     }
     if (terminalDaemonTurnObserved) return;
@@ -920,6 +1002,7 @@ export function createDaemonTuiSession<
           ? turnId
           : "daemon-turn",
     };
+    flushSubmissionCancellation(event);
   };
   const broadcastDaemonEvent = (event: unknown): void => {
     noteDaemonActivity(event);
@@ -1184,8 +1267,22 @@ export function createDaemonTuiSession<
         activeTurnSnapshot ?? baseSession.activeTurn?.unsafePeek?.() ?? null,
     },
     submit: async (message, opts) => {
-      await runtimeSettingsAuthorityMutationTail;
-      await awaitRuntimeSettingsAuthority();
+      const clientMessageId = opts?.clientMessageId ?? randomUUID();
+      const streamId = `${clientId}:${randomUUID()}`;
+      const submission: PendingDaemonSubmission = { clientMessageId, dispatched: false };
+      pendingSubmissions.set(streamId, submission);
+      try {
+        await runtimeSettingsAuthorityMutationTail;
+        await awaitRuntimeSettingsAuthority();
+        if (submission.cancellation !== undefined) {
+          throw Object.assign(new Error(submission.cancellation.reason ?? "interrupted"), {
+            name: "AbortError",
+          });
+        }
+      } catch (error) {
+        pendingSubmissions.delete(streamId);
+        throw error;
+      }
       const queuedInputsBeforeSubmission = [...queuedInputs];
       const queuedEntries: DaemonQueuedInput[] = [];
       const retained: DaemonQueuedInput[] = [];
@@ -1211,11 +1308,12 @@ export function createDaemonTuiSession<
       );
       queuedInputCount = Math.max(0, queuedInputCount - submittedInputCount);
       queuedInputBytes = Math.max(0, queuedInputBytes - submittedInputBytes);
-      if (queued.length === 0 && message.length === 0) return;
+      if (queued.length === 0 && message.length === 0) {
+        pendingSubmissions.delete(streamId);
+        return;
+      }
       inFlightInputCount += submittedInputCount;
       inFlightInputBytes += submittedInputBytes;
-      const clientMessageId = opts?.clientMessageId ?? randomUUID();
-      const streamId = `${clientId}:${randomUUID()}`;
       if (activeTurnSnapshot === null) {
         terminalDaemonTurnObserved = false;
         activeTurnSnapshot = { turnId: streamId };
@@ -1230,6 +1328,10 @@ export function createDaemonTuiSession<
                 : []),
             ];
       let recovered: MessageStreamResult | undefined;
+      let completion: {
+        readonly turnId?: string;
+        readonly terminal: NonNullable<MessageStreamResult["terminal"]>;
+      } | undefined;
       try {
         const metadata: JsonObject = {
           ...(opts?.displayUserMessage !== undefined
@@ -1267,6 +1369,7 @@ export function createDaemonTuiSession<
               }
             : {}),
         };
+        submission.dispatched = true;
         const result = await client.request("message.stream", {
           sessionId,
           content,
@@ -1274,6 +1377,16 @@ export function createDaemonTuiSession<
           clientMessageId,
           streamId,
         } satisfies MessageStreamParams);
+        if (result.terminal !== undefined && (
+          !isJsonObject(result.terminal) ||
+          (result.terminal.code !== 0 && result.terminal.code !== 1 && result.terminal.code !== 130) ||
+          (result.terminal.message !== undefined && typeof result.terminal.message !== "string") ||
+          (result.turnId !== undefined && (
+            typeof result.turnId !== "string" || result.turnId.trim().length === 0
+          ))
+        )) {
+          throw new Error("daemon returned an invalid terminal submission result");
+        }
         if (result.disposition === "duplicate") {
           if (
             result.duplicateState !== "completed" ||
@@ -1291,6 +1404,8 @@ export function createDaemonTuiSession<
             activeTurnSnapshot = null;
             terminalDaemonTurnObserved = true;
           }
+        } else if (result.terminal !== undefined) {
+          completion = { turnId: result.turnId, terminal: result.terminal };
         }
         const submitted = new Set(queuedEntries);
         for (const [token, admission] of idleInputAdmissions) {
@@ -1323,6 +1438,8 @@ export function createDaemonTuiSession<
         if (activeTurnSnapshot?.turnId === streamId) activeTurnSnapshot = null;
         throw error;
       } finally {
+        pendingSubmissions.delete(streamId);
+        if (observedSubmission === submission) observedSubmission = undefined;
         inFlightInputCount = Math.max(
           0,
           inFlightInputCount - submittedInputCount,
@@ -1340,6 +1457,35 @@ export function createDaemonTuiSession<
             ...(recovered.turnId === undefined ? {} : { turnId: recovered.turnId }),
             ...recovered.terminal,
           },
+        });
+      }
+      if (completion !== undefined && !terminalDaemonTurnObserved && (
+        activeTurnSnapshot?.turnId === streamId ||
+        (completion.turnId !== undefined && (
+          activeDaemonTurnId() === completion.turnId ||
+          (activeTurnSnapshot === null && lastObservedTurnId === completion.turnId)
+        ))
+      )) {
+        // The response is a second authoritative terminal delivery path. Only
+        // reconcile its own turn; an older RPC may finish after a successor starts.
+        // Some submissions complete without starting a model turn. Their
+        // response can retire only the local placeholder, never a daemon turn.
+        const { terminal } = completion;
+        const turnId = completion.turnId ?? streamId;
+        activeTurnSnapshot = { turnId };
+        if (completion.turnId !== undefined) lastObservedTurnId = completion.turnId;
+        broadcastDaemonEvent({
+          id: `daemon-submission:${clientMessageId}:terminal`,
+          clientMessageId,
+          ...(terminal.code === 1
+            ? createTurnFailedEvent({
+                turnId,
+                code: "daemon_submission_failed",
+                message: terminal.message ?? "Daemon turn failed",
+              })
+            : terminal.code === 130
+              ? { type: "turn_aborted", payload: { turnId, reason: terminal.message ?? "interrupted" } }
+              : { type: "turn_complete", payload: { turnId, ...(terminal.message !== undefined ? { lastAgentMessage: terminal.message } : {}) } }),
         });
       }
     },
@@ -1444,40 +1590,19 @@ export function createDaemonTuiSession<
       }
     },
     cancelActiveTurn: async (reason?: string) => {
-      // Best-effort: a closed/disconnected daemon socket throws. The
-      // user pressed ESC — they want the turn to stop, but a thrown
-      // error here doesn't help them. Swallow and let the next health
-      // check / event surface the disconnection separately.
-      // Timeout: a WEDGED daemon (idle deadlock) never answers the RPC at
-      // all — without a deadline the ESC press vanishes silently and the
-      // UI keeps showing "Working…" forever. Give up after 5s and tell the
-      // user the interrupt could not be delivered.
-      try {
-        await client.request(
-          "session.cancelTurn",
-          {
-            sessionId,
-            ...(reason !== undefined ? { reason } : {}),
-          },
-          { signal: AbortSignal.timeout(5_000) },
-        );
-      } catch (error) {
-        const timedOut =
-          error instanceof Error &&
-          (error.name === "TimeoutError" || error.name === "AbortError");
-        if (timedOut) {
-          broadcastDaemonEvent({
-            id: `agenc-daemon-cancel-unacked-${Date.now()}`,
-            type: "warning",
-            payload: {
-              cause: "daemon_delivery_failed",
-              action: "session.cancelTurn",
-              message:
-                "interrupt not acknowledged by the daemon (it may be unresponsive) — try ESC again, or restart the daemon",
-            },
-          });
-        }
+      const expectedTurnId = activeDaemonTurnId();
+      if (expectedTurnId !== undefined) {
+        await cancelDaemonTurn(expectedTurnId, reason);
+        return;
       }
+      // A pending submission's stream id is local, not cancellation authority.
+      // Bind ESC to its durable user marker and subsequent daemon turn start;
+      // an unrelated client's turn must not inherit this cancellation.
+      const pending = (activeTurnSnapshot === null
+        ? undefined
+        : pendingSubmissions.get(activeTurnSnapshot.turnId)) ??
+        [...pendingSubmissions.values()].find((submission) => !submission.dispatched);
+      if (pending !== undefined) pending.cancellation = { reason };
     },
     partialCompactFromMessage: async (params) =>
       client.request(
@@ -3155,8 +3280,13 @@ function transcriptEventFromAgentStatus(params: JsonObject, activeTurnId?: strin
   return {
     id: daemonTranscriptEventId(params, turnId),
     type: "background_agent_status",
+    ...(typeof params.clientMessageId === "string"
+      ? { clientMessageId: params.clientMessageId }
+      : {}),
     payload: {
-      turnId,
+      ...(typeof params.turnId === "string" && params.turnId.length > 0
+        ? { turnId: params.turnId }
+        : {}),
       status,
       ...(typeof params.agentId === "string" && params.agentId.length > 0
         ? { agentId: params.agentId }

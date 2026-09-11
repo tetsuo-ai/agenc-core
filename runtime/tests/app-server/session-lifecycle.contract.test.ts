@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { RolloutStore } from "../session/rollout-store.js";
@@ -40,6 +41,80 @@ function sequence(values: readonly string[]): () => string {
 }
 
 describe("AgenC daemon session lifecycle", () => {
+  it("awaits shared termination cleanup without blocking other sessions", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const onSessionTerminated = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const manager = new AgenCDaemonSessionManager({ onSessionTerminated });
+    const cwd = await workspaces.create();
+    const session = await manager.createSession({ cwd });
+    const first = manager.terminateSession({
+      sessionId: session.sessionId,
+      reason: "first reason",
+    });
+    await entered.promise;
+    let repeatedFinished = false;
+    const repeated = manager.terminateSession({
+      sessionId: session.sessionId,
+      reason: "second reason",
+    }).then((result) => {
+      repeatedFinished = true;
+      return result;
+    });
+    try {
+      await setImmediate();
+      expect(repeatedFinished).toBe(false);
+      await expect(manager.createSession({ cwd })).resolves.toMatchObject({ status: "idle" });
+      await expect(manager.attachSession({ sessionId: session.sessionId }))
+        .rejects.toMatchObject({ code: "SESSION_CLOSED" });
+    } finally {
+      release.resolve();
+      await Promise.all([first, repeated]);
+    }
+    expect(await first).toMatchObject({ terminated: true, reason: "first reason" });
+    expect(await repeated).toMatchObject({ terminated: false, reason: "first reason" });
+    expect(onSessionTerminated).toHaveBeenCalledOnce();
+  });
+
+  it("retries failed resource disposal while retaining the original closure", async () => {
+    const onSessionTerminated = vi.fn()
+      .mockRejectedValueOnce(new Error("resource disposal failed"))
+      .mockResolvedValue(undefined);
+    const manager = new AgenCDaemonSessionManager({ onSessionTerminated });
+    const session = await manager.createSession({ cwd: await workspaces.create() });
+    await expect(manager.terminateSession({ sessionId: session.sessionId, reason: "done" }))
+      .rejects.toThrow("resource disposal failed");
+    const closed = await manager.getSession(session.sessionId);
+    await expect(manager.terminateSession({ sessionId: session.sessionId, reason: "retry" }))
+      .resolves.toMatchObject({ terminated: false, reason: "done", closedAt: closed?.closedAt });
+    await manager.terminateSession({ sessionId: session.sessionId });
+    expect(onSessionTerminated).toHaveBeenCalledTimes(2);
+  });
+
+  it("disposes resources even when archival fails and retries only unfinished cleanup", async () => {
+    const onSessionTerminated = vi.fn(async () => {});
+    const archiveThread = vi.fn()
+      .mockImplementationOnce(() => { throw new Error("archive failed"); })
+      .mockReturnValue(undefined);
+    const manager = new AgenCDaemonSessionManager({
+      onSessionTerminated,
+      threadStore: {
+        readThread: () => storedThread("persisted", "2026-05-01T10:00:00.000Z"),
+        archiveThread,
+      } as unknown as ThreadStore,
+    });
+    await expect(manager.terminateSession({ sessionId: "persisted" }))
+      .rejects.toThrow("archive failed");
+    expect(onSessionTerminated).toHaveBeenCalledOnce();
+    await expect(manager.terminateSession({ sessionId: "persisted" }))
+      .resolves.toMatchObject({ terminated: false });
+    expect(onSessionTerminated).toHaveBeenCalledOnce();
+    expect(archiveThread).toHaveBeenCalledTimes(2);
+  });
+
   it("notifies resource owners exactly once when a session terminates", async () => {
     const onSessionTerminated = vi.fn(async () => {});
     const manager = new AgenCDaemonSessionManager({

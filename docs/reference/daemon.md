@@ -7,6 +7,32 @@ agents) attach over a local socket and speak JSON-RPC.
 Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Embedding API:
 [`../sdk.md`](../sdk.md).
 
+## Connection and session ownership
+
+Closing a connection permanently rejects new RPC work and removes its logical
+clients and attachments. Authentication or attachment work completing afterward
+cannot restore that connection. A reconnect may reuse a logical client ID;
+cleanup from the previous physical connection cannot detach the replacement.
+
+A session's `agentId` alone does not grant runtime control. Prompt, cancellation,
+and runtime inspection/mutation require the session to belong to the agent's
+authoritative session list. Use `agent.create` and `agent.attach` for a live
+runtime binding.
+
+Use `session.cancelTurn` with `expectedTurnId` to interrupt the observed turn.
+The TUI defers pre-start cancellation until it correlates its own submitted
+message with a daemon turn. Closing an SDK client settles its local prompt
+waiters without issuing turn cancellation.
+
+Session termination revokes new attachments immediately and awaits resource
+cleanup. Concurrent terminators share cleanup; a later termination request can
+retry a failed finalizer. Agent stop likewise shares teardown, and daemon
+shutdown waits for existing stops. An accepted daemon shutdown still completes
+if its acknowledgement cannot reach the requester.
+
+Implementation findings and regression strategy:
+[`daemon/session control-plane audit`](../design/daemon-session-control-plane-audit.md).
+
 ## Process ownership
 
 | Piece       | Package / path                        | Role                                                                                |
@@ -157,7 +183,7 @@ parsing or dispatch, including when the terminating newline arrives in the
 chunk that crosses the limit. Multiple bounded lines can share a chunk.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.9.0`**
+- Protocol version constant: **`1.12.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
