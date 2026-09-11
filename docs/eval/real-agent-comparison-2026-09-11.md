@@ -16,7 +16,7 @@ Keys never touch an argv: each agent gets one provider key through `env -i`.
 | grok-4.6, xAI sign-in (OAuth) | 12 of 12, 233 s (11 to 27 s per task) | no xAI OAuth support | no xAI OAuth support |
 | grok-4.6, xAI API key | 11 of 12, 486 s (see below) | key out of credit before its run | key out of credit before its run |
 | Claude Sonnet 5 | 12 of 12, 125 s (7 to 17 s) | 12 of 12, 129 s (7 to 14 s) | 5 of 5 completed, 141 s (21 to 34 s); the key ran out of credit on task 6 |
-| DeepSeek V4 Pro | 12 of 12, 192 s (11 to 24 s) | 12 of 12, 173 s (9 to 19 s) | 12 of 12, 587 s (24 to 86 s) with the operator's real HOME; isolated HOME: see below |
+| DeepSeek V4 Pro | 12 of 12, 192 s (11 to 24 s) before #2407; 12 of 12, 148 s (8 to 21 s) after it | 12 of 12, 173 s (9 to 19 s) | 12 of 12, 109 s (7 to 11 s) with an isolated HOME; 587 s (24 to 86 s) with the operator's real HOME |
 
 The grok API key run lost one task to a transient xAI 403: the turn failed after 1.5 s and `agenc -p` then sat until the
 runner killed it at 120 s (issue filed). Minutes later the same key answered 403 "team has used all available credits" to
@@ -28,10 +28,11 @@ every call, which is why Hermes and OpenCode have no grok row; the xAI sign-in i
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | AgenC, grok-4.6 (xAI sign-in) | 15 of 15 (verifier 1 of 1) | 1174 s | 188 (Edit 74, FileRead 71, Write 15, exec 12, Grep 10, Glob 5) | 0 | 71 (24) | 0 | 28.9M |
 | Hermes 0.21.2, DeepSeek V4 Pro | 15 of 15 (verifier 1 of 1) | 1772 s | 94 (write_file 32, patch 25, terminal 21, read_file 10, search_files 6) | not reported | 10 (not reported) | not reported | 5.25M (70,872 uncached, 5.18M cache reads); 169k output, 132k reasoning |
-| OpenCode 1.18.30, DeepSeek V4 Pro (isolated HOME) | PENDING | | | | | | |
+| OpenCode 1.18.30, DeepSeek V4 Pro (isolated HOME) | 15 of 15 (verifier 1 of 1) | 1362 s | 130 (edit 75, bash 20, write 16, read 16, grep 3) | not reported | 16 (not reported) | not reported | 9.96M (46k uncached, 9.9M cache reads); 35.5k output, 80.7k reasoning |
 
 Per-step wall time for AgenC on grok-4.6 (seconds): 34, 28, 39, 37, 48, 51, 49, 74, 41, 46, 128, 50, 270, 239, 39.
 Per-step wall time for Hermes 0.21.2 on DeepSeek V4 Pro (seconds): 36, 33, 46, 34, 84, 64, 76, 141, 84, 92, 177, 78, 388, 265, 173.
+Per-step wall time for OpenCode 1.18.30 on DeepSeek V4 Pro (seconds): 18, 15, 18, 48, 78, 62, 94, 125, 61, 82, 133, 59, 297, 232, 40.
 For reference, the September 5 like-for-like run at medium effort took 1275 s for AgenC and 2203 s for Hermes 0.14.
 
 AgenC's session task over the AgenC SDK needs the provider credential in the home's secure storage (the xAI sign-in
@@ -56,12 +57,13 @@ OpenCode's figure is not the tool's fault: with the operator's real HOME it load
 `~/AGENTS.md` and `~/CLAUDE.md` into every request, about 204,000 input tokens for a one-word reply. With an isolated
 HOME the same reply costs 5,516 tokens. The rerun with an isolated HOME is the row that counts.
 
-| DeepSeek V4 Pro, 12 command tasks | AgenC | Hermes 0.21.2 |
-| --- | --- | --- |
-| model calls | 53 | 57 |
-| tool calls | 46 | 54 |
-| cache-miss prompt tokens per call | 25,623 | 2,896 |
-| cache-hit prompt tokens per call | 14,628 | 11,758 |
+| DeepSeek V4 Pro, 12 command tasks | AgenC (before #2407) | Hermes 0.21.2 | OpenCode 1.18.30 (isolated HOME) |
+| --- | --- | --- | --- |
+| model calls | 53 | 57 | 50 |
+| tool calls | 46 | 54 | not reported |
+| cache-miss prompt tokens per call | 25,623 | 2,896 | 1,438 |
+| cache-hit prompt tokens per call | 14,628 | 11,758 | 6,344 |
+| output tokens | 5,342 | 6,080 | 4,349 (plus 149 reasoning) |
 
 AgenC's 25,600 miss tokens per call were a bug, found by capturing two consecutive requests through a logging proxy:
 the retained "Auto Mode" note moved from the second message of the first request to the end of the second request in
@@ -72,11 +74,14 @@ the retained "Auto Mode" note moved from the second message of the first request
 
 ## Reading
 
-- Pass rates are equal wherever all three agents ran: 12 of 12 for AgenC and Hermes on both Sonnet 5 and DeepSeek V4
-  Pro, and 12 of 12 for OpenCode on DeepSeek V4 Pro.
-- Wall time on the command tasks is within 5 percent between AgenC and Hermes on Sonnet 5 (125 s against 129 s) and 10
-  percent on DeepSeek V4 Pro (192 s against 173 s); the DeepSeek gap is the cache bug above, which the fix removes.
+- Pass rates are equal wherever all three agents ran: 12 of 12 on every model, and 15 of 15 session steps for all
+  three.
+- Wall time on the command tasks is within 5 percent between AgenC and Hermes on Sonnet 5 (125 s against 129 s). On
+  DeepSeek V4 Pro OpenCode with an isolated HOME is fastest (109 s), then Hermes (173 s), then AgenC before the cache
+  fix (192 s); AgenC after #2407: 148 s, with 81 percent of its prompt tokens served from cache against 57 percent before. OpenCode's prompt there is about 8,000 tokens per call against 40,000 for
+  AgenC before the fix.
+- On the session task, OpenCode finished in 1362 s and Hermes in 1772 s on DeepSeek V4 Pro; AgenC's 1174 s is on
+  grok-4.6 through the xAI sign-in, so it is a pace reference, not a like-for-like number.
 - AgenC makes fewer model calls and fewer tool calls per task than Hermes on both models.
 - AgenC's prompt is larger than Hermes's: about 24,000 cached tokens per call against 19,000, the difference being the
   skills listing and the 46 KB tool catalog (spawn_agent alone is 10 KB).
-- On the session task AgenC finished the 15 steps on grok-4.6 in 1174 s with no tool errors and no compaction.
