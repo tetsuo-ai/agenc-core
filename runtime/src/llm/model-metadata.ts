@@ -92,13 +92,18 @@ interface FetchJsonOptions {
   readonly jsonBody?: Readonly<Record<string, unknown>>;
 }
 
+type MetadataJson = object | string | number | boolean | null;
+
 export class ModelMetadataResolver {
   private readonly fetchImpl?: typeof fetch;
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly timeoutMs: number;
   private readonly onWarn?: (msg: string) => void;
-  private readonly inFlightJson = new Map<string, Promise<unknown>>();
-  private readonly jsonCache = new Map<string, unknown>();
+  private readonly inFlightJson = new Map<
+    string,
+    Promise<MetadataJson | undefined>
+  >();
+  private readonly jsonCache = new Map<string, MetadataJson | undefined>();
   private readonly warnedInvalidEnv = new Set<string>();
 
   constructor(options: ModelMetadataResolverOptions = {}) {
@@ -287,7 +292,7 @@ export class ModelMetadataResolver {
   private async fetchJson(
     url: string,
     options: FetchJsonOptions = {},
-  ): Promise<unknown | undefined> {
+  ): Promise<MetadataJson | undefined> {
     if (!this.fetchImpl) return undefined;
     const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}\n${
       JSON.stringify(options.jsonBody ?? null)
@@ -303,7 +308,7 @@ export class ModelMetadataResolver {
   private async fetchJsonUncached(
     url: string,
     options: FetchJsonOptions,
-  ): Promise<unknown | undefined> {
+  ): Promise<MetadataJson | undefined> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
