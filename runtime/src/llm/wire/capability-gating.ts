@@ -33,7 +33,7 @@ import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "../registry/openai-reasoning-models.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
-import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "../registry/agenc-deepseek.js";
+import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_V41_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "../registry/agenc-deepseek.js";
 import { DEEPSEEK_REASONING_LEVELS, isNativeDeepSeekModel } from "../registry/deepseek-models.js";
 
 export interface ChatCompletionsCapabilityHints {
@@ -542,6 +542,12 @@ export function chatCompletionsCapabilityHintsForProvider(
       reasoningContentField: "reasoning_content" as const,
     } : {}),
     ...(isManagedDeepSeek ? {
+      // The reviewed V4.1 route supports automatic tool selection, not forced
+      // or named choices. All tools remain available to the agent.
+      ...(model === AGENC_DEEPSEEK_V41_MODEL ? {
+        acceptsToolChoice: false,
+        toolChoicePolicy: "auto_only" as const,
+      } : {}),
       acceptsParallelToolCalls: false,
       acceptsDirectImageInput: false,
       toolResultImagePolicy: "strip" as const,
