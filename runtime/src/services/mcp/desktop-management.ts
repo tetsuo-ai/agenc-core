@@ -67,7 +67,8 @@ export async function mcpDesktopInventory(context: ManagementContext) {
       ...(editable ? { revision: revision(raw[name]) } : {}),
     };
   });
-  return { schemaVersion: 1, servers, errors: result.errors.length ? ["Some MCP definitions could not be loaded. Run MCP doctor for details."] : [] };
+  const loadErrors = result.errors.filter(error => error.type !== "mcp-server-suppressed-duplicate");
+  return { schemaVersion: 1, servers, errors: loadErrors.length ? ["Some MCP definitions could not be loaded. Run MCP doctor for details."] : [] };
 }
 
 const PATCH_KEYS = new Set(["revision", "originalName", "name", "transport", "command", "args", "url", "env", "envPassthrough", "cwd", "oauth"]);

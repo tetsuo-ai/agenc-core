@@ -110,6 +110,38 @@ describe("desktop MCP contract", () => {
     expect((await mcpDesktopInventory(context)).servers.find((item) => item.name === entry.name)?.enabled).toBe(true);
     expect(() => patch({ originalName: entry.name })).toThrow();
   });
+  test("loads separate plugins that both use node ./server/main.mjs", async () => {
+    mutateCanonicalUserConfigSync(authority.homeContext.configTomlPath, (raw) => { raw.plugins = { enabled: true }; });
+    await authority.reload();
+    for (const name of ["first-plugin", "second-plugin"]) {
+      const plugin = join(context.pluginStorageRoot, name);
+      await mkdir(join(plugin, ".agenc-plugin"), { recursive: true });
+      await mkdir(join(plugin, "server"));
+      await writeFile(join(plugin, "server", "main.mjs"), "// Inventory must not execute this server.\n");
+      await writeFile(join(plugin, ".agenc-plugin", "plugin.json"), JSON.stringify({
+        name, mcpServers: { api: { transport: "stdio", command: "node", args: ["./server/main.mjs"] } },
+      }));
+    }
+    const inventory = await mcpDesktopInventory(context);
+    expect(inventory.errors).toEqual([]);
+    expect(inventory.servers.map(server => server.pluginId).sort()).toEqual(["first-plugin", "second-plugin"]);
+    for (const server of inventory.servers) {
+      expect(server.cwd).toBe(join(context.pluginStorageRoot, server.pluginId!));
+    }
+  });
+  test("does not report an intentional duplicate suppression as a load failure", async () => {
+    await seed("manual", { transport: "http", endpoint: "https://example.test/mcp" });
+    mutateCanonicalUserConfigSync(authority.homeContext.configTomlPath, (raw) => { raw.plugins = { enabled: true }; });
+    await authority.reload();
+    const plugin = join(context.pluginStorageRoot, "duplicate-plugin");
+    await mkdir(join(plugin, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(plugin, ".agenc-plugin", "plugin.json"), JSON.stringify({
+      name: "duplicate-plugin", mcpServers: { api: { transport: "http", endpoint: "https://example.test/mcp" } },
+    }));
+    const inventory = await mcpDesktopInventory(context);
+    expect(inventory.servers.map(server => server.name)).toEqual(["manual"]);
+    expect(inventory.errors).toEqual([]);
+  });
   test("logout removes only exact-server OAuth state and client secret", async () => {
     const config = { type: "http" as const, url: "https://example.test/mcp", oauth: {} };
     await seed("sample", { transport: "http", endpoint: config.url, oauth: {} });
