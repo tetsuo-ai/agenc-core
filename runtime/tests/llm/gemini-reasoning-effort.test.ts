@@ -15,8 +15,12 @@ import type { LLMChatOptions } from "../../src/llm/types.js";
 
 const MODEL_LEVELS = [
   ["gemini-3.1-pro-preview", ["low", "medium", "high"]],
+  ["gemini-3.8-flash", ["low", "medium", "high"]],
   ["gemini-3.7-flash", ["low", "medium", "high"]],
+  ["gemini-3.6-flash", ["minimal", "low", "medium", "high"]],
   ["gemini-3.5-flash", ["minimal", "low", "medium", "high"]],
+  ["gemini-3.5-flash-lite", ["minimal", "low", "medium", "high"]],
+  ["gemini-3.1-flash-lite", ["minimal", "low", "medium", "high"]],
   ["gemini-3-flash-preview", ["minimal", "low", "medium", "high"]],
   ["gemini-3-pro-preview", ["low", "high"]],
   ["gemini-2.5-pro", []],
