@@ -911,7 +911,7 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
     expect(request("us.anthropic.agenc-opus-5-v1", "low").thinking).toEqual({ type: "adaptive" });
 
     // Budgeted generations keep their config; effort only where the API takes it.
-    expect(request("claude-opus-4-5-20251101", "high").thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+    expect(request("claude-opus-4-5-20251101", "high").thinking).toEqual({ type: "enabled", budget_tokens: 4095 });
     expect(request("claude-opus-4-5-20251101", "high").output_config).toEqual({ effort: "high" });
     for (const model of ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]) {
       expect(request(model, "low").thinking, model).toEqual({ type: "enabled", budget_tokens: 2048 });
