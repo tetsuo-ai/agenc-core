@@ -212,6 +212,19 @@ export async function readContainedUtf8(
   }
 }
 
+type ContainedWalkFrame = {
+  readonly path: string;
+  readonly depth: number;
+};
+
+type ContainedWalkState = {
+  readonly files: string[];
+  readonly rejections: ContainedReject[];
+  droppedCount: number;
+  readonly visited: Set<string>;
+  readonly queue: ContainedWalkFrame[];
+};
+
 export async function walkContainedFiles(
   root: ContainedRoot,
   startPath: string,
@@ -233,48 +246,81 @@ export async function walkContainedFiles(
       }],
     };
   }
-  const files: string[] = [];
-  const rejections: ContainedReject[] = [];
-  let droppedCount = 0;
-  const visited = new Set<string>([start.canonicalPath]);
-  const queue: Array<{ readonly path: string; readonly depth: number }> = [
-    { path: start.declaredPath, depth: 0 },
-  ];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
+  const state: ContainedWalkState = {
+    files: [],
+    rejections: [],
+    droppedCount: 0,
+    visited: new Set([start.canonicalPath]),
+    queue: [{ path: start.declaredPath, depth: 0 }],
+  };
+  while (state.queue.length > 0) {
+    const current = state.queue.shift()!;
     if (current.depth > options.maxDepth) continue;
-    let entries: Dirent[];
-    try {
-      entries = await io.readdir(current.path);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (options.skipDir?.(entry.name) === true) continue;
-      const childPath = join(current.path, entry.name);
-      const inspected = await inspectContainedPath(root, childPath, io);
-      if (!inspected.ok) {
-        rejections.push(inspected);
-        continue;
-      }
-      if (inspected.kind === "directory") {
-        if (
-          current.depth < options.maxDepth &&
-          !visited.has(inspected.canonicalPath)
-        ) {
-          visited.add(inspected.canonicalPath);
-          queue.push({ path: inspected.declaredPath, depth: current.depth + 1 });
-        }
-        continue;
-      }
-      if (current.depth === 0 && options.includeStartFiles === false) continue;
-      if (!options.collectFile(entry.name)) continue;
-      if (files.length >= options.maxFiles) droppedCount += 1;
-      else files.push(inspected.declaredPath);
-    }
+    await visitContainedDirectory(root, current, options, io, state);
   }
-  files.sort((left, right) => left.localeCompare(right));
-  return { files, droppedCount, rejections };
+  state.files.sort((left, right) => left.localeCompare(right));
+  return {
+    files: state.files,
+    droppedCount: state.droppedCount,
+    rejections: state.rejections,
+  };
+}
+
+async function visitContainedDirectory(
+  root: ContainedRoot,
+  current: ContainedWalkFrame,
+  options: ContainedWalkOptions,
+  io: ContainedRootIo,
+  state: ContainedWalkState,
+): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await io.readdir(current.path);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    await visitContainedChild(root, current, entry, options, io, state);
+  }
+}
+
+async function visitContainedChild(
+  root: ContainedRoot,
+  current: ContainedWalkFrame,
+  entry: Dirent,
+  options: ContainedWalkOptions,
+  io: ContainedRootIo,
+  state: ContainedWalkState,
+): Promise<void> {
+  if (options.skipDir?.(entry.name) === true) return;
+  const inspected = await inspectContainedPath(
+    root,
+    join(current.path, entry.name),
+    io,
+  );
+  if (!inspected.ok) {
+    state.rejections.push(inspected);
+    return;
+  }
+  if (inspected.kind === "directory") {
+    enqueueContainedDirectory(inspected, current.depth, options.maxDepth, state);
+    return;
+  }
+  if (current.depth === 0 && options.includeStartFiles === false) return;
+  if (!options.collectFile(entry.name)) return;
+  if (state.files.length >= options.maxFiles) state.droppedCount += 1;
+  else state.files.push(inspected.declaredPath);
+}
+
+function enqueueContainedDirectory(
+  inspected: ContainedInspectOk,
+  depth: number,
+  maxDepth: number,
+  state: ContainedWalkState,
+): void {
+  if (depth >= maxDepth || state.visited.has(inspected.canonicalPath)) return;
+  state.visited.add(inspected.canonicalPath);
+  state.queue.push({ path: inspected.declaredPath, depth: depth + 1 });
 }
 
 function isInsideContainedRoot(root: ContainedRoot, canonicalPath: string): boolean {
