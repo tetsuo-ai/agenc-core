@@ -4,10 +4,6 @@ import backendPrompt from "./prompts/backend_prompt.md";
 import realtimeEndPrompt from "./prompts/realtime_end.md";
 import realtimeStartPrompt from "./prompts/realtime_start.md";
 
-/**
- * Parity anchors: `core/src/realtime_prompt.rs` plus the realtime prompt
- * markdown assets at commit `c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
- */
 export const REALTIME_USER_FIRST_NAME_PLACEHOLDER = "{{ user_first_name }}";
 const DEFAULT_REALTIME_USER_FIRST_NAME = "there";
 

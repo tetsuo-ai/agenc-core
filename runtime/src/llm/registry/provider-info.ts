@@ -17,7 +17,7 @@ export const GITHUB_COPILOT_MODEL_PREFIX = "github:copilot:";
 
 const GITHUB_COPILOT_MODEL_IDS = Object.freeze([
   "gpt-5-mini",
-  "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+  "gpt-5.3-codex",
   "gpt-5.4",
   "gpt-5.4-mini",
   "gpt-5.4-nano",
@@ -361,7 +361,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     onboarding: onboardingInfo(10, "api-key"),
   }),
   openai: providerDefinition({
-    name: "OpenAI", // branding-scan: allow real provider display name
+    name: "OpenAI",
     defaultModel: "gpt-5",
     baseURL: "https://api.openai.com/v1",
     credentials: apiKeyCredentials(["OPENAI_API_KEY"]),
@@ -370,7 +370,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     onboarding: onboardingInfo(20, "api-key"),
   }),
   anthropic: providerDefinition({
-    name: "Anthropic", // branding-scan: allow real provider display name
+    name: "Anthropic",
     defaultModel: "claude-opus-4-7",
     baseURL: "https://api.anthropic.com/v1",
     credentials: apiKeyCredentials(["ANTHROPIC_API_KEY"]),
@@ -394,7 +394,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     onboarding: onboardingInfo(50, "local"),
   }),
   "openai-compatible": providerDefinition({
-    name: "OpenAI-compatible", // branding-scan: allow provider category display name
+    name: "OpenAI-compatible",
     defaultModel: "local-model",
     baseURL: "http://localhost:8000/v1",
     credentials: apiKeyCredentials(
@@ -535,7 +535,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   github: providerDefinition({
     name: "GitHub Copilot",
-    defaultModel: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+    defaultModel: "gpt-5.3-codex",
     baseURL: "https://api.githubcopilot.com",
     credentials: apiKeyCredentials(["GITHUB_TOKEN", "GH_TOKEN"]),
     baseURLEnvVars: ["GITHUB_BASE_URL"],

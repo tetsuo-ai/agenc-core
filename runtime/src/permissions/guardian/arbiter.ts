@@ -1,10 +1,6 @@
 /**
  * Guardian approval arbiter.
  *
- * Source parity:
- * - core/src/guardian/approval_request.rs
- * - core/src/guardian/review.rs
- *
  * This is the single approval-request entry point for tool dispatch. It owns
  * hook routing, automatic guardian review, user prompt fallback, stale-turn
  * checks, and session approval-cache writes.

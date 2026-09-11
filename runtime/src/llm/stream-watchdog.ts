@@ -2,9 +2,8 @@
  * Stream idle watchdog — I-11.
  *
  * AgenC stream-idle deadline guard (`streamWatchdogEnabled`,
- * `streamWatchdogFiredAt`, `streamIdleAborted`) plus runtime
- * `client.rs:1146`
- * (`stream_idle_timeout_ms` from provider info).
+ * `streamWatchdogFiredAt`, `streamIdleAborted`) driven by
+ * `stream_idle_timeout_ms` from provider info.
  *
  * The watchdog has no implicit deadline. The canonical config snapshot carries
  * a positive timeout when operators opt in; `0` disables it. This keeps long

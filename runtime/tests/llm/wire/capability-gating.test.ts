@@ -10,7 +10,6 @@ import { buildChatCompletionsRequest } from "./chat-completions.js";
 describe("chatCompletionsCapabilityHintsForProvider", () => {
   describe("acceptsReasoningEffort", () => {
     test("openai reasoning-family models accept reasoning_effort", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       expect(
         chatCompletionsCapabilityHintsForProvider("openai", "gpt-5")
           .acceptsReasoningEffort,
@@ -26,7 +25,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
 
     test("openai non-reasoning models do not accept reasoning_effort", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       expect(
         chatCompletionsCapabilityHintsForProvider("openai", "gpt-4o")
           .acceptsReasoningEffort,
@@ -38,7 +36,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
 
     test("documented grok reasoning models accept reasoning_effort", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       expect(
         chatCompletionsCapabilityHintsForProvider("grok", "grok-4.3")
           .acceptsReasoningEffort,
@@ -89,7 +86,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
 
     test("undocumented grok models do not accept reasoning_effort", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       expect(
         chatCompletionsCapabilityHintsForProvider("grok", "grok-4")
           .acceptsReasoningEffort,
@@ -101,7 +97,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
 
     test("rejects the retired xai provider selector", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       expect(
         () => chatCompletionsCapabilityHintsForProvider(
           "xai",
@@ -111,7 +106,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
 
     test("nim reasoning families accept only their documented enum", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       const cases: readonly {
         readonly model: string;
         readonly allowed: readonly string[];
@@ -178,7 +172,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
 
     test("nim models without a documented effort field stay stripped", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       const models = [
         "moonshotai/kimi-k2.6",
         "moonshotai/kimi-k2-thinking",
@@ -197,7 +190,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
 
     test("nim enums do not leak to other providers or hint shapes", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       expect(
         chatCompletionsCapabilityHintsForProvider(
           "openrouter",
@@ -211,7 +203,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
 
     test("non-openai non-grok providers never accept reasoning_effort", () => {
-      // branding-scan: allow real model identifiers used as test fixtures
       const providers = [
         "lmstudio",
         "ollama",

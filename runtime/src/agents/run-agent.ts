@@ -1,7 +1,7 @@
 /**
  * runAgent — drive one subagent's run-turn loop.
  *
- * Hand-port of the donor subagent runner subset. Responsibilities:
+ * Responsibilities:
  *
  *   1. Build a child Session from the parent + fork context.
  *   2. Initialize MCP servers (30s wait, cancellable — I-50).

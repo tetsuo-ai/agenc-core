@@ -2542,7 +2542,7 @@ describe("session-store", () => {
   test("DEFAULT_SESSION_ROOT_MARKERS covers common ecosystem roots", () => {
     // Guards against accidental drift between this list and the
     // project-instructions loader; a full equality check would couple
-    // the two, so just assert coverage of the agenc runtime-rooted minimum.
+    // the two, so just assert coverage of the minimum.
     expect(DEFAULT_SESSION_ROOT_MARKERS).toContain(".git");
     expect(DEFAULT_SESSION_ROOT_MARKERS).toContain("package.json");
   });

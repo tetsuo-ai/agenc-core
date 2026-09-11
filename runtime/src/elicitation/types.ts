@@ -1,14 +1,11 @@
 /**
- * Ports the donor runtime's request-user-input and MCP elicitation protocol
- * shapes onto AgenC's TypeScript event and tool surfaces.
+ * Request-user-input and MCP elicitation protocol shapes for AgenC's event
+ * and tool surfaces.
  *
- * Why this lives here / shape difference from upstream:
- *   - The donor splits protocol structs, tool schema helpers, and MCP client
- *     service callbacks across separate crates; AgenC keeps the shared wire
- *     types together so session, MCP, and model-facing tools agree.
- *
- * Cross-cuts deliberately NOT carried:
- *   - URL browser automation. URL elicitations are surfaced as events; a UI
+ * Design notes:
+ *   - The shared wire types live together so session, MCP, and
+ *     model-facing tools agree.
+ *   - No URL browser automation. URL elicitations are surfaced as events; a UI
  *     owner decides how to open and complete the out-of-band flow.
  *
  * @module

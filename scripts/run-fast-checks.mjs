@@ -11,8 +11,6 @@ const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function isDocumentationPath(file) {
   return file === "README.md" ||
-    file === "memory_todo.md" ||
-    file === "todo.txt" ||
     file.startsWith("docs/");
 }
 

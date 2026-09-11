@@ -9,15 +9,13 @@
  *   - `session.onTaskFinished(subId)` drains the review from the
  *     registry the same way it drains a regular turn.
  *   - Review tasks are NOT steerable — `isTaskKindSteerable("review")`
- *     returns `false`, matching upstream agenc runtime behavior (Item 6
- *     steer_input gate port will consume this classifier directly).
+ *     returns `false` (the
+ *     steer_input gate consumes this classifier directly).
  *   - `ReviewManager` tracks spawned reviews by subId and shuts them
- *     down cleanly (upstream `GuardianReviewSessionManager::shutdown`).
- *   - `parseReviewOutput` mirrors upstream
- *     `parse_review_output_event`: structured JSON, substring JSON,
+ *     down cleanly.
+ *   - `parseReviewOutput` handles structured JSON, substring JSON,
  *     and plain-text fallback.
- *   - Exit templates render verbatim (upstream
- *     `render_review_exit_success` + CRLF-free
+ *   - Exit templates render verbatim (`renderReviewExitSuccess` + CRLF-free
  *     `exit_interrupted.xml`).
  *
  * Fixture reuses the `buildSession` pattern from `tasks.test.ts` so
@@ -782,7 +780,6 @@ describe("parseReviewOutput", () => {
 describe("review exit templates", () => {
   it("renderReviewExitSuccess substitutes {{results}} once", () => {
     const rendered = renderReviewExitSuccess("Finding A\nFinding B");
-    // Mirrors upstream tasks/review.rs::tests::render_review_exit_success_replaces_results_placeholder
     expect(rendered).toBe(
       "<user_action>\n  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>\n  <action>review</action>\n  <results>\n  Finding A\nFinding B\n  </results>\n  </user_action>",
     );
@@ -949,9 +946,9 @@ describe("ReviewManager + session abort integration", () => {
     // Documents the current contract: the manager registry is separate
     // from Session's task registry. Callers who register a review with
     // a manager are responsible for calling manager.take(subId) or
-    // manager.shutdown() to release it. This matches upstream agenc runtime
-    // where `on_task_finished` does not reach into the
-    // `GuardianReviewSessionManager` state.
+    // manager.shutdown() to release it;
+    // `onTaskFinished` does not reach into the
+    // `ReviewManager` state.
     const session = mkSession();
     const manager = new ReviewManager();
     await spawnReviewTask(session, {
@@ -1106,7 +1103,7 @@ describe("renderReviewExitSuccess edge cases", () => {
   });
 
   it("escapes no characters in results (matches upstream — callers must sanitize)", () => {
-    // Upstream agenc runtime template engine substitutes literally; any escaping
+    // The template engine substitutes literally; any escaping
     // is the caller's responsibility. This test pins the behavior.
     const results = "a<b>c&d\"e'f";
     const rendered = renderReviewExitSuccess(results);

@@ -1,10 +1,8 @@
 /**
  * TurnState — mutable working set carried across phase-machine iterations.
  *
- * Hand-port of agenc `src/query.ts`'s `State` type (query.ts:203) plus
- * the 22 loop-local variables the body destructures/re-assigns each iteration
- * (query.ts:315-339). Every field below cites its exact AgenC source
- * line per `docs/plan/translation-conventions.md` "full-port with citations".
+ * Holds the per-turn `State` plus the loop-local variables the phase
+ * machine destructures and re-assigns each iteration.
  * Cross-subsystem fields are bound to the concrete in-tree contracts that
  * currently own those runtime surfaces.
  *
@@ -34,24 +32,21 @@ import {
 } from "./turn-checkpoint-slice.js";
 
 /**
- * Continue — the 8 recovery re-entry reasons captured at each
- * AgenC query.ts continue site. Used on `TurnState.transition`
+ * Continue: the recovery re-entry reasons captured at each
+ * continue site of the turn loop. Used on `TurnState.transition`
  * so the phase machine can route correctly on the next iteration
  * and so tests can assert which recovery path fired without peeking
- * at message contents. Mirrors agenc `Continue` from
- * `src/query/transitions.ts` (source exists in upstream head; cited
- * as per transition literal sites in query.ts).
+ * at message contents.
  *
- * Sites (AgenC query.ts line → reason):
- *   981  → collapse_drain_retry (implied by context-collapse retry)
- *   1142 → collapse_drain_retry
- *   1195 → reactive_compact_retry
- *   1251 → max_output_tokens_escalate
- *   1281 → max_output_tokens_recovery
- *   1338 → stop_hook_blocking
- *   1375 → token_budget_continuation
- *   1457 → continuation_nudge
- * Plus agenc runtime model-fallback site → model_fallback.
+ * Reasons:
+ *   collapse_drain_retry (context-collapse retry)
+ *   reactive_compact_retry
+ *   max_output_tokens_escalate
+ *   max_output_tokens_recovery
+ *   stop_hook_blocking
+ *   token_budget_continuation
+ *   continuation_nudge
+ *   model_fallback (model-fallback site)
  *
  * T8 disambiguation:
  *   - `model_fallback` is reserved for `onFallbackError` (FallbackTriggeredError
@@ -495,7 +490,7 @@ export interface TurnState {
 // (see session/turn-context.ts). Phases read the frozen config from
 // `ctx.configSnapshot`, never from `session.state` directly. TurnState
 // does not duplicate the snapshot — there is exactly one immutable
-// snapshot per turn, on the TurnContext, mirroring agenc runtime's pattern.
+// snapshot per turn, on the TurnContext.
 
 // ─────────────────────────────────────────────────────────────────────
 // Builder

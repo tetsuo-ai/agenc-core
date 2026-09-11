@@ -114,7 +114,7 @@ describe("StaticModelsManager", () => {
     const listed = await manager.listModels();
     expect(listed.map((entry) => entry.slug)).toContain("gpt-5.4");
     expect(listed.map((entry) => entry.slug)).not.toContain(
-      "codex-auto-review", // branding-scan: allow openai model identifier
+      "codex-auto-review",
     );
 
     const info = await manager.getModelInfo("gpt-5.4");
@@ -140,10 +140,10 @@ describe("StaticModelsManager", () => {
     ]);
 
     const hidden = await manager.getModelInfo(
-      "codex-auto-review", // branding-scan: allow openai model identifier
+      "codex-auto-review",
     );
     expect(hidden).toMatchObject({
-      slug: "codex-auto-review", // branding-scan: allow openai model identifier
+      slug: "codex-auto-review",
       visibility: "hide",
       showInPicker: false,
     });
@@ -154,7 +154,6 @@ describe("StaticModelsManager", () => {
       config: mergeConfigs(defaultConfig(), {
         providers: {
           openrouter: {
-            // branding-scan: allow documented routed Anthropic model identifier
             default_model: "anthropic/claude-3.7-sonnet",
           },
         },
@@ -164,7 +163,6 @@ describe("StaticModelsManager", () => {
 
     const listed = await manager.listModels();
     expect(listed.map((entry) => entry.slug)).toContain(
-      // branding-scan: allow documented routed Anthropic model identifier
       "anthropic/claude-3.7-sonnet",
     );
   });

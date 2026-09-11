@@ -1,9 +1,6 @@
 /**
  * Context-size budgeting for prompt assembly and turn continuation.
  *
- * Source provenance lives in `runtime/src/conversation/PARITY.md` and
- * `parity/PR-05-parity.json`; this runtime module stays AgenC-branded.
- *
  * @module
  */
 

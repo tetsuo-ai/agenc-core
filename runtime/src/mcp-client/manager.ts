@@ -1236,8 +1236,7 @@ export class MCPManager {
   }
 
   /**
-   * Port of donor runtime `Session::resolve_mcp_tool_info` (session.rs). Given
-   * a tool name the model emitted, either return `{ serverName,
+   * Given a tool name the model emitted, either return `{ serverName,
    * toolName }` when the tool is MCP-backed, or `undefined`.
    *
    * Accepts both the namespaced `mcp.<server>.<tool>` form and a plain

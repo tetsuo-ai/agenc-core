@@ -1,14 +1,11 @@
 /**
- * Ports the donor runtime's MCP elicitation callback handling onto the
- * AgenC MCP client and session boundary.
+ * MCP elicitation callback handling at the AgenC MCP client and session
+ * boundary.
  *
- * Why this lives here / shape difference from upstream:
- *   - The donor keeps the pending responder map inside its MCP service.
- *     AgenC keeps pending responders on `ActiveTurnState`, so this file
- *     translates SDK requests and delegates waiting to `Session`.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Realtime audio pause plumbing beyond the session's existing
+ * Design notes:
+ *   - Pending responders live on `ActiveTurnState`, so this file translates
+ *     SDK requests and delegates waiting to `Session`.
+ *   - No realtime audio pause plumbing beyond the session's existing
  *     `outOfBandElicitationPaused` subject.
  *
  * @module

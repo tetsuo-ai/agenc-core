@@ -194,8 +194,6 @@ Primary and upstream sources reviewed 2026-07-16:
 - [OpenAI agent approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security)
   and [sandboxing](https://learn.chatgpt.com/docs/sandboxing) describe explicit
   approval/isolation boundaries and platform behavior.
-- [OpenAI Linux sandbox implementation](https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md) <!-- branding-scan: allow upstream sandbox research citation -->
-  informed the separation between policy decisions and final OS enforcement.
 - [Linux Landlock](https://www.kernel.org/doc/html/latest/userspace-api/landlock.html),
   [`no_new_privs`](https://docs.kernel.org/userspace-api/no_new_privs.html), and
   [seccomp filters](https://docs.kernel.org/userspace-api/seccomp_filter.html)
@@ -234,8 +232,8 @@ Primary and upstream sources reviewed 2026-07-16:
   requires session-specific working-directory context and explicitly models
   stdio child environment, supporting a session-owned ACP spawn boundary rather
   than a process-global one.
-- [Claude Code sandboxing](https://code.claude.com/docs/en/sandboxing) <!-- branding-scan: allow current competitor sandbox research -->,
-  [Hermes security guidance](https://hermes-agent.nousresearch.com/docs/user-guide/security) <!-- branding-scan: allow comparator research citation -->,
-  and [OpenClaw sandboxing](https://github.com/openclaw/openclaw/blob/main/docs/gateway/sandboxing.md) <!-- branding-scan: allow comparator research citation -->
+- [Claude Code sandboxing](https://code.claude.com/docs/en/sandboxing),
+  [Hermes security guidance](https://hermes-agent.nousresearch.com/docs/user-guide/security),
+  and [OpenClaw sandboxing](https://github.com/openclaw/openclaw/blob/main/docs/gateway/sandboxing.md)
   were checked for current peer behavior. Their layered isolation and explicit
   escape modes support a common boundary; none justifies warning-only fallback.

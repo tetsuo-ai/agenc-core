@@ -1,11 +1,10 @@
 /**
- * Ports upstream runtime `realtime-webrtc/src/lib.rs` onto AgenC's
- * TypeScript realtime WebRTC session surface.
+ * Realtime WebRTC session surface.
  *
- * Shape difference from upstream:
+ * Design notes:
  *   - AgenC uses WebRTC APIs provided by the host Node/Electron runtime. When
- *     those APIs are absent, `RealtimeWebrtcSession.start()` preserves the
- *     upstream unsupported-platform error.
+ *     those APIs are absent, `RealtimeWebrtcSession.start()` raises the
+ *     unsupported-platform error.
  */
 
 import { AsyncQueue } from "../../../utils/async-queue.js";

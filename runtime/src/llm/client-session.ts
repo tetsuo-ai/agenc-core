@@ -1,8 +1,7 @@
 /**
  * Turn-scoped provider HTTP session.
  *
- * Ports the upstream runtime provider/session contract into the runtime-facing
- * TypeScript client layer: provider-level query params, auth/header injection,
+ * Provider/session contract for the runtime-facing client layer: provider-level query params, auth/header injection,
  * bounded retry budgets, operator-configurable stream idle timeouts, and
  * explicit wire-api metadata. Stream idle timeouts are disabled by default.
  *
@@ -77,8 +76,6 @@ export type ProviderWireApi =
 export interface ProviderHttpRetryBudget {
   /**
    * Retry budget excluding the initial attempt.
-   *
-   * Matches upstream runtime `request_max_retries` / `stream_max_retries`.
    */
   readonly maxRetries?: number;
   readonly baseDelayMs?: number;

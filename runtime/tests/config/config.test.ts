@@ -563,7 +563,6 @@ describe("provider resolution (T13)", () => {
         grok: {
           fallback: {
             targets: [
-              // branding-scan: allow provider normalization fixture
               { provider: " OpenAI ", model: " gpt-5 ", reason: " burst " },
               { provider: "openai", model: "gpt-5" },
               { provider: " grok ", model: "grok-3" },
@@ -630,14 +629,12 @@ describe("provider resolution (T13)", () => {
     const config = mergeConfigs(defaultConfig(), {
       providers: {
         openrouter: {
-          // branding-scan: allow documented provider model id
           default_model: "anthropic/claude-3.7-sonnet",
         },
       },
     });
 
     expect(buildProviderModelCatalog(config).openrouter).toContain(
-      // branding-scan: allow documented provider model id
       "anthropic/claude-3.7-sonnet",
     );
   });

@@ -1,29 +1,25 @@
 /**
  * ReviewDecision — user's answer to an approval prompt.
  *
- * Hand-port of reference runtime `protocol/src/protocol.rs:3600-3654`
- * (T11 Wave 1, Agent C).
- *
  * This file is the single canonical location for the `ReviewDecision`
- * type in the reference runtime. `runtime/src/tools/orchestrator.ts`
+ * type in the runtime. `runtime/src/tools/orchestrator.ts`
  * re-exports from here; nothing else in the runtime owns its own copy.
  *
  * Shape notes:
- *   - The original reference runtime enum is serde `snake_case` tagged, meaning
- *     `ReviewDecision::Approved` serializes as `"approved"` and
- *     `ReviewDecision::ApprovedExecpolicyAmendment { .. }` as
+ *   - The wire form is `snake_case` tagged: a plain approval serializes
+ *     as `"approved"` and an execpolicy approval as
  *     `{ "approved_execpolicy_amendment": { .. } }`. AgenC models the
- *     Rust enum as a discriminated `{ kind }` tagged union so TypeScript
+ *     decision as a discriminated `{ kind }` tagged union so TypeScript
  *     callers can pattern-match exhaustively.
  *   - `approved_execpolicy_amendment` carries an opaque
- *     `ExecPolicyAmendment`. T11 Wave 1 does NOT port the execpolicy
- *     internals, so the amendment is typed as opaque JSON. A later
+ *     `ExecPolicyAmendment`. The execpolicy internals are not modeled
+ *     here, so the amendment is typed as opaque JSON. A later
  *     wave can swap in a real schema without touching callers.
  *   - `network_policy_amendment` carries the host rule the user chose
  *     to persist (allow/deny). The AgenC network-approval tranche will
  *     land the full resolver; currently this only needs to round-trip.
- *   - `to_opaque_string()` lives here (as `reviewDecisionOpaqueString`)
- *     so telemetry stays stable across call sites.
+ *   - `reviewDecisionOpaqueString` lives here so telemetry stays stable
+ *     across call sites.
  *
  * @module
  */
@@ -138,8 +134,7 @@ export function reviewDecisionIsAllow(decision: ReviewDecision): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Stable, PII-free string form of a decision. Ports reference runtime
- * `ReviewDecision::to_opaque_string()` (protocol.rs:3635-3653).
+ * Stable, PII-free string form of a decision.
  *
  * These strings appear in metrics labels and logs. Do not rename or
  * the downstream dashboards break.

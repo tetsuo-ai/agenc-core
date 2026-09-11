@@ -1533,9 +1533,7 @@ export async function streamModel(
       ...(availability !== undefined ? { availability } : {}),
       ...(provenance !== undefined ? { provenance } : {}),
     };
-    // Cross-turn token accumulator — agenc runtime
-    // `Session::update_token_info_from_usage` (session/mod.rs:2739-2749)
-    // plus `TokenUsageInfo::append_last_usage` (protocol.rs:2294-2297).
+    // Cross-turn token accumulator.
     // Runs under the session state lock so the mid-turn compact gate in
     // run-turn.ts sees a consistent read even when a concurrent
     // recovery path also touches state. Providers that don't surface

@@ -1,12 +1,12 @@
 /**
  * Agent roles — built-in + user-configurable.
  *
- * Subset port of upstream runtime `core/src/agent/role.rs`. Ports:
- *   - Role enum + nickname allocation (Wave 1).
+ * Covers:
+ *   - Role enum + nickname allocation.
  *   - Role/config loading (`loadRoleLayerToml`, `applyRoleToConfig`,
- *     `buildConfigLayerStack`, `formatRoleList`) (Wave 3).
+ *     `buildConfigLayerStack`, `formatRoleList`).
  *
- * TypeScript port notes:
+ * Design notes:
  *
  *   - Registry-as-single-nickname-source. AgenC's `AgentRegistry`
  *     owns nickname bookkeeping, not a process-global pool; free
@@ -15,8 +15,8 @@
  *     this module still cannot rebuild a live `SessionConfiguration`
  *     or provider object because the child-session config source is
  *     not wired yet. The layering here preserves `base → role → user`
- *     precedence and profile selection, but it does not recreate
- *     upstream runtime's full `ConfigLayerStack` / provider-preservation reload.
+ *     precedence and profile selection, but it does not perform a full
+ *     provider-preserving config reload.
  *
  * Built-in roles:
  *   - `netrunner` — unrestricted default agent; inherits parent config
@@ -90,7 +90,7 @@ export interface AgentRoleConfig {
   /** Runtime hint derived from the loaded role layer when possible. */
   readonly serviceTier?: string;
   /** Optional explicit tool allowlist. This is runtime metadata, not a
-   *  upstream runtime role-layer config field. */
+   *  role-layer config field. */
   readonly allowlist?: ReadonlyArray<string>;
   /** Optional tool denylist. Tools named here are removed from the spawned
    *  child's registry (both advertised + dispatch-rejected), on top of any
@@ -480,8 +480,7 @@ export function resolveAgentRole(
 }
 
 /**
- * Strict role-config lookup. Mirrors upstream runtime `resolve_role_config`
- * (`role.rs:121`). Returns the `AgentRoleConfig` for a named role or
+ * Strict role-config lookup. Returns the `AgentRoleConfig` for a named role or
  * `undefined` when the role is unknown — the caller is expected to
  * surface the error. Contrast with `resolveAgentRole`, which falls
  * back to the default role for convenience.
@@ -507,8 +506,7 @@ export function tryResolveRoleConfig(
 /**
  * Allocate a nickname for a fresh subagent. On collision, cycles
  * through the candidate list + appends an ordinal suffix
- * ("scout the 2nd"). Mirrors upstream runtime `registry.rs::format_agent_nickname`
- * except for nickname ordering (see module-level divergence note).
+ * ("scout the 2nd").
  */
 export function allocateNickname(
   role: AgentRole,
@@ -564,10 +562,10 @@ export function formatNicknameWithSuffix(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Config-layer stack (Wave 3 port of upstream runtime role.rs:40-270)
+// Config-layer stack
 //
-// Upstream runtime layers TOML documents: `base → role-layer → user-layer` with
-// config/profile resolution (`role.rs:155-270`). AgenC now loads role
+// TOML documents layer as `base → role-layer → user-layer` with
+// config/profile resolution. AgenC loads role
 // TOML through the canonical config vocabulary, strips role-only
 // metadata, and merges the resulting config keys onto a plain object
 // blob so `control.ts spawn()` can keep the seam live before the child
@@ -575,8 +573,8 @@ export function formatNicknameWithSuffix(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Role-shaped subset of the effective config blob. Pure-ported from
- * upstream runtime `role.rs`: the live child config will eventually be a full
+ * Role-shaped subset of the effective config blob. The live child config
+ * will eventually be a full
  * session-config snapshot, but today this seam accepts the config keys
  * the role layer can legitimately rewrite plus arbitrary pass-through
  * siblings.
@@ -604,9 +602,8 @@ export type OptionalRoleShapedConfig = {
 };
 
 /**
- * Apply the role's loaded TOML layer onto a base config blob. Mirrors
- * upstream runtime `apply_role_to_config` (`role.rs:40`) at the config-loading
- * seam: role metadata is ignored, canonical config keys are validated, and
+ * Apply the role's loaded TOML layer onto a base config blob at the
+ * config-loading seam: role metadata is ignored, canonical config keys are validated, and
  * top-level `profile = "..."` selectors are resolved against the
  * merged config snapshot.
  */
@@ -638,8 +635,7 @@ function applyRoleToConfigInner<Base extends RoleShapedConfig>(
 }
 
 /**
- * Load the role's TOML layer. Mirrors upstream runtime `load_role_layer_toml`
- * (`role.rs:87-119`) at the module boundary:
+ * Load the role's TOML layer at the module boundary:
  *   - built-ins resolve `configFile` against embedded TOML content
  *   - user-defined role files are read from disk
  *   - role-declaration metadata keys are stripped before the config
@@ -654,10 +650,7 @@ export function loadRoleLayerToml(role: AgentRole): Record<string, unknown> {
 }
 
 /**
- * Build the layered effective config. Mirrors upstream runtime
- * `build_config_layer_stack` + `build_next_config` +
- * `deserialize_effective_config` (`role.rs:155-270`) collapsed into a
- * single pure function.
+ * Build the layered effective config as a single pure function.
  *
  * Precedence: `base → role → user`.
  *
@@ -675,13 +668,12 @@ export function buildConfigLayerStack<Base extends RoleShapedConfig>(opts: {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Role-list prompt formatter (Wave 3 port of upstream runtime role.rs:280-309)
+// Role-list prompt formatter
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Format a known-roles list for injection into the spawn-agent tool
- * description. Mirrors upstream runtime `spawn_tool_spec::build` +
- * `build_from_configs` + `format_role` (`role.rs:280-309`).
+ * description.
  *
  * Roles missing a `description` are rendered as `name: no description`
  * so the list still announces them.

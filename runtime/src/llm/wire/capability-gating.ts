@@ -182,7 +182,6 @@ export interface ChatCompletionsCapabilityHints {
 }
 
 // Providers that document `service_tier` on chat-completions.
-// branding-scan: allow real provider identifiers in capability matrix
 const SERVICE_TIER_PROVIDERS = new Set([
   "openai",
   "azure-openai",
@@ -277,7 +276,6 @@ const LOCAL_TOOL_PROFILE_PROVIDERS = new Set([
 function isUpstreamReasoningModel(model: string | undefined): boolean {
   if (model === undefined) return false;
   if (isVerifiedOpenAiReasoningModel(model)) return true;
-  // branding-scan: allow real model-family identifiers in regex
   return /(?:^|[/:])(?:gpt-5|o1|o3|o4|codex|chatgpt-5)(?:$|[-_.:])/i.test(
     model.trim(),
   );
@@ -296,7 +294,6 @@ const NIM_REASONING_EFFORT_FAMILIES: readonly {
   readonly pattern: RegExp;
   readonly values: ReadonlySet<string>;
 }[] = [
-  // branding-scan: allow real model-family identifiers in capability matrix
   {
     // moonshotai/kimi-k3: enum low|high|max, default max.
     pattern: /(?:^|\/)kimi-k3(?:$|[-.:])/i,
@@ -435,7 +432,6 @@ export function chatCompletionsCapabilityHintsForProvider(
   // reasoning_effort: allow only provider/model combinations with a verified
   // contract. Every other destination either rejects it or silently ignores
   // it, so unrecognized combinations default to the safe "strip" behavior.
-  // branding-scan: allow factual reference to real provider in routing comment
   let acceptsReasoningEffort = false;
   let reasoningEffortAllowedValues: ReadonlySet<string> | undefined;
   if (isManagedDeepSeek) {

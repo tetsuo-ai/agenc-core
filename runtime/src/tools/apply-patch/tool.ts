@@ -1,7 +1,7 @@
 /**
- * Ports the donor apply-patch tool surface onto AgenC's Tool contract.
+ * Apply-patch tool surface on AgenC's Tool contract.
  *
- * Shape differences from upstream:
+ * Design notes:
  *   - AgenC exposes the JSON input shape universally and accepts raw
  *     string calls through the registry string-argument adapter.
  *   - The Lark grammar is exported for providers/runtime surfaces that

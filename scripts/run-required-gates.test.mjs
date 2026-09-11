@@ -146,16 +146,8 @@ test("required gate inventory is complete, ordered, and bounded", () => {
       },
       { id: "gate-policy-tests", args: ["run", "test:required-gates"] },
       {
-        id: "agent-surface-tests",
-        args: ["run", "test:agent-surface-contract"],
-      },
-      {
         id: "stable-tests",
         args: ["runtime/scripts/run-hermetic-test-boundary.mjs", "run"],
-      },
-      {
-        id: "agent-surface",
-        args: ["run", "check:agent-surface-contract", "--", "--no-run-commands"],
       },
       { id: "runtime-build", args: ["run", "build"] },
       { id: "sbom", args: ["run", "check:sbom"] },

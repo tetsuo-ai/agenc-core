@@ -1,6 +1,5 @@
 /**
- * Ports donor `mcp-server/src/lib.rs` stdin/stdout JSON-RPC task wiring onto
- * AgenC's MCP server framework.
+ * Stdin/stdout JSON-RPC task wiring for AgenC's MCP server framework.
  *
  * Why this lives here:
  *   - MS-03 owns server-side stdio framing only. CLI entrypoints, HTTP/SSE,

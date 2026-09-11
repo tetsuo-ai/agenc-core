@@ -234,8 +234,8 @@ unchanged.
 ## Comparator compatibility snapshot
 
 Research refreshed 2026-07-15 against the official
-[Hermes Agent `v2026.7.7.2`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.7.2) <!-- branding-scan: allow comparator research citation -->
-and [OpenClaw `v2026.7.1`](https://github.com/openclaw/openclaw/releases/tag/v2026.7.1). <!-- branding-scan: allow comparator research citation -->
+[Hermes Agent `v2026.7.7.2`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.7.2)
+and [OpenClaw `v2026.7.1`](https://github.com/openclaw/openclaw/releases/tag/v2026.7.1).
 The former's asynchronous Runs API is the appropriate neutral disconnect surface;
 killing its one-shot CLI would kill the in-process task. The latter's CLI signal
 handler aborts a run, so `SIGTERM`/`SIGINT` is cancellation, not client
@@ -245,9 +245,9 @@ not reasons to change task inputs or schedule semantics. External workspace
 diffs and hidden verification remain the source of truth for both.
 
 The behavior snapshot is tied to the tagged
-[Hermes one-shot source](https://github.com/NousResearch/hermes-agent/blob/v2026.7.7.2/hermes_cli/oneshot.py) <!-- branding-scan: allow comparator research citation -->
-and [Runs API documentation](https://github.com/NousResearch/hermes-agent/blob/v2026.7.7.2/website/docs/user-guide/features/api-server.md), <!-- branding-scan: allow comparator research citation -->
-plus the tagged [OpenClaw gateway/signal source](https://github.com/openclaw/openclaw/blob/v2026.7.1/src/commands/agent-via-gateway.ts). <!-- branding-scan: allow comparator research citation -->
+[Hermes one-shot source](https://github.com/NousResearch/hermes-agent/blob/v2026.7.7.2/hermes_cli/oneshot.py)
+and [Runs API documentation](https://github.com/NousResearch/hermes-agent/blob/v2026.7.7.2/website/docs/user-guide/features/api-server.md),
+plus the tagged [OpenClaw gateway/signal source](https://github.com/openclaw/openclaw/blob/v2026.7.1/src/commands/agent-via-gateway.ts).
 
 Comparator adapters and paid runs are intentionally deferred to their own M1
 checkbox. When added, they must pin release, commit, package/OCI digest, install

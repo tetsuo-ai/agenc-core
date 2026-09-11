@@ -1,7 +1,6 @@
 /**
  * `normalizeMessagesForAPI` — pure function that prepares an in-memory
- * `LLMMessage[]` for an API call. Mirrors the reference runtime's
- * message-normalization path.
+ * `LLMMessage[]` for an API call.
  *
  * The runtime previously scattered this normalization across
  * `chat-executor-text.ts`, `chat-executor.ts`, and provider adapters.
@@ -27,7 +26,7 @@
  *      can pin stable prefixes. Phase J tags
  *      the LAST system message, the LAST non-tool user message, and
  *      the LAST tool result that survived the normalization above.
- *      These are the three cut points the reference runtime uses.
+ *      These are the three cut points.
  *      Providers that do not support cache_control
  *      silently ignore the tag.
  *
@@ -171,8 +170,7 @@ function stripDurableMetadataForProvider(message: LLMMessage): LLMMessage {
  * Tag the last system message, the last non-tool user message, and
  * the last tool message with a `cacheControl: "ephemeral"` marker so
  * providers that support prompt caching can
- * pin stable prefixes. Mirrors the reference runtime's three-cut-point
- * strategy.
+ * pin stable prefixes using the three-cut-point strategy.
  *
  * The tag is an optional camelCase field on the message object. The
  * core `LLMMessage` type does not declare it as required — provider

@@ -317,7 +317,6 @@ npm run test:cross-repo    # explicit contracts for separately checked-out repos
 npm run test:live          # explicit provider/browser/devnet tests (may incur cost)
 npm run test:bun           # isolated Bun suite
 npm run validate:runtime   # typecheck + build + PTY startup smoke
-npm run check:agent-surface-contract
 npm run check:required-gates # release attestation contract; clean Linux checkout
 npm run check:clean-build  # two installs + byte-identical OCI builds + hardened smoke
 ```
@@ -407,7 +406,7 @@ change depends on Linux kernel sandboxing, PowerShell, Neovim, macOS, or Windows
 behavior. Releases still run the full local and hosted verification at exact
 current `main`.
 
-Doc index: [`docs/INDEX.md`](docs/INDEX.md). Local contributor notes may live in a gitignored `AGENTS.md`.
+Doc index: [`docs/INDEX.md`](docs/INDEX.md).
 
 ## Security
 

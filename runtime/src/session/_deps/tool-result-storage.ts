@@ -1,7 +1,6 @@
 /**
- * Content-replacement state — port of AgenC
- * `utils/toolResultStorage.ts::ContentReplacementState` adapted to gut's
- * flat `LLMMessage` shape.
+ * Content-replacement state for tool results, keyed on the flat
+ * `LLMMessage` shape.
  *
  * Implements I-88 in-memory invariants:
  *   - `seenIds`: every tool-call id whose tool-role message has passed

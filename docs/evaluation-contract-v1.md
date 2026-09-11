@@ -343,12 +343,12 @@ calendar fields, never to order runs or access/seal events.
 - [Harbor](https://github.com/harbor-framework/harbor) informed the neutral
   task/container/agent-adapter boundary. AgenC keeps the contract portable rather
   than coupling competitive tasks to daemon-specific protocol semantics.
-- [OpenClaw ShellBench](https://github.com/openclaw/shellbench) informed <!-- branding-scan: allow comparator research citation -->
+- [OpenClaw ShellBench](https://github.com/openclaw/shellbench) informed
   deterministic completion and reliability diagnostics, but product-specific
   trace/process scoring is not used as neutral coding-quality truth.
 - Official comparator releases inspected on 2026-07-15 were
-  [Hermes Agent `v2026.7.7.2`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.7.2) <!-- branding-scan: allow comparator release research -->
-  and [OpenClaw `v2026.7.1`](https://github.com/openclaw/openclaw/releases/tag/v2026.7.1). <!-- branding-scan: allow comparator release research -->
+  [Hermes Agent `v2026.7.7.2`](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.7.2)
+  and [OpenClaw `v2026.7.1`](https://github.com/openclaw/openclaw/releases/tag/v2026.7.1).
   These links are research snapshots, not mutable runtime defaults. Every real
   comparison must preregister its exact tag, commit, package digest, install
   command, public/redacted config, model lane, and limitations.

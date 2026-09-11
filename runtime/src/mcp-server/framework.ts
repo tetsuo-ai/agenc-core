@@ -1,9 +1,8 @@
 /**
- * Ports donor `mcp-server/src/message_processor.rs` request lifecycle
- * onto AgenC's transport-neutral MCP server framework.
+ * JSON-RPC request lifecycle for AgenC's transport-neutral MCP server
+ * framework.
  *
- * The donor server wires this processor directly to stdio. AgenC keeps
- * MS-01 pure: transports feed parsed JSON-RPC messages into this class,
+ * MS-01 stays pure: transports feed parsed JSON-RPC messages into this class,
  * MS-02 attaches provider-backed tool registration, MS-03 owns stdio, and
  * MS-04 owns HTTP/SSE. Later MS-* items own permission integration.
  */

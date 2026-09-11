@@ -507,7 +507,7 @@ export async function* runAgent({
   // would duplicate it and would leak a parent-workspace rendering into a
   // worktree child. Explicit overrides may add other user context, but cannot
   // bypass the single live-request resolver.
-  const { agencMd: _omittedAgenCMd, ...userContextNoAgenCMd } = baseUserContext // branding-scan: allow upstream user-context field name pending context absorb
+  const { agencMd: _omittedAgenCMd, ...userContextNoAgenCMd } = baseUserContext
   const resolvedUserContext = userContextNoAgenCMd
 
   // scanner / Plan are read-only search agents — the

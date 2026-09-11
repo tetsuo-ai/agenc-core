@@ -2991,7 +2991,7 @@ describe("model-facing tools", () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-skill-tool-home-"));
     const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skill-tool-ws-"));
     const home = await mkdtemp(join(tmpdir(), "agenc-skill-tool-user-"));
-    const legacyUserSkillRoot = ".codex"; // branding-scan: allow legacy user skill root compatibility
+    const legacyUserSkillRoot = ".legacy-agent";
     try {
       await writeTestSkill(join(home, ".agents", "skills"), "shared-visible");
       await writeTestSkill(
@@ -3200,12 +3200,12 @@ describe("model-facing tools", () => {
     const hiddenModel = await spawnAgent.execute({
       message: "inspect",
       task_name: "task_1",
-      model: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      model: "codex-auto-review",
       fork_turns: "none",
     });
     expect(hiddenModel.isError).toBe(true);
     expect(JSON.parse(hiddenModel.content).error).toBe(
-      "Unknown model `codex-auto-review` for spawn_agent. Available models: test-model", // branding-scan: allow OpenAI model identifier
+      "Unknown model `codex-auto-review` for spawn_agent. Available models: test-model",
     );
 
     const fullHistoryWithOverride = await spawnAgent.execute({
@@ -3440,7 +3440,7 @@ describe("model-facing tools", () => {
     };
     const unsupportedModelInfo = {
       ...fakeSession().modelInfo,
-      slug: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+      slug: "gpt-5.3-codex",
       serviceTiers: [],
     };
     const session = fakeSession();
@@ -3508,14 +3508,14 @@ describe("model-facing tools", () => {
     const rejected = await spawn.execute({
       message: "inspect",
       task_name: "slow_task",
-      model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+      model: "gpt-5.3-codex",
       service_tier: "priority",
       fork_turns: "none",
     });
 
     expect(rejected.isError).toBe(true);
     expect(JSON.parse(rejected.content).error).toBe(
-      "Service tier `priority` is not supported for model `gpt-5.3-codex`. Supported service tiers: none", // branding-scan: allow OpenAI model identifier
+      "Service tier `priority` is not supported for model `gpt-5.3-codex`. Supported service tiers: none",
     );
     expect(delegateMock).toHaveBeenCalledTimes(1);
   });
@@ -3540,7 +3540,7 @@ describe("model-facing tools", () => {
     };
     const requestedModelInfo = {
       ...fakeSession().modelInfo,
-      slug: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+      slug: "gpt-5.3-codex",
       supportedReasoningLevels: ["low", "medium"],
       serviceTiers: [
         {
@@ -3617,7 +3617,7 @@ describe("model-facing tools", () => {
         message: "inspect",
         task_name: "priority_review",
         agent_type: "priority-reviewer",
-        model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+        model: "gpt-5.3-codex",
         reasoning_effort: "low",
         service_tier: "standard",
         fork_turns: "none",

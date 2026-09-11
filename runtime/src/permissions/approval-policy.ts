@@ -1,9 +1,8 @@
 /**
  * ApprovalPolicy — when / whether to ask the user for permission.
  *
- * Hand-port of reference runtime `protocol/src/protocol.rs:826-896` and the
- * decision table at `core/src/tools/sandboxing.rs:185-221` (T11 Wave 1,
- * Agent C).
+ * Defines the approval policy enum, granular config, sandbox kind view,
+ * and the per-tool approval decision table.
  *
  * This file is the single canonical source for `ApprovalPolicy`,
  * `GranularApprovalConfig`, `FileSystemSandboxKind`,
@@ -13,17 +12,17 @@
  *
  * Wire format note
  * ────────────────
- * reference runtime serializes the enum as `kebab-case`: `"never"`, `"on-failure"`,
- * `"on-request"`, `"granular"`, `"untrusted"`. reference runtime code
- * already operates on the `snake_case` form (`"on_request"`, etc.)
- * across ~12 files; the config layer handles the kebab→snake mapping
- * at parse time. This file uses the runtime-internal form.
+ * The config file serializes the enum as `kebab-case`: `"never"`,
+ * `"on-failure"`, `"on-request"`, `"granular"`, `"untrusted"`. Runtime code
+ * operates on the `snake_case` form (`"on_request"`, etc.); the config
+ * layer handles the kebab to snake mapping at parse time. This file uses
+ * the runtime-internal form.
  *
  * @module
  */
 
 // ─────────────────────────────────────────────────────────────────────
-// ApprovalPolicy — reference runtime `AskForApproval` (protocol.rs:826-857)
+// ApprovalPolicy
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -46,7 +45,7 @@ export type ApprovalPolicy =
 export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = "on_request";
 
 /**
- * Port of reference runtime `GranularApprovalConfig` (protocol.rs:859-874).
+ * Per-subsystem approval opt-ins for the `granular` policy.
  * When an entry is `false`, the corresponding approval prompt is
  * auto-rejected instead of shown.
  */
@@ -59,7 +58,7 @@ export interface GranularApprovalConfig {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// FileSystemSandboxKind — reference runtime `FileSystemSandboxKind`
+// FileSystemSandboxKind
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -68,8 +67,8 @@ export interface GranularApprovalConfig {
  * mode whose `ReadOnlyAccess` is unrestricted; `restricted` covers
  * `read_only` / `workspace_write` when access is limited.
  *
- * reference runtime also carries an `external_sandbox` kind. AgenC preserves that
- * (via `SandboxMode`) but the approval table itself only distinguishes
+ * `SandboxMode` also carries an `external_sandbox` kind, but the approval
+ * table itself only distinguishes
  * `full_access` vs `restricted`.
  */
 export type FileSystemSandboxKind = "full_access" | "restricted";
@@ -89,7 +88,7 @@ export interface ResolveApprovalPolicyOptions {
 /**
  * Resolve the effective approval policy.
  *
- * Precedence (matches reference runtime):
+ * Precedence:
  *   1. CLI override wins outright (user typed `--ask-for-approval …`).
  *   2. Project trust file:
  *        - `trusted`   → `on_request`
@@ -117,8 +116,7 @@ export function resolveApprovalPolicy(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * The resolved decision for a single tool invocation. Port of reference runtime
- * `ExecApprovalRequirement` (tools/sandboxing.rs:141-162).
+ * The resolved decision for a single tool invocation.
  */
 export type ExecApprovalRequirement =
   | { readonly kind: "skip"; readonly bypassSandbox: boolean }
@@ -126,9 +124,6 @@ export type ExecApprovalRequirement =
   | { readonly kind: "needs_approval"; readonly reason?: string };
 
 /**
- * Port of reference runtime `default_exec_approval_requirement`
- * (tools/sandboxing.rs:185-221).
- *
  * Given the current approval policy + filesystem sandbox kind,
  * decide whether the tool call should skip approval, ask for it,
  * or be forbidden outright.
@@ -144,7 +139,7 @@ export type ExecApprovalRequirement =
  *   | granular     | restricted  | false                     | forbidden       |
  *   | untrusted    | any         | —                         | needs_approval  |
  *
- * The `granular` + forbidden branch uses the exact reference runtime message so
+ * The `granular` + forbidden branch uses a fixed message so
  * downstream logs and tests round-trip cleanly.
  */
 export function defaultExecApprovalRequirement(

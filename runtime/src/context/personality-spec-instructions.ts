@@ -1,13 +1,12 @@
 /**
- * Ports upstream runtime `core/src/context/personality_spec_instructions.rs`
- * and the model-message personality template helpers onto AgenC messages.
+ * Personality-spec instruction templates and the model-message personality
+ * template helpers for AgenC messages.
  *
- * Shape difference from upstream:
+ * Design notes:
  *   - AgenC keeps the live system prompt outside the model catalog, so
  *     instruction templates may include a `{{ base_instructions }}`
  *     placeholder that is filled from the current assembled prompt.
  *
- * Cross-cuts deliberately NOT carried:
  *   - Remote model metadata fetching owns wire deserialization; this module
  *     only resolves already-normalized template data.
  */

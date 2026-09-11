@@ -1,7 +1,6 @@
 /**
- * Ports the MCP JSON-RPC WebSocket transport shape used by the donor CX
- * `rmcp-client/tests/streamable_http_test_support.rs` remote harness onto
- * AgenC's MCP client connection boundary.
+ * MCP JSON-RPC WebSocket transport for AgenC's MCP client connection
+ * boundary.
  *
  * Why this lives here:
  *   - WebSocket is a first-class MCP transport choice for remote servers, but

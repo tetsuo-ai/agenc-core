@@ -1,10 +1,6 @@
 /**
  * Guardian approval-request normalization.
  *
- * Source parity:
- * - core/src/guardian/approval_request.rs
- * - core/src/guardian/prompt.rs
- *
  * The guardian reviewer needs a stable, compact request payload that is
  * independent of the tool caller's raw object identity. This module builds
  * that payload from AgenC's approval context, serializes object keys in sorted

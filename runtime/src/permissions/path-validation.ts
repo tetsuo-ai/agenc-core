@@ -1,11 +1,10 @@
 /**
- * Ports upstream `src/utils/permissions/pathValidation.ts` onto AgenC's
- * permission primitives.
+ * Path validation helpers for AgenC's permission primitives.
  *
- * Shape differences from upstream:
+ * Shape notes:
  *   - The live runtime stores working roots outside `ToolPermissionContext`,
  *     so callers pass `cwd` and optional extra working roots explicitly.
- *   - Rule matching maps upstream read/edit permission types onto AgenC's
+ *   - Rule matching maps read/edit permission types onto AgenC's
  *     visible `FileRead`, `Read`, `Edit`, and `Write` tool names.
  *   - OS sandbox allowlist integration is not carried because AgenC's current
  *     sandbox layer is policy math only; executable sandbox enforcement lives

@@ -1,11 +1,9 @@
 /**
  * Mailbox — bidirectional typed queue for inter-agent communication.
  *
- * Hand-port of reference runtime `core/src/agent/mailbox.rs` (161 LOC) adapted
- * for AgenC's bounded + backpressure model. The reference implementation uses
- * `mpsc::unbounded_channel` and relies on tokio backpressure semantics;
- * Node has no equivalent OS-level backpressure signal, so AgenC runs
- * a bounded queue with an overflow salvage window instead.
+ * Node has no OS-level backpressure signal for in-process queues, so AgenC
+ * runs a bounded queue with an overflow salvage window instead of an
+ * unbounded channel.
  *
  * AgenC's mailbox is:
  *   - **Bidirectional** (I-5) — each message carries a

@@ -1,8 +1,6 @@
 /**
  * Tests for the steer-input subsystem (`Session.steerInput` +
- * `SteerInputError` + `isSteerable`). Mirrors upstream agenc runtime
- * `agenc-rs/core/src/session/mod.rs::steer_input` (line 2938) and the
- * `SteerInputError` taxonomy at `session/mod.rs:213`.
+ * `SteerInputError` + `isSteerable`).
  *
  * Coverage (per task brief):
  *   1. steerInput against a regular task succeeds (items reach mailbox).
@@ -241,8 +239,7 @@ describe("Session.steerInput against a regular task", () => {
 
   it("sets mailboxDeliveryPhase back to current_turn after a deferred phase", async () => {
     // Pre-condition: force the turnState phase to `next_turn`, proving
-    // steerInput flips it back — upstream parity for
-    // `accept_mailbox_delivery_for_current_turn` at session/mod.rs:2992.
+    // steerInput flips it back.
     const session = buildSession();
     await session.spawnTask({ subId: "turn-A", kind: "regular" });
     await session.withActiveTurnState((s) => {
@@ -377,8 +374,8 @@ describe("Session.steerInput rejections", () => {
   });
 
   it("empty_input is checked before active-turn state (upstream parity)", async () => {
-    // Upstream session/mod.rs:2944 checks empty input BEFORE taking the
-    // active_turn lock. Gut mirrors this: with no active turn AND empty
+    // Empty input is checked BEFORE taking the
+    // active-turn lock: with no active turn AND empty
     // items, the error should still be empty_input, not no_active_turn.
     const session = buildSession();
     const result = await session.steerInput("turn-nope", []);

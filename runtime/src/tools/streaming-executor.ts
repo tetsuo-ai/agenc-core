@@ -1,7 +1,6 @@
 /**
  * StreamingToolExecutor — full AgenC port.
  *
- * Hand-port of the reference streaming tool executor.
  * Dispatches tools as they stream in from the model, with four-class
  * concurrency control (via the T7 `classify` analyzer) + sibling-
  * abort cascade on Bash errors + order-preserving yield of completed

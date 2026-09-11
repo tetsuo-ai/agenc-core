@@ -7,8 +7,8 @@ Operating policy update: 2026-08-31
 Ordinary pull requests use `.github/workflows/pr-fast.yml`. One Ubuntu job
 classifies the changed paths, runs runtime typecheck, and selects exact changed
 tests or tests related to changed runtime inputs. Launcher, SDK, and gate policy
-tests run only when a PR changes those paths. Changes limited to `docs/**`,
-`README.md`, `memory_todo.md`, and `todo.txt` do not start GitHub Actions. The
+tests run only when a PR changes those paths. Changes limited to `docs/**`
+and `README.md` do not start GitHub Actions. The
 classifier, command plan, and local pitfalls are in
 [Fast `test:fast` checks](#fast-testfast-checks).
 
@@ -89,8 +89,7 @@ Before classification the script also runs `git diff --check` on
 
 ### Classification
 
-If every changed path is `docs/**`, `README.md`, `memory_todo.md`, or
-`todo.txt`, or if the change set is empty, the script prints the plan and
+If every changed path is `docs/**` or `README.md`, or if the change set is empty, the script prints the plan and
 exits without typecheck or tests. A mix of those files and any other path
 still runs.
 
@@ -130,7 +129,7 @@ These paths select no Vitest, launcher, SDK, or policy command:
 | --- | --- |
 | `runtime/native/agenc-landlock-run.c`, `agenc-process-broker.c`, `agenc-process-job-broker.cs`, `agenc-keychain-helper.c`, `agenc-secret-service-helper.c` | typecheck only |
 | `runtime/bin/agenc`, `runtime/bin/agenc-linux-sandbox` | typecheck only |
-| `.npmrc`, `packaging/**` gate units, `parity/agent-surface-contract.json` | typecheck only |
+| `.npmrc`, `packaging/**` gate units | typecheck only |
 | other non-JS/TS runtime files (assets, JSON fixtures, `runtime/scripts/hermetic-network-boundary.c`) | typecheck only |
 
 Related mode only accepts `.[cm]?[jt]sx?` under `src`, `tests`, `scripts`,

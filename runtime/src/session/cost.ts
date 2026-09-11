@@ -390,47 +390,28 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("o3", COST_TIER_O3),
     ...openAiCostAliases("o3-mini", COST_TIER_O3_MINI),
     ...openAiCostAliases("o4-mini", COST_TIER_O4_MINI),
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-sonnet-4-6": COST_TIER_SONNET,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-sonnet-4-6": COST_TIER_SONNET,
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-sonnet-4-5": COST_TIER_SONNET,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-sonnet-4-5": COST_TIER_SONNET,
     // Current Opus generation (4.5-4.8) at $5/$25. canonicalModel routes the
     // whole modern family to claude-opus-4-8; the explicit slugs below keep the
     // exact-match lookup (which precedes canonical) on the same tier.
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-opus-4-8": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-opus-4-8": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-opus-4-7": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-opus-4-7": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-opus-4-7-1m": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-opus-4-7-1m": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-opus-4-6": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-opus-4-6": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-opus-4-5": COST_TIER_OPUS_5_25,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-opus-4-5": COST_TIER_OPUS_5_25,
     // Legacy Opus (4.0 / 4.1) remain $15/$75.
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-opus-4-1": COST_TIER_OPUS_LEGACY,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-opus-4-1": COST_TIER_OPUS_LEGACY,
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-opus-4": COST_TIER_OPUS_LEGACY,
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-opus-4": COST_TIER_OPUS_LEGACY,
-    // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-haiku-4-5": {
       inputUsdPer1K: 0.001,
       outputUsdPer1K: 0.005,
@@ -438,7 +419,6 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       cacheCreationUsdPer1K: 0.00125,
       webSearchUsdPerRequest: 0.01,
     },
-    // branding-scan: allow documented Anthropic API model identifier
     "claude-haiku-4-5": {
       inputUsdPer1K: 0.001,
       outputUsdPer1K: 0.005,
@@ -722,11 +702,8 @@ function canonicalModel(model: string): string {
   if (unqualified.startsWith("gpt-4.1")) return "gpt-4.1";
   if (unqualified.startsWith("gpt-4o-mini")) return "gpt-4o-mini";
   if (unqualified.startsWith("gpt-4o")) return "gpt-4o";
-  // branding-scan: allow documented Anthropic API model identifier
   if (unqualified.startsWith("claude-haiku-4-5")) return "claude-haiku-4-5";
-  // branding-scan: allow documented Anthropic API model identifier
   if (unqualified.startsWith("claude-sonnet-4")) return "claude-sonnet-4-6";
-  // branding-scan: allow documented Anthropic API model identifier
   // Opus 4.5+ bills at $5/$25, Opus 4.0/4.1 at $15/$75. Parse the minor version
   // from a delimited group (not startsWith) so opus-4-1 is not confused with a
   // future opus-4-10+, and route each family to its representative priced slug.

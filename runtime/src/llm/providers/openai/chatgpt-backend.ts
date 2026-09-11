@@ -2,7 +2,6 @@ import { parseChatgptAccountId } from "../../../services/api/openAiCodeOAuthShar
 
 /** Fixed transport and credential contract for ChatGPT subscription inference. */
 
-// branding-scan: allow factual reference to real provider in endpoint
 export const CHATGPT_BACKEND_BASE_URL =
   "https://chatgpt.com/backend-api/codex";
 

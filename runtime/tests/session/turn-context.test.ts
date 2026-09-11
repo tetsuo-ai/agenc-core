@@ -241,8 +241,8 @@ describe("SessionConfiguration helpers", () => {
     expect(next.approvalPolicy.allowed).toEqual(["never", "on_request"]);
     expect(next.sandboxPolicy.value).toBe("workspace_write");
     // A sandbox-policy change now rebuilds `fileSystemSandboxPolicy`
-    // from the new mode via `deriveFileSystemSandboxPolicyForMode`,
-    // matching agenc runtime `apply_sandbox_policy_changes`. The deny-entry
+    // from the new mode via `deriveFileSystemSandboxPolicyForMode`.
+    // The deny-entry
     // preservation still lands with T11; this default projection
     // covers the zero-op "new richer policy" baseline.
     expect(next.fileSystemSandboxPolicy).not.toBe(
@@ -455,7 +455,7 @@ describe("applySessionConfiguration sandbox cascade", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// agenc runtime `impl Session` turn-builder helpers
+// Session turn-builder helpers
 // ─────────────────────────────────────────────────────────────────────
 
 function mkSessionForTurn(overrides: Partial<SessionForTurn> = {}): SessionForTurn {

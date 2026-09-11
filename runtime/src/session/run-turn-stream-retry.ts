@@ -255,7 +255,7 @@ function suppressInterruptedStreamToolHistory(state: TurnState): void {
 }
 
 /**
- * agenc runtime `is_retryable()` on agenc runtimeErr. AgenC classifies via typed
+ * Retryability classification via typed
  * error discrimination on the underlying cause rather than substring
  * matching against `error.message`, which is fragile: a
  * `LLMContextWindowExceededError` whose provider message happens to

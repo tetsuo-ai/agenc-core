@@ -1808,10 +1808,9 @@ function createMultiAgentV2RuntimeTools(
         }
         const thread = outcome.thread;
         outstandingThreadIds.add(thread.threadId);
-        // AgenC `agent_jobs.rs:704` subscribes to thread status to detect
-        // a worker that terminates without calling `report_agent_job_result`
-        // (handled by `finalize_finished_item`). AgenC mirrors this by
-        // resolving `threadFinished` when `thread.join()` completes; the
+        // Detect a worker that terminates without calling
+        // `report_agent_job_result` by resolving `threadFinished` when
+        // `thread.join()` completes; the
         // orchestrator's finalize guard then converts a still-pending item
         // into a failed one with agenc's exact error message.
         const threadFinished = thread
@@ -1856,10 +1855,9 @@ function createMultiAgentV2RuntimeTools(
 
     const callId = callIdFromArgs(args, "agent_job");
     const signal = abortSignalFromArgs(args);
-    // Mirror agenc `notify_background_event(turn, "agent_job_progress:{json}")`
-    // (agent_jobs.rs:172-174) by emitting a `tool_progress` event whose
-    // chunk is the agenc line verbatim. Operators wired to the AgenC
-    // event bus see the same payload agenc prints.
+    // Emit a `tool_progress` event whose chunk is the
+    // `agent_job_progress:{json}` line so operators wired to the AgenC
+    // event bus see the same payload.
     const progressEmitter: AgentJobProgressEmitter = (update) => {
       const payload = {
         job_id: update.jobId,

@@ -28,7 +28,7 @@ describe("Semaphore (I-61)", () => {
   });
 });
 
-describe("ToolCallRuntime (parallel.rs port)", () => {
+describe("ToolCallRuntime", () => {
   test("shared_read runs in parallel; exclusive serializes", async () => {
     const runtime = new ToolCallRuntime();
     const order: string[] = [];

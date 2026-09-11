@@ -1,9 +1,7 @@
 /**
  * ResumeManager — decides resume-vs-restart on subagent failure.
  *
- * Port of reference resume decision logic + reference runtime
- * `resume_agent_from_rollout` discrimination. When a subagent
- * fails, the parent asks: "can we resume from the last checkpoint,
+ * When a subagent fails, the parent asks: "can we resume from the last checkpoint,
  * or do we need a fresh thread?"
  *
  *   - **Network errors** (ECONNRESET, stream_idle, 503) → resume:

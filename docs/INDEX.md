@@ -138,12 +138,8 @@ Tracked in the repo (safe for GitHub clones):
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
 | [`../runtime/src/mcp-client/README.md`](../runtime/src/mcp-client/README.md) | Outbound MCP client notes |
-| [`../runtime/src/agents/v2/PARITY.md`](../runtime/src/agents/v2/PARITY.md) | Multi-agent v2 tool parity |
+| [`../runtime/src/agents/v2/README.md`](../runtime/src/agents/v2/README.md) | Multi-agent v2 tools |
 | [`../runtime/src/tools/WebSearchTool/README_SEARCH_PROVIDERS.md`](../runtime/src/tools/WebSearchTool/README_SEARCH_PROVIDERS.md) | Web-search provider config |
 | [`../runtime/src/llm/providers/openai-compatible/README.md`](../runtime/src/llm/providers/openai-compatible/README.md) | Provider naming note |
-| [`../parity/agent-surface-contract.reviews/README.md`](../parity/agent-surface-contract.reviews/README.md) | Agent-surface contract reviews |
-| [`../parity/embedded-neovim-buffer.reviews/README.md`](../parity/embedded-neovim-buffer.reviews/README.md) | Embedded-Neovim contract reviews |
 
-Local-only (gitignored — not shipped on GitHub): contributor working files such
-as `AGENTS.md` and `TODO.md`. Product backlog for public readers is
-[roadmap.md](roadmap.md).
+Product backlog for public readers is [roadmap.md](roadmap.md).

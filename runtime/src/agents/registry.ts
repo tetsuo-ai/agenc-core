@@ -1,7 +1,6 @@
 /**
  * AgentRegistry — in-memory slot + path tracking for subagents.
  *
- * Hand-port of reference runtime `core/src/agent/registry.rs` (344 LOC).
  * Owns:
  *   - Spawn-slot counter
  *   - `agentPath` → `AgentMetadata` map (hierarchical "/root/worker/sub")
@@ -10,7 +9,7 @@
  *
  * Invariants wired:
  *   I-37 (sibling `agentPath` collision) — `reserveAgentPath` returns
- *        `AgentPathExistsError` on collision. Mirrors reference runtime.
+ *        `AgentPathExistsError` on collision.
  *   I-63 (atomic slot acquisition) — slot counter increment/decrement
  *        happens under `AsyncLock<void>`. Concurrent spawns never
  *        both observe `count = N-1` and both increment to `N`.
@@ -213,7 +212,7 @@ export class AgentCapacityQueueFullError extends Error {
 /**
  * Opaque handle the caller must hold until spawn finalizes. On drop
  * (dispose), the reservation releases the slot — so failed spawns
- * don't leak counters. Matches reference runtime's `SpawnReservation` RAII.
+ * don't leak counters.
  */
 export class SpawnReservation {
   private released = false;
@@ -651,8 +650,8 @@ export class AgentRegistry {
   }
 
   /**
-   * Allocate a nickname for a freshly spawning child. Matches the reference
-   * candidate-pool semantics: use the role-specific pool when present,
+   * Allocate a nickname for a freshly spawning child. Candidate-pool
+   * semantics: use the role-specific pool when present,
    * otherwise use the shared `agent_names.txt` list, choose one currently
    * unused candidate, and advance the ordinal suffix after full exhaustion.
    * Nicknames stay reserved until the allocator exhausts a suffix cycle.

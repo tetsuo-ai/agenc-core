@@ -1,9 +1,6 @@
 /**
  * Phase 3b — Stop hooks.
  *
- * Port of agenc runtime `hooks/src/events/stop.rs` (547 LOC, AgenC subset
- * ~250 LOC) + agenc `query.ts:1313-1341` stop-hook ladder.
- *
  * Stop hooks fire at turn-end and can:
  *   - declare that the stop is legitimate (no-op; turn completes)
  *   - block the stop and inject continuation prompts so the model
@@ -21,7 +18,7 @@
  *        guard + stop-hook-loop + throw-guard all funnel through
  *        `emitError`.
  *
- * Critical subtlety (AgenC 1297-1299): `executeStopFailureHooks`
+ * Critical subtlety: `executeStopFailureHooks`
  * fires ONLY when `lastMessage?.isApiErrorMessage` — without this
  * gate tokens spiral, because a stop-failure hook on a non-API-error
  * assistant turn can inject text the model refines indefinitely.
@@ -42,17 +39,12 @@ import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
 // Constants
 // ─────────────────────────────────────────────────────────────────────
 
-/** I-17 recursion cap is AgenC's additional guard over both sources.
- *  agenc runtime has no cap — its stop-hook loop relies on timeouts +
- *  cancellation (see `agenc-rs/hooks/src/events/stop.rs` and
- *  `agenc-rs/core/src/session/turn.rs`, neither defines a
- *  `MAX_STOP_HOOK_RECURSION_DEPTH` constant). AgenC caps at
- *  `MAX_STOP_HOOK_BLOCKS` in `query.ts`; we mirror that name + value
- *  here. */
+/** I-17 recursion cap: the stop-hook block loop is bounded by this count
+ *  in addition to hook timeouts and cancellation. */
 export const MAX_STOP_HOOK_BLOCKS = 3;
 
 // ─────────────────────────────────────────────────────────────────────
-// Stop-hook types (port of agenc runtime StopOutcome subset)
+// Stop-hook types
 // ─────────────────────────────────────────────────────────────────────
 
 export interface StopRequest {
@@ -64,8 +56,7 @@ export interface StopRequest {
   readonly permissionMode: string;
   readonly stopHookActive: boolean;
   readonly lastAssistantMessage?: string;
-  /** Whether the last assistant message was itself an API error —
-   *  agenc `isApiErrorMessage` flag (query.ts:1297-1299). */
+  /** Whether the last assistant message was itself an API error. */
   readonly lastIsApiErrorMessage: boolean;
   readonly hookMessages?: readonly Message[];
 }
@@ -197,8 +188,8 @@ export async function evaluateStopHooks(
     }
 
     if (outcome.shouldBlock) {
-      // agenc runtime `stop.rs:185-193` rejects `decision:block` without a
-      // non-empty reason. Mirror that: blank/whitespace-only
+      // A block decision without a non-empty reason is rejected:
+      // blank/whitespace-only
       // blockReason is a typed hook failure; we skip this hook's
       // block contribution entirely.
       const trimmedReason = outcome.blockReason?.trim();
@@ -228,11 +219,9 @@ export async function evaluateStopHooks(
   }
   void aggregate;
 
-  // agenc runtime `stop.rs:271` precedence: `should_block = !should_stop &&
-  // any(should_block)`. A hook that returned `shouldStop: true` wins
-  // over any concurrent `shouldBlock: true`, even across hooks.
-  // Asserted by agenc runtime test `continue_false_overrides_block_decision`
-  // (stop.rs:378-400).
+  // Precedence: `shouldBlock = !shouldStop && any(shouldBlock)`. A hook
+  // that returned `shouldStop: true` wins over any concurrent
+  // `shouldBlock: true`, even across hooks.
   if (anyShouldStop) {
     return {
       allowStop: true,
@@ -458,12 +447,12 @@ function parseToolInput(raw: string): unknown {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Stop-failure hooks — port of AgenC executeStopFailureHooks
+// Stop-failure hooks
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Run stop-failure hooks ONLY when the last assistant message is an
- * API error (AgenC query.ts:1297-1299 guard). Without this
+ * API error. Without this
  * guard the hooks fire on every terminal turn, even successful
  * ones, which spirals tokens on stop-hook-inject loops.
  */

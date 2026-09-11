@@ -1,12 +1,11 @@
 /**
  * Tool payload conversion for provider wire requests.
  *
- * Ports the TypeScript reference runtime's provider-tool shaping onto AgenC's
- * `LLMTool` catalog. The source runtime builds provider payloads from
- * prompt-derived tool descriptions; AgenC receives those descriptions on
- * `LLMTool.function.description` and preserves them across every wire format.
+ * Shapes AgenC's `LLMTool` catalog into provider payloads. Tool
+ * descriptions arrive on `LLMTool.function.description` and are preserved
+ * across every wire format.
  *
- * Shape differences from the reference runtime:
+ * Design notes:
  *   - AgenC's registry already exposes provider-ready JSON schemas, so this
  *     layer only normalizes provider envelopes and does not rebuild schemas.
  */

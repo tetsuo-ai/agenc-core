@@ -838,8 +838,8 @@ export interface SessionReadSnapshotExport {
  * Entries without content (unknown timestamp or null content) are
  * skipped. The caller typically uses this right before
  * `clearSessionReadCache` during compaction, then re-injects the
- * returned content back into the prompt as anchor messages — matching
- * the reference runtime's compact-and-re-attach pattern.
+ * returned content back into the prompt as anchor messages (the
+ * compact-and-re-attach pattern).
  */
 export function snapshotTopRecentReads(params: {
   readonly sessionId: string;

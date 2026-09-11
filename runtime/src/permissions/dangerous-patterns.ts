@@ -1,10 +1,9 @@
 /**
- * Ports upstream `src/utils/permissions/dangerousPatterns.ts` constants into
- * the live permission-mode path.
+ * Dangerous-pattern constants for the live permission-mode path.
  *
  * The constants are intentionally separate from `mode.ts` so rule stripping
- * uses the same shared Bash/PowerShell interpreter list as the upstream
- * permission setup code instead of an inline subset.
+ * uses the same shared Bash/PowerShell interpreter list as the permission
+ * setup code instead of an inline subset.
  */
 
 import { expandTilde, isDangerousRemovalPath } from "./path-validation.js";

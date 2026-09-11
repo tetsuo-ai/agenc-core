@@ -1,10 +1,8 @@
 /**
  * Git worktree lifecycle for subagent isolation.
  *
- * Hand-port of reference `utils/worktree.ts` (1,563 LOC) focused on
- * the core create/resume/teardown paths. The AgenC file mixes
- * in telemetry, stale-cleanup cron, and UI-specific flows; AgenC's
- * T9 subset includes:
+ * Covers the core create/resume/teardown paths. Telemetry, stale-cleanup
+ * cron, and UI-specific flows live elsewhere; this module includes:
  *
  *   - `getOrCreateWorktree(gitRoot, slug)` — fast resume if exists,
  *     else `git worktree add -B worktree-<slug>`.

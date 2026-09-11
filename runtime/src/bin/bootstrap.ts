@@ -1762,10 +1762,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     // reconstruction, sidecar register, buildTurnContext, sidecar
     // start, MCP start) is threaded in via `onBeforeSessionConfigured`
     // / `onAfterSessionConfigured`. The bin path intentionally does
-    // NOT pass `mcp` to `bootstrapSession` because upstream agenc runtime
-    // starts the live MCP connection manager AFTER SessionConfigured
-    // (session.rs:856-908); the `onAfterSessionConfigured` hook does
-    // that work instead.
+    // NOT pass `mcp` to `bootstrapSession` because the live MCP
+    // connection manager starts AFTER SessionConfigured; the
+    // `onAfterSessionConfigured` hook does that work instead.
     const session = await bootstrapSession({
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
       conversationId,
@@ -1969,8 +1968,7 @@ async function bootstrapLocalRuntimeSessionScoped(
               { sessionId: conversationId, agencHome },
               { messages: existingItems },
             );
-            // Port of agenc runtime `Session::record_initial_history` resume
-            // branch (session/mod.rs:1150-1236): restore persisted
+            // Resume branch of initial-history recording: restore persisted
             // agent task, emit a model-change warning when the
             // rollout's last turn ran on a different model, and seed
             // token-usage from the last persisted token_count event
@@ -2105,9 +2103,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         ]);
 
         // Start sidecars AFTER session_configured so they cannot emit
-        // earlier events. Mirrors agenc runtime `session.rs:750-751`: "Start
-        // the watcher after SessionConfigured so it cannot emit
-        // earlier events."
+        // earlier events.
         if (sidecarManager !== null) {
           await sidecarManager.start(s.eventLog);
         }

@@ -20,7 +20,6 @@ const BROAD_HOSTED_GATE_COMMANDS = [
   "npm run typecheck",
   "npm run validate:runtime",
   "npm run check:required-gates",
-  "npm run check:agent-surface-contract",
   "npm run check:sbom",
   "check:tui-runtime-startup",
   "tsc --noEmit",

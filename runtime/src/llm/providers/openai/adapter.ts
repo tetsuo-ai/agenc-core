@@ -1,5 +1,5 @@
 /**
- * OpenAI provider adapter. // branding-scan: allow real OpenAI provider identifier
+ * OpenAI provider adapter.
  *
  * Uses the new T13 wire shims rather than the compatibility `openai` SDK path.
  *
@@ -76,10 +76,10 @@ import {
   resolveBuiltInProviderInfo,
 } from "../../registry/provider-info.js";
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
-  "OpenAI Responses stream emitted invalid function_call"; // branding-scan: allow real OpenAI provider identifier
-const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed"; // branding-scan: allow real OpenAI provider identifier
+  "OpenAI Responses stream emitted invalid function_call";
+const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed";
 const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
-  "OpenAI chat-completions stream emitted invalid tool_call"; // branding-scan: allow real OpenAI provider identifier
+  "OpenAI chat-completions stream emitted invalid tool_call";
 const CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
 const CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS = 256;
 

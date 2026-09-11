@@ -4,15 +4,13 @@ import path from "node:path";
 import { AsyncLock } from "../utils/async-lock.js";
 
 /**
- * Ports upstream Rust `core/src/file_watcher.rs` onto AgenC's Node runtime.
+ * File watcher for AgenC's Node runtime.
  *
- * Why this lives here / shape difference from upstream:
+ * Design notes:
  *   - Node's single event loop owns state transitions, while the receiver uses
- *     AgenC's AsyncLock to preserve the upstream coalescing invariant.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Rust tracing warnings; live watcher setup failures are represented by
- *     omitted backend watches so subscribers keep synthetic/test semantics.
+ *     AgenC's AsyncLock to preserve the coalescing invariant.
+ *   - Live watcher setup failures are represented by omitted backend watches
+ *     so subscribers keep synthetic/test semantics; no warnings are logged.
  */
 
 export interface FileWatcherEvent {

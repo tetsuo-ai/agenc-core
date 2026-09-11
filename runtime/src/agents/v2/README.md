@@ -1,19 +1,18 @@
-# Multi-Agent v2 Parity
+# Multi-Agent v2 Tools
 
-This directory owns the model-facing v2 agent tools tracked by the
-`task-tool-bridge` row in `parity/agent-surface-contract.json`.
+This directory owns the model-facing v2 agent tools.
 
 ## Tool Map
 
-| Reference source                                          | Local target      | Model-facing tool       |
-| --------------------------------------------------------- | ----------------- | ----------------------- |
-| `core/src/tools/handlers/multi_agents_v2/spawn.rs`        | `spawn.ts`        | `spawn_agent`           |
-| `core/src/tools/handlers/multi_agents_v2/wait.rs`         | `wait.ts`         | `wait_agent`            |
-| `core/src/tools/handlers/multi_agents_v2/close_agent.rs`  | `close-agent.ts`  | `close_agent`           |
-| `core/src/tools/handlers/multi_agents_v2/assign_task.rs`  | `assign-task.ts`  | `assign_task`           |
-| `core/src/tools/handlers/multi_agents_v2/send_message.rs` | `send-message.ts` | `send_message`          |
-| `core/src/tools/handlers/multi_agents_v2/list_agents.rs`  | `list-agents.ts`  | `list_agents`           |
-| `core/src/tools/handlers/multi_agents_v2/message_tool.rs` | `message-tool.ts` | shared message dispatch |
+| Local target      | Model-facing tool       |
+| ----------------- | ----------------------- |
+| `spawn.ts`        | `spawn_agent`           |
+| `wait.ts`         | `wait_agent`            |
+| `close-agent.ts`  | `close_agent`           |
+| `assign-task.ts`  | `assign_task`           |
+| `send-message.ts` | `send_message`          |
+| `list-agents.ts`  | `list_agents`           |
+| `message-tool.ts` | shared message dispatch |
 
 The previous `followup_task` compatibility alias (`followup-task.ts`) has been
 deleted — `assign_task` is the only trigger-turn spelling. Historical

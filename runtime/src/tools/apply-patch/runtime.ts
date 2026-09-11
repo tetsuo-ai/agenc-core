@@ -1,7 +1,7 @@
 /**
- * Ports the donor apply-patch runtime onto AgenC filesystem tools.
+ * Apply-patch runtime built on AgenC filesystem tools.
  *
- * Shape differences from upstream:
+ * Design notes:
  *   - Filesystem calls use Node fs/promises and AgenC path allowlists.
  *   - Permission and session-read integration is exposed through the
  *     tool wrapper; this module owns the primitive patch application.

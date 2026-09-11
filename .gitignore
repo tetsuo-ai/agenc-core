@@ -59,9 +59,6 @@ obj/
 !runtime/tsconfig.tui.json
 !runtime/idl/*.json
 !runtime/src/replay/alert-schema-lockfile.json
-!parity/*.json
-!parity/*.reviews/*.json
-!runtime/parity/*.json
 !runtime/tests/fixtures/*.json
 !runtime/tests/fixtures/replay-cli/*.json
 !runtime/tests/fixtures/golden/*.json
@@ -146,33 +143,9 @@ runtime/tests/*.c
 runtime/tests/*.h
 runtime/TODO-*.md
 
-
-# Codex (local AI assistant config)
-.codex/
-CODEX.md
-codex.md
-
-# Cursor IDE
-.cursor/
-.cursorrules
-cursor.md
-CURSOR.md
-
 # Local tool artifacts
 .surfpool/
 .tmp/
-
-# Claude Code (local AI assistant config)
-.claude/
-.codex/
-CLAUDE.md
-claude.md
-AGENTS.md
-agents.md
-CONCORDIA_TODO.MD
-TODO.MD
-TODO.md
-TASK-SYSTEM-PLAN.md
 
 # Playwright outputs
 **/test-results/

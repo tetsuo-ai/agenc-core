@@ -37,7 +37,6 @@ describe("realtime startup context", () => {
 
   test("omits imported instruction, hook, shell, skill, and multipart fragments", () => {
     const importedInstructions =
-      // branding-scan: allow live imported instruction marker
       "# AGENTS.md instructions for /repo\n" +
       "<INSTRUCTIONS>\nsecret instructions\n</INSTRUCTIONS>";
     const section = buildCurrentThreadSection([

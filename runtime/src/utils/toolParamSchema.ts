@@ -3,7 +3,7 @@
  *
  * The OpenAI function-calling spec requires each tool's `parameters` JSON
  * schema to have an OBJECT root (`type: "object"`). Lenient providers
- * (OpenAI/Codex) tolerate a root-level `anyOf`/`oneOf` union, but strict
+ * (OpenAI) tolerate a root-level `anyOf`/`oneOf` union, but strict
  * OpenAI-compatible providers (x.ai grok, deepseek) reject it with:
  *
  *   400 "exec_command: tool parameter root must be an object type

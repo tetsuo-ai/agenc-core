@@ -493,7 +493,6 @@ describe("cost helpers", () => {
 
   test("computeUsdCost prices cache writes and web search requests", () => {
     const usage = {
-      // branding-scan: allow documented Anthropic API model identifier
       model: "claude-sonnet-4-5",
       inputTokens: 1_000,
       outputTokens: 1_000,
@@ -601,7 +600,6 @@ describe("CostSidecar", () => {
   test("tracks cache writes and web search usage", () => {
     const sidecar = new CostSidecar({
       defaultProvider: "anthropic",
-      // branding-scan: allow documented Anthropic API model identifier
       defaultModel: "claude-sonnet-4-5",
     });
     sidecar.onEvent({

@@ -7,7 +7,7 @@
  *   - sorted, capped file-path output with donor-compatible empty and
  *     truncation text
  *
- * Shape differences from the donor runtime:
+ * Shape differences:
  *   - AgenC returns plain `ToolResult.content` instead of a structured
  *     tool-result block.
  *   - Paths are relativized to the nearest allowed workspace root so nested

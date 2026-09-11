@@ -1,8 +1,8 @@
 /**
- * Ports upstream runtime `core/src/realtime_conversation.rs` onto AgenC's
- * TypeScript conversation primitives.
+ * Realtime conversation state machine over AgenC's conversation
+ * primitives.
  *
- * Shape difference from upstream:
+ * Design notes:
  *   - Concrete network construction is injected. This file owns the realtime
  *     phase machine, queues, handoff state, event handling, and session config
  *     shape that later daemon and transport items attach to.

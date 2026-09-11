@@ -2,8 +2,7 @@
  * Event log — the discriminated union that every state change in
  * AgenC flows through.
  *
- * Hand-port of agenc runtime `protocol/src/protocol.rs` EventMsg (78 variants)
- * reduced to AgenC's 83-variant runtime surface.
+ * The EventMsg union covers AgenC's 83-variant runtime surface.
  *
  * Invariants wired here:
  *   I-8  (every error site emits a typed event) — `emitError()` helper
@@ -940,7 +939,7 @@ export interface CollabResumeEndEvent {
  * TurnContextItem — emitted once per real user turn after computing
  * that turn's model-visible context updates (and again after
  * mid-turn compaction) so resume/fork replay recovers the latest
- * durable baseline. Port of agenc runtime `TurnContextItem` (protocol.rs:2896).
+ * durable baseline.
  *
  * Full-parity shape: every field populated by `toTurnContextItem` in
  * `turn-context.ts` is declared here so downstream readers (notably
@@ -982,7 +981,7 @@ export interface TurnContextItem {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * agenc runtime `SessionConfigured` payload. Emitted once at session open.
+ * `SessionConfigured` payload. Emitted once at session open.
  * Kept in the canonical union so session.ts can rely on event-log.ts
  * as the single source of truth for event types.
  */

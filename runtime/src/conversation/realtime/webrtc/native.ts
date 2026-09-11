@@ -1,10 +1,8 @@
 /**
- * Ports upstream runtime `realtime-webrtc/src/native.rs` onto host-provided
- * WebRTC primitives.
+ * Host-provided WebRTC primitives for the realtime session.
  *
- * Shape difference from upstream:
- *   - The source crate binds a macOS-native WebRTC runtime. AgenC accepts an
- *     injected or global WebRTC runtime so Node/Electron hosts can provide the
+ * Design notes:
+ *   - AgenC accepts an injected or global WebRTC runtime so Node/Electron hosts can provide the
  *     peer connection and microphone primitives directly.
  */
 

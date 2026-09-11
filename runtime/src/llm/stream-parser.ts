@@ -7,19 +7,18 @@ import {
 /**
  * Stream parser — extract/strip hidden tags from assistant text.
  *
- * Hand-port of the core subset of reference runtime
- * reference parser source:
+ * Tag families handled:
  *
- *   - `citation.rs` / `strip_citations`         — <oai-mem-citation>…</oai-mem-citation>
- *   - `proposed_plan.rs` / `strip_proposed_plan_blocks` — line-delimited
+ *   - `stripCitations`: <oai-mem-citation>…</oai-mem-citation>
+ *   - `stripProposedPlanBlocks`: line-delimited
  *        <proposed_plan>…</proposed_plan> blocks
- *   - `inline_hidden_tag.rs`                    — generic literal-tag stripper
+ *   - `stripInlineHiddenTags`: generic literal-tag stripper
  *
- * The reference runtime parser handles streaming (partial chunks that split a tag
- * across a `push_str` boundary). Here we ship a full-string stripper
- * for each tag family, a streaming `InlineHiddenTagParser` for inline
- * hidden tags, and a dedicated `ProposedPlanStreamParser` that
- * preserves reference runtime's line-based proposed-plan contract.
+ * This module ships a full-string stripper for each tag family, a
+ * streaming `InlineHiddenTagParser` for inline hidden tags (partial
+ * chunks may split a tag across a push boundary), and a dedicated
+ * `ProposedPlanStreamParser` that keeps the line-based proposed-plan
+ * contract.
  *
  * Invariants covered here:
  *   I-54 (tool-call schema validation)      — T7 wires the Zod
@@ -29,8 +28,8 @@ import {
  *        before any TUI rendering.
  *
  * T7 tightens the remaining streaming semantics for generic inline
- * tags. For T5 the proposed-plan parser matches reference runtime's finished-text
- * behaviour and streaming tag-recognition contract.
+ * tags. The proposed-plan parser keeps the same finished-text behaviour
+ * and streaming tag-recognition contract.
  *
  * @module
  */
@@ -66,7 +65,7 @@ export interface StripResult<TagName extends string = string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Full-string strip — matches reference runtime `strip_citations` / `strip_proposed_plan_blocks`
+// Full-string strip
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -75,8 +74,7 @@ export interface StripResult<TagName extends string = string> {
  * the outer tag's content, and its closing tag terminates the outer
  * block. Unterminated tags auto-close at EOF.
  *
- * Matches reference runtime `InlineHiddenTagParser` semantics on a finished
- * input.
+ * Equivalent to running `InlineHiddenTagParser` over a finished input.
  */
 export function stripInlineHiddenTags<TagName extends string>(
   input: string,
@@ -111,8 +109,7 @@ export function stripInlineHiddenTags<TagName extends string>(
 
 /**
  * Strip `<oai-mem-citation>…</oai-mem-citation>` tags from a complete
- * string. Returns `(visibleText, citations)`. Mirrors reference runtime
- * `strip_citations`.
+ * string. Returns `(visibleText, citations)`.
  */
 export function stripCitations(text: string): {
   readonly visibleText: string;
@@ -314,7 +311,7 @@ function mapProposedPlanSegments(
 
 /**
  * Strip `<proposed_plan>…</proposed_plan>` blocks from a complete
- * string. Mirrors reference runtime `strip_proposed_plan_blocks`.
+ * string.
  */
 export function stripProposedPlanBlocks(text: string): string {
   const parser = new ProposedPlanStreamParser();
@@ -325,7 +322,6 @@ export function stripProposedPlanBlocks(text: string): string {
 
 /**
  * Extract proposed-plan text content from a complete string.
- * Mirrors reference runtime `extract_proposed_plan_text`.
  */
 export function extractProposedPlanText(text: string): string | undefined {
   const parser = new ProposedPlanStreamParser();
@@ -364,7 +360,7 @@ export interface StreamTextChunk<Extracted> {
  * returns only the newly-resolved visible text + extracted tags. A
  * partial open-tag prefix at the end of a chunk is buffered until
  * the next chunk (or emitted verbatim at `finish()` if it never
- * resolves — matches reference runtime `preserves_partial_open_tag_at_eof`).
+ * resolves).
  *
  * Used by phase 5 (stream-model) once T7 wires the streaming
  * `chatStream()` path.
@@ -515,8 +511,8 @@ export class ProposedPlanStreamParser {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Canonical chunk kinds in the order consumers expect them. reference runtime
- * + AgenC history format is: reasoning → tool_use → text. Some
+ * Canonical chunk kinds in the order consumers expect them. AgenC's
+ * history format is: reasoning → tool_use → text. Some
  * providers emit in arbitrary order — buffer during streaming and
  * re-emit in canonical order on end().
  */
@@ -543,8 +539,8 @@ const CHUNK_KIND_ORDER: Readonly<Record<StreamChunkKind, number>> =
  * the reorder flag is set.
  *
  * The reorder is stable within each kind — relative order of two
- * reasoning chunks is preserved, same for tool_use, same for text.
- * This matches reference runtime's stream-parser behaviour (stable sort).
+ * reasoning chunks is preserved, same for tool_use, same for text
+ * (stable sort).
  */
 export class StreamChunkReorderBuffer<T = unknown> {
   private buffered: StreamChunkReorderEntry<T>[] = [];

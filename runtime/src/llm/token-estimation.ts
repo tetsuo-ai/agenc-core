@@ -1,8 +1,7 @@
 /**
- * Ports upstream `src/services/tokenEstimation.ts` rough-estimation helpers
- * onto AgenC's provider-neutral runtime.
+ * Rough token-estimation helpers for AgenC's provider-neutral runtime.
  *
- * Why this lives here / shape difference from upstream:
+ * Design notes:
  *   - AgenC keeps live API token counting out of this module. The exported
  *     helpers are deterministic local estimates that can be used by tools,
  *     compaction, prompt budgeting, and provider routing.
@@ -67,7 +66,6 @@ export interface TokenEstimationMessage {
 
 export const DEFAULT_BYTES_PER_TOKEN = 4;
 
-// branding-scan: allow Anthropic model family identifier
 const ANTHROPIC_MODEL_RE = /\bclaude[-_]/i;
 
 export const MODEL_TOKENIZER_CONFIGS: readonly ModelTokenizerConfig[] = [
