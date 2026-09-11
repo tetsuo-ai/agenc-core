@@ -152,6 +152,7 @@ export interface GetAttachmentsOptions {
         readonly loadedFrom?: string;
         readonly scope?: string;
         readonly root?: string;
+        readonly pluginId?: string;
       }>;
       /** Roots holding more skills than the per-root cap loaded. */
       readonly truncatedSkillRoots?: ReadonlyArray<{

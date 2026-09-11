@@ -976,6 +976,7 @@ export const connectToServer = memoize(
         transport = new StdioClientTransport({
           command: finalCommand,
           args: finalArgs,
+          ...(serverRef.cwd !== undefined ? { cwd: serverRef.cwd } : {}),
           env: withChildTempAuthority(
             {
               ...subprocessEnv({ ...environment }),

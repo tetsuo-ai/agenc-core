@@ -403,6 +403,9 @@ describe("attachmentsToMessages", () => {
     expect(content).toContain("wait for its schema before invoking it");
     expect(content).toContain("Never call a listed skill name as a tool");
     expect(content).not.toContain("invoke the Skill tool before responding");
+    expect(content).toContain("An @plugin-id mention selects that plugin");
+    expect(content).toContain("use its listed skill names, which may differ from the plugin name");
+    expect(content).toContain("an empty tool search does not mean its listed skills are unavailable");
   });
 
   test("renders agent_listing_delta in initial vs delta modes", () => {
