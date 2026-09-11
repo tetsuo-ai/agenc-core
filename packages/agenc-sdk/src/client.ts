@@ -800,6 +800,7 @@ export class AgencClient {
     string,
     { readonly clientMessageId: string; turnId?: string }
   >();
+  readonly #closeListeners = new Set<(error: Error) => void>();
   #initializeResult: InitializeResult | undefined;
   #negotiatedClientProtocolVersion: string | undefined;
   #initialized = false;
@@ -914,8 +915,20 @@ export class AgencClient {
         ? { jsonrpc: AGENC_SDK_JSON_RPC_VERSION, id, method }
         : { jsonrpc: AGENC_SDK_JSON_RPC_VERSION, id, method, params }
     ) as AgencDaemonRequest<Method>;
-    const response = await this.#transport.request(request);
-    return parseResponse(response, method, id);
+    let rejectOnClose!: (error: Error) => void;
+    const closed = new Promise<never>((_resolve, reject) => {
+      rejectOnClose = reject;
+    });
+    this.#closeListeners.add(rejectOnClose);
+    try {
+      const response = await Promise.race([
+        this.#transport.request(request),
+        closed,
+      ]);
+      return parseResponse(response, method, id);
+    } finally {
+      this.#closeListeners.delete(rejectOnClose);
+    }
   }
 
   async initialize(params: InitializeParams = {}): Promise<InitializeResult> {
@@ -1177,6 +1190,7 @@ export class AgencClient {
     content: MessageContent,
     options: AgencPromptOptions = {},
   ): AgencPromptRun {
+    if (this.#closed) throw new Error("AgenC SDK client is closed");
     const clientMessageId = normalizeClientMessageId(options.clientMessageId);
     const existingRun = this.#activePromptRuns.get(sessionId);
     if (existingRun !== undefined) {
@@ -1213,6 +1227,7 @@ export class AgencClient {
 
     const flushDeferredCancellation = (): Promise<void> => {
       if (
+        finishing ||
         cancellationPromise !== undefined ||
         deferredCancellationReason === undefined ||
         !submissionObserved ||
@@ -1231,6 +1246,7 @@ export class AgencClient {
     };
 
     const requestScopedCancellation = (reason: string): Promise<void> => {
+      if (finishing) return Promise.resolve();
       if (!submissionDispatched) {
         cancelBeforeDispatchReason = reason;
         return Promise.resolve();
@@ -1255,6 +1271,7 @@ export class AgencClient {
       finishing = true;
       unsubscribe();
       removeAbortListener();
+      this.#closeListeners.delete(fail);
       releaseReservation();
       let usageFields: Pick<AgencPromptResult, "usage"> = {};
       if (options.includeUsage !== false) {
@@ -1300,6 +1317,7 @@ export class AgencClient {
           };
         }
       }
+      if (finishing) return;
       try {
         if (decision.behavior === "allow") {
           await this.request("tool.approve", {
@@ -1332,7 +1350,7 @@ export class AgencClient {
       } catch {
         return;
       }
-      if (response === null) return;
+      if (response === null || finishing) return;
       try {
         await this.request("elicitation.respond", {
           sessionId,
@@ -1349,6 +1367,7 @@ export class AgencClient {
     };
 
     const unsubscribe = this.onSessionNotification(sessionId, (message) => {
+      if (finishing) return;
       const observedClientMessageId =
         userMessageClientMessageIdFromNotification(message);
       if (!submissionObserved) {
@@ -1410,6 +1429,17 @@ export class AgencClient {
       const terminal = terminalStatusFromNotification(message, reservation.turnId);
       if (terminal !== null) void finish(terminal);
     });
+
+    const fail = (error: unknown): void => {
+      if (finishing) return;
+      finishing = true;
+      unsubscribe();
+      removeAbortListener();
+      this.#closeListeners.delete(fail);
+      releaseReservation();
+      channel.fail(error instanceof Error ? error : new Error(String(error)));
+    };
+    this.#closeListeners.add(fail);
 
     if (options.signal !== undefined) {
       const signal = options.signal;
@@ -1499,12 +1529,7 @@ export class AgencClient {
           : {}),
       };
     })();
-    accepted.catch((error: unknown) => {
-      unsubscribe();
-      removeAbortListener();
-      releaseReservation();
-      channel.fail(error instanceof Error ? error : new Error(String(error)));
-    });
+    accepted.catch(fail);
 
     return {
       sessionId,
@@ -1520,6 +1545,9 @@ export class AgencClient {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    const error = new Error("AgenC SDK client is closed");
+    for (const listener of this.#closeListeners) listener(error);
+    this.#closeListeners.clear();
     this.#notificationListeners.clear();
     this.#sessionListeners.clear();
     this.#activePromptRuns.clear();

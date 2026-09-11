@@ -38,8 +38,9 @@ import {
 } from "../session/runtime-options.js";
 import type { PendingProviderSwitch } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
-import { AGENC_DAEMON_PROTOCOL_VERSION } from "./protocol/index.js";
+import { AGENC_DAEMON_PROTOCOL_VERSION, type JsonObject } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { ensureAgenCDaemonAutostart } from "./daemon-autostart.js";
 import {
   AGENC_DAEMON_HEARTBEAT_FRESH_MS,
@@ -4518,6 +4519,155 @@ workspace = ${JSON.stringify(process.cwd())}
     expect(coordinator.blocksRequests).toBe(true);
     expect(completed).toHaveBeenCalledTimes(1);
   });
+
+  it.each([1, 2])(
+    "completes accepted shutdown when all %i acknowledgement sends fail",
+    async (count) => {
+      const completed = vi.fn();
+      const coordinator = new AgenCDaemonRpcShutdownCoordinator(completed);
+      const attempts = Array.from({ length: count }, (_, id) => {
+        const result = coordinator.accept("instance-disconnected");
+        const gate = Promise.withResolvers<void>();
+        const message = {
+          jsonrpc: "2.0",
+          id,
+          method: "daemon.shutdown",
+          params: { instanceId: "instance-disconnected" },
+        } as const;
+        const sent = coordinator.send(
+          message,
+          { jsonrpc: "2.0", id, result },
+          () => gate.promise,
+        );
+        return { gate, sent };
+      });
+
+      for (const [index, attempt] of attempts.entries()) {
+        attempt.gate.reject(new Error("requester disconnected"));
+        await expect(attempt.sent).rejects.toThrow("requester disconnected");
+        expect(coordinator.blocksRequests).toBe(true);
+        expect(completed).toHaveBeenCalledTimes(index === count - 1 ? 1 : 0);
+      }
+    },
+  );
+
+  it.each(["unix", "websocket"])(
+    "terminates the %s peer when its sole attached client is evicted",
+    async (transport) => {
+      const agencHome = await tempAgencHome();
+      const host = createHost(agencHome);
+      const io = createIo();
+      const signalProcess = createSignalProcess();
+      const registered = vi.spyOn(
+        AgenCDaemonClientMultiplexer.prototype,
+        "registerClient",
+      );
+      const runner: AgenCBackgroundAgentRunner = {
+        startAgent: async () => ({
+          agentId: "agent-evicted-peer",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+        getAgentSnapshot: async () => ({
+          status: "running",
+          lastActiveAt: "2026-05-01T12:00:00.500Z",
+          runtimeSettingsEventId: "settings:evicted-peer:initial",
+          runtimeSettings: {
+            permissionMode: "default",
+            prePlanMode: null,
+            autoModeActive: false,
+            autoModeAvailable: false,
+            bypassPermissionsModeAvailable: false,
+            bypassPermissionsWorkspace: null,
+            bypassPermissionsConsentWorkspace: null,
+            model: "grok-4",
+            provider: "grok",
+            profile: null,
+            reasoningEffort: null,
+            modelVerbosity: null,
+            serviceTier: null,
+            hooksDisabled: false,
+          },
+        }),
+      };
+      const running = runAgenCDaemonCli(
+        { kind: "command", action: "run" },
+        { host, io, signalProcess, runner },
+      );
+      let socket: Socket | WebSocket | undefined;
+      try {
+        await waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome));
+        const authCookie = (await readFile(
+          resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8",
+        )).trim();
+        socket = transport === "unix"
+          ? createConnection(resolveAgenCDaemonSocketPath(host.env, host.userHome))
+          : new WebSocket(await waitForDaemonWebSocketUrl(io));
+        const peer = socket;
+        const messages = new AsyncQueue<JsonObject>();
+        if (peer instanceof WebSocket) {
+          peer.on("message", (data) => { messages.send(JSON.parse(data.toString())); });
+        } else {
+          let buffer = "";
+          peer.on("data", (chunk: Buffer) => {
+            buffer += chunk.toString("utf8");
+            let newline: number;
+            while ((newline = buffer.indexOf("\n")) !== -1) {
+              messages.send(JSON.parse(buffer.slice(0, newline)));
+              buffer = buffer.slice(newline + 1);
+            }
+          });
+        }
+        let closed = false;
+        peer.once("close", () => { closed = true; messages.close(); });
+        await once(peer, peer instanceof WebSocket ? "open" : "connect");
+        const request = async (method: string, params: JsonObject) => {
+          const payload = JSON.stringify({ jsonrpc: "2.0", id: method, method, params });
+          if (peer instanceof WebSocket) peer.send(payload);
+          else peer.write(`${payload}\n`);
+          for (;;) {
+            const response = await messages.recv();
+            if (response === null) throw new Error("peer closed before response");
+            if (response.id !== method) continue;
+            expect(response.error).toBeUndefined();
+            return response.result as JsonObject;
+          }
+        };
+        await request("initialize", {
+          protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+          clientName: "agenc-eviction-contract",
+          authCookie,
+          capabilities: {},
+        });
+        const created = await request("agent.create", {
+          cwd: process.cwd(),
+          objective: "verify eviction closes transport",
+          runtimeOptions: TEST_RUNTIME_OPTIONS,
+        });
+        await request("agent.attach", {
+          agentId: created.agentId!,
+          clientId: "client-evicted-peer",
+        });
+        const multiplexer = registered.mock.contexts.at(-1);
+        expect(multiplexer).toBeDefined();
+        // Exceed the default 8 MiB per-client delivery cap before a socket
+        // write. This exercises real daemon eviction without timing-dependent
+        // kernel send-buffer saturation or a provider connection.
+        await multiplexer!.broadcastSessionEvent(String(created.sessionId), {
+          type: "session.delta",
+          text: "x".repeat(8 * 1024 * 1024),
+        });
+        await expect.poll(() => closed).toBe(true);
+      } finally {
+        if (socket instanceof WebSocket) socket.terminate();
+        else socket?.destroy();
+        signalProcess.emit("SIGTERM");
+        await running;
+        registered.mockRestore();
+        await rm(agencHome, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("foreground daemon instantiates AuthBackend for auth requests", async () => {
     const agencHome = await tempAgencHome();

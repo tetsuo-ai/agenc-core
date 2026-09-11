@@ -94,7 +94,6 @@ async function expectRoutesCleaned(fixture: Awaited<ReturnType<typeof createComp
     const event: JsonObject = { method: "event.agent_status", params: { sessionId, status: "stopped" } };
     expect(await multiplexer.broadcastSessionEvent(sessionId, event)).toEqual({ sessionId, deliveredClientIds: [], failed: [] });
     expect(await multiplexer.broadcastCapabilityEvent(sessionId, CAPABILITY, event)).toEqual({ sessionId, deliveredClientIds: [], failed: [] });
-    expect(await multiplexer.terminateSession({ sessionId })).toMatchObject({ terminated: false, status: "closed" });
   }
   expect(statusSend).not.toHaveBeenCalled();
   expect(capabilitySend).toHaveBeenCalledTimes(1);
@@ -141,16 +140,55 @@ describe("agent-owned session route cleanup", () => {
     const fixture = await createComposition(path);
     await fixture.stop();
     await expectRoutesCleaned(fixture);
+    for (const sessionId of OWNED_SESSIONS) {
+      await expect(fixture.multiplexer.terminateSession({ sessionId }))
+        .resolves.toMatchObject({ terminated: false, status: "closed" });
+    }
     await expect(fixture.agents.stopAgent({ agentId: "agent_owner" })).resolves.toMatchObject({ stopped: false });
   });
 
-  it.each(STOP_PATHS)("cleans all owned sessions when a post-termination hook fails through %s", async (path) => {
+  it.each(STOP_PATHS)("cleans all owned routes while preserving persistent hook failures through %s", async (path) => {
     const failure = new Error("session termination hook failed");
-    const fixture = await createComposition(path, (sessionId) => {
+    const onSessionTerminated = vi.fn((sessionId: string) => {
       if (sessionId === OWNED_SESSIONS[0]) throw failure;
     });
+    const fixture = await createComposition(path, onSessionTerminated);
     await expect(fixture.stop()).rejects.toThrow();
     await expectRoutesCleaned(fixture);
+    await expect(fixture.multiplexer.terminateSession({ sessionId: OWNED_SESSIONS[0] }))
+      .rejects.toBe(failure);
+    await expect(fixture.multiplexer.terminateSession({ sessionId: OWNED_SESSIONS[1] }))
+      .resolves.toMatchObject({ terminated: false, status: "closed" });
+    expect(onSessionTerminated.mock.calls).toEqual([
+      [OWNED_SESSIONS[0]], [OWNED_SESSIONS[1]], [OWNED_SESSIONS[0]],
+    ]);
+    for (const sessionId of OWNED_SESSIONS) {
+      expect(await fixture.multiplexer.attachedClientIds(sessionId)).toEqual([]);
+    }
+  });
+
+  it.each(STOP_PATHS)("retries transient hook failure without repeating successful cleanup through %s", async (path) => {
+    let failedOnce = false;
+    const onSessionTerminated = vi.fn((sessionId: string) => {
+      if (sessionId === OWNED_SESSIONS[0] && !failedOnce) {
+        failedOnce = true;
+        throw new Error("transient termination hook failure");
+      }
+    });
+    const fixture = await createComposition(path, onSessionTerminated);
+    await expect(fixture.stop()).rejects.toThrow();
+    await expectRoutesCleaned(fixture);
+    for (const sessionId of OWNED_SESSIONS) {
+      const closed = await fixture.sessions.getSession(sessionId);
+      await expect(fixture.multiplexer.terminateSession({ sessionId, reason: "retry" }))
+        .resolves.toMatchObject({ terminated: false, status: "closed", closedAt: closed?.closedAt });
+      await expect(fixture.multiplexer.terminateSession({ sessionId }))
+        .resolves.toMatchObject({ terminated: false, status: "closed" });
+      expect(await fixture.multiplexer.attachedClientIds(sessionId)).toEqual([]);
+    }
+    expect(onSessionTerminated.mock.calls).toEqual([
+      [OWNED_SESSIONS[0]], [OWNED_SESSIONS[1]], [OWNED_SESSIONS[0]],
+    ]);
   });
 
   it("preserves live routing when termination fails before closing and permits a retry", async () => {
@@ -179,12 +217,21 @@ describe("agent-owned session route cleanup", () => {
   });
 
   it("reports every post-close hook error after cleaning every owned session", async () => {
-    const fixture = await createComposition("agent.stop", (sessionId) => {
+    const onSessionTerminated = vi.fn((sessionId: string) => {
       throw new Error(`hook failed for ${sessionId}`);
     });
+    const fixture = await createComposition("agent.stop", onSessionTerminated);
     await expect(fixture.stop()).rejects.toMatchObject({
       errors: OWNED_SESSIONS.map((sessionId) => new Error(`hook failed for ${sessionId}`)),
     });
     await expectRoutesCleaned(fixture);
+    for (const sessionId of OWNED_SESSIONS) {
+      await expect(fixture.multiplexer.terminateSession({ sessionId }))
+        .rejects.toThrow(`hook failed for ${sessionId}`);
+      expect(await fixture.multiplexer.attachedClientIds(sessionId)).toEqual([]);
+    }
+    expect(onSessionTerminated.mock.calls).toEqual(
+      [...OWNED_SESSIONS, ...OWNED_SESSIONS].map((sessionId) => [sessionId]),
+    );
   });
 });

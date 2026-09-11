@@ -479,7 +479,12 @@ export async function connect(
       signal: deadline.signal,
       connectTimeoutMs: deadline.remainingMs(),
       onNotification: (message) => client?.dispatchNotification(message),
-      onClose: (error) => options.onDisconnect?.(error),
+      onClose: (error) => {
+        // Closing the transport rejects RPCs; closing the client also settles
+        // accepted legacy prompts still waiting for a terminal notification.
+        void client?.close().catch(() => {});
+        options.onDisconnect?.(error);
+      },
     });
     deadline.assertActive();
     client = new AgencClient({

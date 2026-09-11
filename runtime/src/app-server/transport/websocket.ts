@@ -58,6 +58,7 @@ export interface AgenCWebSocketMessageContext {
   readonly remoteAddress: string | undefined;
   send(message: JsonValue): Promise<void>;
   close(code?: number, reason?: string): void;
+  terminate(): void;
 }
 
 export interface AgenCWebSocketServerOptions {
@@ -333,6 +334,7 @@ export class AgenCWebSocketServer {
       close: (code, reason) => {
         socket.close(code, reason);
       },
+      terminate: () => socket.terminate(),
     };
 
     socket.on("message", (data, isBinary) => {
@@ -383,6 +385,12 @@ export class AgenCWebSocketServer {
     active: ActiveWebSocketConnection,
     context: AgenCWebSocketMessageContext,
   ): Promise<boolean> {
+    if (
+      active.socket.readyState !== WebSocket.OPEN ||
+      active.closingUnauthenticated
+    ) {
+      return false;
+    }
     if (active.accepted) {
       return !active.closingUnauthenticated;
     }
@@ -394,7 +402,11 @@ export class AgenCWebSocketServer {
     const inFlight = active.authResolution;
     if (inFlight !== resolvedWebSocketAuth) {
       await inFlight;
-      return active.accepted && !active.closingUnauthenticated;
+      return (
+        active.accepted &&
+        !active.closingUnauthenticated &&
+        active.socket.readyState === WebSocket.OPEN
+      );
     }
     let release: (() => void) | undefined;
     active.authResolution = new Promise<void>((resolve) => {
@@ -410,9 +422,15 @@ export class AgenCWebSocketServer {
         active.closingUnauthenticated = true;
         this.#options.onError?.(asError(error), context.connectionId);
         this.#connections.delete(context.connectionId);
-        if (active.socket.readyState !== WebSocket.CLOSED) {
-          active.socket.terminate();
-        }
+        active.socket.terminate();
+        return false;
+      }
+      // An accept decision cannot restore authority revoked by disconnect,
+      // server shutdown, or the authentication deadline while it awaited.
+      if (
+        active.socket.readyState !== WebSocket.OPEN ||
+        active.closingUnauthenticated
+      ) {
         return false;
       }
       if (!authenticated) {
@@ -459,7 +477,11 @@ export class AgenCWebSocketServer {
       const pending = Promise.resolve()
         .then(async () => {
           await initializeBarrier;
-          if (active.accepted && !active.closingUnauthenticated) {
+          if (
+            active.accepted &&
+            !active.closingUnauthenticated &&
+            active.socket.readyState === WebSocket.OPEN
+          ) {
             await this.#options.onMessage(message, context);
           }
         })
@@ -500,7 +522,7 @@ export class AgenCWebSocketServer {
           // gaphunt3 #47: gate dispatch on the accept-auth decision so an
           // accepted-but-unauthenticated connection cannot drive the dispatcher.
           const proceed = await this.#resolveAcceptance(message, active, context);
-          if (!proceed) return;
+          if (!proceed || active.socket.readyState !== WebSocket.OPEN) return;
           await this.#options.onMessage(message, context);
         } finally {
           active.queuedNormalMessages = Math.max(

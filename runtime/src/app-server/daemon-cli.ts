@@ -501,10 +501,10 @@ export interface AgenCDaemonWebSocketListenOptions {
 export class AgenCDaemonRpcShutdownCoordinator {
   #pendingAcknowledgements = 0;
   #completed = false;
-  readonly #onAcknowledgementFlushed: () => void;
+  readonly #onShutdownReady: () => void;
 
-  constructor(onAcknowledgementFlushed: () => void) {
-    this.#onAcknowledgementFlushed = onAcknowledgementFlushed;
+  constructor(onShutdownReady: () => void) {
+    this.#onShutdownReady = onShutdownReady;
   }
 
   get blocksRequests(): boolean {
@@ -532,20 +532,26 @@ export class AgenCDaemonRpcShutdownCoordinator {
       await send(response);
     } catch (error) {
       if (acceptedShutdown && !this.#completed) {
-        // Release only this response's acceptance. Another concurrent
-        // acknowledgement remains counted and continues to block requests.
+        // Shutdown acceptance already fenced daemon ingress and cannot be
+        // rolled back by a disconnected requester. Give any other pending
+        // acknowledgement its flush opportunity; if none remain, clean up
+        // even though every requester lost its connection.
         this.#pendingAcknowledgements -= 1;
+        if (this.#pendingAcknowledgements === 0) {
+          this.#completed = true;
+          this.#onShutdownReady();
+        }
       }
       throw error;
     }
     if (!acceptedShutdown || this.#completed) return;
 
     // The transport's write callback is the causal flush barrier. Cleanup
-    // cannot begin before at least one authenticated acknowledgement reaches
-    // it, and a failed concurrent send cannot reopen a completed shutdown.
+    // waits for an acknowledgement to reach it or for all sends to fail. A
+    // failed concurrent send cannot reopen a completed shutdown.
     this.#pendingAcknowledgements -= 1;
     this.#completed = true;
-    this.#onAcknowledgementFlushed();
+    this.#onShutdownReady();
   }
 }
 
@@ -3327,11 +3333,11 @@ async function runAgenCDaemonForegroundLocked(
     // the multiplexer ask the transport to tear down a slow consumer's socket
     // when that client's pending delivery backlog trips the per-client cap.
     let destroyEvictedClientConnection:
-      ((clientId: string) => void) | undefined;
+      ((clientId: string, deliveryKey?: string) => void) | undefined;
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({
       sessionManager,
-      onClientEvicted: (clientId) => {
-        destroyEvictedClientConnection?.(clientId);
+      onClientEvicted: (clientId, deliveryKey) => {
+        destroyEvictedClientConnection?.(clientId, deliveryKey);
       },
     });
     const commandExec = new AgenCCommandExecService({
@@ -3932,7 +3938,10 @@ async function runAgenCDaemonForegroundLocked(
     const connections = new Map<string, AgenCDaemonJsonRpcConnection>();
     const socketConnections = new Map<
       string,
-      { readonly send: (message: JsonObject) => Promise<void> }
+      {
+        readonly send: (message: JsonObject) => Promise<void>;
+        readonly terminate: () => void;
+      }
     >();
     const connectionFor = (
       connectionKey: string,
@@ -3952,9 +3961,6 @@ async function runAgenCDaemonForegroundLocked(
       connections.delete(connectionKey);
       socketConnections.delete(connectionKey);
       void connection?.close().catch(() => {});
-      for (const clientId of connection?.trackedClientIds ?? []) {
-        void clientMultiplexer.removeClient(clientId).catch(() => {});
-      }
     };
     // Tear down the transport for a slow consumer the multiplexer evicted for an
     // unbounded pending delivery backlog. The multiplexer already removed the
@@ -3966,13 +3972,17 @@ async function runAgenCDaemonForegroundLocked(
     // co-located clients) untouched. Destroying the socket ends the backpressured
     // peer so it stops pinning daemon heap; it can reconnect and replay through
     // the normal detached-buffer path.
-    destroyEvictedClientConnection = (clientId: string): void => {
+    destroyEvictedClientConnection = (clientId, deliveryKey): void => {
       for (const [connectionKey, connection] of connections) {
-        if (!connection.trackedClientIds.includes(clientId)) {
+        if (
+          (deliveryKey !== undefined && connection.cancellationScope !== deliveryKey) ||
+          !connection.trackedClientIds.includes(clientId)
+        ) {
           continue;
         }
         const wasSoleClient = connection.untrackClientId(clientId);
         if (wasSoleClient) {
+          socketConnections.get(connectionKey)?.terminate();
           closeConnection(connectionKey);
         }
         return;
@@ -4031,6 +4041,7 @@ async function runAgenCDaemonForegroundLocked(
         );
         socketConnections.set(connectionKey, {
           send: (notification) => context.send(notification),
+          terminate: () => context.terminate(),
         });
         const connection = connectionFor(connectionKey);
         const verifiedIdentity = daemonVerifiedIdentityForContext(context);
@@ -4078,6 +4089,7 @@ async function runAgenCDaemonForegroundLocked(
         );
         socketConnections.set(connectionKey, {
           send: (notification) => context.send(notification),
+          terminate: () => context.terminate(),
         });
         const response = await connectionFor(connectionKey).dispatch(message);
         await rpcShutdown.send(message, response, context.send);

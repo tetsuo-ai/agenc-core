@@ -552,6 +552,10 @@ export class AgenCDaemonAgentManager {
     PendingCanonicalRunCancellation
   >();
   readonly #runCancellationTasks = new Map<string, Promise<RunCancelResult>>();
+  readonly #agentStopTasks = new Map<string, {
+    readonly result: Promise<AgentStopResult>;
+    finalizationError?: unknown;
+  }>();
   readonly #state = new AsyncLock<AgentLifecycleState>({
     agents: new Map(),
   });
@@ -733,10 +737,12 @@ export class AgenCDaemonAgentManager {
           );
         }
         if (
-          existing !== undefined &&
-          isActiveAgent(existing) &&
-          !isRecoveredRuntimeUnavailable(existing) &&
-          !isStaleAgent(existing)
+          this.#agentStopTasks.has(resumeSessionId) ||
+          existing?.status === "stopping" ||
+          (existing !== undefined &&
+            isActiveAgent(existing) &&
+            !isRecoveredRuntimeUnavailable(existing) &&
+            !isStaleAgent(existing))
         ) {
           throw new AgenCDaemonAgentLifecycleError(
             "CANONICAL_SESSION_ALREADY_ACTIVE",
@@ -1628,7 +1634,7 @@ export class AgenCDaemonAgentManager {
       );
     }
 
-    const attachment = await this.#sessionManager.attachSession({
+    const { attachment, created: attachmentCreated } = await this.#sessionManager.attachSessionWithOwnership({
       sessionId: session.sessionId,
       ...(params.clientId !== undefined ? { clientId: params.clientId } : {}),
     });
@@ -1688,12 +1694,14 @@ export class AgenCDaemonAgentManager {
       };
     } catch (error) {
       await Promise.resolve(rollbackRoute?.()).catch(() => {});
-      await this.#sessionManager
-        .detachSession({
-          sessionId: session.sessionId,
-          attachmentId: attachment.attachmentId,
-        })
-        .catch(() => {});
+      if (attachmentCreated) {
+        await this.#sessionManager
+          .detachSession({
+            sessionId: session.sessionId,
+            attachmentId: attachment.attachmentId,
+          })
+          .catch(() => {});
+      }
       throw error;
     }
   }
@@ -1809,6 +1817,21 @@ export class AgenCDaemonAgentManager {
   async stopAgent(params: AgentStopParams): Promise<AgentStopResult> {
     const agentId = normalizeRequiredAgentId(params.agentId, "agent.stop");
     const reason = normalizeNonEmpty(params.reason) ?? "agent.stop";
+    const pending = this.#agentStopTasks.get(agentId);
+    if (pending !== undefined) return pending.result;
+    const task = this.#stopAgentOnce(agentId, reason);
+    const operation = { result: task };
+    this.#agentStopTasks.set(agentId, operation);
+    try {
+      return await task;
+    } finally {
+      if (this.#agentStopTasks.get(agentId) === operation) {
+        this.#agentStopTasks.delete(agentId);
+      }
+    }
+  }
+
+  async #stopAgentOnce(agentId: string, reason: string): Promise<AgentStopResult> {
     const runner = this.#runner;
     const stopRunner = runner?.stopAgent?.bind(runner);
     let transitionAt: string | undefined;
@@ -1892,6 +1915,8 @@ export class AgenCDaemonAgentManager {
         );
         throw error;
       }
+      const finalizationError = this.#agentStopTasks.get(agentId)?.finalizationError;
+      if (finalizationError !== undefined) throw finalizationError;
     }
 
     const stoppedAt = transitionAt ?? this.#now();
@@ -2179,7 +2204,10 @@ export class AgenCDaemonAgentManager {
   ): RunnerTerminationTarget | null {
     const agent = state.agents.get(agentId);
     if (agent === undefined) return null;
-    if (!isActiveAgent(agent)) return null;
+    // Explicit stop has already revoked ingress by publishing "stopping".
+    // Its runner still owns the canonical terminal and must project it before
+    // the ordinary stopped status can be persisted.
+    if (!isActiveAgent(agent) && agent.status !== "stopping") return null;
     const sessionIds = [...agent.sessionIds];
     const route = snapshotRouteForAgent(agent);
     applyAgentSnapshot(agent, snapshot);
@@ -2227,6 +2255,9 @@ export class AgenCDaemonAgentManager {
         // durable terminal projection failed. The canonical JSONL event can
         // be replayed on restart/query and remains the recovery authority.
         this.#onSnapshotError(error);
+        const explicitStop = this.#agentStopTasks.get(agentId);
+        if (explicitStop !== undefined) explicitStop.finalizationError = error;
+        await this.#terminateAgentSessions(target.sessionIds, "runner_terminated");
         return;
       }
     }
@@ -2259,6 +2290,13 @@ export class AgenCDaemonAgentManager {
     } catch (error) {
       createDrainFailure = error;
     }
+    // A stop that already owns teardown is absent from the active-agent list.
+    // Shutdown must drain those operations before it can close daemon stores.
+    const stopping = [...this.#agentStopTasks.entries()];
+    const stopResults = await Promise.allSettled(stopping.map(([agentId, task]) =>
+      withTimeout(task.result, AGENT_LIFECYCLE_OPERATION_TIMEOUT_MS,
+        `agent ${agentId} in-flight stop timed out during daemon shutdown`),
+    ));
     // Shutdown must reach every retained runner even when a status read fails.
     await this.#refreshAgentsFromRunner().catch(() => {});
     const targets = await this.#state.with((state) => {
@@ -2274,6 +2312,11 @@ export class AgenCDaemonAgentManager {
     }> = [];
     if (createDrainFailure !== undefined) {
       failures.push({ agentId: "pending agent.create", error: createDrainFailure });
+    }
+    for (const [index, result] of stopResults.entries()) {
+      if (result.status === "rejected") {
+        failures.push({ agentId: stopping[index]![0], error: result.reason });
+      }
     }
     let stopped = 0;
     for (const target of targets) {
@@ -2794,6 +2837,7 @@ export class AgenCDaemonAgentManager {
       return (
         refreshed !== undefined &&
         isActiveAgent(refreshed) &&
+        refreshed.sessionIds.includes(params.sessionId) &&
         !isRecoveredRuntimeUnavailable(refreshed)
       );
     });
@@ -3756,6 +3800,7 @@ export class AgenCDaemonAgentManager {
           inactiveAgentMessage(session.agentId, refreshed),
         );
       }
+      assertAgentSessionBinding(refreshed, params.sessionId);
       return {
         recoveredRuntimeUnavailable: isRecoveredRuntimeUnavailable(refreshed),
         route: snapshotRouteForAgent(refreshed),
@@ -4046,6 +4091,7 @@ export class AgenCDaemonAgentManager {
           inactiveAgentMessage(session.agentId, refreshed),
         );
       }
+      assertAgentSessionBinding(refreshed, sessionId);
       if (isRecoveredRuntimeUnavailable(refreshed)) {
         throw new AgenCDaemonAgentLifecycleError(
           "BACKGROUND_RUNNER_UNAVAILABLE",
@@ -5267,6 +5313,14 @@ function isActiveAgent(agent: MutableAgent): boolean {
     agent.status !== "stopping" &&
     agent.status !== "stopped" &&
     agent.status !== "error"
+  );
+}
+
+function assertAgentSessionBinding(agent: MutableAgent, sessionId: string): void {
+  if (agent.sessionIds.includes(sessionId)) return;
+  throw new AgenCDaemonAgentLifecycleError(
+    "AGENT_NOT_FOUND",
+    `AgenC daemon session ${sessionId} is not bound to agent ${agent.agentId}`,
   );
 }
 

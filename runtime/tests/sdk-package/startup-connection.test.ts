@@ -157,6 +157,32 @@ describe("SDK connection phases share the startup deadline", () => {
     }
   });
 
+  test("disconnect settles an accepted prompt whose terminal notification never arrives", async () => {
+    mocks.socket.mockImplementation(() => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      queueMicrotask(() => socket.emit("connect"));
+      socket.onWrite = (text) => {
+        const request = JSON.parse(text);
+        const result = request.method === "initialize"
+          ? { type: "initialized", protocolVersion: "1.1.0", protocol: { version: "1.1.0" }, capabilities: {} }
+          : request.method === "session.attach"
+            ? { sessionId: "session_1", attachmentId: "attachment_1" }
+            : { messageId: "message_1", acceptedAt: "2026-08-17T00:00:00.000Z" };
+        socket.emit("data", JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\n");
+      };
+      return socket;
+    });
+    const onDisconnect = vi.fn();
+    const client = await connect({ env: { AGENC_HOME: home }, onDisconnect });
+    const run = client.runPrompt("session_1", "legacy prompt", { includeUsage: false });
+    await run.accepted;
+    sockets[1]!.destroy();
+    await expect(run.result()).rejects.toThrow("AgenC SDK client is closed");
+    expect(onDisconnect).toHaveBeenCalledExactlyOnceWith(null);
+    await expect(client.request("health.ping", {})).rejects.toThrow("AgenC SDK client is closed");
+  });
+
   test("transport cancellation preserves the reason and ignores a late connect", async () => {
     const socket = new FakeSocket();
     sockets.push(socket);
