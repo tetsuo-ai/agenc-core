@@ -3027,12 +3027,7 @@ export class SessionStore {
    * Schema-invalid chunks still match by physical digest and type fields.
    */
   rewriteFailedCompactionPayloadChunksAtomically(digestDomain: string): void {
-    const bytes =
-      this.resumeSourceFd !== undefined
-        ? this.readBoundResumeSourceBytes()
-        : existsSync(this.rolloutPath)
-          ? readFileSync(this.rolloutPath)
-          : Buffer.alloc(0);
+    const bytes = this.readCurrentRolloutBytes();
     const exclusions = failedCompactionPayloadExclusions(bytes, digestDomain);
     if (exclusions.length === 0) return;
     this.rewriteRolloutExcludingPhysicalLinesAtomically(
@@ -3555,12 +3550,7 @@ export class SessionStore {
         "resumed rollout writer authority was revoked after replacement failure",
       );
     }
-    const content =
-      this.resumeSourceFd !== undefined
-        ? this.readBoundResumeSourceUtf8()
-        : existsSync(this.rolloutPath)
-          ? readFileSync(this.rolloutPath, "utf8")
-          : "";
+    const content = this.readCurrentRolloutBytes().toString("utf8");
     const items: RolloutItem[] = [];
     let malformed = 0;
     for (const line of content.split("\n")) {
@@ -3578,8 +3568,14 @@ export class SessionStore {
     return hydrateManifestCompactionItems(items);
   }
 
-  private readBoundResumeSourceUtf8(): string {
-    return this.readBoundResumeSourceBytes().toString("utf8");
+  private readCurrentRolloutBytes(): Buffer {
+    if (this.resumeSourceFd !== undefined) {
+      return this.readBoundResumeSourceBytes();
+    }
+    if (existsSync(this.rolloutPath)) {
+      return readFileSync(this.rolloutPath);
+    }
+    return Buffer.alloc(0);
   }
 
   private readBoundResumeSourceBytes(): Buffer {
