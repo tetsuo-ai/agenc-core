@@ -222,16 +222,17 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
 
   it("keeps every supported MiniMax generation in one catalog", () => {
     const models = BUILT_IN_PROVIDER_MODEL_CATALOG.minimax;
+    // The lineup MiniMax documents for its OpenAI-compatible route
+    // (platform.minimax.io, 2026-09-11), newest first.
     expect(models).toEqual([
       "MiniMax-M3",
       "MiniMax-M2.7",
-      "MiniMax-M2",
-      "MiniMax-M2.1",
+      "MiniMax-M2.7-highspeed",
       "MiniMax-M2.5",
-      "MiniMax-Text-01",
-      "MiniMax-Text-01-Preview",
-      "MiniMax-Vision-01",
-      "MiniMax-Vision-01-Fast",
+      "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.1",
+      "MiniMax-M2.1-highspeed",
+      "MiniMax-M2",
     ]);
     expect(new Set(models)).toHaveLength(models.length);
     expect(buildProviderModelCatalog(defaultConfig()).minimax).toEqual(models);

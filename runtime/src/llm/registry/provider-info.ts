@@ -167,18 +167,6 @@ const NVIDIA_PROVIDER_MODEL_IDS = Object.freeze([
   "moonshotai/kimi-k2-instruct-0905",
 ] as const);
 
-const MINIMAX_MODEL_IDS = Object.freeze([
-  "MiniMax-M3",
-  "MiniMax-M2.7",
-  "MiniMax-M2",
-  "MiniMax-M2.1",
-  "MiniMax-M2.5",
-  "MiniMax-Text-01",
-  "MiniMax-Text-01-Preview",
-  "MiniMax-Vision-01",
-  "MiniMax-Vision-01-Fast",
-] as const);
-
 // Single source of truth: model lists for providers that have entries in
 // REGISTERED_MODEL_CATALOG are computed from it. model-catalog.ts does not
 // import this module, so this one-directional import introduces no cycle.
@@ -527,7 +515,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   minimax: providerDefinition({
     name: "MiniMax",
-    defaultModel: "MiniMax-M2.5",
+    defaultModel: "MiniMax-M3",
     baseURL: "https://api.minimax.io/v1",
     credentials: apiKeyCredentials(["MINIMAX_API_KEY"]),
     baseURLEnvVars: ["MINIMAX_BASE_URL"],
@@ -708,7 +696,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ]),
   mistral: Object.freeze(["mistral-medium-latest"]),
   "nvidia-nim": NVIDIA_PROVIDER_MODEL_IDS,
-  minimax: MINIMAX_MODEL_IDS,
+  minimax: mergeDerivedProviderModels("minimax"),
   // Copilot proxies models owned by several providers. Keep those entries
   // qualified here so bare slugs such as gpt-5.4 retain one global owner.
   github: GITHUB_COPILOT_CATALOG_MODELS,

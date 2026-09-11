@@ -203,6 +203,100 @@ const ZAI_CHAT_MODELS = Object.freeze([
   },
 ] as const satisfies readonly ZaiChatModelSpec[]);
 
+interface MinimaxChatModelSpec {
+  readonly model: string;
+  readonly displayName: string;
+  readonly contextWindow: number;
+  readonly vision: boolean;
+  /** Only MiniMax-M3 exposes the `thinking` switch; M2.x always think. */
+  readonly thinkingSwitch: boolean;
+  readonly priority: number;
+}
+
+/**
+ * MiniMax-M3's `thinking` control on the OpenAI-compatible route has two
+ * positions, `disabled` and `adaptive` (adaptive when the field is omitted).
+ * The effort dial spells them `low` and `high`; there is no depth between.
+ */
+const MINIMAX_M3_REASONING_LEVELS = Object.freeze([
+  "low",
+  "high",
+] as const satisfies readonly ReasoningEffort[]);
+
+const MINIMAX_MAX_OUTPUT_TOKENS = 131_072;
+
+/**
+ * The chat models MiniMax documents for its OpenAI-compatible route
+ * (platform.minimax.io, 2026-09-11). M3 takes image input and has the
+ * thinking switch; the M2 generations are text-only and always think.
+ */
+const MINIMAX_CHAT_MODELS = Object.freeze([
+  {
+    model: "MiniMax-M3",
+    displayName: "MiniMax M3",
+    contextWindow: 1_000_000,
+    vision: true,
+    thinkingSwitch: true,
+    priority: 0,
+  },
+  {
+    model: "MiniMax-M2.7",
+    displayName: "MiniMax M2.7",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 1,
+  },
+  {
+    model: "MiniMax-M2.7-highspeed",
+    displayName: "MiniMax M2.7 Highspeed",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 2,
+  },
+  {
+    model: "MiniMax-M2.5",
+    displayName: "MiniMax M2.5",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 3,
+  },
+  {
+    model: "MiniMax-M2.5-highspeed",
+    displayName: "MiniMax M2.5 Highspeed",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 4,
+  },
+  {
+    model: "MiniMax-M2.1",
+    displayName: "MiniMax M2.1",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 5,
+  },
+  {
+    model: "MiniMax-M2.1-highspeed",
+    displayName: "MiniMax M2.1 Highspeed",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 6,
+  },
+  {
+    model: "MiniMax-M2",
+    displayName: "MiniMax M2",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 7,
+  },
+] as const satisfies readonly MinimaxChatModelSpec[]);
+
 const QWEN_CLOUD_PROVIDER_IDS = Object.freeze([
   "qwen",
   "qwen-token-plan",
@@ -379,6 +473,36 @@ function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
       visibility: "list" as const,
     })),
   );
+}
+
+function minimaxCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
+  return MINIMAX_CHAT_MODELS.map((model) => Object.freeze({
+    provider: "minimax",
+    model: model.model,
+    displayName: model.displayName,
+    contextWindow: model.contextWindow,
+    maxContextWindow: model.contextWindow,
+    maxOutputTokens: MINIMAX_MAX_OUTPUT_TOKENS,
+    inputModalities: model.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
+    supportsToolUse: true,
+    supportsParallelToolCalls: false,
+    // MiniMax documents no response_format contract on this route.
+    supportsStructuredOutput: false,
+    supportsSearchTool: false,
+    supportsVerbosity: false,
+    webSearchToolType: "none" as const,
+    supportsReasoningSummaries: false,
+    defaultReasoningSummary: "none" as const,
+    supportedReasoningLevels: model.thinkingSwitch
+      ? MINIMAX_M3_REASONING_LEVELS
+      : NO_REASONING_LEVELS,
+    ...(model.thinkingSwitch
+      ? { defaultReasoningLevel: "high" as const }
+      : {}),
+    additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+    priority: model.priority,
+    visibility: "list" as const,
+  }));
 }
 
 function kimiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
@@ -637,6 +761,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     },
     ...zaiCatalogEntries(),
     ...kimiCatalogEntries(),
+    ...minimaxCatalogEntries(),
     {
       provider: "cerebras",
       model: "qwen-3.8-27b",

@@ -174,7 +174,9 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   // Yi via NVIDIA NIM
   '01-ai/yi-large': 32_768,
 
-  // MiniMax (all M2.x variants share 204,800 context, 131,072 max output)
+  // MiniMax (M3 has a 1,000,000 window; all M2.x variants share 204,800)
+  'MiniMax-M3':               1_000_000,
+  'minimax-m3':               1_000_000,
   'MiniMax-M2.7':             204_800,
   'MiniMax-M2.7-highspeed':   204_800,
   'MiniMax-M2.5':             204_800,
@@ -188,11 +190,8 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   'minimax-m2.1':             204_800,
   'minimax-m2.1-highspeed':   204_800,
 
-  // MiniMax new models
+  // MiniMax ids no longer in the documented lineup that still answer
   'MiniMax-Text-01':          524_288,
-  'MiniMax-Text-01-Preview':  262_144,
-  'MiniMax-Vision-01':        32_768,
-  'MiniMax-Vision-01-Fast':   16_384,
   'MiniMax-M2':               204_800,
 
   // Google (via OpenRouter)
@@ -363,7 +362,9 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'mistral-large-latest':     32_768,
   'mistral-small-latest':     32_768,
 
-  // MiniMax (all M2.x variants share 131,072 max output)
+  // MiniMax (M3 and all M2.x variants share 131,072 max output)
+  'MiniMax-M3':              131_072,
+  'minimax-m3':              131_072,
   'MiniMax-M2.7':            131_072,
   'MiniMax-M2.7-highspeed':  131_072,
   'MiniMax-M2.5':            131_072,
