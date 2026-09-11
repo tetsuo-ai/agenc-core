@@ -382,17 +382,20 @@ describe("cost helpers", () => {
 
   test("current DeepSeek and Mistral defaults use their official cached-token tiers", () => {
     expect(DEFAULT_MODEL_COSTS["deepseek:deepseek-v4-flash"]).toMatchObject({
-      inputUsdPer1K: 0.00014,
-      outputUsdPer1K: 0.00028,
-      cachedInputUsdPer1K: 0.0000028,
+      inputUsdPer1K: 0.0003,
+      outputUsdPer1K: 0.0012,
+      cachedInputUsdPer1K: 0.000006,
       cachedInputIncludedInInputTokens: true,
     });
     expect(DEFAULT_MODEL_COSTS["deepseek:deepseek-v4-pro"]).toMatchObject({
-      inputUsdPer1K: 0.000435,
-      outputUsdPer1K: 0.00087,
-      cachedInputUsdPer1K: 0.000003625,
+      inputUsdPer1K: 0.00132,
+      outputUsdPer1K: 0.00396,
+      cachedInputUsdPer1K: 0.000044,
       cachedInputIncludedInInputTokens: true,
     });
+    for (const model of ["deepseek-flash", "deepseek-v4-flash-vision-exp"]) {
+      expect(DEFAULT_MODEL_COSTS[`deepseek:${model}`]).toBe(DEFAULT_MODEL_COSTS["deepseek:deepseek-v4-flash"]);
+    }
     expect(DEFAULT_MODEL_COSTS["mistral:mistral-medium-latest"])
       .toMatchObject({
         inputUsdPer1K: 0.0015,

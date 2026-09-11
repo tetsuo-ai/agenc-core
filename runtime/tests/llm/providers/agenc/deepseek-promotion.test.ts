@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AuthBackend } from "../../../../src/auth/backend.js";
 import { createProvider } from "../../../../src/llm/provider.js";
-import { AGENC_DEEPSEEK_MODEL as model } from "../../../../src/llm/registry/agenc-deepseek.js";
+import { AGENC_DEEPSEEK_MODELS, AGENC_DEEPSEEK_V41_MODEL } from "../../../../src/llm/registry/agenc-deepseek.js";
 import { deriveFlatCatalog, resolveRegisteredModelCatalogEntry } from "../../../../src/llm/registry/model-catalog.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../../../src/llm/wire/capability-gating.js";
 import { buildChatCompletionsRequest } from "../../../../src/llm/wire/chat-completions.js";
@@ -10,7 +10,7 @@ import type { LLMMessage } from "../../../../src/llm/types.js";
 import { ModelMetadataResolver } from "../../../../src/llm/model-metadata.js";
 import { defaultConfig } from "../../../../src/config/schema.js";
 
-describe("AgenC DeepSeek promotion wire", () => {
+describe.each(AGENC_DEEPSEEK_MODELS)("AgenC $model promotion wire", ({ model }) => {
   it.each(["low", "high", "max"] as const)("reserves room for reasoning and tools at native %s effort while honoring explicit limits", reasoningEffort => {
     const config = { ...defaultConfig(), model_provider: "agenc", model, reasoning_effort: reasoningEffort };
     const resolver = new ModelMetadataResolver({ env: {} });
@@ -114,6 +114,7 @@ describe("AgenC DeepSeek promotion wire", () => {
       ], { reasoningEffort: effort, parallelToolCalls: true, maxOutputTokens: 256 });
       expect(final.content).toBe("marker");
       expect(bodies[0]).toMatchObject({ model, max_tokens: 256, reasoning_effort: effort });
+      if (model === AGENC_DEEPSEEK_V41_MODEL) expect(bodies[0].tool_choice).toBeUndefined();
       expect(bodies[1].reasoning_effort).toBe(effort);
       expect(bodies[1].messages.find((row: any) => row.role === "assistant").reasoning).toBe("Read the synthetic marker.");
       expect(bodies[1].messages.find((row: any) => row.role === "tool").tool_call_id).toBe(markerCallId);

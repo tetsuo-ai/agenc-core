@@ -174,6 +174,22 @@ const COST_TIER_DEEPSEEK_V4_PRO: Readonly<ModelCostEntry> = Object.freeze({
   cachedInputIncludedInInputTokens: true,
 });
 
+// Native API estimates use the published peak rates (2026-09-11). Off-peak
+// calls cost half; these estimates are not authoritative managed-credit usage.
+// https://api-docs.deepseek.com/quick_start/pricing/
+const COST_TIER_DEEPSEEK_V41_FLASH_NATIVE: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0003,
+  outputUsdPer1K: 0.0012,
+  cachedInputUsdPer1K: 0.000006,
+  cachedInputIncludedInInputTokens: true,
+});
+const COST_TIER_DEEPSEEK_V4_PRO_NATIVE: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00132,
+  outputUsdPer1K: 0.00396,
+  cachedInputUsdPer1K: 0.000044,
+  cachedInputIncludedInInputTokens: true,
+});
+
 // Official Mistral API prices retrieved 2026-08-24:
 // https://docs.mistral.ai/inference/pricing
 const COST_TIER_MISTRAL_MEDIUM_3_5: Readonly<ModelCostEntry> = Object.freeze({
@@ -434,12 +450,16 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       inputUsdPer1K: 0.00059,
       outputUsdPer1K: 0.00079,
     },
-    "deepseek:deepseek-v4-flash": COST_TIER_DEEPSEEK_V4_FLASH,
-    "deepseek-v4-flash": COST_TIER_DEEPSEEK_V4_FLASH,
+    "deepseek:deepseek-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
+    "deepseek-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
+    "deepseek:deepseek-v4-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
+    "deepseek-v4-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
+    "deepseek:deepseek-v4-flash-vision-exp": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
+    "deepseek-v4-flash-vision-exp": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
     "deepseek/deepseek-v4-flash": COST_TIER_DEEPSEEK_V4_FLASH,
     "openrouter:deepseek/deepseek-v4-flash": COST_TIER_DEEPSEEK_V4_FLASH,
-    "deepseek:deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
-    "deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
+    "deepseek:deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO_NATIVE,
+    "deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO_NATIVE,
     "deepseek/deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
     "openrouter:deepseek/deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
     "cerebras:gpt-oss-120b": COST_TIER_CEREBRAS_GPT_OSS_120B,

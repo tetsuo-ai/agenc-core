@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { DeepSeekProvider } from "./index.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
-import { DEEPSEEK_MODELS } from "../../registry/deepseek-models.js";
+import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "../../registry/deepseek-models.js";
 import { ModelMetadataResolver } from "../../model-metadata.js";
 import { defaultConfig } from "../../../config/schema.js";
 import { sessionConfigurationFromAgenCConfig } from "../../../session/configuration.js";
@@ -10,7 +10,7 @@ import type { LLMMessage } from "../../types.js";
 import { bodyAt, createSuccessfulChatResponse, ECHO_TOOL, sseResponse } from "../openai-compatible-test-helpers.js";
 
 describe("DeepSeekProvider", () => {
-  test.each(DEEPSEEK_MODELS)("$model preserves native effort and honors explicit output limits", ({ model }) => {
+  test.each([...DEEPSEEK_MODELS, ...DEEPSEEK_MODEL_ALIASES])("$model preserves native effort and honors explicit output limits", ({ model }) => {
     const config = { ...defaultConfig(), model_provider: "deepseek", model, reasoning_effort: "max" as const };
     const resolver = new ModelMetadataResolver({ env: {} });
     const metadata = resolver.resolveSync({ provider: "deepseek", model, config });
@@ -20,8 +20,7 @@ describe("DeepSeekProvider", () => {
     expect(session.collaborationMode.reasoningEffort).toBe("max");
   });
 
-  test.each(["low", "high", "max"] as const)("sends native %s effort and replays reasoning across tool and user turns", async (reasoningEffort) => {
-    const model = "deepseek-v4-pro";
+  test.each(DEEPSEEK_MODELS.flatMap(({ model }) => (["low", "high", "max"] as const).map(reasoningEffort => ({ model, reasoningEffort }))))("$model sends native $reasoningEffort effort and replays reasoning across tool and user turns", async ({ model, reasoningEffort }) => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => createSuccessfulChatResponse("deepseek-contract")(model));
     const provider = new DeepSeekProvider({ apiKey: "deepseek-test", model, fetchImpl, tools: [ECHO_TOOL] });
     const provenance = { provider: "deepseek", model };
@@ -44,8 +43,7 @@ describe("DeepSeekProvider", () => {
     expect((bodyAt(fetchImpl, 1).messages as Record<string, unknown>[]).filter(row => row.role === "assistant").every(row => row.reasoning_content === undefined)).toBe(true);
   });
 
-  test("streams a complete tool call and carries its reasoning into the next request", async () => {
-    const model = "deepseek-v4-flash";
+  test.each([...DEEPSEEK_MODELS, ...DEEPSEEK_MODEL_ALIASES])("$model streams a complete tool call and carries its reasoning into the next request", async ({ model }) => {
     const frame = (delta: object, finish_reason: string | null = null) => `data: ${JSON.stringify({ id: "deepseek-stream", model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
     const fetchImpl = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(sseResponse([
@@ -64,6 +62,29 @@ describe("DeepSeekProvider", () => {
       { role: "tool", toolCallId: "call_echo", toolName: "system.echo", content: "ok" },
     ], { reasoningEffort: "max" });
     expect((bodyAt(fetchImpl, 1).messages as Record<string, unknown>[]).find(row => row.role === "assistant")?.reasoning_content).toBe("check with the tool");
+  });
+
+  test.each([DEEPSEEK_MODELS[0]!, ...DEEPSEEK_MODEL_ALIASES])("$model sends images and relays tool images as user input", async ({ model }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(createSuccessfulChatResponse("deepseek-image")(model));
+    const provider = new DeepSeekProvider({ apiKey: "deepseek-test", model, fetchImpl, tools: [ECHO_TOOL] });
+    const image = { type: "image_url" as const, image_url: { url: "data:image/png;base64,aW1hZ2U=" } };
+    await provider.chat([
+      { role: "user", content: [{ type: "text", text: "Inspect" }, image] },
+      { role: "assistant", content: "", toolCalls: [{ id: "call_echo", name: "system.echo", arguments: "{}" }] },
+      { role: "tool", toolCallId: "call_echo", toolName: "system.echo", content: [{ type: "text", text: "Screenshot" }, image] },
+    ]);
+    const messages = bodyAt(fetchImpl).messages as Record<string, unknown>[];
+    expect(messages[0]).toMatchObject({ role: "user", content: expect.arrayContaining([image]) });
+    expect(messages[2]).toEqual({ role: "tool", tool_call_id: "call_echo", content: "Screenshot" });
+    expect(messages[3]).toMatchObject({ role: "user", content: expect.arrayContaining([image]) });
+  });
+
+  test("does not claim V4.1 vision support for V4 Pro", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new DeepSeekProvider({ apiKey: "deepseek-test", model: "deepseek-v4-pro", fetchImpl });
+    await expect(provider.chat([{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,aW1hZ2U=" } }] }]))
+      .rejects.toThrow("does not support image input");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("maps reasoning_content responses through the compat adapter", async () => {
