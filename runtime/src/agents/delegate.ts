@@ -1,7 +1,7 @@
 /**
  * Delegate — the canonical subagent spawn dispatcher.
  *
- * Hand-port of the donor spawn-dispatcher subset. Public entry point for:
+ * Public entry point for:
  *
  *   - Isolation setup (worktree create + bind CWD, or CWD-only)
  *   - Fork mode selection

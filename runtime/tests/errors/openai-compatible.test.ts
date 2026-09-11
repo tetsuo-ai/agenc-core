@@ -7,7 +7,6 @@ import {
   formatOpenAICategoryMarker,
 } from "./openai-compatible.js";
 
-// branding-scan: allow real OpenAI provider identifier
 describe("OpenAI-compatible error classification", () => {
   test("classifies localhost ECONNREFUSED as connection_refused", () => {
     const error = Object.assign(new TypeError("fetch failed"), {
@@ -76,7 +75,6 @@ describe("OpenAI-compatible error classification", () => {
     );
 
     const formatted = buildOpenAICompatibilityErrorMessage(
-      // branding-scan: allow real OpenAI provider identifier
       "OpenAI API error 404: Not Found",
       {
         category: "endpoint_not_found",
@@ -89,7 +87,6 @@ describe("OpenAI-compatible error classification", () => {
     expect(extractOpenAICategoryMarker(formatted)).toBe("endpoint_not_found");
     expect(
       extractOpenAICategoryMarker(
-        // branding-scan: allow real OpenAI provider identifier
         "OpenAI API error 500 [openai_category=totally_fake_category]",
       ),
     ).toBeUndefined();

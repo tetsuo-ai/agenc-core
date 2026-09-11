@@ -13,11 +13,10 @@ import {
 } from "./store.js";
 
 /**
- * Params for creating a new `LiveThread`. Mirrors upstream
- * `CreateThreadParams` (thread-store/src/types.rs:31) minus the
- * fields that have no gut-side consumer yet (`baseInstructions`,
- * `dynamicTools`). `eventPersistenceMode` is accepted for signature
- * parity but ignored by gut's default store.
+ * Params for creating a new `LiveThread`. A subset of
+ * `CreateThreadParams` without the fields that have no consumer yet
+ * (`baseInstructions`, `dynamicTools`). `eventPersistenceMode` is
+ * accepted for signature stability but ignored by the default store.
  */
 export interface CreateLiveThreadParams {
   readonly threadId: ThreadId;
@@ -44,8 +43,8 @@ export interface CreateLiveThreadParams {
 }
 
 /**
- * Params for resuming an existing thread. Mirrors upstream
- * `ResumeThreadParams` (thread-store/src/types.rs:48).
+ * Params for resuming an existing thread. A subset of
+ * `ResumeThreadParams`.
  */
 export interface ResumeLiveThreadParams {
   readonly threadId: ThreadId;
@@ -59,8 +58,7 @@ export interface ResumeLiveThreadParams {
 }
 
 /**
- * Handle for an active thread. Ported from upstream agenc runtime
- * `thread-store/src/live_thread.rs`. Immutable construction; the
+ * Handle for an active thread. Immutable construction; the
  * underlying `RolloutStore` owns all mutable rollout state.
  */
 export class LiveThread {
@@ -93,8 +91,7 @@ export class LiveThread {
   }
 
   /**
-   * Append rollout items in order. Mirrors upstream
-   * `LiveThread::append_items` (live_thread.rs:105). When a
+   * Append rollout items in order. When a
    * `ThreadStore` is bound, the append is routed through
    * `ThreadStore.appendItems`; otherwise, the items go directly to the
    * `RolloutStore`. Throws if the handle has been shut down.
@@ -114,7 +111,7 @@ export class LiveThread {
     }
   }
 
-  /** Force a durable flush barrier. Mirrors upstream `LiveThread::flush`. */
+  /** Force a durable flush barrier. */
   flush(): void {
     if (this.threadStore !== undefined) {
       this.threadStore.flushThread(this.threadId);
@@ -124,9 +121,8 @@ export class LiveThread {
   }
 
   /**
-   * Materialize any lazy persistence state. Mirrors upstream
-   * `LiveThread::persist`. Gut's `RolloutStore` opens eagerly, so this
-   * reduces to `flush`.
+   * Materialize any lazy persistence state. `RolloutStore` opens
+   * eagerly, so this reduces to `flush`.
    */
   persist(): void {
     if (this.threadStore !== undefined) {
@@ -137,8 +133,7 @@ export class LiveThread {
   }
 
   /**
-   * Tear down per-thread writer state. Mirrors upstream
-   * `LiveThread::shutdown`. Does NOT close the `RolloutStore` because
+   * Tear down per-thread writer state. Does NOT close the `RolloutStore` because
    * the store lifecycle is owned by `Session`.
    */
   shutdown(): void {
@@ -152,8 +147,7 @@ export class LiveThread {
   }
 
   /**
-   * Abandon the thread without flushing. Mirrors upstream
-   * `LiveThread::discard` (live_thread.rs:126). When a `ThreadStore`
+   * Abandon the thread without flushing. When a `ThreadStore`
    * is bound, delegates to `ThreadStore.discardThread` so the live
    * writer entry is dropped without forcing pending items durable.
    * Without a store, falls back to marking the handle shut down —
@@ -168,21 +162,19 @@ export class LiveThread {
   }
 
   /**
-   * Return the durable rollout path for this thread. Mirrors upstream
-   * `LiveThread::local_rollout_path` (live_thread.rs:163).
+   * Return the durable rollout path for this thread.
    */
   localRolloutPath(): string {
     return this.store.rolloutPath;
   }
 
-  /** Whether the handle has been shut down. Not in upstream's API. */
+  /** Whether the handle has been shut down. */
   get isShutdown(): boolean {
     return this.shutdownCalled;
   }
 
   /**
-   * Load rollout history for this thread. Mirrors upstream
-   * `LiveThread::load_history` (live_thread.rs:130). Requires a bound
+   * Load rollout history for this thread. Requires a bound
    * `ThreadStore`; throws `ThreadStoreInvalidRequestError` otherwise.
    */
   loadHistory(includeArchived: boolean): StoredThreadHistory {
@@ -198,8 +190,7 @@ export class LiveThread {
   }
 
   /**
-   * Update this thread's memory mode. Mirrors upstream
-   * `LiveThread::update_memory_mode` (live_thread.rs:142). Requires a
+   * Update this thread's memory mode. Requires a
    * bound `ThreadStore`; throws `ThreadStoreInvalidRequestError`
    * otherwise.
    */
@@ -221,8 +212,7 @@ export class LiveThread {
 }
 
 /**
- * Create a `LiveThread` for a new conversation. Mirrors upstream
- * `LiveThread::create` (live_thread.rs:81). When a `ThreadStore` is
+ * Create a `LiveThread` for a new conversation. When a `ThreadStore` is
  * supplied, the factory calls `threadStore.createThread(...)` so the
  * store records the live writer; otherwise the handle is returned
  * without any store-side registration.
@@ -262,8 +252,7 @@ export function createLiveThread(params: CreateLiveThreadParams): LiveThread {
 }
 
 /**
- * Resume a `LiveThread` for an existing conversation. Mirrors upstream
- * `LiveThread::resume` (live_thread.rs:93). When a `ThreadStore` is
+ * Resume a `LiveThread` for an existing conversation. When a `ThreadStore` is
  * supplied, the factory calls `threadStore.resumeThread(...)`.
  */
 export function resumeLiveThread(params: ResumeLiveThreadParams): LiveThread {
@@ -299,13 +288,11 @@ export function resumeLiveThread(params: ResumeLiveThreadParams): LiveThread {
 }
 
 /**
- * Two-phase init rollback guard. Ported from upstream
- * `LiveThreadInitGuard` (thread-store/src/live_thread.rs:36).
+ * Two-phase init rollback guard.
  *
- * Upstream uses Rust's `Drop` trait to fire
- * `ThreadStore::discard_thread` when the guard goes out of scope after
- * a failed session init. TypeScript has no deterministic destructor,
- * so this port uses an explicit `commit()` / `discard()` API:
+ * Discards the owned live thread after a failed session init.
+ * TypeScript has no deterministic destructor, so the guard uses an
+ * explicit `commit()` / `discard()` API:
  *
  *   const guard = new LiveThreadInitGuard(live);
  *   try {
@@ -315,11 +302,9 @@ export function resumeLiveThread(params: ResumeLiveThreadParams): LiveThread {
  *     guard.discard();  // no-op after commit; rolls back otherwise
  *   }
  *
- * Deviation from upstream: upstream's `Drop` implementation spawns the
- * discard on the current Tokio runtime handle and logs a warning if no
- * handle exists. Gut's `LiveThread.discard()` is synchronous (backed by
- * the in-memory live-writer map in `FileThreadStore`), so no runtime
- * handle is required and no async spawn is needed. If a future
+ * `LiveThread.discard()` is synchronous (backed by the in-memory
+ * live-writer map in `FileThreadStore`), so no async spawn is needed.
+ * If a future
  * `ThreadStore` implementation is asynchronous, the caller should
  * `await` its own `commit/discard` lifecycle instead of relying on a
  * destructor analog.
@@ -338,8 +323,6 @@ export class LiveThreadInitGuard {
 
   /**
    * Release ownership. After `commit()`, `discard()` is a no-op.
-   * Mirrors upstream `LiveThreadInitGuard::commit`
-   * (live_thread.rs:49).
    */
   commit(): void {
     this.liveThread = undefined;
@@ -347,8 +330,7 @@ export class LiveThreadInitGuard {
 
   /**
    * Roll back the owned live thread by calling `LiveThread.discard()`.
-   * Idempotent: subsequent calls are no-ops. Mirrors upstream
-   * `LiveThreadInitGuard::discard` (live_thread.rs:53).
+   * Idempotent: subsequent calls are no-ops.
    */
   discard(): void {
     const thread = this.liveThread;
@@ -357,7 +339,7 @@ export class LiveThreadInitGuard {
     try {
       thread.discard();
     } catch (err) {
-      // Match upstream's `warn!` on discard failure — don't propagate.
+      // Warn on discard failure; don't propagate.
       // Guard-driven discard happens on error paths where we don't
       // want to mask the original error with a cleanup failure.
       // eslint-disable-next-line no-console

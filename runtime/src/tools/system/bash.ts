@@ -966,13 +966,12 @@ export function createBashTool(config?: BashToolConfig): Tool {
 
   return {
     name: "system.bash",
-    // Marked deferred: exec_command is the canonical shell tool (donor runtime
-    // parity — the donor runtime's `local_shell` + `write_stdin` is what AgenC's
-    // `exec_command` + `write_stdin` mirrors). system.bash stays
+    // Marked deferred: exec_command (with write_stdin) is the canonical
+    // shell tool. system.bash stays
     // available via system.searchTools for callers that genuinely
     // need the direct-mode (command + args) split or the dual-mode
     // semantics, but defaults to off to keep the visible catalog
-    // donor runtime-small and avoid duplicate-tool confusion.
+    // small and avoid duplicate-tool confusion.
     metadata: {
       family: "terminal",
       source: "builtin",

@@ -1,6 +1,6 @@
 /**
- * Extends donor `mcp-server/src/lib.rs` JSON-RPC server processing with
- * AgenC-owned HTTP/SSE framing for remote MCP clients.
+ * HTTP/SSE framing for remote MCP clients on top of AgenC's JSON-RPC server
+ * processing.
  *
  * Why this lives here:
  *   - MS-04 owns server-side remote transport only. CLI binding, auth, and

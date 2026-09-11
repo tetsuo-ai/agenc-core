@@ -1,13 +1,12 @@
 /**
- * Ports upstream Rust `secrets/src/sanitizer.rs` onto AgenC log and artifact
- * payloads.
+ * Secret sanitizer for AgenC log and artifact payloads.
  *
- * Why this lives here / shape difference from upstream:
+ * Why this lives here:
  *   - AgenC consumers persist structured JSON events, so this module redacts
  *     both raw strings and nested JSON-like values.
  *
  * Cross-cuts deliberately NOT carried:
- *   - Local encrypted secret storage from the same upstream crate; SE-01 owns
+ *   - Local encrypted secret storage; SE-01 owns
  *     sanitizer behavior for logs, transcripts, hook output, and traces.
  */
 

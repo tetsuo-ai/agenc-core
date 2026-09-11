@@ -164,7 +164,6 @@ describe('memory privacy', () => {
       { ruleId: 'github-pat', label: 'GitHub PAT' },
     ])
     expect(scanForSecrets(`${content}\nagain=${fakeGitHubPat}`)).toHaveLength(1)
-    // branding-scan: allow real provider display name
     expect(getSecretLabel('openai-api-key')).toBe('OpenAI API Key')
     expect(redactSecrets(content)).toBe('token=[REDACTED_SECRET]')
     expect(redactSecrets(content)).not.toContain(fakeGitHubPat)

@@ -1,21 +1,17 @@
 /**
- * Session bootstrap — port of upstream agenc runtime
- * `core/src/session/session.rs::Session::new` (lines 258-967).
+ * Session bootstrap.
  *
- * Upstream `Session::new` is a single ~710 LOC async function that
- * constructs the `Session`, kicks off parallel auth + MCP + thread-
- * persistence futures, awaits required MCP servers, emits
- * `SessionConfigured`, schedules the startup prewarm, and calls
- * `record_initial_history` for resumed sessions. Gut ports that
- * sequence into a TypeScript free function so the `Session` constructor
- * stays lightweight (field init only) and callers have a single entry
- * point whose contract is testable.
+ * `bootstrapSession` constructs the `Session`, kicks off parallel
+ * auth + MCP + thread-persistence work, awaits required MCP servers,
+ * emits `SessionConfigured`, schedules the startup prewarm, and
+ * records initial history for resumed sessions. It is a free function
+ * so the `Session` constructor stays lightweight (field init only) and
+ * callers have a single entry point whose contract is testable.
  *
  * Design decisions (per brief + `docs/plan/translation-conventions.md`):
  *
  *   - **Module-level `bootstrapSession(opts)`** instead of a static
- *     factory on `Session`. Upstream's `Session::new` is a free
- *     constructor function in Rust; mapping it to a TypeScript free
+ *     factory on `Session`. A free
  *     function avoids leaking bootstrap-only state onto the class
  *     itself and keeps the constructor usable directly from unit tests
  *     that don't want prewarm / session_configured side effects.
@@ -27,9 +23,7 @@
  *     exercise shell/MCP/prewarm. The compatibility constructor path remains
  *     a no-op for bootstrap-only effects.
  *
- *   - **Staged caller hooks.** Upstream does thread-persistence,
- *     state_db lookup, live-thread init, and `record_initial_history`
- *     inline; gut's `bin/bootstrap.ts` already owns rollout-store
+ *   - **Staged caller hooks.** `bin/bootstrap.ts` already owns rollout-store
  *     mount + history reconstruction between session construction and
  *     `session_configured` emit, and sidecar/MCP start between
  *     session_configured and prewarm. The helper exposes two hooks —
@@ -43,19 +37,19 @@
  *     and similar wrappers are intentionally absent. Each sub-step is
  *     an exported helper so tests can drive them in isolation.
  *
- * Sub-steps that landed in this port vs. upstream:
+ * Bootstrap sub-steps and where they live:
  *
- *   | Upstream step                                | Gut status                                     |
+ *   | Step                                          | Status                                        |
  *   |-----------------------------------------------|-----------------------------------------------|
  *   | Shell selection                               | WIRED at the session-services boundary        |
- *   | Parallel auth + MCP startup (`tokio::join!`)  | WIRED via `Promise.all` in this file          |
- *   | `LiveThread::create/resume`                   | WIRED in `bin/bootstrap-services.ts`          |
- *   | `state_db` lookup                             | WIRED for thread-store metadata              |
+ *   | Parallel auth + MCP startup                   | WIRED via `Promise.all` in this file          |
+ *   | Live thread create/resume                     | WIRED in `bin/bootstrap-services.ts`          |
+ *   | State DB lookup                               | WIRED for thread-store metadata              |
  *   | Thread-name lookup                            | WIRED through thread-store metadata          |
  *   | `SessionConfigured` event emit                | WIRED — called from the bootstrap helper      |
- *   | `required_mcp_servers` await (fail-closed)    | WIRED — fails at `manager.start`              |
+ *   | Required MCP servers await (fail-closed)      | WIRED, fails at `manager.start`             |
  *   | Startup prewarm                               | WIRED (best-effort TurnContext construction)  |
- *   | `record_initial_history` (resume)             | WIRED via `agent-task-lifecycle.ts`           |
+ *   | Initial history record (resume)               | WIRED via `agent-task-lifecycle.ts`           |
  *   | Network-proxy setup                           | PUNTED — T11 network approval is separate     |
  *   | `guardian_rejections` / telemetry seeds       | PUNTED — initialized in services builder      |
  *
@@ -82,9 +76,9 @@ import {
 } from "./session.js";
 
 /**
- * Resume-path bundle for `bootstrapSession`. Mirrors the subset of
- * upstream `InitialHistory::Resumed` that the gut `record_initial_history`
- * port consumes: rollout items, the previous model name (for the
+ * Resume-path bundle for `bootstrapSession`. The subset of resumed
+ * history that `recordInitialHistoryOnResume`
+ * consumes: rollout items, the previous model name (for the
  * model-change warning), and the current session's active model.
  */
 export interface BootstrapResumePayload {
@@ -110,13 +104,11 @@ export interface BootstrapSessionConfiguredPayload {
 
 /**
  * Options for `bootstrapSession`. A superset of `SessionOpts` with the
- * bootstrap-only fields agenc runtime `Session::new` accepts directly:
+ * bootstrap-only fields:
  *
- *   - `mcp` — session-owned MCP manager + optional start opts. Upstream
- *     constructs `McpConnectionManager::new()` inline; gut wires the
- *     existing `startMcpManagerForSession` seam here.
- *   - `auth` — async auth prep future. Upstream calls
- *     `auth_manager.auth().await` in parallel with MCP; gut accepts a
+ *   - `mcp`: session-owned MCP manager + optional start opts. Wires
+ *     the existing `startMcpManagerForSession` seam here.
+ *   - `auth`: async auth prep future, run in parallel with MCP. A
  *     caller-supplied prep so the parallelism is preserved even when
  *     the live `AuthManager` is not yet threaded end-to-end.
  *   - `resume` — resume-path bundle handed to `recordInitialHistoryOnResume`
@@ -127,12 +119,11 @@ export interface BootstrapSessionConfiguredPayload {
  *   - `onBeforeSessionConfigured` — caller hook run after MCP startup
  *     completes but before the `SessionConfigured` emit. Used by
  *     `bin/bootstrap.ts` to mount the rollout store and reconstruct
- *     resume history at the exact moment upstream does the same work.
+ *     resume history before the emit.
  *   - `onAfterSessionConfigured` — caller hook run AFTER the
  *     `SessionConfigured` emit but BEFORE the startup prewarm. Used by
  *     `bin/bootstrap.ts` to start sidecars and launch the live MCP
- *     connection manager, mirroring the upstream agenc runtime ordering at
- *     `session.rs:814-854, 857-908` where sidecar and MCP start happen
+ *     connection manager; sidecar and MCP start happen
  *     after the terminal SessionConfigured event.
  *   - `enablePrewarm` — opt-out for tests. Default `true`; the prewarm
  *     call is a no-op-safe `session.newDefaultTurn()` today so it is
@@ -213,8 +204,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream parallel `tokio::join!(auth_and_mcp_fut, ...)`
- * (agenc-rs/core/src/session/session.rs:388-419). Runs the caller's
+ * Runs the caller's
  * `auth` prep and `manager.start(...)` concurrently and returns the
  * individual results so the caller can thread the auth artifact into
  * downstream services.
@@ -273,10 +263,9 @@ export async function startAuthAndMcpInParallel(params: {
 }
 
 /**
- * Upstream `SessionConfigured` event emission block
- * (agenc-rs/core/src/session/session.rs:814-854). The event is the
- * LAST bootstrap step before the post-configured event chain; gut
- * mirrors that by emitting through the canonical `session.emit` path
+ * `SessionConfigured` event emission. The event is the
+ * LAST bootstrap step before the post-configured event chain; it
+ * is emitted through the canonical `session.emit` path
  * and seeding the TUI's initial-transcript-event list with the same
  * payload so the resume UI renders from the same source of truth.
  */
@@ -314,21 +303,14 @@ export function emitSessionConfigured(
 }
 
 /**
- * Upstream `sess.schedule_startup_prewarm(...)` (session.rs:931-932,
- * impl in session_startup_prewarm.rs:159-181). Upstream pre-builds a
- * default TurnContext and pre-warms the provider websocket so the
- * first `submit` isn't bottlenecked on context construction.
- *
- * Gut runs the TurnContext construction, the optional provider startup
+ * Startup prewarm. Runs the TurnContext construction, the optional provider startup
  * prewarm hook, and agent-task registration prewarm so the first submit
  * doesn't pay that cost.
  * Failures are swallowed — the real first submit will re-run the
  * same work and surface any error there.
  *
  * Cancellation honors `opts.signal` at entry. Once the prewarm runs
- * in the background it is not interrupted, matching upstream's
- * `CancellationToken::new()` scope which only covers the in-line
- * prewarm body.
+ * in the background it is not interrupted.
  */
 export async function runStartupPrewarm(
   session: Session,
@@ -336,9 +318,8 @@ export async function runStartupPrewarm(
 ): Promise<void> {
   if (opts.signal?.aborted) return;
   try {
-    // Upstream pre-builds the startup turn context via
-    // `new_default_turn_with_sub_id(INITIAL_SUBMIT_ID.to_owned())`.
-    // The gut equivalent is a default turn with a fresh sub-id.
+    // Pre-build the startup turn context: a default turn with a
+    // fresh sub-id.
     session.newDefaultTurn();
   } catch {
     // Non-fatal — the first submit will reconstruct the turn.
@@ -348,8 +329,7 @@ export async function runStartupPrewarm(
   } catch {
     // Non-fatal — provider/session prewarm is an optimization.
   }
-  // Prewarm agent-task registration. Upstream does this in the
-  // same broad startup prep block; the gut helper already
+  // Prewarm agent-task registration. The helper already
   // swallows its own failures.
   try {
     await maybePrewarmAgentTaskRegistration(session);
@@ -363,10 +343,7 @@ export async function runStartupPrewarm(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Full port of upstream `Session::new`.
- *
- * Orchestration mirrors upstream line-for-line where a gut-side
- * concept exists:
+ * Full session bootstrap sequence:
  *
  *   1. Accept the immutable shell selected by the session-services boundary.
  *      Bootstrap never re-reads daemon-global process state.
@@ -374,27 +351,21 @@ export async function runStartupPrewarm(
  *      (field init + permission-registry bootstrap).
  *   3. Run auth prep and MCP startup in parallel. Required-server
  *      failures throw `RequiredMcpStartupError` BEFORE the
- *      SessionConfigured emit — matching upstream's
- *      `anyhow::bail!("required MCP servers failed to initialize: ...")`.
+ *      SessionConfigured emit.
  *   4. Call `onBeforeSessionConfigured(session)` if provided. This is
  *      the seam `bin/bootstrap.ts` uses to mount the rollout store
- *      and reconstruct resume history at the same point upstream
- *      does the thread-persistence future.
+ *      and reconstruct resume history.
  *   5. Emit `SessionConfigured` — the terminal bootstrap event.
  *   6. Start the skills watcher, then call
  *      `onAfterSessionConfigured(session)` if provided. This is where
  *      `bin/bootstrap.ts` starts sidecars and the live MCP connection
- *      manager, matching upstream agenc runtime ordering at
- *      `session.rs:856-908`.
+ *      manager.
  *   7. Schedule the startup prewarm. Runs in the background; any
  *      error is swallowed.
  *   8. If `opts.resume` is set, call `recordInitialHistoryOnResume`
- *      so the model-change warning and token-info seed matches
- *      upstream's `Session::record_initial_history(Resumed(...))`
- *      arm. Per upstream comment
- *      (`session.rs:941`: "record_initial_history can emit events.
- *      We record only after the SessionConfiguredEvent is emitted.")
- *      this runs AFTER the SessionConfigured emit.
+ *      so the model-change warning and token-info seed are applied.
+ *      Recording initial history can emit events, so this runs AFTER
+ *      the SessionConfigured emit.
  *
  * Returns the constructed `Session`. The caller owns its lifecycle
  * (shutdown + rollout flushing); `bootstrapSession` does not attach
@@ -470,10 +441,9 @@ export async function bootstrapSession(
   emitSessionConfigured(session, sessionConfiguredPayload);
 
   // 6. Post-emit startup — skill watcher first, then caller hook for
-  //    sidecar start + live MCP connection manager init. Upstream
-  //    agenc runtime ordering (`agenc-rs/core/src/session/session.rs:856-908`)
-  //    starts the watcher/skills listener and the real
-  //    `McpConnectionManager::new()` AFTER the SessionConfigured dispatch.
+  //    sidecar start + live MCP connection manager init. The
+  //    watcher/skills listener and the real MCP connection manager
+  //    start AFTER the SessionConfigured dispatch.
   if (
     opts.deferOrdinaryStartup === true &&
     opts.services.skillsWatcher?.start !== undefined
@@ -501,9 +471,9 @@ export async function bootstrapSession(
 
   throwIfAborted(opts.signal);
 
-  // 7. Startup prewarm. Awaited here for determinism in tests; upstream
-  //    detaches via `tokio::spawn` but the gut body is cheap enough to
-  //    run inline. Errors are swallowed inside the helper.
+  // 7. Startup prewarm. Awaited here for determinism in tests; the
+  //    body is cheap enough to run inline. Errors are swallowed inside
+  //    the helper.
   if (opts.enablePrewarm !== false && opts.deferOrdinaryStartup !== true) {
     await runStartupPrewarm(session, {
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),

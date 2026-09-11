@@ -1,25 +1,25 @@
 /**
  * run-turn — orchestration for one user turn.
  *
- * Port of agenc runtime `core/src/session/turn.rs` (2,230 LOC). The outer
- * orchestration shape follows agenc runtime `run_turn` line-for-line; the
+ * The outer orchestration (pre-sampling compact, the sampling-request
+ * loop, mid-turn compaction, drain on abort) lives in this module; the
  * per-iteration body delegates to AgenC's 6-phase machine
- * (`runtime/src/phases/`) which in turn ports AgenC's query.ts.
+ * (`runtime/src/phases/`).
  *
- * agenc runtime → AgenC call-graph mapping:
+ * Main entry points:
  *
- *   run_turn()                         → runTurn()
- *   run_pre_sampling_compact()         → runPreSamplingCompact()
- *   maybe_run_previous_model_inline_compact() → maybeRunPreviousModelInlineCompact()
- *   run_auto_compact()                 → runAutoCompact()
- *   build_prompt()                     → buildPrompt()
- *   run_sampling_request()             → runSamplingRequest()
- *   try_run_sampling_request()         → tryRunSamplingRequest()
- *   drain_in_flight()                  → drainInFlight()
- *   built_tools()                      → builtTools()
- *   get_last_assistant_message_from_turn() → getLastAssistantMessageFromTurn()
+ *   runTurn()
+ *   runPreSamplingCompact()
+ *   maybeRunPreviousModelInlineCompact()
+ *   runAutoCompact()
+ *   buildPrompt()
+ *   runSamplingRequest()
+ *   tryRunSamplingRequest()
+ *   drainInFlight()
+ *   builtTools()
+ *   getLastAssistantMessageFromTurn()
  *
- * Forward-dep subsystems that the ported methods call into route
+ * Forward-dep subsystems that these methods call into route
  * through `SessionServices` placeholder interfaces (session.ts:327).
  * Placeholders return sensible defaults today; T6/T7/T8/T9/T10/T11/T13
  * land the real subsystems and the call sites upgrade without
@@ -350,7 +350,7 @@ class RegularTurnTask implements SessionTask {
     // task body is driven by `runTurnKernelInner` below. The task
     // object still owns the lifecycle metadata and abort hook so
     // `Session.handleTaskAbort` can dispatch through the same concrete
-    // task interface as agenc runtime.
+    // task interface as every other task kind.
     return null;
   }
 
@@ -633,7 +633,7 @@ function launchTerminalPostSampling(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// agenc runtime port: sampling request orchestration
+// Sampling request orchestration
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SamplingRequestResult {
@@ -816,13 +816,11 @@ async function prepareSamplingRequestBoundary(
 }
 
 /**
- * Port of agenc runtime `try_run_sampling_request` (turn.rs:1828-2222). In
- * agenc runtime this is the single-attempt stream consumer: it streams the
- * already-snapshotted request, dispatches tool calls via the
- * ToolCallRuntime, and returns a SamplingRequestResult when the
- * stream completes or an Err on retryable failure.
+ * Single-attempt sampling request: streams the already-snapshotted
+ * request, dispatches tool calls, and returns a SamplingRequestResult
+ * when the stream completes or throws on retryable failure.
  *
- * AgenC's translation runs ONE phase-machine iteration. The phase
+ * This runs ONE phase-machine iteration. The phase
  * machine handles the stream (stream-model phase), tool dispatch
  * (execute-tools phase), nudging (continuation-nudge phase), and
  * history commit (commit phase). The resulting TurnState tells us
@@ -1022,8 +1020,7 @@ async function tryRunSamplingRequest(
 }
 
 /**
- * Port of agenc runtime `run_sampling_request` (turn.rs:987-1129). Applies the
- * per-provider retry policy around `tryRunSamplingRequest`.
+ * Applies the per-provider retry policy around `tryRunSamplingRequest`.
  *
  * T8: retries route through `reconnectWithBackoff` from
  * `recovery/reconnection.ts` so every attempt shares the suspend-aware
@@ -1352,7 +1349,7 @@ function appendInterruptedAssistantToolCalls(
 }
 
 /**
- * Port of agenc runtime `drain_in_flight` (turn.rs:1794-1818). On abort/error,
+ * On abort/error,
  * drain any still-in-flight tool futures so their side effects record
  * into conversation state.
  *
@@ -1521,13 +1518,13 @@ function restoreModelSampleResumePrompt(state: TurnState): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Top-level runTurn kernel — agenc runtime `run_turn` (turn.rs:130-665).
+// Top-level runTurn kernel.
 // Session owns the live entrypoint; the exported free function below is
 // a compatibility path that delegates back into Session.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of agenc runtime `run_turn` (turn.rs:130). Drives one user turn from
+ * Drives one user turn from
  * pre-sampling compact through N sampling-request iterations until
  * the turn terminates (no tool calls, no transition, stop-gate
  * allowed) or maxTurns is exceeded.
@@ -1700,8 +1697,7 @@ export async function* runTurnKernel(
         ? LEDGER_WALLET_CLI_ROUTING_GUIDANCE
         : undefined;
 
-  // agenc runtime: `if input.is_empty() && !sess.has_pending_input().await { return None }`
-  // Empty/no-pending-input is a no-op turn, not a synthetic completed
+  // Empty input with no pending input is a no-op turn, not a synthetic completed
   // turn. Callers that want to force work must enqueue pending input or
   // pass a non-empty user message.
   //
@@ -1720,10 +1716,10 @@ export async function* runTurnKernel(
     return { reason: "completed" };
   }
 
-  // Upstream agenc runtime `tasks/mod.rs::spawn_task` — register this turn with
+  // Register this turn with
   // the session's task dispatcher BEFORE any state-mutation work runs.
   // This takes the `activeTurn` lock and aborts any prior in-flight
-  // turn with `TurnAbortReason::Replaced`, then installs the new
+  // turn with reason `replaced`, then installs the new
   // `ActiveTurn` keyed on `ctx.subId`. `onTaskFinished` in the finally
   // block below clears the registry on every exit path (normal, abort,
   // error). The returned task's `abortController` is merged into the
@@ -1769,9 +1765,9 @@ export async function* runTurnKernel(
   } finally {
     for (const cleanup of signalCleanups) cleanup();
     codeModeTurnWorker.dispose();
-    // Upstream agenc runtime emits `on_task_finished` uniformly from the spawn
-    // site so every task-kind shares the same lifecycle. In gut the
-    // kernel BOTH runs the task body AND owns its finish emit.
+    // `onTaskFinished` is emitted uniformly from the spawn site so every
+    // task-kind shares the same lifecycle. The kernel BOTH runs the task
+    // body AND owns its finish emit.
     await session.onTaskFinished(ctx.subId);
   }
 }
@@ -1780,8 +1776,8 @@ export async function* runTurnKernel(
  * Inner body of `runTurnKernel` extracted so the outer generator can
  * wrap it in a try/finally that funnels every exit path through
  * `session.onTaskFinished`. The outer wrapper also owns the
- * `session.spawnTask` call (see upstream agenc runtime `tasks/mod.rs::spawn_task`
- * → `start_task` → task body → `on_task_finished` sequence).
+ * `session.spawnTask` call (the spawnTask → startTask → task body →
+ * onTaskFinished sequence).
  */
 interface RunTurnKernelCommons {
   readonly turnStartedAt: number;
@@ -1825,10 +1821,9 @@ async function* runTurnKernelInner(
 
   // Seed the initial TurnState BEFORE pre-sampling compact so the
   // dispatcher can splice post-compact messages back into state and the
-  // first `prepareContext` call reads the compacted view. agenc runtime's
-  // equivalent operates on the session-held conversation directly;
-  // AgenC's phase machine reads `state.messages`, so the compact result
-  // has to land there.
+  // first `prepareContext` call reads the compacted view. The phase
+  // machine reads `state.messages`, so the compact result has to land
+  // there.
   const ctxBaseInstructions =
     typeof (ctx as TurnContext & { baseInstructions?: unknown })
       .baseInstructions === "string"
@@ -2192,10 +2187,8 @@ async function* runTurnKernelInner(
     });
   };
 
-  // Upstream agenc runtime resets per-turn guardian-denial counters at the top
-  // of every new turn (see `GuardianRejectionCircuitBreaker::clear_turn`
-  // usage around task start in `agenc-rs/core/src/guardian/review.rs`).
-  // We run it here — after `spawnTask` installed the new `ActiveTurn`
+  // Per-turn guardian-denial counters reset at the top of every new
+  // turn. We run it here, after `spawnTask` installed the new `ActiveTurn`
   // for `ctx.subId` and before any phase work that could record a
   // denial — so a previous turn's leftover counters or interrupt flag
   // cannot bleed into this turn's `isOpen(ctx.subId)` check below.
@@ -2300,10 +2293,9 @@ async function* runTurnKernelInner(
     session.rolloutStore.flushDurable();
   }
 
-  // agenc runtime: run_pre_sampling_compact before any phase runs. Returns
-  // whether compaction happened; if yes and we had a prewarmed
-  // client session, reset it (agenc runtime 155-157 — AgenC has no prewarm
-  // today).
+  // Run pre-sampling compact before any phase runs. Returns
+  // whether compaction happened. (No prewarmed client session exists
+  // today, so there is nothing to reset on compaction.)
   let deferredCompaction = false;
   let requiredCompactionAttempted = false;
   const deferCompactionRefusal = (): void => {
@@ -2330,8 +2322,8 @@ async function* runTurnKernelInner(
       PRE_SAMPLING_COMPACT_FAILED_CAUSE,
       underlying.message,
     );
-    // agenc runtime: "return None" on pre-compact failure. The turn
-    // ends; the daemon session must stay promptable.
+    // Pre-compact failure ends the turn; the daemon session must stay
+    // promptable.
     await syncSessionState();
     emitTurnComplete("", "compact_failed", underlying);
     const terminal: Terminal = { reason: "completed", error: underlying };
@@ -2340,11 +2332,9 @@ async function* runTurnKernelInner(
   }
 
   // Merge external opts.signal, the session-level abort, and the
-  // task-local abort from `spawnTask`. Upstream agenc runtime `start_task`
-  // constructs a child `CancellationToken` for the running task
-  // (see `tasks/mod.rs` line 269) whose cancellation is triggered
-  // by `abort_all_tasks`. The merged signal here is the gut
-  // equivalent of `task_cancellation_token.child_token()`.
+  // task-local abort from `spawnTask`. `startTask` gives the running
+  // task its own abort controller, which `abortAllTasks` trips; the
+  // merged signal here is the child token every phase observes.
   const mergedSession = mergeSignals(
     opts.signal,
     session.abortController.signal,
@@ -2426,7 +2416,7 @@ async function* runTurnKernelInner(
   // site share an identical config object. Pure synchronous resolution.
   const behavioralCfg: BehavioralConfig = resolveBehavioralConfig();
 
-  // The phase loop — agenc runtime's "while streaming & tools" outer loop.
+  // The phase loop: the "while streaming & tools" outer loop.
   while (true) {
     const cancelledAtLoopStart = await finishCancelledIfAborted();
     if (cancelledAtLoopStart !== null) {
@@ -2434,8 +2424,7 @@ async function* runTurnKernelInner(
       return cancelledAtLoopStart.terminal;
     }
 
-    // Guardian-rejection circuit-breaker interrupt (inspected runtime
-    // `guardian/review.rs::record_guardian_denial` → `session.abort_turn_if_active(turn_id, Interrupted)`).
+    // Guardian-rejection circuit-breaker interrupt.
     // Detection-site writers call `recordDenial(turnId)` on the breaker
     // when a guardian review rejects an approval; the first crossing of
     // the consecutive-or-total threshold flips `interruptTriggered=true`
@@ -2452,8 +2441,7 @@ async function* runTurnKernelInner(
       emitTurnAborted("guardian_breaker_open");
       // Propagate the interrupt through the task dispatcher so in-flight
       // tasks see their cancellation signal trip and pending approvals
-      // clear under the active-turn lock. Upstream invokes
-      // `session.abort_turn_if_active(turn_id, TurnAbortReason::Interrupted)`.
+      // clear under the active-turn lock.
       await session.abortTurnIfActive(ctx.subId, "interrupted");
       const terminal: Terminal = { reason: "cancelled" };
       yield {
@@ -2618,12 +2606,12 @@ async function* runTurnKernelInner(
       checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
     }
 
-    // agenc runtime run_sampling_request — phases 1-4.
+    // Sampling request: phases 1-4.
     const pending: PhaseEvent[] = [];
     // Hoisted so the mid-turn compaction check after the try/catch can
-    // read the just-returned model_needs_follow_up signal. agenc runtime reads
-    // this from `SamplingRequestResult` at turn.rs:468-476 right before
-    // the `token_limit_reached && needs_follow_up` arm at turn.rs:493.
+    // read the just-returned model_needs_follow_up signal from
+    // `SamplingRequestResult` right before the
+    // `token_limit_reached && needs_follow_up` check.
     let modelNeedsFollowUp = false;
     try {
       if (ctx.editorInteraction !== undefined) {
@@ -2810,14 +2798,14 @@ async function* runTurnKernelInner(
       continue;
     }
 
-    // Mid-turn compaction — port of agenc runtime `turn.rs:493-508`. When the
+    // Mid-turn compaction. When the
     // just-finished sampling step pushed total token usage at or past
     // the current model's auto-compact limit AND a follow-up is still
     // required (tool calls pending or mailbox has queued user input),
     // compact before the next sampling request instead of letting the
     // next prepareContext stage blow through the window.
     //
-    // agenc runtime contract reconstructed here:
+    // Contract:
     //   token_limit_reached = total_usage_tokens >= auto_compact_limit
     //   needs_follow_up     = model_needs_follow_up || has_pending_input
     //   if both: run_auto_compact(MidTurn) -> reset_websocket_session -> continue
@@ -2830,18 +2818,17 @@ async function* runTurnKernelInner(
     //   total_usage_tokens    ← `getTotalTokenUsage(session)` reads the
     //     cross-turn cumulative `SessionState.totalTokenUsage` maintained
     //     by the stream-model writer (phases/stream-model.ts) after every
-    //     provider response, mirroring agenc runtime
-    //     `TokenUsageInfo::append_last_usage` (protocol.rs:2294-2297).
+    //     provider response.
     //   auto_compact_limit    ← `ctx.modelInfo.autoCompactTokenLimit`.
     //
-    // Provider continuity reset (agenc runtime `client_session.reset_websocket_session()`):
+    // Provider continuity reset:
     //   `runAutoCompact` → `autoCompactIfNeeded` → `runPostCompactCleanup`
     //   → `context.clearProviderResponseId()` wires through
     //   `session.clearProviderResponseId()`, which is AgenC's equivalent.
     //   That covers the reset when compaction actually runs; we add an
     //   explicit `session.bindProviderConversation()` rebind after
-    //   compaction to mirror agenc runtime's "the next sampling request must
-    //   look like a fresh conversation" guarantee.
+    //   compaction so the next sampling request looks like a fresh
+    //   conversation.
     //
     // AgenC behavior: mid-turn compaction must re-inject the current
     // reference-context snapshot immediately before the last real user
@@ -2878,9 +2865,9 @@ async function* runTurnKernelInner(
     // request. The previous logic took `Math.max(getTotalTokenUsage,
     // usage.totalTokens, lastResponseUsage.totalTokens)` where the first
     // two are CUMULATIVE counters that sum every sample's `totalTokens`
-    // additively across the turn (see stream-model.ts:897-903 — these are
-    // donor-parity cost-tracking surfaces from `TokenUsageInfo::
-    // append_last_usage`, not context-window-pressure signals). After 19
+    // additively across the turn (see stream-model.ts; these are
+    // cumulative cost-tracking surfaces, not context-window-pressure
+    // signals). After 19
     // samples in a single turn each ~13k, the cumulative total reached
     // 248k and falsely tripped the 236k threshold even though no single
     // prompt was anywhere near it. Use the latest sample's
@@ -2929,7 +2916,7 @@ async function* runTurnKernelInner(
           },
         );
       } catch (error) {
-        // agenc runtime returns None on mid-turn compact failure. End
+        // Mid-turn compact failure: end
         // the turn with a warning plus compact_failed so rollout
         // reducers see a closed boundary without killing the run.
         await drainInFlight(state, ctx, session);
@@ -2947,13 +2934,12 @@ async function* runTurnKernelInner(
       }
 
       if (!midTurnCompacted && !deferredCompaction) {
-        // agenc runtime's `is_err()` arm fires only on dispatcher failure. If
+        // The catch arm above fires only on dispatcher failure. If
         // the dispatcher ran but reported `wasCompacted=false` (circuit
         // breaker tripped, feature disabled, or threshold logic inside
         // the compact module disagreed with our outer check), we do NOT
         // loop — that would spin forever with unchanged state. Surface
-        // the token-limit condition as a per-turn compact_failed matching
-        // the semantics of agenc runtime's `return None`.
+        // the token-limit condition as a per-turn compact_failed.
         await drainInFlight(state, ctx, session);
         const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
         emitTurnWarning(
@@ -2969,19 +2955,17 @@ async function* runTurnKernelInner(
         return terminal;
       }
 
-      // agenc runtime `client_session.reset_websocket_session()` parity.
+      // Provider continuity reset.
       // `runAutoCompact` → `runPostCompactCleanup` already called
       // `session.clearProviderResponseId()` via the compact context;
       // rebind the provider HTTP client to the current conversation
       // so the next request opens a fresh continuation under the same
-      // conversationId (agenc runtime's websocket session is keyed per
-      // conversation the same way).
+      // conversationId.
       if (midTurnCompacted) session.bindProviderConversation();
-      // agenc runtime sets `can_drain_pending_input = !model_needs_follow_up;`
-      // to gate mailbox drain on the outer loop's next iteration. AgenC
-      // does not yet surface a matching gate (the phase machine drains
-      // pending input whenever `prepareContext` decides), so there is
-      // nothing to set here; the session mailbox fires naturally on the
+      // There is no separate "can drain pending input" gate on the outer
+      // loop's next iteration: the phase machine drains pending input
+      // whenever `prepareContext` decides, so there is nothing to set
+      // here; the session mailbox fires naturally on the
       // next iteration.
       if (midTurnCompacted) continue;
     }
@@ -3390,7 +3374,7 @@ export function runTurn(
 export type { Continue, Terminal };
 
 // ─────────────────────────────────────────────────────────────────────
-// Plan-mode helpers — port of agenc runtime turn.rs:1537-1793. Exported from
+// Plan-mode helpers. Exported from
 // run-turn.ts so existing call sites can tree-shake them. The
 // implementations live in `./plan-mode.ts` because they're pure helpers
 // with no dependency on the outer turn loop.

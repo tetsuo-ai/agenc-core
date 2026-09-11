@@ -13,7 +13,7 @@ async function tempRoot(): Promise<string> {
 }
 
 describe("apply_patch tool", () => {
-  test("exports the donor Lark grammar", () => {
+  test("exports the Lark grammar", () => {
     expect(APPLY_PATCH_LARK_GRAMMAR).toContain("start: begin_patch hunk+ end_patch");
     expect(APPLY_PATCH_LARK_GRAMMAR).toContain(
       'change_line: ("+" | "-" | " ") /(.*)/ LF',

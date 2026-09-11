@@ -57,7 +57,7 @@ export interface ToolMetadata {
   /**
    * When `true`, the tool is omitted from the outgoing tools array sent
    * to the provider unless the model has explicitly discovered it via
-   * `system.searchTools` in this turn. Mirrors the reference runtime's
+   * `system.searchTools` in this turn.
    * Heavy specialist tools (marketplace mutations, browser sessions,
    * office/pdf/calendar/email, http, sandbox, etc.) stay deferred so the
    * default per-call tool catalog is the small

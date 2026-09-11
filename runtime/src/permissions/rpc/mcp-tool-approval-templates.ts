@@ -1,13 +1,13 @@
 /**
- * Ports the donor runtime MCP tool approval template renderer onto AgenC.
+ * MCP tool approval template renderer.
  *
- * Why this lives here / shape difference from upstream:
- *   - AgenC does not yet own the donor app-connector catalogue or namespace.
+ * Why this lives here:
+ *   - AgenC does not yet own an app-connector catalogue or namespace.
  *     The renderer and schema are live here, while callers inject AgenC-owned
  *     templates when they have a connector surface to approve.
  *
  * Cross-cuts deliberately NOT carried:
- *   - Filesystem loading of the bundled donor catalogue. The default bundle is
+ *   - Filesystem loading of a bundled connector catalogue. The default bundle is
  *     intentionally empty until AgenC has a matching connector namespace.
  */
 

@@ -555,8 +555,8 @@ export class StreamingToolExecutor {
 
     this.tools.push(tracked);
 
-    // Upstream agenc runtime does not surface routing classification as transcript
-    // warnings. Keep this path quiet; real failures are emitted where they
+    // Routing classification is not surfaced as a transcript warning.
+    // Keep this path quiet; real failures are emitted where they
     // happen (permission denial, hook errors, dispatch errors).
   }
 

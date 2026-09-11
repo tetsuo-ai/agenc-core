@@ -13,7 +13,6 @@ export const AGENTS_PROJECT_INSTRUCTION_FILE = 'AGENTS.md'
 // unrelated model (e.g. Qwen via lmstudio) makes that model adopt
 // the donor's identity verbatim, because it interprets the file as
 // its own instructions.
-// branding-scan: allow CLAUDE.md is a real upstream filename users have on disk
 export const CLAUDE_PROJECT_INSTRUCTION_FILE = 'CLAUDE.md'
 export const FALLBACK_PROJECT_INSTRUCTION_FILE = AGENTS_PROJECT_INSTRUCTION_FILE
 export const FALLBACK_PROJECT_INSTRUCTION_FILES = [

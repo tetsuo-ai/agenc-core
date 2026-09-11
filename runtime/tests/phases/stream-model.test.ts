@@ -1534,10 +1534,8 @@ describe("streamModel — token budget boundary semantics", () => {
 describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
   // Regression guard. `run-turn.ts` reads `SessionState.totalTokenUsage`
   // via `getTotalTokenUsage(session)` to drive the mid-turn compact gate
-  // (`total_usage_tokens >= auto_compact_limit`). Upstream agenc runtime
-  // maintains a real cross-turn accumulator
-  // (`Session::update_token_info_from_usage`,
-  // `TokenUsageInfo::append_last_usage` at protocol.rs:2294-2297); AgenC
+  // (`total_usage_tokens >= auto_compact_limit`). The session
+  // maintains a real cross-turn accumulator; AgenC
   // used to read an unwritten field and papered over the miss with
   // `Math.max(sessionTotal, usage.totalTokens)` in the mid-turn arm. The
   // writer now lives in `streamModel` right after the per-turn usage
@@ -1572,7 +1570,7 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
       // totalTokens. Provider may surface cache/reasoning fields as
       // structural extras alongside the LLMUsage base contract; the
       // writer reads those optimistically so the accumulator stays
-      // aligned with agenc runtime's 5-field TokenUsage shape.
+      // aligned with the 5-field TokenUsage shape.
       if (call === 1) {
         return {
           content: "first",
@@ -1703,10 +1701,8 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
     const ctx = mkCtx("chat");
     const provider = mkProvider(async () =>
       parseAnthropicMessagesResponse(
-        // branding-scan: allow documented Anthropic API model identifier
         "claude-sonnet-4-5",
         {
-          // branding-scan: allow documented Anthropic API model identifier
           model: "claude-sonnet-4-5",
           content: [{ type: "text", text: "ok" }],
           stop_reason: "end_turn",
@@ -1719,7 +1715,6 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
           },
         },
         {
-          // branding-scan: allow documented Anthropic API model identifier
           model: "claude-sonnet-4-5",
           messages: [{ role: "user", content: "search" }],
           tools: [],
@@ -1740,7 +1735,6 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
     expect(sidecar.getPerModelUsage()).toMatchObject([
       {
         provider: "stub-provider",
-        // branding-scan: allow documented Anthropic API model identifier
         model: "claude-sonnet-4-5",
         inputTokens: 1000,
         outputTokens: 500,
@@ -1756,9 +1750,9 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
 
   test("survives a non-compacting turn — a third call keeps adding onto the prior two", async () => {
     // Regression guard against a naive reset-per-turn implementation.
-    // agenc runtime's accumulator is additive across the whole session; the
-    // only agenc runtime reset paths are `recompute_token_usage` (after
-    // compaction) and `fill_to_context_window`, neither of which runs
+    // The accumulator is additive across the whole session; the
+    // only reset paths are the post-compaction recompute and the
+    // fill-to-context-window path, neither of which runs
     // on a plain non-compacting turn.
     const ctx = mkCtx("chat");
     const provider = mkProvider(async () => {

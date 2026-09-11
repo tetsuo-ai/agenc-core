@@ -1,6 +1,6 @@
 /**
- * Ports the upstream Rust `state/src/runtime/memories.rs` and
- * `state/src/model/memories.rs` flows onto AgenC's SQLite state driver.
+ * Memory job coordination and memory row persistence on AgenC's SQLite
+ * state driver.
  *
  * This is a state facade only: stage1/phase2 job coordination lives in the
  * project-scoped state DB, while durable memory files are loaded from the

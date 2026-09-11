@@ -1,7 +1,5 @@
 /**
- * Ports donor `mcp-server/src/message_processor.rs` and
- * `mcp-server/src/outgoing_message.rs` JSON-RPC shapes onto AgenC's
- * server-side MCP framework.
+ * JSON-RPC message shapes for AgenC's server-side MCP framework.
  *
  * Shape differences:
  *   - AgenC keeps the framework transport-neutral; stdio and HTTP/SSE

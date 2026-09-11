@@ -1,16 +1,15 @@
 /**
  * Session — initialized model agent context.
  *
- * Hand-port of agenc runtime `core/src/session/session.rs` (852 LOC Rust)
- * per `docs/plan/agenc runtime-inventory.md §1` Session struct mapping table.
- * Every field of agenc runtime's `Session` struct has a TypeScript equivalent.
+ * Owns the per-conversation state, the single active turn slot, the
+ * mailbox, and the service container every turn runs against.
  * Session-facing subsystem contracts (ModelsManager, RolloutRecorder,
  * McpConnectionManager, AgentControl, etc.) are structural service
  * interfaces. Concrete implementations live in their owning runtime
  * modules and are injected through `SessionServices`.
  *
- * "A session has at most 1 running task at a time, and can be
- *  interrupted by user input." — agenc runtime doc-comment, session.rs:5
+ * A session has at most one running task at a time, and can be
+ * interrupted by user input.
  *
  * Invariants enforced here:
  *   I-5  (bidirectional mailbox) — Session holds both `mailbox` (its own
@@ -256,7 +255,7 @@ import {
 // behavior to the subsystem implementations injected through services.
 // ─────────────────────────────────────────────────────────────────────
 
-/** agenc runtime `ThreadId`. Conversation/thread unique identifier. */
+/** Conversation/thread unique identifier. */
 export type ThreadId = string;
 
 // Event / EventMsg / SessionConfiguredEvent are re-exported from
@@ -284,10 +283,10 @@ export {
   nonSteerableTurnKindFrom,
 } from "./tasks.js";
 
-/** agenc runtime `AgentStatus` FSM, owned by `runtime/src/agents/status.ts`. */
+/** Agent status FSM, owned by `runtime/src/agents/status.ts`. */
 export type AgentStatus = RuntimeAgentStatus;
 
-/** agenc runtime `SessionState`. Mutable state under `state` mutex. */
+/** Mutable session state held under the `state` lock. */
 export interface SessionState {
   /** Active configuration (mutable per `/model`, `/provider`, etc.). */
   sessionConfiguration: SessionConfiguration;
@@ -309,8 +308,7 @@ export interface SessionState {
   /** Resume/fork baseline turn context from rollout reconstruction. */
   referenceContextItem?: TurnContextItem;
   /**
-   * Seeded from the last persisted `token_count` event on resume/fork
-   * (agenc runtime `last_token_info_from_rollout` at session/mod.rs:1257). UIs
+   * Seeded from the last persisted `token_count` event on resume/fork. UIs
    * that need to display cumulative token usage immediately on resume
    * read this instead of waiting for the first new completion. The
    * live per-turn accounting path continues to update it via the
@@ -326,15 +324,12 @@ export interface SessionState {
     readonly webSearchRequests?: number;
   };
   /**
-   * Cross-turn cumulative token usage. Mirrors agenc runtime
-   * `TokenUsageInfo.total_token_usage` (protocol.rs:2259-2297) and is
-   * the authoritative source for the mid-turn compact gate's
-   * `total_usage_tokens >= auto_compact_limit` check. The writer in
-   * `stream-model.ts` element-wise accumulates every provider-reported
-   * `LLMUsage` under the session state lock after each stream
-   * completes, matching agenc runtime's `TokenUsageInfo::append_last_usage`
-   * (protocol.rs:2294-2297). Undefined until the first response with
-   * usage lands so an unpopulated session reports zero.
+   * Cross-turn cumulative token usage. This is the authoritative source
+   * for the mid-turn compact gate's total-usage versus auto-compact-limit
+   * check. The writer in `stream-model.ts` element-wise accumulates every
+   * provider-reported `LLMUsage` under the session state lock after each
+   * stream completes. Undefined until the first response with usage lands
+   * so an unpopulated session reports zero.
    */
   totalTokenUsage?: {
     readonly promptTokens: number;
@@ -343,19 +338,18 @@ export interface SessionState {
     readonly cachedInputTokens: number;
     readonly reasoningOutputTokens: number;
   };
-  /** Pending session-start hook source (agenc runtime line 841). */
+  /** Pending session-start hook source. */
   pendingSessionStartSource?: SessionStartSource;
 }
 
-/** agenc runtime `SessionStartSource` from the hook runtime. */
+/** Session-start source from the hook runtime. */
 export type SessionStartSource = Extract<
   HookSessionStartSource,
   "startup" | "resume" | "clear"
 >;
 
 /**
- * agenc runtime `ResponseInputItem` / `UserInput` — opaque payload the turn
- * machine consumes. Structural alias kept permissive so both text and
+ * Opaque user-input payload the turn machine consumes. Structural alias kept permissive so both text and
  * multimodal items can route through idle-input merge without the
  * session module pulling in the provider-specific shape.
  */
@@ -379,11 +373,11 @@ export interface IdleInputOwnership {
 export const MAILBOX_SOURCE_IDLE_INPUT = "idle";
 
 /**
- * Upstream agenc runtime `state/turn.rs::ActiveTurn`. Holds the running-task
- * registry and the per-turn lock-guarded state (`ActiveTurnState`).
+ * Active turn record. Holds the running-task registry and the per-turn
+ * lock-guarded state (`ActiveTurnState`).
  *
  * Gut originally exposed only `{turnId, startedAtMs, abortController}`
- * as a forward slot; the T5 task-dispatch port (see `session/tasks.ts`)
+ * as a forward slot; the task-dispatch layer (see `session/tasks.ts`)
  * adds the `tasks` registry and the `turnState` lock so
  * `Session.spawnTask` / `Session.onTaskFinished` can enforce the "one
  * turn in flight at a time" invariant. Existing consumers read the
@@ -394,10 +388,9 @@ export interface ActiveTurn {
   readonly turnId: string;
   readonly startedAtMs: number;
   readonly abortController: AbortController;
-  /** Upstream `tasks: IndexMap<sub_id, RunningTask>`. JS Map preserves
-   *  insertion order, matching IndexMap semantics. */
+  /** Running tasks keyed by sub-id. JS Map preserves insertion order. */
   readonly tasks: Map<string, RunningTask>;
-  /** Upstream `turn_state: Arc<Mutex<TurnState>>` per translation-conventions. */
+  /** Lock-guarded per-turn state. */
   readonly turnState: AsyncLock<ActiveTurnState>;
   /** Root human input bound to this exact turn; absent for synthetic turns. */
   readonly rootHumanTurn?: {
@@ -406,7 +399,7 @@ export interface ActiveTurn {
   };
 }
 
-/** agenc runtime `Mailbox` + `MailboxReceiver`. T9 (subagents) provides the
+/** Mailbox + receiver contract. T9 (subagents) provides the
  *  full bidirectional impl per I-5/I-16/I-31/I-64. Today we expose the
  *  shape so Session can hold its own inbox + per-child outbound
  *  mailboxes.
@@ -1045,15 +1038,15 @@ function mcpElicitationPendingKey(
   return `${serverName}\u0000${String(requestId)}`;
 }
 
-/** agenc runtime `RealtimeConversationManager`. */
+/** Realtime conversation manager. */
 export type RealtimeConversationManager = RealtimeConversation;
 
-/** agenc runtime `GuardianReviewSessionManager`. */
+/** Guardian review session manager. */
 export interface GuardianReviewSessionManager {
   readonly enabled: boolean;
 }
 
-/** agenc runtime `RolloutRecorder`. */
+/** Rollout recorder contract. */
 export interface RolloutRecorder {
   rolloutPath(): string;
   record(item: unknown): Promise<void>;
@@ -1061,7 +1054,7 @@ export interface RolloutRecorder {
   setWindowGeneration(n: number): void;
 }
 
-/** agenc runtime `ModelsManager`; runtime provider/model catalog. */
+/** Runtime provider/model catalog. */
 export interface ModelsManager {
   getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
   tryListModels(): ReadonlyArray<ModelInfo> | undefined;
@@ -1070,7 +1063,7 @@ export interface ModelsManager {
   ): Promise<ReadonlyArray<ModelInfo>>;
 }
 
-/** agenc runtime `McpManager`. */
+/** MCP manager contract. */
 export interface McpManager {
   effectiveServers(
     config: unknown,
@@ -1198,12 +1191,12 @@ export interface McpServerInfo {
   readonly command?: string;
 }
 
-/** agenc runtime `LspManager`. */
+/** LSP manager contract. */
 export interface LspManager {
   refreshFromConfig?(config: unknown): Promise<void>;
 }
 
-/** agenc runtime `McpConnectionManager`. */
+/** MCP connection manager contract. */
 export interface McpConnectionManager {
   setApprovalPolicy(policy: unknown): void;
   setSandboxPolicy(policy: unknown): void;
@@ -1212,19 +1205,19 @@ export interface McpConnectionManager {
   ): Promise<ReadonlyArray<{ server: string; error: string }>>;
 }
 
-/** agenc runtime `AgentControl` service facade for subagents. */
+/** Agent control service facade for subagents. */
 export interface AgentControl {
   readonly maxThreads: number;
   spawnAgent(opts: unknown): Promise<unknown>;
   shutdownAgentTree(threadId: ThreadId): Promise<void>;
 }
 
-/** agenc runtime `AgentIdentityManager`; owned by the agent registry layer. */
+/** Agent identity manager; owned by the agent registry layer. */
 export interface AgentIdentityManager {
   ensureRegistered(): Promise<void>;
 }
 
-/** agenc runtime `Hooks`; implemented by `runtime/src/llm/hooks/`. */
+/** Hooks contract; implemented by `runtime/src/llm/hooks/`. */
 export interface Hooks {
   startupWarnings(): ReadonlyArray<string>;
   /**
@@ -1252,7 +1245,7 @@ export interface Hooks {
   executeStopFailure(...args: unknown[]): Promise<unknown>;
 }
 
-/** agenc runtime `SkillsManager` + `SkillsWatcher` + `PluginsManager`. */
+/** Skills manager (skills catalog, watcher, and plugin-provided skills). */
 export interface SkillsManager {
   skillsForConfig(input: unknown, fs: unknown): Promise<SkillLoadOutcome>;
   resolveSkill?(
@@ -1304,12 +1297,12 @@ export interface PluginsManager {
   ): Promise<{ effectiveSkillRoots(): unknown }>;
 }
 
-/** agenc runtime `ExecPolicyManager`. */
+/** Exec policy manager contract. */
 export interface ExecPolicyManager {
   current(): unknown;
 }
 
-/** agenc runtime `ApprovalStore`. */
+/** Approval store contract. */
 export interface ApprovalStore {
   hasApproval(key: string): boolean;
   approve(key: string): void;
@@ -1320,19 +1313,19 @@ export interface ApprovalStore {
   }): Promise<unknown>;
 }
 
-/** agenc runtime `LocalThreadStore`. */
+/** Local thread store contract. */
 export interface LocalThreadStore {
   threadName(threadId: ThreadId): Promise<string | undefined>;
   setThreadName(threadId: ThreadId, name: string): Promise<void>;
 }
 
-/** Deferred agenc runtime `ModelClient`; live provider dispatch uses `services.provider`. */
+/** Deferred model client facade; live provider dispatch uses `services.provider`. */
 export interface ModelClient {
   setWindowGeneration(n: number): void;
-  // Deferred until a caller needs the full agenc runtime ModelClient facade.
+  // Deferred until a caller needs the full ModelClient facade.
 }
 
-/** agenc runtime `NetworkApprovalService`. */
+/** Network approval service contract. */
 export interface NetworkApprovalService {
   enabled(): boolean;
   clearSessionHosts?(): void;
@@ -1340,23 +1333,23 @@ export interface NetworkApprovalService {
   requestDeferredApproval?(opts: unknown): Promise<unknown>;
 }
 
-/** agenc runtime `Shell`. */
+/** User shell contract. */
 export interface UserShell extends CommandExecutionAuthority {
   deriveExecArgs(input: string, useLoginShell: boolean): string[];
 }
 
-/** agenc runtime `UnifiedExecProcessManager`. */
+/** Unified exec process manager. */
 export type UnifiedExecProcessManager = UnifiedExecProcessManagerLike;
 
-/** agenc runtime `BehaviorSubject<unknown>` for shell snapshot tx. */
+/** Shell snapshot transmitter. */
 export type ShellSnapshotTx = BehaviorSubject<unknown | null>;
 
-/** agenc runtime `state_db_ctx`. */
+/** State database context. */
 export interface StateDbContext {
   readonly path: string;
 }
 
-/** agenc runtime `SessionServices` — DI container of all session-scoped services. */
+/** DI container of all session-scoped services. */
 export interface SessionServices {
   readonly readOnlyDelegation?: ReadOnlyDelegationConstraint;
   /** Immutable operator policy captured for this session at creation time. */
@@ -1371,16 +1364,15 @@ export interface SessionServices {
   readonly hooks: Hooks;
   readonly rollout: RolloutRecorder | undefined;
   /**
-   * agenc runtime `rollout_trace` (T6 diagnostics). Coexists with `rollout`:
+   * Rollout trace recorder (T6 diagnostics). Coexists with `rollout`:
    * `rollout` is the authoritative rollout item log (source of truth),
    * `rolloutTrace` is the best-effort diagnostic trace bundle recorder
    * used for replay analysis and post-mortem debugging.
    *
    * Declared optional (`?`) instead of `RolloutTraceRecorder | undefined`
    * so existing `SessionServices` construction sites in `bin/bootstrap.ts`
-   * and test fixtures do not need to be updated in this tranche. Upstream
-   * agenc runtime treats this slot as required and passes a disabled handle when
-   * tracing is off; AgenC callers can opt in by supplying
+   * and test fixtures do not need to be updated in this tranche. Callers
+   * can opt in by supplying
    * `createRolloutTraceRecorder(...)` or `RolloutTraceRecorder.disabled()`.
    */
   readonly rolloutTrace?: RolloutTraceRecorder;
@@ -1396,9 +1388,8 @@ export interface SessionServices {
   readonly toolApprovals: ApprovalStore;
   readonly guardianRejections: Map<string, unknown>;
   /**
-   * agenc runtime `GuardianRejectionCircuitBreaker` (per-turn guardian-denial
-   * counter with consecutive + total thresholds). Ported from upstream
-   * agenc runtime `core/src/guardian/mod.rs`. Optional while callers are wired up;
+   * Guardian rejection circuit breaker (per-turn guardian-denial
+   * counter with consecutive + total thresholds). Optional while callers are wired up;
    * the bootstrap default map above stays until every consumer routes
    * denials through the breaker instead.
    *
@@ -1413,7 +1404,7 @@ export interface SessionServices {
    * `guardianRejectionCircuitBreaker`.
    */
   readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
-  /** T13 review-task port. agenc runtime `session/review.rs` manager analog. */
+  /** Review-task manager. */
   readonly reviewManager?: import("./review.js").ReviewManager;
   readonly skillsManager: SkillsManager;
   readonly pluginsManager: PluginsManager;
@@ -1440,12 +1431,11 @@ export interface SessionServices {
   readonly stateDb?: StateDbContext;
   readonly threadStore: LocalThreadStore;
   /**
-   * Upstream agenc runtime `services.live_thread: Option<LiveThread>`
-   * (core/src/state/service.rs:66). Optional because gut has no
+   * Optional live thread handle. Optional because gut has no
    * ThreadStore subsystem: the service is populated by callers that
    * construct a `LiveThread` against the session's `RolloutStore`, and
    * left unset in tests / ephemeral sessions. See `live-thread.ts` for
-   * the partial port's RESERVED-method list.
+   * the RESERVED-method list.
    */
   readonly liveThread?: LiveThread;
   readonly modelClient: ModelClient;
@@ -1631,7 +1621,7 @@ export type AbortReason =
   | "process_killed";
 
 // ─────────────────────────────────────────────────────────────────────
-// Session class — the field-faithful port of agenc runtime `Session` struct.
+// Session class.
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SessionOpts {
@@ -2415,11 +2405,9 @@ function activeAgentDefinitionsFromRoles(
 
 /**
  * Initialized model agent context.
- *
- * Mirrors agenc runtime `Session` struct (session.rs:6-29).
  */
 export class Session {
-  /** agenc runtime: `conversation_id: ThreadId` */
+  /** Conversation/thread id. */
   readonly conversationId: ThreadId;
   readonly fileReadScope: object;
   private readonly ownsFileReadScope: boolean;
@@ -2434,31 +2422,31 @@ export class Session {
    */
   readonly txEvent: AsyncQueue<Event>;
 
-  /** agenc runtime: `agent_status: watch::Sender<AgentStatus>` — status with replay-current. */
+  /** Agent status with replay-current semantics. */
   readonly agentStatus: BehaviorSubject<AgentStatus>;
 
-  /** agenc runtime: `out_of_band_elicitation_paused: watch::Sender<bool>` — agenc runtime realtime parity. */
+  /** Whether out-of-band elicitation is paused (realtime). */
   readonly outOfBandElicitationPaused: BehaviorSubject<boolean>;
 
-  /** agenc runtime: `state: Mutex<SessionState>` — async-locked session state. */
+  /** Async-locked session state. */
   readonly state: AsyncLock<SessionState>;
 
-  /** agenc runtime: `managed_network_proxy_refresh_lock: Mutex<()>` — serializes proxy rebuilds. */
+  /** Serializes managed network proxy rebuilds. */
   readonly managedNetworkProxyRefreshLock: AsyncLock<void>;
 
-  /** agenc runtime: `features: ManagedFeatures` — invariant for the lifetime of the session. */
+  /** Managed features; invariant for the lifetime of the session. */
   readonly features: ManagedFeatures;
 
-  /** agenc runtime: `pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>`. */
+  /** Pending MCP server refresh config, if any. */
   readonly pendingMcpServerRefreshConfig: AsyncLock<unknown | null>;
 
-  /** agenc runtime: `conversation: Arc<RealtimeConversationManager>`. T-future (realtime). */
+  /** Realtime conversation manager. T-future (realtime). */
   readonly conversation: RealtimeConversationManager;
 
-  /** agenc runtime: `active_turn: Mutex<Option<ActiveTurn>>` — at most one running task. */
+  /** Active turn slot; at most one running task. */
   readonly activeTurn: AsyncLock<ActiveTurn | null>;
 
-  /** agenc runtime: `mailbox: Mailbox` — Session's own inbox (parent or peer can send). */
+  /** Session's own inbox (parent or peer can send). */
   readonly mailbox: Mailbox;
 
   /** Concrete bounded inbox backing the public structural mailbox surface. */
@@ -2467,16 +2455,16 @@ export class Session {
   /** Sequence watcher for root mailbox delivery. */
   readonly mailboxSeqWatch: BehaviorSubject<number>;
 
-  /** agenc runtime: `mailbox_rx: Mutex<MailboxReceiver>` — drain receiver. */
+  /** Mailbox drain receiver. */
   readonly mailboxRx: AsyncLock<{ drain(): InterAgentCommunication[] }>;
 
-  /** agenc runtime: `guardian_review_session: GuardianReviewSessionManager`. */
+  /** Guardian review session manager. */
   readonly guardianReviewSession: GuardianReviewSessionManager;
 
-  /** agenc runtime: `services: SessionServices` — DI container. */
+  /** Session-scoped services (DI container). */
   readonly services: SessionServices;
 
-  /** agenc runtime: `js_repl: Arc<JsReplHandle>`. */
+  /** JS REPL handle. */
   readonly jsRepl: JsReplHandle;
 
   /** Session-root config snapshot used to build per-turn frozen configs. */
@@ -2485,17 +2473,16 @@ export class Session {
   /** Session-root model metadata used by the turn-context builder. */
   readonly modelInfo: ModelInfo;
 
-  /** agenc runtime: `next_internal_sub_id: AtomicU64` — monotonic sub-id counter. */
+  /** Monotonic internal sub-id counter. */
   private nextInternalSubIdValue: number;
 
-  /** agenc runtime: `agent_task_registration_lock: Mutex<()>` — serializes task registration. */
+  /** Serializes agent task registration. */
   readonly agentTaskRegistrationLock: AsyncLock<void>;
 
   /**
    * Serializes `spawnTask` + `abortAllTasks` so the "abort old then
    * install new" sequence is atomic w.r.t. other spawn/abort callers.
-   * Upstream agenc runtime doesn't need this because `spawn_task` is always
-   * called from the single submit dispatcher; gut exposes `spawnTask`
+   * Gut exposes `spawnTask`
    * to `runTurnKernel`, slash-command adapters, and tests, so we add a
    * dedicated mutex to keep the two-lock sequence race-free. See
    * `session/tasks.ts` for design notes.
@@ -2505,7 +2492,7 @@ export class Session {
   );
 
   // ───────────────────────────────────────────────────────────
-  // AgenC-specific additions (not in agenc runtime):
+  // Additional session fields:
   // ───────────────────────────────────────────────────────────
 
   /** I-5: per-child outbound mailboxes (parent → child Interrupt/Resume). */
@@ -3874,9 +3861,6 @@ export class Session {
   }
 
   /**
-   * Mirrors agenc runtime `Session::next_internal_sub_id` — monotonic id allocation.
-   */
-  /**
    * Move the internal sub-id counter past ids that already exist durably.
    * A resumed session starts the counter at zero; without this its first
    * turn reused `sub-<conversation>-2` and the admission journal refused
@@ -4968,9 +4952,8 @@ export class Session {
    * payload is stored on `metadata.payload` so `drainIdleInput()`
    * can round-trip the original `UserInput` back to callers.
    *
-   * AgenC behavior: matches `core/src/session/session.rs` line 23's
-   * pending-input slot, routed through the same mailbox that carries
-   * peer/agent traffic.
+   * AgenC behavior: the pending-input slot is routed through the same
+   * mailbox that carries peer/agent traffic.
    */
   enqueueIdleInput(input: UserInput, ownership?: IdleInputOwnership): number {
     return this.enqueueIdleInputBatch([input], ownership);
@@ -5355,27 +5338,21 @@ export class Session {
   }
 
   /**
-   * Upstream agenc runtime `session/mod.rs::steer_input` (line 2938). Folds
+   * Steer input into the live turn. Folds
    * `items` into the live turn's mailbox/idle-input pipeline so the
    * running task picks them up at the next idle-merge boundary, and
    * sets the mailbox delivery phase back to `current_turn` so the
    * injected items stay in THIS turn rather than deferring.
    *
-   * Rejection surface mirrors upstream 1:1:
-   *   - `empty_input` when `items` is empty — matches
-   *     `SteerInputError::EmptyInput` (`session/mod.rs:2944`).
+   * Rejection surface:
+   *   - `empty_input` when `items` is empty.
    *   - `no_active_turn` when the `activeTurn` slot is `null` OR its
    *     task registry is empty. Carries `items` back to the caller
-   *     unchanged so no data is lost. Matches
-   *     `SteerInputError::NoActiveTurn(input)` (`session/mod.rs:2950`,
-   *     2954, 2978).
+   *     unchanged so no data is lost.
    *   - `sub_id_mismatch` when the caller's `subId` does not match
-   *     the live turn's first task id. Matches upstream
-   *     `SteerInputError::ExpectedTurnMismatch` (`session/mod.rs:2960`),
-   *     renamed to fit gut's `subId` naming on `RunningTask`.
+   *     the live turn's first task id.
    *   - `active_turn_not_steerable` when the live task's `kind` is
-   *     `compact` or `review`. Matches upstream's explicit arm
-   *     rejection (`session/mod.rs:2967-2979`) via the shared
+   *     `compact` or `review`, decided by the shared
    *     `isSteerable` predicate in `tasks.ts`.
    *
    * Happy path: appends each item to `Session.mailbox` via the same
@@ -5384,7 +5361,7 @@ export class Session {
    * code path), then accepts mailbox delivery for the current turn by
    * flipping `ActiveTurnState.mailboxDeliveryPhase` back to
    * `current_turn` under the per-turn lock. Returns the subId that
-   * accepted the steer, matching upstream's `Ok(active_turn_id.clone())`.
+   * accepted the steer.
    */
   async steerInput(
     subId: string,
@@ -5394,11 +5371,10 @@ export class Session {
       return { ok: false, error: { kind: "empty_input" } };
     }
 
-    // Upstream takes `active_turn.lock().await` for the whole check +
-    // update so steer state stays atomic (see the clippy `expect` at
-    // `session/mod.rs:2934-2937`). Gut's `AsyncLock.with` gives the
-    // same serialization window — the mailbox + turnState writes
-    // happen before we release the lock.
+    // Hold the active-turn lock for the whole check + update so steer
+    // state stays atomic. `AsyncLock.with` gives the serialization
+    // window: the mailbox + turnState writes happen before we release
+    // the lock.
     const result = await this.activeTurn.with(
       async (current): Promise<SteerInputResult> => {
         if (current === null) {
@@ -5451,11 +5427,9 @@ export class Session {
         }
 
         // Route the whole user steer atomically through the protected
-        // idle-input lane. Upstream calls
-        // `turn_state.push_pending_input(input.into())` which lands on
-        // `TurnState.pending_input`; gut's `pending_input` is
-        // WIRED-EXTERNAL through the mailbox per the classification in
-        // `tasks.ts`, so the equivalent gut surface is `enqueueIdleInput`.
+        // idle-input lane. Pending input is WIRED-EXTERNAL through the
+        // mailbox per the classification in `tasks.ts`, so the surface
+        // used here is `enqueueIdleInput`.
         const admitted = this.sessionMailbox.sendProtectedBatch(
           items.map((item) => ({
             author: this.conversationId,
@@ -5479,8 +5453,7 @@ export class Session {
           };
         }
 
-        // Upstream: `turn_state.accept_mailbox_delivery_for_current_turn()`
-        // (`session/mod.rs:2992`). Re-affirm `current_turn` delivery so
+        // Re-affirm `current_turn` delivery so
         // a late `defer_mailbox_delivery_to_next_turn` earlier in this
         // turn does not strand the steered items.
         await current.turnState.with((ts) => {
@@ -5520,24 +5493,22 @@ export class Session {
 
   /**
    * AgenC behavior: send_event_raw — emit with caller-supplied envelope.
-   * Used for SessionConfigured + DeprecationNotice events at startup
-   * (agenc runtime session.rs:746-748).
+   * Used for SessionConfigured + DeprecationNotice events at startup.
    */
   sendEventRaw(event: Event): void {
     this.emit(event);
   }
 
   // ───────────────────────────────────────────────────────────
-  // Task dispatch — port of upstream agenc runtime `tasks/mod.rs`.
+  // Task dispatch.
   // See `session/tasks.ts` for the rationale. These methods own the
   // `activeTurn` lock so the outer "one turn in flight at a time"
   // invariant is enforced at every spawn / finish / abort site.
   // ───────────────────────────────────────────────────────────
 
   /**
-   * Upstream agenc runtime `tasks/mod.rs::spawn_task`. Serializes the new-turn
-   * boundary: first aborts any in-flight task with `TurnAbortReason::Replaced`
-   * (matching upstream's `abort_all_tasks(TurnAbortReason::Replaced)`),
+   * Spawn a task. Serializes the new-turn
+   * boundary: first aborts any in-flight task with reason `replaced`,
    * then installs a fresh `ActiveTurn` for the new task keyed by `subId`.
    *
    * Returns the `RunningTask` so callers can pull its `.signal` for the
@@ -5548,16 +5519,16 @@ export class Session {
    */
   async spawnTask(opts: SpawnTaskOptions): Promise<RunningTask> {
     return this.taskDispatchLock.with(async () => {
-      // Upstream agenc runtime: `spawn_task` always calls
-      // `abort_all_tasks(TurnAbortReason::Replaced)` before installing
-      // the new task. This is the non-negotiable serialization point.
+      // Always abort every running task with reason `replaced` before
+      // installing the new task. This is the non-negotiable
+      // serialization point.
       await this.abortAllTasksLocked("replaced");
       return await this.startTask(opts);
     });
   }
 
   /**
-   * Upstream agenc runtime `tasks/mod.rs::start_task`. Installs the task under
+   * Installs the task under
    * `activeTurn` after the caller has serialized the abort-then-start
    * boundary.
    */
@@ -5622,13 +5593,13 @@ export class Session {
   }
 
   /**
-   * Upstream agenc runtime `tasks/mod.rs::on_task_finished`. Removes the task
+   * Normal task completion. Removes the task
    * from the `tasks` registry. When the registry empties, clears the
    * `activeTurn` slot so the next `spawnTask` sees a clean state.
    *
    * This is the normal-exit cleanup; the abort paths go through
    * `abortAllTasks` / `abortTurnIfActive` which also trigger
-   * `resolveDone` so `handle_task_abort`'s awaiter unblocks.
+   * `resolveDone` so `handleTaskAbort`'s awaiter unblocks.
    */
   async onTaskFinished(subId: string): Promise<void> {
     await this.activeTurn.update((current) => {
@@ -5649,8 +5620,8 @@ export class Session {
   }
 
   /**
-   * Upstream agenc runtime `tasks/mod.rs::abort_all_tasks`. Takes the
-   * `activeTurn` slot (upstream `take_active_turn`), drains every
+   * Abort every running task. Takes the
+   * `activeTurn` slot, drains every
    * running task by firing its cancellation token and awaiting its
    * `done` signal under the graceful-interruption budget, then
    * clears pending state and releases.
@@ -5671,7 +5642,7 @@ export class Session {
     if (taken === null) return;
     const tasks = Array.from(taken.tasks.values());
     await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason)));
-    // Upstream: `active_turn.clear_pending().await` — release any
+    // Release any
     // dangling approvals / input pre-emptively so interrupted tasks
     // don't surface stale responses. We reach into `turnState` here
     // because the `ActiveTurn` object itself is already taken out.
@@ -5686,7 +5657,7 @@ export class Session {
   }
 
   /**
-   * Upstream agenc runtime `tasks/mod.rs::abort_turn_if_active`. If the
+   * If the
    * currently-active turn's registry contains `turnId`, aborts it;
    * otherwise returns false.
    */
@@ -5715,12 +5686,11 @@ export class Session {
   }
 
   /**
-   * Upstream agenc runtime `tasks/mod.rs::handle_task_abort`. Fires the task's
+   * Fires the task's
    * cancellation signal, awaits `done` up to `GRACEFUL_INTERRUPTION_TIMEOUT_MS`,
-   * then returns even if the task did not signal done in time. We do
-   * not call `handle.abort()` like upstream does because JS has no
+   * then returns even if the task did not signal done in time. JS has no
    * force-kill primitive for a pending Promise; the bounded wait + the
-   * task's own cancellation-signal check are the gut equivalents.
+   * task's own cancellation-signal check are the equivalents.
    */
   private async handleTaskAbort(
     task: RunningTask,
@@ -6371,9 +6341,8 @@ function deriveMinimalSessionConfig(
  * Session without wiring a real `ModelsManager`. The runtime models manager is
  * the real owner of per-model metadata.
  *
- * `effectiveContextWindowPercent: 100` matches agenc runtime's "no reduction"
- * meaning (agenc runtime backend default is 95; 100 here is the safe fallback when
- * no authoritative per-model metadata is available). The previous `1`
+ * `effectiveContextWindowPercent: 100` means "no reduction" (100 is the
+ * safe fallback when no authoritative per-model metadata is available). The previous `1`
  * value silently truncated the live context window to 1% via
  * `modelContextWindow()` and broke compaction/budgeting math.
  */

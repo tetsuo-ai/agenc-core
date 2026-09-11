@@ -1,15 +1,13 @@
 /**
  * AgenC child-session delegate surface for review-scoped one-shot turns.
  *
- * This module replaces the old flat reviewer provider call with the
- * upstream-shaped delegate contract: create an isolated child Session,
+ * This module replaces the old flat reviewer provider call with a
+ * delegate contract: create an isolated child Session,
  * submit one user input through a tx queue, consume child events through
  * an rx queue, forward approval/permission requests to the parent, and
  * shut the child down on completion, abort, or timeout.
  *
- * Product-facing names are AgenC-owned. References to upstream behavior
- * in comments are provenance only; live file names, exported types, and
- * events avoid agenc runtime-branded delegate names.
+ * Product-facing names are AgenC-owned.
  *
  * @module
  */
@@ -63,8 +61,8 @@ import { TerminalRunEpochOpenError } from "./rollout-store.js";
 // ─────────────────────────────────────────────────────────────────────
 // Structural dependencies (`AgenCDelegateSessionLike`, `AgenCDelegateTurnContextLike`)
 //
-// Upstream agenc runtime passes `Arc<Session>` + `Arc<TurnContext>`. Gut stays
-// structural so tests can build minimal fixtures. The *minimum* a
+// The delegate stays structural so tests can build minimal fixtures.
+// The *minimum* a
 // delegate needs is: a provider handle, an event emitter, and a task
 // registrar. Everything else is an opt-in extension.
 // ─────────────────────────────────────────────────────────────────────
@@ -78,10 +76,9 @@ import { TerminalRunEpochOpenError } from "./rollout-store.js";
  * internals.
  */
 export interface AgenCDelegateEventSink {
-  /** Upstream agenc runtime `Session::send_event` — sends an event with the
-   *  given sub_id stamped as `id`. */
+  /** Sends an event with the given sub_id stamped as `id`. */
   sendEvent(subId: string, msg: EventMsg): void;
-  /** Upstream agenc runtime `Session::emit` — emit with a pre-built event. */
+  /** Emit with a pre-built event. */
   emit(event: Event): void;
 }
 
@@ -96,23 +93,22 @@ export interface AgenCDelegateEventSink {
  * need while still exposing parent task lifecycle and forwarding hooks.
  */
 export interface AgenCDelegateSessionLike extends AgenCDelegateEventSink {
-  /** Upstream `sess.services.provider`. The provider to route the
-   *  one-shot review call through. */
+  /** The provider to route the one-shot review call through. */
   readonly provider: LLMProvider;
   /** Optional service bag present on live `Session`. The delegate uses
-   *  `modelsManager` when available to match upstream's reviewer-model
+   *  `modelsManager` when available for the reviewer-model
    *  capability lookup before the provider call. */
   readonly services?: Partial<SessionServices> & {
     readonly modelsManager?: {
       getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
     };
   };
-  /** Upstream agenc runtime `Session::spawn_task`. Used so the delegate's
+  /** Used so the delegate's
    *  review turn participates in the Wave 2 task lifecycle (replace-
    *  on-new-turn, abort cascade, done promise). */
   spawnTask(opts: SpawnTaskOptions): Promise<RunningTask>;
-  /** Upstream agenc runtime `Session::on_task_finished`. Called by the
-   *  delegate on every termination path so the task drains cleanly. */
+  /** Called by the delegate on every termination path so the task
+   *  drains cleanly. */
   onTaskFinished(subId: string): Promise<void>;
 }
 
@@ -131,28 +127,24 @@ export type AgenCDelegateTurnContextLike = TurnContext;
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Input shape for `runAgenCReviewOneShot`. Mirrors the positional arg
- * list of the upstream one-shot child-thread helper:
- *   (config, auth_manager, models_manager, input, parent_session,
- *    parent_ctx, cancel_token, subagent_source,
- *    final_output_json_schema, initial_history)
+ * Input shape for `runAgenCReviewOneShot`.
  */
 export interface AgenCReviewOneShotRequest {
-  /** Upstream `sub_id`. Identifier the session registers the task
+  /** Identifier the session registers the task
    *  under. The delegate reuses this as the `TurnContext.subId` so the
    *  review-scoped context stamps emitted events with the caller's id. */
   readonly subId: string;
-  /** Upstream `config`. The review-scoped `Config` from
+  /** The review-scoped `Config` from
    *  {@link buildGuardianReviewSessionConfig}. Required so the one-shot
    *  call uses the reviewer-scoped sandbox/approval/feature settings
    *  instead of the parent's. */
   readonly config: Config;
-  /** Upstream `parent_ctx`. The parent `TurnContext` used as the
+  /** The parent `TurnContext` used as the
    *  basis for the review-scoped `TurnContext`. */
   readonly parentContext: AgenCDelegateTurnContextLike;
-  /** Upstream `input: Vec<UserInput>`. Gut delegate accepts a
-   *  pre-formed `LLMMessage[]` because the upstream `UserInput::Text`
-   *  → provider-message plumbing lives outside this module's scope. */
+  /** The delegate accepts a pre-formed `LLMMessage[]` because the
+   *  user-input to provider-message plumbing lives outside this
+   *  module's scope. */
   readonly input: ReadonlyArray<LLMMessage>;
   /** Review request context (target + user-facing hint). Attached to
    *  the synthesized `exit_review_mode` event so UIs can render which
@@ -164,11 +156,11 @@ export interface AgenCReviewOneShotRequest {
   /** Optional model metadata for the reviewer model. When omitted,
    *  the delegate inherits the parent context's `modelInfo`. */
   readonly reviewerModelInfo?: ModelInfo;
-  /** Upstream `final_output_json_schema`. Passed through to the
+  /** Passed through to the
    *  provider's structured-output slot when supported. `undefined`
    *  runs the reviewer as free-form text. */
   readonly finalOutputJsonSchema?: unknown;
-  /** Upstream `cancel_token`. Parent abort signal; the delegate
+  /** Parent abort signal; the delegate
    *  derives a child controller from this so it can shut down
    *  independently on completion. */
   readonly signal?: AbortSignal;
@@ -192,7 +184,7 @@ export interface AgenCReviewOneShotRequest {
    */
   readonly registerTask?: boolean;
   /**
-   * Persist upstream-style synthetic review user/assistant records on
+   * Persist synthetic review user/assistant records on
    * `exit_review_mode`. Defaults to true for standalone review tasks
    * and false for inline approval reviewers (`registerTask:false`).
    */
@@ -207,17 +199,15 @@ export interface AgenCReviewOneShotRequest {
 }
 
 /**
- * Upstream agenc runtime `agenc runtime` return value of `run_agenc runtime_thread_one_shot`
- * (the wrapped `agenc runtime` struct from `agenc runtime_delegate.rs:230-236`). Gut
- * collapses this into a synchronous outcome because there is no
- * child-Session event channel to drain. Shape preserves the
+ * Outcome of a one-shot review turn. A synchronous outcome because
+ * there is no child-Session event channel to drain. Shape carries the
  * essential fields a caller needs:
  *
  *   - `verdict` — `pass` / `fail` / `partial` / `aborted` / `timeout`.
- *     `pass` / `fail` / `partial` mirror upstream's structured
- *     `ReviewOutputEvent` outcomes; `aborted` / `timeout` cover the
+ *     `pass` / `fail` / `partial` are the structured review outcomes;
+ *     `aborted` / `timeout` cover the
  *     teardown paths where no model output is available.
- *   - `output` — parsed `ReviewOutput` (upstream `ReviewOutputEvent`).
+ *   - `output`: parsed `ReviewOutput`.
  *     Always present so callers do not branch on undefined. Empty on
  *     abort/timeout.
  *   - `rawText` — the raw assistant text the reviewer model
@@ -237,15 +227,13 @@ export interface AgenCReviewOneShotOutcome {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Error shapes (upstream agenc runtimeErr / guardian review errors)
+// Error shapes (guardian review errors)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Raised when the request specifies a reviewer model that the
- * provider does not support. Upstream agenc runtime surfaces this through
- * `ModelsManager::get_model_info` failing to resolve the model slug.
- * Gut's delegate checks it up-front so callers get a typed rejection
- * before any provider round-trip.
+ * provider does not support. The delegate checks it up-front so
+ * callers get a typed rejection before any provider round-trip.
  */
 export class ReviewerModelMismatchError extends Error {
   readonly reviewerModel: string;
@@ -261,46 +249,40 @@ export class ReviewerModelMismatchError extends Error {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// build_guardian_review_session_config port
+// buildGuardianReviewSessionConfig
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Options for {@link buildGuardianReviewSessionConfig}. Mirrors the
- * positional args of upstream
- * `guardian/review_session.rs::build_guardian_review_session_config`
- * (`review_session.rs:831-836`) with a couple of gut-friendly
- * additions for the feature-flag surface.
+ * Options for {@link buildGuardianReviewSessionConfig}, including a
+ * couple of additions for the feature-flag surface.
  */
 export interface BuildGuardianReviewSessionConfigOptions {
-  /** Upstream `parent_config: &Config`. The session's live config. */
+  /** The session's live config. */
   readonly parentConfig: Config;
-  /** Upstream `active_model: &str`. Reviewer model slug. */
+  /** Reviewer model slug. */
   readonly activeModel: string;
   /**
-   * Upstream `reasoning_effort: Option<ReasoningEffort>`. Gut's
-   * `Config.modelReasoningEffort` covers the same slot; passing it
-   * explicitly mirrors upstream's per-turn override semantics.
+   * Reasoning effort override. `Config.modelReasoningEffort` covers
+   * the same slot; passing it explicitly gives per-turn override
+   * semantics.
    */
   readonly reasoningEffort?: Config["modelReasoningEffort"];
   /**
    * Optional reviewer system prompt override. Defaults to
-   * {@link REVIEW_SYSTEM_PROMPT}. Upstream wires this via
-   * `guardian_policy_prompt(_with_config)`; gut uses the review
-   * guidelines directly (upstream `tasks/review.rs:115`).
+   * {@link REVIEW_SYSTEM_PROMPT} (the review guidelines are used
+   * directly).
    */
   readonly baseInstructions?: string;
 }
 
 /**
  * Synthesize the review-scoped `Config` that the AgenC delegate runs
- * under. Mirrors upstream
- * `guardian/review_session.rs::build_guardian_review_session_config`
- * (`review_session.rs:831-897`).
+ * under.
  *
- * The fields that get rewritten (and the upstream evidence):
- *   - `model` ← `activeModel` (upstream line 838)
- *   - `modelReasoningEffort` ← `reasoningEffort` (line 839)
- *   - approval/sandbox → `never` / `read_only` (lines 849-851)
+ * The fields that get rewritten:
+ *   - `model` ← `activeModel`
+ *   - `modelReasoningEffort` ← `reasoningEffort`
+ *   - approval/sandbox → `never` / `read_only`
  * Child-session service isolation clears runtime tool/MCP visibility
  * at delegate construction time (`buildChildServices`) rather than by
  * mutating `Config`, because AgenC wires those surfaces through
@@ -333,8 +315,8 @@ export function buildGuardianReviewSessionConfig(
   if (reasoningEffort !== undefined) {
     mutable.modelReasoningEffort = reasoningEffort;
   }
-  // Upstream: approval_policy = Never, sandbox_policy = read_only.
-  // Gut's `Config` holds approval/sandbox on `SessionConfiguration`
+  // Reviewer policy: approval never, sandbox read_only.
+  // `Config` holds approval/sandbox on `SessionConfiguration`
   // (not directly on Config). The reviewer-scoped TurnContext pulls
   // approval/sandbox from the parent sessionConfiguration during
   // `buildTurnContext`; the review delegate path overrides them there.
@@ -350,11 +332,9 @@ export function buildGuardianReviewSessionConfig(
 
 /**
  * Build the review-scoped `TurnContext` from the parent context +
- * reviewer overrides. Mirrors the inline turn-context assembly at
- * upstream `agenc-rs/core/src/session/review.rs:101-146`.
+ * reviewer overrides.
  *
- * Unlike upstream's hand-built `TurnContext { ... }` struct literal,
- * gut threads the overrides through `buildTurnContext` so the frozen-
+ * Threads the overrides through `buildTurnContext` so the frozen-
  * config invariant + metadata state get the same treatment as every
  * other turn. The caller-visible difference: reviewer web/view-image
  * features are disabled (the fixed feature predicate is functions-only),
@@ -394,8 +374,7 @@ function buildReviewTurnContext(
           ? { reasoningEffort: modelInfo.defaultReasoningLevel }
           : {}),
     },
-    // Upstream zeroes developer_instructions / user_instructions for
-    // the reviewer (session/review.rs:121-122). Preserve that contract.
+    // Developer / user instructions are zeroed for the reviewer.
     dynamicTools: [],
     sessionSource: parentCtx.sessionSource,
   };
@@ -1209,9 +1188,9 @@ export async function runAgenCReviewOneShot(
   session: AgenCDelegateSessionLike,
   req: AgenCReviewOneShotRequest,
 ): Promise<AgenCReviewOneShotOutcome> {
-  // Reviewer-model resolution. Upstream consults ModelsManager before
-  // spawning the child review session; AgenC mirrors that when the
-  // live Session service bag is present and falls back to the parent
+  // Reviewer-model resolution. Consult ModelsManager before spawning
+  // the child review session when the
+  // live Session service bag is present; fall back to the parent
   // metadata shape only for slim test fixtures.
   const reviewerModel = (
     req.reviewerModel ?? req.parentContext.modelInfo.slug
@@ -1315,7 +1294,7 @@ export async function runAgenCReviewOneShot(
     throw fatalAdmissionError;
   }
 
-  // Verdict classification. Order matches upstream: timeout → abort
+  // Verdict classification. Order: timeout → abort
   // → provider error → parsed output. Timeout wins over generic
   // abort so the UI can surface the more-specific reason.
   let verdict: AgenCReviewOneShotOutcome["verdict"];
@@ -1368,10 +1347,8 @@ export async function runAgenCReviewOneShot(
 
   // Emit the `exit_review_mode` event on every termination path so
   // consumers do not have to reconcile "did the task emit the event
-  // or did I need to emit it myself". Upstream emits from
-  // `tasks/review.rs::exit_review_mode` (`tasks/review.rs:213-283`)
-  // including the rollout record; AgenC mirrors that by persisting the
-  // synthetic review user/assistant records before the exit event.
+  // or did I need to emit it myself". The synthetic review
+  // user/assistant records are persisted before the exit event.
   const exitPayload: ExitReviewModePayload = {
     subId: req.subId,
     reason:
@@ -1392,9 +1369,8 @@ export async function runAgenCReviewOneShot(
     payload: exitPayload,
   });
 
-  // Drain the task from the session registry. Upstream
-  // `SessionTaskContext::on_task_finished` fires after `ReviewTask::run`
-  // returns; gut's `Session.onTaskFinished` clears the activeTurn
+  // Drain the task from the session registry.
+  // `Session.onTaskFinished` clears the activeTurn
   // slot when the task registry empties. `void`-await is fine because
   // the lifecycle awaits `task.done` elsewhere (graceful interruption
   // path); we resolve `done` here by explicitly finishing.
@@ -1416,9 +1392,8 @@ export async function runAgenCReviewOneShot(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream agenc runtime `ExitedReviewModeEvent`
- * (`protocol/src/protocol.rs:2157-2159`). Carries the review output
- * so the UI can render results; gut adds the termination `reason`
+ * Exit-review-mode event payload. Carries the review output
+ * so the UI can render results, plus the termination `reason`
  * and the `modelUsed` for telemetry + a compact `subId` for event
  * correlation.
  *

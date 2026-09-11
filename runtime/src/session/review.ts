@@ -1,24 +1,18 @@
 /**
  * Review-task subsystem for the AgenC session kernel.
  *
- * Port of the upstream agenc runtime review machinery:
- *   - `agenc-rs/core/src/tasks/review.rs` — the `ReviewTask` trait impl
- *     (`TaskKind::Review`, `span_name("session_task.review")`, run/abort
- *     wiring, process_review_events, exit_review_mode, and the
- *     JSON-parsing fallback for `ReviewOutputEvent`).
- *   - `agenc-rs/core/src/session/review.rs` — the `spawn_review_thread`
- *     entry point that builds a review-scoped `TurnContext`, disables
- *     web-search / view-image features, and spawns the `ReviewTask` via
- *     `Session::spawn_task`.
- *   - `agenc-rs/core/src/guardian/review_session.rs` —
- *     `GuardianReviewSessionManager`. This file ports the manager's
- *     shape and lifecycle primitives (`shutdown`, trunk vs ephemeral
- *     review-session tracking).
- *   - `agenc-rs/core/review_prompt.md` and the two
- *     `agenc-rs/core/templates/review/*.xml` templates — lifted
- *     verbatim into the three exported string constants so future
- *     `spawnReviewTask` wiring can reach them without adding a file
- *     loader.
+ * This module owns:
+ *   - The review task (`TaskKind` "review"): run/abort wiring, review
+ *     event processing, exit-review handling, and the JSON-parsing
+ *     fallback for the reviewer output.
+ *   - The `spawnReviewTask` entry point that builds a review-scoped
+ *     turn context, disables web-search / view-image features, and
+ *     spawns the review task through `Session.spawnTask`.
+ *   - `ReviewManager`: lifecycle primitives (`shutdown`, trunk vs
+ *     ephemeral review-session tracking).
+ *   - The review prompt and the two exit templates as exported string
+ *     constants so `spawnReviewTask` wiring can reach them without a
+ *     file loader.
  *
  * Purpose. Wave 2 landed the generic task-dispatch machinery in
  * `session/tasks.ts`, including a `TaskKind` union that already
@@ -29,37 +23,32 @@
  *   1. `spawnReviewTask(session, opts)` — the session-scoped entry
  *      point. Calls `session.spawnTask({kind: "review", ...})` so the
  *      review task flows through the same replace-on-new-turn lifecycle
- *      as regular turns (upstream agenc runtime
- *      `session/review.rs::spawn_review_thread -> sess.spawn_task`).
+ *      as regular turns.
  *
- *   2. `ReviewManager` — the agenc runtime `GuardianReviewSessionManager`
- *      port. Tracks the "trunk" review session and any ephemeral fork
- *      review sessions by subId so `shutdown()` can cancel them all on
- *      session teardown. The full trunk-reuse and ephemeral-fork
- *      semantics from `guardian/review_session.rs` (reuse-key
- *      invalidation, fork snapshots, prior-review-count deltas) now
+ *   2. `ReviewManager`: tracks the "trunk" review session and any
+ *      ephemeral fork review sessions by subId so `shutdown()` can
+ *      cancel them all on session teardown. The full trunk-reuse and
+ *      ephemeral-fork semantics (reuse-key
+ *      invalidation, fork snapshots, prior-review-count deltas)
  *      route through the AgenC child-session delegate.
  *
  *   3. `isTaskKindSteerable(kind)` — the classifier used by the
- *      forthcoming steer_input port (Item 6). Review tasks are
- *      explicitly NON-steerable (upstream agenc runtime treats
- *      `TaskKind::Review` as reject-on-steer). The classifier is
+ *      forthcoming steer_input path. Review tasks are
+ *      explicitly NON-steerable (reject-on-steer). The classifier is
  *      implemented against the TaskKind contract so it can be asserted
  *      today even before the steer_input path is wired through.
  *
  *   4. The three review-prompt string constants
  *      (`REVIEW_SYSTEM_PROMPT`, `REVIEW_EXIT_SUCCESS_TMPL`,
- *      `REVIEW_EXIT_INTERRUPTED_TMPL`) — ported verbatim from the
- *      upstream assets so the reviewer runner can synthesize the
- *      system prompt and exit-templates without a file loader.
+ *      `REVIEW_EXIT_INTERRUPTED_TMPL`), inlined so the reviewer
+ *      runner can synthesize the system prompt and exit-templates
+ *      without a file loader.
  *
  *   5. `ReviewRequest`, `ReviewFinding`, `ReviewOutput` — the
- *      structural types corresponding to upstream agenc runtime
- *      `agenc runtime-protocol::protocol::{ReviewRequest, ReviewOutputEvent}`
- *      and `ReviewLineRange` / `ReviewCodeLocation`. Shapes are
- *      preserved so `parseReviewOutput` can deserialize a reviewer
- *      model's JSON response (or fall back to the plain-text path
- *      mirroring upstream `parse_review_output_event`).
+ *      structural types for the review protocol surface, plus
+ *      `ReviewLineRange` / `ReviewCodeLocation`. `parseReviewOutput`
+ *      deserializes a reviewer model's JSON response into them (or
+ *      falls back to the plain-text path).
  *
  * `spawnReviewTask` now runs the full scoped reviewer turn by owning
  * the parent `kind: "review"` task while delegating model execution to
@@ -86,39 +75,32 @@ import type { ResponseItem } from "./rollout-item.js";
 import type { LLMMessage } from "../llm/types.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Structural types (upstream `agenc runtime-protocol` review surface)
+// Structural types (review protocol surface)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream agenc runtime `agenc runtime-protocol::protocol::ReviewRequest`. Describes
- * what the user / operator asked the reviewer model to look at. The
- * target is a free-form description (e.g. "Diff between HEAD and
- * main") that upstream threads through `resolved.target`.
+ * Describes what the user / operator asked the reviewer model to look
+ * at. The target is a free-form description (e.g. "Diff between HEAD
+ * and main").
  */
 export interface ReviewRequest {
   readonly target: string;
   readonly userFacingHint?: string;
 }
 
-/**
- * Upstream agenc runtime `agenc runtime-protocol::protocol::ReviewLineRange`.
- */
+/** Inclusive line range of a review finding. */
 export interface ReviewLineRange {
   readonly start: number;
   readonly end: number;
 }
 
-/**
- * Upstream agenc runtime `agenc runtime-protocol::protocol::ReviewCodeLocation`.
- */
+/** File path plus line range of a review finding. */
 export interface ReviewCodeLocation {
   readonly absolutePath: string;
   readonly lineRange: ReviewLineRange;
 }
 
-/**
- * Upstream agenc runtime `agenc runtime-protocol::protocol::ReviewFinding`.
- */
+/** One finding reported by the reviewer model. */
 export interface ReviewFinding {
   readonly title: string;
   readonly body: string;
@@ -128,11 +110,9 @@ export interface ReviewFinding {
 }
 
 /**
- * Upstream agenc runtime `agenc runtime-protocol::protocol::ReviewOutputEvent`. Shape
- * of the structured review output the reviewer model returns. The
- * plain-text fallback path in `parseReviewOutput` stuffs the raw text
- * into `overallExplanation` and leaves `findings` empty, matching
- * upstream `tasks/review.rs::parse_review_output_event`.
+ * Shape of the structured review output the reviewer model returns.
+ * The plain-text fallback path in `parseReviewOutput` stuffs the raw
+ * text into `overallExplanation` and leaves `findings` empty.
  */
 export interface ReviewOutput {
   readonly findings: ReadonlyArray<ReviewFinding>;
@@ -143,7 +123,7 @@ export interface ReviewOutput {
 
 /**
  * Fresh-default `ReviewOutput` with all-zero confidences and no
- * findings. Mirrors upstream `Default` impl on `ReviewOutputEvent`.
+ * findings.
  */
 export function emptyReviewOutput(): ReviewOutput {
   return {
@@ -159,14 +139,13 @@ export function emptyReviewOutput(): ReviewOutput {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream agenc runtime `tasks/mod.rs` classification consumed by the
- * steer_input gate (Item 6 port): a review task cannot be steered
- * with a mid-turn user message. Upstream rejects with
- * `ActiveTurnNotSteerable`.
+ * Task-kind classification consumed by the steer_input gate: a review
+ * task cannot be steered with a mid-turn user message (the gate
+ * rejects with `ActiveTurnNotSteerable`).
  *
  * Returns `true` when the task kind accepts steer input, `false`
  * otherwise. Today only `regular` tasks are steerable. `review` and
- * `compact` both reject, matching upstream behavior.
+ * `compact` both reject.
  *
  * Exposed as a free function so the forthcoming `steer_input` path
  * (and tests today, before that path lands) can assert the
@@ -184,15 +163,13 @@ export function isTaskKindSteerable(kind: TaskKind): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Review prompt / exit templates (verbatim from upstream assets)
+// Review prompt / exit templates
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream agenc runtime `core/review_prompt.md`. Used as the reviewer
- * model's `base_instructions` in `tasks/review.rs::start_review_conversation`.
- * Ported verbatim so a later runner can set it on the review-scoped
- * config without needing a file loader. First-line header retained
- * for fidelity; newlines normalized to `\n` (the upstream file is LF).
+ * Reviewer system prompt. Used as the reviewer model's base
+ * instructions. Inlined so the runner can set it on the review-scoped
+ * config without needing a file loader. Newlines are `\n`.
  */
 export const REVIEW_SYSTEM_PROMPT: string = [
   "# Review guidelines:",
@@ -217,10 +194,9 @@ export const REVIEW_SYSTEM_PROMPT: string = [
 ].join("\n");
 
 /**
- * Upstream agenc runtime `core/templates/review/exit_success.xml`. Rendered
- * by `render_review_exit_success` with `{{results}}` substituted in.
- * Ported verbatim; `renderReviewExitSuccess` below performs the
- * single-placeholder substitution (no template engine dependency).
+ * Exit template for a completed review. `renderReviewExitSuccess`
+ * below substitutes `{{results}}` (single placeholder, no template
+ * engine dependency).
  */
 export const REVIEW_EXIT_SUCCESS_TMPL: string = [
   "<user_action>",
@@ -233,9 +209,8 @@ export const REVIEW_EXIT_SUCCESS_TMPL: string = [
 ].join("\n");
 
 /**
- * Upstream agenc runtime `core/templates/review/exit_interrupted.xml`.
- * Emitted when `review_output` is `None` in upstream
- * `exit_review_mode`.
+ * Exit template for an interrupted review. Emitted when the review
+ * produced no output.
  */
 export const REVIEW_EXIT_INTERRUPTED_TMPL: string = [
   "<user_action>",
@@ -249,10 +224,8 @@ export const REVIEW_EXIT_INTERRUPTED_TMPL: string = [
 ].join("\n");
 
 /**
- * Upstream agenc runtime `tasks/review.rs::render_review_exit_success`. Single
- * placeholder template substitution (`{{results}}`). Upstream uses a
- * real template engine (`agenc runtime_utils_template::Template`); gut uses
- * plain string replace because there is only ever one placeholder.
+ * Single placeholder template substitution (`{{results}}`). Plain
+ * string replace because there is only ever one placeholder.
  */
 export function renderReviewExitSuccess(results: string): string {
   return REVIEW_EXIT_SUCCESS_TMPL.replace("{{results}}", results);
@@ -363,22 +336,19 @@ export async function recordReviewExitRollout(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Review output parser (upstream parse_review_output_event)
+// Review output parser
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream agenc runtime `tasks/review.rs::parse_review_output_event`. Parses
- * a reviewer model's response text as JSON matching `ReviewOutput`.
- * If the raw text is not valid JSON, attempts to extract the
- * first-`{` to last-`}` substring and parse that (matching upstream's
- * `text.find('{')` / `text.rfind('}')` slice). On every parse failure,
- * returns a plain-text fallback where `overallExplanation` carries
- * the raw text verbatim.
+ * Parses a reviewer model's response text as JSON matching
+ * `ReviewOutput`. If the raw text is not valid JSON, attempts to
+ * extract the first-`{` to last-`}` substring and parse that. On every
+ * parse failure, returns a plain-text fallback where
+ * `overallExplanation` carries the raw text verbatim.
  *
- * Gut does not ship a JSON-schema validator, so the parse accepts any
- * object shape and maps the known fields by structural check (upstream
- * uses `serde_json::from_str<ReviewOutputEvent>` which is similarly
- * lenient about additional fields).
+ * There is no JSON-schema validator here, so the parse accepts any
+ * object shape and maps the known fields by structural check (lenient
+ * about additional fields).
  */
 export function parseReviewOutput(text: string): ReviewOutput {
   const direct = tryParseReviewOutput(text);
@@ -404,11 +374,10 @@ function tryParseReviewOutput(raw: string): ReviewOutput | null {
     return null;
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    // Upstream `serde_json::from_str<ReviewOutputEvent>` rejects arrays
-    // and primitives because ReviewOutputEvent is an object schema.
-    // The gut parser mirrors that by falling through to the substring
-    // path (which will then fall through to plain-text) when the
-    // top-level JSON is not an object literal.
+    // ReviewOutput is an object schema, so arrays and primitives are
+    // rejected: fall through to the substring path (which will then
+    // fall through to plain-text) when the top-level JSON is not an
+    // object literal.
     return null;
   }
   const obj = parsed as Record<string, unknown>;
@@ -443,7 +412,7 @@ function tryParseReviewOutput(raw: string): ReviewOutput | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Review-session manager (upstream GuardianReviewSessionManager)
+// Review-session manager
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -469,12 +438,11 @@ interface TrackedReview {
 }
 
 /**
- * Upstream agenc runtime `guardian/review_session.rs::GuardianReviewSessionManager`,
- * ported to the gut session surface. Tracks live review tasks by
- * subId so a session-level shutdown can cancel them all.
+ * Review-session manager. Tracks live review tasks by subId so a
+ * session-level shutdown can cancel them all.
  *
- * The upstream manager distinguishes a long-lived "trunk" review
- * session from short-lived "ephemeral" fork reviews; the AgenC port
+ * A long-lived "trunk" review session is distinguished from
+ * short-lived "ephemeral" fork reviews; the manager
  * keeps lifecycle entries in one registry and snapshots review
  * histories by reuse key for child delegates.
  */
@@ -483,21 +451,18 @@ export class ReviewManager {
   private readonly snapshots = new Map<string, ReviewConversationSnapshot>();
 
   /**
-   * Upstream: `spawn_guardian_review_session` → `state.trunk = ...`.
    * Called by `spawnReviewTask` after `session.spawnTask` returns a
    * live `RunningTask`. Idempotent w.r.t. duplicate subIds — a
    * second `register` call for the same subId replaces the earlier
-   * entry (matching upstream `trunk.replace` semantics).
+   * entry.
    */
   register(entry: TrackedReview): void {
     this.reviews.set(entry.subId, entry);
   }
 
   /**
-   * Upstream: `take_active_ephemeral` / `remove_trunk_if_current`.
    * Returns the registered entry for `subId` and removes it from the
-   * map. `undefined` if the subId was not tracked (upstream returns
-   * `Option::None`).
+   * map. `undefined` if the subId was not tracked.
    */
   take(subId: string): TrackedReview | undefined {
     const entry = this.reviews.get(subId);
@@ -514,8 +479,7 @@ export class ReviewManager {
   }
 
   /**
-   * Upstream `GuardianReviewSessionManager::shutdown`. Cancels every
-   * tracked review's abort controller. Cancellation is fire-and-forget
+   * Cancels every tracked review's abort controller. Cancellation is fire-and-forget
    * here; the underlying `RunningTask.done` promise is awaited by
    * `Session.abortAllTasks` under the graceful-interruption budget
    * (see `tasks.ts::GRACEFUL_INTERRUPTION_TIMEOUT_MS`), so this does
@@ -531,9 +495,8 @@ export class ReviewManager {
   }
 
   /**
-   * Test / introspection helper. Upstream keeps `state: Arc<Mutex<…>>`
-   * private; gut exposes a snapshot for coverage assertions without
-   * letting callers mutate the registry.
+   * Test / introspection helper. Exposes a snapshot for coverage
+   * assertions without letting callers mutate the registry.
    */
   snapshot(): ReadonlyArray<{ readonly subId: string; readonly request: ReviewRequest }> {
     return Array.from(this.reviews.values()).map((entry) => ({
@@ -543,18 +506,16 @@ export class ReviewManager {
   }
 
   /**
-   * Current number of tracked reviews. Upstream
-   * `state.trunk.is_some() + state.ephemeral_reviews.len()`.
+   * Current number of tracked reviews.
    */
   get size(): number {
     return this.reviews.size;
   }
 
   /**
-   * Upstream agenc runtime `guardian/review_session.rs::run_review` orchestrator
-   * (the on-session wrapper that threads timeout + fork snapshot +
-   * delta prompt logic around the child-session delegate). AgenC port
-   * wraps the T13 delegate with:
+   * Review orchestrator: the on-session wrapper that threads timeout,
+   * fork snapshot, and delta prompt logic around the child-session
+   * delegate. Wraps the delegate with:
    *
    *   - an optional caller-supplied timeout, with no implicit deadline,
    *   - an `AbortController` that fires on an explicit timeout OR on
@@ -843,13 +804,12 @@ function priorFindingCountFromHistory(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Options for `spawnReviewTask`. Mirrors the upstream
- * `spawn_review_thread` task-registration shape.
+ * Options for `spawnReviewTask`.
  */
 export interface SpawnReviewTaskOptions {
-  /** Upstream `sub_id`. Identifier the session uses in its task registry. */
+  /** Identifier the session uses in its task registry. */
   readonly subId: string;
-  /** Upstream `resolved: ResolvedReviewRequest`. The reviewer's target + hint. */
+  /** The reviewer's target + hint. */
   readonly request: ReviewRequest;
   /** Review-scoped config. Defaults to `parentContext.config` when omitted. */
   readonly config?: AgenCReviewOneShotRequest["config"];
@@ -898,11 +858,11 @@ export interface SpawnedReviewTask {
 }
 
 /**
- * Upstream agenc runtime `session/review.rs::spawn_review_thread` entry point.
+ * Review task entry point.
  * Registers a `kind: "review"` task, then starts the full isolated
  * AgenC child-session reviewer driver. The returned `done` promise
  * resolves only after the reviewer finishes and the parent task slot is
- * drained, matching upstream `ReviewTask::run -> on_task_finished`.
+ * drained.
  *
  * The returned `SpawnedReviewTask` carries the task's abort controller
  * so callers can cancel the review directly (`spawnedTask.abortController.abort(...)`)
@@ -958,7 +918,7 @@ export async function spawnReviewTask(
     startedAtMs: opts.startedAtMs,
   });
   if (task.kind !== "review") {
-    // Defensive: upstream agenc runtime `spawn_task` never rewrites the kind,
+    // Defensive: `spawnTask` never rewrites the kind,
     // but the JS surface is structural, so surface a clear contract
     // violation instead of silently proceeding.
     throw new Error(

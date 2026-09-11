@@ -2,11 +2,8 @@
  * File-history sidecar — per-message snapshots of edited files with
  * versioned backups.
  *
- * Hand-port of agenc `src/utils/fileHistory.ts` (1,115 LOC). The
- * AgenC implementation is tightly coupled to React-hook-style
- * state updaters + global session state. This AgenC port preserves
- * the on-disk format + data shapes but restructures around
- * `SessionStore` + `SidecarManager`.
+ * Structured around `SessionStore` + `SidecarManager` rather than
+ * React-hook-style state updaters or global session state.
  *
  * Invariants wired here:
  *   I-28 (file-history LRU eviction) — snapshots capped at
@@ -73,7 +70,7 @@ export interface FileHistoryBackup {
 }
 
 /**
- * Port of agenc `DiffStats` + `computeDiffStats`. Counts line-
+ * `DiffStats` + `computeDiffStats`. Counts line-
  * level insertions/deletions relative to the previous version of the
  * same tracked file.
  */
@@ -801,8 +798,7 @@ export class FileHistorySidecar implements Sidecar {
 // ─────────────────────────────────────────────────────────────────────
 // Session-resume surface — module-level helpers
 //
-// Port of agenc `utils/fileHistory.ts` lines 347-397, 399-408,
-// 414-484, 494-531, 600-634, 888-917, 922-1046. The AgenC port reuses
+// These helpers reuse
 // the existing FileHistory on-disk layout (`backupFileName` is the
 // absolute path to the backup artifact under `projectDir/file-history/
 // <pathHash>/v<N>`), so a snapshot carries the fully-resolved backup
@@ -868,7 +864,6 @@ async function hashFileContent(filePath: string): Promise<string | null> {
 }
 
 /**
- * Port of agenc `checkOriginFileChanged` (fileHistory.ts:600-634).
  * Hash-compares current disk state to the recorded origin (v1) backup.
  * Returns `true` when the file differs (including presence mismatch)
  * or when `backupFileName` is `null` but the file exists on disk.
@@ -900,7 +895,6 @@ export async function checkOriginFileChanged(
 }
 
 /**
- * Port of agenc `fileHistoryCanRestore` (fileHistory.ts:399-408).
  * Returns `true` when a snapshot for `messageId` exists AND every
  * tracked file in that snapshot has a reachable backup on disk (i.e.
  * the backup files themselves have not been garbage-collected).
@@ -920,7 +914,6 @@ export async function fileHistoryCanRestore(
 }
 
 /**
- * Port of agenc `fileHistoryRewind` (fileHistory.ts:347-397).
  * Rewind the tracked files on disk to the snapshot identified by
  * `messageId`. Returns the list of files that changed. Throws when
  * the snapshot does not exist so callers can surface a clear error.
@@ -996,8 +989,7 @@ export async function fileHistoryRewind(
 }
 
 /**
- * Port of agenc `fileHistoryGetDiffStats` (fileHistory.ts:414-484),
- * generalized to diff between two snapshot points. When `fromMessageId`
+ * Diff between two snapshot points. When `fromMessageId`
  * is omitted, diffs against the first recorded snapshot (the origin).
  * Returns per-file insertions/deletions plus an aggregate.
  */
@@ -1060,8 +1052,7 @@ export async function fileHistoryGetDiffStats(
 }
 
 /**
- * Port of agenc `fileHistoryHasAnyChanges` (fileHistory.ts:494-531)
- * specialized to "any edit ever recorded" — true iff at least one
+ * "Any edit ever recorded": true iff at least one
  * tracked-file backup exists across the snapshot log. Complements the
  * disk-vs-snapshot variant exposed via the `FileHistory` class.
  */
@@ -1109,8 +1100,7 @@ function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
 }
 
 /**
- * Port of agenc `fileHistoryRestoreStateFromLog` (fileHistory.ts:
- * 888-917). Rebuild `FileHistoryState` by walking the rollout items
+ * Rebuild `FileHistoryState` by walking the rollout items
  * and collecting any `event_msg` payload whose `msg.type ===
  * "file_history_snapshot"` carries a `PersistedSnapshot`. Unknown or
  * malformed payloads are skipped (I-26 forward-compat posture).
@@ -1158,8 +1148,7 @@ export function fileHistoryRestoreStateFromLog(
 }
 
 /**
- * Port of agenc `copyFileHistoryForResume` (fileHistory.ts:922-
- * 1046). AgenC snapshots carry absolute backup paths, so resuming a
+ * AgenC snapshots carry absolute backup paths, so resuming a
  * session does not require per-session backup-dir migration: the new
  * session can read the existing backup artifacts directly. This helper
  * therefore reduces to a structural deep clone of the state so the

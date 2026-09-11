@@ -1,12 +1,9 @@
 /**
- * T11 Wave 1 — rule string parsing, matching, context composition.
+ * Rule string parsing, matching, context composition.
  *
- * Port of the following AgenC modules:
- *   - `src/utils/permissions/permissionRuleParser.ts`
- *     (parseRuleString / serializeRuleValue + escape helpers)
- *   - `src/utils/permissions/permissions.ts`
- *     (flattening + matching + applyPermissionUpdate + context-level
- *     helpers — everything that does NOT touch disk)
+ * Covers parseRuleString / serializeRuleValue + escape helpers, plus
+ * flattening, matching, applyPermissionUpdate, and the context-level
+ * helpers (everything that does NOT touch disk).
  *
  * The classifier, hook, and denial-tracking paths are deferred to
  * Wave 2. This module intentionally stays pure (no fs, no globals) so

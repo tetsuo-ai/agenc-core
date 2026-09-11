@@ -1,8 +1,8 @@
 /**
- * Ports upstream runtime `core/src/realtime_context.rs` startup-context
- * assembly onto AgenC conversation history and workspace primitives.
+ * Realtime startup-context assembly over AgenC conversation history and
+ * workspace primitives.
  *
- * Shape difference from upstream:
+ * Design notes:
  *   - The builder is dependency-injected so daemon methods can supply
  *     session history, thread-store rows, and workspace readers without
  *     coupling this pure formatter to app-server services.

@@ -829,7 +829,6 @@ export function parseChatCompletionsResponse(
           };
         },
       ),
-      // branding-scan: allow real OpenAI provider identifier
       "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];

@@ -2,8 +2,7 @@
  * Rollout reconstruction — rebuild `SessionState` from a JSONL
  * rollout file.
  *
- * Hand-port of agenc runtime `core/src/session/rollout_reconstruction.rs`
- * (304 LOC). The algorithm is a two-pass scan:
+ * The algorithm is a two-pass scan:
  *
  *   1. **Reverse scan** (newest → oldest): walk segments bounded by
  *      `TurnStarted` markers. Capture:
@@ -96,24 +95,21 @@ type RawCheckpointValidation =
   | { readonly status: "deferred"; readonly reason: string };
 
 /**
- * Verbatim port of agenc runtime `core/templates/compact/summary_prefix.md`
- * (referenced at `agenc-rs/core/src/compact.rs:43`). agenc runtime's
- * `is_summary_message` check (`compact.rs:410-412`) does
- * `message.starts_with(format!("{SUMMARY_PREFIX}\n"))` — we mirror that
- * exactly so a compatibility compaction summary re-entering replay is not
+ * Prefix that marks a compaction summary re-fed into history. The
+ * `isSummaryMessage` check tests `text.startsWith(prefix + "\n")`
+ * so a compatibility compaction summary re-entering replay is not
  * re-fed as a real user message on the next compaction pass.
  *
- * Keep this string byte-for-byte identical to agenc runtime's template. If
- * agenc runtime updates the prefix, update here and bump the rollout schema
- * version so older rollouts still match the old prefix via a fallback
- * list.
+ * Keep this string byte-for-byte stable. If the prefix changes, bump the
+ * rollout schema version so older rollouts still match the old prefix via
+ * a fallback list.
  */
 const COMPACT_SUMMARY_PREFIX =
   "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
 
 /**
- * agenc runtime `is_summary_message` (`compact.rs:410-412`): a user message
- * whose text begins with the rendered summary_prefix template + "\n"
+ * A user message
+ * whose text begins with the summary prefix + "\n"
  * is the compaction summary re-fed into history. Treat as non-user
  * so `collectUserMessages` does not recycle it into a new compaction
  * bundle on replay.
@@ -259,12 +255,10 @@ function turnIdsCompatible(active?: string, item?: string): boolean {
 }
 
 /**
- * Contextual user-message fragment definitions (port of agenc runtime
- * `instructions/src/fragment.rs` + `core/src/contextual_user_message.rs`).
+ * Contextual user-message fragment definitions.
  *
  * A contextual fragment is marked by a matching open and close tag pair
- * (agenc runtime `ContextualUserFragmentDefinition::matches_text` at
- * `instructions/src/fragment.rs:23-33`). A user message whose content
+ * (see `fragmentMatchesText`). A user message whose content
  * is *only* a contextual fragment is an injection, not a real
  * user-turn boundary.
  *
@@ -289,24 +283,24 @@ const CONTEXTUAL_USER_FRAGMENTS: ReadonlyArray<ContextualFragmentDef> = [
   },
   // Imported instruction headers emitted by the current prompt path.
   {
-    startMarker: "# AGENTS.md instructions for ", // branding-scan: allow live imported instruction marker
+    startMarker: "# AGENTS.md instructions for ",
     endMarker: "</INSTRUCTIONS>",
   },
-  // Environment context (agenc runtime ENVIRONMENT_CONTEXT_FRAGMENT).
+  // Environment context.
   {
     startMarker: "<environment_context>",
     endMarker: "</environment_context>",
   },
-  // Skill fragment (agenc runtime SKILL_FRAGMENT).
+  // Skill fragment.
   { startMarker: "<skill>", endMarker: "</skill>" },
-  // User shell command (agenc runtime USER_SHELL_COMMAND_FRAGMENT).
+  // User shell command.
   {
     startMarker: "<user_shell_command>",
     endMarker: "</user_shell_command>",
   },
-  // Turn aborted marker (agenc runtime TURN_ABORTED_FRAGMENT).
+  // Turn aborted marker.
   { startMarker: "<turn_aborted>", endMarker: "</turn_aborted>" },
-  // Subagent notification (agenc runtime SUBAGENT_NOTIFICATION_FRAGMENT).
+  // Subagent notification.
   {
     startMarker: "<subagent_notification>",
     endMarker: "</subagent_notification>",
@@ -327,11 +321,9 @@ const CONTEXTUAL_USER_FRAGMENTS: ReadonlyArray<ContextualFragmentDef> = [
 ];
 
 /**
- * Port of agenc runtime `ContextualUserFragmentDefinition::matches_text`
- * (`instructions/src/fragment.rs:23-33`). Requires BOTH the start
+ * Requires BOTH the start
  * marker and the close marker to match (after trimming leading/
- * trailing whitespace). Case-insensitive per agenc runtime's
- * `eq_ignore_ascii_case`.
+ * trailing whitespace). Case-insensitive.
  */
 function fragmentMatchesText(
   text: string,
@@ -359,10 +351,9 @@ function isContextualUserText(text: string): boolean {
 
 /**
  * Exported alias so sibling modules (notably event-log-reducer.ts'
- * `trim_pre_turn_context_updates` equivalent) share the exact same
+ * pre-turn context trimming) share the exact same
  * fragment-detection behavior we use for user-turn boundary
- * classification. Mirrors agenc runtime `is_contextual_user_message_content`
- * (event_mapping.rs:35).
+ * classification.
  */
 export function isContextualUserMessageContent(
   content: ResponseItem["content"],
@@ -374,15 +365,13 @@ export function isContextualUserMessageContent(
  * Does this message content count as a contextual injection rather
  * than a real user turn? Accepts both string and content-array
  * payloads so it matches the permissive `ResponseItem.content` shape.
- * Mirrors agenc runtime `is_contextual_user_message_content` (event_mapping.rs:35).
  */
 function isContextualUserContent(content: ResponseItem["content"]): boolean {
   if (typeof content === "string") {
     return isContextualUserText(content);
   }
   if (!Array.isArray(content) || content.length === 0) return false;
-  // agenc runtime: `message.iter().any(is_contextual_user_fragment)` — any
-  // fragment being contextual is enough.
+  // Any fragment being contextual is enough.
   return content.some((frag) => {
     const text = typeof frag.text === "string" ? frag.text : "";
     return (
@@ -438,8 +427,7 @@ export function hasNonContextualDeveloperMessageContent(
 }
 
 /**
- * Port of agenc runtime `InterAgentCommunication::is_message_content`
- * (protocol.rs:753). An assistant message is an inter-agent instruction
+ * An assistant message is an inter-agent instruction
  * if its content is a single text fragment that parses as a JSON
  * object with the inter-agent-communication shape (author, recipient,
  * content, triggerTurn, ...).
@@ -453,8 +441,8 @@ function isInterAgentInstructionContent(
   } else if (Array.isArray(content) && content.length === 1) {
     const frag = content[0];
     if (!frag) return false;
-    // agenc runtime matches `[InputText|OutputText]` single-fragment content
-    // only — other fragment shapes disqualify.
+    // Only single-fragment `input_text` / `output_text` content
+    // qualifies; other fragment shapes disqualify.
     const ty = frag.type;
     if (ty !== "input_text" && ty !== "output_text") return false;
     text = typeof frag.text === "string" ? frag.text : "";
@@ -482,8 +470,7 @@ function isInterAgentInstructionContent(
 }
 
 /**
- * Is this ResponseItem a user-turn boundary? Port of agenc runtime
- * `context_manager::is_user_turn_boundary` (history.rs:703-710). A
+ * Is this ResponseItem a user-turn boundary? A
  * boundary is either:
  *   - a real (non-contextual) user-role message, OR
  *   - an assistant-role message whose content is an inter-agent
@@ -664,7 +651,7 @@ export function reconstructFromRollout(
           active.turnId = item.payload.turnId;
         }
         if (turnIdsCompatible(active.turnId, item.payload.turnId)) {
-          // agenc runtime threads `realtime_active` from the TurnContext event
+          // `realtime_active` is threaded from the TurnContext event
           // into PreviousTurnSettings so resume can rehydrate a
           // realtime turn. The rollout writer (`toTurnContextItem`)
           // and the TurnContextItem declaration in event-log.ts both
@@ -873,12 +860,10 @@ export function reconstructFromRollout(
   }
 
   // Forward replay over the suffix using the reducer. We apply three
-  // extra agenc runtime-parity steps inline so forward replay reproduces the
+  // extra steps inline so forward replay reproduces the
   // runtime state the writer saw at that seq:
-  //   (a) I-15-style truncation of oversized response_item text (agenc runtime
-  //       `ContextManager::record_items(truncation_policy)`),
-  //   (b) compatibility compaction rebuild via `buildCompactedHistory`
-  //       (agenc runtime `compact::build_compacted_history`),
+  //   (a) I-15-style truncation of oversized response_item text,
+  //   (b) compatibility compaction rebuild via `buildCompactedHistory`,
   //   (c) aggregate `ReductionReport` so callers can surface seq-gap
   //       / unknown-variant telemetry from replay.
   let state: ReducedSessionState = {
@@ -915,8 +900,7 @@ export function reconstructFromRollout(
     const rolloutIndex = rolloutSuffixStartIndex + suffixIndex;
     // (b) Compatibility compaction: rebuild history in place via the inline
     // `buildCompactedHistory` helper instead of deferring to the
-    // reducer (which would just clear the reference). This matches
-    // agenc runtime `rollout_reconstruction.rs:252-274`.
+    // reducer (which would just clear the reference).
     if (
       item.type === "compacted" &&
       item.payload.replacementHistory === undefined
@@ -968,9 +952,8 @@ export function reconstructFromRollout(
 
     // (a) Truncation policy: apply I-15 cap to response_item text
     // payloads on replay so a single oversized message can't blow
-    // memory. agenc runtime uses `truncation_policy.head` at this seam; the
-    // AgenC simplification keeps the full ResponseItem but truncates
-    // the text body with the same marker format.
+    // memory. The full ResponseItem is kept; only the text body is
+    // truncated, using the standard marker format.
     const toReduce =
       item.type === "response_item"
         ? { ...item, payload: applyReplayTruncation(item.payload) }
@@ -1076,7 +1059,7 @@ export function reconstructFromRollout(
   }
 
   // Resolve reference context: if compatibility compaction without
-  // replacement history occurred, agenc runtime clears the reference to avoid
+  // replacement history occurred, clear the reference to avoid
   // out-of-distribution prompt shape.
   let referenceContextItem: TurnContextItem | undefined;
   if (pending.referenceContextItem.kind === "latest") {
@@ -1172,11 +1155,9 @@ function responseItemText(item: ResponseItem): string {
  * Replace text within a `ResponseItem`. Preserves the original shape
  * (string vs content-array). For content arrays we collapse the
  * fragment list into a single text-carrying fragment so the truncation
- * marker applies to the whole payload (agenc runtime
- * `ContextManager::process_item` → `truncate_function_output_payload`
- * replaces the body wholesale; we mirror that here rather than
- * rewriting only fragment 0, which would leave later fragments
- * holding untruncated untrustworthy leftovers).
+ * marker applies to the whole payload (the body is replaced wholesale
+ * rather than rewriting only fragment 0, which would leave later
+ * fragments holding untruncated untrustworthy leftovers).
  */
 function withResponseItemText(
   item: ResponseItem,
@@ -1198,9 +1179,8 @@ function withResponseItemText(
 }
 
 /**
- * Is this a tool-output response item (the only kind agenc runtime truncates
- * on replay)? Port of agenc runtime `ContextManager::process_item` branch
- * selection at `history.rs:375-409`: ONLY `FunctionCallOutput` and
+ * Is this a tool-output response item (the only kind truncated
+ * on replay)? ONLY `FunctionCallOutput` and
  * `CustomToolCallOutput` are truncated — `Message`, `Reasoning`,
  * `FunctionCall`, `LocalShellCall`, and the other variants pass
  * through unchanged.
@@ -1226,17 +1206,15 @@ function isToolOutputItem(item: ResponseItem): boolean {
 }
 
 /**
- * Forward-replay truncation (agenc runtime `ContextManager::process_item` at
- * `history.rs:375-409`). agenc runtime only truncates `FunctionCallOutput` /
- * `CustomToolCallOutput` payloads on replay — every other
+ * Forward-replay truncation. Only `FunctionCallOutput` /
+ * `CustomToolCallOutput` payloads are truncated on replay; every other
  * `ResponseItem` variant (including plain `Message`) is returned
- * as-is. This port mirrors that branch exactly.
+ * as-is.
  *
- * The truncation cap here is AgenC's byte-based `DEFAULT_MAX_TOOL_RESULT_BYTES`
- * (400 KB). agenc runtime's equivalent uses the token-based
- * `COMPACT_USER_MESSAGE_MAX_TOKENS` (20 000 tokens at `compact.rs:44`)
- * for compacted-history rebuild — see the note on `buildCompactedHistory`
- * below for the token-vs-byte divergence. When AgenC wires an
+ * The truncation cap here is the byte-based `DEFAULT_MAX_TOOL_RESULT_BYTES`
+ * (400 KB) rather than a token-based cap for compacted-history
+ * rebuild (see the note on `buildCompactedHistory`
+ * below for the token-vs-byte trade-off). When AgenC wires an
  * approximate token counter we can reconcile that axis; for
  * tool-output replay the byte cap matches the runtime's live I-15
  * ceiling and is the correct input here.
@@ -1251,14 +1229,14 @@ function applyReplayTruncation(item: ResponseItem): ResponseItem {
 }
 
 /**
- * agenc runtime `collect_user_messages(history)` analogue. Extracts real
+ * Extracts real
  * user-turn text (non-contextual, non-summary). Contextual and
  * tool-role items are skipped so compatibility compaction rebuild sees only
  * human input.
  *
- * agenc runtime's collector filters on role=="user" only; the inter-agent
+ * Filters on role=="user" only; the inter-agent
  * assistant branch is not relevant here because compaction rebuild
- * replays literal user prompts. We mirror that by restricting to
+ * replays literal user prompts, so we restrict to
  * user-role (the isUserTurnBoundary assistant branch is intentionally
  * NOT hit because we also check role directly first).
  */
@@ -1270,8 +1248,7 @@ function collectUserMessages(history: ReadonlyArray<ResponseItem>): string[] {
     const text = responseItemText(item);
     if (!text) continue;
     // Skip compaction-summary messages so we don't re-feed an old
-    // summary into a new compaction (agenc runtime `is_summary_message`,
-    // compact.rs:410-412).
+    // summary into a new compaction (see `isSummaryMessage`).
     if (isSummaryMessage(text)) continue;
     out.push(text);
   }
@@ -1279,8 +1256,7 @@ function collectUserMessages(history: ReadonlyArray<ResponseItem>): string[] {
 }
 
 /**
- * agenc runtime `compact::build_compacted_history` minimal port
- * (`compact.rs:465-531`). Rebuilds a compacted history from scratch
+ * Rebuilds a compacted history from scratch
  * when the compatibility `Compacted` item had no inline `replacementHistory`.
  * Structure:
  *   - replay prior real user messages,
@@ -1290,10 +1266,9 @@ function collectUserMessages(history: ReadonlyArray<ResponseItem>): string[] {
  * rollout reconstruction must stay free of the compact subsystem's
  * runtime dependencies.
  *
- * **Divergence from agenc runtime (documented per invariant policy).** agenc runtime
- * bounds the packed user-message slice with
- * `COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000` (compact.rs:44) using
- * `approx_token_count`. AgenC does not have a synchronous tokenizer
+ * **Cap choice (documented per invariant policy).** A token-based
+ * bound (roughly 20k tokens) on the packed user-message slice would be
+ * the ideal cap. AgenC does not have a synchronous tokenizer
  * wired here, so we bound with `DEFAULT_MAX_TOOL_RESULT_BYTES`
  * (400 KB) instead. Both caps target the same safety property — a
  * single oversized user prompt cannot blow replay — but the byte cap

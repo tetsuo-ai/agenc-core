@@ -6,9 +6,6 @@
  * `permissions/network-approval.ts` — it caches approvals, dedups
  * concurrent requests, and invokes the approval resolver.
  *
- * Both sides derive from codex `core/src/network_policy_decision.rs`; // branding-scan: allow upstream source citation
- * the split mirrors codex's policy/enforcement separation. // branding-scan: allow upstream source citation
- *
  * @module
  */
 

@@ -68,11 +68,11 @@ describe("ModelRegistry", () => {
 
     const entry = registry.resolveSync({
       provider: "openai",
-      model: "codex-auto-review", // branding-scan: allow openai model identifier
+      model: "codex-auto-review",
     });
 
     expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
-      slug: "codex-auto-review", // branding-scan: allow openai model identifier
+      slug: "codex-auto-review",
       visibility: "hide",
       showInPicker: false,
     });

@@ -1,13 +1,10 @@
 /**
  * Client response helpers for pending user-input and MCP elicitation requests.
  *
- * Why this lives here / shape difference from upstream:
- *   - The donor routes responses through protocol-specific handler methods.
- *     AgenC exposes one small response adapter so daemon, TUI, and tests can
- *     resolve the same session pending maps without duplicating validation.
- *
- * Cross-cuts deliberately NOT carried:
- *   - UI rendering. This file only validates and forwards completed answers.
+ * Design notes:
+ *   - One small response adapter lets daemon, TUI, and tests resolve the
+ *     same session pending maps without duplicating validation.
+ *   - No UI rendering. This file only validates and forwards completed answers.
  *
  * @module
  */

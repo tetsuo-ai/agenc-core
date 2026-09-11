@@ -1,8 +1,7 @@
 /**
  * `bootstrapSession` tests.
  *
- * Covers the bootstrap sequencing contract ported from upstream agenc runtime
- * `Session::new` (agenc-rs/core/src/session/session.rs:258-967):
+ * Covers the bootstrap sequencing contract:
  *
  *   1. Happy path — real discovered shell, `SessionConfigured` emitted
  *      exactly once, `activeTurn` is clean.
@@ -16,7 +15,7 @@
  *   6. SessionConfigured terminal position — the emit is the last thing
  *      before the resume-history record step (which only runs on
  *      resume). Prewarm runs before the emit; resume-history runs
- *      after it per upstream comment at session.rs:941.
+ *      after it.
  *   7. Legacy constructor still works — `new Session(minimal)` still
  *      builds the session without any bootstrap-only side effects.
  */

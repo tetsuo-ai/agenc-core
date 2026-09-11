@@ -2140,7 +2140,7 @@ export class GrokProvider implements LLMProvider {
     if (this.client) return this.client;
 
     this.client = await ensureLazyImport("openai", this.name, (mod) => {
-      const ProviderSdk = (mod.default ?? mod.OpenAI ?? mod) as any; // branding-scan: allow real SDK export
+      const ProviderSdk = (mod.default ?? mod.OpenAI ?? mod) as any;
       const client = new ProviderSdk({
         apiKey: this.config.apiKey,
         baseURL: this.config.baseURL,

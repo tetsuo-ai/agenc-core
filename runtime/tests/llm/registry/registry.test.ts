@@ -26,9 +26,9 @@ const DONOR_MODEL_IDS = Object.freeze([
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
-  "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+  "gpt-5.3-codex",
   "gpt-5.2",
-  "codex-auto-review", // branding-scan: allow OpenAI model identifier
+  "codex-auto-review",
 ]);
 const EXTENDED_REASONING_MODEL_IDS = Object.freeze([
   "gpt-5.6-sol",
@@ -166,14 +166,14 @@ describe("LLM registry", () => {
       additionalSpeedTiers: ["fast"],
     });
     expect(
-      entries.find((entry) => entry.model === "codex-auto-review"), // branding-scan: allow OpenAI model identifier
+      entries.find((entry) => entry.model === "codex-auto-review"),
     ).toMatchObject({
       displayName: "AgenC Auto Review",
       visibility: "hide",
       priority: 29,
     });
     const personalityModel = entries.find(
-      (entry) => entry.model === "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+      (entry) => entry.model === "gpt-5.3-codex",
     );
     expect(personalityModel?.modelMessages?.instructionsVariables).toMatchObject({
       personalityFriendly:

@@ -175,7 +175,7 @@ describe("defaultRetryPolicy + attemptWithRetry", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// donor runtime-parity port coverage (T7 orchestrator gap fill)
+// Approval and sandbox decision coverage
 // ─────────────────────────────────────────────────────────────────────
 
 describe("defaultExecApprovalRequirement (sandboxing behavior)", () => {
@@ -736,8 +736,8 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
   });
 
   test("sandbox escalation: first attempt sandbox-denied → approval → second attempt succeeds with sandbox=off (under on_failure which wants escalation)", async () => {
-    // AgenC behavior (sandboxing.rs:290-298): `AskForApproval::OnFailure`
-    // has `wants_no_sandbox_approval == true`. Under `never` /
+    // AgenC behavior: the `on_failure` policy
+    // wants sandbox-escalation approval. Under `never` /
     // `on_request`, the orchestrator bails with the original denial
     // (covered in separate tests below). This test exercises the
     // approval → retry-with-sandbox-off pathway via the policy that
@@ -1430,7 +1430,7 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     );
   });
 
-  test("sandbox-denied under on_request policy: bails with original error, no approval (orchestrator behavior + sandboxing.rs:290-298)", async () => {
+  test("sandbox-denied under on_request policy: bails with original error, no approval", async () => {
     // AgenC behavior: `AskForApproval::OnRequest` has
     // `wants_no_sandbox_approval == false` (without network-approval
     // context). A SandboxDeniedError must propagate unchanged — the

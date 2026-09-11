@@ -3,9 +3,6 @@
  * with a cache-boundary marker separating cross-session cacheable content
  * from session-specific content.
  *
- * Source provenance and source-to-target mapping live in
- * `parity/PR-01-parity.json`; runtime source stays AgenC-branded.
- *
  * Adaptations:
  *   - tool-name interpolations map to AgenC's visible catalog
  *     (FileRead, Edit, Write, Glob, Grep, TodoWrite, exec_command)

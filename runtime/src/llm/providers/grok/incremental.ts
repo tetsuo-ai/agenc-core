@@ -2,18 +2,11 @@
  * Incremental-request bookkeeping for the Grok compatible
  * Responses API) adapter.
  *
- * Hand-port of agenc runtime `core/src/client.rs::get_incremental_items`
- * (lines 909-946) plus the `LastResponse`/`WebsocketSession` slots
- * that back it (lines 868-907, 948-960).
- *
- * Rationale (verbatim from agenc runtime `get_incremental_items` comment):
- *
- *   > Checks whether the current request is an incremental extension
- *   > of the previous request. We only reuse an incremental input
- *   > delta when non-input request fields are unchanged and `input`
- *   > is a strict extension of the previous known input.
- *   > Server-returned output items are treated as part of the
- *   > baseline so we do not resend them.
+ * Checks whether the current request is an incremental extension of
+ * the previous request. We only reuse an incremental input delta when
+ * non-input request fields are unchanged and `input` is a strict
+ * extension of the previous known input. Server-returned output items
+ * are treated as part of the baseline so we do not resend them.
  *
  * Invariants covered here:
  *   I-2  (clear `previous_response_id` on compaction): `clearResponseId()`
@@ -38,8 +31,8 @@ import type { LLMMessage } from "../../types.js";
 /**
  * Snapshot of the request properties that must match byte-for-byte
  * (excluding the `input` array) for an incremental extension to be
- * reused. Matches agenc runtime `ResponsesApiRequest` minus the `input`
- * field (which is the variable part agenc runtime clears on line 922).
+ * reused. This is the request minus the `input` field, which is the
+ * variable part.
  */
 export interface IncrementalRequestShape {
   readonly model: string;
@@ -51,9 +44,8 @@ export interface IncrementalRequestShape {
 }
 
 /**
- * Cached state for the last-completed response. agenc runtime's `LastResponse`
- * (client.rs:868-907) tracks both the `previous_response_id` (for
- * server-side state reuse) and the items the server added to output
+ * Cached state for the last-completed response. Tracks both the
+ * `previous_response_id` (for server-side state reuse) and the items the server added to output
  * (so we don't re-send them on the next incremental call).
  */
 export interface LastResponseSnapshot {
@@ -65,9 +57,9 @@ export interface LastResponseSnapshot {
 }
 
 /**
- * Result of a delta-computation attempt. Matches agenc runtime line 940-945:
- *   Some(delta)   → incremental OK, send only these
- *   None          → full resend required
+ * Result of a delta-computation attempt:
+ *   reuse  → incremental OK, send only the delta
+ *   full   → full resend required
  */
 export type IncrementalDecision =
   | { readonly kind: "reuse"; readonly delta: LLMMessage[] }
@@ -137,7 +129,7 @@ export class IncrementalTracker {
   /**
    * Decide whether to send a full or incremental payload.
    *
-   * Mirrors agenc runtime `get_incremental_items` control flow:
+   * Control flow:
    *   1. Compare non-input request shape → full on mismatch
    *   2. Build baseline = previous input + last-response items
    *   3. Current input must start with baseline

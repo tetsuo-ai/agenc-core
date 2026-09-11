@@ -1,7 +1,7 @@
 /**
- * Ports the donor apply-patch data model onto AgenC tool primitives.
+ * Apply-patch data model built on AgenC tool primitives.
  *
- * Shape differences from upstream:
+ * Design notes:
  *   - Paths are plain strings until the runtime resolves them against
  *     the active workspace root.
  *   - Parse/runtime failures throw Error subclasses instead of returning

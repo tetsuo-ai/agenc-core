@@ -1426,9 +1426,7 @@ async function readImageFile(
     rawContent: base64,
   });
 
-  // The `FunctionCallOutputContentItem` shape (port of the runtime
-  // `FunctionCallOutputContentItem`) accepts `input_image` carrying a
-  // branding-scan: allow real provider API name in data URL compatibility note
+  // The `FunctionCallOutputContentItem` shape accepts `input_image` carrying a
   // URL — providers that support the OpenAI Responses API consume data
   // URLs verbatim. The text body remains a brief summary so the runtime
   // envelope is never empty.

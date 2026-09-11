@@ -1,42 +1,32 @@
 /**
  * Network-approval DECISION layer.
  *
- * T11 Wave 1 Agent D — network approval decision layer.
- *
  * Caches approvals, dedups concurrent requests, and invokes the
  * approval resolver. The ENFORCEMENT counterpart lives at
  * `sandbox/escalation/network-approval.ts` — it converts approval
  * verdicts into sandbox-mode bits at child-process spawn.
  *
- * Both sides derive from codex `core/src/network_policy_decision.rs`; // branding-scan: allow upstream source citation
- * the split mirrors codex's policy/enforcement separation. // branding-scan: allow upstream source citation
+ * This module owns ONLY the approval-decision layer: session-scoped host
+ * cache (allow/deny), in-flight request dedup, short-circuit guards, and
+ * resolver/hook invocation. Wildcard / URL / allowlist matching is T13
+ * scope: the cache here operates on exact lowercased
+ * `host + protocol + port` triples that have already cleared any allowlist.
  *
- * Port of reference runtime `tools::network_approval::NetworkApprovalService`
- * (reference runtime source, 688 LOC). This module
- * owns ONLY the approval-decision layer: session-scoped host cache
- * (allow/deny), in-flight request dedup, short-circuit guards, and
- * resolver/hook invocation. Upstream wildcard / URL / allowlist
- * matching (`NetworkDomainPermission`) is T13 scope — the cache here
- * operates on exact lowercased `host + protocol + port` triples that
- * have already cleared any upstream allowlist.
- *
- * Intentionally not ported (see task brief):
- *   - Wildcard/URL matching — T13 upstream allowlist.
- *   - Execpolicy amendment persistence backend — T11 just calls the
+ * Intentionally out of scope here:
+ *   - Wildcard/URL matching (T13 allowlist).
+ *   - Execpolicy amendment persistence backend: this module just calls the
  *     `persistAmendment` hook; T12/T13 wires the actual on-disk write.
- *   - Wildcard process-level network attribution — callers must still pass
+ *   - Process-level network attribution: callers must still pass
  *     the host key being approved.
  *
  * Invariants:
- *   - Exact reference runtime short-circuit order: sandbox gate, then approval-policy
- *     gate (`network_approval.rs:128-133, 361-369`).
+ *   - Short-circuit order: sandbox gate, then approval-policy gate.
  *   - Session deny takes precedence over session allow in the same lookup
- *     turn (`network_approval.rs:320-331`).
+ *     turn.
  *   - Concurrent callers for the same `HostApprovalKey` are deduped: only
- *     the first caller runs the resolver; the rest wait on a `Notify`
- *     (`network_approval.rs:239-251, 333-336`).
- *   - Session-allow evicts session-deny and vice versa
- *     (`network_approval.rs:564-580`).
+ *     the first caller runs the resolver; the rest wait on the shared
+ *     pending promise.
+ *   - Session-allow evicts session-deny and vice versa.
  *
  * @module
  */
@@ -50,11 +40,11 @@ import {
 } from "../hooks/runtime-policy.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Re-declared enum ports (kept local to avoid an import cycle with
+// Re-declared enums (kept local to avoid an import cycle with
 // `session/turn-context.ts` which only has stub shapes today).
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of reference runtime `AskForApproval`. Only `"never"` is load-bearing here. */
+/** Approval policy. Only `"never"` is load-bearing here. */
 export type ApprovalPolicy =
   | "never"
   | "on_failure"
@@ -63,7 +53,7 @@ export type ApprovalPolicy =
   | "untrusted";
 
 /**
- * Port of reference runtime `SandboxPolicy` kinds. Only the `kind` field is load-bearing
+ * Sandbox policy kinds. Only the `kind` field is load-bearing
  * for network approval. Two kinds short-circuit to deny:
  *   - `danger_full_access`: no review flow — full access is already granted.
  *   - `external_sandbox`: review flow is not available outside the managed sandbox.
@@ -76,7 +66,7 @@ export interface SandboxPolicy {
     | "external_sandbox";
 }
 
-/** Port of reference runtime `ReviewDecision` enum (sum type with amendment payload). */
+/** Review decision (sum type with amendment payload). */
 export type ReviewDecision =
   | { readonly kind: "approved" }
   | { readonly kind: "approved_execpolicy_amendment" }
@@ -89,7 +79,7 @@ export type ReviewDecision =
   | { readonly kind: "abort" }
   | { readonly kind: "timed_out" };
 
-/** Port of reference runtime `NetworkPolicyAmendment`. */
+/** Amendment to the session network policy. */
 export interface NetworkPolicyAmendment {
   readonly action: "allow" | "deny";
   /** Optional human-readable justification (not load-bearing for caching). */
@@ -100,22 +90,22 @@ export interface NetworkPolicyAmendment {
 // Host approval key + decisions
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of reference runtime `NetworkApprovalProtocol` string labels. */
+/** Network protocol labels used in host approval keys. */
 export type NetworkProtocol = "http" | "https" | "socks5-tcp" | "socks5-udp";
 
-/** Port of reference runtime `HostApprovalKey`. Host must already be lowercased. */
+/** Host approval key. Host must already be lowercased. */
 export interface HostApprovalKey {
   readonly host: string;
   readonly protocol: NetworkProtocol;
   readonly port: number;
 }
 
-/** Decision returned to the caller (reference runtime `NetworkDecision`). */
+/** Decision returned to the caller. */
 export type NetworkDecision =
   | { readonly kind: "allow" }
   | { readonly kind: "deny"; readonly reason: string };
 
-/** Port of reference runtime `PendingApprovalDecision`. Internal cache-state value. */
+/** Internal cache-state value for a pending approval. */
 type PendingApprovalDecision = "allow_once" | "allow_for_session" | "deny";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -124,9 +114,8 @@ type PendingApprovalDecision = "allow_once" | "allow_for_session" | "deny";
 
 /**
  * Lowercase, trim, and strip a single trailing dot (DNS canonical form).
- * Keeps AgenC behavior: reference runtime does `host.to_ascii_lowercase()` — we add the
- * trailing-dot strip for DNS canonicalization since TypeScript-land hosts
- * may come from `URL` parsing which preserves the dot.
+ * The trailing-dot strip matters because hosts may come from `URL`
+ * parsing, which preserves the dot.
  */
 export function normalizeHost(host: string): string {
   const trimmed = host.trim().toLowerCase();
@@ -168,9 +157,8 @@ function canonicalKey(key: HostApprovalKey): HostApprovalKey {
  * key. Only the owner (first caller) runs the resolver; subsequent
  * callers `await wait()` until the owner calls `set()`.
  *
- * reference runtime uses `tokio::sync::Notify` + `Mutex<Option<...>>`. We use a
- * single promise+resolver pair — all waiters share the same pending
- * promise and are released together when `set()` fires.
+ * Implemented as a single promise+resolver pair: all waiters share the
+ * same pending promise and are released together when `set()` fires.
  */
 export class PendingHostApproval {
   private decisionValue: PendingApprovalDecision | null = null;
@@ -201,7 +189,7 @@ export class PendingHostApproval {
 
   /**
    * Record the decision and release every waiter. Idempotent: a second
-   * call with a different value is ignored (reference runtime behavior).
+   * call with a different value is ignored.
    */
   set(decision: PendingApprovalDecision): void {
     if (this.decisionValue !== null) return;
@@ -215,9 +203,7 @@ export class PendingHostApproval {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Contextual data handed to resolvers and hooks. Mirrors the fields
- * reference runtime gathers before calling `request_command_approval` or the
- * permission-request hook runtime.
+ * Contextual data handed to resolvers and hooks.
  */
 export interface NetworkApprovalContext {
   readonly host: string;
@@ -241,7 +227,7 @@ export type NetworkApprovalHookResult =
   | null;
 
 /**
- * Permission-request hook (reference runtime `run_permission_request_hooks`). Runs
+ * Permission-request hook. Runs
  * with the highest precedence, short-circuiting the resolver when any
  * hook returns a non-null result.
  */
@@ -255,8 +241,7 @@ export interface NetworkApprovalResolver {
 }
 
 /**
- * Persistence callback for network-policy amendments. reference runtime calls
- * `session.persist_network_policy_amendment` — T11 exposes this as a
+ * Persistence callback for network-policy amendments. Exposed as a
  * swap-in callback so T12/T13 can wire the real write path.
  *
  * Throwing from this callback is non-fatal for the approval flow: the
@@ -272,7 +257,7 @@ export type PersistNetworkPolicyAmendment = (
 // Request options + error classes
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of reference runtime `NetworkApprovalMode`. */
+/** Whether a request resolves inline or registers a deferred approval. */
 export type NetworkApprovalMode = "immediate" | "deferred";
 
 export interface RequestNetworkApprovalOptions {
@@ -394,8 +379,8 @@ export class NetworkApprovalService {
   // ───── Session reset ────────────────────────────────────────────────
 
   /**
-   * Clear both session caches. reference runtime `Session::reset` / `/clear` calls
-   * this on new session bootstrap. Does NOT touch in-flight pending
+   * Clear both session caches. Called on new session bootstrap and by
+   * `/clear`. Does NOT touch in-flight pending
    * approvals — those resolve themselves.
    */
   clearSessionHosts(): void {
@@ -472,7 +457,6 @@ export class NetworkApprovalService {
   // ───── Main entrypoint ──────────────────────────────────────────────
 
   /**
-   * Port of reference runtime `NetworkApprovalService::handle_inline_policy_request`.
    * Consult caches, dedup concurrent callers, and invoke hooks/resolver
    * exactly once per host key.
    *
@@ -487,13 +471,12 @@ export class NetworkApprovalService {
   async requestNetworkApproval(
     opts: RequestNetworkApprovalOptions,
   ): Promise<NetworkDecision> {
-    // Signal check — reference runtime spawns the approval task on the runtime; we
-    // proactively refuse if the caller already cancelled.
+    // Signal check: refuse up front if the caller already cancelled.
     if (opts.signal?.aborted) {
       throw makeAbortError(opts.signal);
     }
 
-    // (1) Sandbox gate — `network_approval.rs:128-133`.
+    // (1) Sandbox gate.
     if (
       opts.sandboxPolicy.kind === "danger_full_access" ||
       opts.sandboxPolicy.kind === "external_sandbox"
@@ -501,7 +484,7 @@ export class NetworkApprovalService {
       return { kind: "deny", reason: "not_allowed_in_sandbox_mode" };
     }
 
-    // (2) Approval policy gate — `network_approval.rs:361-369`.
+    // (2) Approval policy gate.
     if (opts.approvalPolicy === "never") {
       return { kind: "deny", reason: "approval_policy_never" };
     }
@@ -533,7 +516,7 @@ export class NetworkApprovalService {
     try {
       const resolved = await this.resolveApproval(normalizedKey, opts);
 
-      // Cache side effects (reference runtime `network_approval.rs:564-580`).
+      // Cache side effects.
       if (resolved === "allow_for_session") {
         this.sessionDeniedHosts.delete(stringKey);
         this.sessionApprovedHosts.add(stringKey);

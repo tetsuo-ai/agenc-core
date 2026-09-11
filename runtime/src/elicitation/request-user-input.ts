@@ -1,14 +1,11 @@
 /**
- * Ports the donor runtime's `request_user_input` tool schema,
- * mode-gating, and argument normalization onto AgenC model-facing tools.
+ * The `request_user_input` tool schema, mode-gating, and argument
+ * normalization for AgenC model-facing tools.
  *
- * Why this lives here / shape difference from upstream:
- *   - The donor tool handler calls directly into a session method. AgenC
- *     keeps the same call boundary, but exposes it through the generic
- *     `Tool` interface used by `runtime/src/bin/model-facing-tools.ts`.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Provider-specific tool declaration objects. The registry converts
+ * Design notes:
+ *   - The tool handler calls into a session method, exposed through the
+ *     generic `Tool` interface used by `runtime/src/bin/model-facing-tools.ts`.
+ *   - Provider-specific tool declaration objects are not built here. The registry converts
  *     AgenC `Tool` objects into provider declarations later.
  *
  * @module

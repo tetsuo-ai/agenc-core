@@ -48,7 +48,7 @@ input shapes, for example:
   "anyOf": [ { "required": ["cmd"] }, { "required": ["command"] } ] }
 ```
 
-Lenient providers (OpenAI / Codex) accept this. Strict ones reject the whole
+Lenient providers (OpenAI) accept this. Strict ones reject the whole
 request:
 
 ```

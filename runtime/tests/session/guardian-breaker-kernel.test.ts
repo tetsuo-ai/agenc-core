@@ -3,7 +3,7 @@
  * turn kernel.
  *
  * Covers the two responsibilities the kernel owns on behalf of the
- * breaker (upstream agenc runtime `guardian/review.rs` + `session::run_turn`):
+ * breaker:
  *
  *   1. `clearTurn(turnId)` at the top of each new turn so a leftover
  *      interrupt flag from a previous turn sharing the same sub-id
@@ -330,11 +330,9 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
     // kernel loops back for another iteration, isOpen(turnId) returns
     // true. We need the turn to loop back at least once, which means
     // the first response must request a tool call (needsFollowUp=true).
-    // Upstream's detection-site call (`record_guardian_denial` in
-    // `guardian/review.rs`) runs during tool-approval evaluation, which
-    // in AgenC is after the model response — so the "next iteration
-    // top-of-loop isOpen" check is the exact gut analog for that
-    // upstream `abort_turn_if_active` handoff.
+    // The detection-site call (`recordDenial`) runs during tool-approval
+    // evaluation, which is after the model response, so the "next iteration
+    // top-of-loop isOpen" check is where the abort handoff lands.
     const breaker = createGuardianRejectionCircuitBreaker();
     let chatCall = 0;
     const { session, events } = mkSession({
@@ -584,9 +582,8 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Detection-layer scenarios (breaker-only, without kernel) — matches the
-// patterns upstream agenc runtime tests exercise in agenc-rs/core/src/guardian/tests.rs
-// but extended to cover the detection surface contract: interleaved
+// Detection-layer scenarios (breaker-only, without kernel), covering
+// the detection surface contract: interleaved
 // non-denial calls, total-threshold precedence, turn-boundary clear.
 // ---------------------------------------------------------------------------
 
@@ -613,7 +610,7 @@ describe("GuardianRejectionCircuitBreaker — detection-layer scenarios", () => 
     const turnId = "turn-detection-total";
     // 9 deny/non-deny pairs keep consecutive at 1 (reset every pair)
     // while total climbs to 9. The 10th denial pushes total to 10,
-    // crossing MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN (agenc-rs `ten`).
+    // crossing MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN.
     for (let i = 0; i < MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN - 1; i += 1) {
       expect(breaker.recordDenial(turnId).kind).toBe("continue");
       breaker.recordNonDenial(turnId);

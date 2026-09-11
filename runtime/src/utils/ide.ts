@@ -133,8 +133,8 @@ type IdeConfig = {
 const supportedIdeConfigs: Record<IdeType, IdeConfig> = {
   cursor: {
     ideKind: 'vscode',
-    displayName: 'Cursor', // branding-scan: allow real editor display name
-    processKeywordsMac: ['Cursor Helper', 'Cursor.app'], // branding-scan: allow real editor process names
+    displayName: 'Cursor',
+    processKeywordsMac: ['Cursor Helper', 'Cursor.app'],
     processKeywordsWindows: ['cursor.exe'],
     processKeywordsLinux: ['cursor'],
   },
@@ -971,7 +971,7 @@ function getVSCodeIDECommandByParentProcess(): string | null {
         // Check for known applications and extract the path up to and including .app
         const appNames = {
           'Visual Studio Code.app': 'code',
-          'Cursor.app': 'cursor', // branding-scan: allow real editor bundle name
+          'Cursor.app': 'cursor',
           'Windsurf.app': 'windsurf',
           'Visual Studio Code - Insiders.app': 'code',
           'VSCodium.app': 'codium',
@@ -1076,7 +1076,7 @@ async function detectRunningIDEsImpl(): Promise<IdeType[]> {
     if (platform === 'macos') {
       // On macOS, use ps with process name matching
       const result = await execa(
-        'ps aux | grep -E "Visual Studio Code|Code Helper|Cursor Helper|Windsurf Helper|IntelliJ IDEA|PyCharm|WebStorm|PhpStorm|RubyMine|CLion|GoLand|Rider|DataGrip|AppCode|DataSpell|Aqua|Gateway|Fleet|Android Studio" | grep -v grep', // branding-scan: allow real editor process name
+        'ps aux | grep -E "Visual Studio Code|Code Helper|Cursor Helper|Windsurf Helper|IntelliJ IDEA|PyCharm|WebStorm|PhpStorm|RubyMine|CLion|GoLand|Rider|DataGrip|AppCode|DataSpell|Aqua|Gateway|Fleet|Android Studio" | grep -v grep',
         { shell: true, reject: false },
       )
       const stdout = result.stdout ?? ''
@@ -1091,7 +1091,7 @@ async function detectRunningIDEsImpl(): Promise<IdeType[]> {
     } else if (platform === 'windows') {
       // On Windows, use tasklist with findstr for multiple patterns
       const result = await execa(
-        'tasklist | findstr /I "Code.exe Cursor.exe Windsurf.exe idea64.exe pycharm64.exe webstorm64.exe phpstorm64.exe rubymine64.exe clion64.exe goland64.exe rider64.exe datagrip64.exe appcode.exe dataspell64.exe aqua64.exe gateway64.exe fleet.exe studio64.exe"', // branding-scan: allow real editor process name
+        'tasklist | findstr /I "Code.exe Cursor.exe Windsurf.exe idea64.exe pycharm64.exe webstorm64.exe phpstorm64.exe rubymine64.exe clion64.exe goland64.exe rider64.exe datagrip64.exe appcode.exe dataspell64.exe aqua64.exe gateway64.exe fleet.exe studio64.exe"',
         { shell: true, reject: false },
       )
       const stdout = result.stdout ?? ''
@@ -1194,7 +1194,7 @@ export function getIdeClientName(
 
 const EDITOR_DISPLAY_NAMES: Record<string, string> = {
   code: 'VS Code',
-  cursor: 'Cursor', // branding-scan: allow real editor display name
+  cursor: 'Cursor',
   windsurf: 'Windsurf',
   antigravity: 'Antigravity',
   vi: 'Vim',

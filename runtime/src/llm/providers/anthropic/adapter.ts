@@ -650,9 +650,8 @@ export class AnthropicProvider implements LLMProvider {
             // round-tripping the block back to the provider on the next
             // request, but not assistant content. Capture on the block; do
             // NOT forward through onChunk (the TUI must not display it, and
-            // it must not inflate the streaming token counter — donor
-            // parity: runtime/src/utils/messages.ts:3080-3084 explicitly
-            // excludes signatures from onUpdateLength).
+            // it must not inflate the streaming token counter; signatures
+            // are excluded from onUpdateLength).
             const block = thinkingBlocks.get(index);
             const sig = typeof delta.signature === "string" ? delta.signature : "";
             if (block && sig.length > 0) {

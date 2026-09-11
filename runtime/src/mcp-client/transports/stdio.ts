@@ -1,8 +1,6 @@
 /**
- * Ports donor CX `rmcp-client/src/stdio_server_launcher.rs`,
- * `rmcp-client/src/program_resolver.rs`, `rmcp-client/src/utils.rs`, and
- * `rmcp-client/src/rmcp_client.rs::new_stdio_client` onto AgenC's MCP SDK
- * client boundary.
+ * Stdio MCP server launcher: program resolution, child environment, and
+ * process-tree cleanup wired onto AgenC's MCP SDK client boundary.
  *
  * Why this lives here:
  *   - `connection.ts` owns transport selection; this module owns stdio

@@ -1,8 +1,8 @@
 /**
- * Ports upstream runtime `core/tests/suite/personality.rs` scenarios onto
+ * Personality scenarios covering
  * AgenC's turn loop, startup bootstrap, and model instruction helpers.
  *
- * Shape difference from upstream:
+ * Notes:
  *   - AgenC's current config file is `config.toml`; the startup migration
  *     test proves the no-config default through bootstrap instead of direct
  *     model construction.
@@ -87,7 +87,7 @@ const LOCAL_FRIENDLY_TEMPLATE =
 const LOCAL_PRAGMATIC_TEMPLATE =
   "You are a deeply pragmatic, effective software engineer.";
 const BASE_INSTRUCTIONS = "base instructions";
-const OPENAI_PERSONALITY_MODEL = "gpt-5.3-codex"; // branding-scan: allow OpenAI model identifier
+const OPENAI_PERSONALITY_MODEL = "gpt-5.3-codex";
 const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
 
 const tempRoots: string[] = [];

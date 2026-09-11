@@ -1,8 +1,7 @@
 /**
- * Ports the donor runtime request-permissions RPC shapes onto AgenC's
- * permission subsystem.
+ * Request-permissions RPC shapes for AgenC's permission subsystem.
  *
- * Why this lives here / shape difference from upstream:
+ * Why this lives here:
  *   - AgenC already has tool-approval prompts and string permission events.
  *     This module adds the structured request-permissions substrate without
  *     wiring a second public approval path into the daemon protocol.

@@ -224,7 +224,6 @@ function matchesModelFamily(model: string, pattern: RegExp): boolean {
 function isOpenAIReasoningModel(model: string): boolean {
   return isVerifiedOpenAiReasoningModel(model) || matchesModelFamily(
     model,
-    // branding-scan: allow OpenAI model family identifier
     /(?:^|[/:])(?:gpt-5|o1|o3|o4|codex|chatgpt-5)(?:$|[-_.:])/,
   );
 }

@@ -295,4 +295,3 @@ prove the checker passes after the intended change (and fails without it —
 
 - Suite author notes: [`runtime/eval/README.md`](../runtime/eval/README.md)
 - Trajectory export for training data: [`trajectory-training-data.md`](trajectory-training-data.md)
-- Agent surface contract gate (root): `npm run check:agent-surface-contract`

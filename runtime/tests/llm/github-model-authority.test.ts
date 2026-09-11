@@ -19,7 +19,7 @@ import { isModelAllowed } from "../../src/utils/model/modelAllowlist.js";
 
 const GITHUB_CATALOG = [
   "github:copilot:gpt-5-mini",
-  "github:copilot:gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+  "github:copilot:gpt-5.3-codex",
   "github:copilot:gpt-5.4",
   "github:copilot:gpt-5.4-mini",
   "github:copilot:gpt-5.4-nano",

@@ -1,11 +1,9 @@
 /**
  * RolloutItem — the per-line wrapper written to the JSONL rollout
- * file. Port of agenc runtime `protocol/src/protocol.rs` (line 2855) + the
- * 6-variant set listed in `docs/plan/agenc runtime-inventory.md §4`.
+ * file, covering the six item variants persisted to disk.
  *
  * Serialization: JSONL with `{ "type": "snake_case", "payload": ... }`
- * discriminant (matching agenc runtime's serde `tag="type" content="payload"`
- * shape). One RolloutItem per line.
+ * discriminant. One RolloutItem per line.
  *
  * On-disk compatibility aliases accepted for backward compatibility:
  *   - `task_started`  → `turn_started`
@@ -59,7 +57,7 @@ export interface SessionMemoryExtractionState {
 }
 
 /**
- * agenc runtime `SessionStateUpdate`: session-scoped mutable slots.
+ * `SessionStateUpdate`: session-scoped mutable slots.
  *
  * Every writer persists one slot per item. A walker restoring one slot must
  * therefore skip the items another writer produced instead of reading its
@@ -113,7 +111,7 @@ export type {
   ProviderReasoningReplayV2,
 } from "../llm/types.js";
 
-/** Port of agenc runtime `ResponseItem` subset used in rollout. Every history
+/** The `ResponseItem` subset used in rollout. Every history
  *  message the model sent/received lives here. */
 export interface ResponseItem {
   readonly role: "system" | "developer" | "user" | "assistant" | "tool";
@@ -149,7 +147,7 @@ export interface ToolResultIntegrityResponseItem extends ResponseItem {
   readonly toolResultIntegrity?: ToolResultIntegrity;
 }
 
-/** agenc runtime `CompactedItem` — when the conversation was compacted, this
+/** `CompactedItem`: when the conversation was compacted, this
  *  captures the summary + (optional) the replacement history that
  *  rebuilds the conversation up to the compaction boundary. The
  *  reconstruction algorithm uses `replacementHistory` as a snapshot
@@ -283,8 +281,7 @@ const KNOWN_ROLLOUT_TYPES = Object.freeze(
 
 /**
  * Compatibility-alias remapping read on deserialization so older rollouts
- * from earlier AgenC versions still parse. agenc runtime retained `task_*`
- * aliases for the same reason.
+ * from earlier AgenC versions still parse.
  */
 const ROLLOUT_LEGACY_TYPE_ALIASES: Readonly<Record<string, string>> =
   Object.freeze({

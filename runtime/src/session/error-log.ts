@@ -2,9 +2,8 @@
  * Error-log sidecar — buffered JSONL error writer with per-MCP-server
  * partitioning.
  *
- * Hand-port of agenc `src/utils/errorLogSink.ts` (235 LOC) stripped
- * of its axios/bootstrap-state dependencies. The AgenC port integrates
- * with `SidecarManager` + `DegradedStore` for I-12/I-43.
+ * Has no axios or bootstrap-state dependencies. Integrates with
+ * `SidecarManager` + `DegradedStore` for I-12/I-43.
  *
  * On-disk layout:
  *

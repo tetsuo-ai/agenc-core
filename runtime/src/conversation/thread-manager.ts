@@ -1,21 +1,12 @@
 /**
- * Ports donor runtime thread/conversation orchestration onto AgenC's
- * TypeScript session, agent, and rollout primitives.
+ * Thread/conversation orchestration over AgenC's session, agent, and
+ * rollout primitives.
  *
- * Source anchors:
- *   - `core/src/thread_manager.rs`
- *   - `core/src/codex_thread.rs` // branding-scan: allow upstream source filename
- *   - `core/src/thread_rollout_truncation.rs`
- *   - `core/src/session_startup_prewarm.rs`
- *   - `core/src/session/rollout_reconstruction.rs`
- *
- * Shape difference from upstream:
+ * Design notes:
  *   - The lower-level thread handle, rollout truncation, replay, and
  *     bootstrap prewarm pieces already live in `runtime/src/agents/` and
  *     `runtime/src/session/`. This module is the checklist-owned
  *     conversation surface that composes those pieces for the live CLI path.
- *
- * Cross-cuts deliberately NOT carried:
  *   - Provider websocket prewarm is exposed through an optional provider
  *     startup hook; current adapters that do not implement it are skipped.
  */

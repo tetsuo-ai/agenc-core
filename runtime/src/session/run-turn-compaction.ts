@@ -335,18 +335,17 @@ function isAutoCompactEnabledForNotices(): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// agenc runtime port: compaction helpers
+// Compaction helpers
 // ─────────────────────────────────────────────────────────────────────
 
-/** Reason passed to runAutoCompact. Port of agenc runtime `CompactionReason`. */
+/** Reason passed to runAutoCompact. */
 export type CompactionReason =
   "context_limit" | "model_downshift" | "manual" | "reactive_recovery";
 
-/** Phase passed to runAutoCompact. Port of agenc runtime `CompactionPhase`. */
+/** Phase passed to runAutoCompact. */
 export type CompactionPhase = "pre_turn" | "in_turn" | "post_turn";
 
-/** Whether to inject the initial context on post-compact. Port of
- *  agenc runtime `InitialContextInjection`. */
+/** Whether to inject the initial context on post-compact. */
 export type InitialContextInjection =
   "before_last_user_message" | "do_not_inject";
 
@@ -414,7 +413,7 @@ export function setAutoCompactImplForTests(impl: AutoCompactImpl | null): void {
 }
 
 /**
- * Port of agenc runtime `run_auto_compact` (turn.rs:790-818). Dispatcher that
+ * Dispatcher that
  * picks between inline and remote compact task based on provider info.
  * AgenC routes the inline path through the turn-owned compact pipeline.
  *
@@ -426,7 +425,7 @@ export function setAutoCompactImplForTests(impl: AutoCompactImpl | null): void {
  *   - When `state` is provided and compaction ran, splices the post-
  *     compact messages back into `state.messages` / `state.messagesForQuery`
  *     and stamps `state.autoCompactTracking` so the next phase sees the
- *     compacted view. (agenc runtime's pre-sampling compact runs before the
+ *     compacted view. (Pre-sampling compact runs before the
  *     first phase iteration; mutating state here is how we guarantee
  *     `prepareContext` reads the compacted view.)
  *   - Never swallows errors silently: emits `warning:auto_compact_failed`,
@@ -696,7 +695,6 @@ function shouldForceAutoCompact(
 }
 
 /**
- * Port of agenc runtime `maybe_run_previous_model_inline_compact` (turn.rs:749-788).
  * When the user switches to a model with a smaller context window and
  * total token usage reaches the new auto-compact limit, compact
  * against the PREVIOUS model's context before continuing.
@@ -709,9 +707,8 @@ export async function maybeRunPreviousModelInlineCompact(
   _totalUsageTokens: number,
   state?: TurnState,
 ): Promise<boolean> {
-  // A1 fix: agenc runtime resolves the previous model's TurnContext via
-  // `turn_context.with_model(previous_turn_settings.model, models_manager)`
-  // and reads its context_window. AgenC has no models_manager yet, so
+  // A1 fix: there is no models-manager lookup for the previous model's
+  // context window yet, so
   // we accept an optional pre-resolved `contextWindow` (and/or
   // `modelInfo`) carried alongside `previousTurnSettings.model`. The
   // new context window always comes from the CURRENT turn's
@@ -826,7 +823,7 @@ function effectivePreviousModelContextWindow(previousTurnSettings: {
 }
 
 /**
- * Port of agenc runtime `run_pre_sampling_compact` (turn.rs:712-741). Runs
+ * Runs
  * (a) previous-model inline compact on model downshift and
  * (b) auto-compact when total-usage-tokens reaches the current
  * model's auto-compact limit.

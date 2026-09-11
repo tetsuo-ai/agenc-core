@@ -1,10 +1,6 @@
 /**
  * Guardian approval review prompt and assessment parsing.
  *
- * Source parity:
- * - core/src/guardian/prompt.rs
- * - core/src/guardian/policy.md
- *
  * @module
  */
 

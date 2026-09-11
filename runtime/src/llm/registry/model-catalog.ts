@@ -1,8 +1,7 @@
 /**
- * Ports upstream runtime model catalog semantics onto AgenC's
- * provider-neutral registry.
+ * Model catalog for AgenC's provider-neutral registry.
  *
- * Shape difference from upstream:
+ * Design notes:
  *   - AgenC keeps full prompt text in the prompt layer. This catalog carries
  *     only the per-model personality template surface needed to splice the
  *     current prompt into model-specific instructions.
@@ -867,8 +866,8 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     },
     {
       provider: "openai",
-      model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
-      displayName: "gpt-5.3-codex", // branding-scan: allow OpenAI model display identifier
+      model: "gpt-5.3-codex",
+      displayName: "gpt-5.3-codex",
       contextWindow: 272_000,
       maxContextWindow: 272_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
@@ -911,7 +910,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     },
     {
       provider: "openai",
-      model: "codex-auto-review", // branding-scan: allow OpenAI model identifier
+      model: "codex-auto-review",
       displayName: "AgenC Auto Review",
       contextWindow: 272_000,
       maxContextWindow: 1_000_000,

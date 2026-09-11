@@ -1358,7 +1358,6 @@ describe("OpenAIProvider", () => {
     );
     const provider = new OpenAIProvider({
       apiKey: "sk-test",
-      // branding-scan: allow real model identifier in test fixture
       model: "gpt-5",
       fetchImpl,
     });

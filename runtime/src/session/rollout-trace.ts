@@ -1,24 +1,24 @@
 /**
  * RolloutTraceRecorder — best-effort, opt-in hot-path trace recorder.
  *
- * Hand-port of upstream agenc runtime `agenc-rs/rollout-trace/src/recorder.rs`
- * (core handle) plus the narrow slice of `writer.rs`, `raw_event.rs`,
- * `bundle.rs`, and `payload.rs` required to land the lifecycle surface.
+ * Owns the recorder handle, the file-backed trace writer, the raw event
+ * envelope, the bundle layout, and the payload references that make up the
+ * lifecycle surface.
  *
  * This recorder complements, and does NOT replace, `RolloutStore`
- * (the authoritative rollout event log). Upstream keeps them separate:
+ * (the authoritative rollout event log). The two stay separate:
  *   - `rollout`            → persistent rollout items (session state source)
  *   - `rollout_trace`      → diagnostic trace bundle (replayable post-mortem)
  *
- * Upstream surface coverage
- * =========================
+ * Surface coverage
+ * ================
  *
- * Implemented (WIRED) — methods that match the upstream public recorder surface:
+ * Implemented (WIRED): public recorder surface:
  *   - `disabled()`                              → no-op recorder
  *   - `createRootOrDisabled(threadId)`          → reads env, returns root or disabled
  *   - `createInRootForTest(root, threadId)`     → creates bundle at known root
  *   - `recordThreadStarted(metadata)`           → emits ThreadStarted lifecycle
- *   - `recordagenc runtimeTurnStarted(threadId, turnId)`→ emits agenc runtimeTurnStarted lifecycle
+ *   - `recordAgenCTurnStarted(threadId, turnId)`→ emits AgenCTurnStarted lifecycle
  *   - File-backed `TraceWriter` (manifest.json + trace.jsonl + payloads/*.json)
  *   - Raw event envelope + schema versioning
  *
@@ -27,17 +27,16 @@
  *   - `startToolDispatchTrace(...)`
  *   - `inferenceTraceContext(...)`
  *   - `compactionTraceContext(...)`
- *   - Reducer (`replay_bundle`)     → not ported. Replay / reduced-state
+ *   - Reducer (`replay_bundle`)     → not implemented. Replay / reduced-state
  *     projection lives in a separate tranche.
  *
- * Not ported (honest INCOMPLETE flags):
- *   - Upstream emits `RolloutEnded`, `ThreadEnded`, and `agenc runtimeTurnEnded` raw
- *     events from context-destruction and reducer paths, not from standalone
- *     `record_*` methods on the recorder.
+ * Not implemented (honest INCOMPLETE flags):
+ *   - `RolloutEnded`, `ThreadEnded`, and `AgenCTurnEnded` raw events would be
+ *     emitted from context-destruction and reducer paths, not from standalone
+ *     `record*` methods on the recorder.
  *
  * Context factories preserve call-site shape so downstream code can call them
- * unconditionally without branching on whether diagnostic recording is enabled,
- * matching upstream's no-op-capable design.
+ * unconditionally without branching on whether diagnostic recording is enabled.
  *
  * @module
  */
@@ -69,10 +68,10 @@ import { redactSecretsInValue } from "../secrets/index.js";
  */
 export const AGENC_ROLLOUT_TRACE_ROOT_ENV = "AGENC_ROLLOUT_TRACE_ROOT";
 
-/** Current raw event envelope schema version. Matches upstream. */
+/** Current raw event envelope schema version. */
 export const RAW_TRACE_EVENT_SCHEMA_VERSION = 1;
 
-/** Trace manifest schema version. Matches upstream. */
+/** Trace manifest schema version. */
 export const TRACE_MANIFEST_SCHEMA_VERSION = 1;
 
 const MANIFEST_FILE_NAME = "manifest.json";
@@ -80,23 +79,23 @@ const RAW_EVENT_LOG_FILE_NAME = "trace.jsonl";
 const PAYLOADS_DIR_NAME = "payloads";
 
 // ---------------------------------------------------------------------------
-// Type primitives (narrow mirror of upstream `model/*.rs`)
+// Type primitives
 // ---------------------------------------------------------------------------
 
-/** Upstream `AgentThreadId`. Kept as a bare string here. */
+/** Agent thread identifier. Kept as a bare string. */
 export type AgentThreadId = string;
 
-/** Upstream `agenc runtimeTurnId`. Kept as a bare string here. */
+/** Turn identifier. Kept as a bare string. */
 export type AgenCTurnId = string;
 
-/** Upstream `CompactionId`. Kept as a bare string here. */
+/** Compaction identifier. Kept as a bare string. */
 export type CompactionId = string;
 
 // ---------------------------------------------------------------------------
-// Raw payload + event envelope (narrow mirror of upstream `raw_event.rs`)
+// Raw payload + event envelope
 // ---------------------------------------------------------------------------
 
-/** Upstream `RawPayloadKind` — coarse role for out-of-band payload files. */
+/** Coarse role for out-of-band payload files. */
 export type RawPayloadKind =
   | "inference_request"
   | "inference_response"
@@ -111,7 +110,7 @@ export type RawPayloadKind =
   | "session_metadata"
   | "agent_result";
 
-/** Upstream `RawPayloadRef`. Bundle-relative reference to a payload file. */
+/** Bundle-relative reference to a payload file. */
 export interface RawPayloadRef {
   readonly rawPayloadId: string;
   readonly kind: RawPayloadKind;
@@ -126,7 +125,7 @@ export interface RawTraceEventContext {
 }
 
 /**
- * Narrow subset of upstream `RawTraceEventPayload`.
+ * Raw trace event payload variants.
  */
 export type RawTraceEventPayload =
   | {
@@ -209,7 +208,7 @@ export type RawTraceEventPayload =
       readonly checkpointPayload?: RawPayloadRef;
     };
 
-/** Upstream `RawTraceEvent`. */
+/** Raw trace event envelope. */
 export interface RawTraceEvent {
   readonly schemaVersion: number;
   readonly seq: number;
@@ -221,15 +220,14 @@ export interface RawTraceEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Thread-started metadata (narrow mirror of upstream `ThreadStartedTraceMetadata`)
+// Thread-started metadata
 // ---------------------------------------------------------------------------
 
 /**
  * Metadata captured once at thread/session start.
  *
- * Mirrors upstream `ThreadStartedTraceMetadata` with fields relaxed to
- * `string | undefined` because `SessionSource` and other structured types
- * are not ported yet in the gut branch.
+ * Fields are relaxed to `string | undefined` because `SessionSource` and
+ * other structured types are not modelled here yet.
  */
 export interface ThreadStartedTraceMetadata {
   readonly threadId: string;
@@ -237,7 +235,7 @@ export interface ThreadStartedTraceMetadata {
   readonly taskName?: string;
   readonly nickname?: string;
   readonly agentRole?: string;
-  /** Stringified session-source tag (upstream uses `SessionSource`). */
+  /** Stringified session-source tag. */
   readonly sessionSource?: string;
   readonly cwd: string;
   readonly rolloutPath?: string;
@@ -285,7 +283,7 @@ function buildManifest(
 /**
  * Append-only trace bundle writer.
  *
- * Mirrors upstream `TraceWriter`:
+ * Responsibilities:
  *   - writes `manifest.json`
  *   - opens `trace.jsonl` append-only
  *   - creates `payloads/<ordinal>.json` when asked for a payload ref
@@ -355,9 +353,9 @@ export class TraceWriter {
 
   /**
    * Writes a JSON payload file and returns its reference. Payload files
-   * are materialised BEFORE the event that references them, matching
-   * upstream ordering guarantees (a replay interrupted after an event is
-   * appended must never see a dangling ref).
+   * are materialised BEFORE the event that references them (a replay
+   * interrupted after an event is appended must never see a dangling
+   * ref).
    */
   writeJsonPayload(kind: RawPayloadKind, value: unknown): RawPayloadRef {
     this.ensureOpen();
@@ -429,7 +427,7 @@ export class TraceWriter {
 // Child trace contexts
 // ---------------------------------------------------------------------------
 
-/** Live/no-op-capable mirror of upstream `CodeCellTraceContext`. */
+/** Live/no-op-capable code-cell trace context. */
 export interface CodeCellTraceContext {
   readonly enabled: boolean;
   recordStarted(modelVisibleCallId?: string, source?: unknown): void;
@@ -437,7 +435,7 @@ export interface CodeCellTraceContext {
   recordEnded(status: string, result?: unknown): void;
 }
 
-/** Live/no-op-capable mirror of upstream `ToolDispatchTraceContext`. */
+/** Live/no-op-capable tool-dispatch trace context. */
 export interface ToolDispatchTraceContext {
   readonly enabled: boolean;
   recordResult(status: string, result?: unknown): void;
@@ -452,7 +450,7 @@ export interface InferenceTraceAttempt {
   recordFailed(error: unknown): void;
 }
 
-/** Live/no-op-capable mirror of upstream `InferenceTraceContext`. */
+/** Live/no-op-capable inference trace context. */
 export interface InferenceTraceContext {
   readonly enabled: boolean;
   startAttempt(request?: unknown): InferenceTraceAttempt;
@@ -465,7 +463,7 @@ export interface CompactionTraceAttempt {
   recordFailed(error: unknown): void;
 }
 
-/** Live/no-op-capable mirror of upstream `CompactionTraceContext`. */
+/** Live/no-op-capable compaction trace context. */
 export interface CompactionTraceContext {
   readonly enabled: boolean;
   startRequest(request?: unknown): CompactionTraceAttempt;
@@ -534,7 +532,7 @@ function stringField(value: unknown): string | undefined {
  *
  * Disabled handles intentionally accept the same calls as enabled handles
  * so hot-path session code can describe traceable events without repeatedly
- * branching on whether diagnostic recording is live. Mirrors upstream.
+ * branching on whether diagnostic recording is live.
  */
 export class RolloutTraceRecorder {
   private readonly writer: TraceWriter | undefined;
@@ -554,7 +552,7 @@ export class RolloutTraceRecorder {
    * Creates and starts a root trace bundle, or returns a disabled recorder.
    *
    * Trace startup is best-effort: a failure here must not make the session
-   * unusable. Mirrors upstream `create_root_or_disabled`.
+   * unusable.
    */
   static createRootOrDisabled(threadId: string): RolloutTraceRecorder {
     const root = process.env[AGENC_ROLLOUT_TRACE_ROOT_ENV];
@@ -570,8 +568,7 @@ export class RolloutTraceRecorder {
    * Creates a trace bundle in a known root directory.
    *
    * Public so integration tests can replay the exact bundle they produced
-   * without mutating process environment (mirrors upstream
-   * `create_in_root_for_test`).
+   * without mutating process environment.
    */
   static createInRootForTest(
     root: string,
@@ -627,7 +624,6 @@ export class RolloutTraceRecorder {
 
   /**
    * Emits the lifecycle event and metadata for one thread.
-   * Mirrors upstream `record_thread_started`.
    */
   recordThreadStarted(metadata: ThreadStartedTraceMetadata): void {
     if (!this.writer) return;
@@ -646,7 +642,7 @@ export class RolloutTraceRecorder {
   /**
    * Emits a turn-start lifecycle event.
    *
-   * Mirrors upstream `record_agenc runtime_turn_started`. Most production turn
+   * Most production turn
    * lifecycle wiring lives in higher-level session code; this explicit hook
    * lets trace-focused integration tests produce valid reducer inputs
    * without exercising the full session loop.
@@ -971,7 +967,7 @@ export class RolloutTraceRecorder {
 /**
  * Factory that constructs a recorder for a new session.
  *
- * Mirrors the upstream call-site shape used in session bootstrap:
+ * Call-site shape used in session bootstrap:
  * spawned child threads inherit the parent recorder; root sessions
  * create a fresh bundle from env config (or a disabled handle).
  */
@@ -980,7 +976,6 @@ export interface CreateRolloutTraceRecorderOpts {
   readonly threadId: string;
   /**
    * When provided, overrides the env-var root. Primarily for tests.
-   * Matches upstream `create_in_root_for_test`.
    */
   readonly root?: string;
   /** When true, always returns a disabled handle regardless of env. */

@@ -2351,7 +2351,6 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  // branding-scan: allow real provider identifier in test title
   it("classifies no-key generic OpenAI-compatible startup as local no-auth", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -2489,7 +2488,6 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  // branding-scan: allow real provider identifier in test title
   it("uses an explicit OpenAI-compatible key without probing native BYOK secure storage", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -4325,8 +4323,7 @@ required = true
 
   it("enforces the runtime bootstrap step ordering invariant", async () => {
     // Asserts the concrete step order the bin bootstrap is required to
-    // follow, mirroring upstream agenc runtime
-    // `core/src/session/session.rs:814-908, 931-942`:
+    // follow:
     //
     //   1. Session construction (Session instance exists).
     //   2. Rollout store mounted on the session.
@@ -4345,9 +4342,9 @@ required = true
     //      `runStartupPrewarm`).
     //
     // Steps 5 (SessionConfigured) and 6/7 (sidecar start + MCP start)
-    // specifically follow the upstream rule "Dispatch the
-    // SessionConfiguredEvent first and then report any errors"
-    // (session.rs:814) — the emit must precede the real MCP manager
+    // specifically follow the rule "Dispatch the
+    // SessionConfiguredEvent first and then report any errors":
+    // the emit must precede the real MCP manager
     // wiring.
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -4449,7 +4446,7 @@ required = true
 
       const idx = (label: string): number => ordering.indexOf(label);
 
-      // The recorded step order must match the upstream agenc runtime
+      // The recorded step order must match the bootstrap
       // contract: each step happens strictly before the next. Every
       // label must have been recorded (index >= 0).
       const mountIdx = idx("rollout_store_mounted");

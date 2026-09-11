@@ -6,8 +6,7 @@
  * user is on a model that has a "more context" sibling available
  * (Sonnet -> Sonnet 1M, Opus -> Opus 1M) and returns either a short
  * `/model <alias>` warning or a longer "Tip: you have access to ..."
- * message. The reference implementation is provider-specific and queries an
- * entitlement endpoint cached at startup.
+ * message.
  *
  * The gut runtime is multi-provider, so the gut equivalent works off
  * the `ModelsManager` catalog instead of provider-specific entitlement

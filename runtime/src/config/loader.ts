@@ -20,7 +20,6 @@
 //   - Date-time values
 //   - Hex/octal/binary integers
 //
-// branding-scan: allow upstream runtime compatibility reference
 // This is enough for AgenC's canonical config surface.
 //
 // Duplicate-key handling (TOML 1.0 §6):

@@ -5,8 +5,6 @@ on:
     paths-ignore:
       - "docs/**"
       - "README.md"
-      - "memory_todo.md"
-      - "todo.txt"
 
 concurrency:
   group: pr-fast-${{ github.event.pull_request.number || github.ref }}

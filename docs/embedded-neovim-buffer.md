@@ -739,7 +739,6 @@ npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim
 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-visual-smoke
 npm run build
 npm --workspace=@tetsuo-ai/runtime run check:tui-runtime-startup
-node scripts/check-embedded-neovim-buffer.mjs
 ```
 
 Hosted Neovim coverage is split. All five runners still run the 18-test

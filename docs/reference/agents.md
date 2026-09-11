@@ -11,7 +11,7 @@ AgenC runs concurrent agent work on two related surfaces:
 ## Multi-agent v2 tool surface
 
 Implementation: `runtime/src/agents/v2/`. Parity notes:
-[`runtime/src/agents/v2/PARITY.md`](../../runtime/src/agents/v2/PARITY.md).
+[`runtime/src/agents/v2/README.md`](../../runtime/src/agents/v2/README.md).
 
 The six v2 tools are registered by `createMultiAgentV2Tools()`
 (`runtime/src/agents/v2/index.ts`). CSV job tools are a sibling registration
@@ -616,6 +616,5 @@ does not abort the session.
 
 ## Validation
 
-- Agent surface contract: `npm run check:agent-surface-contract`
 - Multi-agent / tool-registry suites under `runtime/tests/`
 - Eval gate after turn-loop changes: see [`../agent-eval-reports.md`](../agent-eval-reports.md)

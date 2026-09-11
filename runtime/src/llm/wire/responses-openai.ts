@@ -427,7 +427,6 @@ export function parseOpenAIResponsesResponse(
           arguments: String(item.arguments ?? "{}"),
         }),
       ),
-    // branding-scan: allow real OpenAI provider identifier
     "OpenAI Responses response emitted invalid function_call",
   );
 

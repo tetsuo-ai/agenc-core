@@ -529,10 +529,9 @@ describe("ToolRouter", () => {
   });
 
   test("toolSupportsParallel hard-false for non-Function/Freeform spec variants (router behavior)", () => {
-    // Donor runtime `ToolSpec::Namespace | ToolSpec::ToolSearch |
-    // ToolSpec::LocalShell | ToolSpec::ImageGeneration |
-    // ToolSpec::WebSearch` are hard-coded non-parallel regardless of
-    // the `supports_parallel_tool_calls` flag.
+    // Namespace / tool-search / local-shell / image-generation /
+    // web-search spec kinds are hard-coded non-parallel regardless of
+    // the `supportsParallelToolCalls` flag.
     const shellLike = (name: string): Tool => ({
       name,
       description: "",

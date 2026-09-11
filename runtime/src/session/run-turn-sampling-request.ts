@@ -34,7 +34,7 @@ import { getSessionPermissionInstructions } from "./permission-instructions.js";
 const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
 
 // ─────────────────────────────────────────────────────────────────────
-// agenc runtime port: prompt + tool building
+// Prompt + tool building
 // ─────────────────────────────────────────────────────────────────────
 
 export interface BuiltPrompt {
@@ -72,9 +72,8 @@ function inferParallelToolCallSupport(ctx: TurnContext): boolean {
 }
 
 /**
- * Port of agenc runtime `build_prompt` (turn.rs:946-976). Builds the per-
- * request prompt shape. `dynamicTools[].deferLoading` filters out
- * deferred tools per agenc runtime 952-966.
+ * Builds the per-request prompt shape. `dynamicTools[].deferLoading`
+ * filters out deferred tools.
  */
 export function buildPrompt(
   input: ReadonlyArray<LLMMessage>,
@@ -108,11 +107,10 @@ export function buildPrompt(
 }
 
 /**
- * Port of agenc runtime `built_tools` (turn.rs:1130-1268). Assembles the
- * tool list visible to the model. agenc runtime threads through connectors,
- * MCP tools, skill injections, plan-mode restrictions, etc. AgenC's
+ * Assembles the tool list visible to the model. The
  * T5 version reads the static tool registry; T7 + T9 + T10 add the
- * dynamic filters as their subsystems land.
+ * dynamic filters (connectors, MCP tools, skill injections, plan-mode
+ * restrictions) as their subsystems land.
  */
 
 const DIRECT_MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/gu;
