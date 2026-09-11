@@ -4,6 +4,7 @@
  * @module
  */
 
+import { createHash } from "node:crypto";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -63,6 +64,8 @@ export interface ChatCompletionsRequestOptions {
   readonly options?: LLMChatOptions;
   readonly maxTokens?: number;
   readonly maxTokenField?: ChatCompletionsMaxTokenField;
+  /** Trusted managed attempt identity; never serialized into the request body. */
+  readonly toolCallIdNamespace?: string;
   /**
    * Per-provider capability hints. Adapters populate this so the
    * wire builder can strip fields the destination provider rejects.
@@ -844,7 +847,7 @@ export function parseChatCompletionsResponse(
   }
   const acceptsToolCalls =
     finishReason === "stop" || finishReason === "tool_calls";
-  const toolCalls = acceptsToolCalls && Array.isArray(message.tool_calls)
+  const wireToolCalls = acceptsToolCalls && Array.isArray(message.tool_calls)
     ? normalizeToolCallsStrict(
       (message.tool_calls as Array<Record<string, unknown>>).map(
         (toolCall): LLMToolCall => {
@@ -883,6 +886,13 @@ export function parseChatCompletionsResponse(
       "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];
+  // Some routed providers restart at call_0 for every response. Keep canonical
+  // history globally unique while preserving IDs across retries of one attempt.
+  // Validate the original response first so duplicate IDs within it still fail.
+  const toolCalls = request.toolCallIdNamespace === undefined ? wireToolCalls :
+    wireToolCalls.map(call => ({...call,id:"call_" + createHash("sha256")
+      .update(request.toolCallIdNamespace!).update("\0").update(call.id)
+      .digest("hex").slice(0,32)}));
   const reasoningContentField =
     request.providerCapabilityHints?.reasoningContentField ??
     "reasoning_content";

@@ -758,6 +758,7 @@ export class OpenAIProvider implements LLMProvider {
           maxTokens: this.resolveRequestMaxTokens(options),
           maxTokenField: this.resolveChatCompletionsMaxTokenField(),
           providerCapabilityHints,
+          toolCallIdNamespace: headers?.["Idempotency-Key"],
         });
       }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
     } catch (error) {
@@ -1360,6 +1361,7 @@ export class OpenAIProvider implements LLMProvider {
       maxTokens: this.resolveRequestMaxTokens(options),
       maxTokenField: this.resolveChatCompletionsMaxTokenField(),
       providerCapabilityHints: streamCapabilityHints,
+      toolCallIdNamespace: headers?.["Idempotency-Key"],
     };
     assertProviderStructuredOutputCompatibility({
       providerName: this.name,

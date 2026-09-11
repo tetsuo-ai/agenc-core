@@ -84,13 +84,14 @@ describe("AgenC DeepSeek promotion wire", () => {
       const first = await run([{ role: "user", content: "Read marker" }], {
         reasoningEffort: effort, parallelToolCalls: true, toolChoice: "required", maxOutputTokens: 256,
       });
-      expect(first.toolCalls).toEqual([{ id: "call_marker", name: "read_marker", arguments: "{}" }]);
+      expect(first.toolCalls).toEqual([{ id: expect.stringMatching(/^call_[a-f0-9]{32}$/u), name: "read_marker", arguments: "{}" }]);
+      const markerCallId = first.toolCalls[0]!.id;
       const final = await run([
         { role: "user", content: "Read marker" },
         { role: "assistant", content: "", toolCalls: first.toolCalls,
           providerReasoningContent: first.providerReasoningContent,
           providerReasoningProvenance: first.providerReasoningProvenance },
-        { role: "tool", content: "marker", toolCallId: "call_marker", toolName: "read_marker" },
+        { role: "tool", content: "marker", toolCallId: markerCallId, toolName: "read_marker" },
         ...(tail === "none" ? [] : [{ role: "user" as const, content: tail === "reminder"
           ? "<system-reminder>Continue the current task using tool results.</system-reminder>"
           : "Now verify the marker with the command tool.",
@@ -100,7 +101,7 @@ describe("AgenC DeepSeek promotion wire", () => {
       expect(bodies[0]).toMatchObject({ model, max_tokens: 256, reasoning_effort: effort });
       expect(bodies[1].reasoning_effort).toBe(effort);
       expect(bodies[1].messages.find((row: any) => row.role === "assistant").reasoning).toBe("Read the synthetic marker.");
-      expect(bodies[1].messages.find((row: any) => row.role === "tool").tool_call_id).toBe("call_marker");
+      expect(bodies[1].messages.find((row: any) => row.role === "tool").tool_call_id).toBe(markerCallId);
       expect(bodies[1].messages.at(-1).role).toBe(tail === "user" ? "user" : "tool");
       if (tail === "reminder") {
         expect(bodies[1].messages.at(-1).content).toContain("marker\n\n<runtime-context>");

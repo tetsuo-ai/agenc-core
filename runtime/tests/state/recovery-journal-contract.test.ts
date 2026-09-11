@@ -22,6 +22,7 @@ import {
 } from "./recovery-journal-schema.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 import { StateThreadRepository } from "./threads.js";
+import { RUN_RUNTIME_REASONING_EFFORTS } from "../../src/contracts/run-contracts.js";
 
 const temporaryRoots: string[] = [];
 
@@ -32,6 +33,28 @@ afterEach(() => {
 });
 
 describe("strict canonical journal contract", () => {
+  it.each(RUN_RUNTIME_REASONING_EFFORTS)("replays %s in durable settings and both turn-context carriers", (reasoningEffort) => {
+    const context = {
+      cwd: "/synthetic", approvalPolicy: "never", sandboxPolicy: "danger-full-access",
+      model: "deepseek-v4-pro", collaborationMode: {model: "deepseek-v4-pro", reasoningEffort},
+    };
+    const settings = {
+      runId: "strict-test", epoch: 1, previousSettingsEventId: null, rollbackOfSettingsEventId: null,
+      reason: "initial", changedAt: "2026-09-11T00:00:00.000Z", permissionMode: "default",
+      prePlanMode: null, autoModeActive: false, autoModeAvailable: false,
+      bypassPermissionsModeAvailable: false, bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null, model: "deepseek-v4-pro", provider: "deepseek",
+      profile: null, reasoningEffort, modelVerbosity: null, serviceTier: null, hooksDisabled: false,
+    };
+    const journal = validEvent(1, "run_runtime_settings_changed", settings) +
+      validEvent(2, "turn_context", context) + JSON.stringify({type:"turn_context",payload:context,eventVersion:1}) + "\n";
+    expect(validateCanonicalJournalText(journal).recordCount).toBe(3);
+    expect(isCanonicalEventPayload("run_runtime_settings_changed", {...settings,reasoningEffort:"unknown-effort"})).toBe(false);
+    const invalidContext = {...context,collaborationMode:{...context.collaborationMode,reasoningEffort:"unknown-effort"}};
+    expect(isCanonicalEventPayload("turn_context", invalidContext)).toBe(false);
+    expect(isCanonicalRolloutPayload("turn_context", invalidContext)).toBe(false);
+  });
+
   it("accepts sequenced and explicit legacy format lanes", async () => {
     const catalog = await openFndFixtureCatalog();
     const sequenced = validateCanonicalJournalBytes(
