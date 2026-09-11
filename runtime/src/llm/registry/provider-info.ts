@@ -694,10 +694,16 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   zai: mergeDerivedProviderModels("zai"),
   "zai-coding-plan": mergeDerivedProviderModels("zai-coding-plan"),
   kimi: mergeDerivedProviderModels("kimi"),
+  // Mirrors the curated rows of GEMINI_THINKING_MODELS: every id here has a
+  // verified thinking contract, so an effort never dies at request build.
   gemini: Object.freeze([
     "gemini-3.1-pro-preview",
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
   ]),
   mistral: Object.freeze(["mistral-medium-latest"]),

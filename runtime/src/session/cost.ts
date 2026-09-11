@@ -161,6 +161,13 @@ const COST_TIER_GEMINI_3_FLASH_LITE = {
   inputUsdPer1K: 0.0003,
   outputUsdPer1K: 0.0025,
 } as const;
+// 3.1 Flash Lite $0.25/$1.50 per M (openrouter.ai/api/v1/models pass-through
+// of Google's list price, 2026-09-11; ai.google.dev's pricing page needs a
+// sign-in from this host).
+const COST_TIER_GEMINI_3_1_FLASH_LITE = {
+  inputUsdPer1K: 0.00025,
+  outputUsdPer1K: 0.0015,
+} as const;
 const COST_TIER_DEEPSEEK_V4_FLASH: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.00014,
   outputUsdPer1K: 0.00028,
@@ -546,12 +553,18 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // $0.30/$2.50.
     "gemini:gemini-3.1-pro-preview": COST_TIER_GEMINI_3_1_PRO,
     "gemini-3.1-pro-preview": COST_TIER_GEMINI_3_1_PRO,
+    // 3.8 Flash lists at the same $0.75/$3.75 as 3.7 (openrouter pass-through
+    // of Google's price, 2026-09-11).
+    "gemini:gemini-3.8-flash": COST_TIER_GEMINI_3_FLASH,
+    "gemini-3.8-flash": COST_TIER_GEMINI_3_FLASH,
     "gemini:gemini-3.7-flash": COST_TIER_GEMINI_3_FLASH,
     "gemini-3.7-flash": COST_TIER_GEMINI_3_FLASH,
     "gemini:gemini-3.6-flash": COST_TIER_GEMINI_3_FLASH,
     "gemini-3.6-flash": COST_TIER_GEMINI_3_FLASH,
     "gemini:gemini-3.5-flash": COST_TIER_GEMINI_3_FLASH,
     "gemini-3.5-flash": COST_TIER_GEMINI_3_FLASH,
+    "gemini:gemini-3.1-flash-lite": COST_TIER_GEMINI_3_1_FLASH_LITE,
+    "gemini-3.1-flash-lite": COST_TIER_GEMINI_3_1_FLASH_LITE,
     "gemini:gemini-3.5-flash-lite": COST_TIER_GEMINI_3_FLASH_LITE,
     "gemini-3.5-flash-lite": COST_TIER_GEMINI_3_FLASH_LITE,
     "mistral:mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
