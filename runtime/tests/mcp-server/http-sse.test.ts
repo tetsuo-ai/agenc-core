@@ -882,4 +882,48 @@ describe("MCP HTTP/SSE server transport", () => {
       await server.close();
     }
   });
+
+  test("close ends live streams, is idempotent, and refuses later connects", async () => {
+    const transport = new McpHttpSseServerTransport({
+      serverFactory: () => new McpServerFramework(),
+      streamableIdleMs: 60_000,
+    });
+    const server = await startServer(transport);
+    const legacy = await openSse(`${server.baseUrl}/sse`);
+    await withTimeout(legacy.nextEvent());
+    const initialize = await fetch(`${server.baseUrl}/mcp`, {
+      method: "POST",
+      headers: streamablePostHeaders(),
+      body: JSON.stringify(request(1, "initialize")),
+    });
+    const sessionId = initialize.headers.get("mcp-session-id");
+    expect(sessionId).toEqual(expect.any(String));
+    const streamable = await openSse(
+      `${server.baseUrl}/mcp?sessionId=${sessionId}`,
+    );
+    try {
+      expect(legacy.response.statusCode).toBe(200);
+      expect(streamable.response.statusCode).toBe(200);
+      expect(transport.snapshots()).toHaveLength(2);
+
+      transport.close();
+      transport.close();
+      expect(transport.snapshots()).toHaveLength(0);
+
+      const refusedLegacy = await fetch(`${server.baseUrl}/sse`);
+      expect(refusedLegacy.status).toBe(503);
+      await expect(refusedLegacy.text()).resolves.toContain("shutting down");
+
+      const refusedInit = await fetch(`${server.baseUrl}/mcp`, {
+        method: "POST",
+        headers: streamablePostHeaders(),
+        body: JSON.stringify(request(2, "initialize")),
+      });
+      expect(refusedInit.status).toBe(503);
+    } finally {
+      legacy.close();
+      streamable.close();
+      await server.close();
+    }
+  });
 });

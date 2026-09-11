@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -570,4 +571,43 @@ describe("mcp server start config", () => {
       "only binds to loopback hosts",
     );
   });
+
+  test("close settles with a live SSE client and ignores a second close", async () => {
+    const started = await startMcpSseServe({
+      transport: "sse",
+      host: "127.0.0.1",
+      port: 0,
+    });
+    const sseUrl = new URL("/sse", started.url).href;
+    const live = await new Promise<{
+      readonly statusCode: number;
+      readonly ended: Promise<void>;
+    }>((resolve, reject) => {
+      const req = httpRequest(
+        sseUrl,
+        { headers: { accept: "text/event-stream" } },
+        (response) => {
+          response.resume();
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            ended: new Promise((done) => {
+              response.once("end", () => done());
+              response.once("close", () => done());
+            }),
+          });
+        },
+      );
+      req.once("error", reject);
+      req.end();
+    });
+    expect(live.statusCode).toBe(200);
+    const first = started.close();
+    const second = started.close();
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).resolves.toBeUndefined();
+    await live.ended;
+    await expect(
+      fetch(sseUrl, { headers: { accept: "text/event-stream" } }),
+    ).rejects.toThrow();
+  }, 2000);
 });
