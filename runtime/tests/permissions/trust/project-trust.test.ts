@@ -3,12 +3,14 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { readFileSync as readFileSyncNode } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { isPathTrusted } from "../../../src/utils/config.js";
 
@@ -28,6 +30,9 @@ import {
   trustedProjectsPath,
 } from "./project-trust.js";
 
+function readFileSyncUtf8(path: string): string {
+  return readFileSyncNode(path, "utf8");
+}
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), "agenc-project-trust-"));
 }
@@ -35,6 +40,21 @@ function mkTmp(): string {
 function deadPid(): number {
   return 2_147_483_647;
 }
+
+/**
+ * Whether the temp volume treats two spellings of a name as one directory.
+ * Decided once, at load, from a real probe rather than from the platform
+ * name: a case-sensitive APFS volume exists, and so does case-insensitive
+ * ext4 with casefold.
+ */
+const caseProbe = mkdtempSync(join(tmpdir(), "agenc-case-probe-"));
+mkdirSync(join(caseProbe, "MixedCase"));
+const volumeIgnoresCase =
+  existsSync(join(caseProbe, "mixedcase")) &&
+  statSync(join(caseProbe, "mixedcase")).ino === statSync(join(caseProbe, "MixedCase")).ino;
+afterAll(() => {
+  rmSync(caseProbe, { recursive: true, force: true });
+});
 
 describe("project trust store", () => {
   let home = "";
@@ -53,6 +73,36 @@ describe("project trust store", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test.skipIf(!volumeIgnoresCase)(
+    "a project trusted under one spelling is trusted under every spelling of the same directory",
+    () => {
+      // Observed on a default macOS disk: the app trusted /Users/x/agenc,
+      // the spelling it had stored, and a shell opening the same folder
+      // reported the on-disk /Users/x/AgenC, which the store then refused
+      // with "project is not trusted". Node's JS realpath keeps the case it
+      // is handed; three spellings of one inode canonicalized to three
+      // different strings. The store now uses the native realpath, which
+      // returns the on-disk spelling for all of them.
+      const stored = join(repo, "MixedCase");
+      mkdirSync(stored);
+      mkdirSync(join(stored, ".git"));
+      const spelledDifferently = join(repo, "mixedcase");
+      const upperCased = join(repo, "MIXEDCASE");
+      expect(statSync(spelledDifferently).ino).toBe(statSync(stored).ino);
+
+      trustProjectSync({ agencHome: home, cwd: stored });
+
+      expect(isProjectTrustedSync({ agencHome: home, cwd: spelledDifferently })).toBe(true);
+      expect(isProjectTrustedSync({ agencHome: home, projectRoot: upperCased })).toBe(true);
+      // And trusting it again under another spelling records nothing new:
+      // one directory is one entry, whatever it was called.
+      trustProjectSync({ agencHome: home, cwd: upperCased });
+      expect(
+        JSON.parse(readFileSyncUtf8(trustedProjectsPath({ agencHome: home }))).trustedProjects,
+      ).toHaveLength(1);
+    },
+  );
 
   test("missing trust file means untrusted", async () => {
     expect(await readTrustedProjects({ agencHome: home })).toEqual({

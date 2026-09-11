@@ -92,7 +92,17 @@ export function trustedProjectsPath(options: ProjectTrustPathOptions = {}): stri
 function canonicalizePathSync(path: string): string {
   const absolute = resolve(path);
   try {
-    return realpathSync(absolute);
+    // The native realpath, not Node's JS one. On a case-insensitive volume
+    // (every default macOS disk, most Windows ones) the JS implementation
+    // hands back whatever case it was given, so "/Users/x/agenc" and
+    // "/Users/x/AgenC" canonicalize to two different strings for one
+    // directory, and a project trusted under the spelling the app stored is
+    // refused when a shell, which reports the on-disk case, opens the same
+    // folder: "project is not trusted: /Users/x/AgenC". libc's realpath
+    // returns the on-disk spelling for every input, which is the identity
+    // this comparison is meant to capture. Measured on this machine: three
+    // spellings, one inode, three JS results, one native result.
+    return realpathSync.native(absolute);
   } catch {
     return absolute;
   }
