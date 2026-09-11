@@ -96,6 +96,12 @@ export interface ChatCompletionsCapabilityHints {
   readonly reasoningContentField?: "reasoning_content" | "reasoning";
   /** Older compatible runtimes may emit the legacy name while replay uses canonical. */
   readonly reasoningContentFallbackField?: "reasoning_content" | "reasoning";
+  /**
+   * MiniMax inlines thinking in `content` behind think markers unless
+   * `reasoning_split` is set; with it the thinking arrives in
+   * `reasoning_content`, where the tool turn can replay it.
+   */
+  readonly reasoningSplit?: boolean;
   /** vLLM receives Jinja thinking controls inside chat_template_kwargs. */
   readonly usesVllmThinkingTemplate?: boolean;
   /**
@@ -109,9 +115,13 @@ export interface ChatCompletionsCapabilityHints {
   readonly replaysReasoningContentOnlyForIntactHistory?: boolean;
   /** Canonical destination required for opaque reasoning replay. */
   readonly reasoningContentProvenance?: ProviderReasoningProvenance;
-  /** Provider-native nested thinking configuration for always-on reasoning. */
+  /**
+   * Provider-native nested thinking configuration. `enabled` is the always-on
+   * form (DeepSeek, Z.AI, Kimi). `adaptive` is MiniMax-M3's two-position
+   * switch: the wire sends `disabled` for a `low` effort, `adaptive` otherwise.
+   */
   readonly thinkingConfig?: {
-    readonly type: "enabled";
+    readonly type: "enabled" | "adaptive";
     readonly clearThinking?: boolean;
     readonly keep?: "all";
   };
@@ -414,6 +424,9 @@ export function chatCompletionsCapabilityHintsForProvider(
       ?.supportsImageInput === true;
   const isZai = slug === "zai" || slug === "zai-coding-plan";
   const isKimi = slug === "kimi";
+  const isMinimax = slug === "minimax";
+  const isMinimaxM3 =
+    isMinimax && /(?:^|[/:])minimax-m3(?:$|[-_.:])/i.test(model ?? "");
   const isKimiK3 = isKimi && normalizedModel === "kimi-k3";
   const isKimiK27 =
     isKimi && /^kimi-k2\.7-code(?:-highspeed)?$/u.test(normalizedModel);
@@ -617,7 +630,8 @@ export function chatCompletionsCapabilityHintsForProvider(
     slug === "qwen" ||
     slug === "qwen-token-plan" ||
     slug === "cerebras" ||
-    isZai
+    isZai ||
+    isMinimax
       ? {
           toolResultImagePolicy: acceptsToolResultImages
             ? ("relay_as_user" as const)
@@ -669,6 +683,23 @@ export function chatCompletionsCapabilityHintsForProvider(
           structuredOutputContract: "zai_json_object" as const,
           ...(acceptsToolResultImages
             ? { imageInputContract: "zai_flash" as const }
+            : {}),
+        }
+      : {}),
+    ...(isMinimax
+      ? {
+          // MiniMax inlines thinking in `content` behind think markers by
+          // default. reasoning_split moves it to reasoning_content, and the
+          // docs want thinking preserved unchanged in later turns, above all
+          // in tool-use conversations, so every same-route turn replays it
+          // (the Qwen and Kimi shape, not Z.AI's adjacent-only rule: a
+          // runtime reminder after a tool result must not drop the chain).
+          reasoningSplit: true,
+          replaysReasoningContent: true,
+          reasoningContentField: "reasoning_content" as const,
+          // Only M3 has the thinking switch; M2.x always think.
+          ...(isMinimaxM3
+            ? { thinkingConfig: { type: "adaptive" as const } }
             : {}),
         }
       : {}),

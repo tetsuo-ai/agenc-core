@@ -1,5 +1,5 @@
 /**
- * LIVE: the Sora and MiniMax Hailuo video backends against the real APIs.
+ * LIVE: the Sora, MiniMax Hailuo and MiniMax H3 video backends against the real APIs.
  *
  * Run:
  *   OPENAI_API_KEY=… MINIMAX_API_KEY=… \
@@ -77,6 +77,45 @@ describe.skipIf(!process.env.OPENAI_API_KEY)("Sora video, live", () => {
       duration: 4,
       size: "720x1280",
     });
+    const bytes = await readFile(parsed.path);
+    expect(bytes.length).toBeGreaterThan(10_000);
+    expect(bytes.subarray(4, 8).toString("hex")).toBe(MP4_FTYP);
+  }, 660_000);
+});
+
+describe.skipIf(!process.env.MINIMAX_API_KEY)("MiniMax H3 video (v2 task API), live", () => {
+  it("submits to /v2, polls the task and saves a real MP4", async () => {
+    // H3-Max at 480P for 5 seconds is the cheapest clip the v2 route sells.
+    const { result } = await generate({
+      provider: "minimax",
+      model: "MiniMax-M3",
+      credential: "MINIMAX_API_KEY",
+      args: {
+        model: "MiniMax-H3-Max",
+        duration: 5,
+        resolution: "480P",
+        aspect_ratio: "16:9",
+      },
+    });
+
+    expect(result.isError, String(result.content)).toBeUndefined();
+    const parsed = JSON.parse(result.content) as {
+      model: string;
+      duration: number;
+      resolution: string;
+      ratio: string;
+      request_id: string;
+      url: string;
+      path: string;
+    };
+    expect(parsed).toMatchObject({
+      model: "MiniMax-H3-Max",
+      duration: 5,
+      resolution: "480P",
+      ratio: "16:9",
+    });
+    expect(parsed.request_id.length).toBeGreaterThan(0);
+    expect(new URL(parsed.url).hostname.endsWith(".minimax.io")).toBe(true);
     const bytes = await readFile(parsed.path);
     expect(bytes.length).toBeGreaterThan(10_000);
     expect(bytes.subarray(4, 8).toString("hex")).toBe(MP4_FTYP);

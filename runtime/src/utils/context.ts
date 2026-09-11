@@ -246,7 +246,8 @@ function resolveCatalogContextWindow(
     normalizedProvider !== 'grok' &&
     normalizedProvider !== 'zai' &&
     normalizedProvider !== 'zai-coding-plan' &&
-    normalizedProvider !== 'kimi'
+    normalizedProvider !== 'kimi' &&
+    normalizedProvider !== 'minimax'
   ) {
     return undefined
   }
@@ -320,7 +321,8 @@ export function getModelMaxOutputTokensForContext(
   if (
     normalizedProvider === 'zai' ||
     normalizedProvider === 'zai-coding-plan' ||
-    normalizedProvider === 'kimi'
+    normalizedProvider === 'kimi' ||
+    normalizedProvider === 'minimax'
   ) {
     const catalog = resolveModelCatalogMetadata({ provider: normalizedProvider, model })
     if (catalog?.maxOutputTokens !== undefined) {

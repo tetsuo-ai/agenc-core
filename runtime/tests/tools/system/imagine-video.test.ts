@@ -564,6 +564,173 @@ describe("ImagineVideo execute", () => {
     });
   });
 
+  it("generates with MiniMax H3 on the v2 task API and downloads from its CDN", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-h3-"));
+    let polls = 0;
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u === "https://api.minimax.io/v2/video_generation" && init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ task_id: "h3-task-1" }),
+        };
+      }
+      if (u === "https://api.minimax.io/v2/query/video_generation/h3-task-1") {
+        polls += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            task: polls < 2
+              ? { model: "MiniMax-H3", status: "running" }
+              : {
+                  model: "MiniMax-H3",
+                  status: "succeeded",
+                  content: { url: "https://video-product.cdn.minimax.io/h3.mp4" },
+                  resolution: "768P",
+                  duration: 4,
+                  ratio: "16:9",
+                },
+          }),
+        };
+      }
+      if (u === "https://video-product.cdn.minimax.io/h3.mp4") {
+        return new Response(
+          Uint8Array.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    }) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () =>
+        ({
+          services: {
+            provider: createProvider("minimax", {
+              apiKey: "minimax-session-key",
+              model: "MiniMax-M3",
+            }),
+          },
+        }) as unknown as Session,
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+      pollIntervalMs: 1,
+      pollTimeoutMs: 5_000,
+    });
+
+    const result = await tool.execute({
+      prompt: "a lighthouse at dusk",
+      model: "MiniMax-H3",
+      duration: 4,
+      aspect_ratio: "16:9",
+    });
+
+    expect(result.isError, String(result.content)).toBeUndefined();
+    const parsed = JSON.parse(result.content) as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      model: "MiniMax-H3",
+      request_id: "h3-task-1",
+      duration: 4,
+      resolution: "768P",
+      ratio: "16:9",
+      modality: "text",
+    });
+    expect((await readFile(parsed.path as string)).length).toBeGreaterThan(0);
+    const submit = (fetchImpl as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls[0]!;
+    const init = submit[1] as RequestInit;
+    expect((init.headers as Record<string, string>).authorization).toBe(
+      "Bearer isolated-minimax-key",
+    );
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: "MiniMax-H3",
+      content: [{ type: "text", text: "a lighthouse at dusk" }],
+      resolution: "768P",
+      duration: 4,
+      ratio: "16:9",
+    });
+  });
+
+  it("clamps H3-Max controls to what the model renders and names the drops", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.endsWith("/v2/video_generation")) {
+        return { ok: true, status: 200, json: async () => ({ task_id: "t" }) };
+      }
+      if (u.includes("/v2/query/video_generation/")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            task: {
+              status: "succeeded",
+              content: { url: "https://video-product.cdn.minimax.io/max.mp4" },
+            },
+          }),
+        };
+      }
+      return new Response(Uint8Array.from([0x00, 0x01]), { status: 200 });
+    }) as unknown as typeof fetch;
+    const root = await mkdtemp(join(tmpdir(), "imagine-h3-max-"));
+    const tool = createImagineVideoTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => null,
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+      pollIntervalMs: 1,
+      pollTimeoutMs: 5_000,
+    });
+
+    // 2K and a 4 second clip exist on H3 only; 4:3 is fine, "wide" is not.
+    const result = await tool.execute({
+      prompt: "x",
+      model: "MiniMax-H3-Max",
+      resolution: "2K",
+      duration: 2,
+      aspect_ratio: "wide",
+    });
+
+    expect(result.isError, String(result.content)).toBeUndefined();
+    const parsed = JSON.parse(result.content) as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      model: "MiniMax-H3-Max",
+      resolution: "768P",
+      duration: 5,
+      ratio: "16:9",
+      ignoredControls: ["resolution", "aspect_ratio"],
+    });
+  });
+
+  it("surfaces the v2 error body when MiniMax rejects an H3 request", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 402,
+      json: async () => ({
+        type: "error",
+        error: {
+          type: "insufficient_balance_error",
+          message: "insufficient balance (1008)",
+        },
+      }),
+    })) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => null,
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "x", model: "MiniMax-H3" });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("insufficient balance (1008)");
+  });
+
   it("refuses a MiniMax download that leaves MiniMax's hosts", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-hailuo-host-"));
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {

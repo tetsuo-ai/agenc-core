@@ -74,6 +74,27 @@ describe("splitLeadingThinkBlock", () => {
       reasoning: "never stopped",
     });
   });
+
+  test("drops a bare leading closer a provider left behind after splitting the block out", () => {
+    // MiniMax with reasoning_split streams the thinking on reasoning_content
+    // and still emits the closer in content.
+    expect(splitLeadingThinkBlock("</think>\n\n# Lighthouse Notes")).toEqual({
+      text: "# Lighthouse Notes",
+      reasoning: "",
+    });
+    expect(splitLeadingThinkBlock(" ◁/think▷Answer.")).toEqual({
+      text: "Answer.",
+      reasoning: "",
+    });
+  });
+
+  test("a closer later in the message stays visible", () => {
+    const content = "Close it with </think> at the end of the block.";
+    expect(splitLeadingThinkBlock(content)).toEqual({
+      text: content,
+      reasoning: "",
+    });
+  });
 });
 
 describe("ThinkTagStreamFilter", () => {
@@ -134,6 +155,25 @@ describe("ThinkTagStreamFilter", () => {
     });
   });
 
+  test("drops a bare leading closer, whole or split across chunks", () => {
+    expect(runFilter(["</think>", "\n\n# Lighthouse", " Notes"])).toEqual({
+      text: "# Lighthouse Notes",
+      reasoning: "",
+    });
+    expect(runFilter(["</th", "ink>", "answer"])).toEqual({
+      text: "answer",
+      reasoning: "",
+    });
+    expect(runFilter(["◁/thi", "nk▷ok"])).toEqual({ text: "ok", reasoning: "" });
+  });
+
+  test("a closer lookalike at the start is emitted once resolvable", () => {
+    expect(runFilter(["</them>", "notatag"])).toEqual({
+      text: "</them>notatag",
+      reasoning: "",
+    });
+  });
+
   test("an unresolved marker prefix at stream end is text", () => {
     expect(runFilter(["<thi"])).toEqual({ text: "<thi", reasoning: "" });
   });
@@ -166,6 +206,28 @@ describe("parseChatCompletionsResponse think extraction", () => {
         kind: "reasoning_summary",
       },
     ]);
+  });
+
+  test("keeps split reasoning and drops the closer MiniMax leaves in content", () => {
+    const parsed = parseChatCompletionsResponse(
+      "MiniMax-M3",
+      {
+        model: "MiniMax-M3",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "</think>\n\n# Lighthouse Notes",
+              reasoning_content: "The user wants the first line.",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      },
+      { model: "MiniMax-M3", messages: [], tools: [] },
+    );
+    expect(parsed.content).toBe("# Lighthouse Notes");
+    expect(parsed.thinking?.[0]?.text).toBe("The user wants the first line.");
   });
 
   test("clean content grows no thinking blocks", () => {

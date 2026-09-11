@@ -256,6 +256,12 @@ function reasoningHistoryFingerprint(
   return JSON.stringify(comparable);
 }
 
+/** Efforts that turn MiniMax-M3's two-position thinking switch off. */
+const MINIMAX_THINKING_OFF_EFFORTS: ReadonlySet<string> = new Set([
+  "minimal",
+  "low",
+]);
+
 function toChatCompletionsMessages(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
@@ -641,22 +647,32 @@ export function buildChatCompletionsRequest(
     body.preserve_thinking = true;
   }
   if (input.providerCapabilityHints?.thinkingConfig !== undefined) {
+    const thinkingConfig = input.providerCapabilityHints.thinkingConfig;
     const keepsAdjacentToolReasoning = reasoningContinuation !== undefined;
     body.thinking = {
-      type: input.providerCapabilityHints.thinkingConfig.type,
-      ...(input.providerCapabilityHints.thinkingConfig.keep !== undefined
-        ? { keep: input.providerCapabilityHints.thinkingConfig.keep }
+      // MiniMax-M3's switch has two positions: a low effort answers without
+      // thinking, every other effort keeps the provider's adaptive default.
+      type:
+        thinkingConfig.type === "adaptive"
+          ? MINIMAX_THINKING_OFF_EFFORTS.has(input.options?.reasoningEffort ?? "")
+            ? "disabled"
+            : "adaptive"
+          : thinkingConfig.type,
+      ...(thinkingConfig.keep !== undefined
+        ? { keep: thinkingConfig.keep }
         : {}),
-      ...(input.providerCapabilityHints.thinkingConfig.clearThinking !==
-          undefined
+      ...(thinkingConfig.clearThinking !== undefined
         ? {
             clear_thinking:
               keepsAdjacentToolReasoning
                 ? false
-                : input.providerCapabilityHints.thinkingConfig.clearThinking,
+                : thinkingConfig.clearThinking,
           }
         : {}),
     };
+  }
+  if (input.providerCapabilityHints?.reasoningSplit === true) {
+    body.reasoning_split = true;
   }
   if (
     input.options?.parallelToolCalls !== undefined &&
