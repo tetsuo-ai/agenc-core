@@ -607,6 +607,59 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
   if (second.type === 'connected') await second.cleanup()
 })
 
+test('connectToServer honors PATH-only plugin env_vars on stdio spawn', async () => {
+  vi.resetModules()
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
+    Client: FakeClient,
+  }))
+  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
+    StdioClientTransport: FakeStdioTransport,
+  }))
+
+  const { connectToServer } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
+    { VERSION: 'test' }
+
+  const result = await connectToServer(
+    'plugin-path-stdio',
+    {
+      type: 'stdio',
+      command: 'node',
+      args: ['./server/main.mjs'],
+      env: {
+        AGENC_PLUGIN_ROOT: '/plugins/fixture',
+        AGENC_PLUGIN_DATA: '/plugins/fixture-data',
+        AGENC_PLUGIN_NAME: 'fixture',
+        AGENC_PLUGIN_MCP_SERVER: 'x',
+        AGENC_PLUGIN_SANDBOX: 'stdio-child-process',
+      },
+      env_vars: ['PATH'],
+      cwd: '/plugins/fixture',
+      scope: 'dynamic',
+      pluginServer: { pluginName: 'fixture', serverName: 'x' },
+    },
+    undefined,
+    {
+      environment: Object.freeze({
+        PATH: '/only/bin',
+        LEAK: 'must-not-copy',
+        MCP_TIMEOUT: '1000',
+      }),
+    },
+  )
+
+  assert.equal(result.type, 'connected')
+  assert.equal(fakeStdioTransports[0]?.command, 'node')
+  assert.equal(fakeStdioTransports[0]?.env.PATH, '/only/bin')
+  assert.equal(fakeStdioTransports[0]?.env.LEAK, undefined)
+  assert.equal(fakeStdioTransports[0]?.env.AGENC_PLUGIN_NAME, 'fixture')
+  assert.equal(fakeStdioTransports[0]?.env.AGENC_PLUGIN_SANDBOX, 'stdio-child-process')
+
+  if (result.type === 'connected') {
+    await result.cleanup()
+  }
+})
+
 test('connectToServer logs successful stdio startup stderr before cleanup', async () => {
   vi.resetModules()
   vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
