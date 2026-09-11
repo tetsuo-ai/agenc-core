@@ -1569,6 +1569,13 @@ describe("AgenC TUI daemon session adapter", () => {
     });
     expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "daemon-turn" });
 
+    await session.cancelActiveTurn?.("interrupt foreground tool");
+    expect(client.requests).toContainEqual({
+      method: "session.cancelTurn",
+      params: { sessionId: "session_1", expectedTurnId: "turn_1", reason: "interrupt foreground tool" },
+      signal: expect.any(AbortSignal),
+    });
+
     client.emit("session_1", {
       method: "event.session_event",
       params: {
@@ -1889,6 +1896,11 @@ describe("AgenC TUI daemon session adapter", () => {
       client,
       sessionId: "session_1",
       clientId: "tui_1",
+      transcriptSnapshot: {
+        schemaVersion: 2, sessionId: "session_1", runId: "run_1",
+        historyEpoch: "initial", asOfSequence: 0, messages: [],
+        activeTurn: { turnId: "observed_turn" },
+      },
     });
 
     await session.cancelActiveTurn?.("interrupted");
@@ -1896,7 +1908,7 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(client.requests).toEqual([
       {
         method: "session.cancelTurn",
-        params: { sessionId: "session_1", reason: "interrupted" },
+        params: { sessionId: "session_1", reason: "interrupted", expectedTurnId: "observed_turn" },
         // The cancel RPC carries a 5s timeout signal so a wedged daemon can
         // never swallow an ESC silently.
         signal: expect.any(AbortSignal),
@@ -1911,6 +1923,11 @@ describe("AgenC TUI daemon session adapter", () => {
       client,
       sessionId: "session_1",
       clientId: "tui_1",
+      transcriptSnapshot: {
+        schemaVersion: 2, sessionId: "session_1", runId: "run_1",
+        historyEpoch: "initial", asOfSequence: 0, messages: [],
+        activeTurn: { turnId: "observed_turn" },
+      },
     });
 
     await session.cancelActiveTurn?.();
@@ -1918,7 +1935,7 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(client.requests).toEqual([
       {
         method: "session.cancelTurn",
-        params: { sessionId: "session_1" },
+        params: { sessionId: "session_1", expectedTurnId: "observed_turn" },
         signal: expect.any(AbortSignal),
       },
     ]);
@@ -2321,7 +2338,7 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(authority.currentMode()).toBe("plan");
   });
 
-  it("holds immediate input until an in-flight permission-mode change settles", async () => {
+  it.each([false, true])("holds immediate input until an in-flight permission-mode change settles (cancelled: %s)", async (cancelled) => {
     const authority = runtimeAuthorityBase();
     const client = createClient();
     const request = client.request.bind(client);
@@ -2362,7 +2379,14 @@ describe("AgenC TUI daemon session adapter", () => {
       "session.setPermissionMode",
     ]);
 
+    if (cancelled) await session.cancelActiveTurn?.("cancel before dispatch");
     releaseModeRequest.resolve();
+    if (cancelled) {
+      await expect(submission).rejects.toMatchObject({ name: "AbortError" });
+      await modeChange;
+      expect(client.requests.map((entry) => entry.method)).toEqual(["session.setPermissionMode"]);
+      return;
+    }
     await Promise.all([modeChange, submission]);
     expect(client.requests.map((entry) => entry.method)).toEqual([
       "session.setPermissionMode",

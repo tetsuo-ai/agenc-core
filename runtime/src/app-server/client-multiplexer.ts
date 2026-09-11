@@ -74,9 +74,11 @@ export interface AgenCClientMultiplexerOptions {
    * cannot tear down the transport itself; the daemon supplies this callback to
    * `socket.destroy()` the slow consumer. The client has already been removed
    * from the multiplexer and detached from its sessions by the time this fires.
+   * The delivery key identifies the evicted physical connection even if a
+   * reconnect has already reused the logical client id.
    * It can reconnect later through the normal detached-buffer/replay path.
    */
-  readonly onClientEvicted?: (clientId: string) => void;
+  readonly onClientEvicted?: (clientId: string, deliveryKey?: string) => void;
 }
 
 /**
@@ -97,6 +99,8 @@ export interface RegisterAgenCClientOptions {
   /** Physical delivery identity; logical clients on one socket share this key. */
   readonly deliveryKey?: string;
   readonly send: AgenCClientSend;
+  /** Claim connection ownership synchronously before registration/replay commits. */
+  readonly onRegistered?: (registration: AgenCClientRegistration) => void;
   /**
    * Connection-negotiated filter for ordinary session notifications. This is
    * evaluated both for live fan-out and detached replay so an older client is
@@ -173,6 +177,11 @@ interface EnqueuedDelivery {
   readonly delivered: Promise<void>;
 }
 
+interface EvictedClient {
+  readonly clientId: string;
+  readonly deliveryKey: string;
+}
+
 export class AgenCDaemonClientMultiplexer {
   readonly #sessionManager: AgenCDaemonSessionManager;
   readonly #createClientId: () => string;
@@ -180,7 +189,7 @@ export class AgenCDaemonClientMultiplexer {
   readonly #maxBufferedBytesPerSession: number;
   readonly #maxPendingDeliveryBytesPerClient: number;
   readonly #maxPendingDeliveryCountPerClient: number;
-  readonly #onClientEvicted?: (clientId: string) => void;
+  readonly #onClientEvicted?: (clientId: string, deliveryKey?: string) => void;
   readonly #state = new AsyncLock<MultiplexerState>({
     clients: new Map(),
     sessions: new Map(),
@@ -322,6 +331,7 @@ export class AgenCDaemonClientMultiplexer {
         this.#maxPendingDeliveryBytesPerClient,
         this.#maxPendingDeliveryCountPerClient,
       );
+      options.onRegistered?.({ clientId });
       state.clients.set(clientId, client);
       for (const capability of replayCounts.keys()) {
         state.capabilityReplayInFlight.add(capability);
@@ -401,6 +411,7 @@ export class AgenCDaemonClientMultiplexer {
   async attachClientToSession(
     sessionId: string,
     clientId: string,
+    onAttached?: (created: boolean) => void,
   ): Promise<SessionAttachResult> {
     // Replay reserves its complete bounded batch before attachment. This keeps
     // a blocked client's queued closures within the same byte/count caps as
@@ -425,7 +436,9 @@ export class AgenCDaemonClientMultiplexer {
         const route = getOrCreateRoute(state, sessionId);
 
         client.sessionIds.add(sessionId);
+        const created = !route.clientAttachmentIds.has(clientId);
         route.clientAttachmentIds.set(clientId, attachment.attachmentId);
+        onAttached?.(created);
         const replayDelivery = enqueueReplayDelivery(
           client,
           replayedEvents,
@@ -468,11 +481,15 @@ export class AgenCDaemonClientMultiplexer {
   async detachClientFromSession(
     sessionId: string,
     clientId: string,
+    expectedDeliveryKey?: string,
   ): Promise<SessionDetachResult> {
     return this.#state.with(async (state) => {
       const client = requireClient(state, clientId);
       const route = state.sessions.get(sessionId);
-      if (route === undefined || !route.clientAttachmentIds.has(clientId)) {
+      if (
+        (expectedDeliveryKey !== undefined && client.deliveryKey !== expectedDeliveryKey) ||
+        route === undefined || !route.clientAttachmentIds.has(clientId)
+      ) {
         throw new AgenCClientMultiplexerError(
           "CLIENT_NOT_ATTACHED",
           `AgenC daemon client ${clientId} is not attached to session ${sessionId}`,
@@ -511,37 +528,43 @@ export class AgenCDaemonClientMultiplexer {
   async terminateSession(
     params: SessionTerminateParams,
   ): Promise<SessionTerminateResult> {
-    return this.#state.with(async (state) => {
-      try {
-        const terminated = await this.#sessionManager.terminateSession(params);
-        removeSessionRouting(state, params.sessionId);
-        return terminated;
-      } catch (error) {
-        const stillLive = await this.#isSessionLive(params.sessionId).catch(() => true);
-        if (!stillLive) {
-          removeSessionRouting(state, params.sessionId);
-        }
-        throw error;
+    // Finalizers may broadcast or dispose resources that call this multiplexer.
+    // Never hold the global routing lock across session finalization.
+    try {
+      const terminated = await this.#sessionManager.terminateSession(params);
+      await this.#state.with((state) => removeSessionRouting(state, params.sessionId));
+      return terminated;
+    } catch (error) {
+      const stillLive = await this.#isSessionLive(params.sessionId).catch(() => true);
+      if (!stillLive) {
+        await this.#state.with((state) => removeSessionRouting(state, params.sessionId));
       }
-    });
+      throw error;
+    }
   }
 
-  async removeClient(clientId: string): Promise<readonly string[]> {
-    return this.disconnectClient(clientId);
+  async removeClient(clientId: string, expectedDeliveryKey?: string): Promise<readonly string[]> {
+    return this.disconnectClient(clientId, expectedDeliveryKey);
   }
 
-  async disconnectClient(clientId: string): Promise<readonly string[]> {
+  async disconnectClient(clientId: string, expectedDeliveryKey?: string): Promise<readonly string[]> {
     return this.#state.with(async (state) => {
       const client = requireClient(state, clientId);
+      if (expectedDeliveryKey !== undefined && client.deliveryKey !== expectedDeliveryKey) return [];
       const detachedSessionIds = [...client.sessionIds];
-
       state.clients.delete(clientId);
+      const failures: unknown[] = [];
       for (const sessionId of detachedSessionIds) {
         const route = state.sessions.get(sessionId);
         route?.clientAttachmentIds.delete(clientId);
-        await this.#sessionManager.detachSession({ sessionId, clientId });
+        try {
+          await this.#sessionManager.detachSession({ sessionId, clientId });
+        } catch (error) {
+          failures.push(error);
+        }
       }
-
+      client.sessionIds.clear();
+      if (failures.length > 0) throw new AggregateError(failures, "daemon client detach failed");
       return detachedSessionIds;
     });
   }
@@ -554,15 +577,15 @@ export class AgenCDaemonClientMultiplexer {
    * so the transport can `socket.destroy()` the stuck connection. The client can
    * reconnect later through the normal detached-buffer/replay path.
    */
-  async #evictSlowClients(clientIds: readonly string[]): Promise<void> {
-    if (clientIds.length === 0) return;
-    for (const clientId of clientIds) {
+  async #evictSlowClients(clients: readonly EvictedClient[]): Promise<void> {
+    if (clients.length === 0) return;
+    for (const { clientId, deliveryKey } of clients) {
       try {
-        await this.disconnectClient(clientId);
+        await this.disconnectClient(clientId, deliveryKey);
       } catch {
         // Client may already be gone (concurrent disconnect); ignore.
       }
-      this.#onClientEvicted?.(clientId);
+      this.#onClientEvicted?.(clientId, deliveryKey);
     }
   }
 
@@ -585,7 +608,7 @@ export class AgenCDaemonClientMultiplexer {
         event,
       );
     }
-    const evictedClientIds: string[] = [];
+    const evictedClientIds: EvictedClient[] = [];
     const rejectedDeliveries: AgenCSessionBroadcastFailure[] = [];
     const isMobileStatus = isMobileStatusPushEvent(event);
     const { deliveries, hadLiveTargets, bufferedWithoutTarget } =
@@ -731,7 +754,7 @@ export class AgenCDaemonClientMultiplexer {
     capability: string,
     event: JsonObject,
   ): Promise<AgenCSessionBroadcastResult> {
-    const evictedClientIds: string[] = [];
+    const evictedClientIds: EvictedClient[] = [];
     const rejectedDeliveries: AgenCSessionBroadcastFailure[] = [];
     const { deliveries, bufferAfterDelivery } = await this.#state.with(
       async (state) => {
@@ -998,7 +1021,7 @@ function enqueueDelivery(
   event: JsonObject,
   maxPendingBytes: number,
   maxPendingCount: number,
-  evictedClientIds: string[],
+  evictedClientIds: EvictedClient[],
   rejectedDeliveries: AgenCSessionBroadcastFailure[],
 ): EnqueuedDelivery | null {
   if (client === undefined || client.evicted) return null;
@@ -1007,7 +1030,7 @@ function enqueueDelivery(
   if (eventBytes > maxPendingBytes || maxPendingCount < 1) {
     const error = deliveryLimitError(eventBytes, maxPendingBytes);
     client.evicted = true;
-    evictedClientIds.push(client.clientId);
+    evictedClientIds.push({ clientId: client.clientId, deliveryKey: client.deliveryKey });
     rejectedDeliveries.push({
       clientId: client.clientId,
       message: error.message,
@@ -1023,7 +1046,7 @@ function enqueueDelivery(
       client.pendingDeliveryCount + 1 > maxPendingCount)
   ) {
     client.evicted = true;
-    evictedClientIds.push(client.clientId);
+    evictedClientIds.push({ clientId: client.clientId, deliveryKey: client.deliveryKey });
     rejectedDeliveries.push({
       clientId: client.clientId,
       message:

@@ -48,11 +48,13 @@ interface FakeDaemon {
   readonly pluginStorageRoot: string;
   readonly transport: AgenCInProcessDaemonTransport;
   readonly multiplexer: AgenCDaemonClientMultiplexer;
+  readonly sessionManager: AgenCDaemonSessionManager;
   readonly calls: {
     created: JsonObject[];
     streamed: JsonObject[];
     approved: JsonObject[];
     denied: JsonObject[];
+    cancelled: JsonObject[];
   };
   broadcast(
     sessionId: string,
@@ -93,6 +95,7 @@ async function createFakeDaemon(
     streamed: [],
     approved: [],
     denied: [],
+    cancelled: [],
   };
   const pluginStorageRoot = await workspaces.create();
 
@@ -236,6 +239,10 @@ async function createFakeDaemon(
         requestId: String(params.requestId),
         decision: "cancelled" as const,
       }),
+      cancelSessionTurn: async (params: JsonObject) => {
+        calls.cancelled.push(params);
+        return { sessionId: String(params.sessionId), cancelled: true };
+      },
       snapshotSession: async (params: JsonObject) => ({
         sessionId: String(params.sessionId),
         turnCount: 1,
@@ -245,6 +252,14 @@ async function createFakeDaemon(
           totalTokens: 18,
           costUsd: 0.0042,
         },
+      }),
+      getSessionTranscriptV2: async (params: JsonObject) => ({
+        schemaVersion: 2,
+        sessionId: String(params.sessionId),
+        runId: "run_1",
+        historyEpoch: "initial",
+        asOfSequence: 0,
+        messages: [],
       }),
     } as never,
     sessionManager,
@@ -270,6 +285,7 @@ async function createFakeDaemon(
     pluginStorageRoot,
     transport,
     multiplexer,
+    sessionManager,
     calls,
     broadcast: (sessionId, notification) =>
       multiplexer.broadcastSessionNotification(sessionId, notification),
@@ -301,6 +317,45 @@ function statusNotification(
 }
 
 describe("agenc-sdk client over the in-process transport", () => {
+  it("closing a prompt detaches its client and settles handles while the daemon session remains live", async () => {
+    let started!: () => void;
+    let release!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let completed = false;
+    const daemon = await createFakeDaemon({
+      onStreamMessage: async () => {
+        started();
+        await gate;
+        completed = true;
+      },
+    });
+    try {
+      await daemon.client.initialize();
+      const session = await daemon.client.createSession({ pluginStorageRoot: daemon.pluginStorageRoot });
+      const run = session.prompt("keep running after detach", { includeUsage: false });
+      await admitted;
+      await expect(daemon.multiplexer.attachedClientIds(session.sessionId)).resolves.toEqual([daemon.client.clientId]);
+
+      await daemon.client.close();
+      await expect(run.accepted).rejects.toThrow("AgenC SDK client is closed");
+      await expect(run.result()).rejects.toThrow("AgenC SDK client is closed");
+      await expect(daemon.multiplexer.attachedClientIds(session.sessionId)).resolves.toEqual([]);
+      await expect(daemon.sessionManager.getSession(session.sessionId)).resolves.toMatchObject({
+        sessionId: session.sessionId,
+        status: "idle",
+      });
+      expect(daemon.calls.cancelled).toEqual([]);
+      expect(completed).toBe(false);
+      release();
+      await gate;
+      expect(completed).toBe(true);
+    } finally {
+      release();
+      await daemon.close();
+    }
+  });
+
   it("initializes, creates a session, and streams a typed prompt event stream", async () => {
     const cwd = await workspaces.create();
     const daemon = await createFakeDaemon({

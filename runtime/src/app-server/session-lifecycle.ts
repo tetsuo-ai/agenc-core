@@ -106,6 +106,7 @@ interface MutableSession {
   metadata?: JsonObject;
   closedAt?: string;
   terminationReason?: string;
+  terminationPending?: boolean;
   recoveredFromThreadStore?: boolean;
   attachments: Map<string, AgenCSessionAttachment>;
 }
@@ -140,6 +141,7 @@ export class AgenCDaemonSessionManager {
   readonly #threadStore: ThreadStore | undefined;
   readonly #onSessionTerminated:
     ((sessionId: string) => void | Promise<void>) | undefined;
+  readonly #terminationTasks = new Map<string, Promise<void>>();
 
   constructor(options: AgenCSessionLifecycleOptions = {}) {
     this.#createSessionId =
@@ -466,6 +468,13 @@ export class AgenCDaemonSessionManager {
   async attachSession(
     params: SessionAttachParams,
   ): Promise<SessionAttachResult> {
+    return (await this.attachSessionWithOwnership(params)).attachment;
+  }
+
+  /** Internal receipt: rollback may release only attachments this call created. */
+  async attachSessionWithOwnership(
+    params: SessionAttachParams,
+  ): Promise<{ readonly attachment: SessionAttachResult; readonly created: boolean }> {
     return this.#state.with((state) => {
       const session = this.#requireOpenSession(state, params.sessionId);
       const existing =
@@ -474,7 +483,7 @@ export class AgenCDaemonSessionManager {
           : undefined;
 
       if (existing !== undefined) {
-        return toAttachResult(session, existing);
+        return { attachment: toAttachResult(session, existing), created: false };
       }
 
       const attachment: AgenCSessionAttachment = {
@@ -484,7 +493,7 @@ export class AgenCDaemonSessionManager {
         ...(params.clientId !== undefined ? { clientId: params.clientId } : {}),
       };
       session.attachments.set(attachment.attachmentId, attachment);
-      return toAttachResult(session, attachment);
+      return { attachment: toAttachResult(session, attachment), created: true };
     });
   }
 
@@ -520,33 +529,64 @@ export class AgenCDaemonSessionManager {
       const session = this.#requireSession(state, params.sessionId);
 
       if (session.status === "closed") {
-        this.#archiveRecoveredThread(session);
         return toTerminateResult(session, false);
       }
 
       session.status = "closed";
+      session.terminationPending = true;
       session.closedAt = this.#now();
       session.attachments.clear();
       if (params.reason !== undefined)
         session.terminationReason = params.reason;
-      this.#archiveRecoveredThread(session);
       return toTerminateResult(session, true);
     });
-    if (result.terminated) {
-      await this.#onSessionTerminated?.(result.sessionId);
+    // Closing revokes new attachments immediately, but callers must also wait
+    // for resource disposal. Failed disposal remains retryable on a later
+    // terminate request; a closed projection alone is not cleanup completion.
+    let task = this.#terminationTasks.get(result.sessionId);
+    if (task === undefined) {
+      task = this.#finalizeSessionTermination(result.sessionId);
+      this.#terminationTasks.set(result.sessionId, task);
+    }
+    try {
+      await task;
+    } finally {
+      if (this.#terminationTasks.get(result.sessionId) === task) {
+        this.#terminationTasks.delete(result.sessionId);
+      }
     }
     return result;
   }
 
-  #archiveRecoveredThread(session: MutableSession): void {
-    if (!session.recoveredFromThreadStore || this.#threadStore === undefined) {
-      return;
+  async #finalizeSessionTermination(sessionId: string): Promise<void> {
+    const pending = await this.#state.with((state) => {
+      const session = this.#requireSession(state, sessionId);
+      return {
+        archive: session.recoveredFromThreadStore === true,
+        notify: session.terminationPending === true,
+      };
+    });
+    const errors: unknown[] = [];
+    if (pending.archive && this.#threadStore !== undefined) {
+      try {
+        this.#threadStore.archiveThread({ threadId: sessionId });
+      } catch (error) {
+        if (!(error instanceof ThreadNotFoundError)) errors.push(error);
+      }
     }
-    try {
-      this.#threadStore.archiveThread({ threadId: session.sessionId });
-    } catch (error) {
-      if (error instanceof ThreadNotFoundError) return;
-      throw error;
+    if (pending.notify) {
+      try {
+        await this.#onSessionTerminated?.(sessionId);
+        await this.#state.with((state) => {
+          this.#requireSession(state, sessionId).terminationPending = false;
+        });
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Session termination cleanup failed");
     }
   }
 
