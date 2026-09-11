@@ -8,7 +8,8 @@ main 0245ef4fe; each item says what was done or what remains.
 - Fewer model calls per task than Hermes 0.21.2 (3.9 against 4.3 on Sonnet 5) and fewer tool calls (38 against 44
   over the 12 command tasks); zero tool errors and zero compactions across the 15-step session.
 - Session pace: 1174 s for the 15 steps on grok-4.6, against 1275 s for the same build on September 5 and 2203 s for
-  Hermes 0.14 then. Hermes 0.21.2 on DeepSeek V4 Pro is in the comparison report.
+  Hermes 0.14 then. Hermes 0.21.2 finished the same 15 steps on DeepSeek V4 Pro in 1772 s with 62 model calls and 94
+  tool calls (different model, so a pace reference rather than a like-for-like number).
 - Sign-in without keys (xAI, ChatGPT, managed route) is something neither Hermes nor OpenCode offers for grok.
 
 ## Fixed during the review
