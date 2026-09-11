@@ -971,6 +971,89 @@ describe("RolloutStore transactional compaction", () => {
     );
   });
 
+  it("repairs failed-attempt payload chunks that fail strict validation", () => {
+    const cwd = createTestWorkspace();
+    temporaryWorkspaces.push(cwd);
+    const sessionId = "failed-chunk-repair";
+    const attemptId = "failed-chunk-repair-attempt";
+    const store = openStore(sessionId, {}, cwd);
+    const rolloutPath = store.rolloutPath;
+    try {
+      store.appendRollout(
+        {
+          type: "response_item",
+          payload: { role: "user", content: "keep-me" },
+        },
+        { durable: true },
+      );
+      const prepared = store.prepareSource(attemptId, []);
+      const intent: CompactionIntentV1 = {
+        format_version: COMPACTION_EVENT_FORMAT_VERSION,
+        minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+        attempt_id: attemptId,
+        recorded_at_ms: Date.now(),
+        source: prepared.source,
+        policy_digest: "ab".repeat(32),
+        configuration_digest: "cd".repeat(32),
+        accounting_ref: "ef".repeat(32),
+        automatic: false,
+        selected_history_indexes: [0],
+        admission_required: true,
+        planned_provider_calls: 1,
+      };
+      store.pinAndRecordIntent(intent, sourcePayloadBundles(prepared, intent));
+      store.recordFailure({
+        format_version: COMPACTION_EVENT_FORMAT_VERSION,
+        minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+        attempt_id: attemptId,
+        recorded_at_ms: Date.now(),
+        source_sha256: prepared.source.source_sha256,
+        history_digest: prepared.source.history_digest,
+        reason: "commit_failed",
+        detail_digest: "4".repeat(64),
+      });
+    } finally {
+      store.close();
+    }
+
+    mutatePayloadChunk(rolloutPath, "source_history", (fragment) =>
+      fragment.replace("keep-me", "[REDACTED_SECRET]"),
+    );
+    expect(() =>
+      validateCanonicalJournalBytes(readFileSync(rolloutPath)),
+    ).toThrow(/compaction_payload_chunk payload does not match the runtime schema/);
+
+    const repaired = openStore(sessionId, { resume: true }, cwd);
+    try {
+      const rows = readTestRolloutRows(repaired.rolloutPath);
+      expect(
+        rows.some(
+          (row) =>
+            row.type === "compaction_failed" &&
+            (row.payload as { readonly attempt_id: string }).attempt_id ===
+              attemptId,
+        ),
+      ).toBe(true);
+      expect(
+        rows.some(
+          (row) =>
+            row.type === "compaction_payload_chunk" &&
+            (row.payload as CompactionPayloadChunkV1).attempt_id === attemptId,
+        ),
+      ).toBe(false);
+      expect(
+        reconstructFromRollout(repaired.readAll()).history.map(
+          (message) => message.content,
+        ),
+      ).toEqual(["keep-me"]);
+      expect(() =>
+        validateCanonicalJournalBytes(readFileSync(repaired.rolloutPath)),
+      ).not.toThrow();
+    } finally {
+      repaired.close();
+    }
+  });
+
   it("binds a persisted rollback to the hydrated canonical commit digest", () => {
     const cwd = createTestWorkspace();
     temporaryWorkspaces.push(cwd);
