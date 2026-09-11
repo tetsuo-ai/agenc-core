@@ -535,14 +535,16 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     })),
     // Reviewed AgenC route metadata; account discovery still controls access.
-    // Backend: docs/operations/deepseek-policy-refresh-20260910.md.
+    // Backend: docs/operations/managed-stream-liveness-20260911.md.
     {
       provider: "agenc",
       model: AGENC_DEEPSEEK_MODEL,
       displayName: "DeepSeek V4 Flash 0731",
       contextWindow: 1_048_576,
       maxContextWindow: 1_048_576,
-      maxOutputTokens: 8_192,
+      // Reasoning and tool arguments share this budget. An 8k allowance can
+      // finish entirely in reasoning and repeat the same truncation on recovery.
+      maxOutputTokens: 64_000,
       maxOutputTokensUpperLimit: 384_000,
       maxOutputTokensCappedDefault: true,
       inputModalities: TEXT_MODALITIES,

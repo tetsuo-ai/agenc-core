@@ -7,8 +7,23 @@ import { chatCompletionsCapabilityHintsForProvider } from "../../../../src/llm/w
 import { buildChatCompletionsRequest } from "../../../../src/llm/wire/chat-completions.js";
 import { attachmentsToMessages } from "../../../../src/prompts/attachments/messages.js";
 import type { LLMMessage } from "../../../../src/llm/types.js";
+import { ModelMetadataResolver } from "../../../../src/llm/model-metadata.js";
+import { defaultConfig } from "../../../../src/config/schema.js";
 
 describe("AgenC DeepSeek promotion wire", () => {
+  it.each(["low", "high", "max"] as const)("reserves room for reasoning and tools at native %s effort while honoring explicit limits", reasoningEffort => {
+    const config = { ...defaultConfig(), model_provider: "agenc", model, reasoning_effort: reasoningEffort };
+    const resolver = new ModelMetadataResolver({ env: {} });
+    const metadata = resolver.resolveSync({ provider: "agenc", model, config });
+    expect(metadata).toMatchObject({ maxOutputTokens: 64_000, maxOutputTokensUpperLimit: 384_000, contextWindow: 1_048_576 });
+    const body = buildChatCompletionsRequest({ model, messages: [{ role: "user", content: "Complete the coding task" }], tools: [],
+      options: { maxOutputTokens: metadata.maxOutputTokens, reasoningEffort },
+      providerCapabilityHints: chatCompletionsCapabilityHintsForProvider("openrouter", model, { managedGateway: true }),
+    });
+    expect(body).toMatchObject({ max_tokens: 64_000, reasoning_effort: reasoningEffort });
+    expect(resolver.resolveSync({ provider: "agenc", model, config: { ...config, max_output_tokens: 4096 } }).maxOutputTokens).toBe(4096);
+  });
+
   it("keeps generated tool-discovery context in the tool loop without treating user text as runtime context", () => {
     const messages: LLMMessage[] = [
       { role: "user", content: "Read the skill, then use the discovered MCP tool." },
@@ -113,7 +128,7 @@ describe("AgenC DeepSeek promotion wire", () => {
 
   it("keeps route metadata hidden and does not change direct OpenRouter capabilities", () => {
     expect(resolveRegisteredModelCatalogEntry({ provider: "agenc", model })).toMatchObject({
-      contextWindow: 1_048_576, maxOutputTokens: 8_192, maxOutputTokensUpperLimit: 384_000,
+      contextWindow: 1_048_576, maxOutputTokens: 64_000, maxOutputTokensUpperLimit: 384_000,
       supportedReasoningLevels: ["low", "high", "max"], defaultReasoningLevel: "high", visibility: "none",
     });
     expect(deriveFlatCatalog().agenc ?? []).not.toContain(model);
