@@ -142,6 +142,10 @@ export class AgenCDaemonSessionManager {
   readonly #onSessionTerminated:
     ((sessionId: string) => void | Promise<void>) | undefined;
   readonly #terminationTasks = new Map<string, Promise<void>>();
+  readonly #attachmentClaims = new WeakMap<AgenCSessionAttachment, {
+    readonly owners: Set<symbol>;
+    committed: boolean;
+  }>();
 
   constructor(options: AgenCSessionLifecycleOptions = {}) {
     this.#createSessionId =
@@ -468,13 +472,25 @@ export class AgenCDaemonSessionManager {
   async attachSession(
     params: SessionAttachParams,
   ): Promise<SessionAttachResult> {
-    return (await this.attachSessionWithOwnership(params)).attachment;
+    const receipt = await this.attachSessionWithOwnership(params);
+    if (!await this.commitSessionAttachment(receipt.attachment, receipt.owner)) {
+      throw new AgenCSessionLifecycleError(
+        "SESSION_CLOSED",
+        `AgenC daemon session attachment is no longer active: ${params.sessionId}`,
+      );
+    }
+    return receipt.attachment;
   }
 
-  /** Internal receipt: rollback may release only attachments this call created. */
+  /** Internal lease: concurrent attempts share provisional attachment state. */
   async attachSessionWithOwnership(
     params: SessionAttachParams,
-  ): Promise<{ readonly attachment: SessionAttachResult; readonly created: boolean }> {
+    owner = Symbol("session attachment owner"),
+  ): Promise<{
+    readonly attachment: SessionAttachResult;
+    readonly created: boolean;
+    readonly owner: symbol;
+  }> {
     return this.#state.with((state) => {
       const session = this.#requireOpenSession(state, params.sessionId);
       const existing =
@@ -483,7 +499,8 @@ export class AgenCDaemonSessionManager {
           : undefined;
 
       if (existing !== undefined) {
-        return { attachment: toAttachResult(session, existing), created: false };
+        this.#attachmentClaims.get(existing)!.owners.add(owner);
+        return { attachment: toAttachResult(session, existing), created: false, owner };
       }
 
       const attachment: AgenCSessionAttachment = {
@@ -493,7 +510,40 @@ export class AgenCDaemonSessionManager {
         ...(params.clientId !== undefined ? { clientId: params.clientId } : {}),
       };
       session.attachments.set(attachment.attachmentId, attachment);
-      return { attachment: toAttachResult(session, attachment), created: true };
+      this.#attachmentClaims.set(attachment, { owners: new Set([owner]), committed: false });
+      return { attachment: toAttachResult(session, attachment), created: true, owner };
+    });
+  }
+
+  /** Publish one successful adoption independently of other pending attempts. */
+  async commitSessionAttachment(
+    params: { readonly sessionId: string; readonly attachmentId: string },
+    owner: symbol,
+  ): Promise<boolean> {
+    return this.#state.with((state) => {
+      const attachment = state.sessions.get(params.sessionId)?.attachments.get(params.attachmentId);
+      const claims = attachment === undefined ? undefined : this.#attachmentClaims.get(attachment);
+      if (claims === undefined || !claims.owners.delete(owner)) return false;
+      claims.committed = true;
+      return true;
+    });
+  }
+
+  /** Last failing owner removes only an attachment nobody committed. */
+  async rollbackSessionAttachment(
+    params: { readonly sessionId: string; readonly attachmentId: string },
+    owner: symbol,
+  ): Promise<boolean> {
+    return this.#state.with((state) => {
+      const session = state.sessions.get(params.sessionId);
+      const attachment = session?.attachments.get(params.attachmentId);
+      const claims = attachment === undefined ? undefined : this.#attachmentClaims.get(attachment);
+      if (attachment === undefined || claims === undefined || !claims.owners.delete(owner)) {
+        return false;
+      }
+      if (claims.committed || claims.owners.size > 0) return false;
+      session!.attachments.delete(attachment.attachmentId);
+      return true;
     });
   }
 

@@ -1589,6 +1589,7 @@ export class AgenCDaemonAgentManager {
     params: AgentAttachParams,
     registerSessionRoute: (
       sessionId: string,
+      attachmentOwner?: symbol,
     ) => Promise<() => Promise<void> | void> | (() => Promise<void> | void),
   ): Promise<AgentAttachResult> {
     if (this.#sessionManager === undefined) {
@@ -1634,13 +1635,13 @@ export class AgenCDaemonAgentManager {
       );
     }
 
-    const { attachment, created: attachmentCreated } = await this.#sessionManager.attachSessionWithOwnership({
+    const { attachment, owner: attachmentOwner } = await this.#sessionManager.attachSessionWithOwnership({
       sessionId: session.sessionId,
       ...(params.clientId !== undefined ? { clientId: params.clientId } : {}),
     });
     let rollbackRoute: (() => Promise<void> | void) | undefined;
     try {
-      rollbackRoute = await registerSessionRoute(session.sessionId);
+      rollbackRoute = await registerSessionRoute(session.sessionId, attachmentOwner);
       const runnerSnapshot = await this.#runner.getAgentSnapshot(target.agentId);
       if (
         runnerSnapshot?.runtimeSettings === undefined ||
@@ -1680,7 +1681,7 @@ export class AgenCDaemonAgentManager {
           return { ...activeSession, cwd };
         }),
       );
-      return {
+      const result: AgentAttachResult = {
         agentId: target.agentId,
         attachmentId: attachment.attachmentId,
         sessionIds: orderedSessionIds,
@@ -1692,16 +1693,21 @@ export class AgenCDaemonAgentManager {
         runtimeSessionId: target.agentId,
         sessions: attachedSessions,
       };
+      if (!await this.#sessionManager.commitSessionAttachment(attachment, attachmentOwner)) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "AGENT_NOT_FOUND",
+          `AgenC daemon session attachment is no longer active: ${session.sessionId}`,
+        );
+      }
+      return result;
     } catch (error) {
       await Promise.resolve(rollbackRoute?.()).catch(() => {});
-      if (attachmentCreated) {
-        await this.#sessionManager
-          .detachSession({
-            sessionId: session.sessionId,
-            attachmentId: attachment.attachmentId,
-          })
-          .catch(() => {});
-      }
+      await this.#sessionManager
+        .rollbackSessionAttachment({
+          sessionId: session.sessionId,
+          attachmentId: attachment.attachmentId,
+        }, attachmentOwner)
+        .catch(() => {});
       throw error;
     }
   }
@@ -2297,8 +2303,9 @@ export class AgenCDaemonAgentManager {
       withTimeout(task.result, AGENT_LIFECYCLE_OPERATION_TIMEOUT_MS,
         `agent ${agentId} in-flight stop timed out during daemon shutdown`),
     ));
-    // Shutdown must reach every retained runner even when a status read fails.
-    await this.#refreshAgentsFromRunner().catch(() => {});
+    // Snapshot reads can hold runtime locks that only teardown releases.
+    // Lifecycle state selects retained actors; each runner owns the live
+    // stop/suspend decision, so diagnostics must not precede shutdown.
     const targets = await this.#state.with((state) => {
       return [...state.agents.values()].filter(isActiveAgent).map((agent) => ({
         agentId: agent.agentId,

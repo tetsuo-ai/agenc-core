@@ -502,9 +502,14 @@ export class AgenCDaemonRpcShutdownCoordinator {
   #pendingAcknowledgements = 0;
   #completed = false;
   readonly #onShutdownReady: () => void;
+  readonly #acknowledgementTimeoutMs: number;
 
-  constructor(onShutdownReady: () => void) {
+  constructor(onShutdownReady: () => void, acknowledgementTimeoutMs = 5_000) {
+    if (!Number.isSafeInteger(acknowledgementTimeoutMs) || acknowledgementTimeoutMs <= 0) {
+      throw new TypeError("daemon shutdown acknowledgement timeout must be a positive integer");
+    }
     this.#onShutdownReady = onShutdownReady;
+    this.#acknowledgementTimeoutMs = acknowledgementTimeoutMs;
   }
 
   get blocksRequests(): boolean {
@@ -528,8 +533,21 @@ export class AgenCDaemonRpcShutdownCoordinator {
       message.method === "daemon.shutdown" &&
       !isDaemonErrorResponse(response) &&
       this.#pendingAcknowledgements > 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await send(response);
+      const sending = send(response);
+      if (acceptedShutdown) {
+        await Promise.race([
+          sending,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error(
+              `daemon shutdown acknowledgement exceeded ${this.#acknowledgementTimeoutMs} ms`,
+            )), this.#acknowledgementTimeoutMs);
+          }),
+        ]);
+      } else {
+        await sending;
+      }
     } catch (error) {
       if (acceptedShutdown && !this.#completed) {
         // Shutdown acceptance already fenced daemon ingress and cannot be
@@ -543,6 +561,8 @@ export class AgenCDaemonRpcShutdownCoordinator {
         }
       }
       throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
     if (!acceptedShutdown || this.#completed) return;
 
@@ -3345,9 +3365,10 @@ async function runAgenCDaemonForegroundLocked(
       sessionTempRoot: resolveSessionTempRootAtIngress(host.env),
       allowGpu: activeConfig.sandbox?.allow_gpu === true,
     });
-    cleanup.register("daemon-command-exec", async () => {
+    const closeCommandExec = async () => {
       await commandExec.closeAll("daemon_shutdown");
-    });
+    };
+    const unregisterCommandExecCleanup = cleanup.register("daemon-command-exec", closeCommandExec);
     const csvAgentJobsRepositories = new CsvAgentJobsRepositoryAuthority({
       agencHome: authStartup.daemonHome,
     });
@@ -3626,11 +3647,12 @@ async function runAgenCDaemonForegroundLocked(
     cleanup.register("daemon-snapshots", async () => {
       await agentManager.flushSnapshots("daemon_shutdown");
     });
-    cleanup.register("daemon-agents", async () => {
+    const stopAgents = async () => {
       await agentManager.stopAll("daemon_shutdown", {
         disposition: "suspend_idle",
       });
-    });
+    };
+    const unregisterAgentsCleanup = cleanup.register("daemon-agents", stopAgents);
     codePrediction =
       runner.resolveCodePredictionSource === undefined
         ? undefined
@@ -4118,20 +4140,12 @@ async function runAgenCDaemonForegroundLocked(
     cleanup.register("daemon-fuzzy-file-index", async () => {
       await dispatcher.close();
     });
-    cleanup.register("daemon-connections", async () => {
-      const activeConnections = [...connections.values()];
-      connections.clear();
-      socketConnections.clear();
-      await Promise.all(
-        activeConnections.map((connection) => connection.close()),
-      );
-    });
     cleanup.register("daemon-authority", async () => {
       await options.beforeDaemonAuthorityCleanup?.();
       await runAgenCDaemonAuthorityCleanup({
         host,
         lifecycleLockHeld: !lifecycleLockReleased,
-        closeSocket: () => socketServer.close(),
+        closeSocket: () => socketServer.close({ drainTimeoutMs: 5_000 }),
         removeMetadata: () =>
           removeOwnedForegroundDaemonMetadata({
             expected: daemonIdentity,
@@ -4141,10 +4155,34 @@ async function runAgenCDaemonForegroundLocked(
       });
     });
     cleanup.register("daemon-websocket", async () => {
-      await webSocketServer.close();
+      await webSocketServer.close({ drainTimeoutMs: 5_000 });
     });
     cleanup.register("daemon-mcp-server", async () => {
       await activeMcpServer.close();
+    });
+    // Shutdown already fenced new RPC work. Cancel connection jobs and stop
+    // daemon-owned execution before transport.close drains their handlers;
+    // otherwise a runner-backed request waits for a stop scheduled behind it.
+    // Keep the earlier registrations until construction reaches this point so
+    // startup failures still release partially constructed actors.
+    unregisterAgentsCleanup();
+    cleanup.register("daemon-agents", stopAgents);
+    unregisterCommandExecCleanup();
+    cleanup.register("daemon-command-exec", closeCommandExec);
+    cleanup.register("daemon-connections", async () => {
+      const activeConnections = [...connections.values()];
+      connections.clear();
+      socketConnections.clear();
+      const results = await Promise.allSettled(
+        activeConnections.map((connection) => connection.close()),
+      );
+      const failed = results.filter((result) => result.status === "rejected");
+      if (failed.length > 0) {
+        throw new AggregateError(
+          failed.map((result) => result.reason),
+          "daemon connection cleanup failed",
+        );
+      }
     });
 
     const signalProcess = options.signalProcess ?? process;

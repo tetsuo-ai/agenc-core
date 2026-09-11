@@ -24,6 +24,7 @@ import {
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import { resolveHomeContext } from "../../config/home.js";
 import { AgenCStdioTransport, writeJsonLine } from "./stdio.js";
+import { drainAgenCTransportRequests, type AgenCTransportCloseOptions } from "./request-drain.js";
 import {
   loadAgenCNativePeerCredentialBinding,
   type AgenCNativePeerCredentialBinding,
@@ -94,6 +95,7 @@ export interface AgenCUnixSocketServerOptions {
     context: AgenCUnixSocketMessageContext,
   ) => boolean | Promise<boolean>;
   readonly acceptAuthenticationTimeoutMs?: number;
+  readonly maxQueuedRequests?: number;
   readonly onAuthenticationFailed?: (
     message: JsonObject,
     context: AgenCUnixSocketMessageContext,
@@ -248,7 +250,7 @@ export class AgenCUnixSocketServer {
     return socketPath;
   }
 
-  async close(): Promise<void> {
+  async close(options: AgenCTransportCloseOptions = {}): Promise<void> {
     const server = this.#server;
     const boundSocketIdentity = this.#boundSocketIdentity;
     this.#server = null;
@@ -262,9 +264,7 @@ export class AgenCUnixSocketServer {
     for (const { socket } of activeConnections) {
       socket.destroy();
     }
-    await Promise.allSettled(
-      activeConnections.map(({ transport }) => transport.close()),
-    );
+    const pending = activeConnections.map(({ transport }) => transport.close());
     this.#connections.clear();
 
     if (server !== null) {
@@ -283,6 +283,7 @@ export class AgenCUnixSocketServer {
       await this.#options.beforeSocketPathRemoval?.();
       await removeSocketPathIfIdentity(this.socketPath, boundSocketIdentity);
     }
+    await drainAgenCTransportRequests(pending, options);
   }
 
   #acceptConnection(socket: Socket): void {
@@ -349,6 +350,7 @@ export class AgenCUnixSocketServer {
     const transport = new AgenCStdioTransport({
       input: socket,
       output: socket,
+      maxQueuedRequests: this.#options.maxQueuedRequests,
       onMessage: async (message) => {
         // Parsed frames can still be queued behind an active request after
         // disconnect. They must never recreate a daemon connection or start

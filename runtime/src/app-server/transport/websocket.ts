@@ -28,10 +28,12 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
+  isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
   maxQueuedRequestsFromOptions,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
+import { drainAgenCTransportRequests, type AgenCTransportCloseOptions } from "./request-drain.js";
 
 export const AGENC_WEBSOCKET_DEFAULT_HOST = "127.0.0.1";
 export const AGENC_WEBSOCKET_DEFAULT_PATH = "/";
@@ -110,6 +112,10 @@ interface ActiveWebSocketConnection {
   // Priority requests can bypass model turns only after initialize/auth state
   // for this connection has settled.
   initializeBarrier: Promise<void>;
+  // Only the first handshake can gate priority requests behind normal work.
+  hasInitializeBarrier: boolean;
+  // A health/status backlog cannot consume decision/cancellation capacity.
+  readonly queuedPriorityMessages: { priority: number; control: number };
   // gaphunt3 #47: accept-auth teardown state. `accepted` is true once an
   // authenticator-approved message is seen (or when no authenticator is
   // configured). `authTimeout` is the armed teardown timer; it is cleared on
@@ -224,7 +230,7 @@ export class AgenCWebSocketServer {
     }
   }
 
-  async close(): Promise<void> {
+  async close(options: AgenCTransportCloseOptions = {}): Promise<void> {
     const webSocketServer = this.#webSocketServer;
     const httpServer = this.#server;
     this.#webSocketServer = null;
@@ -241,11 +247,7 @@ export class AgenCWebSocketServer {
       }
     }
     await Promise.allSettled(closed);
-    await Promise.allSettled(
-      activeConnections.flatMap((connection) => [
-        ...connection.pendingMessages,
-      ]),
-    );
+    const pending = activeConnections.flatMap((connection) => [...connection.pendingMessages]);
     this.#connections.clear();
 
     if (webSocketServer !== null) {
@@ -254,6 +256,7 @@ export class AgenCWebSocketServer {
     if (httpServer !== null) {
       await closeHttpServer(httpServer);
     }
+    await drainAgenCTransportRequests(pending, options);
   }
 
   #handleHttpRequest(
@@ -316,6 +319,8 @@ export class AgenCWebSocketServer {
       pendingMessages: new Set(),
       dispatchChain: Promise.resolve(),
       initializeBarrier: Promise.resolve(),
+      hasInitializeBarrier: false,
+      queuedPriorityMessages: { priority: 0, control: 0 },
       // gaphunt3 #47: only require auth when an authenticator is configured;
       // otherwise the connection is accepted immediately (legacy behavior).
       accepted: this.#options.acceptAuthenticator === undefined,
@@ -466,6 +471,15 @@ export class AgenCWebSocketServer {
     }
 
     if (isDaemonPriorityMessage(message)) {
+      const lane = isDaemonPreemptiveMessage(message) ? "control" : "priority";
+      const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
+      if (active.queuedPriorityMessages[lane] >= maxQueuedRequests) {
+        void context.send(daemonOverloadErrorResponse(
+          message, "TOO_MANY_QUEUED_REQUESTS", { maxQueuedRequests, lane },
+        )).catch((error) => this.#options.onError?.(asError(error), context.connectionId));
+        return;
+      }
+      active.queuedPriorityMessages[lane] += 1;
       // Control-plane requests must NOT queue behind a full model stream.
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.
@@ -494,6 +508,7 @@ export class AgenCWebSocketServer {
       }
       active.pendingMessages.add(pending);
       pending.finally(() => {
+        active.queuedPriorityMessages[lane] -= 1;
         active.pendingMessages.delete(pending);
       });
       return;
@@ -535,7 +550,8 @@ export class AgenCWebSocketServer {
       this.#options.onError?.(asError(error), context.connectionId);
     }));
     active.pendingMessages.add(pending);
-    if (message.method === "initialize") {
+    if (message.method === "initialize" && !active.hasInitializeBarrier) {
+      active.hasInitializeBarrier = true;
       active.initializeBarrier = pending;
     }
     pending.finally(() => {
@@ -706,6 +722,9 @@ function closeHttpServer(server: HttpServer): Promise<void> {
       }
       resolve();
     });
+    // Upgraded peers were terminated separately. Incomplete HTTP requests
+    // must not retain the listener while daemon shutdown drains RPC handlers.
+    server.closeAllConnections();
   });
 }
 

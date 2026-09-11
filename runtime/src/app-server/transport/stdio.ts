@@ -16,6 +16,7 @@ import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
+  isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
   maxQueuedRequestsFromOptions,
 } from "../overload.js";
@@ -46,6 +47,11 @@ export class AgenCStdioTransport {
   // Priority requests may bypass a streaming turn, but never the initialize
   // request that authenticates and establishes connection state.
   #initializeBarrier: Promise<void> = Promise.resolve();
+  // Repeated initialize frames must not move controls behind a running turn.
+  #hasInitializeBarrier = false;
+  // Reserve decision/cancellation capacity separately from health/status work.
+  // Both are bounded before initialize can release dispatcher admission.
+  readonly #queuedPriorityMessages = { priority: 0, control: 0 };
   #queuedNormalMessages = 0;
   #reader: BoundedJsonLineReader | null = null;
 
@@ -95,6 +101,15 @@ export class AgenCStdioTransport {
     }
 
     if (isDaemonPriorityMessage(message)) {
+      const lane = isDaemonPreemptiveMessage(message) ? "control" : "priority";
+      const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
+      if (this.#queuedPriorityMessages[lane] >= maxQueuedRequests) {
+        void this.send(daemonOverloadErrorResponse(
+          message, "TOO_MANY_QUEUED_REQUESTS", { maxQueuedRequests, lane },
+        )).catch((error) => this.#options.onError?.(asError(error), line));
+        return;
+      }
+      this.#queuedPriorityMessages[lane] += 1;
       // Control-plane requests must NOT queue behind a full model stream.
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.
@@ -114,6 +129,7 @@ export class AgenCStdioTransport {
       }
       this.#pendingMessages.add(pending);
       pending.finally(() => {
+        this.#queuedPriorityMessages[lane] -= 1;
         this.#pendingMessages.delete(pending);
       });
       return;
@@ -152,7 +168,8 @@ export class AgenCStdioTransport {
         }
       },
     ));
-    if (message.method === "initialize") {
+    if (message.method === "initialize" && !this.#hasInitializeBarrier) {
+      this.#hasInitializeBarrier = true;
       this.#initializeBarrier = pending;
     }
     this.#pendingMessages.add(pending);

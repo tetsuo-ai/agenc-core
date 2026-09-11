@@ -232,7 +232,7 @@ export class AgenCDaemonClientMultiplexer {
     const {
       registration,
       replay,
-      replayCounts,
+      replayItems,
       statusReplay,
       statusReplayEvents,
     } = await this.#state.with((state) => {
@@ -287,12 +287,12 @@ export class AgenCDaemonClientMultiplexer {
         }
       }
       const replayEvents: JsonObject[] = [];
-      const replayCounts = new Map<string, number>();
+      const replayItems = new Map<string, BufferedCapabilityEvent[]>();
       for (const capability of client.capabilities) {
         if (state.capabilityReplayInFlight.has(capability)) continue;
         const buffered = state.capabilityBuffers.get(capability) ?? [];
         if (buffered.length === 0) continue;
-        replayCounts.set(capability, buffered.length);
+        replayItems.set(capability, [...buffered]);
         for (const item of buffered) {
           replayEvents.push(item.event);
         }
@@ -333,7 +333,7 @@ export class AgenCDaemonClientMultiplexer {
       );
       options.onRegistered?.({ clientId });
       state.clients.set(clientId, client);
-      for (const capability of replayCounts.keys()) {
+      for (const capability of replayItems.keys()) {
         state.capabilityReplayInFlight.add(capability);
       }
       if (statusReplayBatch.length > 0) {
@@ -360,7 +360,7 @@ export class AgenCDaemonClientMultiplexer {
       return {
         registration: { clientId },
         replay,
-        replayCounts,
+        replayItems,
         statusReplay,
         statusReplayEvents,
       };
@@ -369,16 +369,21 @@ export class AgenCDaemonClientMultiplexer {
     if (replay.length > 0) {
       const replayResult = await settleDeliveries(replay);
       await this.#state.with((state) => {
-        for (const capability of replayCounts.keys()) {
+        for (const capability of replayItems.keys()) {
           state.capabilityReplayInFlight.delete(capability);
         }
         if (replayResult.failed.length === 0) {
-          for (const [capability, count] of replayCounts) {
+          for (const [capability, items] of replayItems) {
             const buffered = state.capabilityBuffers.get(capability);
             if (buffered === undefined) continue;
-            buffered.splice(0, count);
-            if (buffered.length === 0) {
+            // Termination can replace this buffer while replay is blocked.
+            // Retire only the leased objects, never new actions by position.
+            const delivered = new Set(items);
+            const retained = buffered.filter((item) => !delivered.has(item));
+            if (retained.length === 0) {
               state.capabilityBuffers.delete(capability);
+            } else {
+              state.capabilityBuffers.set(capability, retained);
             }
           }
         }
@@ -412,6 +417,7 @@ export class AgenCDaemonClientMultiplexer {
     sessionId: string,
     clientId: string,
     onAttached?: (created: boolean) => void,
+    attachmentOwner?: symbol,
   ): Promise<SessionAttachResult> {
     // Replay reserves its complete bounded batch before attachment. This keeps
     // a blocked client's queued closures within the same byte/count caps as
@@ -429,10 +435,10 @@ export class AgenCDaemonClientMultiplexer {
           this.#maxPendingDeliveryBytesPerClient,
           this.#maxPendingDeliveryCountPerClient,
         );
-        const attachment = await this.#sessionManager.attachSession({
-          sessionId,
-          clientId,
-        });
+        const params = { sessionId, clientId };
+        const attachment = attachmentOwner === undefined
+          ? await this.#sessionManager.attachSession(params)
+          : (await this.#sessionManager.attachSessionWithOwnership(params, attachmentOwner)).attachment;
         const route = getOrCreateRoute(state, sessionId);
 
         client.sessionIds.add(sessionId);
@@ -476,6 +482,48 @@ export class AgenCDaemonClientMultiplexer {
     }
 
     return attachment;
+  }
+
+  /** Undo a speculative attach only when no other attempt has acquired it. */
+  async rollbackClientAttachment(
+    sessionId: string,
+    clientId: string,
+    attachmentOwner: symbol,
+    expectedDeliveryKey: string,
+  ): Promise<void> {
+    await this.#state.with(async (state) => {
+      const client = state.clients.get(clientId);
+      const route = state.sessions.get(sessionId);
+      const attachmentId = route?.clientAttachmentIds.get(clientId);
+      if (client?.deliveryKey !== expectedDeliveryKey || attachmentId === undefined) return;
+      // Session lifecycle owns acquisition and commit. Routing is a projection
+      // of that authority, so pending or committed adopters retain their route.
+      const removed = await this.#sessionManager.rollbackSessionAttachment(
+        { sessionId, attachmentId }, attachmentOwner,
+      );
+      if (!removed) return;
+      route!.clientAttachmentIds.delete(clientId);
+      client.sessionIds.delete(sessionId);
+      deleteRouteIfEmpty(state, route!);
+    });
+  }
+
+  /** The ownership callback runs under the routing lock before removal. */
+  async removeClientIfUnused(
+    clientId: string,
+    expectedDeliveryKey: string,
+    releaseOwnership: () => boolean,
+  ): Promise<boolean> {
+    return this.#state.with((state) => {
+      const client = state.clients.get(clientId);
+      if (
+        client?.deliveryKey !== expectedDeliveryKey ||
+        client.sessionIds.size > 0 ||
+        !releaseOwnership()
+      ) return false;
+      state.clients.delete(clientId);
+      return true;
+    });
   }
 
   async detachClientFromSession(
