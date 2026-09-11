@@ -1099,7 +1099,7 @@ export class ProviderHttpClientSession {
               if (next.done) return;
               // LLM-09: empty chunks still count as body progress for idle
               // watchdog (providers may send keepalives).
-              watchdog.kick();
+              watchdog.kick("bytes");
               if (!next.value || next.value.length === 0) continue;
               if (prepared.continuation) {
                 const decoded = decoder.decode(next.value, { stream: true });

@@ -322,6 +322,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "schema_validation_failed",
   "malformed_tool_call",
   "daemon_connection_state",
+  "stream_idle_warning",
 ]);
 
 /**

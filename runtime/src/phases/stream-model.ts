@@ -11,10 +11,11 @@
  *
  * Invariants wired here:
  *   I-11 (stream idle watchdog) — installStreamWatchdog wraps the stream;
- *        `kick()` fires on every chunk. The canonical config carries a
- *        ten-minute default idle expiry (`stream_watchdog_timeout_ms`,
- *        `0` disables) that aborts the underlying fetch via the scoped
- *        AbortController; sessions without a config store stay unbounded.
+ *        `kick("delta"|"bytes")` on every chunk. Heartbeats keep a dead-socket
+ *        abort from firing. Quiet reasoning warns instead of aborting. The
+ *        canonical config carries a ten-minute default dead-socket expiry
+ *        (`stream_watchdog_timeout_ms`, `0` disables abort). Sessions without
+ *        a config store still warn after ten minutes of no delta.
  *   I-22 (token budget mid-stream) — per-chunk
  *        `budgetTracker.addEmitted(..., "estimate") + sampleMidStream`
  *        keeps a coarse estimate during streaming, but the actual
@@ -43,9 +44,12 @@ import type {
 } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
 import {
+  formatStreamQuietWarning,
   installStreamWatchdog,
   resolveSessionStreamIdleTimeoutMs,
   STREAM_IDLE_ABORT_REASON,
+  STREAM_IDLE_WARNING_REASON,
+  streamChunkHasDelta,
 } from "../llm/stream-watchdog.js";
 import { DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS } from "../config/schema.js";
 import {
@@ -1109,6 +1113,18 @@ export async function streamModel(
           }
         : {}),
     }),
+    onWarning: (info) => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: STREAM_IDLE_WARNING_REASON,
+            message: formatStreamQuietWarning(info.elapsedMs),
+          },
+        },
+      });
+    },
     onFired: (info) => {
       session.emit({
         id: session.nextInternalSubId(),
@@ -1161,8 +1177,7 @@ export async function streamModel(
 
   const onChunk = (chunk: LLMStreamChunk): void => {
     receivedProviderChunk = true;
-    // I-11: any chunk resets the idle timer.
-    watchdog.kick();
+    watchdog.kick(streamChunkHasDelta(chunk) ? "delta" : "bytes");
 
     // I-22: per-chunk token accounting + sampling gate. The sampling
     // result is estimation-only; the continuation decision stays on
