@@ -27,10 +27,11 @@ every call, which is why Hermes and OpenCode have no grok row; the xAI sign-in i
 | agent, model | steps passed | wall | tool calls | tool errors | file reads (re-reads) | compactions | input tokens |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | AgenC, grok-4.6 (xAI sign-in) | 15 of 15 (verifier 1 of 1) | 1174 s | 188 (Edit 74, FileRead 71, Write 15, exec 12, Grep 10, Glob 5) | 0 | 71 (24) | 0 | 28.9M |
-| Hermes 0.21.2, DeepSeek V4 Pro | PENDING | | | | | | |
+| Hermes 0.21.2, DeepSeek V4 Pro | 15 of 15 (verifier 1 of 1) | 1772 s | 94 (write_file 32, patch 25, terminal 21, read_file 10, search_files 6) | not reported | 10 (not reported) | not reported | 5.25M (70,872 uncached, 5.18M cache reads); 169k output, 132k reasoning |
 | OpenCode 1.18.30, DeepSeek V4 Pro (isolated HOME) | PENDING | | | | | | |
 
 Per-step wall time for AgenC on grok-4.6 (seconds): 34, 28, 39, 37, 48, 51, 49, 74, 41, 46, 128, 50, 270, 239, 39.
+Per-step wall time for Hermes 0.21.2 on DeepSeek V4 Pro (seconds): 36, 33, 46, 34, 84, 64, 76, 141, 84, 92, 177, 78, 388, 265, 173.
 For reference, the September 5 like-for-like run at medium effort took 1275 s for AgenC and 2203 s for Hermes 0.14.
 
 AgenC's session task over the AgenC SDK needs the provider credential in the home's secure storage (the xAI sign-in
