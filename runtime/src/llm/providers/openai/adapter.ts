@@ -24,6 +24,8 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMProviderError,
+  LLMManagedAdmissionError,
+  LLMManagedUsagePendingError,
   LLMRateLimitError,
   LLMServerError,
   mapLLMError,
@@ -756,6 +758,7 @@ export class OpenAIProvider implements LLMProvider {
           maxTokens: this.resolveRequestMaxTokens(options),
           maxTokenField: this.resolveChatCompletionsMaxTokenField(),
           providerCapabilityHints,
+          toolCallIdNamespace: headers?.["Idempotency-Key"],
         });
       }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
     } catch (error) {
@@ -763,6 +766,8 @@ export class OpenAIProvider implements LLMProvider {
         throw error;
       }
       if (error instanceof ProviderHttpError) {
+        const admissionError = this.managedRequestError(error, headers);
+        if (admissionError) throw admissionError;
         throw mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
@@ -809,6 +814,8 @@ export class OpenAIProvider implements LLMProvider {
         throw error;
       }
       if (error instanceof ProviderHttpError) {
+        const admissionError = this.managedRequestError(error, headers);
+        if (admissionError) throw admissionError;
         throw mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
@@ -1063,6 +1070,22 @@ export class OpenAIProvider implements LLMProvider {
     return this.config.managedRequestId === true
       ? { "Idempotency-Key": options?.managedRequestId ?? randomUUID() }
       : undefined;
+  }
+
+  private managedRequestError(error: ProviderHttpError, headers: Readonly<Record<string, string>> | undefined): Error | undefined {
+    const requestId = headers?.["Idempotency-Key"];
+    if (this.config.managedRequestId !== true || !requestId ||
+      error.headers.get("x-agenc-request-id") !== requestId) return undefined;
+    const usageState = error.headers.get("x-agenc-usage-status");
+    const code = readNestedProviderCode(error.body);
+    if (error.status === 429 && usageState === "not_started" && code === "too_many_requests") {
+      return new LLMManagedAdmissionError();
+    }
+    if ((error.status === 502 && usageState === "pending" && code === "provider_unavailable") ||
+      (error.status === 409 && ["pending", "started", "uncertain"].includes(usageState ?? "") && code === "request_already_recorded")) {
+      return new LLMManagedUsagePendingError();
+    }
+    return undefined;
   }
 
   private async streamResponses(
@@ -1338,6 +1361,7 @@ export class OpenAIProvider implements LLMProvider {
       maxTokens: this.resolveRequestMaxTokens(options),
       maxTokenField: this.resolveChatCompletionsMaxTokenField(),
       providerCapabilityHints: streamCapabilityHints,
+      toolCallIdNamespace: headers?.["Idempotency-Key"],
     };
     assertProviderStructuredOutputCompatibility({
       providerName: this.name,

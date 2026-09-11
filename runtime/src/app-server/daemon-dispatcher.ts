@@ -3807,10 +3807,15 @@ function validateSessionApplyConfigParams(
 ): SessionApplyConfigParams {
   const validated = validateObjectShape(params, {
     methodName: "session.applyConfig",
-    stringFields: ["sessionId", "profile"],
+    stringFields: ["sessionId", "profile", "reasoningEffort"],
     valueFields: ["reload"],
   });
   validateRequiredString(validated, "session.applyConfig", "sessionId");
+  if (validated.reasoningEffort !== undefined &&
+    (!['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'none'].includes(String(validated.reasoningEffort)) ||
+      validated.profile !== undefined || validated.reload !== undefined)) {
+    throw invalidParams("session.applyConfig reasoningEffort must be a native effort and cannot be combined with reload or profile");
+  }
   if (validated.reload !== undefined && typeof validated.reload !== "boolean") {
     throw invalidParams("session.applyConfig param 'reload' must be a boolean");
   }

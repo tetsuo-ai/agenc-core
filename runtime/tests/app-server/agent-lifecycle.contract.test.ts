@@ -1992,6 +1992,8 @@ describe("AgenC background agent lifecycle", () => {
       sessionId: "session-applyconfig",
       profile: "fast",
     });
+    await agents.applyConfigToSession({ sessionId: "session-applyconfig", reasoningEffort: "max" });
+    expect(applyAgentConfig).toHaveBeenLastCalledWith("agent-applyconfig", { sessionId: "session-applyconfig", reasoningEffort: "max" });
   });
 
   it("rejects session.applyConfig when no runner is available", async () => {

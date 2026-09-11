@@ -181,7 +181,7 @@ describe("resolveProviderModelCapabilities", () => {
       acceptsImageHistory: false,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: true,
-      acceptsReasoningEffort: false,
+      acceptsReasoningEffort: true,
     });
 
     expect(
@@ -260,7 +260,7 @@ describe("resolveProviderModelCapabilities", () => {
       acceptsImageHistory: false,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: true,
-      acceptsReasoningEffort: false,
+      acceptsReasoningEffort: true,
     });
 
     expect(

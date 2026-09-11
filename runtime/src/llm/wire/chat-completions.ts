@@ -4,6 +4,7 @@
  * @module
  */
 
+import { createHash } from "node:crypto";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -63,6 +64,8 @@ export interface ChatCompletionsRequestOptions {
   readonly options?: LLMChatOptions;
   readonly maxTokens?: number;
   readonly maxTokenField?: ChatCompletionsMaxTokenField;
+  /** Trusted managed attempt identity; never serialized into the request body. */
+  readonly toolCallIdNamespace?: string;
   /**
    * Per-provider capability hints. Adapters populate this so the
    * wire builder can strip fields the destination provider rejects.
@@ -444,6 +447,40 @@ function assertStrictToolResultSequence(
   }
 }
 
+/**
+ * A user-role reminder after a tool result starts a new turn on some hosted
+ * DeepSeek templates. Keep runtime-generated context in the tool continuation
+ * instead. Only runtime metadata authorizes this projection: text resembling a
+ * reminder in an actual user message must remain a user message. Context stays
+ * below system authority, and neither canonical history nor tool evidence is
+ * mutated.
+ */
+function projectRuntimeContextIntoToolResults(
+  messages: readonly LLMMessage[],
+): readonly LLMMessage[] {
+  const projected: LLMMessage[] = [];
+  for (const message of messages) {
+    const previous = projected.at(-1);
+    if (
+      previous?.role === "tool" &&
+      message.role === "user" &&
+      message.runtimeOnly?.mergeBoundary === "user_context" &&
+      typeof message.content === "string"
+    ) {
+      const context = `\n\n<runtime-context>\n${message.content}\n</runtime-context>`;
+      projected[projected.length - 1] = {
+        ...previous,
+        content: typeof previous.content === "string"
+          ? previous.content + context
+          : [...previous.content, { type: "text", text: context }],
+      };
+    } else {
+      projected.push(message);
+    }
+  }
+  return projected;
+}
+
 export function buildChatCompletionsRequest(
   input: ChatCompletionsRequestOptions,
 ): Record<string, unknown> {
@@ -471,11 +508,26 @@ export function buildChatCompletionsRequest(
   const systemSuffix = [
     input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
     zaiJsonSchemaInstruction,
+    ...(input.providerCapabilityHints?.includeToolNameAliases === true && input.tools.length > 0
+      ? [
+          "Tool names in instructions, skills and discovery results are runtime names. " +
+          "Call the corresponding function name from your tool definitions. " +
+          "An encoded function name does not mean the tool is unavailable. " +
+          "Mapping (runtime name -> callable function name):\n" +
+          input.tools.map(tool => {
+            const name = tool.function.name;
+            return `${JSON.stringify(name)} -> ${JSON.stringify(encodeMcpToolNameForWire(name))}`;
+          }).join("\n"),
+        ]
+      : []),
   ].filter((value): value is string => value !== undefined).join("\n");
-  const normalizedMessages = prepareMessagesForWire(
+  const preparedMessages = prepareMessagesForWire(
     input.messages,
     input.options,
   );
+  const normalizedMessages = input.providerCapabilityHints?.runtimeContextInToolResults
+    ? projectRuntimeContextIntoToolResults(preparedMessages)
+    : preparedMessages;
   const replayOnlyAdjacentToolContinuation =
     input.providerCapabilityHints
       ?.replaysReasoningContentOnlyForAdjacentToolContinuation === true;
@@ -561,6 +613,7 @@ export function buildChatCompletionsRequest(
     tools.length === 0;
   if (
     requestedToolChoice !== undefined &&
+    input.providerCapabilityHints?.acceptsToolChoice !== false &&
     !omitToolsForChoice &&
     !omitToolControlsWithoutTools
   ) {
@@ -794,7 +847,7 @@ export function parseChatCompletionsResponse(
   }
   const acceptsToolCalls =
     finishReason === "stop" || finishReason === "tool_calls";
-  const toolCalls = acceptsToolCalls && Array.isArray(message.tool_calls)
+  const wireToolCalls = acceptsToolCalls && Array.isArray(message.tool_calls)
     ? normalizeToolCallsStrict(
       (message.tool_calls as Array<Record<string, unknown>>).map(
         (toolCall): LLMToolCall => {
@@ -832,6 +885,13 @@ export function parseChatCompletionsResponse(
       "OpenAI chat-completions response emitted invalid tool_call",
     )
     : [];
+  // Some routed providers restart at call_0 for every response. Keep canonical
+  // history globally unique while preserving IDs across retries of one attempt.
+  // Validate the original response first so duplicate IDs within it still fail.
+  const toolCalls = request.toolCallIdNamespace === undefined ? wireToolCalls :
+    wireToolCalls.map(call => ({...call,id:"call_" + createHash("sha256")
+      .update(request.toolCallIdNamespace!).update("\0").update(call.id)
+      .digest("hex").slice(0,32)}));
   const reasoningContentField =
     request.providerCapabilityHints?.reasoningContentField ??
     "reasoning_content";

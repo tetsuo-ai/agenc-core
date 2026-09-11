@@ -201,6 +201,15 @@ test('Meta Muse models expose and apply their exact catalog effort levels', asyn
   expect(reasoningEffortToEffortLevel('minimal')).toBe('minimal')
 })
 
+test.each(['deepseek-v4-flash', 'deepseek-v4-pro'])('native %s keeps Low/High/Max and defaults to High', async (model) => {
+  const effort = await importFreshEffortModule({ provider: 'xai' })
+  const context = { home: {}, environment: {}, provider: 'deepseek' } as never
+  expect(effort.getAvailableEffortLevelsForContext(model, context)).toEqual(['low', 'high', 'max'])
+  expect(effort.getDefaultEffortForModelForContext(model, context)).toBe('high')
+  expect(effort.resolveAppliedEffortForContext(model, 'max', context)).toBe('max')
+  expect(effort.getDisplayedEffortLevelForContext(model, 'max', context)).toBe('max')
+})
+
 test('Z.ai GLM-5.3 exposes, defaults, applies, and displays literal max effort', async () => {
   const {
     getAvailableEffortLevelsForContext,

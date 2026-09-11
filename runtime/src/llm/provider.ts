@@ -4,6 +4,7 @@
  * @module
  */
 
+import { concurrentChatFetch } from "./providers/concurrent-chat-fetch.js";
 import type {
   AuthBackend,
   AuthSubscriptionTier,
@@ -1446,7 +1447,11 @@ function buildManagedGatewayProvider(
       ? { contextWindowTokens: extra.contextWindowTokens }
       : {}),
     ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
-    ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
+    ...(extra.fetchImpl
+      ? { fetchImpl: extra.fetchImpl }
+      : provider === "openrouter" && model.startsWith("openrouter/deepseek/") && typeof Bun === "undefined"
+        ? { fetchImpl: concurrentChatFetch() }
+        : {}),
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   };
   const providerInstance = new OpenAIProvider(cfg);

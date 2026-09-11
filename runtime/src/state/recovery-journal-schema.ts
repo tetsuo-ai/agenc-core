@@ -1,4 +1,5 @@
 import type { EventMsg } from "../session/event-log.js";
+import { RUN_RUNTIME_REASONING_EFFORTS } from "../contracts/run-contracts.js";
 import {
   MAX_TURN_FAILURE_MESSAGE_LENGTH,
   validFailureCode,
@@ -133,15 +134,8 @@ const isRunRuntimePermissionMode: Validator<RunRuntimePermissionMode> = (
   value === "dontAsk" ||
   value === "auto" ||
   value === "unattended";
-const isRunRuntimeReasoningEffort: Validator<RunRuntimeReasoningEffort> = (
-  value,
-): value is RunRuntimeReasoningEffort =>
-  value === "minimal" ||
-  value === "low" ||
-  value === "medium" ||
-  value === "high" ||
-  value === "xhigh" ||
-  value === "none";
+const isRunRuntimeReasoningEffort: Validator<RunRuntimeReasoningEffort> =
+  oneOf(...RUN_RUNTIME_REASONING_EFFORTS);
 const isRunRuntimeModelVerbosity: Validator<RunRuntimeModelVerbosity> = (
   value,
 ): value is RunRuntimeModelVerbosity =>
@@ -276,14 +270,7 @@ const isFileSystemSandboxPolicy = objectShape({
 const isCollaborationMode = objectShape(
   { model: isString },
   {
-    reasoningEffort: oneOf(
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "none",
-    ),
+    reasoningEffort: isRunRuntimeReasoningEffort,
     developerInstructions: isString,
   },
 );

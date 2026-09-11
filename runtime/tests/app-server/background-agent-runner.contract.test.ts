@@ -7262,6 +7262,31 @@ describe("AgenC delegate background-agent runner", () => {
     expect(setDisabled).toHaveBeenNthCalledWith(2, false);
   });
 
+  it("applies native effort between turns without changing model, permissions, or disk config", async () => {
+    const h = makeTopLevelRunner({ conversationId: "direct-deepseek-effort", canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = "deepseek";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "deepseek-v4-pro";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const beforeConfig = h.configStore.current();
+    const before = h.sessionState.sessionConfiguration;
+    for (const reasoningEffort of ["low", "high", "max"]) {
+      await expect(h.runner.applyAgentConfig("direct-deepseek-effort", { sessionId: "session_1", reasoningEffort }))
+        .resolves.toMatchObject({ applied: true, model: "deepseek-v4-pro", provider: "deepseek" });
+      expect(h.sessionState.sessionConfiguration.collaborationMode).toMatchObject({ model: "deepseek-v4-pro", reasoningEffort });
+      expect(h.sessionState.sessionConfiguration.approvalPolicy).toEqual(before.approvalPolicy);
+      expect(h.sessionState.sessionConfiguration.sandboxPolicy).toEqual(before.sandboxPolicy);
+      expect(h.configStore.current()).toEqual(beforeConfig);
+      expect(h.session.pendingProviderSwitch).toBeNull();
+    }
+    const recorded = recordedRuntimeSettingsEvents(h.rolloutItems);
+    await expect(h.runner.applyAgentConfig("direct-deepseek-effort", { sessionId: "session_1", reasoningEffort: "medium" })).rejects.toThrow("does not support");
+    Object.assign(h.session, { activeTurn: h.activeTurn });
+    h.setActiveTurn("running-turn");
+    await expect(h.runner.applyAgentConfig("direct-deepseek-effort", { sessionId: "session_1", reasoningEffort: "low" })).rejects.toThrow("between turns");
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(recorded);
+    expect(h.sessionState.sessionConfiguration.collaborationMode).toMatchObject({ reasoningEffort: "max" });
+  });
+
   it("applyAgentConfig applies reasoning effort and stages a profile switch", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "parent-session",

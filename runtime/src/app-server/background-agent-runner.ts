@@ -78,6 +78,7 @@ import {
   PermissionRuleMutationPrecommitError,
 } from "../permissions/permission-updates.js";
 import { applyModelSwitch } from "../commands/model.js";
+import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
 import type {
   ProviderModelSelectionOutcome,
 } from "../contracts/provider-model-selection.js";
@@ -3878,6 +3879,45 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
     const session = active.bootstrap.session;
+    if (params.reasoningEffort !== undefined) {
+      if (params.reload !== undefined || params.profile !== undefined) {
+        throw new Error("An effort-only update cannot reload other configuration");
+      }
+      return withRuntimeSettingsMutation(active, async () => {
+        if (!isRunnableActiveAgent(active) || session.activeTurn?.unsafePeek() != null) {
+          throw new Error("Reasoning effort can only change between turns");
+        }
+        const previousSettings = ensureInitialRuntimeSettings(active, agentId);
+        const level = normalizeRuntimeSetting(params.reasoningEffort, RUN_RUNTIME_REASONING_EFFORTS, "reasoning effort");
+        const entry = resolveRegisteredModelCatalogEntry({ provider: previousSettings.provider, model: previousSettings.model });
+        if (level === null || !entry?.supportedReasoningLevels.includes(level)) {
+          throw new Error("The selected model does not support this reasoning effort");
+        }
+        const identity = { provider: previousSettings.provider, model: previousSettings.model };
+        if (previousSettings.reasoningEffort === level) {
+          return { applied: true, ...identity, summary: `Reasoning effort is ${level}` };
+        }
+        const previousConfiguration = session.sessionConfiguration;
+        const prepared = prepareDurableRuntimeSettingsChange(active, agentId,
+          { ...previousSettings, reasoningEffort: level }, "config_applied");
+        try {
+          await session.state.with(state => {
+            state.sessionConfiguration = {
+              ...state.sessionConfiguration,
+              collaborationMode: { ...state.sessionConfiguration.collaborationMode, reasoningEffort: level },
+            };
+          });
+        } catch (error) {
+          await session.state.with(state => { state.sessionConfiguration = previousConfiguration; });
+          compensatePreparedRuntimeSettingsChange(active, agentId, previousSettings, prepared);
+          throw error;
+        }
+        prepared.finalize();
+        return { applied: true, ...identity,
+          ...(active.runtimeSettingsEventId ? { runtimeSettingsEventId: active.runtimeSettingsEventId } : {}),
+          summary: `Reasoning effort set to ${level}` };
+      });
+    }
     const configStore = session.services.configStore;
     if (configStore === undefined) {
       return {

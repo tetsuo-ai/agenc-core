@@ -31,6 +31,7 @@ import {
 } from "../session/cost.js";
 import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
+import { LLMManagedAdmissionError } from "../llm/errors.js";
 
 export interface AdmittedModelCallOptions {
   readonly session: Session;
@@ -825,6 +826,10 @@ export async function runAdmittedModelCall(
     if (settled) {
       // Reconciliation/unknown-hold already reached an exactly-once terminal
       // state. Never overwrite it from a broad catch path.
+    } else if (dispatched && params.providerName === "agenc" && error instanceof LLMManagedAdmissionError) {
+      // The trusted gateway rejected this exact attempt before provider work.
+      // Keep unrelated unknown holds, but do not fabricate usage for this one.
+      client.reconcile(reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
     } else if (dispatched) {
       client.holdUnknown(reservationId, "provider_call_failed_after_dispatch");
     } else {

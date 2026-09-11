@@ -492,6 +492,21 @@ describe("daemon session-control internal method dispatch", () => {
     });
   });
 
+  it("routes an effort-only update and rejects mixed configuration mutations", async () => {
+    const applyConfigToSession = vi.fn(async (params: SessionApplyConfigParams) => ({ sessionId: params.sessionId, applied: true, summary: "effort applied" }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { applyConfigToSession } as never });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "effort", method: "session.applyConfig", params: { sessionId: "session_1", reasoningEffort: "max" } }))
+      .resolves.toMatchObject({ result: { applied: true } });
+    expect(applyConfigToSession).toHaveBeenCalledWith({ sessionId: "session_1", reasoningEffort: "max" });
+    for (const extra of [{ reasoningEffort: "unknown" }, { reasoningEffort: "max", reload: true }, { reasoningEffort: "low", profile: "fast" }]) {
+      await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "bad-effort", method: "session.applyConfig", params: { sessionId: "session_1", ...extra } }))
+        .resolves.toMatchObject({ error: { code: -32602 } });
+    }
+    expect(applyConfigToSession).toHaveBeenCalledTimes(1);
+  });
+
   it("routes session.applyConfig with reload flag", async () => {
     const applyConfigToSession = vi.fn(
       async (params: SessionApplyConfigParams) => ({

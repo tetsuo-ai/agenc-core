@@ -384,6 +384,9 @@ describe("Linux sandbox launcher", () => {
 
   it("maps restricted filesystem policy to writable, readonly, and masked bwrap mounts", () => {
     const root = withTempDir("agenc-linux-launcher-fs-");
+    // Own the repository metadata fixture; an ambient ancestor repository
+    // must not decide whether this root has a protected .git path.
+    fs.mkdirSync(path.join(root, ".git"));
     const secret = path.join(root, "token.secret");
     const otherSecret = path.join(root, "other.token");
     fs.writeFileSync(secret, "sensitive");

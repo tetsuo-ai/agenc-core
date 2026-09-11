@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { createProvider } from "../../src/llm/provider.js";
 import type { LLMMessage } from "../../src/llm/types.js";
+import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
+import { isTransientProviderError } from "../../src/recovery/api-errors.js";
 
 const baseURL = "https://id.agenc.ag/v1/auth/openrouter/v1";
 const model = "openai/gpt-5";
@@ -24,6 +26,79 @@ function requestId(init: RequestInit | undefined) { return new Headers(init?.hea
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("managed paid request identity", () => {
+  test.each([false, true])("keeps repeated provider tool IDs distinct across rounds and stable within an attempt (stream=%s)", async (streaming) => {
+    const tools = [{type:"function" as const,function:{name:"write_marker",parameters:{type:"object",properties:{content:{type:"string"}}}}}];
+    const argumentsText = JSON.stringify({content:"    marker\n"});
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      const call={id:"call_0",type:"function",function:{name:"write_marker",arguments:argumentsText}};
+      return JSON.parse(String(init?.body)).stream ? new Response([
+        {model,choices:[{index:0,delta:{tool_calls:[{...call,index:0}]}}]},
+        {model,choices:[{index:0,delta:{},finish_reason:"tool_calls"}],usage:{prompt_tokens:10,completion_tokens:4,total_tokens:14}},
+      ].map(frame=>`data: ${JSON.stringify(frame)}\n\n`).join("")+"data: [DONE]\n\n",{headers:{"content-type":"text/event-stream"}}) :
+        Response.json({model,choices:[{message:{role:"assistant",content:"",tool_calls:[call]},finish_reason:"tool_calls"}],usage:{prompt_tokens:10,completion_tokens:4,total_tokens:14}});
+    });
+    const provider = managed(fetchImpl), history: LLMMessage[] = [...messages], ids:string[]=[];
+    for (let i=0;i<3;i++) {
+      const options={tools,singleWireAttempt:true,managedRequestId:`40c87426-0d3a-4b8e-9eb7-a06a882d52a${i}`};
+      const chunks:unknown[]=[];
+      const result=streaming?await provider.chatStream(history,c=>chunks.push(c),options):await provider.chat(history,options);
+      const call=result.toolCalls[0]!;ids.push(call.id);
+      expect(call.arguments).toBe(argumentsText);
+      if(streaming)expect(chunks.at(-1)).toMatchObject({done:true,toolCalls:result.toolCalls});
+      const replay=streaming?await provider.chatStream(history,()=>{},options):await provider.chat(history,options);
+      expect(replay.toolCalls[0]!.id).toBe(call.id);
+      history.push({role:"assistant",content:"",toolCalls:result.toolCalls},{role:"tool",toolCallId:call.id,content:"written"});
+    }
+    expect(new Set(ids).size).toBe(3);
+    const sent=JSON.parse(String(fetchImpl.mock.lastCall![1]?.body));
+    expect(sent.messages.filter((m:LLMMessage)=>m.role==="tool").map((m:{tool_call_id:string})=>m.tool_call_id)).toEqual(ids.slice(0,2));
+    expect(sent).not.toHaveProperty("toolCallIdNamespace");
+  });
+
+  test.each([false, true])("does not automatically retry a recorded failed attempt (stream=%s)", async (streaming) => {
+    for (const [status, code, state] of [[502, "provider_unavailable", "pending"], [409, "request_already_recorded", "uncertain"]] as const) {
+      const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => Response.json({error:{code}}, {
+        status, headers:{"x-agenc-request-id":requestId(init)!,"x-agenc-usage-status":state},
+      }));
+      const provider = managed(fetchImpl);
+      const error = await (streaming ? provider.chatStream(messages,()=>{},{singleWireAttempt:true}) : provider.chat(messages,{singleWireAttempt:true})).catch(error=>error);
+      expect(error).toBeInstanceOf(LLMManagedUsagePendingError);
+      expect(error).not.toBeInstanceOf(LLMManagedAdmissionError);
+      expect(isTransientProviderError(error)).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  });
+
+  test("does not treat an unrelated gateway response as evidence of recorded usage", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({error:{code:"provider_unavailable"}}, {
+      status:502, headers:{"x-agenc-request-id":"unrelated","x-agenc-usage-status":"pending"},
+    }));
+    const error = await managed(fetchImpl).chat(messages,{singleWireAttempt:true}).catch(error=>error);
+    expect(error).not.toBeInstanceOf(LLMManagedUsagePendingError);
+    expect(isTransientProviderError(error)).toBe(true);
+  });
+
+  test.each([false,true])("recognizes a matching no-dispatch receipt without automatic recovery (stream=%s)", async (streaming) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => Response.json({error:{code:"too_many_requests"}}, {
+      status:429, headers:{"x-agenc-request-id":requestId(init)!,"x-agenc-usage-status":"not_started"},
+    }));
+    const provider = managed(fetchImpl);
+    const result = streaming ? provider.chatStream(messages,()=>{},{singleWireAttempt:true}) : provider.chat(messages,{singleWireAttempt:true});
+    const error = await result.catch(error=>error);
+    expect(error).toBeInstanceOf(LLMManagedAdmissionError);
+    expect(isTransientProviderError(error)).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  test.each(["different-request","pending"])("does not infer no usage from an unbound receipt (%s)", async (condition) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => Response.json({error:{code:"too_many_requests"}}, {
+      status:429, headers:{"x-agenc-request-id":condition==="different-request"?"unrelated":requestId(init)!,"x-agenc-usage-status":condition==="pending"?"pending":"not_started"},
+    }));
+    const error = await managed(fetchImpl).chat(messages,{singleWireAttempt:true}).catch(error=>error);
+    expect(error).not.toBeInstanceOf(LLMManagedAdmissionError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   test("keeps one UUID through lost responses and HTTP retries, then gives a new call its own identity", async () => {
     vi.useFakeTimers();
     const fetchImpl = vi.fn<typeof fetch>()

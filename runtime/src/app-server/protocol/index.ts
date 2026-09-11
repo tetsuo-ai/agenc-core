@@ -1888,6 +1888,8 @@ export interface SessionHookRunDiagnosticShape extends JsonObject {
 
 export interface SessionApplyConfigParams extends JsonObject {
   readonly sessionId: string;
+  /** Apply only this effort to the idle session, without reloading other settings. */
+  readonly reasoningEffort?: string;
   /** Profile to overlay onto the live session; omit for a plain reload. */
   readonly profile?: string;
   /** When `true`, re-read config from disk + env before applying. */

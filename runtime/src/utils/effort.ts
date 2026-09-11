@@ -67,6 +67,7 @@ function inferCatalogProvider(
     normalizedModel.startsWith('gemini-') || resolveGeminiThinkingModel(model)
   ) return 'gemini'
   if (normalizedModel.startsWith('muse-spark-')) return 'meta'
+  if (/^deepseek-v4-(?:flash|pro)$/.test(normalizedModel)) return 'deepseek'
   if (isVerifiedOpenAiReasoningModel(normalizedModel)) return 'openai'
   return undefined
 }
@@ -587,6 +588,7 @@ function getDefaultEffortForModelForOptionalContext(
   }
   const registeredEntry =
     registeredProvider === 'meta' ||
+      registeredProvider === 'deepseek' ||
       registeredProvider === 'zai' ||
       registeredProvider === 'zai-coding-plan' ||
       registeredProvider === 'kimi'
