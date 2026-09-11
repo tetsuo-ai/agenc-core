@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 
 import type { LLMMessage } from "../llm/types.js";
 import type { PermissionMode } from "../permissions/types.js";
+import { isAutoFamilyMode } from "../prompts/attachments/auto-mode.js";
 
 export type RetainedPlacement = "before" | "after";
 
@@ -124,8 +125,12 @@ export function projectRetainedAttachments(
       switch (message.runtimeOnly?.permissionModeReminder) {
         case "plan": return permissionMode === "plan";
         case "plan_exit": return permissionMode !== "plan";
-        case "auto": return permissionMode === "auto";
-        case "auto_exit": return permissionMode !== "auto";
+        // The producer emits the note for the whole autonomous family
+        // (auto, acceptEdits, bypassPermissions); keep it under the same
+        // rule or the note is dropped here and re-emitted after the newest
+        // history item, moving the provider's cached prefix on every call.
+        case "auto": return isAutoFamilyMode(permissionMode);
+        case "auto_exit": return !isAutoFamilyMode(permissionMode);
         default: return true;
       }
     });
