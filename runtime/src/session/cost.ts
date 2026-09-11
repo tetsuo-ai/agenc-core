@@ -283,11 +283,64 @@ const COST_TIER_OPUS_LEGACY: Readonly<ModelCostEntry> = Object.freeze({
 // Current Opus tier ($5/$25 per Mtok) — Opus dropped to $5/$25 with 4.5, so 4.5
 // through 4.8 (and later) bill here. Mirrors utils/modelCost.ts COST_TIER_5_25
 // (the canonical AgenC pricing source of truth), expressed per-1K.
+const COST_TIER_MINIMAX_M3: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0003,
+  outputUsdPer1K: 0.0012,
+  cachedInputUsdPer1K: 0.00006,
+  cacheCreationUsdPer1K: 0.000375,
+  webSearchUsdPerRequest: 0,
+});
+const COST_TIER_MINIMAX_M2_7_HIGHSPEED: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0006,
+  outputUsdPer1K: 0.0024,
+  cachedInputUsdPer1K: 0.00006,
+  cacheCreationUsdPer1K: 0.000375,
+  webSearchUsdPerRequest: 0,
+});
+const COST_TIER_MINIMAX_M2: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0003,
+  outputUsdPer1K: 0.0012,
+  cachedInputUsdPer1K: 0.00003,
+  cacheCreationUsdPer1K: 0.000375,
+  webSearchUsdPerRequest: 0,
+});
+const COST_TIER_MINIMAX_M2_HIGHSPEED: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0006,
+  outputUsdPer1K: 0.0024,
+  cachedInputUsdPer1K: 0.00003,
+  cacheCreationUsdPer1K: 0.000375,
+  webSearchUsdPerRequest: 0,
+});
+
+function minimaxCostAliases(
+  model: string,
+  entry: Readonly<ModelCostEntry>,
+): Record<string, Readonly<ModelCostEntry>> {
+  return { [`minimax:${model}`]: entry, [model]: entry };
+}
+
 const COST_TIER_OPUS_5_25: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.005,
   outputUsdPer1K: 0.025,
   cachedInputUsdPer1K: 0.0005,
   cacheCreationUsdPer1K: 0.00625,
+  webSearchUsdPerRequest: 0.01,
+});
+
+// Claude Fable 5 / 5.1 at $10/$50 and Claude Sonnet 5 at $2/$10
+// (platform.claude.com models overview, 2026-09-11).
+const COST_TIER_FABLE_10_50: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.01,
+  outputUsdPer1K: 0.05,
+  cachedInputUsdPer1K: 0.001,
+  cacheCreationUsdPer1K: 0.0125,
+  webSearchUsdPerRequest: 0.01,
+});
+const COST_TIER_SONNET_2_10: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.002,
+  outputUsdPer1K: 0.01,
+  cachedInputUsdPer1K: 0.0002,
+  cacheCreationUsdPer1K: 0.0025,
   webSearchUsdPerRequest: 0.01,
 });
 
@@ -406,6 +459,14 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("o3", COST_TIER_O3),
     ...openAiCostAliases("o3-mini", COST_TIER_O3_MINI),
     ...openAiCostAliases("o4-mini", COST_TIER_O4_MINI),
+    "anthropic:claude-fable-5-1": COST_TIER_FABLE_10_50,
+    "claude-fable-5-1": COST_TIER_FABLE_10_50,
+    "anthropic:claude-fable-5": COST_TIER_FABLE_10_50,
+    "claude-fable-5": COST_TIER_FABLE_10_50,
+    "anthropic:claude-opus-5": COST_TIER_OPUS_5_25,
+    "claude-opus-5": COST_TIER_OPUS_5_25,
+    "anthropic:claude-sonnet-5": COST_TIER_SONNET_2_10,
+    "claude-sonnet-5": COST_TIER_SONNET_2_10,
     "anthropic:claude-sonnet-4-6": COST_TIER_SONNET,
     "claude-sonnet-4-6": COST_TIER_SONNET,
     "anthropic:claude-sonnet-4-5": COST_TIER_SONNET,
@@ -497,8 +558,19 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
     "nvidia-nim:nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
     "nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
-    "minimax:MiniMax-M2.5": DEFAULT_UNKNOWN_MODEL_COST,
-    "MiniMax-M2.5": DEFAULT_UNKNOWN_MODEL_COST,
+    // MiniMax pay-as-you-go (platform.minimax.io/docs/guides/pricing-paygo,
+    // 2026-09-11, standard tier, prompts up to 512k): M3 $0.30/$1.20 per M
+    // with $0.06 cache reads; M2.7 the same; the other M2 generations read
+    // cache at $0.03; every highspeed variant doubles input and output.
+    // Cache writes are $0.375 per M across the line.
+    ...minimaxCostAliases("MiniMax-M3", COST_TIER_MINIMAX_M3),
+    ...minimaxCostAliases("MiniMax-M2.7", COST_TIER_MINIMAX_M3),
+    ...minimaxCostAliases("MiniMax-M2.7-highspeed", COST_TIER_MINIMAX_M2_7_HIGHSPEED),
+    ...minimaxCostAliases("MiniMax-M2.5", COST_TIER_MINIMAX_M2),
+    ...minimaxCostAliases("MiniMax-M2.5-highspeed", COST_TIER_MINIMAX_M2_HIGHSPEED),
+    ...minimaxCostAliases("MiniMax-M2.1", COST_TIER_MINIMAX_M2),
+    ...minimaxCostAliases("MiniMax-M2.1-highspeed", COST_TIER_MINIMAX_M2_HIGHSPEED),
+    ...minimaxCostAliases("MiniMax-M2", COST_TIER_MINIMAX_M2),
     "amazon-bedrock:amazon.nova-pro-v1:0": DEFAULT_UNKNOWN_MODEL_COST,
     "amazon.nova-pro-v1:0": DEFAULT_UNKNOWN_MODEL_COST,
     "agenc:agenc": DEFAULT_UNKNOWN_MODEL_COST,

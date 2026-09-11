@@ -275,7 +275,7 @@ describe("provider/model configuration authority", () => {
       mergeProviderModelLayer(defaultConfig(), { model_provider: "anthropic" }),
     ).toMatchObject({
       model_provider: "anthropic",
-      model: "claude-opus-4-7",
+      model: "claude-opus-5",
     });
   });
 });

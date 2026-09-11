@@ -873,24 +873,75 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
     tools: [],
   };
 
-  test("a fable-5 request carries NO thinking config while opus-4-8 keeps its config", () => {
+  test("a fable-5 request carries NO thinking config while opus-4-8 runs adaptive thinking", () => {
     const fable = buildAnthropicMessagesRequest({
       ...baseInput,
       model: "claude-fable-5",
       options: { reasoningEffort: "high" },
     });
     expect(fable.thinking).toBeUndefined();
+    expect(fable.output_config).toEqual({ effort: "high" });
 
-    // Opus family behavior is unchanged (kept exactly as-is).
+    // Opus 4.8 returns 400 for `enabled` + `budget_tokens` ("Use
+    // thinking.type.adaptive and output_config.effort"), probed 2026-09-11.
     const opus = buildAnthropicMessagesRequest({
       ...baseInput,
       model: "claude-opus-4-8",
       options: { reasoningEffort: "high" },
     });
-    expect(opus.thinking).toEqual({
-      type: "enabled",
-      budget_tokens: 4096,
-    });
+    expect(opus.thinking).toEqual({ type: "adaptive" });
+    expect(opus.output_config).toEqual({ effort: "high" });
+  });
+
+  test("each Claude generation gets the thinking control the API accepts", () => {
+    const request = (model: string, reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "minimal") =>
+      buildAnthropicMessagesRequest({
+        ...baseInput,
+        model,
+        options: reasoningEffort === undefined ? {} : { reasoningEffort },
+      });
+
+    // Current lineup: Fable 5.1 omits the config, Opus 5 and Sonnet 5 run adaptive.
+    expect(request("claude-fable-5-1", "max").thinking).toBeUndefined();
+    expect(request("claude-fable-5-1", "max").output_config).toEqual({ effort: "max" });
+    for (const model of ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]) {
+      expect(request(model, "medium").thinking, model).toEqual({ type: "adaptive" });
+      expect(request(model, "medium").output_config, model).toEqual({ effort: "medium" });
+    }
+    expect(request("us.anthropic.agenc-opus-5-v1", "low").thinking).toEqual({ type: "adaptive" });
+
+    // Budgeted generations keep their config; effort only where the API takes it.
+    expect(request("claude-opus-4-5-20251101", "high").thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+    expect(request("claude-opus-4-5-20251101", "high").output_config).toEqual({ effort: "high" });
+    for (const model of ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]) {
+      expect(request(model, "low").thinking, model).toEqual({ type: "enabled", budget_tokens: 2048 });
+      expect(request(model, "low").output_config, model).toBeUndefined();
+    }
+
+    // No effort, no thinking config and no output_config, as before.
+    expect(request("claude-opus-5").thinking).toBeUndefined();
+    expect(request("claude-opus-5").output_config).toBeUndefined();
+    // `minimal` is not on Claude's ladder; it rounds up to low.
+    expect(request("claude-opus-5", "minimal").output_config).toEqual({ effort: "low" });
+  });
+
+  test("models that answer 400 to temperature never receive it", () => {
+    for (const model of ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"]) {
+      const request = buildAnthropicMessagesRequest({
+        ...baseInput,
+        model,
+        options: { temperature: 0.2 },
+      });
+      expect(request.temperature, model).toBeUndefined();
+    }
+    for (const model of ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]) {
+      const request = buildAnthropicMessagesRequest({
+        ...baseInput,
+        model,
+        options: { temperature: 0.2 },
+      });
+      expect(request.temperature, model).toBe(0.2);
+    }
   });
 
   test("provider spellings of the family also omit the thinking config", () => {
@@ -955,7 +1006,7 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
     expect(request.tool_choice).toBeUndefined();
   });
 
-  test("fable-5 omits temperature (sampling params removed) while opus keeps it", () => {
+  test("fable-5 omits temperature (sampling params removed) while opus 4.6 keeps it", () => {
     const fable = buildAnthropicMessagesRequest({
       ...baseInput,
       model: "claude-fable-5",
@@ -963,9 +1014,11 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
     });
     expect(fable.temperature).toBeUndefined();
 
+    // Opus 4.8 and 4.7 dropped sampling parameters too (400, probed
+    // 2026-09-11); Opus 4.6 is the newest Opus that still takes them.
     const opus = buildAnthropicMessagesRequest({
       ...baseInput,
-      model: "claude-opus-4-8",
+      model: "claude-opus-4-6",
       options: { temperature: 0.4 },
     });
     expect(opus.temperature).toBe(0.4);

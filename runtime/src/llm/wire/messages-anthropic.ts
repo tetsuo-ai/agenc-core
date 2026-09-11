@@ -32,7 +32,12 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
-import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
+import {
+  anthropicAcceptsEffort,
+  anthropicAcceptsSamplingParameters,
+  anthropicEffort,
+  anthropicThinkingControl,
+} from "../../utils/model/anthropicThinkingControl.js";
 
 export interface AnthropicMessagesRequestOptions {
   readonly model: string;
@@ -349,8 +354,15 @@ export function buildAnthropicMessagesRequest(
   // Task 28: the Fable/Mythos 5 family removed sampling parameters —
   // sending `temperature` returns a 400 (provider docs, verified
   // 2026-07-08). Opus-family behavior is unchanged.
-  const alwaysOnThinking = isAlwaysOnThinkingAnthropicModel(input.model);
-  if (input.options?.temperature !== undefined && !alwaysOnThinking) {
+  const thinkingControl = anthropicThinkingControl(input.model);
+  const alwaysOnThinking = thinkingControl === "always_on";
+  // `temperature` is "deprecated for this model" (400) on Opus 5, Sonnet 5,
+  // Opus 4.8 and Opus 4.7 as well (probed 2026-09-11); the 4.6 generation
+  // and older still take it.
+  if (
+    input.options?.temperature !== undefined &&
+    anthropicAcceptsSamplingParameters(input.model)
+  ) {
     body.temperature = input.options.temperature;
   }
   if (
@@ -404,17 +416,31 @@ export function buildAnthropicMessagesRequest(
   // family — thinking is always on and any explicit configuration other
   // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)
   // returns a 400; omitting the param runs adaptive thinking. Depth is the
-  // effort parameter's job on that family. Opus-family (>= 4.6) behavior
-  // below is unchanged.
+  // effort parameter's job on that family.
+  //
+  // Opus 5, Sonnet 5, Opus 4.8 and Opus 4.7 return the same 400 for
+  // `enabled` + `budget_tokens` ("Use thinking.type.adaptive and
+  // output_config.effort"); they and the 4.6 generation take adaptive
+  // thinking, with depth steered by effort. Only Opus 4.5, Sonnet 4.5,
+  // Haiku 4.5 and older still budget their thinking. Probed live
+  // 2026-09-11; see anthropicThinkingControl.ts.
   if (thinkingEnabled && !alwaysOnThinking) {
-    body.thinking = {
-      type: "enabled",
-      budget_tokens:
-        input.options?.reasoningEffort === "high" ||
-          input.options?.reasoningEffort === "xhigh"
-          ? 4096
-          : 2048,
-    };
+    body.thinking = thinkingControl === "adaptive"
+      ? { type: "adaptive" }
+      : {
+          type: "enabled",
+          budget_tokens:
+            input.options?.reasoningEffort === "high" ||
+              input.options?.reasoningEffort === "xhigh"
+              ? 4096
+              : 2048,
+        };
+  }
+  // The effort dial only means something on the wire as output_config.effort;
+  // Sonnet 4.5 and Haiku 4.5 reject the field, so it stays off for them.
+  const effort = anthropicEffort(input.options?.reasoningEffort);
+  if (effort !== undefined && anthropicAcceptsEffort(input.model)) {
+    body.output_config = { effort };
   }
   if (input.contextManagement) {
     body.context_management = input.contextManagement;

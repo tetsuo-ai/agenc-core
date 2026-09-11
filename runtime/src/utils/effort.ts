@@ -109,8 +109,11 @@ function modelSupportsEffortForOptionalContext(
   ) {
     return true
   }
-  // Supported by a subset of AgenC 4 models
+  // Supported by a subset of AgenC 4 models and the current lineup
+  // (platform.claude.com effort doc, 2026-09-11)
   if (
+    m.includes('opus-5') ||
+    m.includes('sonnet-5') ||
     m.includes('opus-4-6') ||
     m.includes('opus-4-7') ||
     m.includes('opus-4-8') ||
@@ -160,8 +163,11 @@ function modelSupportsMaxEffortForOptionalContext(
   }
   const m = model.toLowerCase()
   // Fable 5 supports the full effort range incl. 'max' (provider docs,
-  // verified 2026-07-08).
+  // verified 2026-07-08); Opus 5 and Sonnet 5 accept 'max' too (probed
+  // 2026-09-11).
   if (
+    m.includes('opus-5') ||
+    m.includes('sonnet-5') ||
     m.includes('opus-4-6') ||
     m.includes('opus-4-7') ||
     m.includes('opus-4-8') ||
