@@ -26,6 +26,7 @@ import {
   deriveFlatCatalog,
   listRegisteredModelCatalogEntries,
   resolveModelCatalogMetadata,
+  resolveRegisteredModelCatalogEntry,
 } from "../../../src/llm/registry/model-catalog.js";
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -218,6 +219,23 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
     expect(buildProviderModelCatalog(defaultConfig())["nvidia-nim"]).toEqual(
       models,
     );
+  });
+
+  it("gives GPT-5 the effort ladder its API accepts and keeps xhigh for the later generations", () => {
+    // Probed on the Responses API 2026-09-11: gpt-5 rejects xhigh
+    // ("Supported values are: minimal, low, medium, high"); gpt-5.5 and
+    // gpt-5.4 accept xhigh and reject max; gpt-5.3-codex rejects minimal.
+    expect(
+      resolveRegisteredModelCatalogEntry({ provider: "openai", model: "gpt-5" })
+        ?.supportedReasoningLevels,
+    ).toEqual(["minimal", "low", "medium", "high"]);
+    for (const model of ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2"]) {
+      const levels = resolveRegisteredModelCatalogEntry({ provider: "openai", model })
+        ?.supportedReasoningLevels;
+      expect(levels, model).toContain("xhigh");
+      expect(levels, model).not.toContain("minimal");
+      expect(levels, model).not.toContain("max");
+    }
   });
 
   it("keeps every supported MiniMax generation in one catalog", () => {

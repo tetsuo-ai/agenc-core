@@ -33,7 +33,9 @@ describe("ModelRegistry", () => {
     expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
       slug: "gpt-5",
       contextWindow: 272_000,
-      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+      // gpt-5 predates xhigh; the API answers "Supported values are:
+      // 'minimal', 'low', 'medium', 'high'" (probed 2026-09-11).
+      supportedReasoningLevels: ["minimal", "low", "medium", "high"],
       usedFallbackModelMetadata: false,
     });
   });
