@@ -7,6 +7,10 @@ import {
   marketplacePluginSupportsProduct,
   parseQualifiedMarketplacePluginId,
   resolveMarketplaceInstallTarget,
+  ensureOfficialMarketplace,
+  OFFICIAL_MARKETPLACE_NAME,
+  OFFICIAL_MARKETPLACE_REFRESH_MS,
+  OFFICIAL_MARKETPLACE_URL,
 } from "./catalog-cli.js";
 import { addMarketplaceOp } from "./marketplace.js";
 
@@ -233,5 +237,59 @@ describe("marketplace catalog CLI surface", () => {
     await expect(
       resolveMarketplaceInstallTarget(options, "missing@nowhere", "desktop"),
     ).rejects.toThrow(/not configured/);
+  });
+});
+
+describe("the official marketplace stays current", () => {
+  // The marketplace was installed once and then read from disk forever: a
+  // home that installed it on Sep 10 served a 5-plugin manifest while the
+  // live one listed 11, and the Plugins pane showed the 5.
+  const hour = 60 * 60_000;
+  const t0 = Date.parse("2026-09-11T12:00:00.000Z");
+  type Added = { source: string; name: string; force: boolean };
+  async function seededOfficial(ageMs: number) {
+    const { pluginStorageRoot, workspaceRoot } = await tempRuntime();
+    const marketplaceRoot = await writeMarketplace(join(workspaceRoot, "official"));
+    await addMarketplaceOp({
+      pluginStorageRoot, workspaceRoot, source: marketplaceRoot, force: false,
+      name: OFFICIAL_MARKETPLACE_NAME, now: () => new Date(t0 - ageMs),
+    });
+    const added: Added[] = [];
+    const spy = async (input: Added) => { added.push({ source: input.source, name: input.name, force: input.force }); };
+    return { options: { pluginStorageRoot, workspaceRoot, now: () => new Date(t0) }, added, spy };
+  }
+
+  it("installs it into an empty home", async () => {
+    const { pluginStorageRoot, workspaceRoot } = await tempRuntime();
+    const added: Added[] = [];
+    const refreshed = await ensureOfficialMarketplace(
+      { pluginStorageRoot, workspaceRoot, now: () => new Date(t0) },
+      async (input) => { added.push({ source: input.source, name: input.name, force: input.force }); },
+    );
+    expect(refreshed).toBe(true);
+    expect(added).toEqual([{ source: OFFICIAL_MARKETPLACE_URL, name: OFFICIAL_MARKETPLACE_NAME, force: false }]);
+  });
+
+  it("leaves a fresh copy alone", async () => {
+    const { options, added, spy } = await seededOfficial(hour / 2);
+    expect(await ensureOfficialMarketplace(options, spy)).toBe(false);
+    expect(added).toEqual([]);
+  });
+
+  it("fetches it again, in place, once the copy is older than the refresh window", async () => {
+    const { options, added, spy } = await seededOfficial(OFFICIAL_MARKETPLACE_REFRESH_MS + 1);
+    expect(await ensureOfficialMarketplace(options, spy)).toBe(true);
+    // force: the existing install is replaced rather than refused as a duplicate.
+    expect(added).toEqual([{ source: OFFICIAL_MARKETPLACE_URL, name: OFFICIAL_MARKETPLACE_NAME, force: true }]);
+  });
+
+  it("keeps the cached copy when the refresh fails", async () => {
+    // A stale catalog is a catalog. An empty one is an outage.
+    const { options } = await seededOfficial(2 * hour);
+    const refreshed = await ensureOfficialMarketplace(options, async () => { throw new Error("offline"); });
+    expect(refreshed).toBe(false);
+    const catalog = await buildMarketplaceCatalog(options, "desktop");
+    expect(catalog.marketplaces).toHaveLength(1);
+    expect(catalog.marketplaces[0]!.plugins.length).toBeGreaterThan(0);
   });
 });
