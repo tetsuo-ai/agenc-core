@@ -39,6 +39,26 @@ function makeOpts(
 }
 
 describe("skillListingProducer", () => {
+  test("identifies an explicitly mentioned plugin's skills even with an older retained listing", async () => {
+    const text = "@stonks-copilot can u use this";
+    const opts = makeOpts({
+      userInput: text,
+      messages: attachmentsToMessages([{ kind: "skill_listing", content: "- stock-analyzer: Analyze stocks" }]),
+      turnProvenance: { turnId: "plugin-turn", rootHumanTurn: { turnId: "plugin-turn", text } },
+      skillsManager: { skillsForConfig: async () => ({ availableSkills: [
+        { name: "stock-analyzer", description: "Analyze stocks", pluginId: "stonks-copilot", loadedFrom: "plugin" },
+        { name: "other-skill", description: "Other work", pluginId: "other-plugin", loadedFrom: "plugin" },
+      ] }) },
+    });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+    tracking.listedSkillNames.add("stock-analyzer");
+    expect(await skillListingProducer(opts, tracking)).toEqual([{
+      kind: "skill_relevance", content: "- stock-analyzer: [plugin: stonks-copilot] Analyze stocks",
+    }]);
+    // Tool continuations do not repeat the reminder or invent a new human turn.
+    expect(await skillListingProducer(opts, tracking)).toEqual([]);
+  });
+
   test("emits the listing on every request whose history does not carry it", async () => {
     const opts = makeOpts();
     const trackingState = getAttachmentTrackingState(opts.sessionKey);

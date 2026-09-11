@@ -166,6 +166,7 @@ class FakeStdioTransport {
   readonly command: string
   readonly args: string[]
   readonly env: Record<string, string>
+  readonly cwd?: string
   closed = false
   pid?: number
 
@@ -173,10 +174,12 @@ class FakeStdioTransport {
     command: string
     args?: string[]
     env?: Record<string, string>
+    cwd?: string
   }) {
 	    this.command = options.command
 	    this.args = options.args ?? []
 	    this.env = options.env ?? {}
+        this.cwd = options.cwd
 	    if (options.command === 'pid-server') {
 	      this.pid = 4242
 	    }
@@ -328,6 +331,7 @@ test('connectToServer creates stdio clients with lifecycle handlers and cleanup'
     type: 'stdio',
     command: 'demo-server',
     args: ['--flag'],
+    cwd: '/plugins/fixture plugin',
     env: { DEMO: '1' },
     scope: 'local',
   } as const
@@ -340,6 +344,7 @@ test('connectToServer creates stdio clients with lifecycle handlers and cleanup'
   }
   assert.equal(fakeStdioTransports[0]?.command, 'demo-server')
   assert.deepEqual(fakeStdioTransports[0]?.args, ['--flag'])
+  assert.equal(fakeStdioTransports[0]?.cwd, '/plugins/fixture plugin')
   assert.deepEqual(result.capabilities, {
     tools: {},
     resources: { subscribe: true },

@@ -372,7 +372,7 @@ export const SKILL_LISTING_REMINDER_HEADER =
   "The following skills are available for use with the Skill tool.";
 
 const SKILL_LOADING_GUIDANCE =
-  "If a skill fits, use Skill when it is callable. Otherwise, if system.searchTools is callable, find and select Skill there, then wait for its schema before invoking it. Never call a listed skill name as a tool or invent an unavailable call.";
+  "If a skill fits, use Skill when it is callable. Otherwise, if system.searchTools is callable, find and select Skill there, then wait for its schema before invoking it. Never call a listed skill name as a tool or invent an unavailable call. A [plugin: id] label identifies the plugin that provides that skill. An @plugin-id mention selects that plugin; use its listed skill names, which may differ from the plugin name. Discover its MCP tools separately with system.searchTools when callable; an empty tool search does not mean its listed skills are unavailable.";
 
 function permissionModeMessage(
   permissionModeReminder: NonNullable<LLMMessage["runtimeOnly"]>["permissionModeReminder"],

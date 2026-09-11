@@ -690,6 +690,7 @@ export async function discoverPluginSkillRoots(
 export interface PluginSkillRoot {
   readonly path: string;
   readonly contentProvenance: PluginContentProvenance;
+  readonly pluginId: string;
   /** Root of the plugin that ships this skill dir; substitution target. */
   readonly pluginRoot: string;
 }
@@ -700,7 +701,7 @@ export async function discoverPluginSkillRootsWithProvenance(
   const result = await loadPlugins(options);
   const roots = new Map<
     string,
-    { provenance: PluginContentProvenance; pluginRoot: string }
+    { provenance: PluginContentProvenance; pluginRoot: string; pluginId: string }
   >();
   for (const plugin of result.enabled) {
     for (const path of plugin.skillsPaths) {
@@ -712,6 +713,7 @@ export async function discoverPluginSkillRootsWithProvenance(
             ? "repository-controlled"
             : "authority-controlled",
         pluginRoot: current?.pluginRoot ?? plugin.root,
+        pluginId: current?.pluginId ?? plugin.id,
       });
     }
   }
@@ -720,6 +722,7 @@ export async function discoverPluginSkillRootsWithProvenance(
       path,
       contentProvenance: entry.provenance,
       pluginRoot: entry.pluginRoot,
+      pluginId: entry.pluginId,
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
 }

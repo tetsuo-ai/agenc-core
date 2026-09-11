@@ -82,6 +82,7 @@ export interface LocalSkillMetadata {
   readonly argNames?: readonly string[];
   /** Root of the owning plugin when the skill ships inside one. */
   readonly pluginRoot?: string;
+  readonly pluginId?: string;
   readonly whenToUse?: string;
   readonly version?: string;
   readonly model?: string;
@@ -165,6 +166,7 @@ interface SkillRoot {
   readonly loadedFrom: Exclude<LoadedFrom, "bundled" | "mcp">;
   /** Root of the owning plugin when this root ships inside one. */
   readonly pluginRoot?: string;
+  readonly pluginId?: string;
 }
 
 interface SkillWithContent {
@@ -400,6 +402,7 @@ export async function discoverSkillRoots(
         : "plugin" as const,
       loadedFrom: "plugin" as const,
       pluginRoot: root.pluginRoot,
+      pluginId: root.pluginId,
     })),
   );
 
@@ -708,6 +711,7 @@ async function loadSkillFile(
     ...(root.pluginRoot !== undefined
       ? { pluginRoot: root.pluginRoot }
       : {}),
+    ...(root.pluginId !== undefined ? { pluginId: root.pluginId } : {}),
     contentLength: markdown.length,
     ...(() => {
       const aliases = implicitAliasesForSkillName(skillName);
@@ -992,6 +996,7 @@ export interface SkillListingEntry {
   readonly loadedFrom?: string;
   readonly scope?: string;
   readonly root?: string;
+  readonly pluginId?: string;
 }
 
 const SKILL_LISTING_SCOPE_RANK: Readonly<Record<string, number>> = {
@@ -1060,8 +1065,8 @@ function skillRelevance(
   tokens: readonly string[],
 ): number {
   if (tokens.length === 0) return 0;
-  const nameParts = new Set(skill.name.toLowerCase().split(/[^a-z0-9]+/u));
-  const name = skill.name.toLowerCase();
+  const name = `${skill.name} ${skill.pluginId ?? ""}`.toLowerCase();
+  const nameParts = new Set(name.split(/[^a-z0-9]+/u));
   const description = `${skill.description ?? ""} ${skill.whenToUse ?? ""}`.toLowerCase();
   let score = 0;
   let fromDescription = 0;
@@ -1221,8 +1226,17 @@ export function rankSkillsForRequest(
 ): { readonly lines: readonly string[]; readonly names: readonly string[] } {
   const tokens = requestMatchTokens(request);
   if (tokens.length === 0 || limit <= 0) return { lines: [], names: [] };
+  // An explicit plugin mention must identify its member skills even when an
+  // older retained listing already showed those skills without their owner.
+  const mentionedPlugins = new Set(
+    [...(request ?? "").matchAll(/(?:^|[\s(])@([a-z0-9][a-z0-9:_-]*)/giu)]
+      .map((match) => match[1]!.toLowerCase()),
+  );
   const ranked = skills
-    .filter((skill) => !skill.disableModelInvocation && !exclude.has(skill.name))
+    .filter((skill) => !skill.disableModelInvocation && (
+      !exclude.has(skill.name) ||
+      (skill.pluginId !== undefined && mentionedPlugins.has(skill.pluginId.toLowerCase()))
+    ))
     .map((skill, index) => ({
       skill,
       index,
@@ -1257,6 +1271,7 @@ function getSkillListingDescription(
     readonly description?: string;
     readonly whenToUse?: string;
     readonly loadedFrom?: string;
+    readonly pluginId?: string;
   },
 ): string {
   const raw = skill.whenToUse
@@ -1267,7 +1282,10 @@ function getSkillListingDescription(
     skill.loadedFrom === "mcp" && sanitized.length > 0
       ? `[untrusted MCP metadata] ${sanitized}`
       : sanitized;
-  return truncate(description, SKILL_LISTING_DESC_MAX_CHARS);
+  const owner = skill.pluginId === undefined
+    ? ""
+    : `[plugin: ${truncate(sanitizeSkillListingMetadata(skill.pluginId), 96)}] `;
+  return `${owner}${truncate(description, SKILL_LISTING_DESC_MAX_CHARS)}`;
 }
 
 function formatSkillListingLine(
@@ -1276,6 +1294,7 @@ function formatSkillListingLine(
     readonly description?: string;
     readonly whenToUse?: string;
     readonly loadedFrom?: string;
+    readonly pluginId?: string;
   },
 ): string {
   return `- ${skill.name}: ${getSkillListingDescription(skill)}`;
