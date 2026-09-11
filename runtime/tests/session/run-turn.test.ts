@@ -5680,7 +5680,10 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     expect(new Set([ids[0], ids[3], ids[4]]).size).toBe(3);
     const bodies = fetchImpl.mock.calls.map(([, init]) => String(init?.body));
     expect(bodies.slice(0, 3)).toEqual(Array(3).fill(bodies[0]));
-    expect(JSON.parse(bodies[3]!).messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "synthetic-read" }));
+    const continuation = JSON.parse(bodies[3]!).messages;
+    const toolCallId = continuation.find((message: { role: string }) => message.role === "assistant").tool_calls[0].id;
+    expect(toolCallId).toMatch(/^call_[a-f0-9]{32}$/u);
+    expect(continuation).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: toolCallId }));
     for (const body of bodies) {
       expect(body).not.toContain("managedRequestId");
       for (const id of ids) expect(body).not.toContain(id!);

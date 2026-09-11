@@ -39,15 +39,17 @@ describe("AgenC Coder 30B relay wire", () => {
       const run: typeof provider.chat = (messages, options) => stream
         ? provider.chatStream(messages, () => {}, options) : provider.chat(messages, options);
       const first = await run([{ role: "user", content: "Echo synthetic" }], { reasoningEffort: "medium", toolChoice: "required", maxOutputTokens: 192 });
-      expect(first.toolCalls).toEqual([{ id: "call_test", name: "echo_value", arguments: '{"value":"synthetic"}' }]);
+      expect(first.toolCalls).toEqual([{ id: expect.stringMatching(/^call_[a-f0-9]{32}$/u), name: "echo_value", arguments: '{"value":"synthetic"}' }]);
+      const toolCallId = first.toolCalls![0]!.id;
       const final = await run([
         { role: "user", content: "Echo synthetic" },
         { role: "assistant", content: "", toolCalls: first.toolCalls },
-        { role: "tool", content: "synthetic", toolCallId: "call_test", toolName: "echo_value" },
+        { role: "tool", content: "synthetic", toolCallId, toolName: "echo_value" },
       ], { reasoningEffort: "xhigh", maxOutputTokens: 192 });
       expect(final.content).toBe("done");
       expect(bodies[0]).toMatchObject({ model, max_completion_tokens: 192, tool_choice: "required" });
-      expect(bodies[1].messages.find((message: any) => message.role === "tool").tool_call_id).toBe("call_test");
+      expect(bodies[1].messages.find((message: any) => message.role === "assistant").tool_calls[0].id).toBe(toolCallId);
+      expect(bodies[1].messages.find((message: any) => message.role === "tool").tool_call_id).toBe(toolCallId);
       for (const body of bodies) for (const field of ["reasoning_effort", "thinking", "enable_thinking", "preserve_thinking", "chat_template_kwargs"]) {
         expect(body[field]).toBeUndefined();
       }

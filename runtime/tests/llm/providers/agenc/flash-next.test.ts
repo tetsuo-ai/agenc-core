@@ -52,16 +52,18 @@ describe("AgenC Flash Next relay wire", () => {
     const first = await provider.chatStream(messages, () => {}, { reasoningEffort: "medium", maxTokens: 192 });
     expect(first.content).toBe("");
     expect(first.providerReasoningContent).toBe("synthetic replay state");
-    expect(first.toolCalls).toEqual([{ id: "call_lookup", name: "lookup_ticket", arguments: '{"ticket_id":"SYN-42"}' }]);
+    expect(first.toolCalls).toEqual([{ id: expect.stringMatching(/^call_[a-f0-9]{32}$/u), name: "lookup_ticket", arguments: '{"ticket_id":"SYN-42"}' }]);
+    const toolCallId = first.toolCalls![0]!.id;
     expect(first.usage.totalTokens).toBe(36);
     const final = await provider.chatStream([...messages,
       { role: "assistant", content: "", toolCalls: first.toolCalls, providerReasoningContent: first.providerReasoningContent, providerReasoningProvenance: first.providerReasoningProvenance },
-      { role: "tool", content: '{"status":"resolved"}', toolCallId: "call_lookup", toolName: "lookup_ticket" },
+      { role: "tool", content: '{"status":"resolved"}', toolCallId, toolName: "lookup_ticket" },
     ], () => {}, { reasoningEffort: "low", maxTokens: 192 });
     expect(final.content).toBe("resolved");
     expect(requests[0]).toMatchObject({ model, reasoning_effort: "medium", chat_template_kwargs: { preserve_thinking: true }, stream_options: { include_usage: true } });
     expect(requests[1].messages.find((message: any) => message.role === "assistant")).toMatchObject({ reasoning: "synthetic replay state" });
-    expect(requests[1].messages.find((message: any) => message.role === "tool").tool_call_id).toBe("call_lookup");
+    expect(requests[1].messages.find((message: any) => message.role === "assistant").tool_calls[0].id).toBe(toolCallId);
+    expect(requests[1].messages.find((message: any) => message.role === "tool").tool_call_id).toBe(toolCallId);
     await provider.dispose?.();
   });
 
