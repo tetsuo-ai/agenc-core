@@ -2764,6 +2764,9 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
     }),
     isReadOnly: true,
     recoveryCategory: "side-effecting",
+    // Loading records session invocation state. Complete that effect before
+    // another skill can reach the unresolved-outcome admission gate.
+    concurrencyClass: { kind: "exclusive" },
     inputSchema: {
       type: "object",
       properties: {
