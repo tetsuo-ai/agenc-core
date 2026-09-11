@@ -138,8 +138,13 @@ export class LLMProviderError extends RuntimeError {
 
 /** An authenticated AgenC response bound to this attempt proves no dispatch. */
 export class LLMManagedAdmissionError extends LLMProviderError {
-  constructor() {
-    super("agenc", "Too many model requests are active. Try again after one finishes. No new model request was started.", 429);
+  constructor(readonly reason: "capacity" | "insufficient_credits" | "credits_unavailable" = "capacity") {
+    const message = reason === "insufficient_credits"
+      ? "Not enough available AgenC model credits for this request. Check your available credits and pending usage in Profile. No new model request was started."
+      : reason === "credits_unavailable"
+        ? "AgenC model credits are unavailable for this account. Check your credit status in Profile. No new model request was started."
+        : "Too many model requests are active. Try again after one finishes. No new model request was started.";
+    super("agenc", message, reason === "capacity" ? 429 : 402);
     this.name = "LLMManagedAdmissionError";
   }
 }

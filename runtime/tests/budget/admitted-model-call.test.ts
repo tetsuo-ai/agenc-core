@@ -866,9 +866,9 @@ describe("runAdmittedModelCall", () => {
     );
   });
 
-  test("settles zero only for a managed gateway no-dispatch receipt", async () => {
+  test.each(["capacity", "insufficient_credits", "credits_unavailable"] as const)("settles zero only for a managed gateway no-dispatch receipt: %s", async (reason) => {
     const state = harness({});
-    const error = new LLMManagedAdmissionError();
+    const error = new LLMManagedAdmissionError(reason);
     await expect(runAdmittedModelCall({session:state.session,provider:state.provider,messages:[],
       options:{maxOutputTokens:200},stepId:"managed-rejected",model:"grok-4.5",providerName:"agenc",
       invoke:async()=>{throw error;},

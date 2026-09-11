@@ -90,6 +90,33 @@ describe("managed paid request identity", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  test.each([false,true])("reports a bound credit rejection without retrying or claiming pending usage (stream=%s)",async(streaming)=>{
+    for(const code of ["insufficient_credits","credits_unavailable"] as const){
+      const fetchImpl=vi.fn<typeof fetch>(async(_url,init)=>Response.json({error:{code,message:"untrusted diagnostic"}},{
+        status:402,headers:{"x-agenc-request-id":requestId(init)!,"x-agenc-usage-status":"not_started"},
+      }));
+      const provider=managed(fetchImpl);
+      const error=await(streaming?provider.chatStream(messages,()=>{},{singleWireAttempt:true}):provider.chat(messages,{singleWireAttempt:true})).catch(error=>error);
+      expect(error).toBeInstanceOf(LLMManagedAdmissionError);
+      expect(error).toMatchObject({providerName:"agenc",statusCode:402,reason:code});
+      expect(error.message).toContain("Profile");
+      expect(error.message).toContain("No new model request was started");
+      expect(error.message).not.toContain("untrusted diagnostic");
+      expect(isTransientProviderError(error)).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  });
+
+  test.each(["different-request","pending","missing-state","unknown-code"])("does not claim a credit rejection is undispatched without a valid receipt (%s)",async(condition)=>{
+    const fetchImpl=vi.fn<typeof fetch>(async(_url,init)=>Response.json({error:{code:condition==="unknown-code"?"unavailable":"insufficient_credits"}},{
+      status:402,headers:{"x-agenc-request-id":condition==="different-request"?"unrelated":requestId(init)!,
+        ...(condition==="missing-state"?{}:{"x-agenc-usage-status":condition==="pending"?"pending":"not_started"})},
+    }));
+    const error=await managed(fetchImpl).chat(messages,{singleWireAttempt:true}).catch(error=>error);
+    expect(error).not.toBeInstanceOf(LLMManagedAdmissionError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   test.each(["different-request","pending"])("does not infer no usage from an unbound receipt (%s)", async (condition) => {
     const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => Response.json({error:{code:"too_many_requests"}}, {
       status:429, headers:{"x-agenc-request-id":condition==="different-request"?"unrelated":requestId(init)!,"x-agenc-usage-status":condition==="pending"?"pending":"not_started"},
