@@ -1,9 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 /**
- * Ensure that any model codenames introduced here are also added to
- * scripts/excluded-strings.txt to avoid leaking them. Wrap any codename string
- * literals with process.env.USER_TYPE === 'ant' for Bun to remove the codenames
- * during dead code elimination
+ * Every model name in this file is public; no codenames belong here.
  */
 import {
   getSubscriptionType,
@@ -22,7 +19,6 @@ import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getExecutionAuthoritySettings } from '../settings/settings.js'
 import {
   getAPIProvider,
-  getSelectedProviderEnvironment,
   getSelectedProviderModel,
   getSelectedProviderName,
 } from './providers.js'
@@ -37,10 +33,6 @@ import {
   isModelAllowed,
 } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
-import {
-  getAntModelOverrideConfig,
-  resolveAntModel,
-} from './antModels.js'
 import { capitalize } from '../stringUtils.js'
 
 export type ModelShortName = string
@@ -319,14 +311,6 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   }
   if (getAPIProvider() === 'minimax') {
     return getActiveProviderModel() || 'MiniMax-M2.5'
-  }
-
-  // Ants default to defaultModel from flag config, or Opus 1M if not configured
-  if (getSelectedProviderEnvironment().USER_TYPE === 'ant') {
-    return (
-      getAntModelOverrideConfig()?.defaultModel ??
-      getDefaultOpusModel() + '[1m]'
-    )
   }
 
   // Max users get Opus as default
@@ -615,20 +599,10 @@ export function getPublicModelDisplayNameForProvider(
   }
 }
 
-function maskModelCodename(baseName: string): string {
-  // Mask only the first dash-separated segment (the codename), preserve the rest
-  // e.g. capybara-v2-fast → cap*****-v2-fast
-  const [codename = '', ...rest] = baseName.split('-')
-  const masked =
-    codename.slice(0, 3) + '*'.repeat(Math.max(0, codename.length - 3))
-  return [masked, ...rest].join('-')
-}
-
 export function renderModelName(model: ModelName): string {
   return renderModelNameWithAuthority(
     model,
     getPublicModelDisplayName(model),
-    process.env.USER_TYPE,
   )
 }
 
@@ -644,14 +618,12 @@ export function renderModelNameForContext(
   return renderModelNameWithAuthority(
     model,
     getPublicModelDisplayNameForProvider(model, context.provider),
-    context.environment.USER_TYPE,
   )
 }
 
 function renderModelNameWithAuthority(
   model: ModelName,
   publicName: string | null,
-  userType: string | undefined,
 ): string {
   if (publicName) {
     return publicName
@@ -659,20 +631,6 @@ function renderModelNameWithAuthority(
   // Handle GitHub Copilot special model aliases
   if (model === 'github:copilot') {
     return 'GPT-4o'
-  }
-  if (userType === 'ant') {
-    const resolved = parseUserSpecifiedModel(model)
-    const antModel = resolveAntModel(model)
-    if (antModel) {
-      const baseName = antModel.model.replace(/\[1m\]$/i, '')
-      const masked = maskModelCodename(baseName)
-      const suffix = has1mContext(resolved) ? '[1m]' : ''
-      return masked + suffix
-    }
-    if (resolved !== model) {
-      return `${model} (${resolved})`
-    }
-    return resolved
   }
   return model
 }
@@ -733,21 +691,6 @@ export function parseUserSpecifiedModel(
     }
   }
 
-  if (process.env.USER_TYPE === 'ant') {
-    const has1mAntTag = has1mContext(normalizedModel)
-    const baseAntModel = normalizedModel.replace(/\[1m]$/i, '').trim()
-
-    const antModel = resolveAntModel(baseAntModel)
-    if (antModel) {
-      const suffix = has1mAntTag ? '[1m]' : ''
-      return antModel.model + suffix
-    }
-
-    // Fall through to the alias string if we cannot load the config. The API calls
-    // will fail with this string, but we should hear about it through feedback and
-    // can tell the user to restart/wait for flag cache refresh to get the latest values.
-  }
-
   // Preserve original case for custom model names (e.g., Azure Foundry deployment IDs)
   // Only strip [1m] suffix if present, maintaining case of the base model
   if (has1mTag) {
@@ -788,9 +731,7 @@ export function resolveSkillModelOverride(
 
 export function modelDisplayString(model: ModelSetting): string {
   if (model === null) {
-    if (process.env.USER_TYPE === 'ant') {
-      return `Default for Ants (${renderDefaultModelSetting(getDefaultMainLoopModelSetting())})`
-    } else if (isAgenCAISubscriber(credentialHome())) {
+    if (isAgenCAISubscriber(credentialHome())) {
       return `Default (${getAgenCAiUserDefaultModelDescription()})`
     }
     return `Default (${getDefaultMainLoopModel()})`

@@ -5,13 +5,11 @@
 import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 
 /**
- * Whether background memory consolidation should run. User setting
- * (autoDreamEnabled in config.toml) overrides the GrowthBook default
- * when explicitly set; otherwise falls through to tengu_onyx_plover.
+ * Whether background memory consolidation should run. The user setting
+ * (autoDreamEnabled in config.toml) decides; unset means off.
  */
 export function isAutoDreamEnabled(): boolean {
   const setting = getExecutionAuthoritySettings().autoDreamEnabled
   if (setting !== undefined) return setting
-  // Open-build: no GrowthBook auto-dream config; defaults to off.
   return false
 }

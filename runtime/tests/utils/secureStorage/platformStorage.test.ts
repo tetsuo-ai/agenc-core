@@ -238,7 +238,7 @@ describe("Secure Storage Platform Implementations", () => {
         {
           AGENC_HOME: "/tmp/bound-native-secure-storage",
           USER: "captured-user",
-          USER_TYPE: "ant",
+          AGENC_OAUTH_DEV_ENDPOINTS: "1",
           USE_LOCAL_OAUTH: "1",
         },
         { platformHome: homedir() },

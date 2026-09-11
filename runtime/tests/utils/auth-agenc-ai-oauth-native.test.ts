@@ -203,7 +203,7 @@ describe('AgenC AI OAuth native authority', () => {
     const prodHome = resolveHomeContext({ AGENC_HOME: HOME_A.path })
     const localHome = resolveHomeContext({
       AGENC_HOME: HOME_A.path,
-      USER_TYPE: 'ant',
+      AGENC_OAUTH_DEV_ENDPOINTS: '1',
       USE_LOCAL_OAUTH: '1',
     })
     const customHome = resolveHomeContext({

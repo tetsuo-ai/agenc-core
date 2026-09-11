@@ -9,7 +9,6 @@ import { format } from 'util'
 import { getAgenCAIOAuthTokens, getOauthAccountInfo } from '../auth.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../envUtils.js'
-import { sideQuery } from '../sideQuery.js'
 import {
   readNativeSecureStorage,
   updateNativeSecureStorage,
@@ -40,31 +39,13 @@ function isPermissionMode(raw: string): raw is PermissionMode {
 }
 
 /**
- * Resolves the Chrome bridge URL based on environment and feature flag.
- * Bridge is used when the feature flag is enabled; ant users always get
- * bridge. API key / 3P users fall back to native messaging.
+ * The hosted Chrome bridge is not part of this runtime; native messaging is
+ * the only transport.
  */
 function getChromeBridgeUrl(
-  environment: ProviderEnvironment,
+  _environment: ProviderEnvironment,
 ): string | undefined {
-  const bridgeEnabled = environment.USER_TYPE === 'ant'
-
-  if (!bridgeEnabled) {
-    return undefined
-  }
-
-  if (
-    isEnvTruthy(environment.USE_LOCAL_OAUTH) ||
-    isEnvTruthy(environment.LOCAL_BRIDGE)
-  ) {
-    return 'ws://localhost:8765'
-  }
-
-  if (isEnvTruthy(environment.USE_STAGING_OAUTH)) {
-    return 'wss://bridge-staging.agenc.tech'
-  }
-
-  return 'wss://bridge.agenc.tech'
+  return undefined
 }
 
 function isLocalBridge(environment: ProviderEnvironment): boolean {
@@ -149,69 +130,6 @@ export function createChromeContext(
       },
     }),
     ...(initialPermissionMode && { initialPermissionMode }),
-    // Wire inference for the browser_task tool — the chrome-mcp server runs
-    // a lightning-mode agent loop in Node and calls the extension's
-    // lightning_turn tool once per iteration for execution.
-    //
-    // Ant-only: the extension's lightning_turn is build-time-gated via
-    // import.meta.env.ANT_ONLY_BUILD — the whole lightning/ module graph is
-    // tree-shaken from the public extension build (build:prod greps for a
-    // marker to verify). Without this injection, the Node MCP server's
-    // ListTools also filters browser_task + lightning_turn out, so external
-    // users never see the tools advertised. Three independent gates.
-    //
-    // Types inlined: AnthropicMessagesRequest/Response live in
-    // @ant/agenc-for-chrome-mcp@0.4.0 which isn't published yet. CI installs
-    // 0.3.0. The callAnthropicMessages field is also 0.4.0-only, but spreading
-    // an extra property into AgenCForChromeContext is fine against either
-    // version — 0.3.0 sees an unknown field (allowed in spread), 0.4.0 sees a
-    // structurally-matching one. Once 0.4.0 is published, this can switch to
-    // the package's exported types and the dep can be bumped.
-    ...(environment.USER_TYPE === 'ant' && {
-      callAnthropicMessages: async (req: {
-        model: string
-        max_tokens: number
-        system: string
-        messages: Parameters<typeof sideQuery>[0]['messages']
-        stop_sequences?: string[]
-        signal?: AbortSignal
-      }): Promise<{
-        content: Array<{ type: 'text'; text: string }>
-        stop_reason: string | null
-        usage?: { input_tokens: number; output_tokens: number }
-      }> => {
-        // sideQuery handles OAuth attribution fingerprint, proxy, model betas.
-        // tools: [] is load-bearing — without it Sonnet emits
-        // <function_calls> XML before the text commands. Original
-        // lightning-harness.js (apps repo) does the same.
-        const response = await sideQuery({
-          model: req.model,
-          system: req.system,
-          messages: req.messages,
-          max_tokens: req.max_tokens,
-          stop_sequences: req.stop_sequences,
-          signal: req.signal,
-          tools: [],
-          querySource: 'chrome_mcp',
-        })
-        // BetaContentBlock is TextBlock | ThinkingBlock | ToolUseBlock | ...
-        // Only text blocks carry the model's command output.
-        const textBlocks: Array<{ type: 'text'; text: string }> = []
-        for (const b of response.content) {
-          if (b.type === 'text') {
-            textBlocks.push({ type: 'text', text: b.text })
-          }
-        }
-        return {
-          content: textBlocks,
-          stop_reason: response.stop_reason,
-          usage: {
-            input_tokens: response.usage.input_tokens,
-            output_tokens: response.usage.output_tokens,
-          },
-        }
-      },
-    }),
     trackEvent: (_eventName: any, _metadata: any) => {},
   }
 }

@@ -49,7 +49,6 @@ const TOUCHED_ENV_KEYS = [
   "AGENC_HOME",
   "AGENC_PROVIDER",
   "AGENC_MAX_CONTEXT_TOKENS",
-  "USER_TYPE",
   "XAI_API_KEY",
 ] as const;
 

@@ -6,7 +6,6 @@ import { isAbsolute, join, resolve } from "path";
 import { join as posixJoin } from "path/posix";
 import {
   getOriginalCwd,
-  getSessionId,
   setCwdState,
 } from "../bootstrap/state.js";
 import { generateTaskId } from "../tasks/Task.js";
@@ -345,9 +344,6 @@ export async function exec(
     GIT_EDITOR: "true",
     AGENCCODE: "1",
     ...envOverrides,
-    ...(commandAuthority.childEnvironment.USER_TYPE === "ant"
-      ? { AGENC_SESSION_ID: getSessionId() }
-      : {}),
   };
   const unsandboxedSpawnCommand: SandboxSpawnCommand = {
     program: spawnBinary,

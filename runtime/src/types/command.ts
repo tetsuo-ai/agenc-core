@@ -155,7 +155,7 @@ type LocalJSXCommand = {
  *
  * This is separate from `isEnabled()`:
  *   - `availability` = who can use this (auth/provider requirement, static)
- *   - `isEnabled()`  = is this turned on right now (GrowthBook, platform, env vars)
+ *   - `isEnabled()`  = is this turned on right now (platform, env vars)
  *
  * Commands without `availability` are available everywhere.
  * Commands with `availability` are only shown if the user matches at least one

@@ -88,13 +88,13 @@ type ModuleWithLoad = typeof Module & {
 
 const moduleWithLoad = Module as ModuleWithLoad
 const originalModuleLoad = moduleWithLoad._load
-const originalUserType = process.env.USER_TYPE
+const originalAgentTeams = process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS
 
 function resetUserType(): void {
   if (originalUserType === undefined) {
-    delete process.env.USER_TYPE
+    delete process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS
   } else {
-    process.env.USER_TYPE = originalUserType
+    process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS = originalAgentTeams
   }
 }
 
@@ -236,7 +236,7 @@ describe('UserTextMessage swarm 018 coverage', () => {
     )
     expect(memory.props.text).toContain('remember this')
 
-    process.env.USER_TYPE = 'ant'
+    process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS = '1'
     const teammate = expectCachedElement(
       makeProps(
         `<${TEAMMATE_MESSAGE_TAG} teammate_id="qa">hello</${TEAMMATE_MESSAGE_TAG}>`,

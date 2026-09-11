@@ -674,20 +674,6 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         clearClassifierChecking(toolUseID)
       }
 
-      // Notify ants when classifier error dumped prompts (will be in /share)
-      if (
-        process.env.USER_TYPE === 'ant' &&
-        classifierResult.errorDumpPath &&
-        context.addNotification
-      ) {
-        context.addNotification({
-          key: 'auto-mode-error-dump',
-          text: `Auto mode classifier error — prompts dumped to ${classifierResult.errorDumpPath} (included in /share)`,
-          priority: 'immediate',
-          color: 'error',
-        })
-      }
-
       if (classifierResult.durationMs !== undefined) {
         addToTurnClassifierDuration(classifierResult.durationMs)
       }
@@ -718,7 +704,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           }
         }
         // When classifier is unavailable (API error), behavior depends on
-        // the tengu_iron_gate_closed gate.
+        // the classifier circuit-breaker gate.
         if (classifierResult.unavailable) {
           if (
             true

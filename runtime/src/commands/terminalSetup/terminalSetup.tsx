@@ -10,7 +10,6 @@ import { supportsHyperlinks } from '../../tui/ink/supports-hyperlinks.js';
 import { color } from '../../tui/ink.js';
 import { maybeMarkProjectOnboardingComplete } from '../../onboarding/projectOnboardingState.js';
 import { backupTerminalPreferences, checkAndRestoreTerminalBackup, getTerminalPlistPath, markTerminalSetupComplete } from '../../utils/appleTerminalBackup.js';
-import { setupShellCompletion } from '../../utils/completionCache.js';
 import { getRuntimeState, updateRuntimeState } from '../../utils/config.js';
 import { env } from '../../utils/env.js';
 import { isFsInaccessible } from '../../utils/errors.js';
@@ -116,10 +115,6 @@ export async function setupTerminal(theme: ThemeName): Promise<string> {
   });
   maybeMarkProjectOnboardingComplete();
 
-  // Install shell completions (internal-only, since the completion command is internal-only)
-  if (("external" as string) === 'ant') {
-    result += await setupShellCompletion(theme);
-  }
   return result;
 }
 export function isShiftEnterKeyBindingInstalled(): boolean {

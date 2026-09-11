@@ -381,7 +381,7 @@ function detectBlockedSleepPattern(command: string): string | null {
 /**
  * Checks if a command contains tools that shouldn't run in sandbox
  * This includes:
- * - Dynamic config-based disabled commands and substrings (tengu_sandbox_disabled_commands)
+ * - Dynamic config-based disabled commands and substrings
  * - User-configured commands from config.toml (sandbox.excludedCommands)
  *
  * User-configured commands support the same pattern syntax as permission rules:

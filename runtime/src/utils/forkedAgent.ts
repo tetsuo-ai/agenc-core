@@ -4,7 +4,7 @@
  * This utility ensures forked agents:
  * 1. Share identical cache-critical params with the parent to guarantee prompt cache hits
  * 2. Track full usage metrics across the entire query loop
- * 3. Log metrics via the tengu_fork_agent_query event when complete
+ * 3. Log usage metrics when complete
  * 4. Isolate mutable state to prevent interference with the main agent loop
  */
 
@@ -481,7 +481,7 @@ export function createSubagentContext(
  * This function:
  * 1. Uses identical cache-safe params from parent to enable prompt caching
  * 2. Accumulates usage across all query iterations
- * 3. Logs tengu_fork_agent_query with full usage when complete
+ * 3. Logs full usage when complete
  *
  * @example
  * ```typescript

@@ -37,7 +37,7 @@ export const TaskStopTool = buildTool({
   name: TASK_STOP_TOOL_NAME,
   searchHint: 'kill a running background task',
   maxResultSizeChars: 100_000,
-  userFacingName: () => (process.env.USER_TYPE === 'ant' ? '' : 'Stop Task'),
+  userFacingName: () => 'Stop Task',
   get inputSchema(): InputSchema {
     return inputSchema()
   },

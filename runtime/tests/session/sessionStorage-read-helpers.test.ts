@@ -55,7 +55,6 @@ import {
 
 const tempDirs: string[] = [];
 const sessionId = "00000000-0000-4000-8000-000000000888";
-const originalUserType = process.env.USER_TYPE;
 const originalSaveHookContext = process.env.AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT;
 
 function id(n: number): UUID {
@@ -181,7 +180,6 @@ afterEach(async () => {
   clearSessionMessagesCache();
   resetProjectForTesting();
   resetStateForTests();
-  restoreOptionalEnv("USER_TYPE", originalUserType);
   restoreOptionalEnv(
     "AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT",
     originalSaveHookContext,
@@ -770,7 +768,6 @@ test("loads subagent transcripts from agent files and task state", async () => {
 });
 
 test("cleans transcript messages for external logging while preserving ant transcripts", () => {
-  restoreOptionalEnv("USER_TYPE", undefined);
   process.env.AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT = "1";
   const replAssistant = assistant(id(60), null, [
     { type: "tool_use", id: "repl-1", name: "REPL", input: {} },
@@ -831,18 +828,6 @@ test("cleans transcript messages for external logging while preserving ant trans
     (cleaned[1]!.message as { content: Array<{ type: string }> }).content,
   ).toEqual([{ type: "text", text: "visible" }]);
   expect(cleaned[2]).not.toHaveProperty("isVirtual");
-
-  process.env.USER_TYPE = "ant";
-  const antCleaned = cleanMessagesForLogging(
-    [replAssistant, normalAttachment],
-    [replAssistant],
-  );
-  expect(antCleaned).toHaveLength(2);
-  expect(
-    (antCleaned[0]!.message.content as Array<{ id?: string }>).map(
-      (block) => block.id,
-    ),
-  ).toEqual(["repl-1", "bash-1"]);
 });
 
 test("returns empty read results for missing project and transcript files", async () => {

@@ -127,9 +127,8 @@ export function __listAutoModeAllowlistedToolsForTesting(): readonly string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Live circuit breaker for the auto-mode classifier. AgenC wires
- * this to GrowthBook's `tengu_iron_gate_closed` flag. AgenC does not yet
- * ship that remote circuit-breaker surface, so the gate is considered open
+ * Live circuit breaker for the auto-mode classifier. There is no remote
+ * circuit-breaker surface, so the gate is considered open
  * when the local runtime can actually reach the xAI-backed classifier
  * (currently: an xAI API key is configured). Tests can still override the
  * resolver directly.
@@ -284,10 +283,10 @@ export function __resetClassifierStubSessionForTesting(): void {
  *
  * Structural gaps that remain after this tranche:
  *
- *   - AgenC does not yet expose AgenC's remote auto-mode circuit breaker
- *     or custom auto-mode rules/model settings. The gate therefore uses local
- *     classifier reachability (API key present) rather than GrowthBook, and
- *     the prompt is runtime-owned rather than settings-owned.
+ *   - There is no remote auto-mode circuit breaker or custom auto-mode
+ *     rules/model settings yet. The gate therefore uses local classifier
+ *     reachability (API key present), and the prompt is runtime-owned rather
+ *     than settings-owned.
  */
 const DEFAULT_AUTO_MODE_FAST_MODEL = "grok-4-fast";
 const DEFAULT_AUTO_MODE_THINKING_MODEL = "grok-4";

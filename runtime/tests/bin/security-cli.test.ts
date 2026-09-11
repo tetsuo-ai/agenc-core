@@ -237,7 +237,7 @@ describe("security audit against a temp home", () => {
   });
 
   test.each([
-    ["local", { USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" }],
+    ["local", { AGENC_OAUTH_DEV_ENDPOINTS: "1", USE_LOCAL_OAUTH: "1" }],
     ["custom", { AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech" }],
   ] as const)(
     "audits the %s OAuth native secure storage namespace from the captured environment",

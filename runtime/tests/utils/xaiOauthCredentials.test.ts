@@ -320,7 +320,7 @@ test('same-path OAuth secure-storage identities isolate caches and refresh fligh
   const prodHome = resolveHomeContext({ AGENC_HOME: home.path })
   const localHome = resolveHomeContext({
     AGENC_HOME: home.path,
-    USER_TYPE: 'ant',
+    AGENC_OAUTH_DEV_ENDPOINTS: '1',
     USE_LOCAL_OAUTH: '1',
   })
   const customHome = resolveHomeContext({
