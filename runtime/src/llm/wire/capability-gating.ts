@@ -500,6 +500,10 @@ export function chatCompletionsCapabilityHintsForProvider(
     reasoningEffortAllowedValues =
       CEREBRAS_QWEN_GEMMA_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
+  } else if (slug === "ollama-cloud") {
+    const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
+    reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (slug === "nvidia-nim") {
     reasoningEffortAllowedValues = nimReasoningEffortValues(model);
     acceptsReasoningEffort = reasoningEffortAllowedValues !== undefined;
@@ -543,6 +547,16 @@ export function chatCompletionsCapabilityHintsForProvider(
 
   return {
     acceptsReasoningEffort,
+    ...(slug === "ollama-cloud" ? {
+      acceptsDirectImageInput: acceptsToolResultImages,
+      toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+      replaysReasoningContent: true,
+      reasoningContentField: "reasoning" as const,
+      reasoningContentFallbackField: "reasoning_content" as const,
+      acceptsParallelToolCalls: false,
+      omitsToolControlsWithoutTools: true,
+      includeToolNameAliases: true,
+    } : {}),
     ...(isNativeDeepSeek ? {
       acceptsToolChoice: false,
       acceptsParallelToolCalls: false,

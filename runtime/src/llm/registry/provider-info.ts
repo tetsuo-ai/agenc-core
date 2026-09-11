@@ -6,6 +6,7 @@
  * defaults, ordered environment ingress names, and onboarding classification.
  */
 
+import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_API_KEY_ENV, OLLAMA_CLOUD_DEFAULT_MODEL } from "./ollama-cloud-models.js";
 import { deriveFlatCatalog } from "./model-catalog.js";
 import { OPENROUTER_FREE_MODEL_IDS } from "./openrouter-free-models.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
@@ -454,6 +455,14 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     ],
     onboarding: onboardingInfo(98, "api-key"),
   }),
+  "ollama-cloud": providerDefinition({
+    name: "Ollama Cloud",
+    defaultModel: OLLAMA_CLOUD_DEFAULT_MODEL,
+    baseURL: OLLAMA_CLOUD_BASE_URL,
+    credentials: apiKeyCredentials([OLLAMA_CLOUD_API_KEY_ENV]),
+    baseURLEnvVars: [],
+    onboarding: onboardingInfo(99, "api-key"),
+  }),
   cerebras: providerDefinition({
     name: "Cerebras",
     defaultModel: "gpt-oss-120b",
@@ -690,6 +699,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   meta: mergeDerivedProviderModels("meta"),
   qwen: mergeDerivedProviderModels("qwen"),
   "qwen-token-plan": mergeDerivedProviderModels("qwen-token-plan"),
+  "ollama-cloud": mergeDerivedProviderModels("ollama-cloud"),
   cerebras: mergeDerivedProviderModels("cerebras"),
   zai: mergeDerivedProviderModels("zai"),
   "zai-coding-plan": mergeDerivedProviderModels("zai-coding-plan"),

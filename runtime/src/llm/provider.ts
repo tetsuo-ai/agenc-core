@@ -50,6 +50,7 @@ import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
+import { OllamaCloudProvider } from "./providers/ollama-cloud/index.js";
 import { CerebrasProvider } from "./providers/cerebras/index.js";
 import {
   ZaiCodingPlanProvider,
@@ -1325,6 +1326,7 @@ function buildOpenAICompatibleProvider(
     | "groq"
     | "deepseek"
     | "meta"
+    | "ollama-cloud"
     | "cerebras"
     | "zai"
     | "zai-coding-plan"
@@ -1935,6 +1937,12 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: MetaProvider,
+      });
+    case "ollama-cloud":
+      return buildOpenAICompatibleProvider("ollama-cloud", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: OllamaCloudProvider,
       });
     case "cerebras":
       return buildOpenAICompatibleProvider("cerebras", opts, {

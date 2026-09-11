@@ -19,6 +19,7 @@ import {
   getOpenAICompatibleMaxOutputTokens,
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
 } from "./openai-compatible-token-limits.js";
+import { OLLAMA_CLOUD_BASE_URL } from "./registry/ollama-cloud-models.js";
 import { asRecord } from "../utils/record.js";
 
 export const CONSERVATIVE_CONTEXT_WINDOW_TOKENS =
@@ -36,6 +37,7 @@ const LIVE_METADATA_PROVIDERS = new Set([
   "lmstudio",
   "openai-compatible",
   "ollama",
+  "ollama-cloud",
   "groq",
   "deepseek",
   "meta",
@@ -226,10 +228,11 @@ export class ModelMetadataResolver {
     if (!shouldQueryLiveEndpoint(params, this.env)) return undefined;
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
+    if (provider === "ollama-cloud" && baseUrl.replace(/\/+$/, "") !== OLLAMA_CLOUD_BASE_URL) return undefined;
     const headers = authHeaders(provider, this.env);
     // Ollama serves no context length over its OpenAI-compatible surface, so
     // the native endpoint is the only place the real number exists.
-    if (provider !== "ollama") {
+    if (provider !== "ollama" && provider !== "ollama-cloud") {
       const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
         headers,
       });
@@ -413,7 +416,7 @@ function shouldPreferDynamicMetadata(
   // Z.AI's curated catalog is authoritative even when an operator overrides
   // the API base URL. `/models` remains a credential health probe, but its
   // list does not replace exact context/output limits here.
-  if (provider === "zai" || provider === "zai-coding-plan") return false;
+  if (provider === "zai" || provider === "zai-coding-plan" || provider === "ollama-cloud") return false;
   return provider === "openrouter" || shouldQueryLiveEndpoint(params, env);
 }
 
@@ -427,6 +430,7 @@ function shouldQueryLiveEndpoint(
     provider === "lmstudio" ||
     provider === "openai-compatible" ||
     provider === "ollama" ||
+    provider === "ollama-cloud" ||
     Boolean(providerConfig?.base_url?.trim()) ||
     Boolean(envBaseUrl(provider, env))
   );
@@ -551,6 +555,7 @@ const OPENAI_COMPATIBLE_METADATA_PROVIDERS = new Set([
   "qwen",
   "qwen-token-plan",
   "cerebras",
+  "ollama-cloud",
   "zai",
   "zai-coding-plan",
   "kimi",

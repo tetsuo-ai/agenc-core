@@ -14,6 +14,7 @@ import {
 } from "../../context/personality-spec-instructions.js";
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
+import { OLLAMA_CLOUD_MODELS } from "./ollama-cloud-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
 import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
@@ -768,6 +769,31 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: 0,
       visibility: "list",
     },
+    ...OLLAMA_CLOUD_MODELS.map((entry, priority): RegisteredModelCatalogEntry => ({
+      provider: "ollama-cloud",
+      model: entry.model,
+      displayName: entry.label,
+      contextWindow: entry.contextWindow,
+      maxContextWindow: entry.contextWindow,
+      maxOutputTokens: 16_384,
+      maxOutputTokensUpperLimit: 32_768,
+      maxOutputTokensCappedDefault: true,
+      inputModalities: entry.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
+      supportsToolUse: entry.tools,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: false,
+      supportsStructuredOutputWithTools: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: entry.efforts,
+      ...("defaultEffort" in entry ? { defaultReasoningLevel: entry.defaultEffort } : {}),
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority,
+      visibility: "list",
+    })),
     ...zaiCatalogEntries(),
     ...kimiCatalogEntries(),
     ...minimaxCatalogEntries(),

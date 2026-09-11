@@ -174,7 +174,7 @@ describe("resolveProviderModelCapabilities", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "deepseek",
-        model: "deepseek-v4-flash",
+        model: "deepseek-v4-pro",
       }),
     ).toMatchObject({
       provider: "deepseek",

@@ -128,7 +128,7 @@ the Grok 4.6 default and capability change.
 they run only through the Grok Build CLI ACP path. See
 [grok-oauth.md](../grok-oauth.md#composer-models-acp).
 
-## Built-in providers (23)
+## Built-in providers (24)
 
 | Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -144,6 +144,7 @@ they run only through the Grok Build CLI ACP path. See
 | `meta` | Meta | `muse-spark-1.3` | `https://api.meta.ai/v1` | `MODEL_API_KEY` | `META_BASE_URL` | `api-key` |
 | `qwen` | QwenCloud Pay-As-You-Go | `qwen3.8-max` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `QWEN_API_KEY` | `DASHSCOPE_BASE_URL`, `QWEN_BASE_URL` | `api-key` |
 | `qwen-token-plan` | QwenCloud Token Plan | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_TOKEN_PLAN_API_KEY` | `QWEN_TOKEN_PLAN_BASE_URL`, `DASHSCOPE_TOKEN_PLAN_BASE_URL` | `api-key` |
+| `ollama-cloud` | Ollama Cloud | `deepseek-v4.1-flash` | `https://ollama.com/v1` | `OLLAMA_API_KEY` | None (fixed Cloud endpoint) | `api-key` |
 | `cerebras` | Cerebras | `gpt-oss-120b` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` | `CEREBRAS_BASE_URL` | `api-key` |
 | `zai` | Z.AI | `glm-5.3` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | `ZAI_BASE_URL` | `api-key` |
 | `zai-coding-plan` | Z.AI Coding Plan | `glm-5.3` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_CODING_PLAN_API_KEY` | `ZAI_CODING_PLAN_BASE_URL` | `api-key` |
@@ -760,3 +761,25 @@ Grammar-safe tool schemas and the reduced local catalog:
 - Token admission invariant: [`../design/provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Managed OpenRouter path: [`../managed-openrouter.md`](../managed-openrouter.md)
 - Onboarding: `agenc onboard`
+
+## Ollama Cloud
+
+Select `ollama-cloud` and provide `OLLAMA_API_KEY` for direct hosted inference at
+`https://ollama.com/v1`. The existing `ollama` provider remains a local daemon
+connection; `OLLAMA_BASE_URL` never reroutes the Cloud key. No local Ollama
+installation is required.
+
+The checked-in Cloud metadata comes from Ollama's `/api/tags` and `/api/show`
+on 2026-09-11. Desktop refreshes model IDs from `/v1/models`; an empty successful
+listing stays empty. Unknown additions can use text/tools and native context
+metadata, but do not inherit unverified image or effort settings from another
+provider. Cloud model IDs retain their tags (for example `gpt-oss:120b`).
+
+DeepSeek V4.1 Flash defaults to Low and supports image input. Reasoning controls
+are model specific; binary thinking models expose None/High, GPT OSS uses
+Low/Medium/High, and non-thinking models have no effort control. The 16k default
+and 32k recovery budget are AgenC output budgets, not advertised Cloud limits.
+Cloud quota and model availability depend on the Ollama account.
+
+Sources: https://docs.ollama.com/cloud and
+https://docs.ollama.com/api/openai-compatibility.

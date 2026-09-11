@@ -26,6 +26,7 @@ describe("built-in provider info", () => {
       ["meta", "Meta", "muse-spark-1.3", "https://api.meta.ai/v1", "api-key", ["MODEL_API_KEY"], ["META_BASE_URL"], 95, "api-key", false],
       ["qwen", "QwenCloud Pay-As-You-Go", "qwen3.8-max", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "api-key", ["DASHSCOPE_API_KEY", "QWEN_API_KEY"], ["DASHSCOPE_BASE_URL", "QWEN_BASE_URL"], 97, "api-key", false],
       ["qwen-token-plan", "QwenCloud Token Plan", "qwen3.8-max", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "api-key", ["QWEN_TOKEN_PLAN_API_KEY", "DASHSCOPE_TOKEN_PLAN_API_KEY"], ["QWEN_TOKEN_PLAN_BASE_URL", "DASHSCOPE_TOKEN_PLAN_BASE_URL"], 98, "api-key", false],
+      ["ollama-cloud", "Ollama Cloud", "deepseek-v4.1-flash", "https://ollama.com/v1", "api-key", ["OLLAMA_API_KEY"], [], 99, "api-key", false],
       ["cerebras", "Cerebras", "gpt-oss-120b", "https://api.cerebras.ai/v1", "api-key", ["CEREBRAS_API_KEY"], ["CEREBRAS_BASE_URL"], 99, "api-key", false],
       ["zai", "Z.AI", "glm-5.3", "https://api.z.ai/api/paas/v4", "api-key", ["ZAI_API_KEY"], ["ZAI_BASE_URL"], 99, "api-key", false],
       ["zai-coding-plan", "Z.AI Coding Plan", "glm-5.3", "https://api.z.ai/api/coding/paas/v4", "api-key", ["ZAI_CODING_PLAN_API_KEY"], ["ZAI_CODING_PLAN_BASE_URL"], 100, "api-key", false],
