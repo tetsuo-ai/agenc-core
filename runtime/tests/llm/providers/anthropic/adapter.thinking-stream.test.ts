@@ -158,4 +158,30 @@ describe("messages-API adapter forwards extended-thinking SSE events", () => {
     expect(response.toolCalls.map((c) => c.name)).toEqual(["Read"]);
     expect(response.content).toBe("done");
   });
+
+  test("maps streamed model_context_window_exceeded to length", async () => {
+    const { response } = await runStream([
+      messageStart,
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"cut mid-sentence"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded","stop_sequence":null},"usage":{"output_tokens":7}}\n\n',
+      messageStop,
+    ]);
+    expect(response.finishReason).toBe("length");
+    expect(response.content).toBe("cut mid-sentence");
+  });
+
+  test("rejects streamed pause_turn instead of treating it as a natural stop", async () => {
+    await expect(
+      runStream([
+        messageStart,
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"pause_turn","stop_sequence":null},"usage":{"output_tokens":1}}\n\n',
+        messageStop,
+      ]),
+    ).rejects.toMatchObject({
+      name: "LLMInvalidResponseError",
+      message: expect.stringContaining("pause_turn"),
+    });
+  });
 });
