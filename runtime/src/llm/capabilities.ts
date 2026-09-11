@@ -8,6 +8,7 @@ import {
 import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
 import { supportsGrokServerSideTools } from "./provider-native-search.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
+import { ollamaCloudModel } from "./registry/ollama-cloud-models.js";
 import { isVerifiedOpenAiReasoningModel } from "./registry/openai-reasoning-models.js";
 
 export interface ProviderModelCapabilities {
@@ -476,6 +477,14 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsStructuredOutputWithTools: isMetaMuseSparkModel,
     acceptsImageHistory: isMetaMuseSparkModel,
     acceptsReasoningEffort: isMetaMuseSparkModel,
+  },
+  "ollama-cloud": {
+    ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+    supportsImageInput: model => ollamaCloudModel(model)?.vision === true,
+    acceptsImageHistory: model => ollamaCloudModel(model)?.vision === true,
+    supportsExtendedThinking: model => ollamaCloudModel(model)?.thinking === true,
+    acceptsThinkingHistory: model => ollamaCloudModel(model)?.thinking === true,
+    acceptsReasoningEffort: model => (ollamaCloudModel(model)?.efforts.length ?? 0) > 0,
   },
   cerebras: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
