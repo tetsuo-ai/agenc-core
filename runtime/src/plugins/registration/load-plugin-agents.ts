@@ -232,7 +232,7 @@ async function loadAgentFile(
 ): Promise<PluginAgentDefinition | null> {
   if (loadedPaths.has(path)) return null;
   loadedPaths.add(path);
-  const file = await readMarkdownFile(path, baseDir);
+  const file = await readMarkdownFile(path, baseDir, plugin.root);
   return file
     ? createPluginAgent(plugin, file, roleCwd, pluginStorageRoot)
     : null;
@@ -246,7 +246,7 @@ async function loadAgentsFromPath(
   pluginStorageRoot: string | undefined,
 ): Promise<readonly PluginAgentDefinition[]> {
   if (await pathIsDirectory(path)) {
-    const files = await collectMarkdownFiles(path);
+    const files = await collectMarkdownFiles(plugin.root, path);
     const agents = await Promise.all(
       files.map((filePath) =>
         loadAgentFile(

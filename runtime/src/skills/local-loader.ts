@@ -1,6 +1,4 @@
 import {
-  readdir,
-  readFile,
   realpath,
   stat,
 } from "node:fs/promises";
@@ -18,6 +16,14 @@ import {
 import { load as loadYaml } from "js-yaml";
 
 import type { AgenCConfig } from "../config/schema.js";
+import {
+  bindContainedRoot,
+  containedRejectReason,
+  inspectContainedPath,
+  readContainedUtf8,
+  walkContainedFiles,
+  type ContainedRoot,
+} from "../fs/root-contained-read.js";
 import { FileWatcher } from "../file-watcher/index.js";
 import { discoverPluginSkillRootsWithProvenance } from "../plugins/loader.js";
 import type { SessionServices } from "../session/session.js";
@@ -276,14 +282,6 @@ async function pathIsDirectory(path: string): Promise<boolean> {
   }
 }
 
-async function pathIsFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
-  } catch {
-    return false;
-  }
-}
-
 async function getFileIdentity(filePath: string): Promise<string | null> {
   try {
     return await realpath(filePath);
@@ -438,113 +436,6 @@ export async function discoverSkillWatchRoots(
   );
 }
 
-async function readDirEntries(path: string) {
-  try {
-    return await readdir(path, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-}
-
-async function isDirectoryEntry(path: string, isSymlink: boolean): Promise<boolean> {
-  if (!isSymlink) return true;
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-interface SkillFileScan {
-  readonly files: readonly string[];
-  readonly droppedCount: number;
-}
-
-interface MutableSkillFileScan {
-  readonly files: string[];
-  droppedCount: number;
-  readonly maxFiles: number;
-}
-
-interface ScanFrame {
-  readonly path: string;
-  readonly depth: number;
-}
-
-type DirEntry = Awaited<ReturnType<typeof readDirEntries>>[number];
-
-async function isScannableDir(entry: DirEntry, path: string): Promise<boolean> {
-  if (!entry.isDirectory() && !entry.isSymbolicLink()) return false;
-  if (SKIP_DIRS.has(entry.name)) return false;
-  return isDirectoryEntry(path, entry.isSymbolicLink());
-}
-
-async function topLevelScanFrames(root: string): Promise<ScanFrame[]> {
-  const frames: ScanFrame[] = [];
-  for (const entry of await readDirEntries(root)) {
-    const next = join(root, entry.name);
-    if (await isScannableDir(entry, next)) frames.push({ path: next, depth: 1 });
-  }
-  return frames;
-}
-
-/** Returns false when the directory (by real path) was already scanned. */
-async function markVisited(path: string, visited: Set<string>): Promise<boolean> {
-  const dirId = await getFileIdentity(path);
-  if (dirId === null) return true;
-  if (visited.has(dirId)) return false;
-  visited.add(dirId);
-  return true;
-}
-
-function recordSkillFile(scan: MutableSkillFileScan, file: string): void {
-  // Past the cap the walk keeps going but only counts, so the snapshot can
-  // say how many skills this root holds that were never loaded.
-  if (scan.files.length >= scan.maxFiles) scan.droppedCount += 1;
-  else scan.files.push(file);
-}
-
-async function scanSkillDir(
-  frame: ScanFrame,
-  scan: MutableSkillFileScan,
-  queue: ScanFrame[],
-): Promise<void> {
-  for (const entry of await readDirEntries(frame.path)) {
-    const next = join(frame.path, entry.name);
-    if (entry.isFile()) {
-      if (isSkillFile(next)) recordSkillFile(scan, next);
-      continue;
-    }
-    if (frame.depth < MAX_SCAN_DEPTH && (await isScannableDir(entry, next))) {
-      queue.push({ path: next, depth: frame.depth + 1 });
-    }
-  }
-}
-
-async function findSkillFiles(root: string): Promise<SkillFileScan> {
-  const scan: MutableSkillFileScan = {
-    files: [],
-    droppedCount: 0,
-    maxFiles: maxSkillFilesPerRoot(),
-  };
-  const queue = await topLevelScanFrames(root);
-  const visitedDirs = new Set<string>();
-  while (queue.length > 0) {
-    const frame = queue.shift()!;
-    if (await markVisited(frame.path, visitedDirs)) {
-      await scanSkillDir(frame, scan, queue);
-    }
-  }
-  return {
-    files: scan.files.toSorted((a, b) => a.localeCompare(b)),
-    droppedCount: scan.droppedCount,
-  };
-}
-
-function isSkillFile(filePath: string): boolean {
-  return basename(filePath).toLowerCase() === "skill.md";
-}
-
 function buildNamespace(targetDir: string, baseDir: string): string {
   const rel = relative(baseDir, targetDir);
   if (!rel || rel === ".") return "";
@@ -644,19 +535,18 @@ function escapeRegExp(value: string): string {
 async function loadSkillFile(
   filePath: string,
   root: SkillRoot,
+  bound: ContainedRoot,
   warnings: SkillLoadWarning[],
 ): Promise<SkillWithContent | null> {
-  if (!(await pathIsFile(filePath))) return null;
-  let raw: string;
-  try {
-    raw = await readFile(filePath, "utf8");
-  } catch (error) {
+  const read = await readContainedUtf8(bound, filePath);
+  if (!read.ok) {
     warnings.push({
-      path: filePath,
-      reason: `unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      path: read.declaredPath,
+      reason: containedRejectReason(read.code),
     });
     return null;
   }
+  const raw = read.text;
 
   const { frontmatter, markdown, warning } = splitFrontmatter(raw);
   if (warning !== undefined) warnings.push({ path: filePath, reason: warning });
@@ -729,27 +619,39 @@ interface LoadedSkillRoot {
 }
 
 async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
-  const scan = await findSkillFiles(root.path);
-  const files = [...scan.files];
-  // A root can BE one skill: plugin manifests may declare each skill
-  // dir individually (skills: ["./skills/flash-board"]), so the root
-  // itself carries the SKILL.md instead of holding child skill dirs.
+  const bound = await bindContainedRoot(root.path);
+  if (bound === null) {
+    return { skills: [], droppedCount: 0, warnings: [] };
+  }
+  const walked = await walkContainedFiles(bound, root.path, {
+    maxDepth: MAX_SCAN_DEPTH,
+    maxFiles: maxSkillFilesPerRoot(),
+    collectFile: (name) => name.toLowerCase() === SKILL_FILE_NAME.toLowerCase(),
+    skipDir: (name) => SKIP_DIRS.has(name),
+    includeStartFiles: false,
+  });
+  const files = [...walked.files];
+  const warnings: SkillLoadWarning[] = walked.rejections.map((reject) => ({
+    path: reject.declaredPath,
+    reason: containedRejectReason(reject.code),
+  }));
   if (files.length === 0) {
-    const leaf = join(root.path, SKILL_FILE_NAME);
-    try {
-      const stats = await stat(leaf);
-      if (stats.isFile()) files.push(leaf);
-    } catch {
-      // Genuinely empty root.
+    const leaf = await inspectContainedPath(bound, join(root.path, SKILL_FILE_NAME));
+    if (leaf.ok && leaf.kind === "file") {
+      files.push(leaf.declaredPath);
+    } else if (!leaf.ok && leaf.code !== "not-found") {
+      warnings.push({
+        path: leaf.declaredPath,
+        reason: containedRejectReason(leaf.code),
+      });
     }
   }
-  const warnings: SkillLoadWarning[] = [];
   const loaded = await Promise.all(
-    files.map((file) => loadSkillFile(file, root, warnings)),
+    files.map((file) => loadSkillFile(file, root, bound, warnings)),
   );
   return {
     skills: loaded.filter((entry): entry is SkillWithContent => entry !== null),
-    droppedCount: scan.droppedCount,
+    droppedCount: walked.droppedCount,
     warnings,
   };
 }
@@ -946,13 +848,11 @@ async function loadSkillContent(
   if (skill.loadedFrom === "bundled") {
     return renderBundledSkill(skill, args);
   }
-  let raw: string;
-  try {
-    raw = await readFile(skill.path, "utf8");
-  } catch {
-    return null;
-  }
-  const { markdown } = splitFrontmatter(raw);
+  const bound = await bindContainedRoot(skill.root);
+  if (bound === null) return null;
+  const read = await readContainedUtf8(bound, skill.path);
+  if (!read.ok) return null;
+  const { markdown } = splitFrontmatter(read.text);
   const baseDir = dirname(skill.path);
   let content = `Base directory for this skill: ${baseDir}\n\n${markdown}`;
   content = substituteArguments(content, args, true, skill.argNames ?? []);
