@@ -36,6 +36,7 @@ run() { # name manifest report extra-args...
       "$NODE" "$HERE/scripts/run-agent-eval.mjs" --tasks "$manifest" "${COMMON[@]}" --agent-command "$HERMES_CMD -q {prompt}" --session-command "$HERMES_CMD {continue} -q {prompt}" --session-continue-arg -c --agent-name hermes --output "$report" "$@" ;;
     opencode*) env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" "$KEY_VAR=$KEY" AGENC_HOME="$AGENC_EVAL_HOME" XDG_CONFIG_HOME="$OUT_DIR/oc-home/config" XDG_DATA_HOME="$OUT_DIR/oc-home/data" XDG_CACHE_HOME="$OUT_DIR/oc-home/cache" \
       "$NODE" "$HERE/scripts/run-agent-eval.mjs" --tasks "$manifest" "${COMMON[@]}" --agent-command "$OPENCODE_CMD {prompt}" --session-command "$OPENCODE_CMD {continue} {prompt}" --session-continue-arg --continue --agent-name opencode --output "$report" "$@" ;;
+    *) echo "unknown agent: $name" >&2; return 1 ;;
   esac
 }
 # The runner resolves fixture directories relative to the manifest, so the

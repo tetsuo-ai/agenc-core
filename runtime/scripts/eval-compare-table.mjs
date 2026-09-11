@@ -1,14 +1,40 @@
 #!/usr/bin/env node
 // Print a markdown comparison of the compare-agents.sh reports in a directory.
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve, sep } from "node:path";
 
-const dir = process.argv[2] ?? "eval/reports";
-const tag = process.argv[3] ? `-${process.argv[3]}` : "";
+// The directory argument is an operator path; it must be an existing
+// directory under the working directory or the home directory, and the tag
+// must be a plain token, so no argument can point the reader elsewhere.
+const requested = resolve(process.argv[2] ?? "eval/reports");
+const roots = [resolve(process.cwd()), resolve(homedir())];
+let dir;
+try {
+  dir = realpathSync(requested);
+} catch {
+  console.error(`report directory not found: ${requested}`);
+  process.exit(2);
+}
+if (!roots.some((root) => dir === root || dir.startsWith(root + sep))) {
+  console.error("report directory must be under the working directory or the home directory");
+  process.exit(2);
+}
+const rawTag = process.argv[3] ?? "";
+if (rawTag !== "" && !/^[A-Za-z0-9._-]{1,64}$/.test(rawTag)) {
+  console.error("tag must be letters, digits, dots, underscores or dashes");
+  process.exit(2);
+}
+const tag = rawTag === "" ? "" : `-${rawTag}`;
 const agents = ["agenc", "hermes", "opencode"];
 const load = (name) => (existsSync(join(dir, name)) ? JSON.parse(readFileSync(join(dir, name), "utf8")) : null);
 const seconds = (ms) => `${Math.round((ms ?? 0) / 1000)} s`;
 const label = (report) => `${report.run?.agent?.name ?? "?"} ${report.run?.agent?.version ?? ""}`.trim();
+const taskCell = (task) => {
+  if (!task) return "-";
+  const verdict = task.status === "passed" ? "ok" : "FAIL";
+  return `${seconds(task.durationMs)} ${verdict}`;
+};
 
 const commands = agents.map((a) => [a, load(`${a}${tag}-commands.json`)]).filter(([, r]) => r);
 if (commands.length > 0) {
@@ -23,7 +49,7 @@ if (commands.length > 0) {
   const ids = [...new Set(commands.flatMap(([, r]) => r.tasks.map((t) => t.id)))].filter((id) => id !== "asteroid-drift-15");
   console.log(`\n| task | ${commands.map(([, r]) => label(r)).join(" | ")} |\n| --- |${" --- |".repeat(commands.length)}`);
   for (const id of ids) {
-    const cells = commands.map(([, r]) => { const t = r.tasks.find((x) => x.id === id); return t ? `${seconds(t.durationMs)} ${t.status === "passed" ? "ok" : "FAIL"}` : "-"; });
+    const cells = commands.map(([, r]) => taskCell(r.tasks.find((x) => x.id === id)));
     console.log(`| ${id} | ${cells.join(" | ")} |`);
   }
 }
