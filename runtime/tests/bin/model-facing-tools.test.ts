@@ -26,6 +26,8 @@ import {
 import { collectSkillsSnapshot } from "../commands/skills.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
+import { buildToolRegistry } from "../tool-registry.js";
+import { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import {
   _clearAgentControlCacheForTesting,
   _setAgentControlForTesting,
@@ -2946,6 +2948,53 @@ describe("model-facing tools", () => {
         skillName: "demo-skill",
       }),
     );
+  });
+
+  it("finishes each skill invocation before starting the next plugin skill", async () => {
+    const session = fakeSession();
+    const skill = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "Skill")!;
+    const registry = buildToolRegistry({
+      workspaceRoot: process.cwd(),
+      modelFacingTools: [skill],
+      requireAdmission: false,
+    });
+    let active = 0;
+    let peakActive = 0;
+    const order: string[] = [];
+    const executor = new StreamingToolExecutor({
+      registry,
+      runToolUseFn: async (call) => {
+        active += 1;
+        peakActive = Math.max(peakActive, active);
+        order.push(`start:${call.id}`);
+        try {
+          const result = await skill.execute(JSON.parse(call.arguments));
+          // Keep the invocation open while its recorded effect settles.
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          return result;
+        } finally {
+          active -= 1;
+          order.push(`finish:${call.id}`);
+        }
+      },
+    });
+    for (const id of ["first", "second"]) {
+      const input = { skill: "demo-skill", args: id };
+      executor.addTool(
+        { type: "tool_use", id, name: "Skill", input },
+        { id, name: "Skill", arguments: JSON.stringify(input) },
+      );
+    }
+    executor.close();
+    const results = [];
+    for await (const result of executor.getRemainingResults()) results.push(result);
+    expect(results).toHaveLength(2);
+    expect(results.every((result) => result.result.isError !== true)).toBe(true);
+    expect(peakActive).toBe(1);
+    expect(order).toEqual(["start:first", "finish:first", "start:second", "finish:second"]);
   });
 
   it("frames repository skill content as guidance-only model context", async () => {
