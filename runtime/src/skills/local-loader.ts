@@ -234,6 +234,14 @@ const MAX_SCAN_DEPTH = 12;
 const MAX_ACTIVE_PATHS = 256;
 const INVOKED_MAIN_AGENT_ID = "__main__";
 const SKILL_LISTING_DEFAULT_CHAR_BUDGET = 8_000;
+/**
+ * Ceiling for the context-scaled listing. One percent of a 1M-token window
+ * is 40,000 chars (about 10,000 tokens) in every request of every session,
+ * measured on 2026-09-11 with 1,801 installed skills; the ranked listing plus
+ * the per-request relevance reminder does the same job in a fraction of that.
+ * `SLASH_COMMAND_TOOL_CHAR_BUDGET` still overrides both the scale and the cap.
+ */
+const SKILL_LISTING_MAX_CHAR_BUDGET = 12_000;
 const SKILL_LISTING_DESC_MAX_CHARS = 250;
 const SKILL_LISTING_CONTEXT_PERCENT = 0.01;
 const CHARS_PER_TOKEN = 4;
@@ -1259,8 +1267,11 @@ function getListingCharBudget(contextWindowTokens?: number): number {
   const envBudget = Number(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET);
   if (Number.isFinite(envBudget) && envBudget > 0) return envBudget;
   if (contextWindowTokens && Number.isFinite(contextWindowTokens)) {
-    return Math.floor(
-      contextWindowTokens * CHARS_PER_TOKEN * SKILL_LISTING_CONTEXT_PERCENT,
+    return Math.min(
+      SKILL_LISTING_MAX_CHAR_BUDGET,
+      Math.floor(
+        contextWindowTokens * CHARS_PER_TOKEN * SKILL_LISTING_CONTEXT_PERCENT,
+      ),
     );
   }
   return SKILL_LISTING_DEFAULT_CHAR_BUDGET;
