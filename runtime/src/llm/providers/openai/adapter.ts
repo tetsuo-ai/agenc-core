@@ -1081,6 +1081,10 @@ export class OpenAIProvider implements LLMProvider {
     if (error.status === 429 && usageState === "not_started" && code === "too_many_requests") {
       return new LLMManagedAdmissionError();
     }
+    if (error.status === 402 && usageState === "not_started" &&
+      (code === "insufficient_credits" || code === "credits_unavailable")) {
+      return new LLMManagedAdmissionError(code);
+    }
     if ((error.status === 502 && usageState === "pending" && code === "provider_unavailable") ||
       (error.status === 409 && ["pending", "started", "uncertain"].includes(usageState ?? "") && code === "request_already_recorded")) {
       return new LLMManagedUsagePendingError();
