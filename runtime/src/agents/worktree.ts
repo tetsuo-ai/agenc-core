@@ -43,6 +43,10 @@ import { AsyncLock } from "./_deps/async-lock.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { gitChildEnvironment } from "../sandbox/git-environment.js";
 import {
+  isBareGitDirectory,
+  isValidGitMarker,
+} from "../utils/git/gitRootMarker.js";
+import {
   runSupervisedProcess,
   type SupervisedProcessResult,
 } from "../utils/supervisedProcess.js";
@@ -182,7 +186,10 @@ function findNearestGitRoot(startDir: string): string | null {
   let dir = resolvePath(startDir);
   while (true) {
     const probe = join(dir, ".git");
-    if (existsSync(probe)) {
+    if (existsSync(probe) && isValidGitMarker(probe)) {
+      return dir;
+    }
+    if (isBareGitDirectory(dir)) {
       return dir;
     }
     const parent = dirname(dir);
