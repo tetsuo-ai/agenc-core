@@ -657,6 +657,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         thread: managedThread,
         status: "running",
         startedAt,
+        runtimeGenerationId: randomUUID(),
         runEpoch: currentRunEpochFromRollout(bootstrap, managedThread.threadId),
         canonicalEventBridgeInstalled: false,
         durableTerminalFinalizerInstalled: false,
@@ -829,6 +830,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       return {
         agentId: managedThread.threadId,
         agentPath: managedThread.agentPath ?? ("/root" as AgentPath),
+        runtimeGenerationId: active.runtimeGenerationId,
         startedAt,
         status: "running",
         ...(rolloutIdentity !== undefined
@@ -895,6 +897,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       return {
         status: active.status,
         lastActiveAt: active.lastActiveAt,
+        runtimeGenerationId: active.runtimeGenerationId,
         ...(active.runtimeSettings !== undefined
           ? {
               runtimeSettings: cloneFrozenRuntimeSettingsSnapshot(
@@ -1211,6 +1214,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               ? "running"
               : "idle",
           startedAt,
+          runtimeGenerationId: params.restoreAttemptId ?? randomUUID(),
           ...(params.restoreAttemptId !== undefined
             ? { restoreAttemptId: params.restoreAttemptId }
             : {}),
@@ -4875,6 +4879,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const terminalSnapshot: AgenCBackgroundAgentSnapshot = {
       status: active.status,
       lastActiveAt: active.lastActiveAt,
+      runtimeGenerationId: active.runtimeGenerationId,
       ...(active.terminal !== undefined ? { terminal: active.terminal } : {}),
     };
     try {

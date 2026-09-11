@@ -48,6 +48,7 @@ export interface StartAgenCInProcessDaemonTransportOptions
 export class AgenCInProcessDaemonTransport {
   readonly #connection: AgenCDaemonJsonRpcConnection;
   #closed = false;
+  #closing: Promise<void> | null = null;
 
   constructor(options: AgenCInProcessDaemonTransportOptions) {
     this.#connection = options.dispatcher.createConnection({
@@ -85,10 +86,11 @@ export class AgenCInProcessDaemonTransport {
     });
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closing !== null) return this.#closing;
     this.#closed = true;
-    await this.#connection.close();
+    this.#closing = this.#connection.close();
+    return this.#closing;
   }
 
   #assertOpen(): void {

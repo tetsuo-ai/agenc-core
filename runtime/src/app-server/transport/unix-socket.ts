@@ -133,6 +133,9 @@ export class AgenCUnixSocketServer {
   #nativePeerCredentialBinding: AgenCNativePeerCredentialBinding | null = null;
   #boundSocketIdentity: AgenCUnixSocketPathIdentity | null = null;
   #nextConnectionId = 1;
+  #listening: Promise<string> | null = null;
+  #closing: Promise<void> | null = null;
+  #closeInProgress = false;
 
   constructor(options: AgenCUnixSocketServerOptions) {
     this.#options = options;
@@ -145,11 +148,21 @@ export class AgenCUnixSocketServer {
     );
   }
 
-  async listen(): Promise<string> {
-    if (this.#server !== null) {
-      throw new Error("AgenC Unix socket transport is already listening");
+  listen(): Promise<string> {
+    if (this.#closeInProgress) {
+      return Promise.reject(new Error("AgenC Unix socket transport is closing"));
     }
+    if (this.#server !== null || this.#listening !== null) {
+      return Promise.reject(new Error("AgenC Unix socket transport is already listening"));
+    }
+    this.#closing = null;
+    this.#listening = this.#listen().finally(() => {
+      this.#listening = null;
+    });
+    return this.#listening;
+  }
 
+  async #listen(): Promise<string> {
     if (
       this.#options.nativePeerCredentialAddonPath !== undefined &&
       this.#options.nativePeerCredentialBinding !== undefined
@@ -250,7 +263,23 @@ export class AgenCUnixSocketServer {
     return socketPath;
   }
 
-  async close(options: AgenCTransportCloseOptions = {}): Promise<void> {
+  close(options: AgenCTransportCloseOptions = {}): Promise<void> {
+    if (this.#closing !== null) return this.#closing;
+    this.#closeInProgress = true;
+    const listening = this.#listening;
+    this.#closing = (async () => {
+      // Startup owns its listener until bind and path identity capture finish.
+      // Keep admission fenced while joining it, then release that generation.
+      if (listening !== null) await listening.catch(() => {});
+      await this.#close(options);
+    })().finally(() => {
+      this.#closeInProgress = false;
+      this.#closing = null;
+    });
+    return this.#closing;
+  }
+
+  async #close(options: AgenCTransportCloseOptions): Promise<void> {
     const server = this.#server;
     const boundSocketIdentity = this.#boundSocketIdentity;
     this.#server = null;
@@ -270,7 +299,7 @@ export class AgenCUnixSocketServer {
     if (server !== null) {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
-          if (error) {
+          if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
             reject(error);
             return;
           }
@@ -287,7 +316,7 @@ export class AgenCUnixSocketServer {
   }
 
   #acceptConnection(socket: Socket): void {
-    if (this.#server === null) {
+    if (this.#server === null || this.#closeInProgress) {
       socket.destroy();
       return;
     }

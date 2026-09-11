@@ -2657,6 +2657,69 @@ describe("AgenC delegate background-agent runner", () => {
     ).resolves.not.toBeNull();
   });
 
+  it("keeps a timed-out terminal notification bound to the retired runtime generation", async () => {
+    const agentId = "session-delayed-terminal-generation";
+    const h = makeTopLevelRunner({ conversationId: agentId });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let notification: Promise<void> | undefined;
+    let failPublication = true;
+    const manager = new AgenCDaemonAgentManager({ runner: {
+      startAgent: vi.fn(),
+      attachAgentSessionEvents: async () => {
+        if (failPublication) throw new Error("publication failed");
+      },
+    } });
+    h.runner.setOnActiveAgentTerminated((id, snapshot) => {
+      notification = (async () => {
+        entered.resolve();
+        await release.promise;
+        await manager.handleRunnerTerminated(id, snapshot);
+      })();
+      return notification;
+    });
+    const started = await h.runner.startAgent({
+      objective: "original runtime", initialContent: [], unattendedAllow: [], unattendedDeny: [],
+    });
+    const firstGeneration = started.runtimeGenerationId ?? "legacy-first-generation";
+    await expect(manager.restoreAgent({
+      agentId, objective: "original runtime", runtimeAvailable: true,
+      restoreAttemptId: firstGeneration, sessionIds: ["unpublished-session"],
+    })).rejects.toThrow("publication failed");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      h.stub.pushStatus({ status: "completed", turnId: "old-turn", endedAtMs: 2, lastMessage: "done" });
+      await vi.advanceTimersByTimeAsync(0);
+      await entered.promise;
+      await manager.rollbackRestoredAgentRecord(agentId, firstGeneration);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await h.runner.getAgentSnapshot(agentId)).toBeNull();
+      h.stub.pushStatus({ status: "running", turnId: "replacement-turn", startedAtMs: 3 });
+      expect(await h.runner.restoreAgent({
+        agentId, objective: "replacement runtime", explicitColdResume: true,
+        restoreAttemptId: "replacement-generation",
+      })).toBe(true);
+      failPublication = false;
+      await manager.restoreAgent({
+        agentId, objective: "replacement runtime", runtimeAvailable: true,
+        restoreAttemptId: "replacement-generation", sessionIds: ["replacement-session"],
+      });
+      release.resolve();
+      await notification;
+      expect(await manager.getAgent(agentId)).toMatchObject({
+        objective: "replacement runtime", status: "running", activeSessionIds: ["replacement-session"],
+      });
+      expect(await h.runner.getAgentSnapshot(agentId)).toMatchObject({ runtimeGenerationId: "replacement-generation" });
+      expect(started.runtimeGenerationId).toEqual(expect.any(String));
+      expect(started.runtimeGenerationId).not.toBe("replacement-generation");
+    } finally {
+      release.resolve();
+      await notification;
+      vi.useRealTimers();
+      await h.runner.stopAgent(agentId, "test_cleanup");
+    }
+  });
+
   it("reports a cold-restored agent idle until a turn starts", async () => {
     // A hydrated thread reports pending_init, which maps to "running"; with
     // nothing to resume the restored agent must read idle until its next
@@ -5654,6 +5717,7 @@ describe("AgenC delegate background-agent runner", () => {
     ).resolves.toEqual({
       agentId: "parent-session",
       agentPath: "/root",
+      runtimeGenerationId: expect.any(String),
       startedAt: "2026-05-01T12:00:00.500Z",
       status: "running",
     });

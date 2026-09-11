@@ -233,7 +233,7 @@ async function initializedClient(
   return client;
 }
 
-function userMessage(clientMessageId: string): JsonObject {
+function userMessage(clientMessageId: string, content: string): JsonObject {
   return {
     jsonrpc: "2.0",
     method: "event.session_event",
@@ -243,7 +243,7 @@ function userMessage(clientMessageId: string): JsonObject {
       event: {
         id: `user_${clientMessageId}`,
         type: "user_message",
-        payload: { message: clientMessageId, messageId: clientMessageId },
+        payload: { message: content, messageId: clientMessageId },
       },
     },
   };
@@ -394,7 +394,7 @@ describe("agenc-sdk prompt race safety", () => {
         onElicitationRequest: respond,
       });
       const send = await waitForSend(transport, 0);
-      transport.emit(userMessage("interactive_message"));
+      transport.emit(userMessage("interactive_message", "interactive"));
       transport.emit(turnStarted("interactive_turn"));
       transport.emit({
         jsonrpc: "2.0",
@@ -766,7 +766,7 @@ describe("agenc-sdk prompt race safety", () => {
     ).toThrow(AgencPromptRunInProgressError);
 
     const sendA = await waitForSend(transport, 0);
-    transport.emit(userMessage("message_A"));
+    transport.emit(userMessage("message_A", "A"));
     transport.emit(turnStarted("turn_A"));
     transport.emit(terminal("turn_A", "answer A"));
     resolveSend(sendA, "turn_A");
@@ -791,7 +791,7 @@ describe("agenc-sdk prompt race safety", () => {
     ]);
     expect(stillPending).toBe(true);
 
-    transport.emit(userMessage("message_B"));
+    transport.emit(userMessage("message_B", "B"));
     transport.emit(turnStarted("turn_B"));
     transport.emit(text("turn_B", "ha"));
     transport.emit(text("turn_B", "ha"));
@@ -821,7 +821,7 @@ describe("agenc-sdk prompt race safety", () => {
     const client = await initializedClient(transport);
     const run = client.runPrompt("session_1", "work", { clientMessageId: "failure-message", includeUsage: false });
     const send = await waitForSend(transport, 0);
-    transport.emit(userMessage("failure-message"));
+    transport.emit(userMessage("failure-message", "work"));
     transport.emit(turnStarted("turn-failure"));
     const emit = (id: string, type: string, payload: JsonObject, turnId = "turn-failure") => transport.emit({
       jsonrpc: "2.0", method: "event.session_event",
@@ -882,7 +882,7 @@ describe("agenc-sdk prompt race safety", () => {
       ),
     ).toEqual([]);
 
-    transport.emit(userMessage("message_cancel"));
+    transport.emit(userMessage("message_cancel", "cancel me"));
     expect(
       transport.requests.filter(
         (request) => request.method === "session.cancelTurn",
@@ -924,7 +924,7 @@ describe("agenc-sdk prompt race safety", () => {
         (request) => request.method === "session.cancelTurn",
       ),
     ).toHaveLength(0);
-    transport.emit(userMessage("message_legacy_cancel"));
+    transport.emit(userMessage("message_legacy_cancel", "legacy cancel"));
     transport.emit(turnStarted("turn_legacy_cancel"));
     await Promise.resolve();
     expect(
@@ -989,7 +989,7 @@ describe("agenc-sdk prompt race safety", () => {
     });
     const send = await waitForSend(transport, 0);
 
-    transport.emit(userMessage("message_terminal_fallback"));
+    transport.emit(userMessage("message_terminal_fallback", "finish from result"));
     transport.emit(turnStarted("turn_terminal_fallback"));
     transport.emit(text("turn_terminal_fallback", "answer"));
     transport.emit(committed("turn_terminal_fallback", "answer"));

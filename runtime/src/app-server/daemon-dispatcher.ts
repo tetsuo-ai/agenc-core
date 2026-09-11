@@ -2225,7 +2225,11 @@ export class AgenCDaemonJsonRpcDispatcher {
       });
     }
     const onAbort = (): void => {
-      void cancelTurn();
+      // The request waiter owns its cancellation result. This legacy runner
+      // interruption may fail after that waiter or its connection has closed
+      // (for example, the session was retired). Observe the best-effort task so
+      // its failure cannot become an unhandled rejection for the whole daemon.
+      void cancelTurn().catch(() => {});
     };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
