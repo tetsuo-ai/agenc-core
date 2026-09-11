@@ -1,5 +1,5 @@
-import { readFileSync, statSync } from 'fs'
-import { basename, dirname, join, resolve } from 'path'
+import { readFileSync, statSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 
 const GITDIR_PREFIX = 'gitdir:'
 
