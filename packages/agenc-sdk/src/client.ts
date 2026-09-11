@@ -11,6 +11,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   AGENC_SDK_DAEMON_PROTOCOL_VERSION,
   AGENC_SDK_JSON_RPC_VERSION,
@@ -1219,7 +1220,14 @@ export class AgencClient {
     let lastCommittedMessage = "";
     let finishing = false;
     let submissionDispatched = false;
+    let submissionValidated = false;
     let submissionObserved = false;
+    let dispatchedContent: MessageContent | undefined;
+    let provisionalTerminal: {
+      code: number;
+      message?: string;
+      turnId?: string;
+    } | undefined;
     let cancelBeforeDispatchReason: string | undefined;
     let deferredCancellationReason: string | undefined;
     let cancellationPromise: Promise<void> | undefined;
@@ -1228,6 +1236,7 @@ export class AgencClient {
     const flushDeferredCancellation = (): Promise<void> => {
       if (
         finishing ||
+        provisionalTerminal !== undefined ||
         cancellationPromise !== undefined ||
         deferredCancellationReason === undefined ||
         !submissionObserved ||
@@ -1246,7 +1255,7 @@ export class AgencClient {
     };
 
     const requestScopedCancellation = (reason: string): Promise<void> => {
-      if (finishing) return Promise.resolve();
+      if (finishing || provisionalTerminal !== undefined) return Promise.resolve();
       if (!submissionDispatched) {
         cancelBeforeDispatchReason = reason;
         return Promise.resolve();
@@ -1317,7 +1326,7 @@ export class AgencClient {
           };
         }
       }
-      if (finishing) return;
+      if (finishing || provisionalTerminal !== undefined) return;
       try {
         if (decision.behavior === "allow") {
           await this.request("tool.approve", {
@@ -1350,7 +1359,7 @@ export class AgencClient {
       } catch {
         return;
       }
-      if (response === null || finishing) return;
+      if (response === null || finishing || provisionalTerminal !== undefined) return;
       try {
         await this.request("elicitation.respond", {
           sessionId,
@@ -1369,11 +1378,23 @@ export class AgencClient {
     const unsubscribe = this.onSessionNotification(sessionId, (message) => {
       // session.attach replays prior submissions before message.send can
       // validate this one's content and identity. Replay is not its admission.
-      if (finishing || !submissionDispatched) return;
+      if (finishing || provisionalTerminal !== undefined || !submissionDispatched) {
+        return;
+      }
       const observedClientMessageId =
         userMessageClientMessageIdFromNotification(message);
       if (!submissionObserved) {
         if (observedClientMessageId !== clientMessageId) return;
+        // A delayed replay can arrive after dispatch. The durable marker's
+        // original content must agree before its turn can own our callbacks.
+        const marker = nestedSessionEventFromNotification(message);
+        if (
+          isJsonObject(marker?.payload) &&
+          marker.payload.message !== undefined &&
+          !isDeepStrictEqual(marker.payload.message, dispatchedContent)
+        ) {
+          return;
+        }
         submissionObserved = true;
       } else if (
         observedClientMessageId !== null &&
@@ -1429,7 +1450,18 @@ export class AgencClient {
         }
       }
       const terminal = terminalStatusFromNotification(message, reservation.turnId);
-      if (terminal !== null) void finish(terminal);
+      if (terminal !== null) {
+        // message.send validates the submission independently of session
+        // notifications. A replayed terminal cannot override its rejection.
+        if (submissionValidated) {
+          void finish(terminal);
+        } else {
+          provisionalTerminal = {
+            ...terminal,
+            ...(reservation.turnId === undefined ? {} : { turnId: reservation.turnId }),
+          };
+        }
+      }
     });
 
     const fail = (error: unknown): void => {
@@ -1471,16 +1503,20 @@ export class AgencClient {
       }
       await this.#attachSession(sessionId);
       throwIfPromptCancelledBeforeDispatch(cancelBeforeDispatchReason);
+      // Compare against exactly what JSON transports send, independently of
+      // caller object prototypes, omitted undefined fields, or later mutation.
+      dispatchedContent = JSON.parse(JSON.stringify(content)) as MessageContent;
       submissionDispatched = true;
       const sendResult = await this.request("message.send", {
         sessionId,
-        content,
+        content: dispatchedContent,
         clientMessageId,
         ...(options.ifBusy !== undefined ? { ifBusy: options.ifBusy } : {}),
         ...(options.metadata !== undefined
           ? { metadata: options.metadata }
           : {}),
       });
+      submissionValidated = true;
       if (sendResult.turnId !== undefined) {
         reservation.turnId = sendResult.turnId;
         void flushDeferredCancellation().catch(() => {});
@@ -1517,12 +1553,20 @@ export class AgencClient {
               ? { message: lastCommittedMessage }
               : {}),
         });
+      } else if (
+        !finishing &&
+        provisionalTerminal !== undefined &&
+        (sendResult.turnId === undefined ||
+          sendResult.turnId === provisionalTerminal.turnId)
+      ) {
+        void finish(provisionalTerminal);
       } else if (sendResult.terminal !== undefined && !finishing) {
         // The RPC result is the authoritative terminal fallback when a live
         // notification was lost or filtered during reconnect. Legacy daemons
         // omit this field, so their behavior remains notification-driven.
         void finish(sendResult.terminal);
       }
+      provisionalTerminal = undefined;
       return {
         messageId: sendResult.messageId,
         clientMessageId,

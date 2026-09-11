@@ -122,6 +122,8 @@ export interface AgenCBackgroundAgentStartParams {
 export interface AgenCBackgroundAgentStartResult {
   readonly agentId: string;
   readonly agentPath?: string;
+  /** Internal runtime incarnation identity; never serialized to clients. */
+  readonly runtimeGenerationId?: string;
   /** Internal pre-publication rollback token; never serialized to clients. */
   readonly restoreAttemptId?: string;
   readonly startedAt: string;
@@ -201,6 +203,8 @@ export interface AgenCBackgroundAgentReplayToolResult {
 export interface AgenCBackgroundAgentSnapshot {
   readonly status: DaemonAgentStatus;
   readonly lastActiveAt: string;
+  /** Identifies the runtime that observed this snapshot, independently of run epoch. */
+  readonly runtimeGenerationId?: string;
   readonly metadata?: JsonObject;
   /** Live daemon-owned session authority, captured after its durable commit. */
   readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
@@ -674,6 +678,7 @@ interface ActiveBackgroundAgent {
   readonly thread: ManagedThread;
   status: DaemonAgentStatus;
   readonly startedAt: string;
+  readonly runtimeGenerationId: string;
   /** Opaque generation proof retained only until publication succeeds/fails. */
   readonly restoreAttemptId?: string;
   /** Current canonical lifecycle epoch, recovered from run_reopened events. */

@@ -142,6 +142,9 @@ export class AgenCWebSocketServer {
   #webSocketServer: WebSocketServer | null = null;
   #listenAddress: AgenCWebSocketListenAddress | null = null;
   #nextConnectionId = 1;
+  #listening: Promise<AgenCWebSocketListenAddress> | null = null;
+  #closing: Promise<void> | null = null;
+  #closeInProgress = false;
 
   constructor(options: AgenCWebSocketServerOptions) {
     this.#options = options;
@@ -163,11 +166,21 @@ export class AgenCWebSocketServer {
     return this.#listenAddress;
   }
 
-  async listen(): Promise<AgenCWebSocketListenAddress> {
-    if (this.#server !== null || this.#webSocketServer !== null) {
-      throw new Error("AgenC websocket transport is already listening");
+  listen(): Promise<AgenCWebSocketListenAddress> {
+    if (this.#closeInProgress) {
+      return Promise.reject(new Error("AgenC websocket transport is closing"));
     }
+    if (this.#server !== null || this.#webSocketServer !== null || this.#listening !== null) {
+      return Promise.reject(new Error("AgenC websocket transport is already listening"));
+    }
+    this.#closing = null;
+    this.#listening = this.#listen().finally(() => {
+      this.#listening = null;
+    });
+    return this.#listening;
+  }
 
+  async #listen(): Promise<AgenCWebSocketListenAddress> {
     const httpServer = createServer((request, response) => {
       this.#handleHttpRequest(request, response);
     });
@@ -230,7 +243,23 @@ export class AgenCWebSocketServer {
     }
   }
 
-  async close(options: AgenCTransportCloseOptions = {}): Promise<void> {
+  close(options: AgenCTransportCloseOptions = {}): Promise<void> {
+    if (this.#closing !== null) return this.#closing;
+    this.#closeInProgress = true;
+    const listening = this.#listening;
+    this.#closing = (async () => {
+      // A requested startup still owns the server until address publication.
+      // Do not close beneath it or allow a replacement to inherit its cleanup.
+      if (listening !== null) await listening.catch(() => {});
+      await this.#close(options);
+    })().finally(() => {
+      this.#closeInProgress = false;
+      this.#closing = null;
+    });
+    return this.#closing;
+  }
+
+  async #close(options: AgenCTransportCloseOptions): Promise<void> {
     const webSocketServer = this.#webSocketServer;
     const httpServer = this.#server;
     this.#webSocketServer = null;
@@ -274,7 +303,7 @@ export class AgenCWebSocketServer {
       return;
     }
     if (path === AGENC_WEBSOCKET_READY_PATH) {
-      const ready = this.#options.ready?.() ?? true;
+      const ready = !this.#closeInProgress && (this.#options.ready?.() ?? true);
       writePlainResponse(response, ready ? 200 : 503, ready ? "ok\n" : "not ready\n");
       return;
     }
@@ -301,7 +330,7 @@ export class AgenCWebSocketServer {
     }
 
     const webSocketServer = this.#webSocketServer;
-    if (webSocketServer === null) {
+    if (webSocketServer === null || this.#closeInProgress) {
       rejectHttpUpgrade(socket, 503, "not ready\n");
       return;
     }
@@ -311,6 +340,10 @@ export class AgenCWebSocketServer {
   }
 
   #acceptConnection(socket: WebSocket, request: IncomingMessage): void {
+    if (this.#webSocketServer === null || this.#closeInProgress) {
+      socket.terminate();
+      return;
+    }
     const connectionId = this.#nextConnectionId;
     this.#nextConnectionId += 1;
 

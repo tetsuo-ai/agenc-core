@@ -435,6 +435,7 @@ interface MutableAgent {
   stateProjectDir?: string;
   metadata?: JsonObject;
   restoreAttemptId?: string;
+  runtimeGenerationId?: string;
   sessionIds: string[];
   logSessionIds: string[];
   recovered?: boolean;
@@ -466,6 +467,7 @@ interface PendingCanonicalRunCancellation {
 }
 
 interface RunnerTerminationTarget {
+  readonly owner: MutableAgent;
   readonly sessionIds: readonly string[];
   readonly route: AgenCDaemonSnapshotRoute;
   readonly status: AgentStatus;
@@ -545,7 +547,7 @@ export class AgenCDaemonAgentManager {
   >();
   readonly #pendingRunnerTerminations = new Map<
     string,
-    PendingRunnerTermination
+    Map<string | undefined, PendingRunnerTermination>
   >();
   readonly #pendingCanonicalRunCancellations = new Map<
     string,
@@ -1092,6 +1094,9 @@ export class AgenCDaemonAgentManager {
       };
       const agent: MutableAgent = {
         agentId: started.agentId,
+        ...(started.runtimeGenerationId !== undefined
+          ? { runtimeGenerationId: started.runtimeGenerationId }
+          : {}),
         ...(started.agentPath !== undefined
           ? { agentPath: started.agentPath }
           : retainedAgent?.agentPath !== undefined
@@ -1181,7 +1186,9 @@ export class AgenCDaemonAgentManager {
           (state) => {
             signal.throwIfAborted();
             state.agents.set(agent.agentId, agent);
-            const pending = this.#pendingRunnerTerminations.get(agent.agentId);
+            const pendingByGeneration = this.#pendingRunnerTerminations.get(agent.agentId);
+            const pending = pendingByGeneration?.get(agent.runtimeGenerationId)
+              ?? pendingByGeneration?.get(undefined);
             let pendingTermination: RunnerTerminationTarget | null = null;
             if (pending !== undefined) {
               this.#pendingRunnerTerminations.delete(agent.agentId);
@@ -1406,6 +1413,7 @@ export class AgenCDaemonAgentManager {
       rolloutDev: params.rolloutDev,
       rolloutIno: params.rolloutIno,
       restoreAttemptId: params.restoreAttemptId,
+      runtimeGenerationId: params.restoreAttemptId,
     };
   }
 
@@ -1435,7 +1443,10 @@ export class AgenCDaemonAgentManager {
       recovered: true,
       runtimeAvailable: record.runtimeAvailable === true,
       ...(record.restoreAttemptId !== undefined
-        ? { restoreAttemptId: record.restoreAttemptId }
+        ? {
+            restoreAttemptId: record.restoreAttemptId,
+            runtimeGenerationId: record.restoreAttemptId,
+          }
         : {}),
     };
     if (record.cwd !== undefined) agent.cwd = record.cwd;
@@ -2171,22 +2182,31 @@ export class AgenCDaemonAgentManager {
     snapshot: AgenCBackgroundAgentSnapshot,
   ): Promise<void> {
     const transitionAt = this.#now();
-    const target = await this.#state.with((state) => {
+    const outcome = await this.#state.with((state) => {
+      const agent = state.agents.get(agentId);
+      const matchesGeneration = agent === undefined || matchesRuntimeGeneration(agent, snapshot);
       const target = this.#applyRunnerTerminationLocked(
         state,
         agentId,
         snapshot,
         transitionAt,
       );
-      if (target !== null) return target;
-      if (this.#activeCreates > 0 && !state.agents.has(agentId)) {
-        this.#pendingRunnerTerminations.set(agentId, {
+      if (target !== null) return { target };
+      if (this.#activeCreates > 0 && (agent === undefined || !matchesGeneration)) {
+        let pending = this.#pendingRunnerTerminations.get(agentId);
+        if (pending === undefined) {
+          pending = new Map();
+          this.#pendingRunnerTerminations.set(agentId, pending);
+        }
+        pending.set(snapshot.runtimeGenerationId, {
           snapshot,
           transitionAt,
         });
       }
-      return null;
+      return matchesGeneration ? { target: null } : null;
     });
+    if (outcome === null) return;
+    const { target } = outcome;
     const pendingCancellation =
       this.#pendingCanonicalRunCancellations.get(agentId);
     if (pendingCancellation !== undefined) {
@@ -2209,7 +2229,7 @@ export class AgenCDaemonAgentManager {
     transitionAt: string,
   ): RunnerTerminationTarget | null {
     const agent = state.agents.get(agentId);
-    if (agent === undefined) return null;
+    if (agent === undefined || !matchesRuntimeGeneration(agent, snapshot)) return null;
     // Explicit stop has already revoked ingress by publishing "stopping".
     // Its runner still owns the canonical terminal and must project it before
     // the ordinary stopped status can be persisted.
@@ -2228,6 +2248,7 @@ export class AgenCDaemonAgentManager {
     ]);
     agent.sessionIds = [];
     return {
+      owner: agent,
       sessionIds,
       route,
       status: snapshot.status,
@@ -2250,19 +2271,28 @@ export class AgenCDaemonAgentManager {
       this.#recordRunTerminal !== undefined
     ) {
       try {
-        await this.#recordRunTerminal({
-          agentId,
-          sessionId: agentId,
-          ...target.route,
-          ...target.terminal,
+        const pending = await this.#state.with((state) => {
+          if (state.agents.get(agentId) !== target.owner) return undefined;
+          // Begin the write while its owner is authoritative, but retain the
+          // asynchronous continuation outside the lifecycle lock.
+          return { result: this.#recordRunTerminal!({
+            agentId,
+            sessionId: agentId,
+            ...target.route,
+            ...target.terminal!,
+          }) };
         });
+        await pending?.result;
       } catch (error) {
         // Do not advance the legacy agent row to a terminal status when the
         // durable terminal projection failed. The canonical JSONL event can
         // be replayed on restart/query and remains the recovery authority.
         this.#onSnapshotError(error);
-        const explicitStop = this.#agentStopTasks.get(agentId);
-        if (explicitStop !== undefined) explicitStop.finalizationError = error;
+        await this.#state.with((state) => {
+          if (state.agents.get(agentId) !== target.owner) return;
+          const explicitStop = this.#agentStopTasks.get(agentId);
+          if (explicitStop !== undefined) explicitStop.finalizationError = error;
+        });
         await this.#terminateAgentSessions(target.sessionIds, "runner_terminated");
         return;
       }
@@ -2275,6 +2305,8 @@ export class AgenCDaemonAgentManager {
       "runner_terminated",
       target.route,
       target.metadata,
+      undefined,
+      target.owner,
     );
     await this.#terminateAgentSessions(target.sessionIds, "runner_terminated");
   }
@@ -3879,11 +3911,12 @@ export class AgenCDaemonAgentManager {
     route: AgenCDaemonSnapshotRoute = {},
     metadataPatch?: JsonObject,
     runStatus?: string,
+    owner?: MutableAgent,
   ): Promise<void> {
     if (this.#recordAgentStatusTransition === undefined) return;
     for (const sessionId of sessionIds) {
       try {
-        await this.#recordAgentStatusTransition({
+        const record = () => this.#recordAgentStatusTransition!({
           sessionId,
           agentId,
           ...route,
@@ -3893,6 +3926,13 @@ export class AgenCDaemonAgentManager {
           ...(reason !== undefined ? { reason } : {}),
           ...(metadataPatch !== undefined ? { metadataPatch } : {}),
         });
+        const pending = owner === undefined
+          ? { result: record() }
+          : await this.#state.with((state) => state.agents.get(agentId) === owner
+            ? { result: record() }
+            : undefined);
+        if (pending === undefined) return;
+        await pending.result;
       } catch (error) {
         this.#onSnapshotError(error);
       }
@@ -4230,7 +4270,8 @@ export class AgenCDaemonAgentManager {
       const agent = state.agents.get(agentId);
       // A stop, attachment, or restore can commit while the reads are pending.
       // Apply only to the generation and state that initiated those reads.
-      if (agent !== owner || !isDeepStrictEqual(agent, expected)) return undefined;
+      if (agent !== owner || !isDeepStrictEqual(agent, expected) ||
+        (snapshot != null && !matchesRuntimeGeneration(agent, snapshot))) return undefined;
       const previousStatus = agent.status;
       if (snapshot === null && agent.recovered !== true) {
         // Retain the record through transient runner misses. The reaper needs
@@ -5275,6 +5316,16 @@ function normalizeLimit(limit: number | undefined): number {
     );
   }
   return Math.min(limit, 500);
+}
+
+function matchesRuntimeGeneration(
+  agent: MutableAgent,
+  snapshot: AgenCBackgroundAgentSnapshot,
+): boolean {
+  // Injected legacy runners may omit the token. Concrete runners always bind
+  // observations to one incarnation, even when a resume retains the run epoch.
+  return snapshot.runtimeGenerationId === undefined ||
+    snapshot.runtimeGenerationId === agent.runtimeGenerationId;
 }
 
 function applyAgentSnapshot(
