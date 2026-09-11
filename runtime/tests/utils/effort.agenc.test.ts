@@ -80,7 +80,6 @@ test('explicit effort context wins over ambient provider and subscription state'
     getDefaultEffortForModelForContext,
     modelSupportsEffortForContext,
   } = await importFreshEffortModule({ provider: 'xai' })
-  vi.stubEnv('USER_TYPE', 'ant')
   const context = {
     home: {},
     environment: { TEST_SUBSCRIPTION: 'pro' },

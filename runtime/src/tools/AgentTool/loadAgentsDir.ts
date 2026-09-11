@@ -443,12 +443,9 @@ function parseMemoryScope(value: unknown): AgentMemoryScope | undefined {
     : undefined
 }
 
-function parseIsolation(value: unknown): 'worktree' | 'remote' | undefined {
-  const valid = process.env.USER_TYPE === 'ant' ? ['worktree', 'remote'] : ['worktree']
-  return typeof value === 'string' &&
-    valid.includes(value)
-    ? (value as 'worktree' | 'remote')
-    : undefined
+function parseIsolation(value: unknown): 'worktree' | undefined {
+  // Only worktree isolation exists; a remote sandbox is not a thing here.
+  return value === 'worktree' ? 'worktree' : undefined
 }
 
 function parseHooks(value: unknown): HooksSettings | undefined {

@@ -2,7 +2,6 @@
 import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getCanonicalName } from './model/model.js'
-import { resolveAntModel } from './model/antModels.js'
 import { isAlwaysOnThinkingAnthropicModel } from './model/alwaysOnThinking.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
@@ -30,8 +29,7 @@ const OPEN_TO_CLOSE: Record<string, string> = {
 }
 
 /**
- * Build-time gate (feature) + runtime gate (GrowthBook). The build flag
- * controls code inclusion in external builds; the GB flag controls rollout.
+ * Build-time gate (feature). The build flag controls code inclusion.
  */
 export function isUltrathinkEnabled(): boolean {
   if (!feature('ULTRATHINK')) {
@@ -165,11 +163,6 @@ export function modelSupportsThinking(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'thinking')
   if (supported3P !== undefined) {
     return supported3P
-  }
-  if (process.env.USER_TYPE === 'ant') {
-    if (resolveAntModel(model.toLowerCase())) {
-      return true
-    }
   }
   // IMPORTANT: Do not change thinking support without notifying the model
   // launch DRI and research. This can greatly affect model quality and bashing.

@@ -153,7 +153,7 @@ export type SpawnTeammateConfig = {
   agent_role_workspace_cwd: string
   /** request_id of the API call whose response contained the tool_use that
    *  spawned this teammate. Threaded through to TeammateAgentContext for
-   *  lineage tracing on tengu_api_* events. */
+   *  lineage tracing on API request events. */
   invokingRequestId?: string
 }
 

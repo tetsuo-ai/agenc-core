@@ -32,7 +32,6 @@ const OPUS_48 = 'claude-opus-4-8'
 
 beforeEach(() => {
   vi.stubEnv('AGENC_DISABLE_1M_CONTEXT', '')
-  vi.stubEnv('USER_TYPE', '')
   vi.stubEnv('AGENC_PROVIDER', 'anthropic')
 })
 

@@ -40,11 +40,10 @@ export type FileReadingLimits = {
 
 /**
  * Default limits for Read tool when the ToolUseContext doesn't supply an
- * override. Memoized so the GrowthBook value is fixed at first call — avoids
- * the cap changing mid-session as the flag refreshes in the background.
+ * override. Memoized so the value is fixed at first call and cannot change
+ * mid-session.
  *
- * Precedence for maxTokens: env var > GrowthBook > DEFAULT_MAX_OUTPUT_TOKENS.
- * (Env var is a user-set override, should beat experiment infrastructure.)
+ * Precedence for maxTokens: env var > DEFAULT_MAX_OUTPUT_TOKENS.
  *
  * Defensive: each field is individually validated; invalid values fall
  * through to the hardcoded defaults (no route to cap=0).

@@ -314,7 +314,7 @@ function isToolReferenceBlock(value: unknown): boolean {
 
 /**
  * Appends a memory correction hint to a rejection/cancellation message
- * when auto-memory is enabled and the GrowthBook flag is on.
+ * when auto-memory is enabled.
  */
 export function withMemoryCorrectionHint(message: string): string {
   if (

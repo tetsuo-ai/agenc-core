@@ -48,21 +48,6 @@ export const DANGEROUS_BASH_PATTERNS: readonly string[] = [
   "env",
   "xargs",
   "sudo",
-  ...(process.env.USER_TYPE === "ant"
-    ? [
-        "fa run",
-        "coo",
-        "gh",
-        "gh api",
-        "curl",
-        "wget",
-        "git",
-        "kubectl",
-        "aws",
-        "gcloud",
-        "gsutil",
-      ]
-    : []),
 ];
 
 interface DangerousShellCommandPattern {

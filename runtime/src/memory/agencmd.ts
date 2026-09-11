@@ -1197,9 +1197,9 @@ export function getLargeMemoryFiles(files: MemoryFileInfo[]): MemoryFileInfo[] {
 }
 
 /**
- * When tengu_moth_copse is on, the findRelevantMemories prefetch surfaces
- * memory files via attachments, so the MEMORY.md index is no longer injected
- * into the system prompt. Callsites that care about "what's actually in
+ * When the findRelevantMemories prefetch surfaces memory files via
+ * attachments, the MEMORY.md index is no longer injected into the system
+ * prompt. Callsites that care about "what's actually in
  * context" (context builder, /context viz) should filter through this.
  */
 export function filterInjectedMemoryFiles(

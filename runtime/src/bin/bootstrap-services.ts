@@ -9,7 +9,6 @@ import type { ReviewDecision } from "../permissions/review-decision.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 import {
   PermissionModeRegistry,
-  removeOverlyBroadShellAllowRules,
   type PendingPermissionAuthorityPublication,
 } from "../permissions/permission-mode.js";
 import {
@@ -778,13 +777,7 @@ export function buildBootstrapSessionServices(
     const publication = permissionReloadTail.then(async () => {
       if (permissionReloadDisposed) return;
       await authorityPublication.publish((current) => {
-        let next = applyPermissionRulesSnapshot(current, snapshot);
-        if (
-          opts.env.USER_TYPE === "ant" &&
-          opts.env.AGENC_ENTRYPOINT !== "local-agent"
-        ) {
-          next = removeOverlyBroadShellAllowRules(next);
-        }
+        const next = applyPermissionRulesSnapshot(current, snapshot);
         return {
           next,
           result: () => undefined,

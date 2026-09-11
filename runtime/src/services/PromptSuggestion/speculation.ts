@@ -22,12 +22,9 @@ import {
   count,
   createCacheSafeParams,
   createChildAbortController,
-  createSystemMessage,
   createUserMessage,
   errorMessage,
   extractReadFilesFromMessages,
-  formatDuration,
-  formatNumber,
   getCurrentCwd,
   isSpeculationConfigEnabled,
   logError,
@@ -270,35 +267,12 @@ function createSpeculationFeedbackMessage(
   timeSavedMs: number,
   sessionTotalMs: number,
 ): Message | null {
-  if (process.env.USER_TYPE !== 'ant') return null
-
-  if (messages.length === 0 || timeSavedMs === 0) return null
-
-  const toolUses = countToolsInMessages(messages)
-  const tokens = boundary?.type === 'complete' ? boundary.outputTokens : null
-
-  const parts = []
-  if (toolUses > 0) {
-    parts.push(`Speculated ${toolUses} tool ${toolUses === 1 ? 'use' : 'uses'}`)
-  } else {
-    const turns = messages.length
-    parts.push(`Speculated ${turns} ${turns === 1 ? 'turn' : 'turns'}`)
-  }
-
-  if (tokens !== null) {
-    parts.push(`${formatNumber(tokens)} tokens`)
-  }
-
-  const savedText = `+${formatDuration(timeSavedMs)} saved`
-  const sessionSuffix =
-    sessionTotalMs !== timeSavedMs
-      ? ` (${formatDuration(sessionTotalMs)} this session)`
-      : ''
-
-  return createSystemMessage(
-    `[internal-only] ${parts.join(' · ')} · ${savedText}${sessionSuffix}`,
-    'warning',
-  )
+  // The speculation summary was a development diagnostic; it is never shown.
+  void messages
+  void boundary
+  void timeSavedMs
+  void sessionTotalMs
+  return null
 }
 
 function updateActiveSpeculationState(
@@ -329,9 +303,8 @@ function resetSpeculationState(setAppState: SetAppState): void {
 }
 
 export function isSpeculationEnabled(speculationEnabled?: boolean): boolean {
-  const enabled =
-    process.env.USER_TYPE === 'ant' &&
-    isSpeculationConfigEnabled(speculationEnabled)
+  // The persisted setting is the only authority.
+  const enabled = isSpeculationConfigEnabled(speculationEnabled)
   logForDebugging(`[Speculation] enabled=${enabled}`)
   return enabled
 }

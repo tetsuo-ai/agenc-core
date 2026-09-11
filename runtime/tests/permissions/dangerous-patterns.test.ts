@@ -41,21 +41,6 @@ const EXPECTED_DANGEROUS_BASH_PATTERNS = [
   "env",
   "xargs",
   "sudo",
-  ...(process.env.USER_TYPE === "ant"
-    ? [
-        "fa run",
-        "coo",
-        "gh",
-        "gh api",
-        "curl",
-        "wget",
-        "git",
-        "kubectl",
-        "aws",
-        "gcloud",
-        "gsutil",
-      ]
-    : []),
 ] as const;
 
 describe("dangerous-patterns donor parity", () => {

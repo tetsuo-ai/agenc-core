@@ -24,7 +24,6 @@ import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
 import { errorMessage } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { extractTextContent } from '../messages.js'
-import { resolveAntModel } from '../model/antModels.js'
 import { isAlwaysOnThinkingAnthropicModel } from '../model/alwaysOnThinking.js'
 import { getMainLoopModel } from '../model/model.js'
 import { getAutoModeConfig } from '../settings/settings.js'
@@ -75,25 +74,20 @@ const BASE_PROMPT: string = feature('TRANSCRIPT_CLASSIFIER')
   : ''
 
 // External template is loaded separately so it's available for
-// `agenc auto-mode defaults` even in ant builds. Ant builds use
-// permissions_anthropic.txt at runtime but should dump external defaults.
+// `agenc auto-mode defaults`.
 const EXTERNAL_PERMISSIONS_TEMPLATE: string = feature('TRANSCRIPT_CLASSIFIER')
   ? txtRequire(cjsRequire('./yolo-classifier-prompts/permissions_external.txt'))
   : ''
 
-const ANTHROPIC_PERMISSIONS_TEMPLATE: string =
-  feature('TRANSCRIPT_CLASSIFIER') && process.env.USER_TYPE === 'ant'
-    ? txtRequire(cjsRequire('./yolo-classifier-prompts/permissions_anthropic.txt'))
-    : ''
+// Only the external permissions template ships; the other variant stays empty.
+const ANTHROPIC_PERMISSIONS_TEMPLATE: string = ''
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 
 const MAX_CLASSIFIER_TRANSCRIPT_CHARS = 200_000
 const MAX_CLASSIFIER_BLOCK_VALUE_CHARS = 32_000
 
 function isUsingExternalPermissions(): boolean {
-  if (process.env.USER_TYPE !== 'ant') return true
-  const config = {} as AutoModeConfig
-  return config?.forceExternalPermissions === true
+  return true
 }
 
 /**
@@ -175,7 +169,6 @@ async function maybeDumpAutoMode(
   timestamp: number,
   suffix?: string,
 ): Promise<void> {
-  if (process.env.USER_TYPE !== 'ant') return
   if (!isEnvTruthy(process.env.AGENC_DUMP_AUTO_MODE)) return
   const base = suffix ? `${timestamp}.${suffix}` : `${timestamp}`
   try {
@@ -769,10 +762,9 @@ function replaceOutputFormatWithXml(systemPrompt: string): string {
  *
  * For most models: send { type: 'disabled' } via sideQuery's `thinking: false`.
  *
- * Models with alwaysOnThinking (declared in tengu_ant_model_override) default
- * to adaptive thinking server-side and reject `disabled` with a 400. For those:
- * don't pass `thinking: false`, instead pad max_tokens so adaptive thinking
- * (observed 0–1114 tokens replaying go/ccshare/shawnm-20260310-202833) doesn't
+ * Models with always-on thinking default to adaptive thinking server-side and
+ * reject `disabled` with a 400. For those: don't pass `thinking: false`,
+ * instead pad max_tokens so adaptive thinking (observed 0–1114 tokens) doesn't
  * exhaust the budget before <block> is emitted. Without headroom,
  * stop_reason=max_tokens yields an empty text response → parseXmlBlock('')
  * → null → "unparseable" → safe commands blocked.
@@ -783,13 +775,9 @@ function replaceOutputFormatWithXml(systemPrompt: string): string {
 function getClassifierThinkingConfig(
   model: string,
 ): [false | undefined, number] {
-  if (
-    (process.env.USER_TYPE === 'ant' &&
-      resolveAntModel(model)?.alwaysOnThinking) ||
-    // Claude Fable/Mythos 5: same always-on behavior for the public family —
-    // `thinking: {type:'disabled'}` returns a 400, so omit and pad instead.
-    isAlwaysOnThinkingAnthropicModel(model)
-  ) {
+  // Claude Fable/Mythos 5: always-on thinking —
+  // `thinking: {type:'disabled'}` returns a 400, so omit and pad instead.
+  if (isAlwaysOnThinkingAnthropicModel(model)) {
     return [undefined, 2048]
   }
   return [false, 0]
@@ -1170,7 +1158,7 @@ export async function classifyYoloAction(
 
   const model = getClassifierModel()
 
-  // Dispatch to 2-stage XML classifier if enabled via GrowthBook
+  // Dispatch to 2-stage XML classifier if enabled
   if (isTwoStageClassifierEnabled()) {
     return classifyYoloActionXml(
       prefixMessages,
@@ -1373,20 +1361,18 @@ function getClassifierModel(): string {
 }
 
 /**
- * Resolve the XML classifier setting: internal-only env var takes precedence,
- * then GrowthBook. Returns undefined when unset (caller decides default).
+ * Resolve the XML classifier setting: the env var takes precedence, then the
+ * auto-mode config. Returns undefined when unset (caller decides default).
  */
 function resolveTwoStageClassifier():
   | boolean
   | 'fast'
   | 'thinking'
   | undefined {
-  if (process.env.USER_TYPE === 'ant') {
-    const env = process.env.AGENC_TWO_STAGE_CLASSIFIER
-    if (env === 'fast' || env === 'thinking') return env
-    if (isEnvTruthy(env)) return true
-    if (isEnvDefinedFalsy(env)) return false
-  }
+  const env = process.env.AGENC_TWO_STAGE_CLASSIFIER
+  if (env === 'fast' || env === 'thinking') return env
+  if (isEnvTruthy(env)) return true
+  if (isEnvDefinedFalsy(env)) return false
   const config = {} as AutoModeConfig
   return config?.twoStageClassifier
 }
@@ -1400,11 +1386,9 @@ function isTwoStageClassifierEnabled(): boolean {
 }
 
 function isJsonlTranscriptEnabled(): boolean {
-  if (process.env.USER_TYPE === 'ant') {
-    const env = process.env.AGENC_JSONL_TRANSCRIPT
-    if (isEnvTruthy(env)) return true
-    if (isEnvDefinedFalsy(env)) return false
-  }
+  const env = process.env.AGENC_JSONL_TRANSCRIPT
+  if (isEnvTruthy(env)) return true
+  if (isEnvDefinedFalsy(env)) return false
   const config = {} as AutoModeConfig
   return config?.jsonlTranscript === true
 }

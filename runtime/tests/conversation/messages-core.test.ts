@@ -97,7 +97,6 @@ import {
 const parentUuid = "00000000-0000-4000-8000-000000000123";
 const originalDisableToolReminders = process.env.AGENC_DISABLE_TOOL_REMINDERS;
 const originalEnableTasks = process.env.AGENC_ENABLE_TASKS;
-const originalUserType = process.env.USER_TYPE;
 
 afterEach(() => {
   if (originalDisableToolReminders === undefined) {
@@ -113,9 +112,7 @@ afterEach(() => {
   }
 
   if (originalUserType === undefined) {
-    delete process.env.USER_TYPE;
   } else {
-    process.env.USER_TYPE = originalUserType;
   }
 });
 
@@ -1156,7 +1153,6 @@ describe("message utility constructors and predicates", () => {
     expect(userText(relevant[0]).match(/<\/persistent_memory_context>/g))
       .toHaveLength(1);
 
-    process.env.USER_TYPE = "ant";
     const mailboxText = userText(normalizeAttachmentForAPI({
       type: "teammate_mailbox",
       messages: [{

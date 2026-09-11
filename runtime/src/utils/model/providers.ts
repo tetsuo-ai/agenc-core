@@ -210,8 +210,7 @@ export function isGithubNativeAnthropicMode(resolvedModel: string): boolean {
 }
 /**
  * Check if ANTHROPIC_BASE_URL is a first-party provider API URL.
- * Returns true if not set (default API) or points to api.anthropic.com
- * (or api-staging.anthropic.com for ant users).
+ * Returns true if not set (default API) or points to api.anthropic.com.
  */
 export function isFirstPartyAnthropicBaseUrl(): boolean {
   const environment = getSelectedProviderEnvironment()
@@ -221,11 +220,7 @@ export function isFirstPartyAnthropicBaseUrl(): boolean {
   }
   try {
     const host = new URL(baseUrl).host
-    const allowedHosts = ['api.anthropic.com']
-    if (environment.USER_TYPE === 'ant') {
-      allowedHosts.push('api-staging.anthropic.com')
-    }
-    return allowedHosts.includes(host)
+    return host === 'api.anthropic.com'
   } catch {
     return false
   }

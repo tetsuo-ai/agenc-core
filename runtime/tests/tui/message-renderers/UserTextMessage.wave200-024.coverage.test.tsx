@@ -15,19 +15,19 @@ import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { UserTextMessage } from './UserTextMessage.js'
 
-const originalUserType = process.env.USER_TYPE
+const originalAgentTeams = process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS
 
 afterEach(() => {
   if (originalUserType === undefined) {
-    delete process.env.USER_TYPE
+    delete process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS
   } else {
-    process.env.USER_TYPE = originalUserType
+    process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS = originalAgentTeams
   }
 })
 
 describe('UserTextMessage wave200-024 coverage', () => {
   test('routes teammate messages when agent swarms are enabled', async () => {
-    process.env.USER_TYPE = 'ant'
+    process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS = '1'
 
     const output = await renderToString(
       <UserTextMessage

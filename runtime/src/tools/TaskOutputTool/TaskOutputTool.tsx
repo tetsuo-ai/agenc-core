@@ -148,10 +148,7 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     return this.isReadOnly?.(_input) ?? false;
   },
   isEnabled() {
-    // "external" is a build-time substituted USER_TYPE literal; the cast keeps
-    // the comparison (and its always-true result for external builds) intact
-    // while satisfying the disjoint-literal narrowing check.
-    return ("external" as string) !== 'ant';
+    return true;
   },
   isReadOnly(_input) {
     return true;

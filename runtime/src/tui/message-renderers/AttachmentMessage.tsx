@@ -102,16 +102,10 @@ export function AttachmentMessage({
   if (feature('EXPERIMENTAL_SKILL_SEARCH')) {
     if (attachment.type === 'skill_discovery') {
       if (attachment.skills.length === 0) return null;
-      // Ant users get shortIds inline so they can /skill-feedback while the
-      // turn is still fresh. External users (when this un-gates) just see
-      // names — shortId is undefined outside ant builds anyway.
       const names = attachment.skills.map(s => s.shortId ? `${s.name} [${s.shortId}]` : s.name).join(', ');
-      const firstId = attachment.skills[0]?.shortId;
-      const hint = "external" === 'ant' && !isDemoEnv && firstId ? ` · /skill-feedback ${firstId} 1=wrong 2=noisy 3=good [comment]` : '';
       return <Line>
           <Text bold>{attachment.skills.length}</Text> relevant{' '}
           {plural(attachment.skills.length, 'skill')}: {names}
-          {hint && <Text dimColor>{hint}</Text>}
         </Line>;
     }
   }
