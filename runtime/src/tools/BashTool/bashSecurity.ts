@@ -145,7 +145,9 @@ function extractQuotedContent(command: string, isJq = false): QuoteExtraction {
 }
 
 function stripSafeRedirections(content: string): string {
-  // SECURITY: All three patterns MUST have a trailing boundary (?=\s|$).
+  // SECURITY: All three patterns MUST have a trailing shell-token boundary.
+  // An unquoted ;, | or & also ends /dev/null (common in batched diagnostics).
+  // Escaped separators and suffixes such as /dev/nullo must never match.
   // Without it, `> /dev/nullo` matches `/dev/null` as a PREFIX, strips
   // `> /dev/null` leaving `o`, so `echo hi > /dev/nullo` becomes `echo hi o`.
   // validateRedirections then sees no `>` and passes. The file write to
@@ -153,9 +155,9 @@ function stripSafeRedirections(content: string): string {
   // Main bashPermissions flow is protected (checkPathConstraints validates the
   // original command), but speculation.ts uses checkReadOnlyConstraints alone.
   return content
-    .replace(/\s+2\s*>&\s*1(?=\s|$)/g, '')
-    .replace(/[012]?\s*>\s*\/dev\/null(?=\s|$)/g, '')
-    .replace(/\s*<\s*\/dev\/null(?=\s|$)/g, '')
+    .replace(/\s+2\s*>&\s*1(?=\s|[;|&]|$)/g, '')
+    .replace(/[012]?\s*>\s*\/dev\/null(?=\s|[;|&]|$)/g, '')
+    .replace(/\s*<\s*\/dev\/null(?=\s|[;|&]|$)/g, '')
 }
 
 /**

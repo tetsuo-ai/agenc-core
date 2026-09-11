@@ -4868,6 +4868,31 @@ describe("AgenC delegate background-agent runner", () => {
     await expect(runner.getAgentSnapshot(agentId)).resolves.toBeNull();
   });
 
+  it.each(["completed", "cancelled"] as const)("keeps permission-denied routine outcome honest after a %s answer", async (stopReason) => {
+    const agentId = "session-routine-denied";
+    const { runner, rolloutItems, control, session } = makeTopLevelRunner({ conversationId: agentId });
+    await runner.startAgent({ objective: "one routine", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
+    control.sendInput.mockImplementationOnce(async () => {
+      session.emit({ id: "blocked-call", msg: { type: "error", payload: {
+        cause: "permission_denied:permission_mode", message: "This run has nobody attached to approve it.",
+      } } });
+      session.emitPhaseEvent({ type: "assistant_text", content: "Only a partial report is available." });
+      session.emitPhaseEvent({ type: "turn_complete", content: "Only a partial report is available.", stopReason, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } });
+    });
+    await runner.submitAgentMessage(agentId, { sessionId: agentId, content: "inspect", originalContent: "inspect", messageId: "routine-message", streamId: "routine-stream", acceptedAt: "2026-05-09T00:00:00.000Z" });
+    const status = stopReason === "cancelled" ? "cancelled" : "failed";
+    expect(await runner.finishAgentRun(agentId, "routine-message")).toBe(status);
+    const terminals = rolloutItems.flatMap(item => {
+      const event = (item as { payload?: { msg?: { type?: string; payload?: unknown } } }).payload?.msg;
+      return event?.type === "run_terminal" ? [event.payload] : [];
+    });
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]).toMatchObject({ status, exitCode: status === "cancelled" ? 130 : 1,
+      stopReason: status === "cancelled" ? "routine_cancelled" : "routine_permission_denied",
+      finalMessage: "Only a partial report is available.",
+    });
+  });
+
   it("suspends a daemon-shutdown idle run without poisoning it terminal", async () => {
     let clock = "2026-05-09T00:00:00.000Z";
     const { runner, rolloutItems, rolloutStore } = makeTopLevelRunner({

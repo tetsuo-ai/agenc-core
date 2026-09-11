@@ -30,6 +30,7 @@ import {
   type PathCommand,
 } from './pathValidation.js'
 import { sedCommandIsAllowedByAllowlist } from './sedValidation.js'
+import { MACOS_READ_ONLY_COMMANDS } from './macosReadOnlyCommands.js'
 
 // Unified command validation configuration system
 type CommandConfig = {
@@ -1150,6 +1151,9 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
 
 function getCommandAllowlist(): Record<string, CommandConfig> {
   let allowlist: Record<string, CommandConfig> = COMMAND_ALLOWLIST
+  if (getPlatform() === 'macos') {
+    allowlist = { ...allowlist, ...MACOS_READ_ONLY_COMMANDS }
+  }
   // On Windows, xargs can be used as a data-to-code bridge: if a file contains
   // a UNC path, `cat file | xargs cat` feeds that path to cat, triggering SMB
   // resolution. Since the UNC path is in file contents (not the command string),
