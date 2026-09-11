@@ -1,28 +1,23 @@
 #!/usr/bin/env node
 // Print a markdown comparison of the compare-agents.sh reports in a directory.
-import { readFileSync, existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-// The directory argument is an operator path; it must be an existing
-// directory under the working directory or the home directory, and the tag
-// must be a plain token, so no argument can point the reader elsewhere.
-const requested = resolve(process.argv[2] ?? "eval/reports");
-const roots = [resolve(process.cwd()), resolve(homedir())];
-let dir;
-try {
-  dir = realpathSync(requested);
-} catch {
-  console.error(`report directory not found: ${requested}`);
+// Reports live under runtime/eval/reports/<run>/ (gitignored). The run name
+// and the tag are plain tokens taken as basenames, so no argument can point
+// the reader outside that directory.
+const TOKEN = /^[A-Za-z0-9._-]{1,64}$/;
+const run = basename(process.argv[2] ?? "latest");
+const rawTag = basename(process.argv[3] ?? "");
+if (!TOKEN.test(run) || (rawTag !== "" && !TOKEN.test(rawTag))) {
+  console.error("run and tag must be letters, digits, dots, underscores or dashes");
   process.exit(2);
 }
-if (!roots.some((root) => dir === root || dir.startsWith(root + sep))) {
-  console.error("report directory must be under the working directory or the home directory");
-  process.exit(2);
-}
-const rawTag = process.argv[3] ?? "";
-if (rawTag !== "" && !/^[A-Za-z0-9._-]{1,64}$/.test(rawTag)) {
-  console.error("tag must be letters, digits, dots, underscores or dashes");
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const dir = join(root, "eval", "reports", run);
+if (!existsSync(dir)) {
+  console.error(`no reports under eval/reports/${run}`);
   process.exit(2);
 }
 const tag = rawTag === "" ? "" : `-${rawTag}`;

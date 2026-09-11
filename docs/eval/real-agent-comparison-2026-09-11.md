@@ -6,7 +6,8 @@ runs headless from an isolated home: AgenC through `agenc -p` in an isolated `AG
 AgenC SDK), Hermes 0.21.2 (tag v2026.9.11, run from a git checkout in its own venv and `HERMES_HOME`) through
 `hermes chat -Q --yolo --provider <p> -m <model> --reasoning medium -q <prompt>` (`-c` on later steps), OpenCode 1.18.30
 (npm package, `XDG_*_HOME` isolated) through `opencode run --auto -m <provider>/<model> <prompt>` (`--continue` on later
-steps). `runtime/scripts/compare-agents.sh` runs all of it; `runtime/scripts/eval-compare-table.mjs` prints the tables.
+steps). `runtime/scripts/compare-agents.sh` runs all of it and writes the reports under `runtime/eval/reports/<run>/`;
+`runtime/scripts/eval-compare-table.mjs <run> [tag]` prints the tables.
 Keys never touch an argv: each agent gets one provider key through `env -i`.
 
 ## Command tasks (12 single prompts)

@@ -4,11 +4,12 @@
 #
 #   PROVIDER=anthropic MODEL=claude-sonnet-5 KEY_VAR=ANTHROPIC_API_KEY \
 #   AGENC_BIN=/path/to/agenc HERMES_BIN=/path/to/hermes OPENCODE_BIN=/path/to/opencode \
-#   AGENC_EVAL_HOME=/abs/isolated/home OUT_DIR=/abs/reports [TAG=sonnet] \
+#   AGENC_EVAL_HOME=/abs/isolated/home [RUN=2026-09-11] [TAG=sonnet] \
 #   runtime/scripts/compare-agents.sh [commands|session|all]
 #
-# Reports are written as <agent>-<TAG>-commands.json and <agent>-<TAG>-session.json
-# (TAG defaults to MODEL) and summarised by scripts/eval-compare-table.mjs.
+# Reports are written under runtime/eval/reports/<RUN>/ (gitignored) as
+# <agent>-<TAG>-commands.json and <agent>-<TAG>-session.json (TAG defaults to
+# MODEL, RUN to today's date) and summarised by scripts/eval-compare-table.mjs.
 #
 # The isolated AgenC home's config.toml must select PROVIDER/MODEL and the
 # reasoning effort; the runner refuses to start a daemon in the default home.
@@ -16,9 +17,12 @@
 # under OUT_DIR so nothing touches a developer's real installs.
 set -euo pipefail
 LANE="${1:-all}"
-: "${PROVIDER:?}" "${MODEL:?}" "${KEY_VAR:?}" "${AGENC_BIN:?}" "${HERMES_BIN:?}" "${OPENCODE_BIN:?}" "${AGENC_EVAL_HOME:?}" "${OUT_DIR:?}"
+: "${PROVIDER:?}" "${MODEL:?}" "${KEY_VAR:?}" "${AGENC_BIN:?}" "${HERMES_BIN:?}" "${OPENCODE_BIN:?}" "${AGENC_EVAL_HOME:?}"
 KEY="${!KEY_VAR:?$KEY_VAR is not set}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+RUN="${RUN:-$(date +%Y-%m-%d)}"
+case "$RUN" in *[!A-Za-z0-9._-]*|"") echo "RUN must be a plain token" >&2; exit 2 ;; esac
+OUT_DIR="$HERE/eval/reports/$RUN"
 NODE="${NODE:-node}"
 EFFORT="${EFFORT:-medium}"
 mkdir -p "$OUT_DIR/hermes-home" "$OUT_DIR/oc-home/config" "$OUT_DIR/oc-home/data" "$OUT_DIR/oc-home/cache"
@@ -55,4 +59,4 @@ fi
 if [[ "$LANE" == "session" || "$LANE" == "all" ]]; then
   for a in agenc hermes opencode; do run "$a session" "$HERE/eval/tasks/manifest-session.json" "$OUT_DIR/$a-$TAG-session.json" --timeout-ms 1800000; done
 fi
-"$NODE" "$HERE/scripts/eval-compare-table.mjs" "$OUT_DIR" "$TAG"
+"$NODE" "$HERE/scripts/eval-compare-table.mjs" "$RUN" "$TAG"
