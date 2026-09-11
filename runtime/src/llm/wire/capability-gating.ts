@@ -33,7 +33,7 @@ import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "../registry/openai-reasoning-models.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
-import { AGENC_DEEPSEEK_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "../registry/agenc-deepseek.js";
+import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "../registry/agenc-deepseek.js";
 import { DEEPSEEK_REASONING_LEVELS, isNativeDeepSeekModel } from "../registry/deepseek-models.js";
 
 export interface ChatCompletionsCapabilityHints {
@@ -402,7 +402,7 @@ export function chatCompletionsCapabilityHintsForProvider(
 ): ChatCompletionsCapabilityHints {
   const slug = normalizeProviderIdentity(providerName, "capability gate") ?? "";
   const isManagedDeepSeek = options.managedGateway === true &&
-    slug === "openrouter" && model === AGENC_DEEPSEEK_MODEL;
+    slug === "openrouter" && isAgenCDeepSeekModel(model);
   const isNativeDeepSeek = slug === "deepseek" && isNativeDeepSeekModel(model);
   const normalizedModel = model?.trim().toLowerCase() ?? "";
   const reasoningContentProvenance =
@@ -533,8 +533,8 @@ export function chatCompletionsCapabilityHintsForProvider(
     ...(isNativeDeepSeek ? {
       acceptsToolChoice: false,
       acceptsParallelToolCalls: false,
-      acceptsDirectImageInput: false,
-      toolResultImagePolicy: "strip" as const,
+      acceptsDirectImageInput: acceptsToolResultImages,
+      toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
       toolChoicePolicy: "auto_only" as const,
       acceptsTemperature: false,
       thinkingConfig: { type: "enabled" as const },

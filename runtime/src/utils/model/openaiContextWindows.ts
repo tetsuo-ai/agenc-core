@@ -108,6 +108,9 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
 
   // DeepSeek V4 Flash and Pro: 1,048,576 context and 384,000 output ceiling.
   // The native adapter's default response budget is registered separately.
+  'deepseek-flash':         1_048_576,
+  'deepseek-v4.1-flash':     1_048_576,
+  'deepseek-v4-flash-vision-exp': 1_048_576,
   'deepseek-v4-flash':      1_048_576,
   'deepseek-v4-pro':        1_048_576,
   // Groq (fast inference)
@@ -344,6 +347,9 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'o4-mini':                  100_000,
 
   // DeepSeek V4 coding-agent models. See context-window note above.
+  'deepseek-flash':           384_000,
+  'deepseek-v4.1-flash':       384_000,
+  'deepseek-v4-flash-vision-exp': 384_000,
   'deepseek-v4-flash':        384_000,
   'deepseek-v4-pro':          384_000,
   // Compatibility DeepSeek API aliases documented in the public pricing/model pages.

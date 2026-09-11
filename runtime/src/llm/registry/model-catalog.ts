@@ -15,10 +15,10 @@ import {
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
-import { DEEPSEEK_MODELS } from "./deepseek-models.js";
+import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
-import { AGENC_DEEPSEEK_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "./agenc-deepseek.js";
+import { AGENC_DEEPSEEK_MODELS, AGENC_DEEPSEEK_REASONING_LEVELS } from "./agenc-deepseek.js";
 import {
   GEMINI_THINKING_MODELS,
   resolveGeminiThinkingModel,
@@ -510,7 +510,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     })),
     ...qwenCloudCatalogEntries(),
-    ...DEEPSEEK_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
+    ...[...DEEPSEEK_MODELS, ...DEEPSEEK_MODEL_ALIASES].map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "deepseek",
       model: entry.model,
       displayName: entry.label,
@@ -518,7 +518,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       maxContextWindow: entry.contextWindow,
       maxOutputTokens: entry.maxOutputTokens,
       maxOutputTokensUpperLimit: entry.maxOutputTokensUpperLimit,
-      inputModalities: TEXT_MODALITIES,
+      inputModalities: entry.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: false,
       supportsStructuredOutput: true,
@@ -532,14 +532,14 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningLevel: entry.defaultEffort,
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: index,
-      visibility: "list",
+      visibility: index < DEEPSEEK_MODELS.length ? "list" : "none",
     })),
-    // Reviewed AgenC route metadata; account discovery still controls access.
-    // Backend: docs/operations/managed-stream-liveness-20260911.md.
-    {
+    // Client wire metadata only. Account discovery and the reviewed backend
+    // policy control which exact route is live; V4 is not an alias of V4.1.
+    ...AGENC_DEEPSEEK_MODELS.map((entry): RegisteredModelCatalogEntry => ({
       provider: "agenc",
-      model: AGENC_DEEPSEEK_MODEL,
-      displayName: "DeepSeek V4 Flash 0731",
+      model: entry.model,
+      displayName: entry.label,
       contextWindow: 1_048_576,
       maxContextWindow: 1_048_576,
       // Reasoning and tool arguments share this budget. An 8k allowance can
@@ -547,6 +547,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       maxOutputTokens: 64_000,
       maxOutputTokensUpperLimit: 384_000,
       maxOutputTokensCappedDefault: true,
+      // Managed image admission needs a separately reviewed backend contract.
       inputModalities: TEXT_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: false,
@@ -561,7 +562,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 0,
       visibility: "none",
-    },
+    })),
     // Metadata only: exposing this private route requires configured model access.
     // https://huggingface.co/Qwen/Qwen3.8-Flash-Next/tree/de4b8e4d43b917e7706784d8bb445c9af86a3540
     ...["agenc", "qwen"].map((provider): RegisteredModelCatalogEntry => ({

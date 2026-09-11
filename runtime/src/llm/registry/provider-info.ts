@@ -426,7 +426,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   deepseek: providerDefinition({
     name: "DeepSeek",
-    defaultModel: "deepseek-v4-flash",
+    defaultModel: "deepseek-flash",
     baseURL: "https://api.deepseek.com/v1",
     credentials: apiKeyCredentials(["DEEPSEEK_API_KEY"]),
     baseURLEnvVars: ["DEEPSEEK_BASE_URL"],
@@ -690,7 +690,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
   ]),
-  deepseek: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
+  deepseek: Object.freeze(["deepseek-flash", "deepseek-v4-pro"]),
   // `/models` also advertises image generation and voice transcription.
   // Those are not chat-completion LLMs and deliberately stay out of this list.
   meta: mergeDerivedProviderModels("meta"),

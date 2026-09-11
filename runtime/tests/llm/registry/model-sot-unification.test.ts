@@ -144,10 +144,10 @@ describe("model SoT: one catalog entry surfaces everywhere", () => {
 
 describe("retired models remain historical metadata, not live choices", () => {
   it("uses only reachable provider defaults and catalog rows", () => {
-    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.deepseek).toBe("deepseek-v4-flash");
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.deepseek).toBe("deepseek-flash");
     expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.mistral).toBe("mistral-medium-latest");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.deepseek).toEqual([
-      "deepseek-v4-flash",
+      "deepseek-flash",
       "deepseek-v4-pro",
     ]);
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.groq).not.toContain(
