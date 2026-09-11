@@ -26,7 +26,6 @@ import { transitionPermissionMode } from '../../permissions/permission-mode.js'
 import type { ToolPermissionContext as CanonicalToolPermissionContext } from '../../permissions/types.js'
 import { createSessionMcpSamplingHandlers } from '../../session/mcp-startup.js'
 import { runTurnCompat } from '../../session/turn-compat.js'
-import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import {
   connectToServer,
   fetchToolsForClient,
@@ -58,7 +57,6 @@ import type {
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { AbortError } from '../../utils/errors.js'
-import { getDisplayPath } from '../../utils/file.js'
 import {
   cloneFileStateCache,
   createFileStateCacheWithSizeLimit,
@@ -475,13 +473,6 @@ export async function* runAgent({
     // owns a fresh spawn reservation and must durably commit that edge.
     spawnAdmission.markDispatched()
     spawnAdmission.commit()
-  }
-
-  // Log API calls path for subagents (internal-only)
-  if (process.env.USER_TYPE === 'ant') {
-    logForDebugging(
-      `[Subagent ${agentDefinition.agentType}] API calls: ${getDisplayPath(getDumpPromptsPath(agentId))}`,
-    )
   }
 
   // Handle message forking for context sharing

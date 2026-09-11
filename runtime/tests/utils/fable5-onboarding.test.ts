@@ -41,7 +41,6 @@ const FABLE_5 = 'claude-fable-5'
 
 beforeEach(() => {
   vi.stubEnv('AGENC_DISABLE_1M_CONTEXT', '')
-  vi.stubEnv('USER_TYPE', '')
   vi.stubEnv('AGENC_PROVIDER', 'anthropic')
 })
 

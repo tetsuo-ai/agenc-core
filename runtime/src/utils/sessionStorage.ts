@@ -514,7 +514,7 @@ export function getNodeEnv(): string {
 
 // exported for testing
 export function getUserType(): string {
-  return process.env.USER_TYPE || 'external'
+  return 'external'
 }
 
 function getEntrypoint(): string | undefined {
@@ -2598,11 +2598,11 @@ function recoverOrphanedParallelToolResults(
 /**
  * Find the latest turn_duration checkpoint in the reconstructed chain and
  * compare its recorded messageCount against the chain's position at that
- * point. Emits tengu_resume_consistency_delta for BigQuery monitoring of
+ * point. Records the resume consistency delta for monitoring of
  * write→load round-trip drift — the class of bugs where snip/compact/
  * parallel-TR operations mutate in-memory but the parentUuid walk on disk
- * reconstructs a different set (adamr-20260320-165831: 397K displayed →
- * 1.65M actual on resume).
+ * reconstructs a different set (one case: 397K displayed, 1.65M actual on
+ * resume).
  *
  * delta > 0: resume loaded MORE than in-session (the usual failure mode)
  * delta < 0: resume loaded FEWER (chain truncation — #22453 class)
@@ -2983,7 +2983,6 @@ export async function saveCustomTitle(
  * - CAS semantics: VS Code's `onlyIfNoCustomTitle` check scans for the
  *   `customTitle` field only, so AI can overwrite its own previous AI
  *   title but never a user title.
- * - Metrics: `tengu_session_renamed` is not fired for AI titles.
  *
  * Because the entry is never re-appended, it scrolls out of the 64KB tail
  * window once enough messages accumulate. Readers (`readLiteMetadata`,
@@ -4673,11 +4672,11 @@ export async function loadAllSubagentTranscriptsFromDisk(): Promise<{
 // without awaiting recordTranscript's return value (race-free hint tracking).
 export function isLoggableMessage(m: Message): boolean {
   if (m.type === 'progress') return false
-  // IMPORTANT: We deliberately filter out most attachments for non-ants because
-  // they have sensitive info for training that we don't want exposed to the public.
-  // When enabled, we allow hook_additional_context through since it contains
-  // user-configured hook output that is useful for session context on resume.
-  if (m.type === 'attachment' && getUserType() !== 'ant') {
+  // IMPORTANT: most attachments are deliberately kept out of the transcript
+  // because they can carry sensitive material. When enabled, we allow
+  // hook_additional_context through since it contains user-configured hook
+  // output that is useful for session context on resume.
+  if (m.type === 'attachment') {
     if (
       m.attachment.type === 'hook_additional_context' &&
       isEnvTruthy(process.env.AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT)

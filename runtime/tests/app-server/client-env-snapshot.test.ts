@@ -103,7 +103,6 @@ describe("daemon client environment snapshots", () => {
       AGENC_REMOTE: "1",
       AGENC_REMOTE_SESSION_ID: "session-client-a",
       SESSION_INGRESS_URL: "https://ingress-a.example",
-      USER_TYPE: "ant",
     });
     const second = collectDaemonClientEnvOverrides({
       AGENC_REMOTE_SESSION_ID: "session-client-b",
@@ -113,12 +112,10 @@ describe("daemon client environment snapshots", () => {
     expect(first).toMatchObject({
       AGENC_REMOTE_SESSION_ID: "session-client-a",
       SESSION_INGRESS_URL: "https://ingress-a.example",
-      USER_TYPE: "ant",
     });
     expect(second).toMatchObject({
       AGENC_REMOTE_SESSION_ID: "session-client-b",
       SESSION_INGRESS_URL: "https://ingress-b.example",
-      USER_TYPE: "",
     });
     expect(first).not.toHaveProperty("AGENC_REMOTE");
     expect(second).not.toHaveProperty("AGENC_REMOTE");

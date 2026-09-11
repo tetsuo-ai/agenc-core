@@ -50,14 +50,12 @@ describe("PromptSuggestion speculation", () => {
     clearCurrentRuntimeSession();
     resetProjectForTesting();
     process.env.AGENC_CWD = originalCwd;
-    delete process.env.USER_TYPE;
     delete process.env.TEST_ENABLE_SESSION_PERSISTENCE;
     await Promise.all(tempDirs.map(dir => rm(dir, { recursive: true, force: true })));
     tempDirs.length = 0;
   });
 
   it("uses only the persisted speculation setting", () => {
-    process.env.USER_TYPE = "ant";
 
     expect(isSpeculationEnabled(false)).toBe(false);
     expect(isSpeculationEnabled(true)).toBe(true);
@@ -191,7 +189,6 @@ describe("PromptSuggestion speculation", () => {
 
     const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-session-temp-"));
     tempDirs.push(sessionTempRoot);
-    process.env.USER_TYPE = "ant";
     runForkedAgentMock.mockResolvedValueOnce({
       messages: [],
       totalUsage: { output_tokens: 0 },
@@ -236,7 +233,6 @@ describe("PromptSuggestion speculation", () => {
     const cwd = await mkdtemp(join(tmpdir(), "agenc-spec-boundary-"));
     const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-spec-temp-"));
     tempDirs.push(cwd, sessionTempRoot);
-    process.env.USER_TYPE = "ant";
 
     const decisions: Array<{ label: string; behavior: string; reason?: string }> = [];
     runForkedAgentMock.mockImplementationOnce(async params => {
@@ -286,7 +282,6 @@ describe("PromptSuggestion speculation", () => {
     const cwd = await mkdtemp(join(tmpdir(), "agenc-spec-overlay-"));
     const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-spec-temp-"));
     tempDirs.push(cwd, sessionTempRoot);
-    process.env.USER_TYPE = "ant";
     await writeFile(join(cwd, "notes.txt"), "original");
 
     let writePath = "";
@@ -334,7 +329,6 @@ describe("PromptSuggestion speculation", () => {
     const rootA = await mkdtemp(join(tmpdir(), "agenc-spec-root-a-"));
     const rootB = await mkdtemp(join(tmpdir(), "agenc-spec-root-b-"));
     tempDirs.push(cwdA, cwdB, rootA, rootB);
-    process.env.USER_TYPE = "ant";
     runForkedAgentMock.mockResolvedValue({
       messages: [],
       totalUsage: { output_tokens: 0 },

@@ -40,13 +40,13 @@ export const TOOL_RESULT_CLEARED_MESSAGE = '[Old tool result content cleared]'
 
 /**
  * Resolve the effective persistence threshold for a tool.
- * GrowthBook override wins when present; otherwise falls back to the declared
+ * A config override wins when present; otherwise falls back to the declared
  * per-tool cap clamped by the global default.
  *
- * Defensive: GrowthBook's cache returns `cached !== undefined ? cached : default`,
- * so a flag served as `null` leaks through. We guard with optional chaining and a
- * typeof check so any non-object flag value (null, string, number) falls through
- * to the hardcoded default instead of throwing on index or returning 0.
+ * Defensive: a config value served as `null` must not leak through. We guard
+ * with optional chaining and a typeof check so any non-object value (null,
+ * string, number) falls through to the hardcoded default instead of throwing
+ * on index or returning 0.
  */
 export function getPersistenceThreshold(
   // Per-tool overrides were feature-flag-stripped to a constant; the threshold is
@@ -56,7 +56,7 @@ export function getPersistenceThreshold(
 ): number {
   // Infinity = hard opt-out. Read self-bounds via maxTokens; persisting its
   // output to a file the model reads back with Read is circular. Checked
-  // before the GB override so tengu_satin_quoll can't force it back on.
+  // before the config override so it cannot be forced back on.
   if (!Number.isFinite(declaredMaxResultSizeChars)) {
     return declaredMaxResultSizeChars
   }

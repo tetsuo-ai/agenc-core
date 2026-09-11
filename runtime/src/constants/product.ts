@@ -53,7 +53,7 @@ export function getAgenCAiBaseUrl(
  * Get the full session URL for a remote session.
  *
  * The cse_→session_ translation is a short-lived shim gated by
- * tengu_bridge_repl_v2_cse_shim_enabled (see isCseShimEnabled). Worker
+ * isCseShimEnabled. Worker
  * endpoints (/v1/code/sessions/{id}/worker/*) want `cse_*` but the AgenC web
  * frontend currently routes on `session_*` (compat/convert.go:27 validates
  * TagSession). Same UUID body, different tag prefix. Once the server tags by

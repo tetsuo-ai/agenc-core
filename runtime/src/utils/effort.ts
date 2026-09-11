@@ -7,10 +7,6 @@ import {
   type ProviderAuthReadContext,
 } from './auth.js'
 import { getAPIProvider } from './model/providers.js'
-import {
-  getAntModelOverrideConfig,
-  resolveAntModel,
-} from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { resolveRegisteredModelCatalogEntry } from '../llm/registry/model-catalog.js'
 import { isVerifiedOpenAiReasoningModel } from '../llm/registry/openai-reasoning-models.js'
@@ -173,13 +169,6 @@ function modelSupportsMaxEffortForOptionalContext(
     m.includes('opus-4-8') ||
     m.includes('fable-5')
   ) {
-    return true
-  }
-  const userType =
-    context === undefined
-      ? process.env.USER_TYPE
-      : context.environment.USER_TYPE
-  if (userType === 'ant' && resolveAntModel(model)) {
     return true
   }
   return false
@@ -463,23 +452,13 @@ export function isValidNumericEffort(value: number): boolean {
 
 function convertEffortValueToLevelForOptionalContext(
   value: EffortValue,
-  context?: ProviderAuthReadContext,
+  _context?: ProviderAuthReadContext,
 ): AvailableEffortLevel {
   if (typeof value === 'string') {
-    // Runtime guard: value may come from remote config (GrowthBook) where
-    // TypeScript types can't help us. Coerce unknown strings to 'high'
-    // rather than passing them through unchecked.
+    // Runtime guard: value may come from config where TypeScript types
+    // can't help us. Coerce unknown strings to 'high' rather than passing
+    // them through unchecked.
     return isAvailableEffortLevel(value) ? value : 'high'
-  }
-  const userType =
-    context === undefined
-      ? process.env.USER_TYPE
-      : context.environment.USER_TYPE
-  if (userType === 'ant' && typeof value === 'number') {
-    if (value <= 50) return 'low'
-    if (value <= 85) return 'medium'
-    if (value <= 100) return 'high'
-    return 'max'
   }
   return 'high'
 }
@@ -527,10 +506,6 @@ export function getEffortLevelDescription(level: AvailableEffortLevel): string {
  * @returns Human-readable description
  */
 export function getEffortValueDescription(value: EffortValue): string {
-  if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {
-    return `[internal-only] Numeric effort value of ${value}`
-  }
-
   if (typeof value === 'string') {
     return getEffortLevelDescription(value)
   }
@@ -563,31 +538,6 @@ function getDefaultEffortForModelForOptionalContext(
   model: string,
   context?: ProviderAuthReadContext,
 ): EffortValue | undefined {
-  const userType =
-    context === undefined
-      ? process.env.USER_TYPE
-      : context.environment.USER_TYPE
-  if (userType === 'ant') {
-    const config = getAntModelOverrideConfig()
-    const isDefaultModel =
-      config?.defaultModel !== undefined &&
-      model.toLowerCase() === config.defaultModel.toLowerCase()
-    if (isDefaultModel && config?.defaultModelEffortLevel) {
-      return config.defaultModelEffortLevel
-    }
-    const antModel = resolveAntModel(model)
-    if (antModel) {
-      if (antModel.defaultEffortLevel) {
-        return antModel.defaultEffortLevel
-      }
-      if (antModel.defaultEffortValue !== undefined) {
-        return antModel.defaultEffortValue
-      }
-    }
-    // Always default ants to undefined/high
-    return undefined
-  }
-
   const registeredProvider = inferCatalogProvider(model, context)
   if (registeredProvider === 'gemini') {
     return resolveGeminiThinkingModel(model)?.defaultLevel
@@ -615,7 +565,6 @@ function getDefaultEffortForModelForOptionalContext(
   // that can greatly affect model quality and bashing.
 
   // Default effort on Opus 4.6/4.7/4.8 to medium for Pro.
-  // Max/Team also get medium when the tengu_grey_step2 config is enabled.
   if (
     model.toLowerCase().includes('opus-4-6') ||
     model.toLowerCase().includes('opus-4-7') ||

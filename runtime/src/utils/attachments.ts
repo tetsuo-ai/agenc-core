@@ -1821,8 +1821,8 @@ async function processAtMentionedFiles(
         return await generateFileAttachment(
           absoluteFilename,
           toolUseContext,
-          'tengu_at_mention_extracting_filename_success',
-          'tengu_at_mention_extracting_filename_error',
+          'at_mention_extracting_filename_success',
+          'at_mention_extracting_filename_error',
           'at-mention',
           {
             offset: lineStart,
@@ -3011,11 +3011,6 @@ async function getTaskReminderAttachments(
     return []
   }
 
-  // Skip for ant users
-  if (process.env.USER_TYPE === 'ant') {
-    return []
-  }
-
   // When SendUserMessage is in the toolkit, it's the primary communication
   // channel and the model is always told to use it (#20467). TaskUpdate
   // becomes a side channel — nudging the model about it conflicts with the
@@ -3156,9 +3151,6 @@ async function getTeammateMailboxAttachments(
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
   if (!isAgentSwarmsEnabled()) {
-    return []
-  }
-  if (process.env.USER_TYPE !== 'ant') {
     return []
   }
 
@@ -3522,10 +3514,7 @@ async function getVerifyPlanReminderAttachment(
   messages: Message[] | undefined,
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
-  if (
-    process.env.USER_TYPE !== 'ant' ||
-    !isEnvTruthy(process.env.AGENC_VERIFY_PLAN)
-  ) {
+  if (!isEnvTruthy(process.env.AGENC_VERIFY_PLAN)) {
     return []
   }
 

@@ -83,7 +83,6 @@ afterEach(() => {
 
 describe("user email fallbacks", () => {
   test("getCoreUserData does not synthesize provider email from COO_CREATOR", async () => {
-    process.env.USER_TYPE = "ant";
     process.env.COO_CREATOR = "alice";
     (globalThis as Record<string, unknown>).MACRO = { VERSION: "0.0.0" };
 
@@ -96,7 +95,6 @@ describe("user email fallbacks", () => {
   });
 
   test("initUser falls back to git email when oauth email is missing", async () => {
-    process.env.USER_TYPE = "ant";
     process.env.COO_CREATOR = "alice";
     (globalThis as Record<string, unknown>).MACRO = { VERSION: "0.0.0" };
 

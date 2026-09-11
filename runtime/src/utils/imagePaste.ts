@@ -19,10 +19,9 @@ import {
 } from './imageResizer.js'
 import { logError } from './log.js'
 
-// Native NSPasteboard reader. GrowthBook gate tengu_collage_kaleidoscope is
-// a kill switch (default on). Falls through to osascript when off.
-// The gate string is inlined at each callsite INSIDE the feature() condition
-// — module-scope helpers are NOT tree-shaken (see docs/feature-gating.md).
+// Native NSPasteboard reader behind feature('NATIVE_CLIPBOARD_IMAGE'). Falls
+// through to osascript when off. The feature() call is inlined at each
+// callsite — module-scope helpers are NOT tree-shaken (see docs/feature-gating.md).
 
 type SupportedPlatform = 'darwin' | 'linux' | 'win32'
 

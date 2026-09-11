@@ -138,7 +138,7 @@ describe("startGateway", () => {
   test.each([
     [
       "local",
-      { USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" },
+      { AGENC_OAUTH_DEV_ENDPOINTS: "1", USE_LOCAL_OAUTH: "1" },
       "local-oauth-webchat-token-123456",
     ],
     [

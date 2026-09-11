@@ -61,7 +61,7 @@ export const isDebugMode = memoize((): boolean => {
 })
 
 export function enableDebugLogging(): boolean {
-  const wasActive = isDebugMode() || process.env.USER_TYPE === 'ant'
+  const wasActive = isDebugMode()
   runtimeDebugEnabled = true
   isDebugMode.cache.clear?.()
   return wasActive
@@ -206,7 +206,7 @@ function shouldLogDebugMessage(message: string): boolean {
     return false
   }
 
-  if (process.env.USER_TYPE !== 'ant' && !isDebugMode()) {
+  if (!isDebugMode()) {
     return false
   }
 
