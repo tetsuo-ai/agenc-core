@@ -326,8 +326,12 @@ const PROVIDER_STOP_REASON_OUTCOME: {
   pause_turn: { kind: "unsupported" },
 };
 
+function providerStopReasonKey(reason: unknown): string {
+  return typeof reason === "string" ? reason : "";
+}
+
 function outcomeForProviderStopReason(reason: unknown): ProviderStopOutcome {
-  return PROVIDER_STOP_REASON_OUTCOME[String(reason ?? "")] ?? {
+  return PROVIDER_STOP_REASON_OUTCOME[providerStopReasonKey(reason)] ?? {
     kind: "mapped",
     finishReason: "stop",
   };
@@ -346,7 +350,7 @@ export function requireMappedFinishReason(
   if (outcome.kind === "unsupported") {
     throw new LLMInvalidResponseError(
       providerName,
-      `Unsupported provider state ${JSON.stringify(String(reason ?? ""))}`,
+      `Unsupported provider state ${JSON.stringify(providerStopReasonKey(reason))}`,
     );
   }
   return outcome.finishReason;
