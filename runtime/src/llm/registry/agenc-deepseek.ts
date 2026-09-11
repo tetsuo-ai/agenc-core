@@ -2,8 +2,8 @@
 export const AGENC_DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 export const AGENC_DEEPSEEK_V41_MODEL = "deepseek/deepseek-v4.1-flash";
 export const AGENC_DEEPSEEK_MODELS = [
-  { model: AGENC_DEEPSEEK_MODEL, label: "DeepSeek V4 Flash 0731" },
-  { model: AGENC_DEEPSEEK_V41_MODEL, label: "DeepSeek V4.1 Flash" },
+  { model: AGENC_DEEPSEEK_MODEL, label: "DeepSeek V4 Flash 0731", vision: false },
+  { model: AGENC_DEEPSEEK_V41_MODEL, label: "DeepSeek V4.1 Flash", vision: true },
 ] as const;
 
 export function isAgenCDeepSeekModel(model: string | undefined): boolean {

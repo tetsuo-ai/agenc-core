@@ -680,8 +680,8 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       maxOutputTokens: 64_000,
       maxOutputTokensUpperLimit: 384_000,
       maxOutputTokensCappedDefault: true,
-      // Managed image admission needs a separately reviewed backend contract.
-      inputModalities: TEXT_MODALITIES,
+      // V4.1 supports inline images under the reviewed managed gateway policy.
+      inputModalities: entry.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: false,
       supportsStructuredOutput: true,
