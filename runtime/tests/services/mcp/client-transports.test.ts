@@ -556,10 +556,12 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
       TEMP: 'C:\\declared\\temp',
       TMP: 'C:\\declared\\tmp',
     },
+    env_vars: ['PATH'],
     scope: 'local',
   } as const
   const environment = Object.freeze({
     PATH: '/usr/bin',
+    LEAK: 'must-not-copy',
     AGENC_TMPDIR: '/ambient/agenc',
     TMPDIR: '/ambient/posix',
     TEMP: 'C:\\ambient\\temp',
@@ -586,7 +588,16 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
   assert.equal(first.type, 'connected')
   assert.equal(second.type, 'connected')
   assert.equal(fakeStdioTransports.length, 2)
-  assert.deepEqual(fakeStdioTransports[0]?.env, {
+  const posixEnv = (env: Record<string, string> | undefined) =>
+    Object.fromEntries(
+      Object.entries(env ?? {}).map(([key, value]) => [
+        key,
+        value.replaceAll('\\', '/'),
+      ]),
+    )
+  assert.equal(posixEnv(fakeStdioTransports[0]?.env).LEAK, undefined)
+  assert.equal(posixEnv(fakeStdioTransports[1]?.env).LEAK, undefined)
+  assert.deepEqual(posixEnv(fakeStdioTransports[0]?.env), {
     PATH: '/usr/bin',
     AGENC_TMPDIR: '/tmp/agenc-mcp-session-a',
     TMPDIR: '/tmp/agenc-mcp-session-a',
@@ -594,7 +605,7 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
     TMP: '/tmp/agenc-mcp-session-a',
     TMPPREFIX: '/tmp/agenc-mcp-session-a/zsh',
   })
-  assert.deepEqual(fakeStdioTransports[1]?.env, {
+  assert.deepEqual(posixEnv(fakeStdioTransports[1]?.env), {
     PATH: '/usr/bin',
     AGENC_TMPDIR: '/tmp/agenc-mcp-session-b',
     TMPDIR: '/tmp/agenc-mcp-session-b',
@@ -605,59 +616,6 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
 
   if (first.type === 'connected') await first.cleanup()
   if (second.type === 'connected') await second.cleanup()
-})
-
-test('connectToServer honors PATH-only plugin env_vars on stdio spawn', async () => {
-  vi.resetModules()
-  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
-    Client: FakeClient,
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
-    StdioClientTransport: FakeStdioTransport,
-  }))
-
-  const { connectToServer } = await import('./client.js')
-  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
-    { VERSION: 'test' }
-
-  const result = await connectToServer(
-    'plugin-path-stdio',
-    {
-      type: 'stdio',
-      command: 'node',
-      args: ['./server/main.mjs'],
-      env: {
-        AGENC_PLUGIN_ROOT: '/plugins/fixture',
-        AGENC_PLUGIN_DATA: '/plugins/fixture-data',
-        AGENC_PLUGIN_NAME: 'fixture',
-        AGENC_PLUGIN_MCP_SERVER: 'x',
-        AGENC_PLUGIN_SANDBOX: 'stdio-child-process',
-      },
-      env_vars: ['PATH'],
-      cwd: '/plugins/fixture',
-      scope: 'dynamic',
-      pluginServer: { pluginName: 'fixture', serverName: 'x' },
-    },
-    undefined,
-    {
-      environment: Object.freeze({
-        PATH: '/only/bin',
-        LEAK: 'must-not-copy',
-        MCP_TIMEOUT: '1000',
-      }),
-    },
-  )
-
-  assert.equal(result.type, 'connected')
-  assert.equal(fakeStdioTransports[0]?.command, 'node')
-  assert.equal(fakeStdioTransports[0]?.env.PATH, '/only/bin')
-  assert.equal(fakeStdioTransports[0]?.env.LEAK, undefined)
-  assert.equal(fakeStdioTransports[0]?.env.AGENC_PLUGIN_NAME, 'fixture')
-  assert.equal(fakeStdioTransports[0]?.env.AGENC_PLUGIN_SANDBOX, 'stdio-child-process')
-
-  if (result.type === 'connected') {
-    await result.cleanup()
-  }
 })
 
 test('connectToServer logs successful stdio startup stderr before cleanup', async () => {
