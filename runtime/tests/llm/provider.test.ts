@@ -1579,7 +1579,7 @@ describe("createProvider", () => {
     expect(provider).toBeInstanceOf(AnthropicProvider);
     expect(
       (provider as unknown as { config: { model: string } }).config.model,
-    ).toBe("claude-opus-4-7");
+    ).toBe("claude-opus-5");
   });
 
   test("routes 'ollama' to OllamaProvider and strips a trailing /v1 host suffix", () => {

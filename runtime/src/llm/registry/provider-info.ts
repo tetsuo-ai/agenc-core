@@ -359,7 +359,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   anthropic: providerDefinition({
     name: "Anthropic",
-    defaultModel: "claude-opus-4-7",
+    defaultModel: "claude-opus-5",
     baseURL: "https://api.anthropic.com/v1",
     credentials: apiKeyCredentials(["ANTHROPIC_API_KEY"]),
     baseURLEnvVars: ["ANTHROPIC_BASE_URL"],
@@ -640,7 +640,13 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   openai: mergeDerivedProviderModels("openai", {
     trailingExtras: ["o3"],
   }),
+  // The current lineup platform.claude.com lists (2026-09-11), then the
+  // legacy models it still serves. Haiku 4.5 is not offered: it takes no
+  // effort parameter, and the picker's dial would be a lie there.
   anthropic: Object.freeze([
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5-1",
     "claude-fable-5",
     "claude-opus-4-8",
     "claude-opus-4-7",

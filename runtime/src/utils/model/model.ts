@@ -369,8 +369,17 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.replaceAll('anthropic.agenc-', 'anthropic.claude-')
   // Special cases for AgenC 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-7 before 4-6 before 4-5 before 4)
+  if (name.includes('claude-fable-5-1')) {
+    return 'claude-fable-5-1'
+  }
   if (name.includes('claude-fable-5')) {
     return 'claude-fable-5'
+  }
+  if (name.includes('claude-opus-5')) {
+    return 'claude-opus-5'
+  }
+  if (name.includes('claude-sonnet-5')) {
+    return 'claude-sonnet-5'
   }
   if (name.includes('claude-opus-4-8')) {
     return 'claude-opus-4-8'

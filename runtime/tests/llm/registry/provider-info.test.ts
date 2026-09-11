@@ -16,7 +16,7 @@ describe("built-in provider info", () => {
     const expected = [
       ["grok", "xAI Grok", "grok-4.6", "https://api.x.ai/v1", "api-key", ["XAI_API_KEY", "GROK_API_KEY"], ["XAI_BASE_URL", "GROK_BASE_URL"], 10, "api-key", false],
       ["openai", "OpenAI", "gpt-5", "https://api.openai.com/v1", "api-key", ["OPENAI_API_KEY"], ["OPENAI_BASE_URL", "OPENAI_API_BASE"], 20, "api-key", false],
-      ["anthropic", "Anthropic", "claude-opus-4-7", "https://api.anthropic.com/v1", "api-key", ["ANTHROPIC_API_KEY"], ["ANTHROPIC_BASE_URL"], 30, "api-key", false],
+      ["anthropic", "Anthropic", "claude-opus-5", "https://api.anthropic.com/v1", "api-key", ["ANTHROPIC_API_KEY"], ["ANTHROPIC_BASE_URL"], 30, "api-key", false],
       ["ollama", "Ollama", "llama3.3", "http://localhost:11434", "none", [], ["OLLAMA_BASE_URL"], 40, "local", false],
       ["lmstudio", "LM Studio", "gpt-4o-mini", "http://localhost:1234/v1", "api-key", ["LMSTUDIO_API_KEY"], ["LMSTUDIO_BASE_URL"], 50, "local", false],
       ["openai-compatible", "OpenAI-compatible", "local-model", "http://localhost:8000/v1", "api-key", ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_API_KEY"], ["OPENAI_COMPATIBLE_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"], 60, "local", false],
