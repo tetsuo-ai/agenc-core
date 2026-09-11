@@ -241,7 +241,7 @@ interface MutableAttemptScan {
 }
 
 export interface CanonicalCompactionAttemptScan {
-  readonly intent: CompactionIntentV1;
+  readonly intent?: CompactionIntentV1;
   readonly records: readonly StrictCanonicalJournalRecord[];
   readonly admissionValid: boolean;
   readonly hasLaterCanonicalWork: boolean;
@@ -570,7 +570,9 @@ function scanCanonicalRolloutUntimed(
           [...state.attempts].map(([attemptId, attempt]) => [
             attemptId,
             {
-              intent: attempt.intent!,
+              ...(attempt.intent !== undefined
+                ? { intent: attempt.intent }
+                : {}),
               records: Object.freeze(attempt.records.slice()),
               admissionValid: validAdmission(attempt),
               hasLaterCanonicalWork:
@@ -943,7 +945,11 @@ function observeCanonicalRecord(
       attempt.intent === undefined &&
       !attempt.terminal,
   );
-  if (incompleteAttempt !== undefined) {
+  if (
+    incompleteAttempt !== undefined &&
+    (item.type === "compaction_committed" ||
+      item.type === "compaction_rollback_committed")
+  ) {
     throw new Error(
       "canonical compaction intent is missing its required source payload bundle",
     );
@@ -1341,6 +1347,7 @@ function assertAttemptsReconstructed(
   attempts: ReadonlyMap<string, MutableAttemptScan>,
 ): void {
   for (const attempt of attempts.values()) {
+    if (failedAttemptDroppedPayloads(attempt)) continue;
     if (attempt.intent === undefined) {
       throw new Error(
         "canonical compaction intent did not reconstruct its source manifests",
@@ -1360,6 +1367,13 @@ function assertAttemptsReconstructed(
   }
 }
 
+function failedAttemptDroppedPayloads(attempt: MutableAttemptScan): boolean {
+  return (
+    attempt.intent === undefined &&
+    attempt.records.some((record) => record.item.type === "compaction_failed")
+  );
+}
+
 /**
  * Line numbers the digest-anchored second pass must re-read: the caller's
  * additional lines, every attempt's active-history refs, and the live active
@@ -1372,7 +1386,8 @@ function collectSourceLines(
 ): Set<number> {
   const sourceLines = new Set(options.additionalSourceLines ?? []);
   for (const attempt of attempts.values()) {
-    for (const ref of attempt.intent!.source.active_history_refs) {
+    if (attempt.intent === undefined) continue;
+    for (const ref of attempt.intent.source.active_history_refs) {
       sourceLines.add(ref.first_sequence);
     }
   }
