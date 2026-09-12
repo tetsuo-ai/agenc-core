@@ -238,6 +238,8 @@ export interface SkillLoadOutcome {
     readonly allowedTools?: readonly string[];
     readonly argumentHint?: string;
     readonly argNames?: readonly string[];
+    /** Id of the owning plugin when the skill ships inside one. */
+    readonly pluginId?: string;
     readonly whenToUse?: string;
     readonly version?: string;
     readonly model?: string;
