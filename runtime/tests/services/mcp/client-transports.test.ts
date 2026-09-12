@@ -556,10 +556,12 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
       TEMP: 'C:\\declared\\temp',
       TMP: 'C:\\declared\\tmp',
     },
+    env_vars: ['PATH'],
     scope: 'local',
   } as const
   const environment = Object.freeze({
     PATH: '/usr/bin',
+    LEAK: 'must-not-copy',
     AGENC_TMPDIR: '/ambient/agenc',
     TMPDIR: '/ambient/posix',
     TEMP: 'C:\\ambient\\temp',
@@ -586,7 +588,16 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
   assert.equal(first.type, 'connected')
   assert.equal(second.type, 'connected')
   assert.equal(fakeStdioTransports.length, 2)
-  assert.deepEqual(fakeStdioTransports[0]?.env, {
+  const posixEnv = (env: Record<string, string> | undefined) =>
+    Object.fromEntries(
+      Object.entries(env ?? {}).map(([key, value]) => [
+        key,
+        value.replaceAll('\\', '/'),
+      ]),
+    )
+  assert.equal(posixEnv(fakeStdioTransports[0]?.env).LEAK, undefined)
+  assert.equal(posixEnv(fakeStdioTransports[1]?.env).LEAK, undefined)
+  assert.deepEqual(posixEnv(fakeStdioTransports[0]?.env), {
     PATH: '/usr/bin',
     AGENC_TMPDIR: '/tmp/agenc-mcp-session-a',
     TMPDIR: '/tmp/agenc-mcp-session-a',
@@ -594,7 +605,7 @@ test('connectToServer isolates stdio temp authority in env and cache identity', 
     TMP: '/tmp/agenc-mcp-session-a',
     TMPPREFIX: '/tmp/agenc-mcp-session-a/zsh',
   })
-  assert.deepEqual(fakeStdioTransports[1]?.env, {
+  assert.deepEqual(posixEnv(fakeStdioTransports[1]?.env), {
     PATH: '/usr/bin',
     AGENC_TMPDIR: '/tmp/agenc-mcp-session-b',
     TMPDIR: '/tmp/agenc-mcp-session-b',

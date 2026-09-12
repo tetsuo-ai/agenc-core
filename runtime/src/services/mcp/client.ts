@@ -91,10 +91,7 @@ import {
 } from '../../utils/proxy.js'
 import { recursivelySanitizeUnicode } from '../../utils/sanitization.js'
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js'
-import {
-  subprocessEnv,
-  withChildTempAuthority,
-} from '../../utils/subprocessEnv.js'
+import { withChildTempAuthority } from '../../utils/subprocessEnv.js'
 import {
   isPersistError,
   persistToolResult,
@@ -121,6 +118,7 @@ import {
   sanitizeOptionalMcpModelFacingText,
 } from '../../mcp-client/model-facing-sanitization.js'
 import { normalizeMcpToolOutput } from '../../mcp-client/tool-output.js'
+import { createStdioMCPEnvironment } from '../../mcp-client/transports/stdio.js'
 import {
   buildMcpHostClientCapabilities,
   configureMcpHostRequestHandlers,
@@ -978,10 +976,11 @@ export const connectToServer = memoize(
           args: finalArgs,
           ...(serverRef.cwd !== undefined ? { cwd: serverRef.cwd } : {}),
           env: withChildTempAuthority(
-            {
-              ...subprocessEnv({ ...environment }),
-              ...serverRef.env,
-            },
+            createStdioMCPEnvironment(
+              serverRef.env,
+              serverRef.env_vars,
+              environment,
+            ),
             mcpSessionTempRoot(options),
           ),
           stderr: 'pipe', // prevents error output from the MCP server from printing to the UI
