@@ -14,7 +14,14 @@
 import {
   updateSettingsForSource,
   getSettingsForSource,
+  getExecutionAuthoritySettings,
 } from "../utils/settings/settings.js";
+import {
+  applyCanonicalConfigPatchSync,
+  readCanonicalUserConfigSnapshotSync,
+} from "../config/update-sync.js";
+import { asRecord } from "../utils/record.js";
+import { configStoreFromCommandContext, requireCommandConfigStore } from "./config-context.js";
 
 import {
   safeExecute,
@@ -46,12 +53,39 @@ function agentCounts(ctx: SlashCommandContext): {
   };
 }
 
-async function setSwarmMode(ctx: SlashCommandContext, on: boolean): Promise<void> {
-  await updateSettingsForSource("userSettings", { swarmMode: on });
+async function setSwarmMode(ctx: SlashCommandContext, on: boolean): Promise<boolean> {
+  const applyDaemonConfig = asRecord(ctx.session)?.applyDaemonConfig;
+  if (typeof applyDaemonConfig === "function") {
+    const store = requireCommandConfigStore(ctx);
+    // The client and daemon own separate stores. Persist through the canonical
+    // writer, then acknowledge the daemon reload before publishing client
+    // settings: its subscribers otherwise change the badge before admission.
+    applyCanonicalConfigPatchSync(store.homeContext.configTomlPath, { swarmMode: on }, "user");
+    try {
+      const result = asRecord(await applyDaemonConfig.call(ctx.session, { reload: true }));
+      // The deferred bridge reloads global config without starting an agent.
+      // Its explicit pending-session receipt stages the first conversation.
+      if (result?.applied !== true && result?.sessionId !== "pending") {
+        throw new Error(typeof result?.summary === "string" ? result.summary : "Daemon did not apply the configuration");
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      // A lost reply can follow a committed daemon reload. A blind disk
+      // rollback would introduce another divergence, so retain the preference
+      // and keep the client on its last confirmed settings until retry.
+      throw new Error(`Swarm preference saved ${on ? "on" : "off"}, but the live daemon update could not be confirmed: ${detail}. The badge still shows the last confirmed mode; run /config reload to retry.`);
+    }
+    await store.reload();
+  } else {
+    const { error } = await updateSettingsForSource("userSettings", { swarmMode: on });
+    if (error !== null) throw error;
+  }
+  const effective = getExecutionAuthoritySettings().swarmMode === true;
   ctx.appState?.setAppState?.((prev: unknown) => ({
     ...(prev as Record<string, unknown>),
-    swarmMode: on,
+    swarmMode: effective,
   }));
+  return effective;
 }
 
 export const swarmCommand: SlashCommand = {
@@ -66,7 +100,10 @@ export const swarmCommand: SlashCommand = {
 
       if (arg === "status" || arg === "") {
         const on = readSwarmMode(ctx);
-        const persisted = getSettingsForSource("userSettings")?.swarmMode;
+        const store = configStoreFromCommandContext(ctx);
+        const persisted = store === null
+          ? getSettingsForSource("userSettings")?.swarmMode
+          : readCanonicalUserConfigSnapshotSync(store.homeContext.configTomlPath).raw.swarmMode;
         const lines = [
           `swarm mode: ${on ? "ON" : "off"}${persisted !== undefined ? ` (${persisted ? "saved on" : "saved off"})` : ""}`,
           `agents: ${agents.active} active, ${agents.idle} idle/reusable`,
@@ -77,18 +114,20 @@ export const swarmCommand: SlashCommand = {
         return { kind: "text", text: lines.join("\n") };
       }
 
-      if (arg === "on") {
-        await setSwarmMode(ctx, true);
+      if (arg === "on" || arg === "off") {
+        const requested = arg === "on";
+        const effective = await setSwarmMode(ctx, requested);
+        if (effective !== requested) {
+          return {
+            kind: "text",
+            text: `Swarm preference saved ${arg}; effective swarm mode remains ${effective ? "ON" : "off"} because a higher-priority config layer overrides it. Use /config show to inspect the effective settings.`,
+          };
+        }
         return {
           kind: "text",
-          text: "swarm mode ON — adaptive routing stays sequential by default; qualifying parallel work requires an initial worker-spawn attempt and caps fan-out at four (spawns still follow approval policy).",
-        };
-      }
-      if (arg === "off") {
-        await setSwarmMode(ctx, false);
-        return {
-          kind: "text",
-          text: "swarm mode OFF — the agent works sequentially unless a swarm is explicitly requested.",
+          text: effective
+            ? "swarm mode ON — adaptive routing stays sequential by default; qualifying parallel work requires an initial worker-spawn attempt and caps fan-out at four (spawns still follow approval policy)."
+            : "swarm mode OFF — the agent works sequentially unless a swarm is explicitly requested.",
         };
       }
 

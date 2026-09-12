@@ -598,7 +598,7 @@ export function reconstructFromRollout(
     : [compactionLineage.at(-1)!];
 
   // Reverse scan.
-  for (let idx = rolloutItems.length - 1; idx >= 0; idx -= 1) {
+  historyMetadata: for (let idx = rolloutItems.length - 1; idx >= 0; idx -= 1) {
     const item = rolloutItems[idx]!;
     switch (item.type) {
       case "compacted": {
@@ -718,6 +718,18 @@ export function reconstructFromRollout(
           break;
         }
         switch (innerType) {
+          case "history_cleared": {
+            // A clear retires every older history/context base. Keep forward
+            // replay intact so unrelated session facts still reach the reducer.
+            if (active !== null) {
+              finalizeActiveSegment(active, pending);
+              active = null;
+            }
+            if (pending.referenceContextItem.kind === "never_set") {
+              pending.referenceContextItem = { kind: "cleared" };
+            }
+            break historyMetadata;
+          }
           case "thread_rolled_back": {
             const payload = (
               inner as unknown as { payload: { numTurns: number } }
@@ -781,6 +793,7 @@ export function reconstructFromRollout(
   // prefixes. Only an orphan's highest checkpoint can authorize execution.
   const turnBuildIds = new Map<string, string | undefined>();
   const turnStartedIndexes = new Map<string, number>();
+  let latestHistoryClearIndex = -1;
   let latestUserStopIndex = -1;
   let userStopHeld = false;
   let hasExplicitUserStop = false;
@@ -804,6 +817,7 @@ export function reconstructFromRollout(
     }
     if (item?.type !== "event_msg") continue;
     const event = item.payload.msg;
+    if (event.type === "history_cleared") latestHistoryClearIndex = rolloutIndex;
     if (
       event.type === "permission_decision" &&
       event.payload.decision === "denied" &&
@@ -898,6 +912,9 @@ export function reconstructFromRollout(
     const item = rolloutSuffix[suffixIndex];
     if (item === undefined) continue;
     const rolloutIndex = rolloutSuffixStartIndex + suffixIndex;
+    if (item.type === "event_msg" && item.payload.msg.type === "history_cleared") {
+      sawLegacyCompactionWithoutReplacement = false;
+    }
     // (b) Compatibility compaction: rebuild history in place via the inline
     // `buildCompactedHistory` helper instead of deferring to the
     // reducer (which would just clear the reference).
@@ -977,6 +994,8 @@ export function reconstructFromRollout(
   const expectedBuildId = currentBuildId();
   const synthesized: RolloutItem[] = [];
   for (const turnId of seenStarted) {
+    // A cleared conversation cannot authorize resuming one of its old turns.
+    if ((turnStartedIndexes.get(turnId) ?? -1) < latestHistoryClearIndex) continue;
     if (!seenTerminated.has(turnId)) {
       orphanedTurnIds.push(turnId);
 

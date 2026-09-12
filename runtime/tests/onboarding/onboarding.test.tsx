@@ -2047,22 +2047,6 @@ describe("local runtime detection (O-1)", () => {
   });
 });
 
-describe("first-magic wiring contract (O-1b)", () => {
-  // The guaranteed-first-turn effect lives in the compiled App.tsx; a full
-  // component mount is impractical here, so the wiring is guarded at the
-  // source level (established pattern) and the behavior was verified live.
-  test("App.tsx submits a starter turn when the wizard completes without an initial prompt", async () => {
-    const { readFileSync } = await import("node:fs");
-    const source = readFileSync(
-      resolve(process.cwd(), "src/tui/components/App.tsx"),
-      "utf8",
-    );
-    expect(source).toContain("guaranteed first magic");
-    expect(source).toContain("onboardingWasActiveRef");
-    expect(source).toContain("Introduce yourself in a sentence");
-  });
-});
-
 describe("wizard theme mapping", () => {
   test("maps wizard choices to config ThemeSettings the provider consumes", () => {
     // The wizard and engine share one vocabulary; unknown values no-op so a

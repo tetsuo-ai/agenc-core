@@ -449,6 +449,11 @@ function updateUpgradeHistory(params: {
     history.push(item.payload);
     return updatedHistory(history, params.historyDerivationWork);
   }
+  if (item.type === "event_msg" && item.payload.msg.type === "history_cleared") {
+    // The durable clear starts a new conversation prefix. Earlier checkpoints
+    // were already validated against their own history before this boundary.
+    return updatedHistory([], params.historyDerivationWork);
+  }
   if (
     item.type === "compacted" &&
     item.payload.replacementHistory !== undefined
@@ -506,9 +511,8 @@ function updateUpgradeHistory(params: {
         },
       };
     }
-    // Rollback is the only event variant that mutates replay history. Keep its
-    // canonical trimming semantics without running the immutable reducer for
-    // every response item. The complete worst-case visit/copy cost was
+    // Keep rollback's canonical trimming semantics without running the reducer
+    // for every response item. The complete worst-case visit/copy cost was
     // reserved above before the reducer can allocate or traverse the history.
     const state = emptyReducedState();
     state.history = history;

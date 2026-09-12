@@ -25,6 +25,7 @@
 
 import { stat } from "node:fs/promises";
 import * as path from "node:path";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 export { isBridgeSafeCommand } from "./bridge-policy.js";
 
@@ -148,6 +149,20 @@ export interface DispatchOutcome {
  *     `{ kind: "error" }` — the command contract forbids throwing.
  */
 export async function dispatchSlashCommand(
+  parsed: ParsedSlashCommand,
+  ctx: SlashCommandContext,
+  registry: CommandRegistry,
+): Promise<DispatchOutcome> {
+  // Terminal input callbacks do not inherit the bootstrap async context.
+  // Bind the invocation's store for command reads, writes, and async work;
+  // never borrow another session's ambient settings authority.
+  const dispatch = () => dispatchScopedSlashCommand(parsed, ctx, registry);
+  return ctx.configStore === undefined
+    ? dispatch()
+    : runWithCanonicalSettingsAuthority(ctx.configStore, dispatch);
+}
+
+async function dispatchScopedSlashCommand(
   parsed: ParsedSlashCommand,
   ctx: SlashCommandContext,
   registry: CommandRegistry,

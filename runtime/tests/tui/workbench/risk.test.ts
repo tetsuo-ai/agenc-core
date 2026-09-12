@@ -31,6 +31,10 @@ describe("approval risk helpers", () => {
   });
 
   it.each([
+    ["Grep", { pattern: "app\\.(get|post|put|patch|delete)|createServer|/api", glob: "*.{js,json,md}" }],
+    ["Grep", { pattern: "rm -rf|stake|transfer", path: "/project" }],
+    ["Glob", { pattern: "**/delete/*.js" }],
+    ["FileRead", { file_path: "/project/delete/README.md" }],
     ["spawn_agent", { message: "Verify the notes CLI delete command and storage format. Try rm -rf only in disposable test data." }],
     ["TodoWrite", { todos: [{ content: "Test delete and transfer command formatting", status: "completed" }] }],
     ["Write", { file_path: "README.md", content: "Example: delete a note with rm -rf" }],
