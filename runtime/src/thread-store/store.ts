@@ -168,6 +168,7 @@ export interface ListThreadsParams {
  *  policy, git info, full preview, and cli version are not populated. */
 export interface StoredThread {
   readonly threadId: ThreadId;
+  readonly parentThreadId?: ThreadId;
   readonly rolloutPath?: string;
   readonly forkedFromId?: ThreadId;
   readonly name?: string;
@@ -290,6 +291,7 @@ export interface ThreadStore {
 // ─────────────────────────────────────────────────────────────────────
 
 interface RegistryEntry {
+  readonly parentThreadId?: ThreadId;
   readonly threadId: ThreadId;
   readonly name?: string;
   readonly modelProvider?: string;
@@ -1491,6 +1493,7 @@ function toStoredThread(
       : (entry.rolloutPath ?? entry.archivedRolloutPath);
   return {
     threadId: entry.threadId,
+    ...(entry.parentThreadId !== undefined ? { parentThreadId: entry.parentThreadId } : {}),
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
     modelProvider: entry.modelProvider ?? defaultModelProviderId,
@@ -1721,6 +1724,7 @@ function normalizeRegistryEntry(value: unknown): RegistryEntry | undefined {
   const source = normalizeThreadSource(value.source);
   return {
     threadId: value.threadId,
+    ...(typeof value.parentThreadId === "string" ? { parentThreadId: value.parentThreadId } : {}),
     createdAt:
       typeof value.createdAt === "string"
         ? value.createdAt

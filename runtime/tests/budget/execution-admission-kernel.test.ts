@@ -722,6 +722,25 @@ describe("ExecutionAdmissionKernel recovery", () => {
 });
 
 describe("ExecutionAdmissionKernel active cancellation", () => {
+  it("keeps an uncapped run and its children usable after an underestimated response", async () => {
+    const value = kernel("uncapped-estimate");
+    const client = bind(value, "uncapped-root");
+    const lease = await client.acquire({
+      stepId: "web-extraction", kind: "model_turn", model: "deepseek-flash", provider: "deepseek",
+      maxInputTokens: 12450, maxOutputTokens: 2000, maxCostUsd: 0.006135,
+    });
+    client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    expect(client.reconcile(lease.reservation.reservationId, {
+      inputTokens: 13735, outputTokens: 965, costUsd: 0.0052785,
+    })).toMatchObject({ outcome: "reconciled" });
+    expect(lease.signal.aborted).toBe(false);
+    client.acknowledgeCompletion(lease.reservation.reservationId);
+    const child = client.forSession({ runId: "uncapped-child", sessionId: "uncapped-child" });
+    const next = await acquire(child, "continue");
+    expect(next.signal.aborted).toBe(false);
+    expect(client.getUsageSummary?.()).toMatchObject({ totalTokens: 14700, costUsd: 0.0052785 });
+  });
+
   it("enforces a direct scope hard cap across sibling reservations", async () => {
     const siblingLimits = {
       global: 2,
@@ -887,7 +906,11 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
     }
 
     const value = kernel("atomic-provider-overrun");
-    const client = bind(value, "atomic_overrun_root");
+    const client = value.bindClient({
+      cwd,
+      scope: { runId: "atomic_overrun_root", sessionId: "atomic_overrun_root", autonomous: false },
+      budget: { runMaxTokens: 100 },
+    });
     const lease = await acquire(client);
     client.markDispatched(lease.reservation.reservationId, {
       boundary: "provider_wire",

@@ -4,6 +4,8 @@ import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export interface IndexedThreadRecord {
   readonly threadId: ThreadId;
+  /** Derived from the canonical spawn edge; distinct from a user-created fork. */
+  readonly parentThreadId?: ThreadId;
   readonly name?: string;
   readonly model?: string;
   readonly modelProvider?: string;
@@ -25,6 +27,7 @@ export interface IndexedThreadPage {
 
 interface ThreadRow {
   readonly thread_id: string;
+  readonly parent_thread_id: string | null;
   readonly name: string | null;
   readonly created_at: string;
   readonly updated_at: string;
@@ -193,7 +196,9 @@ export class StateThreadRepository {
       .prepareState<[ThreadId], ThreadRow>(
         `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path
+          rollout_path, archived_rollout_path,
+          (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
+           WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
          FROM threads
          WHERE thread_id = ?`,
       )
@@ -206,7 +211,9 @@ export class StateThreadRepository {
       .prepareState<[], ThreadRow>(
         `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path
+          rollout_path, archived_rollout_path,
+          (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
+           WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
          FROM threads`,
       )
       .all()
@@ -256,7 +263,9 @@ export class StateThreadRepository {
     const statement = this.driver.prepareState(
       `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path
+          rollout_path, archived_rollout_path,
+          (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
+           WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
          FROM threads
          WHERE ${archivePredicate}${pagePredicate}
          ORDER BY ${sortColumn} ${direction}, thread_id ${direction}
@@ -590,6 +599,7 @@ export interface RolloutItemRow {
 function rowToThread(row: ThreadRow): IndexedThreadRecord {
   const record: IndexedThreadRecord = {
     threadId: row.thread_id,
+    ...(row.parent_thread_id != null ? { parentThreadId: row.parent_thread_id } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.name !== null ? { name: row.name } : {}),

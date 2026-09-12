@@ -510,6 +510,53 @@ describe("ExecutionAdmissionRepository", () => {
     ).toEqual(["queued", "allowed", "dispatched", "held_unknown", "cancelled"]);
   });
 
+  it.each([
+    { name: "input estimate", input: 13735, output: 965, cost: 0.0052785 },
+    { name: "cost estimate", input: 12000, output: 965, cost: 0.01 },
+  ])("records actual $name overruns without cancelling an uncapped run", ({ input, output, cost }) => {
+    const root = request("uncapped", "web-fetch", {
+      input: 12450, output: 2000, cost: 0.006135,
+      scopes: [{ key: "uncapped-root" }],
+    });
+    admissions.enqueue(root);
+    const reservation = claimReservation(admissionRecordKey(root.step));
+    admissions.markDispatched(reservation.reservationId);
+    expect(admissions.reconcile(reservation.reservationId, {
+      kind: "reported", usage: { inputTokens: input, outputTokens: output, costUsd: cost },
+    })).toMatchObject({ applied: true, outcome: "reconciled" });
+    expect(admissions.listAllocations()[0]).toMatchObject({
+      usedTokens: input + output, usedCostUsd: cost, blockedByProviderOverrun: false,
+    });
+    now = new Date(T1);
+    admissions.recover({ now: T1 });
+    expect(admissions.listAllocations()[0]?.blockedByProviderOverrun).toBe(false);
+    const child = request("uncapped-child", "next", {
+      parentRunId: "uncapped",
+      scopes: [{ key: "uncapped-child", parentKey: "uncapped-root" }],
+    });
+    admissions.enqueue(child);
+    expect(claimReservation(admissionRecordKey(child.step)).reservationId).toBeTruthy();
+  });
+
+  it("honors a durable parent cap even when the child request omits the limit", () => {
+    const parent = request("capped-parent", "first", {
+      scopes: [{ key: "parent-cap", maxTokens: 1000 }],
+    });
+    admissions.enqueue(parent);
+    const first = claimReservation(admissionRecordKey(parent.step));
+    admissions.void(first.reservationId, "fixture_complete");
+    const child = request("capped-child", "next", {
+      parentRunId: "capped-parent", input: 5, output: 5,
+      scopes: [{ key: "child-cap", parentKey: "parent-cap" }],
+    });
+    admissions.enqueue(child);
+    const lease = claimReservation(admissionRecordKey(child.step));
+    admissions.markDispatched(lease.reservationId);
+    expect(admissions.reconcile(lease.reservationId, {
+      kind: "reported", usage: { inputTokens: 7, outputTokens: 4, costUsd: 0.001 },
+    })).toMatchObject({ outcome: "provider_overrun" });
+  });
+
   it("makes provider overrun explicit, blocks the allocation, and cancels descendants", () => {
     const root = request("root-run", "turn-1", {
       input: 5,

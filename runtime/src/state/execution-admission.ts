@@ -2094,11 +2094,26 @@ export class ExecutionAdmissionRepository {
       actualCostNanos =
         usage.costUsd === null ? null : usdToNanos(usage.costUsd);
       providerRequestId = requestedProviderRequestId;
+      // Reservations estimate provider usage even when budgets are disabled.
+      // Only an explicitly capped allocation makes that estimate a hard limit.
+      // Read the durable links, including inherited and retained period caps.
+      const hasHardBudgetCap = this.#driver
+        .prepareState<[string], { readonly capped: number }>(
+          `SELECT 1 AS capped
+           FROM execution_admission_reservation_allocations AS link
+           JOIN execution_admission_allocations AS allocation
+             ON allocation.scope_key = link.scope_key
+           WHERE link.reservation_id = ?
+             AND (allocation.max_tokens IS NOT NULL OR allocation.max_cost_nanos IS NOT NULL)
+           LIMIT 1`,
+        )
+        .get(reservationId) !== undefined;
       overrun =
         input.kind === "provider_overrun" ||
-        actualTokens > reservation.reserved_tokens ||
-        (actualCostNanos !== null &&
-          actualCostNanos > reservation.reserved_cost_nanos);
+        (hasHardBudgetCap &&
+          (actualTokens > reservation.reserved_tokens ||
+            (actualCostNanos !== null &&
+              actualCostNanos > reservation.reserved_cost_nanos)));
       if (actualCostNanos === null && !overrun) {
         finalStatus = "held_unknown";
         event = "held_unknown";
