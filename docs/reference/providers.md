@@ -762,6 +762,20 @@ Grammar-safe tool schemas and the reduced local catalog:
 - Managed OpenRouter path: [`../managed-openrouter.md`](../managed-openrouter.md)
 - Onboarding: `agenc onboard`
 
+## Fast mode and service tiers
+
+`service_tier = "priority"` (config, profile, or the desktop Speed row) is the
+single "Fast" dial. What it does depends on the provider:
+
+| Provider | Wire | Models | Price | Notes |
+| --- | --- | --- | --- | --- |
+| OpenAI | `service_tier: "priority"` on chat completions and Responses (OpenAI also accepts `"fast"`, its new name for the same tier) | GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, GPT-5.5, 5.4, 5.4 Mini, 5.3 Codex, 5.2, 5, plus the GPT-4.1/4o/o3/o4-mini rows on the pricing page | 2x standard on GPT-5.6 and later; see the pricing page per model | The response reports the served tier; requests over the fast-mode rate limit fall back per OpenAI's rules. |
+| Anthropic | `speed: "fast"` plus the `anthropic-beta: fast-mode-2026-02-01` header | Claude Opus 5, Claude Opus 4.8 only | $10 input / $50 output per MTok (2x) | Research preview: the organization needs access from Anthropic; without it the API returns an error. `usage.speed` reports `fast` or `standard`; AgenC warns when a request asked for fast and was served standard. Switching speeds invalidates the prompt cache. Not sent to other Claude models, which reject the field. |
+| Cerebras, Azure OpenAI | `service_tier` passthrough | per provider | per provider | Documented `service_tier` support; other chat-completions providers have the field stripped. |
+
+`flex` is OpenAI's lower-priority tier and is only sent to providers that
+document `service_tier`.
+
 ## Ollama Cloud
 
 Select `ollama-cloud` and provide `OLLAMA_API_KEY` for direct hosted inference at

@@ -4,6 +4,10 @@
  * @module
  */
 
+import {
+  anthropicFastModeRequested,
+  anthropicSupportsFastMode,
+} from "../providers/anthropic/fast-mode.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -441,6 +445,14 @@ export function buildAnthropicMessagesRequest(
   const effort = anthropicEffort(input.options?.reasoningEffort);
   if (effort !== undefined && anthropicAcceptsEffort(input.model)) {
     body.output_config = { effort };
+  }
+  // Fast mode rides the session's "priority" service tier. It is sent only
+  // to the models that accept it; the adapter adds the matching beta header.
+  if (
+    anthropicFastModeRequested(input.options) &&
+    anthropicSupportsFastMode(input.model)
+  ) {
+    body.speed = "fast";
   }
   if (input.contextManagement) {
     body.context_management = input.contextManagement;

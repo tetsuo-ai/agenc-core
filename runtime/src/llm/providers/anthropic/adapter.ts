@@ -42,6 +42,7 @@ import {
 import type { AnthropicProviderConfig } from "./types.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../_deps/betas.js";
+import { ANTHROPIC_FAST_MODE_BETA_HEADER } from "./fast-mode.js";
 import {
   createTokenAccountingConfigurationRevision,
   type ProviderNativeTokenCountResult,
@@ -69,6 +70,8 @@ interface AnthropicUsageAccumulator {
   readonly input_tokens: number;
   readonly output_tokens: number;
   readonly reported: boolean;
+  /** `usage.speed` ("fast" or "standard") when the API reports it. */
+  readonly speed?: string;
   readonly cache_read_input_tokens?: number;
   readonly cache_creation_input_tokens?: number;
   readonly reasoning_output_tokens?: number;
@@ -121,6 +124,11 @@ function mergeAnthropicUsage(
       Number.isFinite(record.output_tokens));
   return {
     reported,
+    ...(typeof record.speed === "string"
+      ? { speed: record.speed }
+      : usage.speed !== undefined
+        ? { speed: usage.speed }
+        : {}),
     input_tokens:
       typeof record.input_tokens === "number" &&
       Number.isFinite(record.input_tokens) &&
@@ -197,6 +205,8 @@ export class AnthropicProvider implements LLMProvider {
 
   private readonly config: AnthropicProviderConfig;
   private readonly client: ProviderHttpClient;
+  /** Beta headers every request carries; fast mode adds its own per request. */
+  private readonly betaHeaderValues: readonly string[];
 
   constructor(config: AnthropicProviderConfig) {
     this.config = config;
@@ -229,6 +239,7 @@ export class AnthropicProvider implements LLMProvider {
     if (config.contextManagement) {
       betaHeaders.add(CONTEXT_MANAGEMENT_BETA_HEADER);
     }
+    this.betaHeaderValues = Object.freeze([...betaHeaders]);
     this.client = new ProviderHttpClient({
       providerName: this.name,
       baseURL: config.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.anthropic,
@@ -264,6 +275,39 @@ export class AnthropicProvider implements LLMProvider {
     });
   }
 
+  /**
+   * Per-request headers for a shaped Messages body. Fast mode is a beta:
+   * the `anthropic-beta` header must list `fast-mode-2026-02-01` alongside
+   * the betas the client always sends, so the merged value replaces the
+   * default header only on requests that carry `speed: "fast"`.
+   */
+  private requestHeadersFor(
+    body: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, string>> {
+    if (body.speed !== "fast") return {};
+    return {
+      "anthropic-beta": [...this.betaHeaderValues, ANTHROPIC_FAST_MODE_BETA_HEADER].join(","),
+    };
+  }
+
+  /**
+   * A request asked for fast mode; say so when the API served standard speed
+   * (rate limit, capacity, or an organization without preview access), since
+   * the turn then runs at standard speed and price without any other signal.
+   */
+  private noteServedSpeed(
+    body: Readonly<Record<string, unknown>>,
+    servedSpeed: unknown,
+  ): void {
+    if (body.speed !== "fast" || servedSpeed === "fast") return;
+    this.config.emitWarning?.({
+      cause: "fast_mode_not_applied",
+      message: `${this.name}/${String(body.model)} asked for fast mode but was served at ${
+        typeof servedSpeed === "string" ? servedSpeed : "standard"
+      } speed`,
+    });
+  }
+
   private async countRequestTokens(
     request: TokenAccountingRequest,
     signal: AbortSignal,
@@ -284,6 +328,8 @@ export class AnthropicProvider implements LLMProvider {
     const {
       max_tokens: _maxTokens,
       stream: _stream,
+      // Fast mode is an inference-time setting; the counter does not take it.
+      speed: _speed,
       ...countBody
     } = inferenceBody;
     const session = this.client.createTurnSession({ wireApi: "custom" });
@@ -399,6 +445,7 @@ export class AnthropicProvider implements LLMProvider {
       const response = await session.requestJson<Record<string, unknown>>({
         api: "messages",
         method: "POST",
+        headers: this.requestHeadersFor(request),
         body: request,
         timeoutMs,
         signal: options?.signal,
@@ -408,6 +455,13 @@ export class AnthropicProvider implements LLMProvider {
         ),
         singleWireAttempt: options?.singleWireAttempt,
       });
+      const responseUsage = response.data.usage;
+      this.noteServedSpeed(
+        request,
+        responseUsage && typeof responseUsage === "object"
+          ? (responseUsage as Record<string, unknown>).speed
+          : undefined,
+      );
       return parseAnthropicMessagesResponse(model, response.data, {
         model,
         messages,
@@ -489,7 +543,10 @@ export class AnthropicProvider implements LLMProvider {
       const response = await session.requestStream({
         api: "messages",
         method: "POST",
-        headers: { accept: "text/event-stream" },
+        headers: {
+          accept: "text/event-stream",
+          ...this.requestHeadersFor(request),
+        },
         body: request,
         timeoutMs,
         signal: options?.signal,
@@ -837,6 +894,7 @@ export class AnthropicProvider implements LLMProvider {
           requestOptions,
         ),
       );
+      this.noteServedSpeed(request, usage.speed);
       const finalResponse: LLMResponse = {
         ...parsed,
         usage: {

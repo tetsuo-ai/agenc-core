@@ -24,6 +24,28 @@ function countCacheControlBlocks(value: unknown): number {
 }
 
 describe("buildAnthropicMessagesRequest", () => {
+  test("sends speed fast only for fast-mode models on the priority tier", () => {
+    const build = (model: string, serviceTier?: "priority" | "flex") =>
+      buildAnthropicMessagesRequest({
+        model,
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: {
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
+          maxOutputTokens: 1024,
+        },
+        maxTokens: 1024,
+      });
+    expect(build("claude-opus-5", "priority").speed).toBe("fast");
+    expect(build("claude-opus-4-8", "priority").speed).toBe("fast");
+    // Not a fast-mode model: the field would return an error, so it is never sent.
+    expect(build("claude-sonnet-5", "priority")).not.toHaveProperty("speed");
+    expect(build("claude-opus-4-7", "priority")).not.toHaveProperty("speed");
+    // Flex and the default tier never ask for fast mode.
+    expect(build("claude-opus-5", "flex")).not.toHaveProperty("speed");
+    expect(build("claude-opus-5")).not.toHaveProperty("speed");
+  });
+
   test("merges request instructions into the system field", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",

@@ -1,3 +1,4 @@
+import { anthropicSupportsFastMode } from "./providers/anthropic/fast-mode.js";
 import {
   buildProviderModelCatalog,
   resolveProviderModelInput,
@@ -96,6 +97,18 @@ function inferServiceTiers(
     model: entry.model,
   });
   const tiers = new Map<string, ModelServiceTier>();
+  // Anthropic has no registered catalog rows; fast mode is a per-model wire
+  // feature (speed: "fast" + beta header), so the tier comes from the model
+  // id alone. The same "priority" id is what the session's service_tier
+  // config carries, so one dial drives both providers.
+  if (entry.provider === "anthropic" && anthropicSupportsFastMode(entry.model)) {
+    tiers.set("priority", {
+      id: "priority",
+      name: "Fast",
+      description:
+        "Up to 2.5x output speed at 2x price (fast mode research preview)",
+    });
+  }
   for (const tier of catalog?.additionalSpeedTiers ?? []) {
     if (tier === "fast" || tier === "priority") {
       tiers.set("priority", {

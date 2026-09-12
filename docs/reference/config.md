@@ -432,7 +432,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
 | `model_verbosity` | `low`, `medium`, or `high`. |
-| `service_tier` | `priority` or `flex`. |
+| `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price) and Anthropic fast mode on Claude Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
 | `personality` | `none`, `friendly`, or `pragmatic`. |
 | `agent_max_threads` | Positive concurrent-agent thread cap. |
 | `agent_max_depth` | Non-negative subagent nesting cap. |
