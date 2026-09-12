@@ -263,7 +263,7 @@ function redactResponseItemForPersistence(
   bodyMode: "authenticate" | "preserve",
 ): ResponseItem {
   const { toolResultIntegrity: _omittedIntegrity, ...unsealedItem } = item;
-  const redacted =
+  let redacted =
     unsealedItem.agentInvocation === undefined
       ? (redactSecretsInValue(unsealedItem) as ResponseItem)
       : (() => {
@@ -291,9 +291,16 @@ function redactResponseItemForPersistence(
             item.providerReasoning.provider ||
           redacted.providerReasoning.model !== item.providerReasoning.model)))
   ) {
-    throw new Error(
-      "cannot persist provider reasoning replay because secret redaction would change its opaque content",
-    );
+    // The replay is opaque provider state: redacting it would corrupt what
+    // the provider gets back, and persisting it unredacted would write the
+    // matched secret into the rollout. Neither is acceptable, so the replay
+    // is dropped from the durable record and the message itself is kept.
+    // The cost is one lost replay on resume. Failing the turn here cost the
+    // whole task: DeepSeek V4 Pro reasoning that quoted a generated password
+    // or a long token-shaped string ended every such run with
+    // turn_execution_failed.
+    const { providerReasoning: _droppedReplay, ...withoutReplay } = redacted;
+    redacted = withoutReplay as ResponseItem;
   }
   assertResponseAgentInvocationItem(redacted);
   if (integrity === undefined) return redacted;
