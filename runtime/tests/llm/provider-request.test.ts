@@ -8,6 +8,32 @@ import { createProvider } from '../../src/llm/provider.ts'
 import { bindingFromProvider } from '../../src/session/provider-service.ts'
 
 describe('provider runtime request', () => {
+  test('forwards OpenRouter zero data retention as a runtime extra and nowhere else', () => {
+    const openrouter = resolveProviderRuntimeRequest({
+      provider: 'openrouter',
+      model: 'x-ai/grok-4.5',
+      config: { providers: { openrouter: { zero_data_retention: true } } },
+      environment: {},
+    })
+    expect(openrouter.requested.extra).toMatchObject({ zeroDataRetention: true })
+
+    const off = resolveProviderRuntimeRequest({
+      provider: 'openrouter',
+      model: 'x-ai/grok-4.5',
+      config: { providers: { openrouter: { zero_data_retention: false } } },
+      environment: {},
+    })
+    expect(off.requested.extra?.zeroDataRetention).toBeUndefined()
+
+    const openai = resolveProviderRuntimeRequest({
+      provider: 'openai',
+      model: 'gpt-5',
+      config: { providers: { openrouter: { zero_data_retention: true } } },
+      environment: {},
+    })
+    expect(openai.requested.extra?.zeroDataRetention).toBeUndefined()
+  })
+
   test('prepares compatibility transport inputs at provider ingress', () => {
     const result = resolveProviderRuntimeRequest({
       provider: 'openai-compatible',

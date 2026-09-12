@@ -1036,6 +1036,9 @@ export class OpenAIProvider implements LLMProvider {
       maxTokenField: this.resolveChatCompletionsMaxTokenField(),
       providerCapabilityHints,
     });
+    for (const [key, value] of Object.entries(this.config.extraBody ?? {})) {
+      request[key] = value;
+    }
     let metadata = collectChatCompletionsRequestMetadata(request);
     const accountedInputTokens = normalizePositiveInteger(
       args.options?.accountedInputTokens,

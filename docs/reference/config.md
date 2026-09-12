@@ -583,6 +583,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `providers.<provider>.web_search`, `providers.<provider>.x_search`, `providers.<provider>.code_execution` | Grok-only native web, X, and code capabilities; rejected on every other provider. |
 | `providers.<provider>.enable_image_search`, `providers.<provider>.enable_image_understanding`, `providers.<provider>.enable_video_understanding` | Grok-only native media capabilities; rejected on every other provider. |
 | `providers.<provider>.incremental_continuation` | Grok-only boolean opt-in (`AGENC_XAI_INCREMENTAL`) for Responses `previous_response_id` continuation on streaming turns; default off. |
+| `providers.<provider>.zero_data_retention` | OpenRouter-only boolean. Every request carries `provider.zdr = true`, so OpenRouter routes only to endpoints with a zero-data-retention policy and refuses a model that has none instead of serving it elsewhere. Rejected under every other provider table: those providers control retention per account, project or team on their own console (see [providers.md](providers.md#zero-data-retention)). |
 | `providers.<provider>.collections` | Grok-only native collection-search block. |
 | `providers.<provider>.collections.enabled`, `providers.<provider>.collections.max_num_results`, `providers.<provider>.collections.vector_store_ids` | Collection enablement, positive result cap, and vector-store ID list. |
 | `providers.<provider>.remote_mcp` | Grok-only server-side MCP block. |

@@ -146,6 +146,8 @@ export type ProviderRuntimeExtra = Partial<
   readonly gemini?: GeminiRuntimeOptions;
   /** Grok-only opt-in for streaming previous_response_id continuation. */
   readonly incrementalContinuation?: boolean;
+  /** OpenRouter: route only to zero-data-retention endpoints (`provider.zdr`). */
+  readonly zeroDataRetention?: boolean;
   readonly grokAcp?: {
     readonly binaryPath?: string;
     readonly allowPermissions?: boolean;
@@ -1167,6 +1169,9 @@ function readRuntimeExtra(
     ...(readBoolean(extra, "incrementalContinuation") !== undefined
       ? { incrementalContinuation: readBoolean(extra, "incrementalContinuation") }
       : {}),
+    ...(readBoolean(extra, "zeroDataRetention") !== undefined
+      ? { zeroDataRetention: readBoolean(extra, "zeroDataRetention") }
+      : {}),
     ...(readString(extra, "visionModel") !== undefined
       ? { visionModel: readString(extra, "visionModel") }
       : {}),
@@ -1387,6 +1392,9 @@ function buildOpenAICompatibleProvider(
     ...(extra.store !== undefined ? { store: extra.store } : {}),
     ...(extra.contextWindowTokens !== undefined
       ? { contextWindowTokens: extra.contextWindowTokens }
+      : {}),
+    ...(extra.zeroDataRetention !== undefined
+      ? { zeroDataRetention: extra.zeroDataRetention }
       : {}),
     ...(extra.authMode ? { authMode: extra.authMode } : {}),
     ...(oauthConfig ? { oauth: oauthConfig } : {}),
