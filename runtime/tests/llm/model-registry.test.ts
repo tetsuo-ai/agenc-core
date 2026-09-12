@@ -65,6 +65,28 @@ describe("ModelRegistry", () => {
     });
   });
 
+  it("advertises the Fast tier for Anthropic fast-mode models and the rest of the GPT-5 family", () => {
+    const registry = new ModelRegistry({ config: defaultConfig() });
+    const tiersFor = (provider: string, model: string) =>
+      modelRegistryEntryToModelInfo(registry.resolveSync({ provider, model })).serviceTiers ?? [];
+
+    expect(tiersFor("anthropic", "claude-opus-5")).toEqual([
+      {
+        id: "priority",
+        name: "Fast",
+        description: "Up to 2.5x output speed at 2x price (fast mode research preview)",
+      },
+    ]);
+    expect(tiersFor("anthropic", "claude-opus-4-8").map((tier) => tier.id)).toEqual(["priority"]);
+    // Sonnet 5 and Fable have no fast mode; the dial must not offer one.
+    expect(tiersFor("anthropic", "claude-sonnet-5")).toEqual([]);
+    expect(tiersFor("anthropic", "claude-fable-5-1")).toEqual([]);
+    // OpenAI fast mode pricing covers the whole GPT-5.x line, not only gpt-5/5.4/5.5.
+    for (const model of ["gpt-5.2", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-6-astra"]) {
+      expect(tiersFor("openai", model).map((tier) => tier.id)).toEqual(["priority"]);
+    }
+  });
+
   it("preserves hidden model visibility in model info", () => {
     const registry = new ModelRegistry({ config: defaultConfig() });
 

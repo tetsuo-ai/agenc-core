@@ -35,6 +35,106 @@ function useDeterministicFallbackTimers(): () => void {
 }
 
 describe("AnthropicProvider", () => {
+  test("fast mode rides the priority tier: beta header, speed field, and a warning when served standard", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_fast","type":"message","role":"assistant","model":"claude-opus-5","content":[],"usage":{"input_tokens":3,"output_tokens":0,"speed":"standard"}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1,"speed":"standard"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ]),
+    );
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-opus-5",
+      betaHeaders: ["interleaved-thinking-2025-05-14"],
+      fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      () => {},
+      { serviceTier: "priority", maxOutputTokens: 64 },
+    );
+
+    expect(response.content).toBe("ok");
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const headers = init?.headers as Headers;
+    // The fast-mode beta joins the betas the client always sends.
+    expect(headers.get("anthropic-beta")).toBe(
+      "interleaved-thinking-2025-05-14,fast-mode-2026-02-01",
+    );
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body.speed).toBe("fast");
+    // The API served standard speed (no preview access, rate limit, capacity):
+    // the operator is told, because the turn ran at standard speed and price.
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        cause: "fast_mode_not_applied",
+        message: expect.stringContaining("served at standard speed"),
+      }),
+    ]);
+  });
+
+  test("keeps fast mode off the wire for models and tiers that do not take it", async () => {
+    const frames = [
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_std","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ];
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => sseResponse(frames));
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-sonnet-5",
+      fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+    // Priority tier on a model without fast mode: no field, no beta, no warning.
+    await provider.chatStream([{ role: "user", content: "hi" }], () => {}, {
+      serviceTier: "priority",
+      maxOutputTokens: 64,
+    });
+    // Fast-mode model without the tier: nothing either.
+    await provider.chatStream([{ role: "user", content: "hi" }], () => {}, {
+      model: "claude-opus-5",
+      maxOutputTokens: 64,
+    });
+    for (const [, init] of fetchImpl.mock.calls) {
+      const headers = init?.headers as Headers;
+      expect(headers.get("anthropic-beta")).toBeNull();
+      expect(JSON.parse(String(init?.body))).not.toHaveProperty("speed");
+    }
+    expect(warnings).toEqual([]);
+  });
+
+  test("the token counter never forwards the fast-mode field", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ input_tokens: 5 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-opus-5",
+      fetchImpl,
+    });
+    const request = createTokenAccountingRequest({
+      provider: provider.name,
+      model: "claude-opus-5",
+      messages: [{ role: "user", content: "hello" }],
+      options: { serviceTier: "priority", maxOutputTokens: 64 },
+    });
+    await provider.tokenCountCapability?.countTokens(request, new AbortController().signal);
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("speed");
+  });
+
   test("counts the complete Messages request through the native endpoint", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ input_tokens: 37 }), {
