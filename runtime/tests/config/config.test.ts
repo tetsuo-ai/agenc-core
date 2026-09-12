@@ -883,6 +883,25 @@ describe("schema: closed config block validators (CF-13)", () => {
     expect(Object.isFrozen(out?.grok?.fallback?.statuses)).toBe(true);
   });
 
+  test("validateProviderConfig accepts zero_data_retention only where the API takes it per request", () => {
+    expect(validateProviderConfig({ openrouter: { zero_data_retention: true } })).toEqual({
+      openrouter: { zero_data_retention: true },
+    });
+    expect(validateProviderConfig({ openrouter: { zero_data_retention: false } })).toEqual({
+      openrouter: { zero_data_retention: false },
+    });
+    expect(() =>
+      validateProviderConfig({ openrouter: { zero_data_retention: "yes" } }),
+    ).toThrow(InvalidProviderConfigError);
+    // Every other provider controls retention on its own console; the field
+    // must not pretend otherwise.
+    for (const provider of ["openai", "anthropic", "grok", "deepseek", "groq"]) {
+      expect(() =>
+        validateProviderConfig({ [provider]: { zero_data_retention: true } }),
+      ).toThrow(/supported only under providers\.openrouter/u);
+    }
+  });
+
   test("validateProviderConfig rejects unknown nested provider fields", () => {
     expect(() =>
       validateProviderConfig({

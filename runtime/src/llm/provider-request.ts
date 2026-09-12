@@ -230,6 +230,10 @@ export function resolveProviderRuntimeRequest(params: {
     params.config.providers?.grok?.incremental_continuation === true
       ? { incrementalContinuation: true }
       : {}),
+    ...(params.provider === "openrouter" &&
+    params.config.providers?.openrouter?.zero_data_retention === true
+      ? { zeroDataRetention: true }
+      : {}),
   };
   return Object.freeze({
     settings,

@@ -612,6 +612,15 @@ export interface ProviderFallbackConfig {
 export interface ProviderConfig {
   readonly base_url?: string;
   readonly default_model?: string;
+  /**
+   * Request-level zero data retention. Accepted only under
+   * `providers.openrouter`: every request carries `provider.zdr = true`, so
+   * OpenRouter routes only to endpoints with a zero-data-retention policy
+   * and a model without one is refused instead of silently falling back.
+   * Other providers control retention per account, project or team on their
+   * own console and reject this field (see docs/reference/providers.md).
+   */
+  readonly zero_data_retention?: boolean;
   readonly context_window_tokens?: number;
   readonly max_output_tokens?: number;
   /**
@@ -1573,6 +1582,12 @@ const PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "collections",
   "remote_mcp",
   "incremental_continuation",
+  "zero_data_retention",
+]);
+
+/** Providers whose API takes a per-request zero-data-retention control. */
+const REQUEST_LEVEL_ZERO_DATA_RETENTION_PROVIDERS: ReadonlySet<string> = new Set([
+  "openrouter",
 ]);
 
 const GROK_CAPABILITY_BOOLEAN_KEYS = Object.freeze([
@@ -1967,6 +1982,20 @@ function validateSingleProviderConfig(
   );
   if (fallback !== undefined) out.fallback = fallback;
   Object.assign(out, validateGrokCapabilities(record, providerId));
+  const zeroDataRetention = optionalBoolean(
+    record.zero_data_retention,
+    fieldPath(providerId, "zero_data_retention"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (zeroDataRetention !== undefined) {
+    if (!REQUEST_LEVEL_ZERO_DATA_RETENTION_PROVIDERS.has(providerId)) {
+      throw new InvalidProviderConfigError(
+        fieldPath(providerId, "zero_data_retention"),
+        "request-level zero data retention is supported only under providers.openrouter; this provider controls retention at the account, project or team level",
+      );
+    }
+    out.zero_data_retention = zeroDataRetention;
+  }
   return Object.freeze(out as ProviderConfig);
 }
 

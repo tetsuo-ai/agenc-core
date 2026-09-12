@@ -776,6 +776,38 @@ single "Fast" dial. What it does depends on the provider:
 `flex` is OpenAI's lower-priority tier and is only sent to providers that
 document `service_tier`.
 
+## Zero data retention
+
+Only one built-in provider takes a request-level zero-data-retention control:
+`[providers.openrouter] zero_data_retention = true` adds `provider.zdr = true`
+to every request (OR-ed with the account setting on OpenRouter's side), so
+routing is restricted to endpoints with a zero-data-retention policy and a
+model without one is refused. The desktop shows this as a switch on the
+OpenRouter card. Everywhere else retention is an account, project or team
+setting, so the config field is rejected and the desktop card states the
+provider's policy instead. Verified 2026-09-12 against each provider's
+documentation:
+
+| Provider | Default retention | Zero data retention | AgenC |
+| --- | --- | --- | --- |
+| OpenRouter | Depends on the upstream endpoint | Per request (`provider.zdr`) and per account (privacy settings) | `zero_data_retention` switch |
+| OpenAI | 30 days for abuse monitoring; Responses state 30 days when `store` is true | Per organization or project, on request and approval; `store` is then forced false | Requests already send `store: false`; ZDR itself is granted by OpenAI |
+| Anthropic | Per the commercial retention policy | Organization-level agreement | Account level |
+| xAI Grok | 30 days encrypted, no training | Team-level in the xAI Console (enterprise); every response carries `x-zero-data-retention: true/false` and ZDR disables the stateful Responses, Files, Collections and Batch APIs | Account level |
+| Google Gemini | Prompts logged for abuse monitoring (paid: 55 days) | Per project, on request | Account level |
+| Groq | No retention of inputs and outputs by default; temporary logs up to 30 days for troubleshooting or abuse | Self-serve in the console Data Controls, globally or per feature | Account level |
+| Mistral | 30-day abuse monitoring window | Organization setting on paid plans, after approval; stateless endpoints only | Account level |
+| Cerebras | Does not retain prompts, requests or responses | Standard policy, nothing to enable | Always on |
+| Ollama Cloud | "Prompt or response data is never logged or trained on"; partners must run zero-data-retention policies | Standard policy, nothing to enable | Always on |
+| DeepSeek | Retained on servers in China while the account exists | None offered | Not available |
+| MiniMax | Purpose- and law-based retention | None documented | Not available |
+| AgenC managed | Requests are routed through the gateway to zero-data-retention endpoints only (`zdr: true`, `data_collection: "deny"`) | Built in | Always on |
+| Local servers (Ollama, LM Studio, OpenAI-compatible) | Nothing leaves the machine unless the endpoint is remote | Not applicable | Local |
+
+Kimi, Qwen, Z.AI, Meta, NVIDIA NIM and GitHub Copilot publish no
+zero-data-retention control for their APIs; treat them as retaining data per
+their terms.
+
 ## Ollama Cloud
 
 Select `ollama-cloud` and provide `OLLAMA_API_KEY` for direct hosted inference at
