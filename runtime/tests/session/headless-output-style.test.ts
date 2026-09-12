@@ -42,4 +42,3 @@ describe("headless compact output style", () => {
     expect(captured).toContain("# Explanatory Style Active");
   });
 });
-
