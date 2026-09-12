@@ -1508,6 +1508,112 @@ describe("skill candidates ride the extraction child", () => {
     await expect(stat(join(agencHome, "skill-candidates"))).rejects.toThrow();
   });
 
+  it("uses the session config-store home when skillCandidatesHome is omitted", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    const storeHome = join(root, "store-home");
+    await mkdir(storeHome, { recursive: true });
+    const runChild = vi.fn(async () => ({
+      outcome: "completed" as const,
+      finalMessage: replyWithCandidate(),
+    }));
+    initExtractMemories({
+      env: {},
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+      listInstalledSkillNames: async () => [],
+    });
+
+    await executeExtractMemories(
+      extractionContext({
+        cwd: root,
+        messages,
+        session: {
+          ...session,
+          services: {
+            ...session.services,
+            configStore: { homeContext: { path: storeHome } },
+          },
+        } as unknown as Session,
+      }),
+    );
+
+    expect(runChild.mock.calls[0]![0].prompt).toContain("Skill candidates");
+    await expect(
+      stat(join(storeHome, "skill-candidates", "run-hermetic-vitest", "SKILL.md")),
+    ).resolves.toBeDefined();
+    await expect(stat(join(agencHome, "skill-candidates"))).rejects.toThrow();
+    expect(warnings.at(-1)?.cause).toBe("skill_candidate_proposed");
+  });
+
+  it("uses an injected env's named AGENC_HOME when no store home is present", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    const namedHome = join(root, "named-home");
+    await mkdir(namedHome, { recursive: true });
+    const runChild = vi.fn(async () => ({
+      outcome: "completed" as const,
+      finalMessage: replyWithCandidate(),
+    }));
+    initExtractMemories({
+      env: { AGENC_HOME: namedHome },
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+      listInstalledSkillNames: async () => [],
+    });
+
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+
+    expect(runChild.mock.calls[0]![0].prompt).toContain("Skill candidates");
+    await expect(
+      stat(join(namedHome, "skill-candidates", "run-hermetic-vitest", "SKILL.md")),
+    ).resolves.toBeDefined();
+    await expect(stat(join(agencHome, "skill-candidates"))).rejects.toThrow();
+    expect(warnings.at(-1)?.cause).toBe("skill_candidate_proposed");
+  });
+
+  it("stays off when an injected env names only whitespace as AGENC_HOME", async () => {
+    const runChild = vi.fn(async () => ({
+      outcome: "completed" as const,
+      finalMessage: replyWithCandidate(),
+    }));
+    initExtractMemories({
+      env: { AGENC_HOME: "   " },
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+      listInstalledSkillNames: async () => [],
+    });
+
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(runChild.mock.calls[0]![0].prompt).not.toContain("Skill candidates");
+    await expect(stat(join(agencHome, "skill-candidates"))).rejects.toThrow();
+  });
+
+  it("stays off when the home resolver refuses the injected env", async () => {
+    const runChild = vi.fn(async () => ({
+      outcome: "completed" as const,
+      finalMessage: replyWithCandidate(),
+    }));
+    initExtractMemories({
+      env: { AGENC_CONFIG_DIR: join(root, "retired-config") },
+      minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild,
+      listInstalledSkillNames: async () => [],
+    });
+
+    await executeExtractMemories(extractionContext({ cwd: root, messages }));
+
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(runChild.mock.calls[0]![0].prompt).not.toContain("Skill candidates");
+    await expect(stat(join(agencHome, "skill-candidates"))).rejects.toThrow();
+  });
+
   it("reads the candidate block from the real delegate result", async () => {
     const delegateFn = vi.fn(async () => ({
       kind: "sync_completed" as const,
