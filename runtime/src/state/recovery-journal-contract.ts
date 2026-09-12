@@ -368,6 +368,7 @@ export class StrictCanonicalJournalValidator {
       if (!isPlainRecord(sourceHistoryManifest)) continue;
       const sourceHistory = attempt.payloadChunks?.get("source_history");
       if (sourceHistory !== undefined) continue;
+      if (attempt.terminal === "failed") continue;
       if (attempt.terminal !== "committed" || attempt.release !== true) {
         this.#fail(
           "identity_conflict",
