@@ -1111,13 +1111,18 @@ describe("exec_command tool", () => {
     });
 
     test("accepts a working directory the user added with --add-dir", async () => {
+      // A prompting session (neither approval policy `never` nor
+      // bypassPermissions), so the added directory is what admits the
+      // workdir. danger_full_access keeps the platform sandbox out of the
+      // test: under workspace_write the call would fail on a host without
+      // one (the Linux container) before the workdir mattered.
       const { tool, execCommand } = workdirTool();
 
       const result = await tool.execute(
         workdirArgs(outsideDir, {
           mode: "default",
           approvalPolicy: "on_request",
-          sandboxMode: "workspace_write",
+          sandboxMode: "danger_full_access",
           added: [outsideDir],
         }),
       );
