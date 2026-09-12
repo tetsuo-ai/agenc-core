@@ -1,7 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentStatusTracker, agentStatusFromEvent, isFinal } from "./status.js";
 
 describe("AgentStatusTracker", () => {
+  it("records one epoch interval per executing turn and freezes it through idle, duplicate marks and shutdown", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100_000);
+    try {
+      const tracker = new AgentStatusTracker();
+      expect(tracker.timing).toBeUndefined();
+      tracker.markRunning("first");
+      clock.mockReturnValue(105_000);
+      tracker.markRunning("first");
+      expect(tracker.timing).toEqual({ turnId: "first", startedAt: 100_000 });
+      clock.mockReturnValue(120_000);
+      tracker.markIdle("first");
+      clock.mockReturnValue(180_000);
+      tracker.markIdle("first");
+      expect(tracker.timing).toEqual({ turnId: "first", startedAt: 100_000, endedAt: 120_000 });
+      tracker.markRunning("second");
+      expect(tracker.timing).toEqual({ turnId: "second", startedAt: 180_000 });
+      clock.mockReturnValue(195_000);
+      tracker.markCompleted("second");
+      clock.mockReturnValue(250_000);
+      tracker.markDurabilityErrored("second", "close failed");
+      tracker.markShutdown();
+      expect(tracker.timing).toEqual({ turnId: "second", startedAt: 180_000, endedAt: 195_000 });
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not infer epoch timing from a restored status or a different unobserved turn", () => {
+    const restored = new AgentStatusTracker({ status: "idle", turnId: "old", endedAtMs: 123 });
+    expect(restored.timing).toBeUndefined();
+    restored.markRunning("known");
+    restored.markIdle("unobserved");
+    expect(restored.timing).toBeUndefined();
+  });
+
   it("starts pending_init", () => {
     const t = new AgentStatusTracker();
     expect(t.value.status).toBe("pending_init");

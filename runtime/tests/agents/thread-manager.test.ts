@@ -66,6 +66,20 @@ function makeLive(
 }
 
 describe("ThreadManager", () => {
+  it("keeps the actual executing turn's interval when a child is interrupted through sendOp", async () => {
+    const manager = new ThreadManager(makeSession());
+    const live = makeLive();
+    manager.registerLiveAgent(live);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100_000);
+    try {
+      live.status.markRunning("executing-turn");
+      clock.mockReturnValue(130_000);
+      await manager.sendOp(live.agentId, { type: "interrupt", reason: "user_cancel" });
+      expect(live.status.value).toMatchObject({ status: "interrupted", turnId: "executing-turn" });
+      expect(live.status.timing).toEqual({ turnId: "executing-turn", startedAt: 100_000, endedAt: 130_000 });
+    } finally { clock.mockRestore(); }
+  });
+
   it("registers a root session and routes user input ops", async () => {
     const session = makeSession();
     const manager = new ThreadManager(session);

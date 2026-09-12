@@ -1,5 +1,6 @@
 import type { LocalAgentTaskState, TaskState, TaskStatus } from "../../tasks/types.js";
 import type { SessionNativeWorkerSnapshot } from "../../app-server/protocol/index.js";
+import type { NativeWorkerTiming } from "../../agents/status.js";
 import {
   isTaskRecord,
   taskNumberField,
@@ -33,6 +34,7 @@ type CollabAgentTaskPatch = {
   readonly error?: string;
   readonly toolUseCount?: number;
   readonly tokenCount?: number;
+  readonly timing?: NativeWorkerTiming;
 };
 
 function collabStatusToTaskStatus(status: unknown): TaskStatus {
@@ -69,6 +71,15 @@ function collabStatusToTaskStatus(status: unknown): TaskStatus {
 
 function collabStatusError(status: unknown): string | undefined {
   return isTaskRecord(status) ? taskStringField(status, "error") : undefined;
+}
+
+function nativeWorkerTiming(value: unknown): NativeWorkerTiming | undefined {
+  if (!isTaskRecord(value) || typeof value.turnId !== "string" || value.turnId.length === 0 ||
+      typeof value.startedAt !== "number" || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) return;
+  if (value.endedAt !== undefined && (typeof value.endedAt !== "number" ||
+      !Number.isSafeInteger(value.endedAt) || value.endedAt < value.startedAt)) return;
+  return { turnId: value.turnId, startedAt: value.startedAt,
+    ...(typeof value.endedAt === "number" ? { endedAt: value.endedAt } : {}) };
 }
 
 function daemonStatusToTaskStatus(payload: Record<string, unknown>): TaskStatus {
@@ -124,6 +135,7 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
     return {
       id,
       status: collabStatusToTaskStatus(payload.status),
+      timing: nativeWorkerTiming(payload.timing),
       title,
       prompt: taskStringField(payload, "prompt"),
       role:
@@ -144,6 +156,7 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
     return {
       id,
       status,
+      timing: nativeWorkerTiming(payload.timing),
       requiresExisting: true,
       preserveCompletedOnTermination:
         status === "failed" || status === "killed",
@@ -234,6 +247,25 @@ function outputUri(id: string): string {
   return `urn:agenc:task:${encodeURIComponent(id)}:output`;
 }
 
+function taskTiming(
+  previous: LocalAgentTaskState | undefined,
+  patch: CollabAgentTaskPatch,
+  status: TaskStatus,
+  ended: boolean,
+): Pick<LocalAgentTaskState, "startTime" | "endTime" | "workerTiming"> {
+  const previousEnded = previous !== undefined && previous.status !== "running" && previous.status !== "pending";
+  const timing = patch.timing ?? (
+    previous?.status === status || (ended && previousEnded) ? previous?.workerTiming : undefined
+  );
+  // A legacy daemon or a transition awaiting its canonical timing is unknown,
+  // not a new zero-duration run starting when this TUI happened to subscribe.
+  if (timing === undefined || (ended && timing.endedAt === undefined)) {
+    return { startTime: 0, workerTiming: timing };
+  }
+  return { startTime: timing.startedAt, workerTiming: timing,
+    ...(timing.endedAt !== undefined ? { endTime: timing.endedAt } : {}) };
+}
+
 function applyPatch(
   previous: TaskState | undefined,
   patch: CollabAgentTaskPatch,
@@ -280,7 +312,7 @@ function applyPatch(
     ...(previousAgent?.daemonWorker !== undefined ? { daemonWorker: previousAgent.daemonWorker } : {}),
     status,
     description: title,
-    startTime: previousAgent?.startTime ?? now,
+    ...taskTiming(previousAgent, patch, status, ended),
     outputFile: previousAgent?.outputFile ?? outputUri(patch.id),
     outputOffset: previousAgent?.outputOffset ?? 0,
     notified: ended ? true : false,
@@ -301,7 +333,6 @@ function applyPatch(
     diskLoaded: previousAgent?.diskLoaded ?? false,
     selectedAgent: previousAgent?.selectedAgent ?? { name: title },
     ...(progress !== undefined ? { progress } : {}),
-    ...(ended ? { endTime: previousAgent?.endTime ?? now } : {}),
     ...(previousAgent?.abortController !== undefined
       ? { abortController: previousAgent.abortController }
       : {}),
@@ -328,6 +359,7 @@ export function projectDaemonWorkerTask(
       error: worker.error,
       toolUseCount: worker.toolUseCount,
       tokenCount: worker.tokenCount,
+      timing: nativeWorkerTiming(worker.timing),
     }, Date.now()),
     daemonWorker: ownership,
     // Idle reusable workers remain owned by the daemon until explicitly closed.

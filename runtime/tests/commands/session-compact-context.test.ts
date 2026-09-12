@@ -669,7 +669,7 @@ describe("/context TUI bridge", () => {
     expect(spoofedPermissionContext).toBe(noPermissionContext);
   });
 
-  test("uses resident daemon context and cache metrics independently of lifetime token usage", async () => {
+  test.each([false, true])("uses resident daemon context and cache metrics independently of lifetime token usage (effective capacity: %s)", async effective => {
     const setToolJSX = vi.fn();
     const session = {
       conversationId: "bridge-session",
@@ -686,7 +686,7 @@ describe("/context TUI bridge", () => {
             },
           }),
         },
-        providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
+        providerEnvironment: effective ? { AGENC_AUTO_COMPACT_WINDOW: "50000" } : TEST_PROVIDER_ENVIRONMENT,
       },
       getDaemonSessionSnapshot: async () => ({
         tokenUsage: {
@@ -702,7 +702,8 @@ describe("/context TUI bridge", () => {
           hitRate: 0.8,
         },
         contextBreakdown: {
-          windowTokens: 100_000,
+          windowTokens: effective ? 200_000 : 100_000,
+          ...(effective ? { effectiveWindowTokens: 100_000 } : {}),
           messageTokens: 22_000,
           systemPromptTokens: 3_000,
           systemToolTokens: 1_000,
@@ -731,7 +732,7 @@ describe("/context TUI bridge", () => {
     expect(result).toEqual({ kind: "skip" });
     const payload = setToolJSX.mock.calls[0]?.[0];
     const text = payload?.jsx?.props?.text;
-    expect(text).toContain("Context: 26,600 / 100,000");
+    expect(text).toContain("Context: 26,600 / 100,000 tokens (27% of hard limit)");
     expect(text).toContain("messages: 22,000 tokens");
     expect(text).toContain("tool catalog: 1,500 tokens");
     expect(text).toContain("system: 3,000 tokens");

@@ -19,7 +19,7 @@
  */
 
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
-import type { AgentStatus } from "../agents/status.js";
+import type { AgentStatus, NativeWorkerTiming } from "../agents/status.js";
 import type { AdmissionJournalEvent, AdmissionUsageSummary } from "../budget/admission-types.js";
 import type {
   EffectBoundary,
@@ -810,6 +810,7 @@ export interface CollabAgentSpawnBeginEvent {
 }
 
 export interface CollabAgentSpawnEndEvent {
+  readonly timing?: NativeWorkerTiming;
   readonly callId: string;
   readonly senderThreadId: string;
   readonly newThreadId?: string;
@@ -841,6 +842,7 @@ export type CollabAgentTaskStatus =
   "pending" | "running" | "idle" | "completed" | "failed" | "killed";
 
 export interface CollabAgentStatusEvent {
+  readonly timing?: NativeWorkerTiming;
   readonly callId: string;
   readonly senderThreadId: string;
   readonly threadId: string;

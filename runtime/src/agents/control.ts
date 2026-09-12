@@ -291,6 +291,7 @@ export interface NativeWorkerSnapshot {
   readonly error?: string;
   readonly toolUseCount: number;
   readonly tokenCount: number;
+  readonly timing?: import("./status.js").NativeWorkerTiming;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1327,7 +1328,8 @@ export class AgentControl {
     if (!agent.abortController.signal.aborted) {
       agent.abortController.abort(reason);
     }
-    agent.status.markInterrupted(agent.agentId, reason);
+    const interruptedStatus = agent.status.value;
+    agent.status.markInterrupted("turnId" in interruptedStatus ? interruptedStatus.turnId : agent.agentId, reason);
 
     // Cascade to descendants.
     for (const descendant of this.descendantsOf(agent.agentPath)) {
@@ -1895,6 +1897,7 @@ export class AgentControl {
           ...(status.status === "errored" ? { error: status.error } : {}),
           toolUseCount: agent.toolCallCount,
           tokenCount: agent.tokenUsage.totalTokens,
+          ...(agent.status.timing !== undefined ? { timing: { ...agent.status.timing } } : {}),
         });
       }
     }

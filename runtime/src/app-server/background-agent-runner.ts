@@ -18,6 +18,8 @@ import {
   completedEventReplayRequired,
 } from "./background-agent-runner/completed-event-cache.js";
 import { roughTokenCountEstimation } from "../llm/token-estimation.js";
+import { modelContextWindow } from "../session/turn-context.js";
+import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/autoCompact.js";
 import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
@@ -2889,6 +2891,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           readonly modelInfo?: {
             readonly slug?: unknown;
             readonly contextWindow?: unknown;
+            readonly effectiveContextWindowPercent?: number;
           };
         }
       ).modelInfo;
@@ -2908,11 +2911,23 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             ? sessionConfiguration.provider.slug
             : undefined;
 
+      const rawWindow = finiteNumber(liveModelInfo?.contextWindow ?? 0);
+      const effectiveModelWindow = modelContextWindow({ modelInfo: {
+        contextWindow: rawWindow,
+        effectiveContextWindowPercent: liveModelInfo?.effectiveContextWindowPercent ?? 100,
+      } });
+      const effectiveWindowTokens = rawWindow > 0
+        ? getEffectiveContextWindowSizeForEnvironment({ options: {
+          mainLoopModel: model,
+          contextWindowTokens: effectiveModelWindow,
+        } }, bootstrap.session.services.providerEnvironment ?? {})
+        : undefined;
       return {
         ...(provider !== undefined ? { provider } : {}),
         ...(model !== undefined ? { model } : {}),
         estimated: true,
-        windowTokens: finiteNumber(liveModelInfo?.contextWindow ?? 0),
+        windowTokens: rawWindow,
+        ...(effectiveWindowTokens !== undefined ? { effectiveWindowTokens } : {}),
         messageTokens: finiteNumber(messageTokens),
         systemPromptTokens: finiteNumber(estimate(instructions)),
         systemToolTokens: finiteNumber(systemToolTokens),

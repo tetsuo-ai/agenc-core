@@ -162,6 +162,27 @@ afterEach(() => {
 });
 
 describe("AgentControl", () => {
+  it("preserves actual turn timing when interrupting a worker by its thread ID", async () => {
+    const session = stubSession();
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const worker = await control.spawn({ parentPath: "/root" });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100_000);
+    try {
+      worker.status.markRunning("executing-turn");
+      clock.mockReturnValue(130_000);
+      control.interrupt(worker.agentId, "user_cancel");
+      expect(worker.status.value).toMatchObject({ status: "interrupted", turnId: "executing-turn" });
+      clock.mockReturnValue(200_000);
+      worker.status.markInterrupted("executing-turn", "user_cancel");
+      expect(control.snapshotNativeWorkers(session.conversationId)[0]?.timing)
+        .toEqual({ turnId: "executing-turn", startedAt: 100_000, endedAt: 130_000 });
+    } finally {
+      clock.mockRestore();
+      await control.shutdownAll();
+    }
+  });
+
   it("snapshots only current native descendants of the requested parent, including idle workers", async () => {
     const session = stubSession();
     const control = new AgentControl({ session, registry: new AgentRegistry(), maxDepth: 3 });

@@ -30,6 +30,7 @@ import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
 import { createDaemonTuiSessionFixture } from "../helpers/daemon-tui-session.js";
 import { getDefaultAppState } from "../../src/tui/state/AppStateStore.js";
 import { startDaemonWorkerTaskPolling } from "../../src/tui/state/daemonWorkerTasks.js";
+import { formatTaskElapsed } from "../../src/tui/workbench/agents/activity.js";
 import type { NativeWorkerSnapshot } from "../../src/agents/control.js";
 import type { AgenCDaemonTuiClient } from "../../src/tui/daemon-session.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
@@ -10978,7 +10979,7 @@ describe("AgenC delegate background-agent runner", () => {
     // Model switching updates the live Session, not bootstrap.modelInfo.
     // Keep the bootstrap fixture at 65,536 to catch stale-window reads.
     Object.assign(session, {
-      modelInfo: { slug: "kimi-k2.6", contextWindow: 262_144 },
+      modelInfo: { slug: "kimi-k2.6", contextWindow: 262_144, effectiveContextWindowPercent: 80 },
     });
     sessionState.sessionConfiguration = {
       ...sessionState.sessionConfiguration,
@@ -11005,6 +11006,7 @@ describe("AgenC delegate background-agent runner", () => {
       model: "kimi-k2.6",
       estimated: true,
       windowTokens: 262_144,
+      effectiveWindowTokens: 209_715,
       systemPromptTokens: expect.any(Number),
     });
     expect(snapshot.contextBreakdown?.systemPromptTokens).toBeGreaterThan(0);
@@ -11012,11 +11014,13 @@ describe("AgenC delegate background-agent runner", () => {
     expect(getSessionTotals).toHaveBeenCalled();
     expect(hasUnknownModelCost).toHaveBeenCalled();
 
+    Object.assign(session.services, { providerEnvironment: { AGENC_AUTO_COMPACT_WINDOW: "180000" } });
     hasUnknownModelCost.mockReturnValue(true);
     const partiallyKnown = await runner.snapshotAgentSession(
       "session-context-accounting",
       { sessionId: "session-context-accounting" },
     );
+    expect(partiallyKnown.contextBreakdown).toMatchObject({ windowTokens: 262_144, effectiveWindowTokens: 180_000 });
     expect(partiallyKnown.tokenUsage).toMatchObject({
       costUsd: 1.2345,
       costKnown: false,
@@ -11127,6 +11131,7 @@ describe("AgenC delegate background-agent runner", () => {
     let workers: NativeWorkerSnapshot[] = ["backend", "frontend", "tests"].map((name) => ({
       agentId: `worker-${name}`, agentPath: `/root/${name}`, nickname: name, role: "default",
       status: "idle", toolUseCount: 4, tokenCount: 120,
+      timing: { turnId: `${name}-first`, startedAt: 100_000, endedAt: 160_000 },
     }));
     const nativeSnapshot = vi.fn(() => workers);
     Object.assign(control, { snapshotNativeWorkers: nativeSnapshot });
@@ -11157,12 +11162,25 @@ describe("AgenC delegate background-agent runner", () => {
       closeProjection = startDaemonWorkerTaskPolling(bridge, update => { state = update(state); }, message => errors.push(message));
       await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(3));
       expect(Object.values(state.tasks).map(task => task.status)).toEqual(["completed", "completed", "completed"]);
+      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 300_000)).toBe("1m00s");
+      closeProjection();
+      vi.setSystemTime(Date.now() + 600_000);
+      closeProjection = startDaemonWorkerTaskPolling(bridge, update => { state = update(state); }, message => errors.push(message));
+      await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(3));
+      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 900_000)).toBe("1m00s");
       expect(nativeSnapshot).toHaveBeenCalledWith(agentId);
-      workers = [{ ...workers[0]!, status: "running" }, { ...workers[1]!, status: "errored", error: "failed" }];
+      workers = [{ ...workers[0]!, status: "running", timing: { turnId: "backend-next", startedAt: 500_000 } },
+        { ...workers[1]!, status: "errored", error: "failed" }];
       await vi.advanceTimersByTimeAsync(5_000);
       await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(2));
       expect(state.tasks["worker-backend"]?.status).toBe("running");
+      expect(state.tasks["worker-backend"]?.endTime).toBeUndefined();
+      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 515_000)).toBe("0m15s");
       expect(state.tasks["worker-frontend"]?.status).toBe("failed");
+      workers = [{ ...workers[0]!, status: "idle", timing: { turnId: "backend-next", startedAt: 500_000, endedAt: 520_000 } }];
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(state.tasks["worker-backend"]?.status).toBe("completed"));
+      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 900_000)).toBe("0m20s");
       expect(errors).toEqual([]);
     } finally {
       closeProjection?.();

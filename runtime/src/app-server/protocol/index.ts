@@ -3199,6 +3199,12 @@ export interface SessionNativeWorkerSnapshot extends JsonObject {
   readonly error?: string;
   readonly toolUseCount: number;
   readonly tokenCount: number;
+  /** Current assignment's Unix-ms execution interval, when known by the daemon. */
+  readonly timing?: {
+    readonly turnId: string;
+    readonly startedAt: number;
+    readonly endedAt?: number;
+  };
 }
 
 export interface SessionSnapshotResult extends JsonObject {
@@ -3237,6 +3243,8 @@ export interface SessionSnapshotResult extends JsonObject {
     readonly estimated?: boolean;
     /** The model's real window, so shares are against the truth. */
     readonly windowTokens: number;
+    /** Daemon-owned capacity after effective-model and compaction-window policy. */
+    readonly effectiveWindowTokens?: number;
     readonly messageTokens: number;
     readonly systemPromptTokens: number;
     /** Always-loaded built-in tool schemas. */

@@ -4,6 +4,7 @@ export function formatTaskElapsed(
   task: Pick<TaskState, "startTime" | "endTime" | "totalPausedMs">,
   now = Date.now(),
 ): string {
+  if (!Number.isFinite(task.startTime) || task.startTime <= 0) return "—";
   const end = task.endTime ?? now;
   const elapsedMs = Math.max(0, end - task.startTime - (task.totalPausedMs ?? 0));
   const totalSeconds = Math.floor(elapsedMs / 1000);

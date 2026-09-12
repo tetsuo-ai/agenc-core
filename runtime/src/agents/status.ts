@@ -229,8 +229,16 @@ export function formatSubagentNotification(params: {
  * Per-agent status tracker. Subscribers receive a replay of the
  * current state + every subsequent mutation.
  */
+export type NativeWorkerTiming = {
+  readonly turnId: string;
+  /** Unix milliseconds recorded when this assignment starts executing. */
+  readonly startedAt: number;
+  readonly endedAt?: number;
+};
+
 export class AgentStatusTracker {
   readonly subject: BehaviorSubject<AgentStatus>;
+  private runTiming: NativeWorkerTiming | undefined;
 
   constructor(initial: AgentStatus = { status: "pending_init" }) {
     this.subject = new BehaviorSubject<AgentStatus>(initial);
@@ -238,6 +246,10 @@ export class AgentStatusTracker {
 
   get value(): AgentStatus {
     return this.subject.value;
+  }
+
+  get timing(): NativeWorkerTiming | undefined {
+    return this.runTiming;
   }
 
   markRunning(turnId: string): void {
@@ -272,7 +284,7 @@ export class AgentStatusTracker {
    * than reopening normal completed agents for reuse.
    */
   markDurabilityErrored(turnId: string, error: string): void {
-    this.subject.next({
+    this.publish({
       status: "errored",
       turnId,
       endedAtMs: monotonicMs(),
@@ -309,6 +321,26 @@ export class AgentStatusTracker {
     // Only irreversible states are sticky. Control-plane admission separately
     // enforces idle-only reuse, so a completed live handle cannot accept work.
     if (IRREVERSIBLE_STATES.has(this.subject.value.status)) return;
+    this.publish(status);
+  }
+
+  private publish(status: AgentStatus): void {
+    const timing = this.runTiming;
+    if (status.status === "running") {
+      this.runTiming = {
+        turnId: status.turnId,
+        // run-agent marks one turn running both before and inside its loop.
+        startedAt: timing?.turnId === status.turnId ? timing.startedAt : Date.now(),
+      };
+    } else if (timing !== undefined) {
+      if ("turnId" in status && status.turnId !== timing.turnId) {
+        this.runTiming = undefined;
+      } else {
+        // Idle, repeated terminal notifications and later shutdown all retain
+        // the first settled endpoint of the actual execution interval.
+        this.runTiming = { ...timing, endedAt: timing.endedAt ?? Date.now() };
+      }
+    }
     this.subject.next(status);
   }
 }

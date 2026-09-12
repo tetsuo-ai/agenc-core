@@ -471,6 +471,10 @@ const isCollabAgentRef = objectShape(
 );
 
 type AgentStatusPayload = EventPayload<"collab_agent_spawn_end">["status"];
+const isNativeWorkerTiming = objectShape(
+  { turnId: isString, startedAt: isNonNegativeInteger },
+  { endedAt: isNonNegativeInteger },
+);
 type CollabTaskStatus = Extract<
   EventPayload<"collab_agent_status">["status"],
   string
@@ -1319,6 +1323,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       status: isAgentStatus,
     },
     {
+      timing: isNativeWorkerTiming,
       newThreadId: isString,
       newAgentPath: isString,
       newAgentNickname: isString,
@@ -1337,6 +1342,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       status: isCollabStatus,
     },
     {
+      timing: isNativeWorkerTiming,
       agentPath: isString,
       agentNickname: isString,
       agentRole: isString,

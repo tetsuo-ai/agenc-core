@@ -30,6 +30,7 @@ import {
 } from "../session/runtime-message-conversion.js";
 import type { Session } from "../session/session.js";
 import type { SessionSnapshotResult } from "../app-server/protocol/index.js";
+import { configuredContextWindow, contextUsagePercentage, projectResidentContextUsage } from "../session/resident-context-usage.js";
 import { getSessionPermissionInstructions } from "../session/permission-instructions.js";
 import { isAuthenticatedCompactionBoundary } from "../session/compaction-history-marker.js";
 import {
@@ -262,7 +263,7 @@ async function buildFallbackContextUsageText(
   const model = resident?.model ?? readFallbackModel(ctx, config);
   const contextWindowTokens = resident && resident.windowTokens > 0
     ? resident.windowTokens
-    : readFallbackContextWindow(config);
+    : configuredContextWindow(config);
   const estimated = computeContextUsageBreakdown({
     messages,
     tools,
@@ -271,24 +272,14 @@ async function buildFallbackContextUsageText(
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
   });
-  // Lifetime API usage includes the same prompt on every call. Only the
-  // daemon's resident context estimate describes the current window.
-  let breakdown = estimated;
-  if (resident) {
-    const toolsTokens = resident.systemToolTokens + resident.mcpToolTokens;
-    const totalUsed = resident.messageTokens + resident.systemPromptTokens +
-      toolsTokens + resident.memoryFileTokens;
-    breakdown = {
-      ...estimated,
-      messagesTokens: resident.messageTokens,
-      toolsTokens,
-      systemTokens: resident.systemPromptTokens,
-      fileTokens: resident.memoryFileTokens,
-      totalUsed,
-      freeUntilCompact: Math.max(0, estimated.compactionThreshold - totalUsed),
-      freeUntilHardLimit: Math.max(0, estimated.hardLimit - totalUsed),
-    };
-  }
+  const breakdown = resident ? {
+    ...estimated,
+    ...projectResidentContextUsage(resident, {
+      providerEnvironment: providerEnvironmentFromCommandContext(ctx),
+      ...(model !== undefined ? { model } : {}),
+      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+    }),
+  } : estimated;
   return [
     formatContextUsageReport(breakdown),
     `  • estimate: ${resident ? "daemon resident context" : reason}`,
@@ -372,19 +363,6 @@ function readFallbackModel(
   return config?.model;
 }
 
-function readFallbackContextWindow(
-  config: {
-    readonly model_provider?: string;
-    readonly providers?: Readonly<Record<string, { readonly context_window_tokens?: number }>>;
-  } | undefined,
-): number | undefined {
-  const provider = config?.model_provider;
-  if (!provider) return undefined;
-  const contextWindow = config?.providers?.[provider]?.context_window_tokens;
-  return typeof contextWindow === "number" && contextWindow > 0
-    ? contextWindow
-    : undefined;
-}
 
 async function ensureNoActiveTurn(ctx: SlashCommandContext): Promise<void> {
   const activeTurn = (ctx.session as unknown as {
@@ -1248,9 +1226,7 @@ function formatContextUsageReport(breakdown: ContextUsageBreakdown): string {
   const used = breakdown.totalUsed.toLocaleString();
   const hard = breakdown.hardLimit.toLocaleString();
   const threshold = breakdown.compactionThreshold.toLocaleString();
-  const usedPct = breakdown.hardLimit > 0
-    ? Math.min(100, Math.round((breakdown.totalUsed / breakdown.hardLimit) * 100))
-    : 0;
+  const usedPct = contextUsagePercentage(breakdown.totalUsed, breakdown.hardLimit);
   const lines: string[] = [
     `Context: ${used} / ${hard} tokens (${usedPct}% of hard limit)`,
     `  • messages: ${breakdown.messagesTokens.toLocaleString()} tokens`,

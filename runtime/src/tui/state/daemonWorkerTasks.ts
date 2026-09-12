@@ -3,6 +3,8 @@ import type { AppState } from "./AppStateStore.js";
 import { isRecord } from "../../utils/record.js";
 import { projectDaemonWorkerTask } from "./collabAgentTaskSync.js";
 
+export type DaemonSessionSnapshot = Awaited<ReturnType<NonNullable<AgenCBridgeSession["getDaemonSessionSnapshot"]>>>;
+
 type SetAppState = (update: (state: AppState) => AppState) => void;
 
 /** Hydrate current native workers without replaying historical tool events. */
@@ -10,6 +12,7 @@ export function startDaemonWorkerTaskPolling(
   session: Pick<AgenCBridgeSession, "conversationId" | "getDaemonSessionSnapshot" | "subscribeToEvents">,
   setAppState: SetAppState,
   onError: (message: string) => void,
+  onSnapshot?: (snapshot: DaemonSessionSnapshot) => void,
 ): () => void {
   if (session.getDaemonSessionSnapshot === undefined) return () => {};
   const projection = {};
@@ -34,10 +37,14 @@ export function startDaemonWorkerTaskPolling(
     const revision = eventRevision;
     try {
       const snapshot = await session.getDaemonSessionSnapshot?.();
-      if (!active || session.conversationId !== sessionId || snapshot?.nativeWorkers === undefined) return;
+      if (!active || session.conversationId !== sessionId || snapshot === undefined) return;
       // A live transition may have overtaken this RPC's inventory snapshot.
       if (eventRevision !== revision) return;
       lastError = undefined;
+      // Share this read with context chrome, including older daemons that
+      // expose resident context but do not yet report native workers.
+      onSnapshot?.(snapshot);
+      if (snapshot.nativeWorkers === undefined) return;
       const signature = JSON.stringify([sessionId, snapshot.sessionId, revision, snapshot.nativeWorkers]);
       if (signature === lastProjection) return;
       setAppState(state => {
@@ -69,6 +76,7 @@ export function startDaemonWorkerTaskPolling(
     if (!isRecord(event)) return;
     if ((typeof event.type === "string" && event.type.startsWith("collab_")) ||
         event.type === "background_agent_status" ||
+        ["token_count", "history_replaced", "history_cleared", "context_compacted", "turn_complete", "turn_aborted", "turn_started", "user_message", "session_configured"].includes(String(event.type)) ||
         (isRecord(event.payload) && event.payload.cause === "daemon_connection_state")) {
       eventRevision++;
       requestRefresh();

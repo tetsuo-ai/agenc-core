@@ -5577,6 +5577,46 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test.each([false, true])("shares daemon resident context between header and /context (effective capacity: %s)", async effective => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { contextCommand } = await import("../../../src/commands/session-compact.js");
+    const snapshot = {
+      sessionId: "daemon-context-session", turnCount: 7,
+      tokenUsage: { inputTokens: 838_609, outputTokens: 5_000, totalTokens: 843_609, costUsd: 1 },
+      cacheStats: { requestCount: 10, cacheReadInputTokens: 8_000, cacheCreationInputTokens: 400, cacheTotalInputTokens: 10_000, hitRate: 0.8 },
+      contextBreakdown: {
+        model: "grok-4.3", windowTokens: effective ? 2_000_000 : 500_000,
+        ...(effective ? { effectiveWindowTokens: 500_000 } : {}),
+        messageTokens: 50_000, systemPromptTokens: 3_000, systemToolTokens: 1_000, systemToolCount: 2,
+        mcpToolTokens: 300, mcpToolCount: 1, memoryFileTokens: 24, memoryFileCount: 1,
+        deferredToolTokens: 200_000, deferredToolCount: 10,
+      },
+    };
+    const read = vi.fn(async () => snapshot);
+    const session = {
+      ...createSession(), getDaemonSessionSnapshot: read,
+      getInitialTranscriptEvents: () => [{ type: "token_count", payload: { promptTokens: 110_000, completionTokens: 500 } }],
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+    fullscreenProbe.fullscreen = true;
+    process.env.AGENC_TUI_WORKBENCH = "1";
+    try {
+      await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+        await vi.waitFor(() => expect(providerProbe.workbenchLayoutProps.at(-1)?.contextPctLabel).toBe("ctx 11%"));
+        const modal = vi.fn();
+        await contextCommand.execute({ session: session as never, argsRaw: "", cwd: process.cwd(), home: "", appState: { setToolJSX: modal } });
+        const report = modal.mock.calls[0]![0].jsx.props.text as string;
+        expect(report).toContain("Context: 54,324 / 500,000 tokens (11% of hard limit)");
+        expect(report).toContain("prompt cache: 80% hit");
+        expect(report).not.toContain("838,609");
+        expect(read).toHaveBeenCalledTimes(2); // one shared poll plus explicit /context
+        Object.assign(session, { conversationId: "replacement-conversation" });
+        (providerProbe.promptProps.at(-1)?.onInputChange as (value: string) => void)("new draft");
+        await vi.waitFor(() => expect(providerProbe.workbenchLayoutProps.at(-1)?.contextPctLabel).toBeNull());
+      });
+    } finally { resetShellSurfaceProbe(); }
+  });
+
   test("passes live MCP clients and tools through the App shell", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const failedClient = {
