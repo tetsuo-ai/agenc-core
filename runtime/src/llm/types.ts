@@ -130,7 +130,8 @@ export interface LLMMessage {
       readonly kind:
         | "input_validation"
         | "mcp_tool_not_shell_command"
-        | "shell_workspace_write_policy";
+        | "shell_workspace_write_policy"
+        | "exec_detach_unavailable";
     };
     /**
      * Durable tool-result identity. This is runtime-only state: provider wire

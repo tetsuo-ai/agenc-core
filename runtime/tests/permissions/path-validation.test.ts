@@ -1,6 +1,6 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -19,6 +19,11 @@ import {
   validatePath,
 } from "./path-validation.js";
 import { applyPermissionUpdate } from "./permission-updates.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ALLOWED_ROOTS_SIG_ARG,
+  verifyAllowedRoots,
+} from "../../src/agents/_deps/filesystem-args.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
@@ -405,6 +410,97 @@ describe("path-validation", () => {
         type: "mode",
         mode: "bypassPermissions",
       });
+    });
+  });
+
+  describe("an allow outside the cwd hands the tool the allowed directory", () => {
+    function signedRoots(input: Record<string, unknown>): string[] {
+      return verifyAllowedRoots(
+        input[SESSION_ALLOWED_ROOTS_ARG],
+        input[SESSION_ALLOWED_ROOTS_SIG_ARG],
+      );
+    }
+
+    test("through --add-dir in a prompting session", async () => {
+      // A read inside an added directory needs no prompt in default mode (a
+      // write there asks, like a write in the workspace), so it exercises
+      // the allow the layer reaches on its own.
+      const target = join(outside, "nginx.conf");
+      const input = { file_path: target };
+      const added = applyPermissionUpdate(ctx(), {
+        type: "addDirectories",
+        destination: "cliArg",
+        directories: [outside],
+      });
+
+      const result = checkToolPathPermission({
+        toolName: "FileRead",
+        input,
+        path: target,
+        cwd: root,
+        context: added,
+        operationType: "read",
+      });
+
+      expect(result.behavior).toBe("allow");
+      expect(signedRoots(result.updatedInput)).toContain(
+        dirname(join(await realpath(outside), "nginx.conf")),
+      );
+    });
+
+    test("through bypassPermissions, the way an approval would", async () => {
+      // Before: the mode allowed the edit and Edit then refused it with its
+      // own "Path is outside allowed directories" (the half-bypass seen with
+      // Edit on /etc/nginx/nginx.conf under --dangerously-bypass-approvals-and-sandbox).
+      const target = join(outside, "nginx.conf");
+      const input = { file_path: target };
+
+      const result = checkToolPathPermission({
+        toolName: "Edit",
+        input,
+        path: target,
+        cwd: root,
+        context: ctx({ mode: "bypassPermissions" }),
+        operationType: "write",
+      });
+
+      expect(result.behavior).toBe("allow");
+      expect(result.decisionReason).toEqual({ type: "mode", mode: "bypassPermissions" });
+      expect(signedRoots(result.updatedInput)).toContain(
+        dirname(join(await realpath(outside), "nginx.conf")),
+      );
+    });
+
+    test("leaves the input alone for a path inside the cwd", () => {
+      const target = join(root, "src", "index.ts");
+      const input = { file_path: target };
+
+      const result = checkToolPathPermission({
+        toolName: "Edit",
+        input,
+        path: target,
+        cwd: root,
+        context: ctx({ mode: "bypassPermissions" }),
+        operationType: "write",
+      });
+
+      expect(result.behavior).toBe("allow");
+      expect(result.updatedInput).toBe(input);
+    });
+
+    test("bypassPermissions still does not allow a protected path", () => {
+      const target = join(root, ".git", "config");
+
+      const result = checkToolPathPermission({
+        toolName: "Edit",
+        input: { file_path: target },
+        path: target,
+        cwd: root,
+        context: ctx({ mode: "bypassPermissions" }),
+        operationType: "write",
+      });
+
+      expect(result.behavior).not.toBe("allow");
     });
   });
 });

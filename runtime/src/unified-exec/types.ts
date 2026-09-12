@@ -96,6 +96,25 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
   readonly ownerId?: string;
 }
 
+/**
+ * A command started with `detach: true`: a service the model wants to keep
+ * running after the command returns and after the session ends. The manager
+ * starts it in its own session with stdout/stderr going to a log file, waits
+ * at most `yield_time_ms` for an early exit, and then neither tracks nor
+ * stops it.
+ */
+export interface DetachedProcessRequest extends ToolExecutionInjectedArgs {
+  readonly callId?: string;
+  readonly cmd: string;
+  readonly workdir?: string;
+  readonly shell?: string;
+  readonly login?: boolean;
+  /** How long to wait for an early exit before returning with the process still running. */
+  readonly yield_time_ms?: number;
+  readonly max_output_tokens?: number;
+  readonly observer?: UnifiedExecObserver;
+}
+
 export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
   readonly callId?: string;
   readonly session_id: number;
@@ -140,12 +159,28 @@ export interface ExecCommandToolOutput {
   readonly timedOut: boolean;
   readonly truncated: boolean;
   readonly original_token_count: number;
+  /** True when the command ran with `detach: true`; AgenC neither tracks nor stops it. */
+  readonly detached?: boolean;
+  /** OS pid of a detached process that was still running when the yield window closed. */
+  readonly pid?: number;
+  /** File a detached process keeps writing its stdout and stderr to. */
+  readonly log_path?: string;
+  /**
+   * True when processes the command left behind (a shell `&` job, nohup,
+   * setsid, a daemon that forked) were still alive after the command returned
+   * and the supervisor stopped them.
+   */
+  readonly residual_processes_terminated?: boolean;
 }
 
 export interface UnifiedExecProcessManagerLike {
   /** Explicit-timeout cap; Infinity means no configured cap. */
   readonly maxTimeoutMs: number;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
+  /** Start a service that outlives the command and the session; see DetachedProcessRequest. */
+  startDetachedProcess?(
+    request: DetachedProcessRequest,
+  ): Promise<ExecCommandToolOutput>;
   writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput>;
   /**
    * Terminate one live background process by its session/process id.

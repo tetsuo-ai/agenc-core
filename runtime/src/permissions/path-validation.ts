@@ -698,10 +698,22 @@ export function checkToolPathPermission(
       ) ? opts.planFileAuthority : null,
     },
   );
+  // A file tool confines itself to the workspace root plus the signed roots
+  // on its input; the permission layer widens that only when the user
+  // approves a prompt (see the `ask` result below). An allow the layer
+  // reaches on its own for a path outside the cwd, through `--add-dir`, an
+  // allow rule, or bypassPermissions, therefore used to end in the tool's
+  // own "Path is outside allowed directories" (observed: Edit on
+  // /etc/nginx/nginx.conf under --dangerously-bypass-approvals-and-sandbox
+  // with --add-dir /). Hand the tool the same directory an approval would.
+  const inputForAllow = (): Record<string, unknown> =>
+    isPathInside(result.resolvedPath, resolve(opts.cwd))
+      ? opts.input
+      : withTransientAllowedRoot(opts.input, result.resolvedPath);
   if (result.allowed) {
     return {
       behavior: "allow",
-      updatedInput: opts.input,
+      updatedInput: inputForAllow(),
       decisionReason: result.decisionReason,
     };
   }
@@ -743,7 +755,7 @@ export function checkToolPathPermission(
   ) {
     return {
       behavior: "allow",
-      updatedInput: opts.input,
+      updatedInput: inputForAllow(),
       decisionReason: { type: "mode", mode: "bypassPermissions" },
     };
   }

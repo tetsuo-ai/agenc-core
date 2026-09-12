@@ -4,12 +4,20 @@ import { resolve } from "node:path";
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
-import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
+import {
+  shellAdditionalWriteRoots,
+  shellBypassesApprovalsAndSandbox,
+  shellWorkspaceMutationPermission,
+} from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
-import type { UnifiedExecProcessManagerLike, UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
+import type {
+  ExecCommandToolOutput,
+  UnifiedExecProcessManagerLike,
+  UnifiedExecRuntimeSandbox,
+} from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
 import type {
   NetworkSandboxPolicy,
@@ -341,30 +349,76 @@ export function confirmedNoEffectDisposition(
   });
 }
 
+/** A detached service that was still running when its yield window closed. */
+function isDetachedAndRunning(output: ExecCommandToolOutput): boolean {
+  return output.detached === true && output.exitCode === null;
+}
+
+/**
+ * Whether the command's process is alive after the tool returned: yielded to
+ * the caller with a session_id, or started detached and still running.
+ */
+function processStillAlive(output: ExecCommandToolOutput): boolean {
+  return (
+    isDetachedAndRunning(output) ||
+    (output.exitCode === null && output.process_id !== undefined)
+  );
+}
+
 function processObservationDisposition(
   cmd: string,
   cwd: string,
-  output: Awaited<
-    ReturnType<UnifiedExecProcessManagerLike["execCommand"]>
-  >,
+  output: ExecCommandToolOutput,
 ) {
-  const stillAlive =
-    output.exitCode === null && output.process_id !== undefined;
+  const evidenceRef = isDetachedAndRunning(output)
+    ? "tool:system.exec-command:process-detached"
+    : processStillAlive(output)
+      ? "tool:system.exec-command:process-yield"
+      : "tool:system.exec-command:process-exit";
   return createToolEffectDispositionEvidence({
     disposition: "confirmed_committed",
     evidenceKind: "provider_receipt",
-    evidenceRef: stillAlive
-      ? "tool:system.exec-command:process-yield"
-      : "tool:system.exec-command:process-exit",
+    evidenceRef,
     evidenceMaterial: JSON.stringify({
       cmd,
       cwd,
       exitCode: output.exitCode,
       processId: output.process_id ?? null,
+      ...(output.detached === true
+        ? { detached: true, pid: output.pid ?? null }
+        : {}),
       timedOut: output.timedOut,
       durationMs: output.durationMs,
     }),
   });
+}
+
+/**
+ * Why `detach: true` cannot run here, or null when it can. A detached process
+ * escapes every containment the sandbox lease relies on, so it exists only
+ * where no sandbox applies; the message names the flag that gets there and
+ * the sandboxed alternative.
+ */
+function detachRefusal(
+  runtimeSandbox: UnifiedExecRuntimeSandbox | undefined,
+  manager: UnifiedExecProcessManagerLike,
+): ToolResult | null {
+  const message =
+    runtimeSandbox !== undefined
+      ? "detach: true needs the danger-full-access sandbox: start AgenC with --dangerously-bypass-approvals-and-sandbox (or sandbox_mode = \"danger-full-access\"). In a sandboxed session keep the process alive with yield_time_ms instead; it stops when the session ends."
+      : manager.startDetachedProcess === undefined
+        ? "detach: true is not supported by this exec manager."
+        : null;
+  if (message === null) return null;
+  return {
+    content: safeStringify({ error: message }),
+    isError: true,
+    metadata: buildRecoverableToolFailureMetadata("exec_detach_unavailable"),
+    effectDisposition: confirmedNoEffectDisposition(
+      "tool:system.exec-command:detach-unavailable",
+      message,
+    ),
+  };
 }
 
 const REMOVED_ALIAS_HINTS = {
@@ -385,8 +439,23 @@ function validateExecCommandInput(
   if (permissions.kind === "invalid") return { code: "invalid-input", message: permissions.reason };
   const cmd = asString(args.cmd);
   if (cmd === undefined) return { code: "invalid-input", message: "cmd must be a non-empty string" };
+  if (args.detach !== undefined && typeof args.detach !== "boolean") {
+    return { code: "invalid-input", message: "detach must be a boolean" };
+  }
+  if (args.detach === true && args.tty === true) {
+    return { code: "invalid-input", message: "detach cannot be combined with tty; a detached service has no terminal" };
+  }
   const workdir = asString(args.workdir);
-  if (workdir !== undefined && workdir.trim().length > 0) {
+  // The working directory may be the workspace, a directory the user added
+  // with --add-dir, or anywhere when approvals are bypassed and no sandbox
+  // applies (the command could `cd` there anyway; refusing only cost the
+  // model a turn: `workdir: /tmp` was refused in every Terminal-Bench run).
+  const context = readToolRuntimeContext(args as Record<string, unknown>);
+  if (
+    workdir !== undefined &&
+    workdir.trim().length > 0 &&
+    !shellBypassesApprovalsAndSandbox(context)
+  ) {
     const canonicalPath = (candidate: string): string => {
       try {
         return existsSync(candidate) ? realpathSync(candidate) : candidate;
@@ -395,7 +464,10 @@ function validateExecCommandInput(
       }
     };
     const resolvedWorkdir = canonicalPath(resolve(config?.cwd ?? process.cwd(), workdir));
-    const roots = (config?.allowedPaths ?? (config?.cwd !== undefined ? [config.cwd] : [])).map(canonicalPath);
+    const roots = [
+      ...(config?.allowedPaths ?? (config?.cwd !== undefined ? [config.cwd] : [])),
+      ...shellAdditionalWriteRoots(context),
+    ].map(canonicalPath);
     if (roots.length > 0 && !roots.some((root) =>
       resolvedWorkdir === root ||
       resolvedWorkdir.startsWith(root.endsWith("/") || root.endsWith("\\") ? root : `${root}/`) ||
@@ -424,7 +496,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   return {
     name: "exec_command",
     description:
-      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use Edit or Write for source-file edits; delete or rename workspace files here with rm or mv. Never use this to print commentary, placeholders, or reminders to yourself; call the relevant tool directly instead.\n\nLong-running commands: set a short yield_time_ms to run in the BACKGROUND — when the command outlives the yield window the result carries a session_id and the process keeps running. Poll for more output with write_stdin(session_id, chars='') and stop it with kill_process(session_id). Prefer this over trailing '&' (a shell-backgrounded child has no session_id, so its output is unrecoverable).",
+      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use Edit or Write for source-file edits; delete or rename workspace files here with rm or mv. Never use this to print commentary, placeholders, or reminders to yourself; call the relevant tool directly instead.\n\nLong-running commands: set a short yield_time_ms to run in the BACKGROUND — when the command outlives the yield window the result carries a session_id and the process keeps running. Poll for more output with write_stdin(session_id, chars='') and stop it with kill_process(session_id). Prefer this over trailing '&' (a shell-backgrounded child has no session_id, so its output is unrecoverable).\n\nServices: every process a command leaves behind (a trailing '&', nohup, setsid, a daemon that forks) is stopped when the command returns, and a process kept alive with yield_time_ms is stopped when the session ends. To start a web server, database, sshd, or other daemon that must keep running afterwards, set detach: true (needs the danger-full-access sandbox); the result carries its pid and log file.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -508,6 +580,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           description:
             "Shell executable to run the command through. Defaults to the user's shell.",
         },
+        detach: {
+          type: "boolean",
+          description:
+            "Start the command as a detached service: its own session, stdout/stderr to a log file, never stopped by AgenC, so it survives this command returning and the session ending. Waits yield_time_ms (default 2000) for an early exit, then returns pid and log path. Only under the danger-full-access sandbox (--dangerously-bypass-approvals-and-sandbox); not with tty.",
+        },
         ...SANDBOX_PERMISSION_INPUT_PROPERTIES,
         prefix_rule: {
           type: "array",
@@ -536,6 +613,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const workdir = asString(args.workdir);
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
+      const detach = asBoolean(args.detach) === true;
 
       if (!(tty === true && isPlainInteractiveShellCommand(cmd))) {
         const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({
@@ -571,46 +649,57 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           args,
           config?.cwd ?? process.cwd(),
         );
+        if (detach) {
+          const refusal = detachRefusal(runtimeSandbox, manager);
+          if (refusal !== null) return refusal;
+        }
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
-        const output = await manager.execCommand({
+        const shellRequest = {
+          ...(workdir !== undefined ? { workdir } : {}),
+          ...(asString(args.shell) !== undefined ? { shell: asString(args.shell) } : {}),
+          ...(asBoolean(args.login) !== undefined ? { login: asBoolean(args.login) } : {}),
+        };
+        const commonRequest = {
           cmd,
           callId: asString(args.__callId),
-          ...(inspection !== undefined
-            ? { directInvocation: inspection, workdir: inspection.cwd }
-            : {
-                ...(workdir !== undefined ? { workdir } : {}),
-                ...(asString(args.shell) !== undefined ? { shell: asString(args.shell) } : {}),
-                ...(asBoolean(args.login) !== undefined ? { login: asBoolean(args.login) } : {}),
-                ...(tty !== undefined ? { tty } : {}),
-              }),
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : {}),
           ...(asNumber(args.max_output_tokens) !== undefined
             ? { max_output_tokens: asNumber(args.max_output_tokens) }
             : {}),
-          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(args.__abortSignal !== undefined
             ? { __abortSignal: args.__abortSignal }
-            : {}),
-          ...(args.__onProgress !== undefined
-            ? { __onProgress: args.__onProgress }
             : {}),
           ...(config?.execObserver !== undefined
             ? { observer: config.execObserver }
             : {}),
-          ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
-          ...(ownerId !== undefined ? { ownerId } : {}),
-        });
-        // exitCode === null has three meaningful sub-cases. The
-        // reliable discriminator is `process_id !== undefined`:
+        };
+        const output = detach
+          ? await manager.startDetachedProcess!({ ...commonRequest, ...shellRequest })
+          : await manager.execCommand({
+              ...commonRequest,
+              ...(inspection !== undefined
+                ? { directInvocation: inspection, workdir: inspection.cwd }
+                : { ...shellRequest, ...(tty !== undefined ? { tty } : {}) }),
+              ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+              ...(args.__onProgress !== undefined
+                ? { __onProgress: args.__onProgress }
+                : {}),
+              ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
+              ...(ownerId !== undefined ? { ownerId } : {}),
+            });
+        // exitCode === null has these sub-cases. The reliable discriminator
+        // is `process_id !== undefined` (or `detached` with a pid):
         //   - process_id set    → process is still alive (YIELDED to
         //                         caller; can resume via write_stdin).
         //                         `timedOut` is NOT a kill marker here —
         //                         it just means the yield window
         //                         elapsed. Not an error.
+        //   - detached + pid    → a detached service still running when
+        //                         its yield window closed. Not an error.
         //   - process_id absent + timedOut    → configured timeout
         //                                       fired AND process was
         //                                       killed. Error.
@@ -620,8 +709,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         // Previously isError was `exitCode !== null && exitCode !== 0`,
         // which evaluated to false for ALL null-exitCode cases and
         // produced a silent success on signal kill.
-        const stillAlive =
-          output.exitCode === null && output.process_id !== undefined;
+        const stillAlive = processStillAlive(output);
         const isError =
           (output.exitCode !== null && output.exitCode !== 0) ||
           (output.exitCode === null && !stillAlive);
@@ -661,6 +749,16 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             durationMs: output.durationMs,
             ...(output.process_id !== undefined
               ? { processId: output.process_id, sessionId: output.process_id }
+              : {}),
+            ...(output.detached === true
+              ? {
+                  detached: true,
+                  ...(output.pid !== undefined ? { pid: output.pid } : {}),
+                  ...(output.log_path !== undefined ? { logPath: output.log_path } : {}),
+                }
+              : {}),
+            ...(output.residual_processes_terminated === true
+              ? { residualProcessesTerminated: true }
               : {}),
           },
         };

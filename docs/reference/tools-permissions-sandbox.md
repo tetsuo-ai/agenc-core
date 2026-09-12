@@ -153,6 +153,22 @@ Legacy `system.*` utilities (not the primary edit surface):
 | `system.bash` | Direct/shell fallback — **deferred** by default; prefer `exec_command` |
 | `PowerShell` | Registered only when `pwsh`/`powershell` is on `PATH` **and** a unified-exec manager is available; **deferred** |
 
+Background processes and services. `exec_command` stops every process a
+command leaves behind when the command returns (a trailing `&`, `nohup`,
+`setsid`, a daemon that forks) and says so in the result, on a line after the
+footer: `[note: this command left processes running ... detach: true]`. A
+process kept alive with `yield_time_ms` has a `session_id`, lives for the
+session, and is stopped by `closeAll` when the session ends. `detach: true`
+starts a service AgenC never stops: its own session, stdout and stderr in a
+log file under the session temp root, an early-exit wait of `yield_time_ms`
+(default 2 s) so a daemon that rejects its config still reports the error,
+then `running=true pid=<pid> detached=true log=<path>` in the footer. It needs
+the `danger-full-access` sandbox (`--dangerously-bypass-approvals-and-sandbox`
+or `sandbox_mode = "danger-full-access"`): a detached process escapes every
+containment a sandbox lease relies on, so under a sandbox the tool refuses it
+and points at `yield_time_ms`. It cannot be combined with `tty`, and
+`kill_process` does not know detached processes; stop one with `kill <pid>`.
+
 ### Search / discovery / code intel
 
 | Name | Notes |
@@ -423,6 +439,38 @@ an error.
 The SDK mirrors the split: `createSession({ bypassApprovals: true })` sends
 `permissionMode: "bypassPermissions"` and leaves the sandbox on, while
 `dangerouslyBypassApprovalsAndSandbox: true` remains the no-sandbox option.
+
+The shell write policy follows the same split. It refuses shell commands that
+write workspace files outside the generated roots (`build`, `dist`, `logs`,
+`.cache`, `tmp`, `coverage`; use Edit or Write), that remove or move files
+outside the workspace, the system temp directory, or a directory added with
+`--add-dir`, that remove protected paths (the workspace root, `/`, the home,
+`.git`, `.agenc`, `.agents`, the AgenC home, shell and git config files), and
+commands whose write targets it cannot determine (variables, globs, command
+substitution). Removals inside the workspace or an added directory run
+without a prompt in `bypassPermissions`, `acceptEdits` and `auto`, and after
+approval otherwise. When approvals are bypassed **and** no sandbox applies
+(`--dangerously-bypass-approvals-and-sandbox`, or `bypassPermissions` on a
+host that cannot sandbox) nothing but this policy would gate a shell mutation,
+so the two guards that only route a mutation to a prompt or the sandbox are
+lifted: undeterminable targets run, and removals outside the workspace are
+allowed. Workspace content writes still belong to Edit and Write, and the
+protected paths stay refused. `--bypass-approvals` alone keeps every guard;
+the sandbox is the boundary there. `exec_command`'s `workdir` follows the
+same rule: the workspace, a directory added with `--add-dir`, or anywhere
+under the full bypass. The policy is evaluated with the session's mode and
+sandbox at preflight as well as at execution (the dispatcher attaches a
+provisional runtime context before a tool's `preflight`), so the two phases
+decide alike.
+
+The file tools (`FileRead`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`)
+confine themselves to the workspace root plus the roots the permission layer
+signs onto their input. When the layer allows a path outside the cwd on its
+own, through `--add-dir`, an allow rule, or `bypassPermissions`, it hands the
+tool that path's directory the same way it does after an approval; before,
+such an allow ended in the tool's own `Path is outside allowed directories`
+(the half-bypass seen with Edit on `/etc/nginx/nginx.conf`). The safety gates
+(`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
 
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).

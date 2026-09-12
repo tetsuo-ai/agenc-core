@@ -35,6 +35,7 @@ import {
   runSupervisedProcess,
   signalProcessTree,
   spawnContainedProcess,
+  terminateProcessTreeAndReport,
   terminateProcessTreeAndWait,
   throwIfPreparedSpawnCleanupUnproven,
   POSIX_PROCESS_GATE_SCRIPT,
@@ -1959,4 +1960,55 @@ describe("posix process gate handoff", () => {
     expect(code).toBe(0);
     expect(stdout).toBe("legacy\n");
   });
+});
+
+describe("terminateProcessTreeAndReport", () => {
+  it.runIf(process.platform !== "win32")(
+    "reports whether it found anything left to stop",
+    async () => {
+      const gone = spawn("sh", ["-c", "exit 0"], { detached: true, stdio: "ignore" });
+      await waitForChildClose(gone, 5_000);
+
+      const afterExit = await terminateProcessTreeAndReport(gone, {
+        terminateGraceMs: 50,
+        killGraceMs: 1_000,
+        label: "test process",
+      });
+      expect(afterExit.residualProcessesTerminated).toBe(false);
+
+      const lingering = spawn("sh", ["-c", "sleep 30 & wait"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      await new Promise<void>((resolve, reject) => {
+        lingering.once("spawn", resolve);
+        lingering.once("error", reject);
+      });
+      // Subscribe before terminating: the close event can fire while the
+      // supervisor awaits, and the leader stays a zombie (kill(pid, 0) still
+      // succeeds) until Node has reaped it.
+      const closed = waitForChildClose(lingering, 5_000);
+
+      const whileAlive = await terminateProcessTreeAndReport(lingering, {
+        terminateGraceMs: 50,
+        killGraceMs: 1_000,
+        label: "test process",
+      });
+      expect(whileAlive.residualProcessesTerminated).toBe(true);
+      await closed;
+      expect(processIsRunning(lingering.pid!)).toBe(false);
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "the void variant still resolves without a value",
+    async () => {
+      const gone = spawn("sh", ["-c", "exit 0"], { detached: true, stdio: "ignore" });
+      await waitForChildClose(gone, 5_000);
+
+      await expect(
+        terminateProcessTreeAndWait(gone, { label: "test process" }),
+      ).resolves.toBeUndefined();
+    },
+  );
 });

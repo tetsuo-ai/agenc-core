@@ -28,6 +28,10 @@ const PROMPT_FREE_APPROVAL_POLICIES: ReadonlySet<
 export interface ShellWorkspaceMutationPermission {
   readonly allowWorkspaceDeletions: boolean;
   readonly protectedRoots: readonly string[];
+  /** Directories the user added with `--add-dir` or approved during the session. */
+  readonly additionalRoots: readonly string[];
+  /** Approvals bypassed and no sandbox: see ShellWorkspaceWritePolicyInput. */
+  readonly bypassesApprovalsAndSandbox: boolean;
 }
 
 type SessionLike = {
@@ -45,9 +49,9 @@ function sessionOf(
   return typeof session === "object" && session !== null ? session : undefined;
 }
 
-function sessionPermissionMode(
+function sessionPermissionContext(
   context: ToolRuntimeAttemptContext | undefined,
-): string | undefined {
+): Record<string, unknown> | undefined {
   const session = sessionOf(context);
   const registry =
     session?.permissionModeRegistry ?? session?.services?.permissionModeRegistry;
@@ -55,13 +59,62 @@ function sessionPermissionMode(
     return undefined;
   }
   try {
-    const mode = (registry.current() as { readonly mode?: unknown } | null)?.mode;
-    return typeof mode === "string" ? mode : undefined;
+    const current = registry.current();
+    return typeof current === "object" && current !== null
+      ? (current as Record<string, unknown>)
+      : undefined;
   } catch {
     // The registry fences reads while an external authority publishes a new
-    // context; an unreadable mode is treated as one that prompts.
+    // context; an unreadable context is treated as one that prompts.
     return undefined;
   }
+}
+
+function sessionPermissionMode(
+  context: ToolRuntimeAttemptContext | undefined,
+): string | undefined {
+  const mode = sessionPermissionContext(context)?.mode;
+  return typeof mode === "string" ? mode : undefined;
+}
+
+/**
+ * Directories the user granted beyond the workspace: `--add-dir` on the
+ * command line, or a directory approved during the session. Read from the
+ * permission context the session publishes, the same source the file tools
+ * consult, so the shell policy and Edit/Write agree on what the user added.
+ */
+export function shellAdditionalWriteRoots(
+  context: ToolRuntimeAttemptContext | undefined,
+): readonly string[] {
+  const directories = sessionPermissionContext(context)?.additionalWorkingDirectories;
+  if (!(directories instanceof Map)) return [];
+  const roots = new Set<string>();
+  for (const entry of directories.values()) {
+    const path = (entry as { readonly path?: unknown } | null)?.path;
+    if (typeof path === "string" && path.trim().length > 0) {
+      roots.add(resolve(path.trim()));
+    }
+  }
+  return [...roots];
+}
+
+/**
+ * Whether nothing but the shell write policy would gate a mutation: the
+ * session never asks (`approvalPolicy: never`, or the bypassPermissions mode
+ * the `--dangerously-bypass-approvals-and-sandbox` flag selects) AND it runs
+ * without a kernel sandbox. Either alone keeps the guards: `--bypass-approvals`
+ * leaves the sandbox as the boundary, and a prompting session in
+ * danger-full-access still routes each command past the user.
+ */
+export function shellBypassesApprovalsAndSandbox(
+  context: ToolRuntimeAttemptContext | undefined,
+): boolean {
+  if (context === undefined) return false;
+  if (context.sandboxMode !== "danger_full_access") return false;
+  return (
+    context.approvalPolicy === "never" ||
+    sessionPermissionMode(context) === "bypassPermissions"
+  );
 }
 
 /**
@@ -123,5 +176,7 @@ export function shellWorkspaceMutationPermission(
   return {
     allowWorkspaceDeletions: shellWorkspaceDeletionsAllowed(context),
     protectedRoots: shellDeletionProtectedRoots(context),
+    additionalRoots: shellAdditionalWriteRoots(context),
+    bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
   };
 }

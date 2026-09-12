@@ -123,6 +123,26 @@ export interface ShellWorkspaceWritePolicyInput {
   readonly allowWorkspaceDeletions?: boolean;
   /** Extra roots (the AgenC home) that a shell command may never remove. */
   readonly protectedRoots?: readonly string[];
+  /**
+   * Directories the user added with `--add-dir` or approved during the
+   * session. A shell command may remove or move files under them the way it
+   * may inside the workspace: without a prompt when `allowWorkspaceDeletions`
+   * is set, otherwise after approval. Content writes there were never
+   * refused, since they are outside the workspace.
+   */
+  readonly additionalRoots?: readonly string[];
+  /**
+   * The session bypasses approvals and runs without a sandbox
+   * (`--dangerously-bypass-approvals-and-sandbox`, or bypassPermissions on a
+   * host that cannot sandbox). Nothing but this policy would gate a shell
+   * mutation, and the user chose that, so the guards that exist only to route
+   * a mutation through a prompt or the sandbox are lifted: a command whose
+   * write targets cannot be determined runs, and removals outside the
+   * workspace are allowed. Workspace content writes still belong to Edit and
+   * Write, and the protected roots (`/`, the home, `.git`, `.agenc`, the
+   * AgenC home, shell and git config files) stay refused.
+   */
+  readonly bypassesApprovalsAndSandbox?: boolean;
 }
 
 interface ShellMove {
@@ -633,21 +653,42 @@ function isProtectedDeletionPath(
   return PROTECTED_DELETION_FILES.has(basename(absolutePath));
 }
 
+interface DeletionPolicyScope {
+  readonly workspaceRoot: string;
+  readonly protectedRoots: readonly string[];
+  readonly additionalRoots: readonly string[];
+  readonly allowWorkspaceDeletions: boolean;
+  readonly bypassesApprovalsAndSandbox: boolean;
+}
+
 function classifyDeletionTarget(
   absolutePath: string,
-  workspaceRoot: string,
-  protectedRoots: readonly string[],
-  allowWorkspaceDeletions: boolean,
+  scope: DeletionPolicyScope,
 ):
   | { readonly kind: "allowed"; readonly inWorkspace: boolean }
   | { readonly kind: "blocked"; readonly reason: DeletionBlockReason } {
+  const { workspaceRoot, protectedRoots, allowWorkspaceDeletions } = scope;
   if (isProtectedDeletionPath(absolutePath, workspaceRoot, protectedRoots)) {
     return { kind: "blocked", reason: "protected" };
   }
   if (workspaceRelation(workspaceRoot, absolutePath) === "outside") {
-    return isUnderTempRoot(absolutePath)
-      ? { kind: "allowed", inWorkspace: false }
-      : { kind: "blocked", reason: "outside" };
+    if (isUnderTempRoot(absolutePath) || scope.bypassesApprovalsAndSandbox) {
+      return { kind: "allowed", inWorkspace: false };
+    }
+    // An added directory is a root the user granted, so a removal there is
+    // the workspace class of mutation (prompt-free or approved), never the
+    // "ask the user to remove it themselves" refusal. It is still not a
+    // workspace path: the file-history sidecar does not back it up.
+    if (
+      scope.additionalRoots.some(
+        (root) => workspaceRelation(root, absolutePath) === "inside",
+      )
+    ) {
+      return allowWorkspaceDeletions
+        ? { kind: "allowed", inWorkspace: false }
+        : { kind: "blocked", reason: "needs_approval" };
+    }
+    return { kind: "blocked", reason: "outside" };
   }
   if (isWorkspaceGeneratedOutputPath(workspaceRoot, absolutePath)) {
     return { kind: "allowed", inWorkspace: true };
@@ -781,13 +822,16 @@ export function classifyShellWorkspaceWritePolicy(
   const deletionTargets: string[] = [];
   const blockedDeletions: string[] = [];
   const deletionReasons = new Set<DeletionBlockReason>();
+  const bypassesApprovalsAndSandbox = params.bypassesApprovalsAndSandbox === true;
+  const deletionScope: DeletionPolicyScope = {
+    workspaceRoot,
+    protectedRoots: params.protectedRoots ?? [],
+    additionalRoots: (params.additionalRoots ?? []).map((root) => resolvePath(root)),
+    allowWorkspaceDeletions: params.allowWorkspaceDeletions === true,
+    bypassesApprovalsAndSandbox,
+  };
   for (const target of removals) {
-    const verdict = classifyDeletionTarget(
-      target,
-      workspaceRoot,
-      params.protectedRoots ?? [],
-      params.allowWorkspaceDeletions === true,
-    );
+    const verdict = classifyDeletionTarget(target, deletionScope);
     if (verdict.kind === "allowed") {
       if (verdict.inWorkspace) deletionTargets.push(target);
     } else {
@@ -806,7 +850,11 @@ export function classifyShellWorkspaceWritePolicy(
   if (blockedDeletions.length > 0) {
     messages.push(buildDeletionPolicyMessage(deletionReasons, blockedDeletions));
   }
-  if (collected.indeterminate) {
+  // With approvals bypassed and no sandbox, an unresolvable target no longer
+  // has a prompt or a kernel boundary to be routed to; refusing it only made
+  // the model rewrite `echo "$(id)"` and `for f in *; do ... done` until they
+  // parsed. The decision still reports `indeterminate` for callers.
+  if (collected.indeterminate && !bypassesApprovalsAndSandbox) {
     messages.push(buildIndeterminatePolicyMessage(observedTargets));
   }
 
