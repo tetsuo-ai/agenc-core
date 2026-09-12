@@ -672,13 +672,18 @@ describe("assembleSystemPrompt", () => {
     ).toBe(true);
   });
 
-  // standard and compact only: these are the profiles whose model calls the
-  // file and shell tools directly, so they are the ones handed raw outside
-  // content. The coordinator runs no tools of its own ("You do NOT edit files
-  // or run commands yourself - workers do") and sees worker results rather
-  // than file bytes, which is a different exposure and a separate prompt
-  // document in coordinator/coordinatorMode.ts.
-  test.each(["standard", "compact"] as const)(
+  // All three profiles. standard and compact call the file and shell tools
+  // directly, so they are handed raw outside content. The coordinator runs no
+  // tools of its own ("You do NOT edit files or run commands yourself -
+  // workers do"), but its exposure is indirect rather than absent: worker
+  // results, task notifications and its own wait_agent/TaskOutput results
+  // carry file contents and command output back to it, and the framing wraps
+  // those results in the same boundary marker (classifyUntrustedToolResult
+  // fails closed to "workspace" for every tool it has). Its wording lives in
+  // coordinator/coordinatorMode.ts and is phrased for what a coordinator can
+  // be steered into (spawning work, relaying content, changing the plan); the
+  // shared assertions below are the floor every profile has to meet.
+  test.each(["standard", "compact", "coordinator"] as const)(
     "the %s profile states the untrusted-tool-result policy it marks data with",
     async (profile) => {
       // The framing is emitted for every provider: a tool result that may
