@@ -47,6 +47,17 @@ export interface PendingRequest {
   resolve(decision: ReviewDecision): void;
 }
 
+export function collectPermissionToolNames(
+  transcriptToolNames: Iterable<string>,
+  requests: readonly PendingRequest[],
+): ReadonlySet<string> {
+  const names = new Set(transcriptToolNames);
+  // Child tools need not appear in the parent's transcript. Every queued
+  // request is projected, so include every identity before building cards.
+  for (const request of requests) names.add(request.ctx.toolName);
+  return names;
+}
+
 function parseJsonObject(raw: string | undefined): Record<string, unknown> {
   if (raw === undefined || raw.trim().length === 0) return {};
   try {

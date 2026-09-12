@@ -19,6 +19,10 @@
 
 import { normalize } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import {
+  attachToolRuntimeContext,
+  readToolRuntimeContext,
+} from "../tools/runtimes/context.js";
 import { attachReadOnlyDelegationReadGuard } from "../permissions/readonly-read-guard.js";
 import { LRUCache } from "lru-cache";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "./child-approval-context.js";
@@ -2708,6 +2712,7 @@ async function prepareChildToolCall(
 > {
   // SECURITY: strip model-supplied `__agenc*` keys before the child
   // policy/injection runs (idempotent if the caller already stripped).
+  const runtimeContext = readToolRuntimeContext(args);
   const sanitizedArgs = stripModelSuppliedChildArgs(args);
   const childSession = opts.getSession?.();
   if (childSession !== undefined && childSession !== null) {
@@ -2725,6 +2730,12 @@ async function prepareChildToolCall(
     }
   }
   const childArgs = injectChildToolArgs(policyResult.args, tool.name, opts);
+  // Policy replacement and signed child-argument copies omit non-enumerable
+  // fields. Preserve the authenticated per-attempt grant, not model-provided
+  // private keys, so the execution sink does not fall back to the base sandbox.
+  if (runtimeContext !== undefined) {
+    attachToolRuntimeContext(childArgs, runtimeContext);
+  }
   if (childSession?.services.readOnlyDelegation !== undefined) {
     attachReadOnlyDelegationReadGuard(childArgs, (target) => readOnlyDelegationPathAllowed(childSession, target));
   }

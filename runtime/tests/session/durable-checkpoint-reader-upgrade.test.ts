@@ -1663,6 +1663,50 @@ describe("legacy durable checkpoint upgrade planner", () => {
     },
   );
 
+  it.each(["none", "before", "after"] as const)(
+    "validates checkpoint histories across clear without hiding corruption (%s)",
+    (tampered) => {
+      const before: ToolResultIntegrityResponseItem[] = [
+        { role: "user", content: "old request" },
+        { role: "assistant", content: "old answer" },
+      ];
+      const after: ToolResultIntegrityResponseItem[] = [
+        { role: "user", content: "new request" },
+        { role: "assistant", content: "new answer" },
+      ];
+      const oldCheckpoint = v4CheckpointForHistory(before);
+      const newCheckpoint = v4CheckpointForHistory(after);
+      if (tampered === "before") before[0] = { role: "user", content: "altered old request" };
+      if (tampered === "after") after[0] = { role: "user", content: "altered new request" };
+      const items: RolloutItem[] = [
+        ...before.map((payload) => ({ type: "response_item" as const, payload })),
+        checkpointItem(oldCheckpoint),
+        { type: "event_msg", payload: {
+          id: "clear", msg: { type: "history_cleared", payload: { timestamp: 1 } },
+        } },
+        ...after.map((payload) => ({ type: "response_item" as const, payload })),
+        checkpointItem({ ...newCheckpoint, checkpointSeq: 2 }),
+      ];
+      const result = planLegacyDurableCheckpointUpgrade({
+        items, runId: "clear-run", projection,
+        projectionId: `clear-${tampered}`, sourceKey: `clear-${tampered}`,
+      });
+      if (tampered === "none") {
+        expect(result).toMatchObject({
+          status: "planned", plan: { changed: false, checkpointsValidated: 2 },
+        });
+        if (result.status === "planned") expect(result.plan.upgradedItems).toEqual(items);
+      } else {
+        expect(result).toMatchObject({
+          status: "invalid", failure: {
+            itemIndex: tampered === "before" ? 2 : 6,
+            cause: { code: "checkpoint_prefix_digest_mismatch" },
+          },
+        });
+      }
+    },
+  );
+
   it("preserves rollback history semantics without reducing every response", () => {
     const survivingHistory: ToolResultIntegrityResponseItem[] = [
       { role: "user", content: "first request" },

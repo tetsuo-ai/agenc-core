@@ -3,6 +3,9 @@ import { matchedDangerousShellCommandLabel } from "./dangerous-patterns.js";
 export type ApprovalRiskTier = "low" | "medium" | "destructive";
 
 const DATA_BEARING_BUILTIN_TOOL_NAMES = new Set([
+  "FileRead",
+  "Glob",
+  "Grep",
   "spawn_agent",
   "send_message",
   "TodoWrite",

@@ -8,8 +8,8 @@
  * `claimRequiredSwarmToolChoice`.
  *
  * The producer reads the persisted flag from user settings (the same
- * canonical config.toml channel /swarm writes and the daemon reloads via the
- * settings watcher), so the TUI toggle takes effect on the next turn
+ * canonical config.toml channel /swarm writes before explicitly reloading
+ * the active daemon configuration), so the toggle takes effect on the next turn
  * without any session restart.
  *
  * @module

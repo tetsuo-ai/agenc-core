@@ -945,6 +945,20 @@ export function createDaemonTuiSession<
       ACTIVE_DAEMON_TRANSCRIPT_EVENTS.has(eventType)
     ) {
       const payload = (event as { readonly payload?: unknown }).payload;
+      if (eventType === "request_permissions") {
+        // A child approval is displayed on the parent's connection, but its
+        // turnId belongs to the child. Approval identity must never establish
+        // or replace the parent turn used for completion and cancellation.
+        const parentTurnId = activeDaemonTurnId();
+        if (
+          parentTurnId === undefined ||
+          (isJsonObject(payload) && (
+            (typeof payload.turnId === "string" && payload.turnId !== parentTurnId) ||
+            (typeof payload.sourceConversationId === "string" &&
+              payload.sourceConversationId !== (baseSession.conversationId ?? sessionId))
+          ))
+        ) return;
+      }
       const callId =
         isJsonObject(payload) && typeof payload.callId === "string"
           ? payload.callId
@@ -3021,6 +3035,9 @@ function transcriptEventFromPermissionRequest(params: JsonObject): JsonObject | 
         ? { toolName: params.toolName }
         : {}),
       ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+      ...(typeof params.sourceConversationId === "string"
+        ? { sourceConversationId: params.sourceConversationId }
+        : {}),
       permissions: Array.isArray(params.permissions)
         ? params.permissions.filter(
             (item): item is string => typeof item === "string",

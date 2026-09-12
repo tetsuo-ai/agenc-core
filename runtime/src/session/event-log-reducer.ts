@@ -263,6 +263,11 @@ export function reduce(
 
       // Handle structural events that affect the reduced state.
       switch (innerType) {
+        case "history_cleared":
+          nextState.history = [];
+          delete nextState.lastCompaction;
+          delete nextState.lastTurnContext;
+          break;
         case "turn_context":
           nextState.lastTurnContext = (
             inner as unknown as { payload: TurnContextItem }

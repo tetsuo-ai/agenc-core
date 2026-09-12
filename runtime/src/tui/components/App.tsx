@@ -192,6 +192,7 @@ import { EDITOR_PROPOSAL_TOOL_NAME } from "../../tools/system/editor-proposal.js
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import { createTuiTools } from "../tool-rendering.js";
+import { useOnboardingStarterTurn } from "../../onboarding/useOnboardingStarterTurn.js";
 import type {
   McpSurfaceServer,
   McpSurfaceSnapshot as CommittedMcpSurfaceSnapshot,
@@ -205,6 +206,7 @@ import { useRealtimeState } from "../realtime/useRealtimeState.js";
 import {
   AgenCPermissionOverlay as PermissionOverlay,
   buildToolUseConfirmQueue,
+  collectPermissionToolNames,
   usePermissionRequests,
 } from "../permission-requests.js";
 import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
@@ -4722,12 +4724,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     getBridgeAppState,
   );
   const elicitation = useTuiElicitation(props.session);
-  const toolNames = useMemo(() => {
-    const names = new Set(transcript.toolNames);
-    const firstPermission = permissionRequests[0];
-    if (firstPermission) names.add(firstPermission.ctx.toolName);
-    return names;
-  }, [permissionRequests, transcript.toolNames]);
+  const toolNames = useMemo(
+    () => collectPermissionToolNames(transcript.toolNames, permissionRequests),
+    [permissionRequests, transcript.toolNames],
+  );
   const tools = useMemo(() => createTuiTools(toolNames), [toolNames]);
   const mcpSurface = useSessionMcpSurface(props.session);
   const mcpClients = mcpSurface.clients;
@@ -6282,32 +6282,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.initialUserMessages,
     notifyInitialSubmitError,
   );
-  // O-1 (onboarding-plan-2026-07): guaranteed first magic. When the first-run
-  // wizard completes IN THIS SESSION and the user brought no prompt of their
-  // own, run one starter turn for them — the first reply is a certainty, not
-  // a blank input box. Never fires for returning users (wizard never active)
-  // or when an initial prompt/messages were provided.
-  const onboardingWasActiveRef = useRef(false);
-  useEffect(() => {
-    const hadPrompt =
-      (props.initialPrompt?.length ?? 0) > 0 ||
-      (props.initialUserMessages?.length ?? 0) > 0;
-    if (onboarding.active) {
-      onboardingWasActiveRef.current = true;
-      return;
-    }
-    if (!onboardingWasActiveRef.current || hadPrompt) return;
-    onboardingWasActiveRef.current = false;
-    void submit(
+  const submitOnboardingStarter = useCallback(
+    () => submit(
       "Introduce yourself in a sentence, then take a quick look at the current directory and suggest one useful thing you could help with here.",
       { automatic: true },
-    ).catch(logError);
-  }, [
-    onboarding.active,
-    submit,
-    props.initialPrompt,
-    props.initialUserMessages,
-  ]);
+    ),
+    [submit],
+  );
+  useOnboardingStarterTurn({
+    active: onboarding.active,
+    connectionReady: onboarding.state.connection?.ok === true,
+    hasInitialPrompt:
+      (props.initialPrompt?.length ?? 0) > 0 ||
+      (props.initialUserMessages?.length ?? 0) > 0,
+    submit: submitOnboardingStarter,
+    onError: logError,
+  });
   useEffect(() => {
     if (queueDrainActiveRef.current) return;
     if (effectiveInputBusy) return;

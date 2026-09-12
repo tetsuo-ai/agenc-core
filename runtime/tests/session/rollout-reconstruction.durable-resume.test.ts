@@ -167,6 +167,41 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
 }
 
 describe("reconstruction durable resume descriptors", () => {
+  test.each([false, true])("clear prevents old history and checkpoints from resuming (new turn=%s)", (newTurn) => {
+    const buildId = pinBuild("clear-history-build");
+    const oldHistory: ResponseItem[] = [{ role: "user", content: "old request" }];
+    const newHistory: ResponseItem[] = [
+      { role: "user", content: "new request" },
+      { role: "assistant", content: "new answer" },
+    ];
+    const items: RolloutItem[] = [
+      { type: "session_state", payload: { agentTask: { taskId: "retained-task" } } },
+      ...orphanWithCheckpoint({ turnId: "old-turn", buildId, prefix: oldHistory, checkpointVersion: 4 }),
+      { type: "compacted", payload: { message: "old summary", replacementHistory: oldHistory } },
+      { type: "turn_context", payload: {
+        turnId: "old-turn", model: "old-model", cwd: "/workspace",
+        approvalPolicy: "on-request", sandboxPolicy: "workspace-write",
+      } },
+      { type: "event_msg", payload: {
+        id: "clear", msg: { type: "history_cleared", payload: { timestamp: 1 } },
+      } },
+      ...(newTurn ? orphanWithCheckpoint({
+        turnId: "new-turn", buildId, prefix: newHistory, checkpointVersion: 4,
+      }) : []),
+    ];
+    const result = reconstruct(items);
+    expect(result.history).toEqual(newTurn ? newHistory : []);
+    expect(result.state.agentTask).toEqual({ taskId: "retained-task" });
+    expect(result.previousTurnSettings).toBeUndefined();
+    expect(result.referenceContextItem).toBeUndefined();
+    expect(result.state.lastCompaction).toBeUndefined();
+    expect(result.state.lastTurnContext).toBeUndefined();
+    expect(result.orphanedTurnIds).toEqual(newTurn ? ["new-turn"] : []);
+    expect(result.resumableTurns).toEqual(newTurn ? [expect.objectContaining({
+      turnId: "new-turn", historyPrefixValid: true, checkpointIntegrityStatus: "valid",
+    })] : []);
+  });
+
   const legacyStops: ReadonlyArray<{ readonly name: string; readonly item: RolloutItem }> = [
     {
       name: "interrupted turn",
