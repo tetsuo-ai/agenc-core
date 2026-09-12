@@ -1705,6 +1705,58 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
 // T10 A+ Fix-alpha - main() smoke test
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Isolated home + trusted cwd + captured stdio for a one-shot run. The env is
+ * restored and the temp dirs removed however the body ends; `run` races the
+ * body against a bounded timeout so a hang fails instead of stalling the suite.
+ */
+async function withOneShotTestEnvironment<T>(
+  prefix: string,
+  body: (env: {
+    readonly cwd: string;
+    readonly run: <R>(start: () => Promise<R>, timeoutMs: number) => Promise<R | "timeout">;
+    readonly stdout: () => string;
+    readonly stderr: () => string;
+  }) => Promise<T>,
+): Promise<T> {
+  const tmpHome = await mkdtemp(join(tmpdir(), `${prefix}home-`));
+  const tmpCwd = await mkdtemp(join(tmpdir(), `${prefix}cwd-`));
+  const prevEnv = { ...process.env };
+  Object.assign(process.env, {
+    AGENC_HOME: tmpHome,
+    AGENC_WORKSPACE: tmpCwd,
+    AGENC_PROVIDER: "openai",
+    OPENAI_API_KEY: "stub-openai-key-for-test",
+    AGENC_CLI_ENTRY_DISABLE: "1",
+  });
+  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const captured = (spy: typeof stdoutSpy) => () =>
+    spy.mock.calls.map(([chunk]) => String(chunk)).join("");
+  try {
+    trustWorkspaceForTest(tmpHome, tmpCwd);
+    return await body({
+      cwd: tmpCwd,
+      run: (start, timeoutMs) =>
+        Promise.race([
+          start(),
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), timeoutMs)),
+        ]),
+      stdout: captured(stdoutSpy),
+      stderr: captured(stderrSpy),
+    });
+  } finally {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    for (const key of Object.keys(process.env)) {
+      if (!(key in prevEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, prevEnv);
+    await rm(tmpHome, { recursive: true, force: true });
+    await rm(tmpCwd, { recursive: true, force: true });
+  }
+}
+
 describe("main() smoke", () => {
   it("loads mcp serve config only when the route needs configured defaults", () => {
     expect(shouldLoadMcpCliConfig(["mcp"])).toBe(false);
@@ -1926,6 +1978,76 @@ describe("main() smoke", () => {
       await rm(tmpHome, { recursive: true, force: true });
       await rm(tmpCwd, { recursive: true, force: true });
     }
+  });
+
+  it("oneShotCLI exits non-zero promptly with the provider error on stderr when its only turn fails", async () => {
+    // Pins the print-mode contract for a provider failure on the only turn,
+    // using the notification shapes the daemon really emits (taken from the
+    // 2026-09-11 grok HTTP 403 rollout): turn_started reaches the client as an
+    // event.agent_status running projection, diagnostics travel as
+    // event.session_event records, and turn_failed is delivered as an
+    // event.session_event, never as an agent_status. The client must classify
+    // that session event, write the message to stderr, settle with code 1
+    // within a bounded time, and stop the daemon agent with one_shot_complete.
+    const agentId = "agent_auth_failed";
+    const sessionId = "session_auth_failed";
+    const turnId = "sub-conv-auth-3";
+    const failureMessage = "grok authentication failed (HTTP 403)";
+    const sessionEvent = (
+      id: string,
+      type: string,
+      payload: Record<string, unknown>,
+    ) => ({
+      method: "event.session_event",
+      params: {
+        sessionId,
+        agentId,
+        eventId: id,
+        turnId,
+        event: { id, type, payload },
+      },
+    });
+    const admission = (id: string, event: string, extra: Record<string, unknown>) =>
+      sessionEvent(id, "execution_admission", {
+        sequence: id === "admission-dispatched" ? 1 : 2,
+        runId: "conv-auth",
+        stepId: `model:${turnId}:1:0:primary`,
+        kind: "model_turn",
+        event,
+        ...extra,
+      });
+    const failedTurnEvents = (cwd: string) =>
+      installDaemonCliDepsForTest({
+        agentId,
+        sessionId,
+        cwd,
+        oneShotEvents: [
+          {
+            method: "event.agent_status",
+            params: { sessionId, agentId, eventId: "turn-started", turnId, status: "running", runStatus: "running" },
+          },
+          sessionEvent("warning", "warning", { cause: "skill_listing_truncated", message: "listed 83 of 1801 invocable skills" }),
+          admission("admission-dispatched", "dispatched", { provider: "grok", model: "grok-4.6" }),
+          admission("admission-held", "held_unknown", { reason: "provider_call_failed_after_dispatch" }),
+          sessionEvent("failed", "turn_failed", { turnId, code: "turn_execution_failed", message: failureMessage, completedAt: 1789161618399, durationMs: 1506 }),
+        ],
+      });
+
+    const outcome = await withOneShotTestEnvironment("agenc-turn-failed-", async ({ cwd, run, stdout, stderr }) => {
+      const daemon = failedTurnEvents(cwd);
+      // A regression that leaves the run waiting for a status the daemon never
+      // sends must fail here as a timeout instead of stalling the suite.
+      const result = await run(() => oneShotCLI("Reply pong"), 4000);
+      return { daemon, result, stdout: stdout(), stderr: stderr() };
+    });
+
+    expect(outcome.result).toBe(1);
+    expect(outcome.stderr).toContain(failureMessage);
+    expect(outcome.stdout).toBe("");
+    const stop = outcome.daemon.requests.find((request) => request.method === "agent.stop");
+    expect(stop?.params).toEqual({ agentId, reason: "one_shot_complete" });
+    expect(outcome.daemon.stopPromptAgent).not.toHaveBeenCalled();
+    expect(outcome.daemon.client.close).toHaveBeenCalled();
   });
 
   it("oneShotCLI DENIES an unanswerable permission request and terminates instead of hanging", async () => {
