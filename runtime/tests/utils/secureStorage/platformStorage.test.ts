@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { SecureStorageUnavailableError } from "../../../src/utils/secureStorage/unavailable.js";
 import {
   createLinuxSecretStorage,
 } from "../../../src/utils/secureStorage/linuxSecretStorage.ts";
@@ -642,6 +643,34 @@ describe("Secure Storage Platform Implementations", () => {
       })
       expect(getExecaCall(0)[0]).toBe("/usr/libexec/agenc-keychain-helper")
       expect(getExecaCall(0)[1][0]).toBe("read")
+    });
+  });
+
+  describe("Linux Secret Service unavailability", () => {
+    test("a missing libsecret or session bus is unavailable, not an unreadable record", () => {
+      const storage = createLinuxSecretStorage(defaultHome(), mockExecaSync);
+      for (const stderr of [
+        "Secret Service is unavailable: libsecret-1.so.0: cannot open shared object file: No such file or directory",
+        "Secret Service session initialization failed: Cannot spawn a message bus without a machine-id: Unable to load /var/lib/dbus/machine-id",
+        "Secret Service helper could not load secret_service_open_sync: symbol unavailable",
+      ]) {
+        mockExecaSync.mockReturnValueOnce({ exitCode: 1, stdout: "", stderr });
+        expect(() => storage.read()).toThrow(SecureStorageUnavailableError);
+      }
+    });
+
+    test("other helper failures stay ordinary read errors", () => {
+      const storage = createLinuxSecretStorage(defaultHome(), mockExecaSync);
+      mockExecaSync.mockReturnValueOnce({ exitCode: 1, stdout: "", stderr: "Access denied" });
+      let caught: unknown;
+      try {
+        storage.read();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught).not.toBeInstanceOf(SecureStorageUnavailableError);
+      expect((caught as Error).message).toBe("Access denied");
     });
   });
 
