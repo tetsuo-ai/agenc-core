@@ -7,6 +7,7 @@ import {
   modelRegistryEntryToModelInfo,
   type ModelMetadataResolverOptions,
 } from "./model-registry.js";
+import { rememberSuccessfulLookup } from "./remember-successful-lookup.js";
 import type { ModelsManager } from "../session/session.js";
 import type { ModelInfo } from "../session/turn-context.js";
 
@@ -16,7 +17,8 @@ export class StaticModelsManager implements ModelsManager {
   private readonly allModels: readonly ModelInfo[];
   private readonly availableModels: readonly ModelInfo[];
   private readonly modelRegistry: ModelRegistry;
-  private readonly modelInfoCache = new Map<string, Promise<ModelInfo>>();
+  private readonly inFlightModelInfo = new Map<string, Promise<ModelInfo>>();
+  private readonly modelInfoCache = new Map<string, ModelInfo>();
 
   constructor(params: {
     readonly config: AgenCConfig;
@@ -64,11 +66,12 @@ export class StaticModelsManager implements ModelsManager {
     readonly model: string;
   }): Promise<ModelInfo> {
     const key = `${params.provider}:${params.model}`;
-    const cached = this.modelInfoCache.get(key);
-    if (cached) return await cached;
-    const resolved = this.buildResolvedModelInfo(params);
-    this.modelInfoCache.set(key, resolved);
-    return await resolved;
+    return await rememberSuccessfulLookup(
+      { inFlight: this.inFlightModelInfo, success: this.modelInfoCache },
+      key,
+      () => this.buildResolvedModelInfo(params),
+      (info) => !info.usedFallbackModelMetadata,
+    );
   }
 
   private async buildResolvedModelInfo(params: {

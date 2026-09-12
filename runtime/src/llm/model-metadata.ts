@@ -3,6 +3,7 @@ import {
 } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
+import { rememberSuccessfulLookup } from "./remember-successful-lookup.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {
   resolveProviderApiKeyEnvironment,
@@ -93,12 +94,18 @@ interface FetchJsonOptions {
   readonly jsonBody?: Readonly<Record<string, unknown>>;
 }
 
+type MetadataJson = object | string | number | boolean | null;
+
 export class ModelMetadataResolver {
   private readonly fetchImpl?: typeof fetch;
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly timeoutMs: number;
   private readonly onWarn?: (msg: string) => void;
-  private readonly jsonCache = new Map<string, Promise<unknown | undefined>>();
+  private readonly inFlightJson = new Map<
+    string,
+    Promise<MetadataJson | undefined>
+  >();
+  private readonly jsonCache = new Map<string, MetadataJson | undefined>();
   private readonly warnedInvalidEnv = new Set<string>();
 
   constructor(options: ModelMetadataResolverOptions = {}) {
@@ -288,22 +295,23 @@ export class ModelMetadataResolver {
   private async fetchJson(
     url: string,
     options: FetchJsonOptions = {},
-  ): Promise<unknown | undefined> {
+  ): Promise<MetadataJson | undefined> {
     if (!this.fetchImpl) return undefined;
     const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}\n${
       JSON.stringify(options.jsonBody ?? null)
     }`;
-    const cached = this.jsonCache.get(cacheKey);
-    if (cached) return await cached;
-    const request = this.fetchJsonUncached(url, options);
-    this.jsonCache.set(cacheKey, request);
-    return await request;
+    return await rememberSuccessfulLookup(
+      { inFlight: this.inFlightJson, success: this.jsonCache },
+      cacheKey,
+      () => this.fetchJsonUncached(url, options),
+      (value) => value !== undefined,
+    );
   }
 
   private async fetchJsonUncached(
     url: string,
     options: FetchJsonOptions,
-  ): Promise<unknown | undefined> {
+  ): Promise<MetadataJson | undefined> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
