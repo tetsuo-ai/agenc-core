@@ -67,7 +67,12 @@ import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
 import { loadMemoryPrompt } from "../memory/memdir.js";
 import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { logForDebugging } from "../utils/debug.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  getAllOutputStyles,
+  selectOutputStyleConfig,
+} from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
 export type { McpServerInstructionsInput } from "./mcp-instructions-framing.js";
 export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
@@ -777,7 +782,9 @@ function fixedSystemPromptSnapshot(text: string): AssembledSystemPrompt {
 function compactSystemPromptSnapshot(
   ctx: TurnContext,
   enabledTools: ReadonlySet<string>,
+  outputStyle: OutputStyleInput | null = null,
 ): AssembledSystemPrompt {
+  const style = getOutputStyleSection(outputStyle);
   return fixedSystemPromptSnapshot(
     [
       `You are AgenC, an open-source coding agent. You work inside the user's repository and complete their request by calling tools.`,
@@ -809,6 +816,7 @@ function compactSystemPromptSnapshot(
       ``,
       `CWD: ${ctx.cwd}`,
       `Date: ${ctx.currentDate ?? "unknown"}`,
+      ...(style === null ? [] : ["", style]),
     ].join("\n"),
   );
 }
@@ -843,7 +851,13 @@ export async function assembleSystemPromptSnapshot(
   };
   switch (opts.profile ?? "standard") {
     case "compact":
-      return withClientRendering(compactSystemPromptSnapshot(opts.ctx, opts.enabledToolNames ?? new Set()));
+      return withClientRendering(
+        compactSystemPromptSnapshot(
+          opts.ctx,
+          opts.enabledToolNames ?? new Set(),
+          opts.outputStyle ?? null,
+        ),
+      );
     case "coordinator": {
       const { getLiveCoordinatorSystemPrompt } =
         await import("../coordinator/coordinatorMode.js");
@@ -854,6 +868,24 @@ export async function assembleSystemPromptSnapshot(
     case "standard":
       return assembleSystemPrompt(opts);
   }
+}
+
+async function resolveOutputStyleFromSession(
+  session: SystemPromptSessionSnapshot,
+  cwd: string,
+): Promise<OutputStyleInput | null> {
+  const pluginStorageRoot = session.services?.runtimeOptions?.pluginStorageRoot;
+  const configStore = session.services?.configStore;
+  if (typeof pluginStorageRoot !== "string" || configStore === undefined) {
+    return null;
+  }
+  const config = configStore.current();
+  const allStyles = await runWithCanonicalSettingsAuthority(configStore, () =>
+    getAllOutputStyles(cwd, pluginStorageRoot, config),
+  );
+  const selected = selectOutputStyleConfig(allStyles, config.outputStyle);
+  if (selected === null) return null;
+  return { name: selected.name, prompt: selected.prompt };
 }
 
 export async function assembleBaseInstructionsForModel(params: {
@@ -884,7 +916,10 @@ export async function assembleBaseInstructionsForModel(params: {
     provider: params.provider,
     permissionContext: params.permissionContext,
     autonomousMode: params.ctx.config.autonomousMode === true,
-    outputStyle: null,
+    outputStyle: await resolveOutputStyleFromSession(
+      params.session,
+      params.ctx.cwd,
+    ),
   });
   return snapshot.text;
 }

@@ -47,7 +47,20 @@ export function createTestConfigStore(
 
 afterAll(() => {
   for (const home of generatedConfigHomes) {
-    rmSync(home, { recursive: true, force: true });
+    try {
+      rmSync(home, { recursive: true, force: true });
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        (error.code !== "EPERM" &&
+          error.code !== "EBUSY" &&
+          error.code !== "ENOENT")
+      ) {
+        throw error;
+      }
+    }
   }
   generatedConfigHomes.clear();
 });

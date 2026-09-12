@@ -217,10 +217,10 @@ export function clearAllOutputStylesCache(): void {
   clearPluginOutputStyleCache()
 }
 
-export async function getOutputStyleConfig(): Promise<OutputStyleConfig | null> {
-  const allStyles = await getAllOutputStyles(getCwd())
-
-  // Check for forced plugin output styles
+export function selectOutputStyleConfig(
+  allStyles: { readonly [styleName: string]: OutputStyleConfig | null },
+  configuredName: string | undefined,
+): OutputStyleConfig | null {
   const forcedStyles = Object.values(allStyles).filter(
     (style): style is OutputStyleConfig =>
       style !== null &&
@@ -242,11 +242,14 @@ export async function getOutputStyleConfig(): Promise<OutputStyleConfig | null> 
     return firstForcedStyle
   }
 
-  const settings = getExecutionAuthoritySettings()
-  const outputStyle = (settings?.outputStyle ||
-    DEFAULT_OUTPUT_STYLE_NAME) as string
+  return allStyles[configuredName || DEFAULT_OUTPUT_STYLE_NAME] ?? null
+}
 
-  return allStyles[outputStyle] ?? null
+export async function getOutputStyleConfig(): Promise<OutputStyleConfig | null> {
+  return selectOutputStyleConfig(
+    await getAllOutputStyles(getCwd()),
+    getExecutionAuthoritySettings()?.outputStyle,
+  )
 }
 
 export function hasCustomOutputStyle(): boolean {
