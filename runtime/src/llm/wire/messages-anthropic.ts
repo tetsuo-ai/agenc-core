@@ -40,6 +40,7 @@ import {
   anthropicAcceptsEffort,
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
+  anthropicManualBudgetTokens,
   anthropicThinkingControl,
 } from "../../utils/model/anthropicThinkingControl.js";
 
@@ -236,6 +237,7 @@ export function buildAnthropicMessagesRequest(
   const systemMessageHasCacheControl = systemMessages.some((message) =>
     hasEphemeralCacheControl(message)
   );
+  const maxTokens = input.maxTokens ?? 4096;
 
   const body: Record<string, unknown> = {
     model: input.model,
@@ -310,7 +312,7 @@ export function buildAnthropicMessagesRequest(
           content: normalizeAnthropicMessageContent(message),
         };
       }),
-    max_tokens: input.maxTokens ?? 4096,
+    max_tokens: maxTokens,
   };
 
   const wireMessages = body.messages as Array<Record<string, unknown>>;
@@ -433,11 +435,10 @@ export function buildAnthropicMessagesRequest(
       ? { type: "adaptive" }
       : {
           type: "enabled",
-          budget_tokens:
-            input.options?.reasoningEffort === "high" ||
-              input.options?.reasoningEffort === "xhigh"
-              ? 4096
-              : 2048,
+          budget_tokens: anthropicManualBudgetTokens(
+            input.options?.reasoningEffort,
+            maxTokens,
+          ),
         };
   }
   // The effort dial only means something on the wire as output_config.effort;

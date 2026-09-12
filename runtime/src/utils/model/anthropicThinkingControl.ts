@@ -82,3 +82,19 @@ export function anthropicEffort(
       return undefined;
   }
 }
+
+const ANTHROPIC_MIN_MANUAL_BUDGET_TOKENS = 1024;
+
+export function anthropicManualBudgetTokens(
+  effort: string | undefined,
+  maxTokens: number,
+): number {
+  const requested = effort === "high" || effort === "xhigh" ? 4096 : 2048;
+  const budget = Math.min(requested, maxTokens - 1);
+  if (budget < ANTHROPIC_MIN_MANUAL_BUDGET_TOKENS) {
+    throw new Error(
+      `Anthropic manual thinking requires budget_tokens >= ${ANTHROPIC_MIN_MANUAL_BUDGET_TOKENS} and below max_tokens (${maxTokens})`,
+    );
+  }
+  return budget;
+}

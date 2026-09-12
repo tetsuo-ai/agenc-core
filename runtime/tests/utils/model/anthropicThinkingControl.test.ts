@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   anthropicAcceptsEffort,
   anthropicEffort,
+  anthropicManualBudgetTokens,
   anthropicThinkingControl,
 } from "../../../src/utils/model/anthropicThinkingControl.js";
 
@@ -48,5 +49,14 @@ describe("anthropicThinkingControl", () => {
     expect(anthropicEffort("max")).toBe("max");
     expect(anthropicEffort("none")).toBeUndefined();
     expect(anthropicEffort(undefined)).toBeUndefined();
+  });
+
+  test("manual budgets clamp below max_tokens and reject caps under 1025", () => {
+    expect(anthropicManualBudgetTokens("xhigh", 5000)).toBe(4096);
+    expect(anthropicManualBudgetTokens("low", 3000)).toBe(2048);
+    expect(anthropicManualBudgetTokens("high", 4096)).toBe(4095);
+    expect(() => anthropicManualBudgetTokens("high", 1024)).toThrow(
+      "budget_tokens >= 1024 and below max_tokens (1024)",
+    );
   });
 });

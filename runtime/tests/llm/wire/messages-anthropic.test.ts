@@ -933,7 +933,7 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
     expect(request("us.anthropic.agenc-opus-5-v1", "low").thinking).toEqual({ type: "adaptive" });
 
     // Budgeted generations keep their config; effort only where the API takes it.
-    expect(request("claude-opus-4-5-20251101", "high").thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+    expect(request("claude-opus-4-5-20251101", "high").thinking).toEqual({ type: "enabled", budget_tokens: 4095 });
     expect(request("claude-opus-4-5-20251101", "high").output_config).toEqual({ effort: "high" });
     for (const model of ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]) {
       expect(request(model, "low").thinking, model).toEqual({ type: "enabled", budget_tokens: 2048 });
@@ -1063,5 +1063,86 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
     );
     expect(response.finishReason).toBe("content_filter");
     expect(response.content).toBe("");
+  });
+});
+
+describe("buildAnthropicMessagesRequest — thinking capability matrix", () => {
+  const turns = [{ role: "user" as const, content: "hello" }];
+
+  test("adaptive, always-on, and manual families emit valid request bodies", () => {
+    const rows = [
+      {
+        label: "opus-4-7 medium at a 1024 cap",
+        model: "claude-opus-4-7",
+        maxTokens: 1024,
+        effort: "medium" as const,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "medium" },
+      },
+      {
+        label: "opus-4-8 medium",
+        model: "claude-opus-4-8",
+        maxTokens: 4096,
+        effort: "medium" as const,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "medium" },
+      },
+      {
+        label: "fable-5 medium omits thinking",
+        model: "claude-fable-5",
+        maxTokens: 4096,
+        effort: "medium" as const,
+        thinking: undefined,
+        output_config: { effort: "medium" },
+      },
+      {
+        label: "opus-4-5 high on the default cap",
+        model: "claude-opus-4-5-20251101",
+        maxTokens: undefined,
+        effort: "high" as const,
+        thinking: { type: "enabled", budget_tokens: 4095 },
+        output_config: { effort: "high" },
+      },
+      {
+        label: "sonnet-4-5 high under a 2048 cap",
+        model: "claude-sonnet-4-5-20250929",
+        maxTokens: 2048,
+        effort: "high" as const,
+        thinking: { type: "enabled", budget_tokens: 2047 },
+        output_config: undefined,
+      },
+      {
+        label: "unknown future model medium under a 1500 cap",
+        model: "claude-future-unknown",
+        maxTokens: 1500,
+        effort: "medium" as const,
+        thinking: { type: "enabled", budget_tokens: 1499 },
+        output_config: undefined,
+      },
+    ];
+
+    for (const row of rows) {
+      const request = buildAnthropicMessagesRequest({
+        model: row.model,
+        messages: turns,
+        tools: [],
+        ...(row.maxTokens === undefined ? {} : { maxTokens: row.maxTokens }),
+        options: { reasoningEffort: row.effort },
+      });
+      expect(request.thinking, row.label).toEqual(row.thinking);
+      expect(request.output_config, row.label).toEqual(row.output_config);
+    }
+  });
+
+  test("a 1024 output cap cannot carry a manual thinking budget", () => {
+    expect(() =>
+      buildAnthropicMessagesRequest({
+        model: "claude-haiku-4-5-20251001",
+        messages: turns,
+        tools: [],
+        maxTokens: 1024,
+        options: { reasoningEffort: "high" },
+      }),
+    ).toThrow("budget_tokens >= 1024 and below max_tokens (1024)");
   });
 });
