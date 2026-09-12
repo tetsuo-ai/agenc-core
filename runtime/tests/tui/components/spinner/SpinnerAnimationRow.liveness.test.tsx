@@ -92,8 +92,7 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
-      // Turn started ~13 minutes ago and nothing has streamed yet.
-      loadingStartTimeRef: makeRef(NOW - 13 * 60_000),
+      loadingStartTimeRef: makeRef(NOW - 30_000),
       responseLengthRef: makeRef(0),
       mode: "responding",
     });
@@ -101,6 +100,7 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     expect(output).toContain("waiting for model");
     expect(output).toContain("no output yet");
     expect(output).not.toContain("slow model");
+    expect(output).not.toContain("no output from the model");
   });
 
   // Operator bug 2026-07-20: "Running tools… (1m 33s · ↓ 208 tokens ·
@@ -161,13 +161,28 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
-      loadingStartTimeRef: makeRef(NOW - 13 * 60_000),
+      loadingStartTimeRef: makeRef(NOW - 60_000),
       responseLengthRef: makeRef(0),
       thinkingStatus: "thinking",
     });
 
     expect(output).not.toContain("slow model");
+    expect(output).not.toContain("no output from the model");
     expect(output).toContain("thinking");
+  });
+
+  test("shows a quiet-stream warning during long thinking", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+
+    const output = await renderRow({
+      loadingStartTimeRef: makeRef(NOW - 13 * 60_000),
+      responseLengthRef: makeRef(0),
+      thinkingStatus: "thinking",
+    });
+
+    expect(output).toContain("no output from the model for 13 minutes");
+    expect(output).toContain("thinking");
+    expect(output).toContain("esc to interrupt");
   });
 
   // The heartbeat must NOT appear for a fresh, fast turn (no false alarm).
