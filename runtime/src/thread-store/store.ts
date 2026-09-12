@@ -1724,6 +1724,7 @@ function normalizeRegistryEntry(value: unknown): RegistryEntry | undefined {
   const source = normalizeThreadSource(value.source);
   return {
     threadId: value.threadId,
+    ...(typeof value.parentThreadId === "string" ? { parentThreadId: value.parentThreadId } : {}),
     createdAt:
       typeof value.createdAt === "string"
         ? value.createdAt

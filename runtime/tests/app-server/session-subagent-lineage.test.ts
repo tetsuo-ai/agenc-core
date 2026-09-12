@@ -29,6 +29,7 @@ it("lists canonical child ownership after restart without classifying user forks
     for (let restart = 0; restart < 2; restart++) {
       const store = new FileThreadStore({ cwd, agencHome: home });
       try {
+        expect(store.readThread({ threadId: "child", includeTurns: false }).parentThreadId).toBe("parent");
         const manager = new AgenCDaemonSessionManager({ threadStore: store });
         const result = await manager.listSessions({ limit: 100 });
         expect(result.sessions).toHaveLength(3);
