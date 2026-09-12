@@ -194,6 +194,12 @@ no default home, relocated home, or colliding directory still owns the record;
 keep those processes stopped until apply completes.
 
 Linux uses its bundled Secret Service helper to enumerate every collection.
+On a Linux host with no Secret Service at all (a container, a server, CI:
+no `libsecret-1.so.0`, or no session bus), the native backend is
+unavailable rather than unreadable. Reads then answer empty, with one
+warning line on stderr, so credentials from the environment and from
+`config.toml` keep working; saving or clearing a credential still fails with
+a clear message, and the destructive migration preconditions stay strict.
 Read, update, and delete refuse multiple records for the exact service/account
 identity; a single existing item is updated or deleted in its own collection.
 This replaces the mismatched all-collection lookup, default-collection store,
