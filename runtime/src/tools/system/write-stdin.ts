@@ -18,6 +18,7 @@ import {
   SANDBOX_PERMISSION_INPUT_PROPERTIES,
 } from "./exec-command.js";
 import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 
 export interface WriteStdinToolConfig {
   readonly cwd?: string;
@@ -232,8 +233,29 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           content: formatUnifiedExecToolContent(output),
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
+          // The manager returned an authoritative process observation. A
+          // non-zero exit or timeout is a command failure, not an unknown
+          // stdin delivery. This receipt settles this call only; it does not
+          // claim that the command succeeded or left the workspace unchanged.
+          effectDisposition: createToolEffectDispositionEvidence({
+            disposition: "confirmed_committed",
+            evidenceKind: "provider_receipt",
+            evidenceRef: stillAlive
+              ? "tool:system.write-stdin:process-yield"
+              : "tool:system.write-stdin:process-exit",
+            evidenceMaterial: JSON.stringify({
+              sessionId,
+              chars,
+              exitCode: output.exitCode,
+              processId: output.process_id ?? null,
+              timedOut: output.timedOut,
+              durationMs: output.durationMs,
+            }),
+          }),
           metadata: {
             sessionId,
+            exitCode: output.exitCode,
+            timedOut: output.timedOut,
             ...(output.process_id !== undefined
               ? { processId: output.process_id }
               : {}),

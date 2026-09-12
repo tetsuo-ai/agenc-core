@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,10 @@ import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
 import { attachPendingPhysicalSettlement } from "../../src/tools/physical-settlement.js";
 import { createFileEditTool } from "../../src/tools/system/file-edit.js";
+import { createExecCommandTool } from "../../src/tools/system/exec-command.js";
+import { createWriteStdinTool } from "../../src/tools/system/write-stdin.js";
+import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
+import { bindExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 
 const zeroAdmissionEstimate = () => ({
   maxInputTokens: 0,
@@ -106,6 +110,51 @@ function toolHarness() {
 }
 
 describe("runAdmittedToolCall", () => {
+  it.each(["timeout", "nonzero", "signal"] as const)(
+    "a real background process %s stays an error without locking subsequent commands",
+    async (termination) => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-process-settlement-"));
+      const manager = new UnifiedExecProcessManager({ cwd: root });
+      const state = toolHarness();
+      const exec = bindExplicitDangerBoundary(createExecCommandTool({ cwd: root, unifiedExecManager: manager }));
+      const poll = bindExplicitDangerBoundary(createWriteStdinTool({ cwd: root, unifiedExecManager: manager }));
+      const invoke = (tool: Tool, callId: string, args: Record<string, unknown>) => runAdmittedToolCall({
+        session: state.session, turnId: "turn-1", callId, tool, args,
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return tool.execute(args);
+        },
+      });
+      try {
+        await mkdir(join(root, "tmp"));
+        // A failed command can already have made changes. The poll receipt
+        // confirms observation, never that the workspace is unchanged.
+        const started = await invoke(exec, "start-background", {
+          cmd: termination === "nonzero"
+            ? "printf partial > tmp/partial.txt; sleep 0.6; exit 7"
+            : "printf partial > tmp/partial.txt; sleep 30",
+          yield_time_ms: 250,
+          ...(termination === "timeout" ? { timeoutMs: 600 } : {}),
+        });
+        const sessionId = started.metadata?.sessionId as number;
+        expect(sessionId, started.content).toEqual(expect.any(Number));
+        if (termination === "signal") manager.terminateProcess(sessionId);
+        const result = await invoke(poll, "poll-background", { session_id: sessionId, chars: "" });
+        expect(result.isError).toBe(true);
+        expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_committed", evidenceKind: "provider_receipt" });
+        expect(result.content).toContain(termination === "timeout" ? "timed_out=true" : termination === "nonzero" ? "exit_code=7" : "signal_terminated=true");
+        expect(await readFile(join(root, "tmp/partial.txt"), "utf8")).toBe("partial");
+        const followUp = await invoke(exec, "follow-up", { cmd: "printf recovered > tmp/recovered.txt" });
+        expect(followUp.isError).not.toBe(true);
+        expect(await readFile(join(root, "tmp/recovered.txt"), "utf8")).toBe("recovered");
+        expect(state.effectEvents.some((event) => event.msg.type === "effect_unknown_outcome")).toBe(false);
+      } finally {
+        await manager.closeAll("test_cleanup");
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("fails closed before tool dispatch when the canonical effect journal is detached", async () => {
     const state = toolHarness();
     Object.assign(state.session, { rolloutStore: null });
