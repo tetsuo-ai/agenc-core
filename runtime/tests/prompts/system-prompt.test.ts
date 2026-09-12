@@ -328,11 +328,32 @@ describe("static section emitters", () => {
     expect(s).toBeNull();
   });
 
-  test("agent_tool returns null when system.agent.delegate is not enabled (gated)", () => {
+  test("agent_tool returns null when spawn_agent is not enabled (gated)", () => {
     expect(getAgentToolSection(new Set())).toBeNull();
     expect(
       getAgentToolSection(new Set(["exec_command", "Edit", "Write"])),
     ).toBeNull();
+  });
+
+  test("agent_tool states the delegation rules that left the spawn_agent description", () => {
+    const s = getAgentToolSection(new Set(["spawn_agent", "FileRead"]));
+    expect(s).not.toBeNull();
+    expect(s!.startsWith("# Subagents")).toBe(true);
+    // The four groups of the delegation discipline that the spawn_agent
+    // description used to carry on every request (when to delegate, designing
+    // subtasks, after delegating, parallel patterns) must all be stated here.
+    expect(s).toContain("critical-path");
+    expect(s).toContain("reviewer, tester, or verifier");
+    expect(s).toContain("disjoint write sets");
+    expect(s).toContain('isolation: "worktree"');
+    expect(s).toContain("base_commit..integration_ref");
+    expect(s).toContain("fork_turns");
+    expect(s).toContain("wait_agent");
+    expect(s).toContain("never wait by reflex");
+    expect(s).toContain("in parallel");
+    expect(s).not.toContain("system.agent.delegate");
+    // No em dashes in user-visible prompt text.
+    expect(s).not.toContain("\u2014");
   });
 
   test("tone_and_style bans emojis + colons before tool calls", () => {
@@ -902,6 +923,31 @@ describe("assembleSystemPrompt", () => {
         .slice(boundaryIdx + 1)
         .some((s) => s.includes("token target")),
     ).toBe(true);
+  });
+
+  test("spawn_agent puts the Subagents section in the static head next to the tool guidance", async () => {
+    const { sections, staticPrefix, dynamicSuffix } = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      enabledToolNames: new Set([
+        "exec_command",
+        "FileRead",
+        "Edit",
+        "Grep",
+        "spawn_agent",
+      ]),
+      simpleMode: false,
+    });
+    const headings = sections
+      .slice(0, sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY))
+      .map((s) => s.split("\n")[0]);
+    const usingIdx = headings.indexOf("# Using your tools");
+    const subagentsIdx = headings.indexOf("# Subagents");
+    const guidanceIdx = headings.indexOf("# Session-specific guidance");
+    expect(subagentsIdx).toBe(usingIdx + 1);
+    expect(guidanceIdx).toBe(subagentsIdx + 1);
+    expect(staticPrefix).toContain("# Subagents");
+    expect(dynamicSuffix).not.toContain("# Subagents");
   });
 
   test("legacy system.agent.delegate does not add subagent prompt prose", async () => {

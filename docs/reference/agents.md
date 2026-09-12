@@ -25,13 +25,13 @@ in `runtime/src/bin/model-facing-tools.ts`, not inside `v2/index.ts`.
 | `assign_task` | Admit one new task to an idle reusable worker (**triggers a turn**). Argument, identity, and target-resolution refusals plus the four no-mutation admission rejections are confirmed no-effect: [agent validation refusals](#agent-validation-refusals). |
 | `send_message` | Queue passive context (**does not** trigger a turn). The same pre-delivery refusals as `assign_task` are confirmed no-effect: [agent validation refusals](#agent-validation-refusals). |
 | `list_agents` | Read the live agent tree and current statuses. Optional `path_prefix`. |
-| `spawn_agents_on_csv` | Fan out workers from CSV rows (job orchestrator) |
-| `report_agent_job_result` | Report a CSV/job worker result back to the orchestrator |
-| `inspect_csv_agent_job` | Read a bounded job summary and keyset item page |
-| `read_csv_agent_job_result` | Read one bounded base64 result chunk |
-| `list_csv_job_reviews` | List a bounded page of unknown-outcome reviews |
-| `show_csv_job_review` | Read one bounded review record |
-| `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence |
+| `spawn_agents_on_csv` | Fan out workers from CSV rows (job orchestrator). Deferred: load with `system.searchTools` (`select:spawn_agents_on_csv`). |
+| `report_agent_job_result` | Report a CSV/job worker result back to the orchestrator. Visible by default because row workers call it. |
+| `inspect_csv_agent_job` | Read a bounded job summary and keyset item page (deferred) |
+| `read_csv_agent_job_result` | Read one bounded base64 result chunk (deferred) |
+| `list_csv_job_reviews` | List a bounded page of unknown-outcome reviews (deferred) |
+| `show_csv_job_review` | Read one bounded review record (deferred) |
+| `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence (deferred) |
 
 ### Read-only planning workers
 

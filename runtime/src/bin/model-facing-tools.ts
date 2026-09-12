@@ -2320,12 +2320,18 @@ function createMultiAgentV2RuntimeTools(
 
   return [
     ...multiAgentV2Tools,
+    // The CSV job family is deferred (metadata.deferred): a coding turn almost
+    // never touches it, and its six schemas cost about 4 KB of every request.
+    // system.searchTools still lists and loads them; report_agent_job_result
+    // stays visible because the row subagents spawned by the job must call it
+    // without a discovery step.
     {
       name: "spawn_agents_on_csv",
       description:
-        "Spawn one subagent per CSV row. The approved instruction is kept separate from an inert structured row payload; subagents must call `report_agent_job_result` exactly once. Optionally writes an output CSV with each row's status and result.",
+        "Spawn one subagent per CSV row. The approved instruction is kept separate from an inert structured row payload; subagents must call `report_agent_job_result` exactly once. Optionally writes an output CSV with each row's status and result. Companion tools for the job it starts load through system.searchTools (select:<name>): inspect_csv_agent_job, read_csv_agent_job_result, list_csv_job_reviews, show_csv_job_review, resolve_csv_job_review.",
       metadata: toolMetadata("agent", {
         mutating: true,
+        deferred: true,
         keywords: ["agent", "spawn", "batch", "csv", "job"],
       }),
       requiresApproval: true,
@@ -2416,6 +2422,7 @@ function createMultiAgentV2RuntimeTools(
         "Read a bounded summary and keyset-paginated item page for a CSV agent job. Result bodies are not embedded.",
       metadata: toolMetadata("agent", {
         mutating: false,
+        deferred: true,
         keywords: ["agent", "job", "csv", "inspect", "status"],
       }),
       isReadOnly: true,
@@ -2447,6 +2454,7 @@ function createMultiAgentV2RuntimeTools(
         "Read one bounded base64 chunk of an available CSV job item result blob.",
       metadata: toolMetadata("agent", {
         mutating: false,
+        deferred: true,
         keywords: ["agent", "job", "csv", "result", "read"],
       }),
       isReadOnly: true,
@@ -2474,6 +2482,7 @@ function createMultiAgentV2RuntimeTools(
         "List a bounded cursor page of CSV job items with unknown outcomes.",
       metadata: toolMetadata("agent", {
         mutating: false,
+        deferred: true,
         keywords: ["agent", "job", "csv", "review", "list"],
       }),
       isReadOnly: true,
@@ -2499,6 +2508,7 @@ function createMultiAgentV2RuntimeTools(
       description: "Read one bounded CSV unknown-outcome review record.",
       metadata: toolMetadata("agent", {
         mutating: false,
+        deferred: true,
         keywords: ["agent", "job", "csv", "review", "show"],
       }),
       isReadOnly: true,
@@ -2520,6 +2530,7 @@ function createMultiAgentV2RuntimeTools(
         "Resolve one CSV unknown outcome from operator evidence. This requires explicit approval and fails closed on a conflicting replay.",
       metadata: toolMetadata("agent", {
         mutating: true,
+        deferred: true,
         keywords: ["agent", "job", "csv", "review", "resolve"],
       }),
       requiresApproval: true,

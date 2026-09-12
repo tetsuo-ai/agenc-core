@@ -730,6 +730,62 @@ describe("model-facing tools", () => {
     expect(visibleNames).not.toContain("StructuredOutput");
   });
 
+  it("defers the CSV job family until system.searchTools loads it, keeping the worker-side report tool visible", async () => {
+    const session = fakeSession(process.cwd());
+    const registry = buildBootstrapToolRegistry({
+      workspaceRoot: process.cwd(),
+      agencHome: join(tmpdir(), "agenc-tools-test"),
+      mcpManager: fakeMcpManager() as never,
+      csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
+      getSession: () => session,
+      emitWarning: () => {},
+    });
+    const deferredCsvTools = [
+      "spawn_agents_on_csv",
+      "inspect_csv_agent_job",
+      "read_csv_agent_job_result",
+      "list_csv_job_reviews",
+      "show_csv_job_review",
+      "resolve_csv_job_review",
+    ];
+    const allNames = registry.tools.map((tool) => tool.name);
+    const visibleBefore = registry
+      .toLLMTools()
+      .map((tool) => tool.function.name);
+    for (const name of deferredCsvTools) {
+      expect(allNames).toContain(name);
+      expect(visibleBefore).not.toContain(name);
+      expect(
+        registry.tools.find((tool) => tool.name === name)?.metadata?.deferred,
+      ).toBe(true);
+    }
+    // Row subagents spawned by a CSV job must call this without a discovery
+    // step, so it stays in the default catalog.
+    expect(visibleBefore).toContain("report_agent_job_result");
+    // The orchestration tools a coding turn does use stay visible.
+    for (const name of ["spawn_agent", "wait_agent", "close_agent", "list_agents"]) {
+      expect(visibleBefore).toContain(name);
+    }
+
+    const result = await registry.dispatch({
+      id: "search-select-csv",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ select: "spawn_agents_on_csv" }),
+    });
+    const body = JSON.parse(result.content) as { loaded?: string[] };
+    expect(body.loaded, result.content).toContain("spawn_agents_on_csv");
+    const visibleAfter = registry
+      .toLLMTools()
+      .map((tool) => tool.function.name);
+    expect(visibleAfter).toContain("spawn_agents_on_csv");
+    // The loaded description tells the model where the companion tools are.
+    const loaded = registry
+      .toLLMTools()
+      .find((tool) => tool.function.name === "spawn_agents_on_csv");
+    expect(loaded?.function.description).toContain("system.searchTools");
+    expect(loaded?.function.description).toContain("inspect_csv_agent_job");
+  });
+
   it("exposes only max_concurrency for CSV worker limits", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
