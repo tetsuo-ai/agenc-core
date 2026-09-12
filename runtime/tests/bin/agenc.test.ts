@@ -2050,6 +2050,144 @@ describe("main() smoke", () => {
     expect(outcome.daemon.client.close).toHaveBeenCalled();
   });
 
+  describe("headless continue (-c -p / --resume <id> -p)", () => {
+    // A minimal rollout the resume resolver accepts: session_meta plus one
+    // user message (rollouts that never recorded a user turn are skipped).
+    async function writeContinuableRollout(
+      agencHome: string,
+      cwd: string,
+      sessionId: string,
+    ): Promise<string> {
+      const sessionDir = join(
+        getProjectDir(cwd, undefined, agencHome),
+        "sessions",
+        sessionId,
+      );
+      await mkdir(sessionDir, { recursive: true });
+      const file = join(sessionDir, `rollout-2026-09-12T10-00-00-000Z-${sessionId}.jsonl`);
+      await writeFile(
+        file,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            sessionId,
+            timestamp: "2026-09-12T10:00:00.000Z",
+            cwd,
+            originator: "agenc-cli",
+            agencVersion: VERSION,
+            rolloutSchemaVersion: 3,
+          },
+        })}\n${JSON.stringify({
+          type: "response_item",
+          payload: { role: "user", content: "first step" },
+        })}\n`,
+      );
+      return file;
+    }
+
+    it("revives the latest project session, submits the prompt as a new turn, prints the answer and stops the revived agent", async () => {
+      await withOneShotTestEnvironment("agenc-continue-", async ({ cwd, run, stdout }) => {
+        const home = process.env.AGENC_HOME!;
+        const sessionId = "conv-continue01";
+        const rolloutPath = await writeContinuableRollout(home, cwd, sessionId);
+        const daemon = installDaemonCliDepsForTest({
+          agentId: "agent_continue",
+          sessionId,
+          cwd,
+          liveAgent: false,
+        });
+
+        const code = await run(
+          () => oneShotCLI("second step", [], undefined, { kind: "latest" }),
+          4000,
+        );
+
+        expect(code).toBe(0);
+        expect(stdout()).toContain("daemon answer");
+        // No fresh agent: the prior session is revived from its rollout.
+        expect(daemon.requests.find((request) => request.method === "agent.create")).toBeUndefined();
+        expect(daemon.startPromptAgent).not.toHaveBeenCalled();
+        expect(daemon.resumePromptAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId, rolloutPath, cwd }),
+        );
+        expect(daemon.requests.find((request) => request.method === "agent.attach")?.params).toMatchObject({
+          agentId: "agent_continue",
+        });
+        // The prompt is one more turn of that session, with a stream id the
+        // client chose so only this turn's terminal can settle the run.
+        const stream = daemon.requests.find((request) => request.method === "message.stream")?.params as
+          | { sessionId?: string; content?: unknown; clientMessageId?: string; streamId?: string }
+          | undefined;
+        expect(stream).toMatchObject({ sessionId, content: "second step" });
+        expect(typeof stream?.streamId).toBe("string");
+        expect(typeof stream?.clientMessageId).toBe("string");
+        // The revived agent is a one-shot resource and is stopped again.
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params).toEqual({
+          agentId: "agent_continue",
+          reason: "one_shot_complete",
+        });
+      });
+    });
+
+    it("reuses a live agent for that session and leaves it running", async () => {
+      await withOneShotTestEnvironment("agenc-continue-live-", async ({ cwd }) => {
+        const home = process.env.AGENC_HOME!;
+        const sessionId = "conv-continue02";
+        await writeContinuableRollout(home, cwd, sessionId);
+        const daemon = installDaemonCliDepsForTest({
+          agentId: "agent_live",
+          sessionId,
+          cwd,
+          liveAgent: true,
+          liveAgentPath: "/root",
+        });
+        // The live agent must carry the rollout identity the descriptor proves.
+        const rolloutStat = await lstat(
+          join(getProjectDir(cwd, undefined, home), "sessions", sessionId, `rollout-2026-09-12T10-00-00-000Z-${sessionId}.jsonl`),
+          { bigint: true },
+        );
+        daemon.findAgentBySessionId.mockImplementation(async () => ({
+          agentId: "agent_live",
+          agentPath: "/root",
+          objective: "live",
+          status: "idle",
+          createdAt: "2026-09-12T10:00:00.000Z",
+          startedAt: "2026-09-12T10:00:00.000Z",
+          lastActiveAt: "2026-09-12T10:00:00.000Z",
+          cwd,
+          activeSessionIds: [sessionId],
+          metadata: {
+            agentPath: "/root",
+            canonicalRolloutPath: join(getProjectDir(cwd, undefined, home), "sessions", sessionId, `rollout-2026-09-12T10-00-00-000Z-${sessionId}.jsonl`),
+            canonicalRolloutDev: rolloutStat.dev.toString(10),
+            canonicalRolloutIno: rolloutStat.ino.toString(10),
+          },
+        }));
+
+        const code = await oneShotCLI("third step", [], undefined, { kind: "resume", sessionId });
+
+        expect(code).toBe(0);
+        expect(daemon.resumePromptAgent).not.toHaveBeenCalled();
+        expect(daemon.requests.find((request) => request.method === "message.stream")?.params).toMatchObject({
+          sessionId,
+          content: "third step",
+        });
+        expect(daemon.requests.find((request) => request.method === "agent.stop")).toBeUndefined();
+      });
+    });
+
+    it("exits 1 with a clear message when there is no session to continue", async () => {
+      await withOneShotTestEnvironment("agenc-continue-none-", async ({ stderr }) => {
+        const daemon = installDaemonCliDepsForTest({ liveAgent: false });
+        expect(await oneShotCLI("anything", [], undefined, { kind: "latest" })).toBe(1);
+        expect(stderr()).toContain("agenc: no previous session found for this project");
+        expect(await oneShotCLI("anything", [], undefined, { kind: "resume", sessionId: "conv-missing" })).toBe(1);
+        expect(stderr()).toContain("session not found in either legacy or hashed project layout: conv-missing");
+        expect(daemon.ensureDaemonReady).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   it("oneShotCLI DENIES an unanswerable permission request and terminates instead of hanging", async () => {
     // Regression for the non-interactive one-shot deadlock: the daemon forces
     // --autonomous, so any tool the model invokes that is not on the (empty by

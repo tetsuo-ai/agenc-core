@@ -50,6 +50,7 @@ import {
   type SessionTranscriptResult,
   type SessionTranscriptV2Result,
 } from "./protocol.js";
+import { AGENC_DAEMON_CLIENT_ENV_KEYS } from "./protocol-wire.generated.js";
 import {
   promptEventFromNotification,
   sessionIdFromNotification,
@@ -81,6 +82,35 @@ function safeSdkRuntimeOptions(
   });
 }
 const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 8;
+
+const DYNAMIC_CLIENT_CREDENTIAL_ENV_KEY = /^AGENC_CREDENTIAL_[A-Z0-9_]+$/u;
+
+/**
+ * The client-owned environment a new session may use, taken from this
+ * process's environment: the daemon's allowlist (`AGENC_DAEMON_CLIENT_ENV_KEYS`,
+ * provider keys such as `DEEPSEEK_API_KEY`, model selection, proxy and TLS
+ * settings) plus any `AGENC_CREDENTIAL_*` remote MCP bearer. Keys that are
+ * absent or blank are not sent; the daemon treats them as explicit clears, so
+ * a session never inherits credentials from the daemon process or from
+ * another client. This is what `agenc -p` forwards, so an embedder that
+ * exports `DEEPSEEK_API_KEY` gets the same provider access as the CLI.
+ */
+export function collectClientEnvOverrides(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string> {
+  const overrides: Record<string, string> = {};
+  const keys = new Set<string>(AGENC_DAEMON_CLIENT_ENV_KEYS);
+  for (const key of Object.keys(env)) {
+    if (DYNAMIC_CLIENT_CREDENTIAL_ENV_KEY.test(key)) keys.add(key);
+  }
+  for (const key of [...keys].sort((left, right) => left.localeCompare(right))) {
+    const value = env[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      overrides[key] = value;
+    }
+  }
+  return overrides;
+}
 
 /**
  * Minimal transport contract. The runtime's
@@ -277,6 +307,13 @@ export interface AgencCreateSessionParams extends SessionCreateParams {
   readonly model?: string;
   /** Provider override for the spawned agent (`agent.create`). */
   readonly provider?: string;
+  /**
+   * Environment forwarded to the daemon for this session (`agent.create`
+   * `envOverrides`). Omit to forward this process's allowlisted environment
+   * (see `collectClientEnvOverrides`), the same ingress `agenc -p` uses; pass
+   * `{}` to forward nothing.
+   */
+  readonly envOverrides?: Readonly<Record<string, string>>;
 }
 
 export interface AgencPromptOptions {
@@ -997,6 +1034,7 @@ export class AgencClient {
       permissionMode: explicitPermissionMode,
       model,
       provider,
+      envOverrides: requestedEnvOverrides,
       initialPrompt,
       metadata,
       ...sessionParams
@@ -1013,6 +1051,7 @@ export class AgencClient {
     const permissionMode = bypassApprovals
       ? ("bypassPermissions" as const)
       : explicitPermissionMode;
+    const envOverrides = requestedEnvOverrides ?? collectClientEnvOverrides();
     const pluginStorageRoot = normalizePluginStorageRoot(
       requestedPluginStorageRoot,
     );
@@ -1052,6 +1091,9 @@ export class AgencClient {
       ...(permissionMode !== undefined ? { permissionMode } : {}),
       ...(model !== undefined && model.length > 0 ? { model } : {}),
       ...(provider !== undefined && provider.length > 0 ? { provider } : {}),
+      ...(Object.keys(envOverrides).length > 0
+        ? { envOverrides: { ...envOverrides } }
+        : {}),
       runtimeOptions: safeSdkRuntimeOptions(
         pluginStorageRoot,
         dangerouslyBypassApprovalsAndSandbox,

@@ -18,12 +18,14 @@ import {
   type JsonObject,
 } from "../../src/app-server/protocol/index.js";
 import {
+  collectClientEnvOverrides,
   createAgencClient,
   type AgencClient,
   type AgencPermissionRequest,
   type AgencPromptEvent,
   type AgencTransport,
 } from "../../../packages/agenc-sdk/src/index";
+import { AGENC_DAEMON_CLIENT_ENV_KEYS } from "../../../packages/agenc-sdk/src/protocol-wire.generated.js";
 
 const workspaces = createTempWorkspaceFixture(
   "agenc-sdk-in-process-workspace-",
@@ -510,6 +512,65 @@ describe("agenc-sdk client over the in-process transport", () => {
       // The conflict is refused before anything reaches the daemon.
       expect(daemon.calls.created).toHaveLength(1);
     } finally {
+      await daemon.close();
+    }
+  });
+
+  it("createSession forwards this process's allowlisted environment as envOverrides, like agenc -p", async () => {
+    const cwd = await workspaces.create();
+    const previous = {
+      DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+      AGENC_CREDENTIAL_TEST_MCP: process.env.AGENC_CREDENTIAL_TEST_MCP,
+      SDK_TEST_UNRELATED_SECRET: process.env.SDK_TEST_UNRELATED_SECRET,
+    };
+    process.env.DEEPSEEK_API_KEY = "sk-test-not-a-real-key";
+    process.env.AGENC_CREDENTIAL_TEST_MCP = "bearer-test";
+    process.env.SDK_TEST_UNRELATED_SECRET = "must-not-leak";
+    const daemon = await createFakeDaemon({});
+    try {
+      await daemon.client.initialize();
+      await daemon.client.createSession({
+        cwd,
+        pluginStorageRoot: daemon.pluginStorageRoot,
+      });
+      const forwarded = daemon.calls.created.at(-1)?.envOverrides as
+        | Record<string, string>
+        | undefined;
+      expect(forwarded).toBeDefined();
+      expect(forwarded).toMatchObject({
+        DEEPSEEK_API_KEY: "sk-test-not-a-real-key",
+        AGENC_CREDENTIAL_TEST_MCP: "bearer-test",
+      });
+      // Only the daemon's allowlist crosses; arbitrary process state does not.
+      expect(forwarded).not.toHaveProperty("SDK_TEST_UNRELATED_SECRET");
+      for (const key of Object.keys(forwarded ?? {})) {
+        expect(
+          (AGENC_DAEMON_CLIENT_ENV_KEYS as readonly string[]).includes(key) ||
+            /^AGENC_CREDENTIAL_[A-Z0-9_]+$/u.test(key),
+        ).toBe(true);
+      }
+
+      // An explicit empty map opts out of forwarding: none of the process
+      // keys travel (the daemon may still add its own guard entries).
+      await daemon.client.createSession({
+        cwd,
+        pluginStorageRoot: daemon.pluginStorageRoot,
+        envOverrides: {},
+      });
+      // The daemon materializes every allowlisted key from the snapshot, so an
+      // omitted key arrives as an explicit clear ("") rather than a value.
+      const optedOut = (daemon.calls.created.at(-1)?.envOverrides ?? {}) as Record<string, string>;
+      expect(optedOut.DEEPSEEK_API_KEY ?? "").toBe("");
+      expect(optedOut.AGENC_CREDENTIAL_TEST_MCP ?? "").toBe("");
+
+      expect(collectClientEnvOverrides({ DEEPSEEK_API_KEY: "  ", PATH: "/usr/bin", OTHER: "x" })).toEqual({
+        PATH: "/usr/bin",
+      });
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       await daemon.close();
     }
   });

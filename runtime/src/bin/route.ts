@@ -278,6 +278,14 @@ export interface BootTUIArgs {
   readonly startupImages?: readonly string[];
 }
 
+/**
+ * Which prior session a headless (`-p`, piped stdin, `--no-tui`) run continues.
+ * `latest` is `-c` / `--continue`; `resume` is `--resume <id>` / `-r <id>`.
+ */
+export type OneShotContinueSession =
+  | { readonly kind: "latest" }
+  | { readonly kind: "resume"; readonly sessionId: string };
+
 export interface ResumeTUIArgs {
   readonly resumeId: string;
 }
@@ -297,6 +305,7 @@ export interface RouteCLIOptions {
   readonly oneShotCLI: (
     userMessage: string,
     startupImages?: readonly string[],
+    continueSession?: OneShotContinueSession,
   ) => Promise<number>;
   /** Resume a prior session through the TUI. Returns the exit code. */
   readonly resumeTUI: (args: ResumeTUIArgs) => Promise<number>;
@@ -312,6 +321,8 @@ export type RouteCLIPlan =
       readonly kind: "oneShotCLI";
       readonly userMessage: string;
       readonly startupImages?: readonly string[];
+      /** Headless `-c` / `--resume <id>`: run the prompt as one more turn of a prior session. */
+      readonly continueSession?: OneShotContinueSession;
     }
   | {
       readonly kind: "errorAndExit";
@@ -413,18 +424,24 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     };
   }
 
+  // Headless runs (`-p`, piped stdin, `--no-tui`) never mount Ink. A prior
+  // session is continued through the daemon-backed one-shot path instead:
+  // the prompt becomes one more turn of that session, the way
+  // `hermes chat -c` and `opencode run --continue` work from a shell.
+  const headless = hasPrintFlag || hasNoTuiFlag || !opts.isTTY;
+
   // 1. `--resume <id>` / `-r <id>` boots through the TUI resume path. Errors
   //    inside `resumeTUI` (missing session, corrupt rollout, etc.) are
   //    surfaced via its return code; the caller owns emitting the
-  //    `agenc: session not found: <id>` message.
-  //    Refuse this path in a non-TTY context: Ink can't read from a piped
-  //    stdin, so resuming there used to hang silently waiting for input.
+  //    `agenc: session not found: <id>` message. Ink cannot read from a piped
+  //    stdin, so headless resumes take the one-shot path.
   if (resumeId !== null && resumeId.length > 0) {
-    if (!opts.isTTY) {
+    if (headless) {
       return {
-        kind: "errorAndExit",
-        message: `agenc --resume requires an interactive terminal. Use 'agenc -p <prompt>' for headless one-shot calls.`,
-        exitCode: 2,
+        kind: "oneShotCLI",
+        userMessage: prompt,
+        ...(startupImages.length > 0 ? { startupImages } : {}),
+        continueSession: { kind: "resume", sessionId: resumeId },
       };
     }
     return { kind: "resumeTUI", args: { resumeId } };
@@ -432,14 +449,15 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
 
   // 2. `--continue` / `-c` is explicit resume of the latest project
   //    session. It is deliberately separate from plain `agenc`, which
-  //    must always start a fresh conversation. Same TTY requirement as
-  //    --resume (todo-122): Ink cannot drive a non-interactive continue.
+  //    must always start a fresh conversation. Headless continues take the
+  //    one-shot path for the same reason as --resume (todo-122).
   if (hasContinueFlag) {
-    if (!opts.isTTY) {
+    if (headless) {
       return {
-        kind: "errorAndExit",
-        message: `agenc --continue requires an interactive terminal. Use 'agenc -p <prompt>' for headless one-shot calls.`,
-        exitCode: 2,
+        kind: "oneShotCLI",
+        userMessage: prompt,
+        ...(startupImages.length > 0 ? { startupImages } : {}),
+        continueSession: { kind: "latest" },
       };
     }
     return { kind: "continueTUI", args: {} };
@@ -513,6 +531,13 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
     case "continueTUI":
       return opts.continueTUI(plan.args);
     case "oneShotCLI":
+      if (plan.continueSession !== undefined) {
+        return opts.oneShotCLI(
+          plan.userMessage,
+          plan.startupImages,
+          plan.continueSession,
+        );
+      }
       return plan.startupImages === undefined
         ? opts.oneShotCLI(plan.userMessage)
         : opts.oneShotCLI(plan.userMessage, plan.startupImages);
