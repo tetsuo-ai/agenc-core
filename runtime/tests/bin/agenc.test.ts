@@ -1930,64 +1930,34 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI writes the answer once when the daemon streams deltas and then the complete message", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-once-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-once-cwd-"));
-    const prevEnv = { ...process.env };
-
-    process.env.AGENC_HOME = tmpHome;
-    process.env.AGENC_WORKSPACE = tmpCwd;
-    process.env.AGENC_PROVIDER = "openai";
-    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
-    process.env.AGENC_ALLOW_UNTRUSTED_HOOKS = "true";
-    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const agentId = "agent_once";
-    const sessionId = "session_once";
     // The daemon path emits every assistant message twice: as streamed
     // deltas (event.message_chunk / agent_message_delta) and then as one
     // complete agent_message transcript event. Print mode used to write
     // both, so `agenc -p` answered "pongpong".
-    installDaemonCliDepsForTest({
-      agentId,
-      sessionId,
-      cwd: tmpCwd,
-      oneShotEvents: [
-        { method: "event.message_chunk", params: { sessionId, eventId: "once_delta_1", agentId, delta: "po" } },
-        {
-          method: "event.session_event",
-          params: { sessionId, eventId: "once_delta_2", agentId, msg: { type: "agent_message_delta", payload: { delta: "ng" } } },
-        },
-        {
-          method: "event.session_event",
-          params: { sessionId, eventId: "once_final_1", agentId, msg: { type: "agent_message", payload: { message: "pong" } } },
-        },
-        // A second message with no deltas at all is still written whole.
-        {
-          method: "event.session_event",
-          params: { sessionId, eventId: "once_final_2", agentId, msg: { type: "agent_message", payload: { message: "and done" } } },
-        },
-        { method: "event.agent_status", params: { sessionId, eventId: "once_complete", agentId, status: "idle", runStatus: "completed" } },
-      ],
-    });
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(() => true);
-
-    try {
-      trustWorkspaceForTest(tmpHome, tmpCwd);
-      const code = await oneShotCLI("Reply with exactly the word pong");
+    await withOneShotTestEnvironment("agenc-once-", async ({ cwd, run, stdout }) => {
+      const agentId = "agent_once";
+      const sessionId = "session_once";
+      const transcript = (eventId: string, type: string, payload: Record<string, string>) => ({
+        method: "event.session_event",
+        params: { sessionId, eventId, agentId, msg: { type, payload } },
+      });
+      installDaemonCliDepsForTest({
+        agentId,
+        sessionId,
+        cwd,
+        oneShotEvents: [
+          { method: "event.message_chunk", params: { sessionId, eventId: "once_delta_1", agentId, delta: "po" } },
+          transcript("once_delta_2", "agent_message_delta", { delta: "ng" }),
+          transcript("once_final_1", "agent_message", { message: "pong" }),
+          // A second message with no deltas at all is still written whole.
+          transcript("once_final_2", "agent_message", { message: "and done" }),
+          { method: "event.agent_status", params: { sessionId, eventId: "once_complete", agentId, status: "idle", runStatus: "completed" } },
+        ],
+      });
+      const code = await run(() => oneShotCLI("Reply with exactly the word pong"), 10_000);
       expect(code).toBe(0);
-      expect(
-        stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toBe("pong\nand done\n");
-    } finally {
-      stdoutSpy.mockRestore();
-      for (const key of Object.keys(process.env)) {
-        if (!(key in prevEnv)) delete process.env[key];
-      }
-      Object.assign(process.env, prevEnv);
-      await rm(tmpHome, { recursive: true, force: true });
-      await rm(tmpCwd, { recursive: true, force: true });
-    }
+      expect(stdout()).toBe("pong\nand done\n");
+    });
   });
 
   it("oneShotFinalMessageRemainder adds only what the deltas did not carry", () => {
