@@ -162,6 +162,32 @@ afterEach(() => {
 });
 
 describe("AgentControl", () => {
+  it("snapshots only current native descendants of the requested parent, including idle workers", async () => {
+    const session = stubSession();
+    const control = new AgentControl({ session, registry: new AgentRegistry(), maxDepth: 3 });
+    control.registerSessionRoot(session.conversationId);
+    const parent = await control.spawn({ parentPath: "/root" });
+    const sibling = await control.spawn({ parentPath: "/root" });
+    const child = await control.spawn({ parentPath: parent.agentPath });
+    parent.status.markRunning("parent-turn");
+    parent.status.markIdle("parent-turn");
+    child.status.markRunning("child-turn");
+    child.toolCallCount = 4;
+    child.tokenUsage.totalTokens = 321;
+    expect(control.snapshotNativeWorkers(parent.agentId)).toEqual([
+      expect.objectContaining({ agentId: child.agentId, status: "running", toolUseCount: 4, tokenCount: 321 }),
+    ]);
+    expect(control.snapshotNativeWorkers(session.conversationId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: parent.agentId, status: "idle" }),
+      expect.objectContaining({ agentId: sibling.agentId, status: "pending_init" }),
+    ]));
+    expect(control.snapshotNativeWorkers("unrelated-parent")).toEqual([]);
+    await control.closeAgent(child.agentId);
+    expect(control.snapshotNativeWorkers(parent.agentId)).toEqual([]);
+    expect(control.snapshotNativeWorkers(session.conversationId)).toHaveLength(2);
+    await control.shutdownAll();
+  });
+
   it("retains planning authority through a live nested spawn after YOLO, without restricting an ordinary verification sibling", async () => {
     const session = stubSession();
     let context = createEmptyToolPermissionContext({ mode: "plan" });

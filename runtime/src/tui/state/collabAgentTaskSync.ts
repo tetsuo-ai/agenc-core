@@ -1,4 +1,5 @@
 import type { LocalAgentTaskState, TaskState, TaskStatus } from "../../tasks/types.js";
+import type { SessionNativeWorkerSnapshot } from "../../app-server/protocol/index.js";
 import {
   isTaskRecord,
   taskNumberField,
@@ -275,6 +276,8 @@ function applyPatch(
   return {
     id: patch.id,
     type: "local_agent",
+    nativeWorker: true,
+    ...(previousAgent?.daemonWorker !== undefined ? { daemonWorker: previousAgent.daemonWorker } : {}),
     status,
     description: title,
     startTime: previousAgent?.startTime ?? now,
@@ -307,6 +310,28 @@ function applyPatch(
       : {}),
     ...(ended && previousAgent?.result !== undefined ? { result: previousAgent.result } : {}),
     ...(evictAfter !== undefined ? { evictAfter } : {}),
+  };
+}
+
+export function projectDaemonWorkerTask(
+  worker: SessionNativeWorkerSnapshot,
+  previous: TaskState | undefined,
+  ownership: NonNullable<LocalAgentTaskState["daemonWorker"]>,
+): LocalAgentTaskState {
+  return {
+    ...applyPatch(previous, {
+      id: worker.agentId,
+      status: collabStatusToTaskStatus(worker.status),
+      title: worker.nickname || worker.agentPath,
+      prompt: worker.prompt,
+      role: worker.role,
+      error: worker.error,
+      toolUseCount: worker.toolUseCount,
+      tokenCount: worker.tokenCount,
+    }, Date.now()),
+    daemonWorker: ownership,
+    // Idle reusable workers remain owned by the daemon until explicitly closed.
+    evictAfter: undefined,
   };
 }
 

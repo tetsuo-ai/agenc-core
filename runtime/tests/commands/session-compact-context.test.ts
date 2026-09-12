@@ -669,7 +669,7 @@ describe("/context TUI bridge", () => {
     expect(spoofedPermissionContext).toBe(noPermissionContext);
   });
 
-  test("falls back to daemon token usage when no in-process turn context exists", async () => {
+  test("uses resident daemon context and cache metrics independently of lifetime token usage", async () => {
     const setToolJSX = vi.fn();
     const session = {
       conversationId: "bridge-session",
@@ -692,7 +692,27 @@ describe("/context TUI bridge", () => {
         tokenUsage: {
           inputTokens: 10_000,
           outputTokens: 2_000,
-          totalTokens: 12_000,
+          totalTokens: 2_000_000,
+        },
+        cacheStats: {
+          requestCount: 10,
+          cacheReadInputTokens: 8_000,
+          cacheCreationInputTokens: 400,
+          cacheTotalInputTokens: 10_000,
+          hitRate: 0.8,
+        },
+        contextBreakdown: {
+          windowTokens: 100_000,
+          messageTokens: 22_000,
+          systemPromptTokens: 3_000,
+          systemToolTokens: 1_000,
+          systemToolCount: 2,
+          mcpToolTokens: 500,
+          mcpToolCount: 1,
+          deferredToolTokens: 90_000,
+          deferredToolCount: 20,
+          memoryFileTokens: 100,
+          memoryFileCount: 1,
         },
       }),
     };
@@ -710,8 +730,17 @@ describe("/context TUI bridge", () => {
 
     expect(result).toEqual({ kind: "skip" });
     const payload = setToolJSX.mock.calls[0]?.[0];
-    expect(payload?.jsx?.props?.text).toContain("Context: 12,000 / 200,000");
-    expect(payload?.jsx?.props?.text).toContain("estimate:");
+    const text = payload?.jsx?.props?.text;
+    expect(text).toContain("Context: 26,600 / 100,000");
+    expect(text).toContain("messages: 22,000 tokens");
+    expect(text).toContain("tool catalog: 1,500 tokens");
+    expect(text).toContain("system: 3,000 tokens");
+    expect(text).toContain("files: 100 tokens");
+    expect(text).toContain("prompt cache: 80% hit");
+    expect(text).toContain("400 written to cache");
+    expect(text).not.toContain("2,000,000");
+    expect(text).not.toContain("90,000");
+    expect(text).toContain("estimate: daemon resident context");
   });
 });
 
@@ -759,7 +788,9 @@ describe("/compact TUI bridge", () => {
       isLocalJSXCommand: true,
       shouldHidePromptInput: true,
     });
-    expect(payload?.jsx?.props?.contextText).toContain("Context: 12,000 / 200,000");
+    expect(payload?.jsx?.props?.contextText).toContain("/ 200,000");
+    expect(payload?.jsx?.props?.contextText).not.toContain("12,000");
+    expect(payload?.jsx?.props?.contextText).not.toContain("prompt cache:");
     expect(payload?.jsx?.props?.message).toContain("requires the in-process runtime");
   });
 });

@@ -2768,9 +2768,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // items, but it's a closer signal than the raw item count.
     const turnCount = Math.max(0, Math.floor(historyLength / 2));
     const cache = await this.#sessionCacheStatsSnapshot(active);
+    if (this.#active.get(agentId) !== active || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
     const breakdown = this.#sessionContextBreakdown(active);
     return {
       sessionId: params.sessionId,
+      nativeWorkers: (active.control.snapshotNativeWorkers?.(active.bootstrap.session.conversationId) ?? [])
+        .map((worker) => ({ ...worker })),
       turnCount,
       tokenUsage: {
         inputTokens: finiteNumber(usage.inputTokens),

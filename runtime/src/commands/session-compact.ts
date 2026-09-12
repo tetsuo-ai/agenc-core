@@ -29,6 +29,7 @@ import {
   type AgenCRuntimeMessage,
 } from "../session/runtime-message-conversion.js";
 import type { Session } from "../session/session.js";
+import type { SessionSnapshotResult } from "../app-server/protocol/index.js";
 import { getSessionPermissionInstructions } from "../session/permission-instructions.js";
 import { isAuthenticatedCompactionBoundary } from "../session/compaction-history-marker.js";
 import {
@@ -257,8 +258,11 @@ async function buildFallbackContextUsageText(
   const tools = readFallbackTools(ctx.session);
   const messages = readFallbackMessages(ctx.session);
   const config = ctx.configStore?.current() ?? ctx.session.services.configStore?.current?.();
-  const model = readFallbackModel(ctx, config);
-  const contextWindowTokens = readFallbackContextWindow(config);
+  const resident = snapshot?.contextBreakdown;
+  const model = resident?.model ?? readFallbackModel(ctx, config);
+  const contextWindowTokens = resident && resident.windowTokens > 0
+    ? resident.windowTokens
+    : readFallbackContextWindow(config);
   const estimated = computeContextUsageBreakdown({
     messages,
     tools,
@@ -267,41 +271,38 @@ async function buildFallbackContextUsageText(
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
   });
-  const totalFromEvents = snapshot?.tokenUsage?.totalTokens;
-  const breakdown =
-    typeof totalFromEvents === "number" && Number.isFinite(totalFromEvents)
-      ? {
-          ...estimated,
-          messagesTokens: Math.max(0, totalFromEvents - estimated.toolsTokens),
-          totalUsed: totalFromEvents,
-          freeUntilCompact: Math.max(0, estimated.compactionThreshold - totalFromEvents),
-          freeUntilHardLimit: Math.max(0, estimated.hardLimit - totalFromEvents),
-        }
-      : estimated;
+  // Lifetime API usage includes the same prompt on every call. Only the
+  // daemon's resident context estimate describes the current window.
+  let breakdown = estimated;
+  if (resident) {
+    const toolsTokens = resident.systemToolTokens + resident.mcpToolTokens;
+    const totalUsed = resident.messageTokens + resident.systemPromptTokens +
+      toolsTokens + resident.memoryFileTokens;
+    breakdown = {
+      ...estimated,
+      messagesTokens: resident.messageTokens,
+      toolsTokens,
+      systemTokens: resident.systemPromptTokens,
+      fileTokens: resident.memoryFileTokens,
+      totalUsed,
+      freeUntilCompact: Math.max(0, estimated.compactionThreshold - totalUsed),
+      freeUntilHardLimit: Math.max(0, estimated.hardLimit - totalUsed),
+    };
+  }
   return [
     formatContextUsageReport(breakdown),
-    `  • estimate: ${reason}`,
+    `  • estimate: ${resident ? "daemon resident context" : reason}`,
   ].join("\n");
 }
 
 async function readDaemonTokenSnapshot(
   ctx: SlashCommandContext,
-): Promise<{ readonly tokenUsage?: {
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
-  readonly totalTokens?: number;
-  readonly costUsd?: number;
-} } | null> {
+): Promise<Partial<Pick<SessionSnapshotResult,
+  "tokenUsage" | "contextBreakdown" | "cacheStats"
+>> | null> {
   const getDaemonSnapshot = (
     ctx.session as unknown as {
-      getDaemonSessionSnapshot?: () => Promise<{
-        readonly tokenUsage?: {
-          readonly inputTokens?: number;
-          readonly outputTokens?: number;
-          readonly totalTokens?: number;
-          readonly costUsd?: number;
-        };
-      }>;
+      getDaemonSessionSnapshot?: () => ReturnType<typeof readDaemonTokenSnapshot>;
     }
   ).getDaemonSessionSnapshot;
   if (typeof getDaemonSnapshot !== "function") return null;
@@ -317,9 +318,13 @@ function readSessionTokenUsage(
   snapshot: Awaited<ReturnType<typeof readDaemonTokenSnapshot>>,
 ): ContextUsageInputs["sessionTokenUsage"] | undefined {
   if (snapshot?.tokenUsage?.totalTokens !== undefined) {
+    const cache = snapshot.cacheStats;
     return {
-      promptTokens: snapshot.tokenUsage.inputTokens ?? snapshot.tokenUsage.totalTokens,
-      cachedInputTokens: 0,
+      promptTokens: cache?.cacheTotalInputTokens ?? snapshot.tokenUsage.inputTokens ?? 0,
+      ...(cache !== undefined ? {
+        cachedInputTokens: cache.cacheReadInputTokens,
+        cacheCreationInputTokens: cache.cacheCreationInputTokens,
+      } : {}),
     };
   }
   const unsafePeek = (session as unknown as {
@@ -1120,6 +1125,8 @@ interface ContextUsageBreakdown {
   readonly autoCompactEnabled: boolean;
   readonly messagesTokens: number;
   readonly toolsTokens: number;
+  readonly systemTokens?: number;
+  readonly fileTokens?: number;
   readonly totalUsed: number;
   readonly freeUntilCompact: number;
   readonly freeUntilHardLimit: number;
@@ -1249,6 +1256,12 @@ function formatContextUsageReport(breakdown: ContextUsageBreakdown): string {
     `  • messages: ${breakdown.messagesTokens.toLocaleString()} tokens`,
     `  • tool catalog: ${breakdown.toolsTokens.toLocaleString()} tokens`,
   ];
+  if (breakdown.systemTokens !== undefined) {
+    lines.push(`  • system: ${breakdown.systemTokens.toLocaleString()} tokens`);
+  }
+  if (breakdown.fileTokens !== undefined) {
+    lines.push(`  • files: ${breakdown.fileTokens.toLocaleString()} tokens`);
+  }
   if (breakdown.autoCompactEnabled) {
     lines.push(
       `  • compaction threshold: ${threshold} tokens (${breakdown.freeUntilCompact.toLocaleString()} until auto-compact fires)`,

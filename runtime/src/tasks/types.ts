@@ -76,6 +76,9 @@ export interface AgentProgress {
 }
 
 export interface LocalAgentTaskState extends TaskStateBase<"local_agent"> {
+  /** Native collaboration rows can be adopted by a daemon inventory projection. */
+  readonly nativeWorker?: true;
+  readonly daemonWorker?: { readonly projection: object; readonly sessionId: string };
   readonly queueOwner?: {
     readonly kind: "session";
     readonly conversationId: string;

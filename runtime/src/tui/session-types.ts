@@ -177,6 +177,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   }>;
   getDaemonSessionSnapshot?(): Promise<{
     readonly sessionId: string;
+    readonly nativeWorkers?: readonly import("../app-server/protocol/index.js").SessionNativeWorkerSnapshot[];
     readonly turnCount: number;
     readonly tokenUsage: {
       readonly inputTokens: number;

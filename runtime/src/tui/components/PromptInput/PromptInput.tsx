@@ -35,6 +35,7 @@ import {
 } from "../../../utils/messageQueueManager.js";
 import stripAnsi from "strip-ansi";
 import { type Command, hasCommand } from "../../../commands.js";
+import { parseLocalControlCommand } from "../../../commands/local-control.js";
 import {
   useIsModalOverlayActive,
   useRegisterOverlay,
@@ -1704,6 +1705,20 @@ function PromptInput({
         return;
       }
 
+      if (
+        submissionMode === "prompt" &&
+        (submissionBlockedReason !== null || isLoading) &&
+        parseLocalControlCommand(inputParam) !== null
+      ) {
+        // Keep attachments and Editor intents in their composer. These controls
+        // open local surfaces instead of submitting to the selected agent.
+        await onSubmitProp(inputParam, {
+          setCursorOffset: setCurrentCursorOffset,
+          clearBuffer,
+          resetHistory,
+        });
+        return;
+      }
       if (submissionBlockedReason !== null) {
         onSubmissionBlocked?.(submissionBlockedReason);
         return;

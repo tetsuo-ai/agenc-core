@@ -8,7 +8,7 @@
  *
  * /swarm          → show status
  * /swarm on|off   → set explicitly
- * /swarm status   → show mode + active/idle agent counts from AppState.tasks
+ * /swarm status   → show mode + agent task outcomes from AppState.tasks
  */
 
 import {
@@ -39,7 +39,9 @@ function readSwarmMode(ctx: SlashCommandContext): boolean {
 
 function agentCounts(ctx: SlashCommandContext): {
   readonly active: number;
-  readonly idle: number;
+  readonly completed: number;
+  readonly failed: number;
+  readonly killed: number;
 } {
   const state = ctx.appState?.getAppState?.() as
     | { tasks?: Record<string, { status?: string; type?: string }> }
@@ -50,7 +52,11 @@ function agentCounts(ctx: SlashCommandContext): {
     active: agents.filter(
       (task) => task.status === "running" || task.status === "pending",
     ).length,
-    idle: agents.filter((task) => task.status === "idle").length,
+    // Completed task results remain visible even after a worker shuts down;
+    // this projection does not establish live assignment eligibility.
+    completed: agents.filter((task) => task.status === "completed").length,
+    failed: agents.filter((task) => task.status === "failed").length,
+    killed: agents.filter((task) => task.status === "killed").length,
   };
 }
 
@@ -115,7 +121,7 @@ function swarmStatus(ctx: SlashCommandContext): SlashCommandResult {
     kind: "text",
     text: [
       `swarm mode: ${on ? "ON" : "off"}${saved}`,
-      `agents: ${agents.active} active, ${agents.idle} idle/reusable`,
+      `agents: ${agents.active} active, ${agents.completed} completed, ${agents.failed} failed, ${agents.killed} killed`,
       on
         ? "Adaptive routing is active: sequential by default; qualifying parallel work requires an initial worker-spawn attempt."
         : "Use /swarm on for conservative adaptive multi-agent routing.",

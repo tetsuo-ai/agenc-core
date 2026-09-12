@@ -28,6 +28,9 @@ import {
 } from "./background-agent-runner.js";
 import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
 import { createDaemonTuiSessionFixture } from "../helpers/daemon-tui-session.js";
+import { getDefaultAppState } from "../../src/tui/state/AppStateStore.js";
+import { startDaemonWorkerTaskPolling } from "../../src/tui/state/daemonWorkerTasks.js";
+import type { NativeWorkerSnapshot } from "../../src/agents/control.js";
 import type { AgenCDaemonTuiClient } from "../../src/tui/daemon-session.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
@@ -11112,6 +11115,58 @@ describe("AgenC delegate background-agent runner", () => {
       expect(control.sendInput).not.toHaveBeenCalled();
     } finally {
       await processes.closeAll();
+      await connection.close();
+      await runner.stopAgent(agentId);
+    }
+  });
+
+  it("[managed-thread] hydrates native workers on TUI resume through the session snapshot authority", async () => {
+    const agentId = "native-worker-owner";
+    const sessionId = "native-worker-session-alias";
+    const { runner, control } = makeTopLevelRunner({ conversationId: agentId });
+    let workers: NativeWorkerSnapshot[] = ["backend", "frontend", "tests"].map((name) => ({
+      agentId: `worker-${name}`, agentPath: `/root/${name}`, nickname: name, role: "default",
+      status: "idle", toolUseCount: 4, tokenCount: 120,
+    }));
+    const nativeSnapshot = vi.fn(() => workers);
+    Object.assign(control, { snapshotNativeWorkers: nativeSnapshot });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const connection = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions }).createConnection();
+    let closeProjection: (() => void) | undefined;
+    try {
+      const started = await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+      await sessions.restoreSession({ sessionId, agentId, createdAt: started.startedAt });
+      await manager.restoreAgent({ agentId, objective: "passive", startedAt: started.startedAt,
+        lastActiveAt: started.startedAt, sessionIds: [sessionId], runtimeAvailable: true });
+      await connection.dispatch({ jsonrpc: "2.0", id: "init", method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } } });
+      const request = async (method: string, params?: Record<string, unknown>) => {
+        const response = await connection.dispatch({ jsonrpc: "2.0", id: method, method, params });
+        if ("error" in response) throw new Error(response.error.message);
+        return response.result;
+      };
+      await expect(request("session.snapshot", { sessionId: "unrelated-session" })).rejects.toThrow();
+      const bridge = createDaemonTuiSessionFixture({
+        baseSession: { conversationId: agentId, services: {} }, sessionId, clientId: "resumed-tui",
+        client: { request, subscribeToSessionEvents: () => () => {} } as unknown as AgenCDaemonTuiClient,
+      });
+      let state = getDefaultAppState();
+      const errors: string[] = [];
+      vi.useFakeTimers();
+      closeProjection = startDaemonWorkerTaskPolling(bridge, update => { state = update(state); }, message => errors.push(message));
+      await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(3));
+      expect(Object.values(state.tasks).map(task => task.status)).toEqual(["completed", "completed", "completed"]);
+      expect(nativeSnapshot).toHaveBeenCalledWith(agentId);
+      workers = [{ ...workers[0]!, status: "running" }, { ...workers[1]!, status: "errored", error: "failed" }];
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(2));
+      expect(state.tasks["worker-backend"]?.status).toBe("running");
+      expect(state.tasks["worker-frontend"]?.status).toBe("failed");
+      expect(errors).toEqual([]);
+    } finally {
+      closeProjection?.();
+      vi.useRealTimers();
       await connection.close();
       await runner.stopAgent(agentId);
     }

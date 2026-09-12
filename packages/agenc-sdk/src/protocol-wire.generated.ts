@@ -1568,8 +1568,22 @@ export interface SessionClearResult extends JsonObject {
 }
 
 /** Counters from the daemon-owned in-process session. */
+export interface SessionNativeWorkerSnapshot extends JsonObject {
+    readonly agentId: string;
+    readonly agentPath: string;
+    readonly nickname: string;
+    readonly role: string;
+    readonly prompt?: string;
+    readonly status: "pending_init" | "running" | "idle" | "completed" | "errored" | "shutdown" | "not_found" | "interrupted";
+    readonly error?: string;
+    readonly toolUseCount: number;
+    readonly tokenCount: number;
+}
+
 export interface SessionSnapshotResult extends JsonObject {
     readonly sessionId: string;
+    /** Current native descendants of this session; omitted by older daemons. */
+    readonly nativeWorkers?: readonly SessionNativeWorkerSnapshot[];
     /** Number of completed turns recorded in the session's history. */
     readonly turnCount: number;
     readonly tokenUsage: {
