@@ -19,7 +19,7 @@ export class DaemonApprovalRequests {
 
   constructor(private readonly replayCapacity: number) {}
 
-  begin(payload: JsonObject): AbortController | undefined {
+  begin(payload: JsonObject, envelopeTurnId?: unknown): AbortController | undefined {
     if (this.#closed) return;
     const requestId = stringField(payload.callId);
     if (requestId === undefined || this.#pending.has(requestId) || this.#settled.has(requestId)) return;
@@ -28,7 +28,7 @@ export class DaemonApprovalRequests {
       controller,
       callId: stringField(payload.toolCallId) ?? requestId,
       sourceConversationId: stringField(payload.sourceConversationId),
-      turnId: stringField(payload.turnId),
+      turnId: stringField(payload.turnId) ?? stringField(envelopeTurnId),
     });
     return controller;
   }
@@ -48,7 +48,9 @@ export class DaemonApprovalRequests {
     const turnId = stringField(envelopeTurnId) ?? stringField(payload.turnId);
     for (const [requestId, pending] of this.#pending) {
       if (pending.callId !== payload.callId || pending.sourceConversationId !== source) continue;
-      if (turnId !== undefined && pending.turnId !== turnId) continue;
+      // Older permission events may lack turn identity. Keep their invocation
+      // and owner fallback while fencing different turns whenever both are known.
+      if (turnId !== undefined && pending.turnId !== undefined && pending.turnId !== turnId) continue;
       this.#settle(requestId);
     }
     return true;

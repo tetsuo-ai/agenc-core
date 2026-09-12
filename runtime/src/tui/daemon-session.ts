@@ -2884,7 +2884,7 @@ async function maybeBridgeDaemonApproval(
   if (event.type !== "request_permissions") return;
   const resolver = session.services.approvalResolver;
   if (resolver === undefined) return;
-  const controller = pendingApprovals.begin(payload);
+  const controller = pendingApprovals.begin(payload, event.turnId);
   if (controller === undefined) return;
   const toolName =
     typeof payload.toolName === "string" ? payload.toolName : "tool";

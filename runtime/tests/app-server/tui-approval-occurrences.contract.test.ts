@@ -108,7 +108,7 @@ async function connectedApprovals(conversationId = "approval-parent") {
     },
     args: { timeout_ms: timeout }, resolver: parent.services.approvalResolver!,
   });
-  return { parent, child, tui, prompts, notifications, sentDecisions, request,
+  return { parent, child, tui, prompts, notifications, sentDecisions, request, publish,
     setSnapshot: (next: JsonObject) => { snapshot = next; },
     setTurn: (owner: Session, turnId: string) => { turns.set(owner.conversationId, turnId); },
     publishCompletion: (callId: string, turnId: string) => publish({
@@ -122,6 +122,58 @@ async function connectedApprovals(conversationId = "approval-parent") {
 }
 
 describe("TUI canonical approval occurrence settlement", () => {
+  it.each([undefined, "approval-child"])("settles an untimed permission notification only within its invocation owner (%s)", async sourceConversationId => {
+    const f = await connectedApprovals();
+    try {
+      const source = sourceConversationId === undefined ? {} : { sourceConversationId };
+      f.publish({ id: "untimed-request", type: "request_permissions", payload: {
+        requestId: "untimed-occurrence", callId: "shared-call", toolName: "wait_agent", permissions: [], ...source,
+      } });
+      f.publish({ id: "another-owner-request", type: "request_permissions", payload: {
+        requestId: "another-owner-occurrence", callId: "shared-call", toolName: "wait_agent", permissions: [],
+        sourceConversationId: "another-child",
+      } });
+      f.publish({ id: "newer-turn-request", type: "request_permissions", turnId: "newer-turn", payload: {
+        requestId: "newer-turn-occurrence", callId: "shared-call", toolName: "wait_agent", permissions: [], ...source,
+      } });
+      await drainMicrotasks(30);
+      expect(f.prompts).toHaveLength(3);
+      const notification = f.notifications.find(event => event.method === "event.permission_request" &&
+        (event.params as JsonObject).requestId === "untimed-occurrence")!;
+      expect(notification.params).not.toHaveProperty("turnId");
+      f.publish({ id: "untimed-completion", type: "tool_call_completed", turnId: "completed-turn", payload: {
+        callId: "shared-call", toolName: "wait_agent", result: "done", isError: false, ...source,
+      } });
+      await drainMicrotasks(30);
+      expect(f.prompts.map(prompt => prompt.ctx.signal?.aborted)).toEqual([true, false, false]);
+      await f.replay(notification);
+      await drainMicrotasks(30);
+      expect(f.prompts).toHaveLength(3);
+      expect(f.sentDecisions).toHaveLength(0);
+    } finally { await f.close(); }
+  });
+
+  it("retains a generic session request's envelope turn when its payload omits it", async () => {
+    const f = await connectedApprovals();
+    try {
+      await f.replay({ jsonrpc: "2.0", method: "event.session_event", params: {
+        sessionId: "approval-parent", eventId: "generic-permission-request", turnId: "current-turn",
+        event: { id: "generic-permission-request", type: "request_permissions", payload: {
+          callId: "generic-occurrence", toolCallId: "reused-call", toolName: "wait_agent", permissions: [],
+        } },
+      } });
+      await drainMicrotasks(30);
+      expect(f.prompts).toHaveLength(1);
+      f.publishCompletion("reused-call", "older-turn");
+      await drainMicrotasks(30);
+      expect(f.prompts[0]!.ctx.signal?.aborted).toBe(false);
+      f.publishCompletion("reused-call", "current-turn");
+      await drainMicrotasks(30);
+      expect(f.prompts[0]!.ctx.signal?.aborted).toBe(true);
+      expect(f.sentDecisions).toHaveLength(0);
+    } finally { await f.close(); }
+  });
+
   it("preserves full snapshots for the captured daemon session and rejects another owner", async () => {
     const f = await connectedApprovals("local-conversation-alias");
     try {
