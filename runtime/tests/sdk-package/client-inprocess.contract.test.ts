@@ -475,6 +475,45 @@ describe("agenc-sdk client over the in-process transport", () => {
     await daemon.close();
   });
 
+  it("createSession bypassApprovals keeps the sandbox and forwards permissionMode, model and provider", async () => {
+    const cwd = await workspaces.create();
+    const daemon = await createFakeDaemon({});
+    try {
+      await daemon.client.initialize();
+      const session = await daemon.client.createSession({
+        cwd,
+        pluginStorageRoot: daemon.pluginStorageRoot,
+        bypassApprovals: true,
+        model: "grok-4.6",
+        provider: "grok",
+      });
+      expect(session.sessionId).toBe("session_1");
+      const created = daemon.calls.created.at(-1);
+      expect(created).toMatchObject({
+        permissionMode: "bypassPermissions",
+        model: "grok-4.6",
+        provider: "grok",
+      });
+      // Approvals off, sandbox on: only the dangerous option drops the sandbox.
+      expect(created?.runtimeOptions).toMatchObject({
+        dangerouslyBypassApprovalsAndSandbox: false,
+      });
+
+      await expect(
+        daemon.client.createSession({
+          cwd,
+          pluginStorageRoot: daemon.pluginStorageRoot,
+          bypassApprovals: true,
+          permissionMode: "plan",
+        }),
+      ).rejects.toThrow(/bypassApprovals conflicts with permissionMode "plan"/u);
+      // The conflict is refused before anything reaches the daemon.
+      expect(daemon.calls.created).toHaveLength(1);
+    } finally {
+      await daemon.close();
+    }
+  });
+
   it("routes a permission request through the callback and back over tool.approve", async () => {
     const seen: AgencPermissionRequest[] = [];
     const daemon = await createFakeDaemon({

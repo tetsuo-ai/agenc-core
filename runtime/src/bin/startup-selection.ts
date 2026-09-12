@@ -17,6 +17,7 @@ import { extractFlagValue, extractFlagValues } from "./route.js";
 import {
   assertNoRetiredStartupFlags,
   AUTONOMOUS_FLAG,
+  BYPASS_APPROVALS_FLAG,
   DANGEROUS_BYPASS_FLAG,
 } from "./startup-flags.js";
 import {
@@ -35,6 +36,12 @@ export interface StartupCliFlags {
   readonly addDirs?: readonly string[];
   readonly permissionMode?: PermissionMode;
   readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
+  /**
+   * `--bypass-approvals`: approvals off, sandbox kept. Also sets
+   * `permissionMode` to `bypassPermissions` so every consumer of the startup
+   * mode sees the same thing `--permission-mode bypassPermissions` would give.
+   */
+  readonly bypassApprovals?: boolean;
   readonly autonomousMode?: boolean;
   readonly simpleMode?: boolean;
 }
@@ -67,9 +74,26 @@ export function readStartupCliFlags(
   // DEFAULT mode — a silent failure toward a LESS restrictive session). Throw
   // a helpful error mirroring provider validation and `/permissions mode`,
   // surfacing as a clean error + non-zero exit at the CLI entrypoint.
-  const permissionMode = resolvePermissionModeOrThrow(rawPermissionMode);
+  const explicitPermissionMode = resolvePermissionModeOrThrow(rawPermissionMode);
   const dangerouslyBypassApprovalsAndSandbox =
     optionArgs.includes(DANGEROUS_BYPASS_FLAG);
+  const bypassApprovals = optionArgs.includes(BYPASS_APPROVALS_FLAG);
+  // `--bypass-approvals` is the approvals-only half of the dangerous flag. It
+  // resolves to the bypassPermissions mode; a different explicit
+  // `--permission-mode` alongside it is a contradiction, not a tie to break
+  // silently toward a less restrictive session.
+  if (
+    bypassApprovals &&
+    explicitPermissionMode !== undefined &&
+    explicitPermissionMode !== "bypassPermissions"
+  ) {
+    throw new Error(
+      `${BYPASS_APPROVALS_FLAG} conflicts with --permission-mode ${explicitPermissionMode}. Pass one of them.`,
+    );
+  }
+  const permissionMode = bypassApprovals
+    ? ("bypassPermissions" as const)
+    : explicitPermissionMode;
   const autonomousMode = optionArgs.includes(AUTONOMOUS_FLAG);
   const simpleMode = optionArgs.includes("--bare");
   return Object.freeze({
@@ -82,6 +106,7 @@ export function readStartupCliFlags(
     ...(dangerouslyBypassApprovalsAndSandbox
       ? { dangerouslyBypassApprovalsAndSandbox: true }
       : {}),
+    ...(bypassApprovals ? { bypassApprovals: true } : {}),
     ...(autonomousMode ? { autonomousMode: true } : {}),
     ...(simpleMode ? { simpleMode: true } : {}),
   });

@@ -60,7 +60,8 @@ From `formatCliHelpText()`:
 | `--model <id\|provider:id>` | Override model for this session |
 | `--permission-mode <mode>` | Override startup mode: `default`, `acceptEdits`, `plan`, `dontAsk`, or `auto`. `bypassPermissions` is an explicit session-only opt-in bound to the current workspace. Internal `unattended` / `bubble` modes are not CLI addressable. |
 | `--autonomous` | Enable autonomous tick mode |
-| `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks |
+| `--bypass-approvals` | Skip approval prompts but keep the OS sandbox (same session-only `bypassPermissions` opt-in as `--permission-mode bypassPermissions`). On a host that cannot sandbox at all the run continues without kernel confinement and prints one stderr notice naming the reason. Conflicts with a different `--permission-mode`. |
+| `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks everywhere (the explicit no-sandbox opt-out) |
 | `--image <file\|url\|data-url>` | Attach a startup image |
 
 ### Print-mode notes
