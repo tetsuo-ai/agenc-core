@@ -94,6 +94,93 @@ describe("exec_command tool", () => {
     root = "";
   });
 
+  /**
+   * Args with a runtime context attached the way the dispatcher does. The
+   * defaults describe the full bypass (approvals never, no sandbox); the
+   * options narrow it: a sandboxed mode with a platform sandbox declared on
+   * the turn, a permission mode published by the session, directories the
+   * user added, an unresolved approval.
+   */
+  function contextArgs(
+    overrides: Record<string, unknown>,
+    options: {
+      readonly approvalPolicy?: string;
+      readonly sandboxMode?: string;
+      readonly mode?: string;
+      readonly added?: readonly string[];
+      readonly approvalResolved?: boolean;
+      readonly platformSandbox?: boolean;
+    } = {},
+  ): Record<string, unknown> {
+    const args: Record<string, unknown> = { ...overrides };
+    const sandboxMode = options.sandboxMode ?? "danger_full_access";
+    attachToolRuntimeContext(args, {
+      callId: "call-context",
+      toolName: "exec_command",
+      runtimeKind: "function",
+      classification: "exclusive",
+      supportsParallelToolCalls: false,
+      source: { type: "model" },
+      submittedAtMs: 0,
+      approvalPolicy: options.approvalPolicy ?? "never",
+      requestedSandboxMode: sandboxMode,
+      sandboxMode,
+      approvalResolved: options.approvalResolved ?? true,
+      rawArgs: "{}",
+      invocation: {
+        session: {
+          ...(options.mode !== undefined
+            ? {
+                permissionModeRegistry: {
+                  current: () => ({
+                    mode: options.mode,
+                    additionalWorkingDirectories: new Map(
+                      (options.added ?? []).map((path) => [path, { path, source: "cliArg" }]),
+                    ),
+                  }),
+                },
+              }
+            : {}),
+          services: { runtimeOptions: { sessionTempRoot: root } },
+        },
+        payload: { kind: "function", arguments: "{}" },
+        turn: {
+          subId: "turn-context",
+          cwd: root,
+          ...(options.platformSandbox === true ? { agencLinuxSandboxExe: "/bin/true" } : {}),
+        },
+      },
+    } as never);
+    return args;
+  }
+
+  /** The tool over a mock manager; the mocks it did not receive answer an empty success. */
+  function mockManagerTool(
+    mocks: {
+      readonly execCommand?: UnifiedExecProcessManagerLike["execCommand"];
+      readonly startDetachedProcess?: UnifiedExecProcessManagerLike["startDetachedProcess"];
+    } = {},
+  ) {
+    const execCommand =
+      mocks.execCommand ??
+      vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => completedExecOutput("ran"));
+    const manager: UnifiedExecProcessManagerLike = {
+      maxTimeoutMs: 30_000,
+      execCommand,
+      ...(mocks.startDetachedProcess !== undefined
+        ? { startDetachedProcess: mocks.startDetachedProcess }
+        : {}),
+      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
+        async () => completedExecOutput(""),
+      ),
+      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
+    };
+    return {
+      execCommand,
+      tool: createExecCommandTool({ cwd: root, allowedPaths: [root], unifiedExecManager: manager }),
+    };
+  }
+
   // Live incident (session conv-mtjdmlfc, 2026-09-02): 21 `npm start` calls
   // over 412 s, each denied by the sandbox, each answered only by the child's
   // own errno text and an escalation request the parser silently discarded.
@@ -102,53 +189,17 @@ describe("exec_command tool", () => {
       overrides: Record<string, unknown>,
       approvalPolicy = "never",
     ): Record<string, unknown> {
-      const args: Record<string, unknown> = { ...overrides };
-      attachToolRuntimeContext(args, {
-        callId: "call-sandbox-denial",
-        toolName: "exec_command",
-        runtimeKind: "function",
-        classification: "exclusive",
-        supportsParallelToolCalls: false,
-        source: { type: "model" },
-        submittedAtMs: 0,
+      return contextArgs(overrides, {
         approvalPolicy,
-        requestedSandboxMode: "read_only",
         sandboxMode: "read_only",
-        approvalResolved: true,
-        rawArgs: "{}",
-        invocation: {
-          session: { services: { runtimeOptions: { sessionTempRoot: root } } },
-          payload: { kind: "function", arguments: "{}" },
-          turn: {
-            subId: "turn-sandbox-denial",
-            cwd: root,
-            agencLinuxSandboxExe: "/bin/true",
-          },
-        },
-      } as never);
-      return args;
+        platformSandbox: true,
+      });
     }
 
     function toolWith(output: ExecCommandToolOutput) {
-      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => output,
-      );
-      const manager: UnifiedExecProcessManagerLike = {
-        maxTimeoutMs: 30_000,
-        execCommand,
-        writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
-          async () => completedExecOutput(""),
-        ),
-        closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
-      };
-      return {
-        execCommand,
-        tool: createExecCommandTool({
-          cwd: root,
-          allowedPaths: [root],
-          unifiedExecManager: manager,
-        }),
-      };
+      return mockManagerTool({
+        execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => output),
+      });
     }
 
     const BIND_DENIED = failedExecOutput(
@@ -581,50 +632,15 @@ describe("exec_command tool", () => {
         readonly sandboxMode?: "danger_full_access" | "workspace_write";
       },
     ): Record<string, unknown> {
-      const args: Record<string, unknown> = { cmd, workdir: root };
-      attachToolRuntimeContext(args, {
-        callId: "call-delete",
-        toolName: "exec_command",
-        runtimeKind: "function",
-        classification: "exclusive",
-        supportsParallelToolCalls: false,
-        source: { type: "model" },
-        submittedAtMs: 0,
+      return contextArgs({ cmd, workdir: root }, {
         approvalPolicy: permission.approvalPolicy ?? "on_request",
-        requestedSandboxMode: permission.sandboxMode ?? "danger_full_access",
         sandboxMode: permission.sandboxMode ?? "danger_full_access",
+        mode: permission.mode,
         approvalResolved: permission.approvalResolved ?? false,
-        rawArgs: "{}",
-        invocation: {
-          session: {
-            permissionModeRegistry: { current: () => ({ mode: permission.mode }) },
-            services: { runtimeOptions: { sessionTempRoot: root } },
-          },
-          payload: { kind: "function", arguments: "{}" },
-          turn: { subId: "turn-delete", cwd: root },
-        },
-      } as never);
-      return args;
+      });
     }
 
-    function deletionTool() {
-      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => completedExecOutput("ran"),
-      );
-      const tool = createExecCommandTool({
-        cwd: root,
-        allowedPaths: [root],
-        unifiedExecManager: {
-          maxTimeoutMs: 30_000,
-          execCommand,
-          writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
-            async () => completedExecOutput(""),
-          ),
-          closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
-        },
-      });
-      return { tool, execCommand };
-    }
+    const deletionTool = () => mockManagerTool();
 
     test("runs rm on a workspace file under bypassPermissions", async () => {
       const { tool, execCommand } = deletionTool();
@@ -813,57 +829,9 @@ describe("exec_command tool", () => {
   );
 
   describe("detach", () => {
-    function fullAccessArgs(overrides: Record<string, unknown>): Record<string, unknown> {
-      const args: Record<string, unknown> = { ...overrides };
-      attachToolRuntimeContext(args, {
-        callId: "call-detach",
-        toolName: "exec_command",
-        runtimeKind: "function",
-        classification: "exclusive",
-        supportsParallelToolCalls: false,
-        source: { type: "model" },
-        submittedAtMs: 0,
-        approvalPolicy: "never",
-        requestedSandboxMode: "danger_full_access",
-        sandboxMode: "danger_full_access",
-        approvalResolved: true,
-        rawArgs: "{}",
-        invocation: {
-          session: { services: { runtimeOptions: { sessionTempRoot: root } } },
-          payload: { kind: "function", arguments: "{}" },
-          turn: { subId: "turn-detach", cwd: root },
-        },
-      } as never);
-      return args;
-    }
-
-    function sandboxedArgs(overrides: Record<string, unknown>): Record<string, unknown> {
-      const args: Record<string, unknown> = { ...overrides };
-      attachToolRuntimeContext(args, {
-        callId: "call-detach-sandboxed",
-        toolName: "exec_command",
-        runtimeKind: "function",
-        classification: "exclusive",
-        supportsParallelToolCalls: false,
-        source: { type: "model" },
-        submittedAtMs: 0,
-        approvalPolicy: "never",
-        requestedSandboxMode: "read_only",
-        sandboxMode: "read_only",
-        approvalResolved: true,
-        rawArgs: "{}",
-        invocation: {
-          session: { services: { runtimeOptions: { sessionTempRoot: root } } },
-          payload: { kind: "function", arguments: "{}" },
-          turn: {
-            subId: "turn-detach-sandboxed",
-            cwd: root,
-            agencLinuxSandboxExe: "/bin/true",
-          },
-        },
-      } as never);
-      return args;
-    }
+    const fullAccessArgs = (overrides: Record<string, unknown>) => contextArgs(overrides);
+    const sandboxedArgs = (overrides: Record<string, unknown>) =>
+      contextArgs(overrides, { sandboxMode: "read_only", platformSandbox: true });
 
     function detachedOutput(overrides: Partial<ExecCommandToolOutput>): ExecCommandToolOutput {
       return {
@@ -876,30 +844,12 @@ describe("exec_command tool", () => {
       };
     }
 
-    function toolWithManager(
+    const toolWithManager = (
       startDetachedProcess?: UnifiedExecProcessManagerLike["startDetachedProcess"],
-    ) {
-      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => completedExecOutput("ran"),
+    ) =>
+      mockManagerTool(
+        startDetachedProcess !== undefined ? { startDetachedProcess } : {},
       );
-      const manager: UnifiedExecProcessManagerLike = {
-        maxTimeoutMs: 30_000,
-        execCommand,
-        ...(startDetachedProcess !== undefined ? { startDetachedProcess } : {}),
-        writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
-          async () => completedExecOutput(""),
-        ),
-        closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
-      };
-      return {
-        execCommand,
-        tool: createExecCommandTool({
-          cwd: root,
-          allowedPaths: [root],
-          unifiedExecManager: manager,
-        }),
-      };
-    }
 
     test("starts a detached service and reports its pid and log", async () => {
       const startDetachedProcess = vi.fn<
@@ -989,26 +939,12 @@ describe("exec_command tool", () => {
     test("the residue note follows the footer when leftover processes were stopped", async () => {
       // Before: `nginx` returned exit 0, the daemon was gone, and the model
       // had no way to learn why. Now the result says so and points at detach.
-      const { tool } = toolWithManager();
-      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => ({
+      const { tool: noteTool } = mockManagerTool({
+        execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => ({
           ...completedExecOutput("nginx started"),
           residual_processes_terminated: true,
-        }),
-      );
-      const noteTool = createExecCommandTool({
-        cwd: root,
-        allowedPaths: [root],
-        unifiedExecManager: {
-          maxTimeoutMs: 30_000,
-          execCommand,
-          writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
-            async () => completedExecOutput(""),
-          ),
-          closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
-        },
+        })),
       });
-      void tool;
 
       const result = await noteTool.execute(fullAccessArgs({ cmd: "nginx" }));
 
@@ -1042,57 +978,16 @@ describe("exec_command tool", () => {
         readonly added?: readonly string[];
       },
     ): Record<string, unknown> {
-      const args: Record<string, unknown> = { cmd: "ls", workdir };
-      attachToolRuntimeContext(args, {
-        callId: "call-workdir",
-        toolName: "exec_command",
-        runtimeKind: "function",
-        classification: "exclusive",
-        supportsParallelToolCalls: false,
-        source: { type: "model" },
-        submittedAtMs: 0,
+      return contextArgs({ cmd: "ls", workdir }, {
         approvalPolicy: permission.approvalPolicy,
-        requestedSandboxMode: permission.sandboxMode,
         sandboxMode: permission.sandboxMode,
+        mode: permission.mode,
+        added: permission.added,
         approvalResolved: false,
-        rawArgs: "{}",
-        invocation: {
-          session: {
-            permissionModeRegistry: {
-              current: () => ({
-                mode: permission.mode,
-                additionalWorkingDirectories: new Map(
-                  (permission.added ?? []).map((path) => [path, { path, source: "cliArg" }]),
-                ),
-              }),
-            },
-            services: { runtimeOptions: { sessionTempRoot: root } },
-          },
-          payload: { kind: "function", arguments: "{}" },
-          turn: { subId: "turn-workdir", cwd: root },
-        },
-      } as never);
-      return args;
+      });
     }
 
-    function workdirTool() {
-      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
-        async () => completedExecOutput("listed"),
-      );
-      const tool = createExecCommandTool({
-        cwd: root,
-        allowedPaths: [root],
-        unifiedExecManager: {
-          maxTimeoutMs: 30_000,
-          execCommand,
-          writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
-            async () => completedExecOutput(""),
-          ),
-          closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
-        },
-      });
-      return { tool, execCommand };
-    }
+    const workdirTool = () => mockManagerTool();
 
     test("refuses a working directory outside the workspace in a prompting session", async () => {
       const { tool, execCommand } = workdirTool();
