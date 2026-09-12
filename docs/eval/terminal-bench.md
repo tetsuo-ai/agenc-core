@@ -93,4 +93,40 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
 
 ## Results
 
-RESULTS_PLACEHOLDER
+Pilot, 2026-09-12: 11 tasks, one trial each, DeepSeek V4 Pro direct at
+medium effort for every agent, run on a Mac through colima with Rosetta (so
+timings are indicative and the 900 second task budget is tight). AgenC
+0.17.0 is the public installer; AgenC main is commit 4c3afd221 (with #2424
+and #2427) as a tarball; the `+adddir` column reruns AgenC main's four
+failed tasks with `add_dirs=/`.
+
+```
+task                         agenc-0.17.0 agenc-main agenc+adddir     hermes   opencode
+---------------------------------------------------------------------------------------
+chess-best-move                       0          0          1          1          0
+configure-git-webserver               0          0          0          0          0
+count-dataset-tokens                  1          1          -          1          1
+extract-elf                           1          1          -          1          1
+fix-git                               1          1          -          1          1
+git-multibranch                       0          0          0          1          1
+log-summary-date-ranges               1          1          -          1          1
+nginx-request-logging                 0          0          0          1          1
+openssl-selfsigned-cert               -          1          -          1          1
+regex-log                             1          1          -          1          1
+sqlite-db-truncate                    1          1          -          1          1
+---------------------------------------------------------------------------------------
+pass                               6/10       7/11        1/4      10/11       9/11
+agent time (s), sum                3703       4080       1780       3232       2896
+input tokens, sum              10805626    9248524    4929672          0       3330
+output tokens, sum               288694     297244     116402          0       1607
+```
+
+Hermes 10/11, OpenCode 9/11, AgenC main 7/11 (8/11 counting the chess pass in
+the rerun; that task sits at the timeout under emulation). Every agent failed
+configure-git-webserver. The two tasks AgenC fails and the others pass,
+nginx-request-logging and git-multibranch, need a service to keep running
+after the agent's last command; see the containment finding above. Token
+columns: only AgenC's adapter reports usage from its rollouts; Harbor's
+Hermes adapter reports none and the OpenCode adapter only the last message.
+Raw job directories with per-trial rollouts and grader output are kept
+outside the repo (`~/claude-agenc/bench-harbor/jobs` on the run host).
