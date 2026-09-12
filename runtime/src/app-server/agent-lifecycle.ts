@@ -110,6 +110,10 @@ import type {
   SessionMcpServerMutationResult,
   SessionSnapshotParams,
   SessionSnapshotResult,
+  SessionProcessesListParams,
+  SessionProcessesListResult,
+  SessionProcessesStopParams,
+  SessionProcessesStopResult,
   SessionTranscriptParams,
   SessionTranscriptResult,
   SessionTranscriptV2Params,
@@ -3211,6 +3215,38 @@ export class AgenCDaemonAgentManager {
     };
   }
 
+  async listSessionProcesses(
+    params: SessionProcessesListParams,
+  ): Promise<SessionProcessesListResult> {
+    if (this.#runner?.listAgentSessionProcesses === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.processes.list requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowProcessControl: true },
+    );
+    return this.#runner.listAgentSessionProcesses(agentId);
+  }
+
+  async stopSessionProcess(
+    params: SessionProcessesStopParams,
+  ): Promise<SessionProcessesStopResult> {
+    if (this.#runner?.stopAgentSessionProcess === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.processes.stop requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowProcessControl: true },
+    );
+    return this.#runner.stopAgentSessionProcess(agentId, params.taskId);
+  }
+
   async snapshotSession(
     params: SessionSnapshotParams,
   ): Promise<SessionSnapshotResult> {
@@ -4005,6 +4041,7 @@ export class AgenCDaemonAgentManager {
       readonly allowMcpEnableServer?: boolean;
       readonly allowMcpDisableServer?: boolean;
       readonly allowSnapshot?: boolean;
+      readonly allowProcessControl?: boolean;
       readonly allowSetModel?: boolean;
       readonly allowSetPermissionMode?: boolean;
       readonly allowMutatePermissionRule?: boolean;
@@ -4064,6 +4101,9 @@ export class AgenCDaemonAgentManager {
     const hasSnapshotRunner =
       options.allowSnapshot === true &&
       this.#runner?.snapshotAgentSession !== undefined;
+    const hasProcessControlRunner = options.allowProcessControl === true &&
+      (this.#runner?.listAgentSessionProcesses !== undefined ||
+        this.#runner?.stopAgentSessionProcess !== undefined);
     const hasSetModelRunner =
       options.allowSetModel === true &&
       this.#runner?.setAgentModel !== undefined;
@@ -4106,6 +4146,7 @@ export class AgenCDaemonAgentManager {
       !hasMcpEnableServerRunner &&
       !hasMcpDisableServerRunner &&
       !hasSnapshotRunner &&
+      !hasProcessControlRunner &&
       !hasSetModelRunner &&
       !hasSetPermissionModeRunner &&
       !hasMutatePermissionRuleRunner &&
@@ -4129,7 +4170,12 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon session not found or closed: ${sessionId}`,
       );
     }
-    await this.#refreshAgentFromRunner(session.agentId);
+    // Process controls must reach the live owner even while a settings or
+    // diagnostic snapshot is blocked. The runner checks its exact active
+    // runtime again; opaque task IDs also fence replacement generations.
+    if (options.allowProcessControl !== true) {
+      await this.#refreshAgentFromRunner(session.agentId);
+    }
     await this.#state.with((state) => {
       const refreshed = state.agents.get(session.agentId);
       if (refreshed === undefined || !isActiveAgent(refreshed)) {

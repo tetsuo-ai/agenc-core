@@ -112,6 +112,21 @@ export interface TerminateProcessRequest {
   readonly ownerId?: string;
 }
 
+/** Operator-visible state; taskId is unique across manager lifetimes. */
+export interface UnifiedExecBackgroundProcess {
+  readonly taskId: string;
+  readonly command: string;
+  readonly cwd: string;
+  readonly tty: boolean;
+  readonly ownerId?: string;
+  readonly startedAt: number;
+  readonly endedAt?: number;
+  readonly status: "running" | "completed" | "failed" | "killed";
+  readonly exitCode?: number;
+  readonly outputTail: string;
+  readonly outputBytes: number;
+}
+
 export interface ExecCommandToolOutput {
   readonly output: string;
   readonly stdout: string;
@@ -140,6 +155,8 @@ export interface UnifiedExecProcessManagerLike {
   terminateProcess?(
     processIdOrRequest: number | TerminateProcessRequest,
   ): { terminated: boolean };
+  listBackgroundProcesses?(): UnifiedExecBackgroundProcess[];
+  stopBackgroundProcess?(taskId: string): Promise<{ stopped: boolean }>;
   closeAll(reason?: string): Promise<void>;
 }
 

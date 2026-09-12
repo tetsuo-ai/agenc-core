@@ -27,7 +27,22 @@ export interface TaskStateBase<T extends TaskType = TaskType> {
   readonly notified: boolean;
 }
 
+export interface DaemonProcessTask {
+  readonly projection: object;
+  readonly sessionId: string;
+  readonly cwd: string;
+  readonly tty: boolean;
+  readonly ownerId?: string;
+  readonly outputTail: string;
+  readonly outputBytes: number;
+  /** Delegates to the daemon's opaque task identity; never a local PID. */
+  readonly stop: () => Promise<void>;
+}
+
 export interface LocalShellTaskState extends TaskStateBase<"local_bash"> {
+  readonly daemonProcess?: DaemonProcessTask;
+  readonly stopRequested?: boolean;
+  readonly stopError?: string;
   readonly queueOwner?: {
     readonly kind: "session";
     readonly conversationId: string;

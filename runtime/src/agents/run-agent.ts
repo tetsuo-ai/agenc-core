@@ -185,6 +185,8 @@ export interface RunAgentParams {
    * enabled because silent internal agents can still perform admitted work.
    */
   readonly silent?: boolean;
+  /** Stop this maintenance child when a new human approval would be required. */
+  readonly deferInteractiveApprovals?: (toolName: string) => void;
   /** Captured once the child turn has the exact cache-safe request state. */
   readonly onCacheSafeParams?: (params: CacheSafeParams) => void;
   /**
@@ -2687,6 +2689,24 @@ function wrapToolForChild(
 ): Tool {
   return inheritBuiltinToolProvenance(tool, {
     ...tool,
+    ...(opts.childToolPolicy !== undefined ? {
+      async checkPermissions(input, context) {
+        if (input === null || typeof input !== "object" || Array.isArray(input)) {
+          return { behavior: "deny" as const, message: "Child tool input must be an object" };
+        }
+        const decision = await opts.childToolPolicy!(tool,
+          stripModelSuppliedChildArgs(input as Record<string, unknown>));
+        if (decision.behavior === "deny") {
+          return { behavior: "deny" as const, message: decision.message,
+            decisionReason: { type: "other" as const, reason: "child_tool_policy" } };
+        }
+        // Restriction runs before the interactive boundary. An allow here only
+        // narrows/normalizes input; the ordinary tool permission still decides.
+        return tool.checkPermissions?.(decision.updatedInput ?? input, context) ?? {
+          behavior: "passthrough" as const, updatedInput: decision.updatedInput ?? input,
+        };
+      },
+    } : {}),
     async execute(args) {
       const prepared = await prepareChildToolCall(tool, args, opts);
       return "result" in prepared
@@ -3114,6 +3134,12 @@ function buildChildSession(
       // lets a child consume or clear the parent's provider resources.
       startupPrewarm: undefined,
       querySource: params.querySource ?? params.parent.services.querySource,
+      ...(params.deferInteractiveApprovals !== undefined ? {
+        deferInteractiveApprovals: (toolName: string) => {
+          params.deferInteractiveApprovals!(toolName);
+          childSession?.abortController.abort("background maintenance requires approval");
+        },
+      } : {}),
       // Permission mode is parent-owned live authority. Sharing the registry
       // keeps persistent children from retaining a more permissive spawn-time
       // snapshot after the parent downgrades the session.

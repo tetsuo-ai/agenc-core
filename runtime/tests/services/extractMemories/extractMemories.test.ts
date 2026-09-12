@@ -844,6 +844,28 @@ describe("extract memories service", () => {
     });
   });
 
+  it("logs approval deferral once and does not retry the same memory batch", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    const delegateFn = vi.fn(async (options: { deferInteractiveApprovals: (tool: string) => void }) => {
+      options.deferInteractiveApprovals("Write");
+      return { kind: "sync_completed", result: { outcome: "cancelled" } };
+    });
+    initExtractMemories({ env: {}, minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      delegateFn: delegateFn as never,
+      ensureAgentControl: (() => ({ control: {}, registry: {} })) as never,
+    });
+    const messages: LLMMessage[] = [{ role: "user", content: "remember my preferences" }];
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+    expect(delegateFn).toHaveBeenCalledOnce();
+    expect(warnings.filter((entry) => entry.message.includes("approval required"))).toEqual([{
+      cause: "memory_extraction_skipped",
+      message: "approval required for Write; background memory stopped without requesting input",
+    }]);
+  });
+
   it("runs the child on every third eligible turn by default and reports each deferral", async () => {
     const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
     const warnings: Array<{ cause: string; message: string }> = [];

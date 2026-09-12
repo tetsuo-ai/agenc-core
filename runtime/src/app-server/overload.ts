@@ -30,6 +30,7 @@ const DAEMON_CONTROL_METHODS = new Set<string>([
   "request.cancel",
   "run.cancel",
   "session.cancelTurn",
+  "session.processes.stop",
   "tool.cancel",
   "commandExec.terminate",
 ]);
@@ -51,6 +52,7 @@ const DAEMON_PRIORITY_METHODS = new Set<string>([
   "run.evidence",
   "session.list",
   "session.snapshot",
+  "session.processes.list",
   "session.hooks.status",
   "health.ping",
   "health.ready",

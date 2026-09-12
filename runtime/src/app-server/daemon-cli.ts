@@ -100,7 +100,6 @@ import {
   type AgenCRealtimeHeadersProvider,
 } from "./realtime-transport.js";
 import {
-  AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
   type AgentStatus,
   type AgentToolOutputLog,
@@ -300,6 +299,10 @@ export const AGENC_DAEMON_WEBSOCKET_PORT_ENV = "AGENC_DAEMON_WEBSOCKET_PORT";
 const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
 const AGENC_DAEMON_STARTUP_DEBUG_ENV = "TUI_E2E_DEBUG";
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
+// Identity, health, reload and shutdown use the protocol 1.0 control surface
+// (no newer method-capability floor). Older peers must still return the full
+// authenticated instance proof. Session clients negotiate the current version.
+const AGENC_DAEMON_CONTROL_PROTOCOL_VERSION = "1.0.0";
 const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
 /**
  * Env override (ms) for how long the daemon readiness waits block, plus the
@@ -2421,8 +2424,8 @@ async function requestAgenCDaemonHealthStats(
         id: 1,
         method: "initialize",
         params: {
-          protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-          protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+          protocolVersion: AGENC_DAEMON_CONTROL_PROTOCOL_VERSION,
+          protocol: { version: AGENC_DAEMON_CONTROL_PROTOCOL_VERSION },
           clientName: "agenc-daemon-cli",
           authCookie,
           capabilities: {},
@@ -2483,8 +2486,8 @@ export async function requestAgenCDaemonInstanceIdentity(
         id: 1,
         method: "initialize",
         params: {
-          protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-          protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+          protocolVersion: AGENC_DAEMON_CONTROL_PROTOCOL_VERSION,
+          protocol: { version: AGENC_DAEMON_CONTROL_PROTOCOL_VERSION },
           clientName: "agenc-daemon-instance-probe",
           authCookie,
           capabilities: {},
@@ -2528,8 +2531,8 @@ export async function requestAgenCDaemonShutdown(
         id: 1,
         method: "initialize",
         params: {
-          protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-          protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+          protocolVersion: AGENC_DAEMON_CONTROL_PROTOCOL_VERSION,
+          protocol: { version: AGENC_DAEMON_CONTROL_PROTOCOL_VERSION },
           clientName: "agenc-daemon-shutdown",
           authCookie,
           capabilities: {},
@@ -2542,6 +2545,9 @@ export async function requestAgenCDaemonShutdown(
         params: { instanceId: expected.instanceId },
       },
     ],
+    (response, responseIndex) => {
+      if (responseIndex === 0) assertDaemonInstanceBeforeControl(response, expected, "shutdown");
+    },
   );
   const initializeResponse = responses[0];
   if (initializeResponse === undefined) {
@@ -2550,20 +2556,6 @@ export async function requestAgenCDaemonShutdown(
   assertExpectedDaemonResponse(initializeResponse, 1, "initialize");
   if (isDaemonErrorResponse(initializeResponse)) {
     throw new Error(initializeResponse.error.message);
-  }
-  const observed = (
-    initializeResponse as AgenCDaemonSuccessResponse<"initialize">
-  ).result.daemonIdentity;
-  if (
-    !isAgenCDaemonInstanceIdentity(observed) ||
-    observed.instanceId !== expected.instanceId ||
-    observed.pid !== expected.pid ||
-    observed.processStart !== expected.processStart ||
-    observed.runtimeVersion !== expected.runtimeVersion ||
-    observed.commit !== expected.commit ||
-    observed.buildTime !== expected.buildTime
-  ) {
-    throw new Error("daemon instance changed before shutdown");
   }
   const shutdownResponse = responses[1];
   if (shutdownResponse === undefined) {
@@ -2581,6 +2573,19 @@ export async function requestAgenCDaemonShutdown(
     result.instanceId !== expected.instanceId
   ) {
     throw new Error("daemon returned a malformed shutdown acknowledgement");
+  }
+}
+
+function assertDaemonInstanceBeforeControl(
+  response: AgenCDaemonResponse,
+  expected: AgenCDaemonInstanceIdentity,
+  action: "shutdown" | "reload",
+): void {
+  assertExpectedDaemonResponse(response, 1, "initialize");
+  if (isDaemonErrorResponse(response)) throw new Error(response.error.message);
+  const observed = (response as AgenCDaemonSuccessResponse<"initialize">).result.daemonIdentity;
+  if (!isAgenCDaemonInstanceIdentity(observed) || !sameAgenCDaemonInstanceIdentity(observed, expected)) {
+    throw new Error(`daemon instance changed before ${action}`);
   }
 }
 
@@ -2810,8 +2815,8 @@ async function requestAgenCDaemonReload(
         id: 1,
         method: "initialize",
         params: {
-          protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-          protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+          protocolVersion: AGENC_DAEMON_CONTROL_PROTOCOL_VERSION,
+          protocol: { version: AGENC_DAEMON_CONTROL_PROTOCOL_VERSION },
           clientName: "agenc-daemon-cli",
           authCookie,
           capabilities: {},
@@ -2825,19 +2830,7 @@ async function requestAgenCDaemonReload(
       },
     ],
     (response, responseIndex) => {
-      if (responseIndex !== 0) return;
-      assertExpectedDaemonResponse(response, 1, "initialize");
-      if (isDaemonErrorResponse(response)) {
-        throw new Error(response.error.message);
-      }
-      const observed = (response as AgenCDaemonSuccessResponse<"initialize">)
-        .result.daemonIdentity;
-      if (
-        !isAgenCDaemonInstanceIdentity(observed) ||
-        !sameAgenCDaemonInstanceIdentity(observed, expected)
-      ) {
-        throw new Error("daemon instance changed before reload");
-      }
+      if (responseIndex === 0) assertDaemonInstanceBeforeControl(response, expected, "reload");
     },
   );
   const initializeResponse = responses[0];

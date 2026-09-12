@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { assertReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
 import { basename, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,6 +17,7 @@ import {
   type TerminateProcessRequest,
   type UnifiedExecManagerOptions,
   type UnifiedExecProcessManagerLike,
+  type UnifiedExecBackgroundProcess,
   type UnifiedExecRuntimeSandbox,
   type UnifiedExecSandboxManager,
   type UnifiedExecProgressEvent,
@@ -54,6 +56,8 @@ const MAX_YIELD_TIME_MS = 30_000;
 const MAX_EMPTY_WRITE_YIELD_TIME_MS = 300_000;
 const DEFAULT_MAX_PROCESSES = 64;
 const DEFAULT_OUTPUT_BUFFER_CHARS = 1024 * 1024;
+const TASK_OUTPUT_TAIL_CHARS = 8192;
+const MAX_COMPLETED_BACKGROUND_PROCESSES = 64;
 const SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS = 5_000;
 const PTY_ARGV0_EXECVE_SCRIPT =
   "const [program, argv0, ...args] = process.argv.slice(1);" +
@@ -90,6 +94,8 @@ export class ProcessOutputBuffer {
   private readonly chunks: OutputChunk[] = [];
   private consumedIndex = 0;
   private totalChars = 0;
+  private outputTail = "";
+  private outputBytes = 0;
   /**
    * Test-only counter of expensive pending-collapse passes, so a perf test can
    * assert the O(pending) work is amortized rather than run on every append.
@@ -100,6 +106,10 @@ export class ProcessOutputBuffer {
 
   append(stream: UnifiedExecStream, chunk: string): void {
     if (chunk.length === 0) return;
+    this.outputBytes += Buffer.byteLength(chunk);
+    this.outputTail = chunk.length >= TASK_OUTPUT_TAIL_CHARS
+      ? chunk.slice(-TASK_OUTPUT_TAIL_CHARS)
+      : (this.outputTail + chunk).slice(-TASK_OUTPUT_TAIL_CHARS);
     this.chunks.push({ stream, chunk });
     this.totalChars += chunk.length;
     // Evicting already-consumed chunks is cheap and safe on every append. The
@@ -127,6 +137,11 @@ export class ProcessOutputBuffer {
     const drained = this.chunks.slice(this.consumedIndex);
     this.consumedIndex = this.chunks.length;
     return drained;
+  }
+
+  /** Reading task details must never consume the model's pending output. */
+  snapshot(): { outputTail: string; outputBytes: number } {
+    return { outputTail: this.outputTail, outputBytes: this.outputBytes };
   }
 
   private evictConsumed(): void {
@@ -294,6 +309,7 @@ function commandForPtyArgv0(
 
 interface ProcessEntry {
   readonly processId: number;
+  readonly taskId: string;
   readonly command: string;
   readonly cwd: string;
   readonly tty: boolean;
@@ -308,6 +324,10 @@ interface ProcessEntry {
   readonly exitPromise: Promise<ExitState>;
   resolveExit: (state: ExitState) => void;
   exitState: ExitState | null;
+  backgrounded: boolean;
+  stopRequested: boolean;
+  endedAt?: number;
+  stopPromise?: Promise<void>;
   cleanupFailure?: Error;
   hardTimeout?: NodeJS.Timeout;
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
@@ -436,6 +456,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
+  private readonly completedBackgroundProcesses = new Map<string, UnifiedExecBackgroundProcess>();
   private sandboxAuthorityGeneration = 0;
   private sandboxAuthorityQuiesced = false;
   private sandboxAuthorityCleanupFailure: Error | undefined;
@@ -660,6 +681,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       this.releaseProcessId(processId);
       return collected;
     }
+    entry.backgrounded = true;
     return {
       ...collected,
       process_id: processId,
@@ -764,6 +786,56 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     enforceOwnerAccess(entry, ownerId);
     this.forceTerminate(entry);
     return { terminated: true };
+  }
+
+  /** The owning session's control plane may inspect its root and child work. */
+  listBackgroundProcesses(): UnifiedExecBackgroundProcess[] {
+    const snapshots = [...this.completedBackgroundProcesses.values()].map(
+      (snapshot) => ({ ...snapshot }),
+    );
+    for (const entry of this.processes.values()) {
+      if (entry.backgrounded) snapshots.push(this.backgroundProcessSnapshot(entry));
+    }
+    return snapshots.sort((left, right) => left.startedAt - right.startedAt);
+  }
+
+  /**
+   * Operator control only. Model tools still use numeric IDs and owner checks.
+   * An old task ID cannot address a process in another session or daemon.
+   */
+  async stopBackgroundProcess(taskId: string): Promise<{ stopped: boolean }> {
+    const entry = [...this.processes.values()].find(
+      (candidate) => candidate.backgrounded && candidate.taskId === taskId,
+    );
+    if (entry === undefined || entry.exitState !== null) return { stopped: false };
+    entry.stopRequested = true;
+    entry.stopPromise ??= this.closeProcessStrict(entry).finally(() => {
+      entry.stopPromise = undefined;
+    });
+    await entry.stopPromise;
+    // Retain the entry until write_stdin retrieves its final output or pruning
+    // needs the slot; stopping from the UI must not destroy pending tool output.
+    return { stopped: true };
+  }
+
+  private backgroundProcessSnapshot(entry: ProcessEntry): UnifiedExecBackgroundProcess {
+    const status = entry.exitState === null
+      ? "running"
+      : entry.stopRequested
+        ? "killed"
+        : entry.exitState.exitCode === 0 ? "completed" : "failed";
+    return {
+      taskId: entry.taskId,
+      command: entry.command,
+      cwd: entry.cwd,
+      tty: entry.tty,
+      ...(entry.ownerId !== undefined ? { ownerId: entry.ownerId } : {}),
+      startedAt: entry.startedAt,
+      ...(entry.endedAt !== undefined ? { endedAt: entry.endedAt } : {}),
+      status,
+      ...(entry.exitState?.exitCode != null ? { exitCode: entry.exitState.exitCode } : {}),
+      ...entry.output.snapshot(),
+    };
   }
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
@@ -881,6 +953,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   private releaseProcessId(processId: number): void {
     const entry = this.processes.get(processId);
+    if (entry?.backgrounded && entry.exitState !== null) {
+      this.completedBackgroundProcesses.set(entry.taskId, this.backgroundProcessSnapshot(entry));
+      while (this.completedBackgroundProcesses.size > MAX_COMPLETED_BACKGROUND_PROCESSES) {
+        const oldest = this.completedBackgroundProcesses.keys().next().value;
+        if (oldest !== undefined) this.completedBackgroundProcesses.delete(oldest);
+      }
+    }
     if (entry?.hardTimeout) clearTimeout(entry.hardTimeout);
     // gaphunt3 #44: ensure the upstream-abort listener is removed when a slot is
     // released, even if the entry never reached complete() (idempotent).
@@ -944,6 +1023,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     };
     const entryBase = {
       processId: params.processId,
+      taskId: randomUUID(),
+      backgrounded: false,
+      stopRequested: false,
       command: params.command,
       cwd: params.cwd,
       tty: params.tty,
@@ -962,6 +1044,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const complete = (entry: ProcessEntry, state: ExitState): void => {
       if (entry.exitState !== null) return;
       entry.exitState = state;
+      entry.endedAt = Date.now();
       // gaphunt3 #44: the process settled — drop the upstream-abort listener so
       // it does not survive (the normal-exit path the `{ once: true }` never covered).
       entry.detachUpstreamAbort?.();
@@ -1267,13 +1350,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       stderr,
       exitCode: entry.exitState?.exitCode ?? null,
       processId: entry.exitState === null ? entry.processId : undefined,
-      durationMs: Date.now() - entry.startedAt,
+      durationMs: (entry.endedAt ?? Date.now()) - entry.startedAt,
       timedOut,
       maxOutputTokens: options.maxOutputTokens,
     });
   }
 
   private forceTerminate(entry: ProcessEntry): void {
+    if (entry.exitState === null) entry.stopRequested = true;
     this.terminate(entry, "SIGTERM");
     setTimeout(() => {
       if (entry.exitState === null) {

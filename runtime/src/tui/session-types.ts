@@ -63,6 +63,8 @@ import type {
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
   SessionShellExecuteResult,
+  SessionProcessesListResult,
+  SessionProcessesStopResult,
   SessionStatusLinePresentation,
   SessionStatusLineExecuteResult,
 } from "../app-server/protocol/index.js";
@@ -91,6 +93,8 @@ export interface AgenCShellExecuteParams {
 }
 
 export interface AgenCBridgeSession extends AgenCCompactProgressControls {
+  listDaemonSessionProcesses?(): Promise<SessionProcessesListResult | undefined>;
+  stopDaemonSessionProcess?(taskId: string): Promise<SessionProcessesStopResult>;
   executeDaemonStatusLine?(
     presentation: SessionStatusLinePresentation,
     signal?: AbortSignal,

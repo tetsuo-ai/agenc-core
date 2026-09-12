@@ -199,6 +199,7 @@ import type {
   McpSurfaceTool,
 } from "../../session/session.js";
 import { useSessionTranscript } from "../session-transcript.js";
+import { useDaemonProcessTasks } from "../hooks/useDaemonProcessTasks.js";
 import { useToolJSX } from "../tool-jsx-state.js";
 import { executeRealtimeComposerCommand } from "../realtime/commands.js";
 import { RealtimePanel } from "../realtime/RealtimePanel.js";
@@ -2942,6 +2943,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   });
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
+  const reportProcessRefreshError = useCallback((message: string) => {
+    addNotification({ key: "daemon-process-refresh-error", text: message, color: "error", priority: "high" });
+  }, [addNotification]);
+  useDaemonProcessTasks(props.session, setAppState, reportProcessRefreshError);
   useEffect(() => {
     if (props.session.agentDefinitions !== undefined) {
       return;

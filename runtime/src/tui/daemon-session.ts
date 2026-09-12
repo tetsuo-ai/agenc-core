@@ -60,6 +60,8 @@ import type {
   SessionTranscriptV2Result,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionProcessesListResult,
+  SessionProcessesStopResult,
   SessionResolveToolCallResult,
   WorkspaceEditorAcquireParams,
   WorkspaceEditorCancelPredictionParams,
@@ -286,6 +288,8 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     readonly reviewer?: string;
   }): Promise<SessionResolveToolCallResult>;
   getDaemonSessionSnapshot?(): Promise<SessionSnapshotResult>;
+  listDaemonSessionProcesses?(): Promise<SessionProcessesListResult | undefined>;
+  stopDaemonSessionProcess?(taskId: string): Promise<SessionProcessesStopResult>;
   partialCompactFromMessage?(params: {
     readonly messageOrdinal: number;
     readonly direction: "from" | "up_to";
@@ -492,6 +496,7 @@ export type AgenCDaemonBackedTuiSession<
 };
 
 export interface AgenCDaemonTuiClient {
+  supportsMethod?(method: string): boolean;
   request(
     method: "session.shell.execute",
     params?: JsonObject,
@@ -1568,6 +1573,22 @@ export function createDaemonTuiSession<
       }),
     getDaemonSessionSnapshot: async () =>
       client.request("session.snapshot", { sessionId }),
+    listDaemonSessionProcesses: async () => {
+      if (client.supportsMethod?.("session.processes.list") !== true) return undefined;
+      try {
+        return await client.request("session.processes.list", { sessionId });
+      } catch (error) {
+        // Reconnect can replace an advertised daemon with an older version.
+        if (error instanceof AgenCDaemonResponseError && error.code === -32601) return undefined;
+        throw error;
+      }
+    },
+    stopDaemonSessionProcess: async (taskId: string) => {
+      if (client.supportsMethod?.("session.processes.stop") !== true) {
+        throw new Error("This daemon does not support stopping session processes");
+      }
+      return client.request("session.processes.stop", { sessionId, taskId });
+    },
     executeShellCommand: async ({ command, commandId, signal }) => {
       if (inFlightShellExecutionCount === 0) {
         shellBatchStartedWithActiveTurn =

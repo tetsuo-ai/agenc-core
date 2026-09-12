@@ -16,7 +16,8 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as memoryPrompt from "../../src/memory/memdir.js";
 import { VERSION } from "../../src/version.js";
-import { lstat, mkdtemp, rm, writeFile, mkdir, rename } from "node:fs/promises";
+import { appendFile, lstat, mkdtemp, readFile, rm, writeFile, mkdir, rename } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -2943,6 +2944,66 @@ describe("main() smoke", () => {
     }
   });
 
+  it.each(["shutdown append", "rewritten prefix", "replaced file", "late append"])(
+    "resumeTUIEntry preserves source authorization across daemon readiness: %s",
+    async (change) => {
+      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-resume-ready-home-"));
+      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-resume-ready-cwd-"));
+      const previousEnv = { ...process.env };
+      const conversationId = "conv-readyflush1";
+      Object.assign(process.env, { AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, AGENC_CLI_ENTRY_DISABLE: "1" });
+      const rolloutPath = await writeResumeRolloutForTest(tmpCwd, conversationId, tmpHome);
+      if (change === "shutdown append") {
+        // Exercise a retained prefix spanning multiple bounded read chunks.
+        await appendFile(rolloutPath, `${JSON.stringify({
+          type: "response_item", payload: { role: "assistant", content: "x".repeat(70 * 1024) },
+        })}\n`);
+      }
+      const original = await readFile(rolloutPath, "utf8");
+      const flushed = `${JSON.stringify({ type: "event", payload: { id: "shutdown-terminal", msg: { type: "run_terminal", payload: { reason: "daemon shutdown" } } } })}\n`;
+      const daemon = installDaemonCliDepsForTest({ agentId: conversationId, sessionId: conversationId, cwd: tmpCwd, liveAgent: false });
+      daemon.ensureDaemonReady.mockImplementation(() => async () => {
+        if (change === "replaced file") {
+          await rename(rolloutPath, `${rolloutPath}.replaced`);
+          await writeFile(rolloutPath, original + flushed);
+        } else if (change === "rewritten prefix") {
+          await writeFile(rolloutPath, original.replace("retained prompt", "rewritten input") + flushed);
+        } else {
+          await appendFile(rolloutPath, flushed);
+        }
+      });
+      if (change === "late append") {
+        daemon.findAgentBySessionId.mockImplementation(async () => {
+          await appendFile(rolloutPath, flushed);
+          return null;
+        });
+      }
+      vi.doMock("../tui/main.js", () => ({ bootTUI: vi.fn(async () => ({ unmount: vi.fn(), waitUntilExit: async () => {} })) }));
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        trustWorkspaceForTest(tmpHome, tmpCwd);
+        await expect(resumeTUIEntry({ resumeId: conversationId })).resolves.toBe(change === "shutdown append" ? 0 : 1);
+        if (change === "shutdown append") {
+          expect(daemon.resumePromptAgent).toHaveBeenCalledWith(expect.objectContaining({ sourceProof: expect.objectContaining({
+            size: String(Buffer.byteLength(original + flushed)),
+            sha256: createHash("sha256").update(original + flushed).digest("hex"),
+          }) }));
+          expect(daemon.requests).toContainEqual(expect.objectContaining({ method: "agent.attach" }));
+        } else {
+          expect(daemon.resumePromptAgent).not.toHaveBeenCalled();
+          expect(stderr).toHaveBeenCalledWith(expect.stringContaining("changed during authorization"));
+        }
+      } finally {
+        stderr.mockRestore();
+        vi.doUnmock("../tui/main.js");
+        for (const key of Object.keys(process.env)) if (!(key in previousEnv)) delete process.env[key];
+        Object.assign(process.env, previousEnv);
+        await rm(tmpHome, { recursive: true, force: true });
+        await rm(tmpCwd, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("resumeTUIEntry cold-restores a retained rollout with no live daemon agent", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-cold-resume-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-cold-resume-cwd-"));
@@ -3721,8 +3782,13 @@ describe("main() smoke", () => {
     });
     const unmount = vi.fn();
     vi.doMock("../tui/main.js", () => ({
-      bootTUI: vi.fn(async () => {
+      bootTUI: vi.fn(async ({ session }: { session: {
+        listDaemonSessionProcesses(): Promise<unknown>;
+        stopDaemonSessionProcess(taskId: string): Promise<unknown>;
+      } }) => {
         observedTempRoots.push(resolveSessionTempRoot());
+        await expect(session.listDaemonSessionProcesses()).resolves.toBeUndefined();
+        await expect(session.stopDaemonSessionProcess("unknown-process")).rejects.toThrow("No live daemon session");
         return { unmount, waitUntilExit };
       }),
     }));
@@ -3898,6 +3964,13 @@ describe("main() smoke", () => {
       agentId: "agent_tui_cancel",
       sessionId: "session_tui_cancel",
       cwd: tmpCwd,
+      oneShotEvents: [{
+        method: "event.session_event",
+        params: {
+          sessionId: "session_tui_cancel", eventId: "cancel-turn-started", turnId: "cancel-turn",
+          event: { id: "cancel-turn-started", type: "turn_started", payload: { turnId: "cancel-turn" } },
+        },
+      }],
     });
 
     let resolveExit: (() => void) | null = null;
@@ -3940,6 +4013,7 @@ describe("main() smoke", () => {
       ]);
       expect(daemon.requests.at(2)?.params).toEqual({
         sessionId: "session_tui_cancel",
+        expectedTurnId: "cancel-turn",
         reason: "interrupted",
       });
     } finally {

@@ -180,6 +180,8 @@ import {
   type WorkspaceEditorTopologyReserveParams,
   type WorkspaceEditorTopologyTarget,
   type SessionSnapshotParams,
+  type SessionProcessesListParams,
+  type SessionProcessesStopParams,
   type SessionTranscriptParams,
   type SessionCreateParams,
   type SessionDetachParams,
@@ -284,6 +286,8 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "session.permissions.mutateRule": 7,
   "session.shell.execute": 9,
   "session.statusLine.execute": 11,
+  "session.processes.list": 13,
+  "session.processes.stop": 13,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -370,6 +374,8 @@ function buildServerCapabilities(
     "session.terminate": hasMethod(sessionManager, "terminateSession"),
     "session.clear": hasMethod(agentManager, "clearSessionHistory"),
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
+    "session.processes.list": hasMethod(agentManager, "listSessionProcesses"),
+    "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.transcript.v2": hasMethod(agentManager, "getSessionTranscriptV2"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
@@ -568,6 +574,8 @@ export interface AgenCDaemonDispatcherOptions {
     | "cancelRunTree"
     | "streamAgentMessage"
   > & {
+    readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
+    readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
@@ -689,6 +697,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "cancelRunTree"
     | "streamAgentMessage"
   > & {
+    readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
+    readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
@@ -1219,6 +1229,20 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionSnapshotParams(params),
           ),
         );
+      case "session.processes.list":
+        if (this.#agentManager.listSessionProcesses === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#agentManager.listSessionProcesses(
+          validateSessionProcessesListParams(params),
+        ));
+      case "session.processes.stop":
+        if (this.#agentManager.stopSessionProcess === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#agentManager.stopSessionProcess(
+          validateSessionProcessesStopParams(params),
+        ));
       case "session.transcript":
         return successResponse(
           id,
@@ -3367,6 +3391,24 @@ function validateSessionSnapshotParams(
   });
   validateRequiredString(validated, "session.snapshot", "sessionId");
   return validated as SessionSnapshotParams;
+}
+
+function validateSessionProcessesListParams(params: JsonObject): SessionProcessesListParams {
+  const methodName = "session.processes.list";
+  const validated = validateObjectShape(params, { methodName, stringFields: ["sessionId"] });
+  validateRequiredString(validated, methodName, "sessionId");
+  return validated as SessionProcessesListParams;
+}
+
+function validateSessionProcessesStopParams(params: JsonObject): SessionProcessesStopParams {
+  const methodName = "session.processes.stop";
+  const validated = validateObjectShape(params, { methodName, stringFields: ["sessionId", "taskId"] });
+  validateRequiredString(validated, methodName, "sessionId");
+  validateRequiredString(validated, methodName, "taskId");
+  if (typeof validated.taskId === "string" && validated.taskId.length > 128) {
+    throw invalidParams(`${methodName}.taskId must be at most 128 characters`);
+  }
+  return validated as SessionProcessesStopParams;
 }
 
 function validateSessionTranscriptParams(

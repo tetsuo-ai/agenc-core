@@ -24,13 +24,14 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
     return resolveWorkbenchShellTask(tasks, workbench.selectedShellTaskId);
   }, [tasks, workbench.selectedShellTaskId]);
   const { content: tail, error } = useTaskTail({
-    taskId: task?.id,
+    taskId: task?.daemonProcess === undefined ? task?.id : null,
     status: task?.status,
     maxBytes: TAIL_BYTES,
     pollIntervalMs: 1_000,
   });
+  const displayedTail = task?.daemonProcess?.outputTail ?? tail;
 
-  const locations = useMemo(() => parseSourceLocations(tail), [tail]);
+  const locations = useMemo(() => parseSourceLocations(displayedTail), [displayedTail]);
 
   useRegisterKeybindingContext("Surface", focused);
   const jumpToFirstLocation = () => {
@@ -67,6 +68,8 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
       <SurfaceHeader title="SHELL" detail={`${task.status} - ${task.description ?? task.id}`} focused={focused} />
       {error !== null ? <Text color="error" wrap="truncate-end">Output read failed: {error}</Text> : null}
+      {task.stopError ? <Text color="error" wrap="truncate-end">{task.stopError}</Text> : null}
+      {task.stopRequested ? <Text dimColor>Stopping process…</Text> : null}
       <Text dimColor wrap="truncate-end">
         follow tail on running tasks{stopAction === "local-shell" ? " - x stop" : ""}
       </Text>
@@ -74,7 +77,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
         <Text dimColor wrap="truncate-end">g/enter edit  @ attach: {locations[0].file}:{locations[0].line}</Text>
       ) : null}
       <Box flexDirection="column" flexGrow={1} overflow="hidden">
-        {(tail || "(no output)").split("\n").slice(-80).map((line, index) => (
+        {(displayedTail || "(no output)").split("\n").slice(-80).map((line, index) => (
           <Text key={`${index}:${line}`} wrap="truncate-end">{line}</Text>
         ))}
       </Box>

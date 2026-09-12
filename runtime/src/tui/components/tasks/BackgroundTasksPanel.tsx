@@ -186,7 +186,7 @@ function taskProgressLabel(task: TaskState): string {
 
 function taskElapsedLabel(task: TaskState): string {
   if (typeof task.startTime !== "number" || task.startTime <= 0) return "—";
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - task.startTime) / 1000));
+  const elapsedSeconds = Math.max(0, Math.floor(((task.endTime ?? Date.now()) - task.startTime) / 1000));
   if (elapsedSeconds >= 3600) return `${Math.floor(elapsedSeconds / 3600)}h`;
   if (elapsedSeconds >= 60) return `${Math.floor(elapsedSeconds / 60)}m`;
   return `${elapsedSeconds}s`;
@@ -313,6 +313,12 @@ function buildTaskDetailRows(
   switch (task.type) {
     case "local_bash":
       addDetailRows(rows, "shell", "command", task.command, "text2");
+      if (task.daemonProcess) {
+        addDetailRows(rows, "shell", "cwd", task.daemonProcess.cwd, "subtle");
+        addDetailRows(rows, "shell", "owner", task.daemonProcess.ownerId, "subtle");
+      }
+      if (task.stopRequested) addDetailRows(rows, "shell", "stop", "Stopping process…", "inactive");
+      addDetailRows(rows, "shell", "stop error", task.stopError, "error");
       if (task.result) {
         addDetailRows(rows, "shell", "exit", `code ${task.result.code}`, task.result.code === 0 ? "success" : "error");
         addDetailRows(rows, "shell", "interrupted", task.result.interrupted ? "yes" : "no", task.result.interrupted ? "error" : "inactive");
@@ -445,8 +451,11 @@ export function BackgroundTasksPanel({
     sorted.findIndex((task) => task.id === selectedTaskId),
   );
   const selectedTask = sorted[selectedIndex] ?? null;
+  const selectedDaemonProcess = selectedTask?.type === "local_bash" ? selectedTask.daemonProcess : undefined;
   const selectedShellOutputTail =
-    selectedTask?.type === "local_bash" ? shellOutputTails[selectedTask.id] : undefined;
+    selectedDaemonProcess !== undefined
+      ? { content: selectedDaemonProcess.outputTail, bytesTotal: selectedDaemonProcess.outputBytes }
+      : selectedTask?.type === "local_bash" ? shellOutputTails[selectedTask.id] : undefined;
   const nameByAgentId = React.useMemo(() => {
     const inverted = new Map<string, string>();
     for (const [name, id] of agentNameRegistry ?? []) {
@@ -467,7 +476,7 @@ export function BackgroundTasksPanel({
     setDetailIndex((current) => Math.min(current, Math.max(0, detailRows.length - 1)));
   }, [detailRows.length]);
   React.useEffect(() => {
-    if (!showDetail || selectedTask?.type !== "local_bash") {
+    if (!showDetail || selectedTask?.type !== "local_bash" || selectedDaemonProcess !== undefined) {
       return;
     }
     let cancelled = false;
@@ -501,7 +510,7 @@ export function BackgroundTasksPanel({
         clearInterval(timer);
       }
     };
-  }, [showDetail, selectedTask?.id, selectedTask?.status, selectedTask?.type]);
+  }, [showDetail, selectedTask?.id, selectedTask?.status, selectedTask?.type, selectedDaemonProcess !== undefined]);
   const selectRelative = React.useCallback(
     (delta: number) => {
       const nextIndex = (selectedIndex + delta + sorted.length) % sorted.length;
@@ -661,10 +670,19 @@ export function BackgroundTasksPanel({
           {"command" in listSelectedTask && listSelectedTask.command ? (
             <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`command: ${listSelectedTask.command}`, taskTextWidth)}</ThemedText>
           ) : null}
+          {listSelectedTask.type === "local_bash" && listSelectedTask.stopRequested ? (
+            <ThemedText color="inactive">Stopping process…</ThemedText>
+          ) : null}
+          {listSelectedTask.type === "local_bash" && listSelectedTask.stopError ? (
+            <ThemedText color="error">{listSelectedTask.stopError}</ThemedText>
+          ) : null}
           {"prompt" in listSelectedTask && listSelectedTask.prompt ? (
             <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`prompt: ${listSelectedTask.prompt}`, taskTextWidth)}</ThemedText>
           ) : null}
-          <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`view output: ${listSelectedTask.outputFile}`, taskTextWidth)}</ThemedText>
+          <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(
+            listSelectedTask.type === "local_bash" && listSelectedTask.daemonProcess
+              ? "Open task detail to view output"
+              : `view output: ${listSelectedTask.outputFile}`, taskTextWidth)}</ThemedText>
         </Box>
       }
       renderRow={(task, _index, active) => [

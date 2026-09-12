@@ -140,6 +140,8 @@ import {
 } from "../services/lsp/manager.js";
 import { ConfigStore } from "../config/store.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { createAutoMemoryToolPolicy } from "../../src/services/extractMemories/extractMemories.js";
+import { applyPermissionUpdate } from "../../src/permissions/permission-updates.js";
 import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -3606,6 +3608,77 @@ describe("runAgent", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it.each(["allowed", "ask", "deny", "outside"] as const)(
+    "keeps %s memory maintenance off the foreground approval bridge", async (kind) => {
+      const cwd = mkdtempSync(join(tmpdir(), "agenc-memory-maintenance-"));
+      const memoryRoot = join(cwd, "state", "memory");
+      mkdirSync(memoryRoot, { recursive: true });
+      const target = join(kind === "outside" ? cwd : memoryRoot, "feedback.md");
+      const configStore = new ConfigStore({ home: join(cwd, "state"), cwd,
+        cliOverrides: { autoMemoryEnabled: true, autoMemoryDirectory: memoryRoot } });
+      await configStore.reload();
+      let permissions = createEmptyToolPermissionContext();
+      if (kind === "ask" || kind === "deny") {
+        permissions = applyPermissionUpdate(permissions, { type: "addRules",
+          destination: "session", behavior: kind,
+          rules: [{ toolName: "Write", ruleContent: target }] });
+      }
+      writeFileSync(join(memoryRoot, "MEMORY.md"), "Response preferences\n");
+      const provider = makeProvider([
+        ...(kind === "allowed" ? [
+          { toolCalls: [{ id: "memory-glob", name: "Glob", arguments: JSON.stringify({ path: memoryRoot, pattern: "*.md" }) }], finishReason: "tool_calls" as const },
+          { toolCalls: [{ id: "memory-read", name: "FileRead", arguments: JSON.stringify({ file_path: join(memoryRoot, "MEMORY.md") }) }], finishReason: "tool_calls" as const },
+        ] : []),
+        { toolCalls: [{ id: "memory-write", name: "Write", arguments: JSON.stringify({
+          file_path: target, content: "Prefer concise responses.\n",
+        }) }], finishReason: "tool_calls" },
+        { content: "Memory reviewed", finishReason: "stop" },
+      ]);
+      const foregroundRequest = vi.fn(async () => ({ kind: "approved" as const }));
+      const deferred = vi.fn();
+      const parent = makeStubSession({ config: { ...mkConfig(), cwd },
+        sessionConfiguration: mkSessionConfiguration({ cwd,
+          approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "danger_full_access" } }),
+        services: { provider, configStore,
+          permissionModeRegistry: new PermissionModeRegistry(permissions),
+          approvalResolver: { request: foregroundRequest },
+          registry: buildProductionToolRegistry({ workspaceRoot: cwd, requireAdmission: false }),
+        } });
+      // This is how the daemon installs its foreground bridge on newly-created
+      // children. A silent maintenance child must remain noninteractive even
+      // when that observer installs a resolver after construction.
+      const unobserve = observeChildApprovalSessions(parent, (child) => {
+        Object.assign(child.services, { approvalResolver: { request: foregroundRequest } });
+        return () => {};
+      });
+      try {
+        const { live } = await spawnLive(parent);
+        const { result, events } = await collectRun(runAgent({ live, parent,
+          initialMessages: [{ role: "user", content: "Remember response preferences" }],
+          taskPrompt: "Remember response preferences", silent: true,
+          toolAllowlist: ["Glob", "FileRead", "Write"], childToolPolicy: createAutoMemoryToolPolicy(memoryRoot),
+          deferInteractiveApprovals: deferred,
+        }));
+        expect(foregroundRequest).not.toHaveBeenCalled();
+        expect(existsSync(target)).toBe(kind === "allowed");
+        if (kind === "allowed") {
+          expect(readFileSync(target, "utf8")).toBe("Prefer concise responses.\n");
+          expect(result.outcome, String(result.error)).toBe("completed");
+          const toolResults = events.filter((event) => event.kind === "tool_result");
+          expect(toolResults.map((event) => [event.callId, event.isError])).toEqual([
+            ["memory-glob", false], ["memory-read", false], ["memory-write", false],
+          ]);
+        }
+        if (kind === "ask") expect(deferred).toHaveBeenCalledWith("Write");
+        else expect(deferred).not.toHaveBeenCalled();
+        expect(parent.abortController.signal.aborted).toBe(false);
+      } finally {
+        unobserve();
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("strips model-supplied __agenc* keys before they reach a wrapped child tool", async () => {
     // SECURITY (audit #1/#2/#4): a child model that emits

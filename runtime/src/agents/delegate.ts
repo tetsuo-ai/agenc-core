@@ -98,6 +98,7 @@ export interface DelegateOpts {
   readonly capacityPermit?: AgentCapacityPermit;
   readonly capacityOwnerId?: string;
   readonly silent?: boolean;
+  readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly resumeManager?: ResumeManager;
   /**
    * Keep the agent's downInbox loop alive between turns instead of
@@ -430,6 +431,8 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         ? { externalSignal: opts.externalSignal }
         : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+      ...(opts.deferInteractiveApprovals !== undefined
+        ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
       ...(opts.model !== undefined ? { model: opts.model } : {}),
       ...(opts.reasoningEffort !== undefined
         ? { reasoningEffort: opts.reasoningEffort }
@@ -586,6 +589,7 @@ async function runDelegateAgentLoop(opts: {
   readonly maxTurns?: number;
   readonly externalSignal?: AbortSignal;
   readonly silent?: boolean;
+  readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly model?: string;
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
@@ -622,6 +626,8 @@ async function runDelegateAgentLoop(opts: {
           ? { externalSignal: opts.externalSignal }
           : {}),
         ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+        ...(opts.deferInteractiveApprovals !== undefined
+          ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
         ...(opts.model !== undefined ? { model: opts.model } : {}),
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }

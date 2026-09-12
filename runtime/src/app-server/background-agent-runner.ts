@@ -130,6 +130,8 @@ import type {
   SessionPreviewFileRewindResult,
   SessionRewindFilesToMessageResult,
   SessionSnapshotResult,
+  SessionProcessesListResult,
+  SessionProcessesStopResult,
   SessionTranscriptResult,
   SessionTranscriptV2Result,
   SessionPermissionRuleMutationParams,
@@ -2713,6 +2715,33 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       toolCount: result.toolCount,
       ...(result.error !== undefined ? { error: result.error } : {}),
     };
+  }
+
+  async listAgentSessionProcesses(agentId: string): Promise<SessionProcessesListResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const manager = active.bootstrap.session.services.unifiedExecManager;
+    if (manager.listBackgroundProcesses === undefined) {
+      throw new Error("Background process inspection is not available for this daemon session.");
+    }
+    return { processes: manager.listBackgroundProcesses().map((snapshot) => ({ ...snapshot })) };
+  }
+
+  async stopAgentSessionProcess(
+    agentId: string,
+    taskId: string,
+  ): Promise<SessionProcessesStopResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const manager = active.bootstrap.session.services.unifiedExecManager;
+    if (manager.stopBackgroundProcess === undefined) {
+      throw new Error("Background process control is not available for this daemon session.");
+    }
+    return manager.stopBackgroundProcess(taskId);
   }
 
   async snapshotAgentSession(

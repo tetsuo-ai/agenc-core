@@ -173,7 +173,7 @@ export interface ExtractMemoriesChildRequest {
 }
 
 export interface ExtractMemoriesChildResult {
-  readonly outcome: RunAgentResult["outcome"] | "rejected";
+  readonly outcome: RunAgentResult["outcome"] | "rejected" | "deferred";
   readonly error?: unknown;
   /**
    * The child's final reply. Memory lands on disk through the tool policy;
@@ -532,6 +532,7 @@ async function defaultRunChild(
       : import("../../agents/delegate.js"),
   ]);
   const { control, registry } = ensureAgentControl(request.session);
+  let deferredTool: string | undefined;
   const outcome = await delegate({
     parent: request.session,
     parentPath: "/root" as AgentPath,
@@ -545,6 +546,7 @@ async function defaultRunChild(
     runInBackground: false,
     forceSynchronous: true,
     silent: true,
+    deferInteractiveApprovals: (toolName) => { deferredTool = toolName; },
     // The catalog is filtered before the path policy runs, so the child
     // never sees shell, network, or agent tools it would only be denied.
     toolAllowlist: MEMORY_EXTRACTION_TOOL_ALLOWLIST,
@@ -556,6 +558,9 @@ async function defaultRunChild(
     },
   });
 
+  if (deferredTool !== undefined) {
+    return { outcome: "deferred", error: `approval required for ${deferredTool}` };
+  }
   if (outcome.kind === "rejected") {
     return { outcome: "rejected", error: outcome.reason };
   }
@@ -918,6 +923,15 @@ export function initExtractMemories(
       onProgress: (event) => tracker.onProgress(event),
     });
 
+    if (childResult.outcome === "deferred") {
+      // Do not repeatedly spend model turns on a batch requiring a human grant.
+      // The next foreground turn remains usable; diagnostics stay in its log.
+      lane.trigger.processedVisibleCount = batchEnd;
+      lane.failedRuns = 0;
+      emitExtractionWarning(session, "memory_extraction_skipped",
+        `${errorText(childResult.error)}; background memory stopped without requesting input`);
+      return;
+    }
     if (
       childResult.outcome !== "completed" ||
       tracker.policyDeniedWrite ||

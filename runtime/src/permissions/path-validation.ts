@@ -41,6 +41,13 @@ import type {
   ToolPermissionContext,
 } from "./types.js";
 
+import {
+  getAutoMemPath,
+  getGlobalMemoryPath,
+  hasAutoMemPathOverride,
+  isAutoMemoryEnabled,
+} from "../memory/paths.js";
+
 const MAX_DIRS_TO_LIST = 5;
 const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
 const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/;
@@ -131,7 +138,7 @@ function isPathInside(candidate: string, root: string): boolean {
   const normalizedRoot = normalize(root).normalize("NFC");
   if (normalizedCandidate === normalizedRoot) return true;
   const rel = relative(normalizedRoot, normalizedCandidate);
-  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function resolveExistingAncestor(filePath: string): {
@@ -356,6 +363,25 @@ export function isDangerousRemovalPath(resolvedPath: string): boolean {
   return false;
 }
 
+/** Use the existing memory capability only after resolving the path's symlinks. */
+function durableMemoryPathPermission(
+  resolvedPath: string,
+  context: ToolPermissionContext,
+  operationType: FileOperationType,
+  precomputedPathsToCheck?: readonly string[],
+): PathCheckResult | null {
+  if (!isAutoMemoryEnabled() || (operationType !== "read" && hasAutoMemPathOverride())) return null;
+  // Match legacy file-tool authority. These roots come from trusted settings,
+  // never tool input. An arbitrary SDK override gets no write carveout.
+  const roots = [getAutoMemPath(), getGlobalMemoryPath()];
+  const paths = precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
+  if (!paths.every((path) => roots.some((root) => isPathInside(path, root)))) return null;
+  const askRule = matchingRuleForPath(resolvedPath, context, operationType, "ask");
+  return askRule === null
+    ? { allowed: true, decisionReason: { type: "other", reason: "durable memory files" } }
+    : { allowed: false, decisionReason: { type: "rule", rule: askRule } };
+}
+
 export function isPathAllowed(
   resolvedPath: string,
   context: ToolPermissionContext,
@@ -390,6 +416,11 @@ export function isPathAllowed(
         }
       : { allowed: false, decisionReason: { type: "rule", rule: askRule } };
   }
+
+  const memoryPermission = durableMemoryPathPermission(
+    resolvedPath, context, operationType, precomputedPathsToCheck,
+  );
+  if (memoryPermission !== null) return memoryPermission;
 
   if (operationType !== "read") {
     const safetyCheck = checkPathSafetyForAutoEdit(

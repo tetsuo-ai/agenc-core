@@ -560,9 +560,7 @@ export function makeToolResultMessage(
     // without isMeta, so results render there; match that here.
     uuid,
     timestamp: timestamp(),
-    toolUseResult: typeof resultContent === "string"
-      ? resultContent
-      : resultContent.map((b) => b.text).join("\n"),
+    toolUseResult: orphanResultText(resultContent),
   };
 }
 
@@ -652,7 +650,8 @@ function eventKey(event: SessionTranscriptEvent): string {
   } catch {
     const existing = fallbackEventKeys.get(event);
     if (existing !== undefined) return existing;
-    const fallback = `${event.type}:object:${fallbackEventKeyCounter}`;
+    const type = "type" in event ? event.type : "unavailable";
+    const fallback = `${type}:object:${fallbackEventKeyCounter}`;
     fallbackEventKeyCounter += 1;
     fallbackEventKeys.set(event, fallback);
     return fallback;
@@ -731,7 +730,7 @@ function unwrap(event: SessionTranscriptEvent): {
     };
   }
   return {
-    type: event.type,
+    type: "type" in event ? event.type : "unavailable",
     payload: "payload" in event ? event.payload : event,
     key: eventKey(event),
   };
@@ -1786,6 +1785,26 @@ export function formatStructuredToolError(
   return blocks;
 }
 
+function appendThinkingDelta(
+  current: AdaptedTranscript["streamingThinking"],
+  delta: string,
+  kind: "thinking" | "reasoning_summary",
+): NonNullable<AdaptedTranscript["streamingThinking"]> {
+  if (current === null) {
+    // A provider can send a delta without first opening its thinking block.
+    return { thinking: delta, isStreaming: true, redacted: false, kind };
+  }
+  if (current.redacted) return current;
+  return { ...current, thinking: current.thinking + delta, isStreaming: true };
+}
+
+function stopThinkingBlock(
+  current: AdaptedTranscript["streamingThinking"],
+): AdaptedTranscript["streamingThinking"] {
+  if (current === null) return null;
+  return { ...current, isStreaming: false, streamingEndedAt: Date.now() };
+}
+
 export function adaptTranscriptEvents(
   events: readonly SessionTranscriptEvent[],
   startupMessages: readonly LLMMessage[] = [],
@@ -1814,15 +1833,7 @@ export function adaptTranscriptEvents(
   let latestUsage: AdaptedTranscript["latestUsage"] = null;
   let sessionCostUsd = 0;
   let sessionUsage: AdmissionUsageSummary | null = null;
-  let streamingThinking:
-    | {
-        thinking: string;
-        isStreaming: boolean;
-        streamingEndedAt?: number;
-        redacted: boolean;
-        kind: "thinking" | "reasoning_summary";
-      }
-    | null = null;
+  let streamingThinking: AdaptedTranscript["streamingThinking"] = null;
   let lastThinkingText = "";
   let currentTurnId: string | null = null;
   let currentTurnTimestamp: string | undefined;
@@ -2197,32 +2208,11 @@ export function adaptTranscriptEvents(
         turnStreamedChars += delta.length;
         const kind: "thinking" | "reasoning_summary" =
           payload.kind === "reasoning_summary" ? "reasoning_summary" : "thinking";
-        if (streamingThinking === null) {
-          // Provider sent a delta without a preceding block_start. Synthesise
-          // the shell so the renderer has somewhere to append.
-          streamingThinking = {
-            thinking: delta,
-            isStreaming: true,
-            redacted: false,
-            kind,
-          };
-        } else if (!streamingThinking.redacted) {
-          streamingThinking = {
-            ...streamingThinking,
-            thinking: streamingThinking.thinking + delta,
-            isStreaming: true,
-          };
-        }
+        streamingThinking = appendThinkingDelta(streamingThinking, delta, kind);
         break;
       }
       case "assistant_thinking_block_stop":
-        if (streamingThinking !== null) {
-          streamingThinking = {
-            ...streamingThinking,
-            isStreaming: false,
-            streamingEndedAt: Date.now(),
-          };
-        }
+        streamingThinking = stopThinkingBlock(streamingThinking);
         break;
       case "agent_thinking": {
         const text = typeof payload.text === "string" ? payload.text : "";
@@ -3275,7 +3265,7 @@ export function useSessionTranscript(
 ) {
   const [state, dispatch] = useReducer(reducer, {
     events: [],
-    keys: new Set(),
+    keys: new Set<string>(),
     maxSeq: null,
     sessionCostUsd: 0,
     sessionUsage: null,

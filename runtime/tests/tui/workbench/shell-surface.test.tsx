@@ -71,6 +71,24 @@ type TestStdin = PassThrough & {
 };
 
 describe("ShellSurface", () => {
+  it("renders daemon output and stop errors without reading a local task file", async () => {
+    const output = await renderToString(
+      <AppStateProvider initialState={{
+        ...getDefaultAppState(),
+        tasks: { "daemon-process": {
+          id: "daemon-process", type: "local_bash", status: "running", command: "node server.js",
+          description: "node server.js", startTime: 1, outputFile: "", outputOffset: 0, notified: true,
+          stopError: "Stop failed: daemon disconnected",
+          daemonProcess: { projection: {}, sessionId: "session", cwd: "/workspace", tty: false,
+            outputTail: "server ready on loopback", outputBytes: 24, stop: async () => {} },
+        } },
+      }}><ShellSurface focused={true} /></AppStateProvider>,
+    );
+    expect(output).toContain("server ready on loopback");
+    expect(output).toContain("Stop failed: daemon disconnected");
+    expect(shellHarness.readCounts).toEqual({});
+  });
+
   beforeEach(() => {
     shellHarness.deferredTaskIds = new Set();
     shellHarness.handlers = {};

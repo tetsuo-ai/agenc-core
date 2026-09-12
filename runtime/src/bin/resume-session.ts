@@ -8,6 +8,7 @@ import {
   opendirSync,
   readSync,
   realpathSync,
+  type BigIntStats,
 } from "node:fs";
 import {
   basename,
@@ -53,6 +54,94 @@ export interface ResolvedResumeSession {
   /** Frozen canonical workspace generation selected from session metadata. */
   readonly cwdDev: string;
   readonly cwdIno: string;
+}
+
+const RESUME_SOURCE_IDENTITY_FIELDS = [
+  "sessionId", "rolloutPath", "cwd", "sourceDev", "sourceIno", "cwdDev", "cwdIno",
+] as const;
+
+function sameResumeSourceIdentity(
+  left: ResolvedResumeSession,
+  right: ResolvedResumeSession,
+): boolean {
+  return RESUME_SOURCE_IDENTITY_FIELDS.every((key) => left[key] === right[key]);
+}
+
+function statMatchesResumeSource(stat: BigIntStats, source: ResolvedResumeSession): boolean {
+  return stat.isFile() && stat.nlink === 1n && hasSupportedFileIdentity(stat) &&
+    stat.dev.toString(10) === source.sourceDev && stat.ino.toString(10) === source.sourceIno &&
+    stat.size.toString(10) === source.sourceSize;
+}
+
+function readResumeSourceDigests(fd: number, sourceBytes: number, prefixBytes: number): {
+  readonly prefixSha256: string;
+  readonly sourceSha256: string;
+} {
+  const prefixHash = createHash("sha256");
+  const sourceHash = createHash("sha256");
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  const deadline = Date.now() + DEFAULT_MAX_STARTUP_RECOVERY_MS;
+  let position = 0;
+  while (position < sourceBytes) {
+    if (Date.now() >= deadline) throw new Error("resume source read deadline exceeded");
+    const count = readSync(fd, chunk, 0, Math.min(chunk.byteLength, sourceBytes - position), position);
+    if (count === 0) throw new Error("resume source ended before its sealed size");
+    sourceHash.update(chunk.subarray(0, count));
+    if (position < prefixBytes) prefixHash.update(chunk.subarray(0, Math.min(count, prefixBytes - position)));
+    position += count;
+  }
+  return { prefixSha256: prefixHash.digest("hex"), sourceSha256: sourceHash.digest("hex") };
+}
+
+function resumeSourceRemainedStable(path: string, fd: number, before: BigIntStats): boolean {
+  const after = fstatSync(fd, { bigint: true });
+  const named = lstatSync(path, { bigint: true });
+  return [after, named].every((stat) => stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n &&
+    stat.dev === before.dev && stat.ino === before.ino && stat.size === before.size &&
+    stat.mtimeNs === before.mtimeNs && stat.ctimeNs === before.ctimeNs) &&
+    realpathSync(path) === path;
+}
+
+/**
+ * Daemon replacement drains the previous writer before publishing readiness.
+ * Freeze its final append without authorizing a replacement or rewritten past.
+ * The caller must still reprove this full descriptor immediately before RPC.
+ */
+export function reproveResumeSessionAfterDaemonReady(
+  expected: ResolvedResumeSession,
+  agencHome: string,
+): ResolvedResumeSession {
+  const changed = (): Error => new Error(
+    `canonical resume source for ${expected.sessionId} changed during authorization`,
+  );
+  const observed = resolveResumeSessionId(expected.cwd, expected.sessionId, agencHome);
+  if (observed.kind !== "ok" || !sameResumeSourceIdentity(expected, observed)) {
+    throw changed();
+  }
+  if (observed.sourceSize === expected.sourceSize && observed.sourceSha256 === expected.sourceSha256) {
+    return observed;
+  }
+  const prefixBytes = Number(expected.sourceSize);
+  const sourceBytes = Number(observed.sourceSize);
+  if (!Number.isSafeInteger(prefixBytes) || prefixBytes < 0 ||
+      !Number.isSafeInteger(sourceBytes) || sourceBytes <= prefixBytes ||
+      sourceBytes > MAX_RECOVERY_CANONICAL_SOURCE_BYTES) throw changed();
+  const noFollow = "O_NOFOLLOW" in fsConstants ? (fsConstants.O_NOFOLLOW as number) : 0;
+  let fd: number | undefined;
+  try {
+    fd = openSync(observed.rolloutPath, fsConstants.O_RDONLY | noFollow);
+    const before = fstatSync(fd, { bigint: true });
+    if (!statMatchesResumeSource(before, observed)) throw changed();
+    const digests = readResumeSourceDigests(fd, sourceBytes, prefixBytes);
+    if (!resumeSourceRemainedStable(observed.rolloutPath, fd, before) ||
+        digests.prefixSha256 !== expected.sourceSha256 ||
+        digests.sourceSha256 !== observed.sourceSha256) throw changed();
+    return observed;
+  } catch {
+    throw changed();
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 export type ResumeSessionResolution =

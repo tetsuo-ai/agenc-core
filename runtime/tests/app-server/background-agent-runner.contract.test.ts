@@ -45,7 +45,8 @@ import {
   type ToolPermissionContext,
 } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
-import { JSON_RPC_VERSION } from "./protocol/index.js";
+import { AGENC_DAEMON_PROTOCOL_VERSION, JSON_RPC_VERSION } from "./protocol/index.js";
+import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import { requestApproval } from "../tools/orchestrator.js";
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
@@ -11061,6 +11062,59 @@ describe("AgenC delegate background-agent runner", () => {
       costUsd: 0,
       costKnown: false,
     });
+  });
+
+  it("[managed-thread] inspects and stops a real child process through session RPC without consuming its output", async () => {
+    const agentId = "process-owner-agent";
+    const sessionId = "process-owner-session";
+    const { runner, session, control } = makeTopLevelRunner({ conversationId: agentId });
+    const processes = new UnifiedExecProcessManager();
+    Object.assign(session.services, { unifiedExecManager: processes });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    const connection = dispatcher.createConnection();
+    const dispatch = (method: string, params: Record<string, string>) => connection.dispatch({
+      jsonrpc: "2.0", id: method, method, params,
+    });
+    try {
+      const started = await runner.startAgent({
+        objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [],
+      });
+      await sessions.restoreSession({ sessionId, agentId, status: "waiting", createdAt: started.startedAt });
+      await manager.restoreAgent({
+        agentId, objective: "passive", startedAt: started.startedAt, lastActiveAt: started.startedAt,
+        sessionIds: [sessionId], runtimeAvailable: true,
+      });
+      await expect(dispatch("session.processes.list", { sessionId })).resolves.toMatchObject({ error: { code: -32000 } });
+      await connection.dispatch({
+        jsonrpc: "2.0", id: "init", method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } },
+      });
+      const execution = await processes.execCommand({
+        cmd: "printf task-ready; sleep 30", ownerId: "worker-child", yield_time_ms: 250,
+      });
+      const taskId = processes.listBackgroundProcesses()[0]!.taskId;
+      await expect(dispatch("session.processes.list", { sessionId })).resolves.toMatchObject({
+        result: { processes: [{ taskId, status: "running", ownerId: "worker-child", outputTail: "task-ready" }] },
+      });
+      await expect(dispatch("session.processes.stop", { sessionId: "foreign-session", taskId })).resolves.toHaveProperty("error");
+      expect(processes.listBackgroundProcesses()[0]?.status).toBe("running");
+      await expect(dispatch("session.processes.stop", { sessionId, taskId })).resolves.toMatchObject({ result: { stopped: true } });
+      await expect(dispatch("session.processes.list", { sessionId })).resolves.toMatchObject({
+        result: { processes: [{ taskId, status: "killed", outputTail: "task-ready", endedAt: expect.any(Number) }] },
+      });
+      await expect(processes.writeStdin({ session_id: execution.session_id!, ownerId: "worker-child" }))
+        .resolves.not.toHaveProperty("session_id");
+      await expect(dispatch("session.processes.list", { sessionId })).resolves.toMatchObject({
+        result: { processes: [{ taskId, status: "killed", outputTail: "task-ready" }] },
+      });
+      expect(control.sendInput).not.toHaveBeenCalled();
+    } finally {
+      await processes.closeAll();
+      await connection.close();
+      await runner.stopAgent(agentId);
+    }
   });
 
   it("[managed-thread] interruptAgentTurn aborts the active session and submits interrupt op on managed thread", async () => {
