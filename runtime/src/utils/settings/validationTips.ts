@@ -47,7 +47,7 @@ const TIP_MATCHERS: TipMatcher[] = [
       ctx.expected === 'array',
     tip: {
       suggestion:
-        'Permission rules must be in an array. Format: ["Tool(specifier)"]. Examples: ["Bash(npm run build)", "Edit(docs/**)", "Read(~/.zshrc)"]. Use * for wildcards.',
+        'Permission rules must be in an array. Format: ["Tool(specifier)"]. Examples: ["exec_command(npm run build)", "Edit(docs/**)", "FileRead(~/.zshrc)"]. Use * for wildcards.',
     },
   },
   {

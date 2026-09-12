@@ -11,8 +11,26 @@ import { matchesPattern } from "../../src/utils/hooks.js";
 import {
   permissionRuleValueFromString,
 } from "../../src/utils/permissions/permissionRuleParser.js";
+import { formatAgenCPermissionsCliHelpText } from "../../src/permissions/permission-cli.js";
 import { isRemovedLiveToolName } from "../../src/permissions/tool-names.js";
 import { validatePermissionRule } from "../../src/utils/settings/permissionValidation.js";
+import { getValidationTip } from "../../src/utils/settings/validationTips.js";
+
+/** Pull `Tool(...)` examples out of quoted help/tip text. Skip the schema placeholder. */
+function extractQuotedPermissionRules(text: string): string[] {
+  const rules: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(/['"]([^'"]+)['"]/g)) {
+    const value = match[1];
+    if (value === "Tool(specifier)") continue;
+    if (!/^[A-Za-z][\w.]*\(.+\)$/.test(value)) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    rules.push(value);
+  }
+  return rules;
+}
+
 
 const REMOVED_NAMES = [
   "WebFetch",
@@ -100,5 +118,31 @@ describe("live tool-name authority", () => {
     { task_id: "task-1", wait_up_to: 1 },
   ])("TaskOutput rejects removed input aliases %#", (input) => {
     expect(TaskOutputTool.inputSchema.safeParse(input).success).toBe(false);
+  });
+
+  test("permissions CLI help examples are live rules the validator accepts", () => {
+    const help = formatAgenCPermissionsCliHelpText();
+    const examples = extractQuotedPermissionRules(help);
+    expect(examples.length).toBeGreaterThan(0);
+    for (const example of examples) {
+      const parsed = permissionRuleValueFromString(example);
+      expect(isRemovedLiveToolName(parsed.toolName)).toBe(false);
+      expect(validatePermissionRule(example)).toEqual({ valid: true });
+    }
+  });
+
+  test("permission-array validation tips quote live rules the validator accepts", () => {
+    const tip = getValidationTip({
+      path: "permissions.allow",
+      code: "invalid_type",
+      expected: "array",
+    });
+    const examples = extractQuotedPermissionRules(tip?.suggestion ?? "");
+    expect(examples.length).toBeGreaterThan(0);
+    for (const example of examples) {
+      const parsed = permissionRuleValueFromString(example);
+      expect(isRemovedLiveToolName(parsed.toolName)).toBe(false);
+      expect(validatePermissionRule(example)).toEqual({ valid: true });
+    }
   });
 });
