@@ -330,6 +330,7 @@ interface ProcessEntry {
   stopPromise?: Promise<void>;
   cleanupFailure?: Error;
   hardTimeout?: NodeJS.Timeout;
+  hardTimeoutExpired?: boolean;
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
@@ -664,6 +665,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         : null;
     if (explicitTimeoutMs !== null) {
       entry.hardTimeout = setTimeout(() => {
+        if (entry.exitState !== null) return;
+        entry.hardTimeoutExpired = true;
         this.forceTerminate(entry);
       }, explicitTimeoutMs);
       entry.hardTimeout.unref?.();
@@ -1354,7 +1357,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       exitCode: entry.exitState?.exitCode ?? null,
       processId: entry.exitState === null ? entry.processId : undefined,
       durationMs: (entry.endedAt ?? Date.now()) - entry.startedAt,
-      timedOut,
+      timedOut: entry.hardTimeoutExpired === true || timedOut,
       maxOutputTokens: options.maxOutputTokens,
     });
   }

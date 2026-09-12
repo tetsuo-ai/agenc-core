@@ -1010,6 +1010,7 @@ describe("UnifiedExecProcessManager", () => {
       });
       expect(polled.process_id).toBeUndefined();
       expect(polled.exit_code).toBeNull();
+      expect(polled.timedOut).toBe(true);
     } finally {
       await manager.closeAll("test_cleanup");
     }
