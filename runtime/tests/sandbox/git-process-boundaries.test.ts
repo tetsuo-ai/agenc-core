@@ -598,7 +598,7 @@ describe.sequential("git process sandbox boundaries", () => {
 
   it("blocks canonical EnterWorktree through its ToolUseContext broker", async () => {
     const root = tempRoot("agenc-canonical-enter-boundary-");
-    mkdirSync(join(root, ".git"), { recursive: true });
+    initGitRepo(root);
     const marker = join(root, "canonical-enter-escaped");
     const bin = installGitShim(root, marker);
     vi.stubEnv("PATH", `${bin}${delimiter}${process.env.PATH ?? ""}`);
