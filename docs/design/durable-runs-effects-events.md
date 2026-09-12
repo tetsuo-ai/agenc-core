@@ -85,7 +85,12 @@ The tables store transition state and journal coordinates, not duplicate event
 payloads. Journal bindings retain historical source paths so an archive or
 reopen does not erase provenance. Bounds may expand monotonically; retiring a
 range requires a recorded `retention`, `compaction`, or
-`corruption_truncated` gap.
+`corruption_truncated` gap. The daemon's session-directory sweep retires
+bindings with reason `retention` before it removes the files; a
+`run_effects` row still `review_status = pending` keeps that session on
+disk. If the journal is already gone, startup quarantines the run instead
+of refusing to start. See
+[session rollout retention](../reference/daemon.md#session-rollout-retention).
 
 ## Lifecycle epochs and terminal results
 

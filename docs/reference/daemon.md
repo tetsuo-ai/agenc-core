@@ -5,7 +5,8 @@ The local **app-server** control plane for AgenC **0.17.0**. One daemon per
 agents) attach over a local socket and speak JSON-RPC.
 
 Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Embedding API:
-[`../sdk.md`](../sdk.md).
+[`../sdk.md`](../sdk.md). Session disk retention:
+[`#session-rollout-retention`](#session-rollout-retention).
 
 ## Connection and session ownership
 
@@ -966,6 +967,113 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. A recovery-journal accept does not prove the resume reader will. See [recovery journal vs checkpoint reader](../design/durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader). |
 | Post-compact checkpoint reports `compactionHistory requires prefix hash version 3` | The rollout pairs marker-bearing replacement history with checkpoint v2/v3. Preserve the rollout and let the atomic upgrader validate it; do not change checkpoint or hash versions by hand. See [checkpoint prefix items](../design/durable-runs-effects-events.md#checkpoint-prefix-items). |
 | Older binary refuses `rollout schema v5` | Expected. Schema 5 is newer than a schema-4 runtime. Upgrade the runtime; do not rewrite the header by hand. |
+| `daemon rollout retention deleted N session(s)` in `daemon.log` | Expected when `agent.retention.rollout_days` is a positive window (default 30) and a session's newest rollout mtime is past it. The named ids are already gone from `<projectDir>/sessions/`. Set `rollout_days = 0` to keep every session. See [session rollout retention](#session-rollout-retention). |
+| Startup dies on `pending effect review without retained canonical journal evidence` | Unexpected after the quarantine remap. The run should appear in `agenc state recovery quarantine list --state active`. Confirm `reasonCode` is `source_changed` and the source digest is 64 zero hex digits, then abandon with that sha if the journal is gone for good. See [session rollout retention](#session-rollout-retention). |
+| A session you still needed disappeared after ~30 idle days | Expected under the default window. "Idle" is newest rollout **file mtime**, not last prompt metadata. Export or reopen the session before the cutoff, or set `rollout_days = 0`. A pending effect review or unreleased compaction pin keeps the directory. |
+
+## Session rollout retention
+
+Session directories under `<projectDir>/sessions/<id>/` are not rotated.
+Without a window they grow without bound. The daemon's throttled sweep
+deletes a session directory whose **newest rollout file mtime** is
+strictly older than `agent.retention.rollout_days`.
+
+This is permanent disk deletion of user session data. SQLite snapshot and
+terminal-run pruning (`completed_days`, `failed_days`, `snapshot_*`) is a
+separate pass and does not remove rollout files.
+
+### Config
+
+Default `agent.retention.rollout_days` is **30**. `0` (or any non-positive
+value) disables the sweep and keeps every session.
+
+```toml
+[agent.retention]
+rollout_days = 30
+```
+
+```bash
+agenc config set agent.retention.rollout_days 0
+agenc config get agent.retention.rollout_days
+```
+
+A fresh config and an upgrade that never set the key both receive 30.
+`agenc daemon reload` pushes the live window through
+`updateRolloutRetention`; a restart also picks it up.
+
+### When it runs
+
+The sweep piggy-backs the snapshot-policy periodic timer (default
+**30 s**). It is **not** a startup path. Each pass deletes at most **50**
+session directories (`DEFAULT_ROLLOUT_PRUNE_MAX_DELETIONS`) so a backlog
+drains across ticks.
+
+The daemon sweep does not pin a live session by id. In-use sessions are
+spared by newest-rollout mtime and by a live rollout lock.
+
+### What one deletion removes
+
+- The session directory (rollout JSONL, `index.json`, sidecars), renamed
+  aside then removed so a half-deleted name is never visible
+- `thread_rollout_items` mirror rows for those rollout paths
+- Journal bindings retired with reason `retention` before the files go
+
+A corrupt, incomplete, or non-monotonic canonical rollout fails closed:
+the sweep leaves that session on disk rather than invent a cursor tail.
+
+### What the sweep keeps
+
+| Keep | Gate |
+| --- | --- |
+| Newest rollout mtime at or after the cutoff | Age |
+| A live process holds the session's rollout lock | `sessionHasLiveRolloutLock` |
+| `run_effects.review_status = 'pending'` for that session | `sessionHasPendingEffectReview` |
+| An unreleased compaction retention pin | `compaction_retention_pins.state != 'released'` |
+| Directory has no rollout files | Not a session the sweep owns |
+| `rollout_days` unset, `0`, or non-finite | Sweep disabled |
+
+A pending effect review pins the journal because review and startup
+recovery need it as evidence. Before that keep, a short soak window
+deleted a session whose run still had `review_status = pending`, and the
+next start could not recover the missing journal.
+
+### Logging
+
+A pass that deleted nothing is silent. A pass that deleted sessions logs
+named ids (first **20**, then "and N more"):
+
+```text
+daemon rollout retention deleted N session(s) (F rollout file(s), M mirror row(s)) in <projectDir>: <id>, ...
+```
+
+Grep `daemon.log` for `daemon rollout retention deleted`. The directories
+are already gone; the log is the surviving inventory.
+
+### Startup if the journal is already gone
+
+If a pending review's canonical journal is missing (older sweep, manual
+delete, or loss), `recoverPendingEffectReviewsOnStartup` **quarantines**
+the run (`reasonCode: "source_changed"`, `sourceKind: "run_journal"`) and
+lets the daemon start. It does **not** refuse startup. The sentinel
+source digest is 64 zero hex digits (`MISSING_RECOVERY_SOURCE_SHA256`).
+The incident is recorded once and reused across restarts.
+
+```bash
+agenc state recovery quarantine list --state active --json
+agenc state recovery quarantine show <quarantine-id> --json
+```
+
+Abandon requires the recorded run id and that sentinel sha. See
+[cli.md](cli.md#state). This is not a keep-on-disk guarantee: settle or
+export a session you still need before the window expires.
+
+### Not this sweep
+
+- `agent.retention.completed_days` / `failed_days` / `snapshot_*` prune
+  SQLite snapshot and terminal-run rows at startup and on the same timer
+- Compaction rollback retention (`/compact-retain`) is [CP-0006](../design/critical-path/0006-compaction-transaction.md#rollback-and-retention)
+- SDK `event.event_gap` reason `retention` is a replay gap after a
+  binding was retired, not the timer itself
 
 ## What the daemon owns
 
@@ -981,7 +1089,8 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
   typed client actions, independent from transcript attachment.
 - **Command exec / PTY** — `commandExec.*` for interactive shell surfaces.
 - **Health & recovery** — `health.*`, startup recovery of in-flight tool
-  calls and agent runs (`runtime/src/state/recovery.ts`), pruning policies.
+  calls and agent runs (`runtime/src/state/recovery.ts`), pruning policies,
+  and the [session rollout retention](#session-rollout-retention) sweep.
   Journal quarantine/deferred (schema v18, live DB through v27) is operator
   CLI `agenc state recovery …`, not a daemon RPC. See [cli.md](cli.md).
 - **Auth / key vending** — auth handlers + provider-key vending for managed
@@ -1036,6 +1145,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Checkpoint slice and reader       | `runtime/src/session/turn-checkpoint-slice.ts`, `runtime/src/session/turn-state.ts`, `runtime/src/session/durable-checkpoint-reader.ts` |
 | Additive recovery-journal shape   | `runtime/src/state/recovery-journal-schema.ts` (`isTurnCheckpointShape`, `objectShape`) |
 | Rollout schema upgrade            | `runtime/src/session/durable-checkpoint-upgrade.ts`, `runtime/src/session/rollout-store.ts` (`promoteDurableCheckpointSchema`) |
+| Session rollout retention         | `pruneRolloutSessions` / `sessionHasPendingEffectReview` in `runtime/src/state/pruning.ts`; timer in `runtime/src/state/snapshot-policy.ts`; `rolloutRetentionPolicy` / `describeRolloutRetentionPrune` in `daemon-cli.ts`; `recoverPendingEffectReviewsOnStartup` in `startup-run-journal-recovery.ts` |
 | In-turn resume gates              | `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
 | Step uniqueness / conflict        | `runtime/src/state/execution-admission.ts`          |
 | Launcher autostart                | `packages/agenc/src/launcher.mjs`                   |
