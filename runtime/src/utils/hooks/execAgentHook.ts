@@ -33,6 +33,8 @@ import { errorMessage } from '../errors.js'
 import type { HookResult } from '../hooks.js'
 import { createUserMessage } from '../messages.js'
 import { getSmallFastModel } from '../model/model.js'
+import { serializeRuleValue } from '../../permissions/rules.js'
+import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { getAgentTranscriptPath, getTranscriptPath } from '../sessionStorage.js'
 import type { AgentHook } from '../../schemas/hooks.js'
@@ -45,6 +47,14 @@ import {
   registerStructuredOutputEnforcement,
 } from './hookHelpers.js'
 import { clearSessionHooks } from './sessionHooks.js'
+
+/** Session allow rule so a hook child can FileRead its transcript path. */
+export function buildHookTranscriptFileReadGrant(transcriptPath: string): string {
+  return serializeRuleValue({
+    toolName: FILE_READ_TOOL_NAME,
+    ruleContent: transcriptPath,
+  })
+}
 
 /**
  * Execute an agent-based hook using a multi-turn LLM query
@@ -188,7 +198,7 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
               mode: 'dontAsk' as const,
               alwaysAllowRules: {
                 ...appState.toolPermissionContext.alwaysAllowRules,
-                session: [...existingSessionRules, `Read(/${transcriptPath})`],
+                session: [...existingSessionRules, buildHookTranscriptFileReadGrant(transcriptPath)],
               },
             },
           }
