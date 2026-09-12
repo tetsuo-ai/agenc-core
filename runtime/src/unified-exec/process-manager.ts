@@ -773,12 +773,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         "missing command line for unified exec request",
       );
     }
-    if (hasCurrentWorkspaceOperationLifetime()) {
-      throw new UnifiedExecError(
-        "create_process",
-        "detach=true is blocked while an Editor workspace fence is active because a detached process cannot be contained",
-      );
-    }
+    // The workspace fence (`retainCurrentWorkspaceOperation`) exists so the
+    // Editor can wait for every contained process to settle before it
+    // acquires the workspace. A detached service never settles and is, by
+    // the user's choice of the full-access sandbox, outside containment, so
+    // it neither retains the fence nor is refused by it: the dispatcher runs
+    // every tool call inside a fence, and refusing here would refuse detach
+    // everywhere (observed in the first Terminal-Bench rerun).
     const cwd = resolve(request.workdir ?? this.cwd);
     const shell = resolveShell(request.shell, this.shellPath);
     const command = wrapCommandForShell(

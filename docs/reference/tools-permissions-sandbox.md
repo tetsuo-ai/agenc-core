@@ -456,7 +456,21 @@ so the two guards that only route a mutation to a prompt or the sandbox are
 lifted: undeterminable targets run, and removals outside the workspace are
 allowed. Workspace content writes still belong to Edit and Write, and the
 protected paths stay refused. `--bypass-approvals` alone keeps every guard;
-the sandbox is the boundary there.
+the sandbox is the boundary there. `exec_command`'s `workdir` follows the
+same rule: the workspace, a directory added with `--add-dir`, or anywhere
+under the full bypass. The policy is evaluated with the session's mode and
+sandbox at preflight as well as at execution (the dispatcher attaches a
+provisional runtime context before a tool's `preflight`), so the two phases
+decide alike.
+
+The file tools (`FileRead`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`)
+confine themselves to the workspace root plus the roots the permission layer
+signs onto their input. When the layer allows a path outside the cwd on its
+own, through `--add-dir`, an allow rule, or `bypassPermissions`, it hands the
+tool that path's directory the same way it does after an approval; before,
+such an allow ended in the tool's own `Path is outside allowed directories`
+(the half-bypass seen with Edit on `/etc/nginx/nginx.conf`). The safety gates
+(`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
 
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).

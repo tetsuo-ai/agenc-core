@@ -4,7 +4,11 @@ import { resolve } from "node:path";
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
-import { shellWorkspaceMutationPermission } from "./shell-mutation-permission.js";
+import {
+  shellAdditionalWriteRoots,
+  shellBypassesApprovalsAndSandbox,
+  shellWorkspaceMutationPermission,
+} from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
@@ -442,7 +446,16 @@ function validateExecCommandInput(
     return { code: "invalid-input", message: "detach cannot be combined with tty; a detached service has no terminal" };
   }
   const workdir = asString(args.workdir);
-  if (workdir !== undefined && workdir.trim().length > 0) {
+  // The working directory may be the workspace, a directory the user added
+  // with --add-dir, or anywhere when approvals are bypassed and no sandbox
+  // applies (the command could `cd` there anyway; refusing only cost the
+  // model a turn: `workdir: /tmp` was refused in every Terminal-Bench run).
+  const context = readToolRuntimeContext(args as Record<string, unknown>);
+  if (
+    workdir !== undefined &&
+    workdir.trim().length > 0 &&
+    !shellBypassesApprovalsAndSandbox(context)
+  ) {
     const canonicalPath = (candidate: string): string => {
       try {
         return existsSync(candidate) ? realpathSync(candidate) : candidate;
@@ -451,7 +464,10 @@ function validateExecCommandInput(
       }
     };
     const resolvedWorkdir = canonicalPath(resolve(config?.cwd ?? process.cwd(), workdir));
-    const roots = (config?.allowedPaths ?? (config?.cwd !== undefined ? [config.cwd] : [])).map(canonicalPath);
+    const roots = [
+      ...(config?.allowedPaths ?? (config?.cwd !== undefined ? [config.cwd] : [])),
+      ...shellAdditionalWriteRoots(context),
+    ].map(canonicalPath);
     if (roots.length > 0 && !roots.some((root) =>
       resolvedWorkdir === root ||
       resolvedWorkdir.startsWith(root.endsWith("/") || root.endsWith("\\") ? root : `${root}/`) ||

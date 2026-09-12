@@ -100,8 +100,20 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   beside a harmless write. Fixed 2026-09-12: with approvals bypassed and no
   sandbox, those two guards are lifted (protected paths and the Edit/Write
   routing for workspace files stay), and removals under `--add-dir` roots
-  count as workspace removals in every mode. `workdir` outside the workspace
-  still needs `--add-dir`; the adapter passes `add_dirs` (default `/`).
+  count as workspace removals in every mode, and `workdir` may point at an
+  added directory or, under the full bypass, anywhere. The first rerun with
+  that build still showed the refusals: the dispatcher ran a tool's
+  preflight before it attached the runtime context, so the policy decided
+  with no session at all; a provisional context is now attached first.
+- Under the same flag, and even with `--add-dir /`, `Edit`, `Write` and
+  `FileRead` refused every path outside the workspace (`Access denied: Path
+  is outside allowed directories`, 8 times in one nginx trial): the
+  permission layer allowed the path but never handed the tool the widened
+  root it hands out after an approval. Fixed 2026-09-12 in
+  `checkToolPathPermission`. The first rerun also showed `detach: true`
+  refused by the Editor workspace fence, which the dispatcher keeps around
+  every tool call; a detached service is now outside that fence. `tty: true`
+  is still refused by the same fence in one-shot runs (pre-existing, open).
 
 ## Results
 

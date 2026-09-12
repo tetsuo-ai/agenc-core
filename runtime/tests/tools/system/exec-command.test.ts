@@ -1020,4 +1020,128 @@ describe("exec_command tool", () => {
       expect(result.codeModeResult).toMatchObject({ residual_processes_terminated: true });
     });
   });
+
+  describe("workdir", () => {
+    let outsideDir = "";
+
+    beforeEach(async () => {
+      outsideDir = await mkdtemp(join(tmpdir(), "agenc-exec-outside-"));
+    });
+
+    afterEach(async () => {
+      if (outsideDir) await rm(outsideDir, { recursive: true, force: true });
+      outsideDir = "";
+    });
+
+    function workdirArgs(
+      workdir: string,
+      permission: {
+        readonly mode: string;
+        readonly approvalPolicy: "on_request" | "never";
+        readonly sandboxMode: "danger_full_access" | "workspace_write";
+        readonly added?: readonly string[];
+      },
+    ): Record<string, unknown> {
+      const args: Record<string, unknown> = { cmd: "ls", workdir };
+      attachToolRuntimeContext(args, {
+        callId: "call-workdir",
+        toolName: "exec_command",
+        runtimeKind: "function",
+        classification: "exclusive",
+        supportsParallelToolCalls: false,
+        source: { type: "model" },
+        submittedAtMs: 0,
+        approvalPolicy: permission.approvalPolicy,
+        requestedSandboxMode: permission.sandboxMode,
+        sandboxMode: permission.sandboxMode,
+        approvalResolved: false,
+        rawArgs: "{}",
+        invocation: {
+          session: {
+            permissionModeRegistry: {
+              current: () => ({
+                mode: permission.mode,
+                additionalWorkingDirectories: new Map(
+                  (permission.added ?? []).map((path) => [path, { path, source: "cliArg" }]),
+                ),
+              }),
+            },
+            services: { runtimeOptions: { sessionTempRoot: root } },
+          },
+          payload: { kind: "function", arguments: "{}" },
+          turn: { subId: "turn-workdir", cwd: root },
+        },
+      } as never);
+      return args;
+    }
+
+    function workdirTool() {
+      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
+        async () => completedExecOutput("listed"),
+      );
+      const tool = createExecCommandTool({
+        cwd: root,
+        allowedPaths: [root],
+        unifiedExecManager: {
+          maxTimeoutMs: 30_000,
+          execCommand,
+          writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
+            async () => completedExecOutput(""),
+          ),
+          closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
+        },
+      });
+      return { tool, execCommand };
+    }
+
+    test("refuses a working directory outside the workspace in a prompting session", async () => {
+      const { tool, execCommand } = workdirTool();
+
+      const result = await tool.execute(
+        workdirArgs(outsideDir, {
+          mode: "default",
+          approvalPolicy: "on_request",
+          sandboxMode: "workspace_write",
+        }),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("workdir is outside allowed workspace paths");
+      expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test("accepts a working directory the user added with --add-dir", async () => {
+      const { tool, execCommand } = workdirTool();
+
+      const result = await tool.execute(
+        workdirArgs(outsideDir, {
+          mode: "default",
+          approvalPolicy: "on_request",
+          sandboxMode: "workspace_write",
+          added: [outsideDir],
+        }),
+      );
+
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+      expect(execCommand.mock.calls[0]?.[0]).toMatchObject({ workdir: outsideDir });
+    });
+
+    test("accepts any working directory under the full bypass", async () => {
+      // `workdir: /tmp` was refused in every Terminal-Bench pilot run even
+      // though the command could have started with `cd /tmp`.
+      const { tool, execCommand } = workdirTool();
+
+      const result = await tool.execute(
+        workdirArgs(outsideDir, {
+          mode: "bypassPermissions",
+          approvalPolicy: "on_request",
+          sandboxMode: "danger_full_access",
+        }),
+      );
+
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+    });
+  });
 });

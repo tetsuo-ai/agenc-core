@@ -102,8 +102,10 @@ import {
 } from "../planning/plan-files.js";
 import { markLoadedToolNamesDiscovered } from "./deferred-discovery.js";
 import {
+  attachToolRuntimeContext,
   buildToolRuntimeAttemptContext,
   buildToolRuntimeCallContext,
+  readToolRuntimeContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
 import { withSignedAllowedRoots } from "./system/filesystem.js";
@@ -1915,12 +1917,64 @@ function readSessionId(session: Session): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Give a tool's preflight the facts the dispatcher already knows about the
+ * call. Preflight runs before approval and before the attempt context is
+ * built, so a preflight that depends on the session's permission mode or
+ * sandbox (the shell write policy in exec_command, write_stdin and
+ * system.bash) used to decide with no context at all and refused under
+ * `--dangerously-bypass-approvals-and-sandbox` what its execution would then
+ * have allowed. The context carries the session (for the permission mode),
+ * the session's approval policy and requested sandbox mode, and
+ * `approvalResolved: false`; the dispatcher attaches its own context at
+ * execution, which replaces this one. Args that already carry a context keep
+ * it.
+ */
+export function attachPreflightRuntimeContext(
+  tool: Tool,
+  args: Record<string, unknown>,
+  invocation: ToolInvocation,
+  params: {
+    readonly approvalPolicy: ApprovalPolicy;
+    readonly sandboxMode: SandboxMode;
+  },
+): void {
+  if (readToolRuntimeContext(args) !== undefined) return;
+  const call = buildToolRuntimeCallContext({
+    toolCall: { id: invocation.callId, name: nameDisplay(invocation.toolName) },
+    payload: invocation.payload,
+    tool,
+    args,
+    source: invocation.source,
+  });
+  attachToolRuntimeContext(
+    args,
+    buildToolRuntimeAttemptContext(call, {
+      approvalPolicy: params.approvalPolicy,
+      requestedSandboxMode: params.sandboxMode,
+      sandboxMode: params.sandboxMode,
+      approvalResolved: false,
+      rawArgs: stringifyToolArgsWithBigInt(args),
+      invocation,
+    }),
+  );
+}
+
 function preflightToolCall(
   tool: Tool,
   args: Record<string, unknown>,
   invocation: ToolInvocation,
-  options: { readonly discoveredToolNames?: ReadonlySet<string> } = {},
+  options: {
+    readonly discoveredToolNames?: ReadonlySet<string>;
+    readonly approvalPolicy?: ApprovalPolicy;
+    readonly sandboxMode?: SandboxMode;
+  } = {},
 ): ToolDispatchResult | null {
+  attachPreflightRuntimeContext(tool, args, invocation, {
+    approvalPolicy:
+      options.approvalPolicy ?? directDispatchApprovalPolicy(invocation),
+    sandboxMode: options.sandboxMode ?? directDispatchSandboxMode(invocation),
+  });
   const result = validateToolPreflight(tool, args, options);
   if (result !== null) {
     emitErrorEvent(invocation.session.eventLog, invocation.callId, {

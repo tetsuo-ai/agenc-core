@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
+import { runWithWorkspaceOperationLifetime } from "../../src/workspace/tool-operation-lifetime.js";
 
 function processIsRunning(pid: number): boolean {
   try {
@@ -92,6 +93,27 @@ describe.skipIf(process.platform === "win32")(
 
       expect(processIsRunning(result.pid!)).toBe(true);
       expect(await readFile(result.log_path!, "utf8")).toContain("later");
+    });
+
+    test("is neither refused by the workspace fence nor holds it", async () => {
+      // The dispatcher runs every tool call inside a workspace operation
+      // lifetime; the first Terminal-Bench rerun saw detach refused for it.
+      let retained = 0;
+      const exec = manager();
+      const result = await runWithWorkspaceOperationLifetime(
+        {
+          retain: () => {
+            retained += 1;
+            return () => {};
+          },
+        },
+        () => exec.startDetachedProcess({ cmd: "sleep 30", yield_time_ms: 300 }),
+      );
+      pids.push(result.pid!);
+
+      expect(result.detached).toBe(true);
+      expect(result.exitCode).toBeNull();
+      expect(retained).toBe(0);
     });
 
     test("an empty command is refused before anything spawns", async () => {
