@@ -45,6 +45,7 @@ import {
   stripRoutingFlags,
   type BootTUIArgs,
   type ContinueTUIArgs,
+  type OneShotContinueSession,
   type ResumeTUIArgs,
 } from "./route.js";
 import { startupShortCircuitFlag } from "./startup-preflight.js";
@@ -113,6 +114,7 @@ import {
   resolveResumeSessionId,
   reproveResumeSessionAfterDaemonReady,
   type ResolvedResumeSession,
+  type ResumeSessionResolution,
 } from "./resume-session.js";
 import {
   formatAgenCDaemonCliHelpText,
@@ -165,6 +167,7 @@ import type {
   AgenCDaemonKnownResultByMethod,
   JsonObject,
   MessageContentBlock,
+  MessageStreamResult,
 } from "../app-server/protocol/index.js";
 import {
   ensureAgenCDaemonAutostart,
@@ -1716,6 +1719,264 @@ function daemonOneShotFinalStatus(
   };
 }
 
+interface DaemonOneShotRunOutcome {
+  readonly code: number;
+  readonly cancelled: boolean;
+}
+
+/**
+ * Stream one daemon turn to the terminal and settle on its outcome.
+ *
+ * Shared by the fresh one-shot path (the turn was started by `agent.create`)
+ * and by headless `-c` / `--resume` (the turn is started here through
+ * `message.stream` once the event subscription is live). Output chunks go to
+ * stdout as they arrive, unanswerable permission requests are denied so the
+ * run cannot hang, and the exit code comes from the classified terminal
+ * event, or from the `terminal` the `message.stream` RPC returns.
+ */
+async function awaitDaemonOneShotRun(params: {
+  readonly daemonClient: Awaited<
+    ReturnType<AgenCDaemonCliDeps["createConnectedTuiClient"]>
+  >;
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly outputFormat: OneShotOutputFormat;
+  readonly signal: AbortSignal;
+  /** Continue mode: submit the prompt as a new turn of the attached session. */
+  readonly startTurn?: (streamId: string) => Promise<MessageStreamResult>;
+}): Promise<DaemonOneShotRunOutcome> {
+  const { daemonClient, sessionId, outputFormat } = params;
+  let unsubscribeEvents: (() => void) | null = null;
+  let unsubscribeConnection: (() => void) | null = null;
+  let cancelled = false;
+  let printedAssistantOutput = false;
+  let assistantOutput = "";
+  let lastPrintedChar = "";
+  const collectedEvents: unknown[] = [];
+  // In continue mode the stream id we choose is the daemon's turn id, so
+  // terminal events of any other turn (a replayed history item, an unrelated
+  // client's turn) never settle this run.
+  const expectedTurnId =
+    params.startTurn !== undefined ? randomUUID() : undefined;
+  let activeTurnId: string | undefined = expectedTurnId;
+  try {
+    const deniedPermissionRequestIds = new Set<string>();
+    const code = await new Promise<number>((resolve, reject) => {
+      let settled = false;
+      let finalizing = false;
+      let onAbort: (() => void) | null = null;
+      const settle = (
+        next: { readonly code: number } | { readonly error: Error },
+      ) => {
+        if (settled) return;
+        settled = true;
+        if (onAbort !== null) {
+          params.signal.removeEventListener("abort", onAbort);
+        }
+        unsubscribeEvents?.();
+        unsubscribeConnection?.();
+        if ("error" in next) {
+          reject(next.error);
+        } else {
+          resolve(next.code);
+        }
+      };
+      onAbort = () => {
+        cancelled = true;
+        settle({ code: oneShotAbortExitCode(params.signal) });
+      };
+      params.signal.addEventListener("abort", onAbort, { once: true });
+      if (params.signal.aborted) {
+        onAbort();
+        return;
+      }
+      const snapshotFieldsForStructuredOutput = async (): Promise<
+        Pick<OneShotJsonResult, "tokenUsage">
+      > => {
+        if (outputFormat === "text") return {};
+        try {
+          return oneShotSnapshotFields(
+            await daemonClient.request("session.snapshot", { sessionId }),
+          );
+        } catch {
+          return {};
+        }
+      };
+      const writeFinalResult = async (result: {
+        readonly exitCode: number;
+        readonly finalMessage: string;
+      }): Promise<void> => {
+        if (outputFormat === "text") return;
+        const snapshotFields = await snapshotFieldsForStructuredOutput();
+        if (settled) return;
+        const jsonResult: OneShotJsonResult = {
+          type: "result",
+          sessionId,
+          agentId: params.agentId,
+          exitCode: result.exitCode,
+          finalMessage: result.finalMessage,
+          deniedPermissionRequestIds: [...deniedPermissionRequestIds],
+          ...snapshotFields,
+          ...(outputFormat === "json" ? { events: collectedEvents } : {}),
+        };
+        if (outputFormat === "json") {
+          process.stdout.write(`${JSON.stringify(jsonResult)}\n`);
+        } else if (outputFormat === "stream-json") {
+          writeOneShotJsonLine(jsonResult);
+        }
+      };
+
+      // Shared terminal path for both signals a run can end on: the classified
+      // session/agent event, or (continue mode) the `terminal` the daemon
+      // returns when the `message.stream` RPC completes.
+      const finalize = async (
+        finalStatus: DaemonOneShotFinalStatus,
+      ): Promise<void> => {
+        if (finalizing) return;
+        finalizing = true;
+        const finalMessage =
+          finalStatus.message ?? assistantOutput.trimEnd();
+        if (outputFormat === "text" && printedAssistantOutput) {
+          if (lastPrintedChar !== "\n") process.stdout.write("\n");
+        } else if (
+          outputFormat === "text" &&
+          finalStatus.code === 0 &&
+          finalStatus.message !== undefined &&
+          finalStatus.message.length > 0
+        ) {
+          process.stdout.write(`${finalStatus.message}\n`);
+        }
+        if (
+          finalStatus.code !== 0 &&
+          finalStatus.message !== undefined &&
+          finalStatus.message.length > 0
+        ) {
+          process.stderr.write(`${finalStatus.message}\n`);
+        }
+        // A tool-blocked giveup must NOT masquerade as a successful answer.
+        // When the run auto-denied a permission request (no human to approve;
+        // see daemonOneShotPermissionRequestId) and then "completed", the
+        // model gave up after its tool call was rejected. Override the
+        // otherwise-zero exit so callers/scripts can distinguish a real answer
+        // from a tool-blocked giveup, and surface a clear stderr marker. A run
+        // that denied nothing keeps its normal exit code, so genuine no-tool
+        // answers still exit 0 and genuine daemon errors still exit non-zero.
+        if (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) {
+          process.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
+          await writeFinalResult({
+            exitCode: ONE_SHOT_TOOL_DENIED_EXIT_CODE,
+            finalMessage,
+          });
+          settle({ code: ONE_SHOT_TOOL_DENIED_EXIT_CODE });
+          return;
+        }
+        await writeFinalResult({
+          exitCode: finalStatus.code,
+          finalMessage,
+        });
+        settle({ code: finalStatus.code });
+      };
+
+      unsubscribeConnection = daemonClient.subscribeToConnectionState(
+        (state) => {
+          if (state.status === "disconnected") {
+            settle({
+              error: new Error(state.message ?? "daemon connection closed"),
+            });
+          }
+        },
+      );
+
+      unsubscribeEvents = daemonClient.subscribeToSessionEvents(
+        sessionId,
+        (event) => {
+          if (settled) return;
+          if (outputFormat === "json") {
+            collectedEvents.push(event);
+          } else if (outputFormat === "stream-json") {
+            writeOneShotJsonLine({
+              type: "event",
+              sessionId,
+              agentId: params.agentId,
+              event,
+            });
+          }
+          // Non-interactive one-shot has no human to answer a permission
+          // request, so an unanswered "ask"/"pause" suspends the turn and the
+          // run hangs forever. DENY it (never grant) so the agent continues and
+          // produces a terminal status. See daemonOneShotPermissionRequestId.
+          const permissionRequestId = daemonOneShotPermissionRequestId(event);
+          if (
+            permissionRequestId !== null &&
+            !deniedPermissionRequestIds.has(permissionRequestId)
+          ) {
+            deniedPermissionRequestIds.add(permissionRequestId);
+            void daemonClient
+              .request("tool.deny", {
+                sessionId,
+                requestId: permissionRequestId,
+                reason: "non-interactive one-shot: no approver",
+              })
+              .catch(() => {
+                /* best effort: a stale/already-resolved request is harmless */
+              });
+            return;
+          }
+
+          const chunk = daemonOneShotMessageChunk(event);
+          if (chunk !== null && chunk.length > 0) {
+            assistantOutput += chunk;
+            if (outputFormat === "text") {
+              process.stdout.write(chunk);
+            }
+            printedAssistantOutput = true;
+            lastPrintedChar = chunk.at(-1) ?? lastPrintedChar;
+          }
+
+          activeTurnId ??= daemonOneShotStartedTurnId(event);
+          const finalStatus = daemonOneShotFinalStatus(event, activeTurnId);
+          if (finalStatus === null) return;
+          void finalize(finalStatus).catch((error: unknown) => {
+            settle({
+              error: error instanceof Error ? error : new Error(String(error)),
+            });
+          });
+        },
+      );
+
+      const startTurn = params.startTurn;
+      if (startTurn !== undefined && expectedTurnId !== undefined) {
+        // Continue mode: the session already exists, so the turn is started
+        // here, after the event subscription is live. The RPC resolves when
+        // the turn ends and carries its terminal outcome; the events above
+        // stream the output and may settle first, whichever arrives.
+        void startTurn(expectedTurnId)
+          .then((result) => {
+            if (settled || result.terminal === undefined) return;
+            return finalize({
+              code: result.terminal.code,
+              ...(result.terminal.message !== undefined
+                ? { message: result.terminal.message }
+                : {}),
+            });
+          })
+          .catch((error: unknown) => {
+            settle({
+              error: error instanceof Error ? error : new Error(String(error)),
+            });
+          });
+      }
+    });
+    return { code, cancelled };
+  } finally {
+    // Assigned inside the executor above; the narrowing to null is stale here.
+    const stopEvents = unsubscribeEvents as (() => void) | null;
+    const stopConnection = unsubscribeConnection as (() => void) | null;
+    stopEvents?.();
+    stopConnection?.();
+  }
+}
+
 async function runDaemonOneShotPrompt(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly prompt: string;
@@ -1743,16 +2004,9 @@ async function runDaemonOneShotPrompt(params: {
     env: params.env,
   });
   let startedAgentId: string | null = null;
-  let unsubscribeEvents: (() => void) | null = null;
-  let unsubscribeConnection: (() => void) | null = null;
   let completed = false;
   let cancelled = false;
-  let printedAssistantOutput = false;
-  let assistantOutput = "";
-  let activeTurnId: string | undefined;
-  let lastPrintedChar = "";
   const outputFormat = params.outputFormat ?? "text";
-  const collectedEvents: unknown[] = [];
 
   try {
     if (params.signal.aborted) {
@@ -1816,193 +2070,20 @@ async function runDaemonOneShotPrompt(params: {
       );
     }
 
-    const deniedPermissionRequestIds = new Set<string>();
-    const code = await new Promise<number>((resolve, reject) => {
-      let settled = false;
-      let finalizing = false;
-      let onAbort: (() => void) | null = null;
-      const settle = (
-        next: { readonly code: number } | { readonly error: Error },
-      ) => {
-        if (settled) return;
-        settled = true;
-        if (onAbort !== null) {
-          params.signal.removeEventListener("abort", onAbort);
-        }
-        unsubscribeEvents?.();
-        unsubscribeConnection?.();
-        if ("error" in next) {
-          reject(next.error);
-        } else {
-          resolve(next.code);
-        }
-      };
-      onAbort = () => {
-        cancelled = true;
-        settle({ code: oneShotAbortExitCode(params.signal) });
-      };
-      params.signal.addEventListener("abort", onAbort, { once: true });
-      if (params.signal.aborted) {
-        onAbort();
-        return;
-      }
-      const snapshotFieldsForStructuredOutput = async (): Promise<
-        Pick<OneShotJsonResult, "tokenUsage">
-      > => {
-        if (outputFormat === "text") return {};
-        try {
-          return oneShotSnapshotFields(
-            await daemonClient.request("session.snapshot", { sessionId }),
-          );
-        } catch {
-          return {};
-        }
-      };
-      const writeFinalResult = async (result: {
-        readonly exitCode: number;
-        readonly finalMessage: string;
-      }): Promise<void> => {
-        if (outputFormat === "text") return;
-        const snapshotFields = await snapshotFieldsForStructuredOutput();
-        if (settled) return;
-        const jsonResult: OneShotJsonResult = {
-          type: "result",
-          sessionId,
-          agentId: started.agentId,
-          exitCode: result.exitCode,
-          finalMessage: result.finalMessage,
-          deniedPermissionRequestIds: [...deniedPermissionRequestIds],
-          ...snapshotFields,
-          ...(outputFormat === "json" ? { events: collectedEvents } : {}),
-        };
-        if (outputFormat === "json") {
-          process.stdout.write(`${JSON.stringify(jsonResult)}\n`);
-        } else if (outputFormat === "stream-json") {
-          writeOneShotJsonLine(jsonResult);
-        }
-      };
-
-      unsubscribeConnection = daemonClient.subscribeToConnectionState(
-        (state) => {
-          if (state.status === "disconnected") {
-            settle({
-              error: new Error(state.message ?? "daemon connection closed"),
-            });
-          }
-        },
-      );
-
-      unsubscribeEvents = daemonClient.subscribeToSessionEvents(
-        sessionId,
-        (event) => {
-          if (settled) return;
-          if (outputFormat === "json") {
-            collectedEvents.push(event);
-          } else if (outputFormat === "stream-json") {
-            writeOneShotJsonLine({
-              type: "event",
-              sessionId,
-              agentId: started.agentId,
-              event,
-            });
-          }
-          // Non-interactive one-shot has no human to answer a permission
-          // request, so an unanswered "ask"/"pause" suspends the turn and the
-          // run hangs forever. DENY it (never grant) so the agent continues and
-          // produces a terminal status. See daemonOneShotPermissionRequestId.
-          const permissionRequestId = daemonOneShotPermissionRequestId(event);
-          if (
-            permissionRequestId !== null &&
-            !deniedPermissionRequestIds.has(permissionRequestId)
-          ) {
-            deniedPermissionRequestIds.add(permissionRequestId);
-            void daemonClient
-              .request("tool.deny", {
-                sessionId,
-                requestId: permissionRequestId,
-                reason: "non-interactive one-shot: no approver",
-              })
-              .catch(() => {
-                /* best effort: a stale/already-resolved request is harmless */
-              });
-            return;
-          }
-
-          const chunk = daemonOneShotMessageChunk(event);
-          if (chunk !== null && chunk.length > 0) {
-            assistantOutput += chunk;
-            if (outputFormat === "text") {
-              process.stdout.write(chunk);
-            }
-            printedAssistantOutput = true;
-            lastPrintedChar = chunk.at(-1) ?? lastPrintedChar;
-          }
-
-          activeTurnId ??= daemonOneShotStartedTurnId(event);
-          const finalStatus = daemonOneShotFinalStatus(event, activeTurnId);
-          if (finalStatus === null) return;
-          if (finalizing) return;
-          finalizing = true;
-          void (async () => {
-            const finalMessage =
-              finalStatus.message ?? assistantOutput.trimEnd();
-            if (outputFormat === "text" && printedAssistantOutput) {
-              if (lastPrintedChar !== "\n") process.stdout.write("\n");
-            } else if (
-              outputFormat === "text" &&
-              finalStatus.code === 0 &&
-              finalStatus.message !== undefined &&
-              finalStatus.message.length > 0
-            ) {
-              process.stdout.write(`${finalStatus.message}\n`);
-            }
-            if (
-              finalStatus.code !== 0 &&
-              finalStatus.message !== undefined &&
-              finalStatus.message.length > 0
-            ) {
-              process.stderr.write(`${finalStatus.message}\n`);
-            }
-            // A tool-blocked giveup must NOT masquerade as a successful answer.
-            // When the run auto-denied a permission request (no human to approve;
-            // see daemonOneShotPermissionRequestId) and then "completed", the
-            // model gave up after its tool call was rejected. Override the
-            // otherwise-zero exit so callers/scripts can distinguish a real answer
-            // from a tool-blocked giveup, and surface a clear stderr marker. A run
-            // that denied nothing keeps its normal exit code, so genuine no-tool
-            // answers still exit 0 and genuine daemon errors still exit non-zero.
-            if (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) {
-              process.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
-              await writeFinalResult({
-                exitCode: ONE_SHOT_TOOL_DENIED_EXIT_CODE,
-                finalMessage,
-              });
-              settle({ code: ONE_SHOT_TOOL_DENIED_EXIT_CODE });
-              return;
-            }
-            await writeFinalResult({
-              exitCode: finalStatus.code,
-              finalMessage,
-            });
-            settle({ code: finalStatus.code });
-          })().catch((error: unknown) => {
-            settle({
-              error: error instanceof Error ? error : new Error(String(error)),
-            });
-          });
-        },
-      );
+    const run = await awaitDaemonOneShotRun({
+      daemonClient,
+      sessionId,
+      agentId: started.agentId,
+      outputFormat,
+      signal: params.signal,
     });
+    cancelled = run.cancelled;
     completed = !cancelled;
-    return code;
+    return run.code;
   } catch (error) {
     if (params.signal.aborted) cancelled = true;
     throw error;
   } finally {
-    const stopEvents = unsubscribeEvents as (() => void) | null;
-    const stopConnection = unsubscribeConnection as (() => void) | null;
-    stopEvents?.();
-    stopConnection?.();
     // One-shot agents are terminal resources, not resumable conversations.
     // Closing the transport alone leaves the daemon-owned runtime, provider,
     // session and rollout references alive indefinitely. Always stop the agent
@@ -2014,16 +2095,282 @@ async function runDaemonOneShotPrompt(params: {
         daemonClient,
         env: params.env,
         agentId: startedAgentId,
-        reason: cancelled
-          ? "one_shot_cancelled"
-          : completed
-            ? "one_shot_complete"
-            : "one_shot_failed",
+        reason: oneShotStopReason(cancelled, completed),
       });
     }
     await daemonClient.close().catch(() => {
       /* best effort */
     });
+  }
+}
+
+function describeUnresolvedOneShotSession(
+  resolved: Exclude<ResumeSessionResolution, { readonly kind: "ok" }>,
+  continueSession: OneShotContinueSession,
+): string {
+  switch (resolved.kind) {
+    case "none":
+      return continueSession.kind === "latest"
+        ? "agenc: no previous session found for this project"
+        : `agenc: session not found in either legacy or hashed project layout: ${continueSession.sessionId}`;
+    case "not_found":
+      return `agenc: session not found in either legacy or hashed project layout: ${resolved.input}`;
+    case "ambiguous":
+      return `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}`;
+    case "search_incomplete":
+      return `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit; ${
+        continueSession.kind === "latest"
+          ? "retry with an exact session id"
+          : "narrow the session id and retry"
+      }`;
+  }
+}
+
+/** Stop reason a one-shot run reports for the agent it owns. */
+function oneShotStopReason(
+  cancelled: boolean,
+  completed: boolean,
+): "one_shot_cancelled" | "one_shot_complete" | "one_shot_failed" {
+  if (cancelled) return "one_shot_cancelled";
+  return completed ? "one_shot_complete" : "one_shot_failed";
+}
+
+type OneShotContinueDaemonClient = Awaited<
+  ReturnType<AgenCDaemonCliDeps["createConnectedTuiClient"]>
+>;
+
+interface OneShotContinueResumeOptions {
+  readonly deps: AgenCDaemonCliDeps;
+  readonly env: NodeJS.ProcessEnv;
+  readonly runtimeOptions: AgentRuntimeOptions;
+  readonly agencHome: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly profile?: string;
+  readonly configPath?: string;
+  readonly addDirs?: readonly string[];
+  readonly permissionMode?: AgentCreateParams["permissionMode"];
+}
+
+/**
+ * Resolve which prior session a headless continue targets, or write the
+ * operator-facing reason it cannot and return the exit code.
+ */
+function resolveOneShotContinueTarget(params: {
+  readonly cwd: string;
+  readonly agencHome: string;
+  readonly continueSession: OneShotContinueSession;
+}): { readonly descriptor: ResolvedResumeSession; readonly displayId: string } | { readonly exitCode: number } {
+  const resolved =
+    params.continueSession.kind === "latest"
+      ? resolveLatestSessionId(params.cwd, params.agencHome)
+      : resolveResumeSessionId(
+          params.cwd,
+          params.continueSession.sessionId,
+          params.agencHome,
+        );
+  if (resolved.kind !== "ok") {
+    process.stderr.write(
+      `${describeUnresolvedOneShotSession(resolved, params.continueSession)}\n`,
+    );
+    return { exitCode: 1 };
+  }
+  return {
+    descriptor: resolved,
+    displayId:
+      params.continueSession.kind === "latest"
+        ? resolved.sessionId
+        : params.continueSession.sessionId,
+  };
+}
+
+/**
+ * Reuse the live daemon agent for a session, or revive the session from its
+ * rollout. Mirrors `resumeResolvedTUIEntry`: the descriptor is reproved before
+ * the revive and the chosen agent must match the trusted workspace and root
+ * topology. `revived` tells the caller whether it owns the agent.
+ */
+async function acquireOneShotContinueAgent(params: {
+  readonly daemonClient: OneShotContinueDaemonClient;
+  readonly descriptor: ResolvedResumeSession;
+  readonly cwdProof: ResumeCwdProof;
+  readonly resume: OneShotContinueResumeOptions;
+}): Promise<{ readonly agent: AgentSummary; readonly revived: boolean; readonly descriptor: ResolvedResumeSession }> {
+  const { deps, agencHome } = params.resume;
+  let descriptor = params.descriptor;
+  const live = await deps.findAgentBySessionId(
+    params.daemonClient,
+    descriptor.sessionId,
+  );
+  if (live !== null) {
+    assertResumeCwdProof(descriptor.cwd, params.cwdProof);
+    assertLiveAgentMatchesResumeDescriptor(live, descriptor);
+    return { agent: live, revived: false, descriptor };
+  }
+  descriptor = reproveResumeDescriptor(descriptor, agencHome);
+  assertResumeCwdProof(descriptor.cwd, params.cwdProof);
+  let agent: AgentSummary;
+  let revived = true;
+  try {
+    agent = await deps.resumePromptAgent({
+      sessionId: descriptor.sessionId,
+      rolloutPath: descriptor.rolloutPath,
+      sourceProof: {
+        dev: descriptor.sourceDev,
+        ino: descriptor.sourceIno,
+        size: descriptor.sourceSize,
+        sha256: descriptor.sourceSha256,
+        cwdDev: descriptor.cwdDev,
+        cwdIno: descriptor.cwdIno,
+      },
+      cwd: descriptor.cwd,
+      env: params.resume.env,
+      runtimeOptions: params.resume.runtimeOptions,
+      ...(params.resume.model !== undefined ? { model: params.resume.model } : {}),
+      ...(params.resume.provider !== undefined
+        ? { provider: params.resume.provider }
+        : {}),
+      ...(params.resume.profile !== undefined
+        ? { profile: params.resume.profile }
+        : {}),
+      ...(params.resume.configPath !== undefined
+        ? { configPath: params.resume.configPath }
+        : {}),
+      ...(params.resume.addDirs !== undefined
+        ? { addDirs: [...params.resume.addDirs] }
+        : {}),
+      ...(params.resume.permissionMode !== undefined
+        ? { permissionMode: params.resume.permissionMode }
+        : {}),
+    });
+  } catch (resumeError) {
+    if (!isCanonicalSessionAlreadyActiveError(resumeError)) throw resumeError;
+    // Another client revived the same session first; use its agent.
+    const raced = await deps.findAgentBySessionId(
+      params.daemonClient,
+      descriptor.sessionId,
+    );
+    if (raced === null) throw resumeError;
+    agent = raced;
+    revived = false;
+  }
+  assertResumeCwdProof(descriptor.cwd, params.cwdProof);
+  assertLiveAgentMatchesResumeDescriptor(agent, descriptor);
+  return { agent, revived, descriptor };
+}
+
+/**
+ * Headless `-c` / `--resume <id>`: run the prompt as one more turn of a prior
+ * session of this project, then exit with that turn's outcome.
+ *
+ * Mirrors the TUI resume path's trust discipline (cwd proof, descriptor
+ * reproving before and after the daemon is ready, live-agent topology check)
+ * and the fresh one-shot path's output contract. A session that is live in
+ * another client (TUI, desktop) is reused and left running; a session this run
+ * revived from its rollout is stopped again when the turn ends, exactly like a
+ * fresh one-shot agent.
+ */
+async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
+  readonly prompt: string;
+  readonly cwd: string;
+  readonly continueSession: OneShotContinueSession;
+  readonly outputFormat?: OneShotOutputFormat;
+  readonly initialContent?: string | readonly MessageContentBlock[];
+  readonly signal: AbortSignal;
+}): Promise<number> {
+  if (params.signal.aborted) {
+    return oneShotAbortExitCode(params.signal);
+  }
+  const target = resolveOneShotContinueTarget(params);
+  if ("exitCode" in target) return target.exitCode;
+  const { displayId } = target;
+  const failResume = (error: unknown): number => {
+    process.stderr.write(
+      `agenc: unable to resume session '${displayId}': ${
+        error instanceof Error ? error.message : String(error)
+      }\n`,
+    );
+    return 1;
+  };
+  let cwdProof: ResumeCwdProof;
+  try {
+    cwdProof = openResumeCwdProof(target.descriptor.cwd);
+  } catch (error) {
+    return failResume(error);
+  }
+  let daemonClient: OneShotContinueDaemonClient | null = null;
+  let revivedAgentId: string | null = null;
+  let completed = false;
+  let cancelled = false;
+  try {
+    assertResumeCwdProof(target.descriptor.cwd, cwdProof);
+    let descriptor = reproveResumeDescriptor(target.descriptor, params.agencHome);
+    await params.deps.ensureDaemonReady(params.env)();
+    assertResumeCwdProof(descriptor.cwd, cwdProof);
+    descriptor = reproveResumeSessionAfterDaemonReady(descriptor, params.agencHome);
+    daemonClient = await params.deps.createConnectedTuiClient({ env: params.env });
+    const acquired = await acquireOneShotContinueAgent({
+      daemonClient,
+      descriptor,
+      cwdProof,
+      resume: params,
+    });
+    if (acquired.revived) revivedAgentId = acquired.agent.agentId;
+    if (params.signal.aborted) {
+      cancelled = true;
+      return oneShotAbortExitCode(params.signal);
+    }
+    const attachment = await daemonClient.request(
+      "agent.attach",
+      {
+        agentId: acquired.agent.agentId,
+        clientId: `agenc-one-shot-${process.pid}`,
+      },
+      { signal: params.signal },
+    );
+    const sessionId = attachment.sessionIds[0] ?? acquired.descriptor.sessionId;
+    const client = daemonClient;
+    const content = params.initialContent ?? params.prompt;
+    const run = await awaitDaemonOneShotRun({
+      daemonClient,
+      sessionId,
+      agentId: acquired.agent.agentId,
+      outputFormat: params.outputFormat ?? "text",
+      signal: params.signal,
+      startTurn: (streamId) =>
+        client.request(
+          "message.stream",
+          { sessionId, content, clientMessageId: randomUUID(), streamId },
+          { signal: params.signal },
+        ),
+    });
+    cancelled = run.cancelled;
+    completed = !cancelled;
+    return run.code;
+  } catch (error) {
+    if (params.signal.aborted) {
+      cancelled = true;
+      return oneShotAbortExitCode(params.signal);
+    }
+    return failResume(error);
+  } finally {
+    if (daemonClient !== null) {
+      // Only the agent this run revived is a one-shot resource; a live agent
+      // belongs to the client that started it and keeps running.
+      if (revivedAgentId !== null) {
+        await stopDaemonAgentBestEffort({
+          deps: params.deps,
+          daemonClient,
+          env: params.env,
+          agentId: revivedAgentId,
+          reason: oneShotStopReason(cancelled, completed),
+        });
+      }
+      await daemonClient.close().catch(() => {
+        /* best effort */
+      });
+    }
+    closeSync(cwdProof.fd);
   }
 }
 
@@ -2043,6 +2390,7 @@ export async function oneShotCLI(
   userMessage: string | null = null,
   startupImages: readonly string[] = [],
   parsedStartupCliFlags?: StartupCliFlags,
+  continueSession?: OneShotContinueSession,
 ): Promise<number> {
   const lifecycleAbort = new AbortController();
   const shutdownSignal = installAgenCShutdownSignalHandlers((event) => {
@@ -2157,6 +2505,41 @@ export async function oneShotCLI(
     // to the daemon-accepted subset (agent.create rejects dontAsk/auto); other
     // user-addressable modes fall back to the unattended default as before.
     const oneShotPermissionMode = startupPermissionMode(startupCliFlags);
+    if (continueSession !== undefined) {
+      // Headless -c / --resume: the prompt is one more turn of a prior session.
+      // Like the TUI resume path, only explicit startup overrides travel; the
+      // session keeps the provider and model it was recorded with otherwise.
+      return await runDaemonOneShotContinue({
+        deps: daemonCliDeps(),
+        prompt: daemonPrompt,
+        env: sessionEnv,
+        runtimeOptions,
+        cwd: daemonCwd,
+        agencHome,
+        continueSession,
+        outputFormat,
+        ...(startupCliFlags.model !== undefined
+          ? { model: startupCliFlags.model }
+          : {}),
+        ...(startupCliFlags.provider !== undefined
+          ? { provider: startupCliFlags.provider }
+          : {}),
+        ...(startupCliFlags.profile !== undefined
+          ? { profile: startupCliFlags.profile }
+          : {}),
+        ...(startupLayers.flagConfigPath !== undefined
+          ? { configPath: startupLayers.flagConfigPath }
+          : {}),
+        ...(startupCliFlags.addDirs !== undefined
+          ? { addDirs: startupCliFlags.addDirs }
+          : {}),
+        ...(initialContent !== undefined ? { initialContent } : {}),
+        ...(oneShotPermissionMode !== undefined
+          ? { permissionMode: oneShotPermissionMode }
+          : {}),
+        signal: lifecycleAbort.signal,
+      });
+    }
     return await runDaemonOneShotPrompt({
       deps: daemonCliDeps(),
       prompt: daemonPrompt,
@@ -5926,11 +6309,16 @@ async function runDefaultAgenCCliRoute(
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
     bootTUI: (args: BootTUIArgs) => bootTUIEntry(args, startupCliFlags),
-    oneShotCLI: (userMessage: string, startupImages?: readonly string[]) =>
+    oneShotCLI: (
+      userMessage: string,
+      startupImages?: readonly string[],
+      continueSession?: OneShotContinueSession,
+    ) =>
       oneShotCLI(
         userMessage.length > 0 ? userMessage : null,
         startupImages ?? [],
         startupCliFlags,
+        continueSession,
       ),
     resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args, startupCliFlags),
     continueTUI: (args: ContinueTUIArgs) =>

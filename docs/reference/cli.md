@@ -52,8 +52,8 @@ From `formatCliHelpText()`:
 | `--input-format <format>` | Print mode input: `stream-json` |
 | `--no-tui` | Force one-shot CLI mode (no interactive TUI) |
 | `--bare` | Use reduced startup mode; immutably suppress every session hook extension point and skip LSP, plugin sync, and skill discovery while keeping authentication active |
-| `-c`, `--continue` | Continue the latest project session |
-| `-r`, `--resume <session-id>` | Resume a prior project session in the TUI |
+| `-c`, `--continue` | Continue the latest project session. In the TUI this reopens it; with `-p`, piped stdin or `--no-tui` the prompt runs as one more turn of that session and the process exits with the turn's outcome (`agenc -c -p "next step"`). |
+| `-r`, `--resume <session-id>` | Resume a prior project session. TUI by default; headless (`-p`, piped stdin, `--no-tui`) runs the prompt as one more turn of that session. |
 | `--config <path>` | Load an explicit schema-v2 `config.toml` layer for this invocation |
 | `--profile <name>` | Named config profile |
 | `--provider <name>` | Override provider for this session |
@@ -65,6 +65,8 @@ From `formatCliHelpText()`:
 | `--image <file\|url\|data-url>` | Attach a startup image |
 
 ### Print-mode notes
+
+- `agenc -c -p "<prompt>"` and `agenc --resume <id> -p "<prompt>"` continue a prior session headless: the session is revived from its rollout (or reused when a TUI or the desktop still has it live), the prompt is submitted as a new turn, output streams to stdout, and the exit code is the turn's outcome. A session this run revived is stopped again afterwards; a live one keeps running. Only explicit `--model`, `--provider` and `--profile` overrides travel; otherwise the session keeps the provider and model it was recorded with. No prior session for the project exits 1 with `agenc: no previous session found for this project`.
 
 - `--print` / `-p` and `--no-tui` select non-interactive runs suitable for
   scripts and CI.
