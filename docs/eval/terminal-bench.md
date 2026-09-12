@@ -33,7 +33,11 @@ name follows Harbor's `provider/model` form. The provider's key is read from
 the runner's environment and forwarded only into the agent process.
 
 Options (`--ak key=value`): `version` (pin a release), `manifest_url`,
-`runtime_url`, `effort` (default `medium`).
+`runtime_url`, `effort` (default `medium`), `add_dirs` (extra workspace
+roots passed as `--add-dir`, default `/`: the tasks configure the whole
+container and AgenC's shell write policy otherwise refuses writes outside
+the task directory, a boundary the other harnesses do not have), and
+`stop_daemon` (default false).
 
 The same file carries `HermesCurrent`, Harbor's Hermes adapter with its
 install check fixed (the current Hermes CLI has no `version` subcommand) and
@@ -74,11 +78,18 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   ("Native secure storage read failed"); release 0.17.0 did not. Fixed in
   core #2424, which is the first commit a benchmark build of main must carry.
 - `exec_command` containment kills every process the agent started when the
-  command returns, so a server or daemon the agent set up is gone by the
-  time the grader runs. Three of the four failures in the 0.17.0 pilot were
-  tasks of that shape (nginx, a git server with a deploy hook, an sshd-based
-  multi-branch server). Other harnesses leave such processes alive. This is
-  a product decision still open: an opt-in way to leave a service running.
+  command returns, and a managed background process (`run_in_background`)
+  dies when the one-shot session ends, daemon running or not (checked by
+  hand in the nginx task image). A server or daemon the agent set up is gone
+  by the time the grader runs. Three of the four failures in every AgenC
+  run were tasks of that shape (nginx, a git server with a deploy hook, an
+  sshd-based multi-branch server); Hermes and OpenCode passed them on the
+  same model. Other harnesses leave such processes alive. This is a product
+  decision still open: an opt-in way to leave a service running.
+- Even with `--dangerously-bypass-approvals-and-sandbox`, shell commands
+  that write or delete under `/etc`, `/var/www` or `/git` are refused by the
+  workspace write policy, and `workdir: /tmp` is refused as outside the
+  workspace. `--add-dir /` lifts that for the benchmark; see `add_dirs`.
 
 ## Results
 

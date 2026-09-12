@@ -72,6 +72,24 @@ class AgencOptions(InstalledAgentOptions):
         default="medium",
         description="reasoning_effort written to the AgenC config before the run.",
     )
+    add_dirs: str = Field(
+        default="/",
+        description=(
+            "Comma-separated extra workspace roots passed as --add-dir. AgenC's "
+            "shell write policy only lets commands write inside the workspace; "
+            "Terminal-Bench tasks configure the whole container, so the default "
+            "widens the workspace to the filesystem root, which is what the "
+            "other harnesses have implicitly."
+        ),
+    )
+    stop_daemon: bool = Field(
+        default=False,
+        description=(
+            "Stop the AgenC daemon after the turn. Off by default so background "
+            "processes the agent started as managed sessions can outlive the turn "
+            "until the container is torn down."
+        ),
+    )
 
 
 class Agenc(BaseInstalledAgent):
@@ -189,6 +207,11 @@ class Agenc(BaseInstalledAgent):
         env = self._key_env(provider)
         env["HARBOR_INSTRUCTION"] = instruction
         effort = shlex.quote(str(self.options.effort))
+        add_dir_flags = " ".join(
+            f"--add-dir {shlex.quote(path.strip())}"
+            for path in str(self.options.add_dirs).split(",")
+            if path.strip()
+        )
         trust = (
             '{"version":1,"trustedProjects":[{"path":"\'"$PWD"\'",'
             '"trustedAt":"1970-01-01T00:00:00Z"}]}'
@@ -199,6 +222,7 @@ class Agenc(BaseInstalledAgent):
             f"printf '%s' '{trust}' > \"$AH/trusted-projects.json\"; "
             f"agenc config set reasoning_effort {effort} >/dev/null; "
             "agenc --dangerously-bypass-approvals-and-sandbox "
+            f"{add_dir_flags + ' ' if add_dir_flags else ''}"
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
             f'-p "$HARBOR_INSTRUCTION" 2>&1 | stdbuf -oL tee {AGENT_LOG}'
         )
@@ -213,8 +237,8 @@ class Agenc(BaseInstalledAgent):
                     'export PATH="$HOME/.local/bin:$PATH"; '
                     'AH="${AGENC_HOME:-$HOME/.agenc}"; '
                     'for f in "$AH"/projects/*/sessions/*/rollout-*.jsonl; do '
-                    '[ -f "$f" ] && cp "$f" /logs/agent/ || true; done; '
-                    "agenc daemon stop >/dev/null 2>&1 || true"
+                    '[ -f "$f" ] && cp "$f" /logs/agent/ || true; done'
+                    + ("; agenc daemon stop >/dev/null 2>&1 || true" if self.options.stop_daemon else "")
                 ),
                 timeout_sec=60,
             )
