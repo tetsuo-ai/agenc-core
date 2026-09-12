@@ -67,7 +67,7 @@ Credential values are not written into the canonical config snapshot.
 | NVIDIA NIM | `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` |
 | MiniMax | `MINIMAX_API_KEY`, `MINIMAX_BASE_URL` |
 | GitHub | `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_BASE_URL` |
-| Ollama | `OLLAMA_BASE_URL` (session wire and `/api/show` metadata probe) |
+| Ollama | `OLLAMA_BASE_URL` (session wire and `/api/show` metadata probe); `OLLAMA_API_KEY` for Ollama Cloud models |
 | Amazon Bedrock | access (required): `AWS_BEDROCK_ACCESS_KEY_ID`, then `AWS_ACCESS_KEY_ID`; secret (required): `AWS_BEDROCK_SECRET_ACCESS_KEY`, then `AWS_SECRET_ACCESS_KEY`; session token (optional): `AWS_BEDROCK_SESSION_TOKEN`, then `AWS_SESSION_TOKEN`; endpoint: `AWS_BEDROCK_BASE_URL`; region: `AWS_BEDROCK_REGION`, then `AWS_REGION`, then `AWS_DEFAULT_REGION` |
 | AgenC managed auth | `AGENC_API_KEY`, `AGENC_ACCOUNT_ID`, `AGENC_BASE_URL`; descriptor variants `AGENC_API_KEY_FILE_DESCRIPTOR`, `AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR`; OAuth/session vars are cataloged below. `AGENC_API_KEY` authenticates managed AgenC APIs and is not a provider BYOK key alias |
 
@@ -373,7 +373,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_I*
 
-`AGENC_IDE_HOST_OVERRIDE`, `AGENC_IDE_SKIP_AUTO_INSTALL`, `AGENC_IDE_SKIP_VALID_CHECK`, `AGENC_INSTALL_MANIFEST_URL`, `AGENC_INSTALL_REPO`, `AGENC_INTERNAL_ARTIFACTORY_BASE_URL`, `AGENC_INTERNAL_ARTIFACTORY_REGISTRY_URL`.
+`AGENC_IDE_HOST_OVERRIDE`, `AGENC_IDE_SKIP_AUTO_INSTALL`, `AGENC_IDE_SKIP_VALID_CHECK`, `AGENC_INSTALL_MANIFEST_URL`, `AGENC_INSTALL_REPO`.
 
 ### AGENC_J*
 
@@ -389,7 +389,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_O*
 
-`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
+`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
 
 ### AGENC_P*
 
@@ -498,6 +498,7 @@ migration contract.
 | `DISABLE_AUTO_COMPACT` | `AGENC_DISABLE_AUTO_COMPACT` |
 | `DISABLE_COMPACT` | `AGENC_DISABLE_COMPACT` |
 | `AGENC_PROVIDER=xai` | `AGENC_PROVIDER=grok` |
+| `AGENC_INTERNAL_ARTIFACTORY_BASE_URL`, `AGENC_INTERNAL_ARTIFACTORY_REGISTRY_URL` | No replacement. The internal registry mirror was removed with the internal-build gates; downloads use the public registry only |
 | `AGENC_PROVIDER=custom`, `AGENC_PROVIDER=openai_compatible` | `AGENC_PROVIDER=openai-compatible` |
 | `AGENC_DISABLE_STREAM_WATCHDOG` | `AGENC_STREAM_IDLE_TIMEOUT_MS=0` |
 | `AGENC_ENABLE_STREAM_WATCHDOG` | A positive `AGENC_STREAM_IDLE_TIMEOUT_MS` or `stream_watchdog_timeout_ms` in `config.toml` |
