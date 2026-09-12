@@ -943,7 +943,14 @@ export class EmbeddedNeovimSession {
       async (signal, timeoutMs) => {
         await this.#request(
           "nvim_exec_lua",
-          [SAVE_BUFFER, [normalizedHandle, force, expectedChangedtick ?? null]],
+          [
+            SAVE_BUFFER,
+            // MessagePack null reaches Lua as vim.NIL, not nil. Omit the
+            // optional argument so ordinary host saves have no tick guard.
+            expectedChangedtick === undefined
+              ? [normalizedHandle, force]
+              : [normalizedHandle, force, expectedChangedtick],
+          ],
           signal,
           timeoutMs,
         );
@@ -3010,13 +3017,18 @@ async function installDirtyAutocmds(rpc: NeovimRpcTransport): Promise<void> {
     "endfunction",
   ].join("\n");
   await rpc.request("nvim_exec2", [publishState, {}]);
+  // Development builds and older supported runtimes may not expose this
+  // event. Registering one unknown event rejects the entire autocmd list.
+  const hasBufModifiedSet = await rpc.request("nvim_eval", [
+    "exists('##BufModifiedSet')",
+  ]);
   await rpc.request("nvim_command", ["augroup AgenCBufferDirtyState"]);
   await rpc.request("nvim_command", ["autocmd!"]);
   await rpc.request("nvim_command", [
-    "autocmd BufAdd,BufDelete,BufEnter,BufModifiedSet,BufWritePost,FileChangedShellPost,TextChanged,TextChangedI,TextChangedP * call AgenCBufferPublishState()",
+    `autocmd BufAdd,BufDelete,BufEnter,${hasBufModifiedSet === 1 ? "BufModifiedSet," : ""}BufWritePost,FileChangedShellPost,TextChanged,TextChangedI,TextChangedP * call AgenCBufferPublishState()`,
   ]);
   await rpc.request("nvim_command", [
-    "autocmd OptionSet endofline call AgenCBufferPublishState()",
+    "autocmd OptionSet endofline,modified call AgenCBufferPublishState()",
   ]);
   await rpc.request("nvim_command", ["augroup END"]);
   await rpc.request("nvim_command", ["call AgenCBufferPublishState()"]);

@@ -1,9 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
+import { ConfigStore } from "../../src/config/store.js";
+import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import { createFileEditTool } from "../tools/system/file-edit.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
 import { createFileWriteTool } from "../tools/system/file-write.js";
@@ -43,6 +45,35 @@ describe("path-validation", () => {
   ): ToolPermissionContext {
     return createEmptyToolPermissionContext(overrides);
   }
+
+  test("grants only enabled canonical memory roots and keeps explicit ask and deny rules", async () => {
+    const memory = join(outside, ".agenc", "memory");
+    await mkdir(memory, { recursive: true });
+    const target = join(memory, "feedback.md");
+    const store = new ConfigStore({ home: outside, cwd: root,
+      cliOverrides: { autoMemoryEnabled: true, autoMemoryDirectory: memory } });
+    await store.reload();
+    await runWithCanonicalSettingsAuthority(store, async () => {
+      expect(validatePath(target, root, ctx(), "write").allowed).toBe(true);
+      expect(validatePath(memory, root, ctx(), "read").allowed).toBe(true);
+      expect(validatePath(join(memory + "-other", "feedback.md"), root, ctx(), "write").allowed).toBe(false);
+      for (const behavior of ["ask", "deny"] as const) {
+        const permissions = applyPermissionUpdate(ctx(), { type: "addRules", destination: "session", behavior,
+          rules: [{ toolName: "Write", ruleContent: target }] });
+        expect(checkToolPathPermission({ toolName: "Write", input: { file_path: target },
+          path: target, cwd: root, context: permissions, operationType: "write" }).behavior).toBe(behavior);
+      }
+      // A trusted root does not authorize links pointing at unrelated files.
+      await symlink(root, join(memory, "escape"));
+      expect(validatePath(join(memory, "escape", "other.md"), outside, ctx(), "write").allowed).toBe(false);
+    });
+    const disabled = new ConfigStore({ home: outside, cwd: root,
+      cliOverrides: { autoMemoryEnabled: false, autoMemoryDirectory: memory } });
+    await disabled.reload();
+    runWithCanonicalSettingsAuthority(disabled, () => {
+      expect(validatePath(target, root, ctx(), "write").allowed).toBe(false);
+    });
+  });
 
   test("formats short and long directory lists", () => {
     expect(formatDirectoryList(["/a", "/b"])).toBe("'/a', '/b'");

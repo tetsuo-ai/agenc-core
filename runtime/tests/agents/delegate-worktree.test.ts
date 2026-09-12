@@ -297,6 +297,8 @@ describe("delegate worktree isolation (real git)", () => {
 
   it("rejects worktree isolation outside a git repository", async () => {
     const plainDir = mkdtempSync(join(tmpdir(), "agenc-wt-plain-"));
+    // Host temp-directory ancestors may themselves be repositories.
+    const findGitRoot = vi.spyOn(worktreeModule, "findGitRoot").mockReturnValueOnce(null);
     try {
       const control = {
         spawn: vi.fn(),
@@ -318,6 +320,7 @@ describe("delegate worktree isolation (real git)", () => {
       }
       expect(control.spawn).not.toHaveBeenCalled();
     } finally {
+      findGitRoot.mockRestore();
       rmSync(plainDir, { recursive: true, force: true });
     }
   });

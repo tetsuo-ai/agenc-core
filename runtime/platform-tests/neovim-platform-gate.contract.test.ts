@@ -142,8 +142,8 @@ describe("hosted Neovim platform gate contract", () => {
     expect(source).toContain("AGENC_BUFFER_NVIM=$pinned_nvim");
     expect(source).toContain("AGENC_BUFFER_NVIM=$pinnedNvim");
     expect(source).toContain("--config vitest.neovim.config.ts");
-    expect(source).toContain("numTotalTests: 18");
-    expect(source).toContain("numPassedTests: 18");
+    expect(source).toContain("numTotalTests: 21");
+    expect(source).toContain("numPassedTests: 21");
     expect(source).toContain("--config vitest.neovim-platform.config.ts");
     expect(
       JSON.stringify(job).match(/--require-zero-skips/gu),
@@ -154,10 +154,10 @@ describe("hosted Neovim platform gate contract", () => {
     expect(source).toContain(
       "platform-tests/neovim-process-tree.real.test.ts",
     );
-    expect(source).toContain("numTotalTests: 68");
-    expect(source).toContain("numPassedTests: 68");
+    expect(source).toContain("numTotalTests: 71");
+    expect(source).toContain("numPassedTests: 71");
     expect(source).toContain(
-      "Neovim provider/observed-descendant platform lane passed 68 tests in 3 files with zero skipped",
+      "Neovim provider/observed-descendant platform lane passed 71 tests in 3 files with zero skipped",
     );
     expect(source).toContain(
       "scripts/check-tui-e2e/runner.mjs --platform",

@@ -98,6 +98,7 @@ export interface DelegateOpts {
   readonly capacityPermit?: AgentCapacityPermit;
   readonly capacityOwnerId?: string;
   readonly silent?: boolean;
+  readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly resumeManager?: ResumeManager;
   /**
    * Keep the agent's downInbox loop alive between turns instead of
@@ -139,6 +140,18 @@ export type DelegateOutcome =
       readonly reason: string;
       readonly effectDisposition?: ToolEffectDispositionEvidence;
     };
+
+function delegateModelOptions(
+  opts: DelegateOpts,
+): Pick<DelegateOpts, "model" | "reasoningEffort" | "serviceTier"> {
+  return {
+    ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.reasoningEffort !== undefined
+      ? { reasoningEffort: opts.reasoningEffort }
+      : {}),
+    ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // delegate — main entry
@@ -430,13 +443,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         ? { externalSignal: opts.externalSignal }
         : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
-      ...(opts.model !== undefined ? { model: opts.model } : {}),
-      ...(opts.reasoningEffort !== undefined
-        ? { reasoningEffort: opts.reasoningEffort }
-        : {}),
-      ...(opts.serviceTier !== undefined
-        ? { serviceTier: opts.serviceTier }
-        : {}),
+      ...(opts.deferInteractiveApprovals !== undefined
+        ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
+      ...delegateModelOptions(opts),
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
         : {}),
@@ -586,6 +595,7 @@ async function runDelegateAgentLoop(opts: {
   readonly maxTurns?: number;
   readonly externalSignal?: AbortSignal;
   readonly silent?: boolean;
+  readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly model?: string;
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
@@ -622,6 +632,8 @@ async function runDelegateAgentLoop(opts: {
           ? { externalSignal: opts.externalSignal }
           : {}),
         ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+        ...(opts.deferInteractiveApprovals !== undefined
+          ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
         ...(opts.model !== undefined ? { model: opts.model } : {}),
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }

@@ -1368,6 +1368,63 @@ describe("PromptInput render surface", () => {
     }
   });
 
+  test.each([
+    { input: "/tasks", blocked: true, busy: false },
+    { input: "/jobs", blocked: true, busy: true },
+    { input: "/bashes", blocked: true, busy: true },
+    { input: "/status", blocked: false, busy: true },
+    { input: "/swarm status", blocked: true, busy: true },
+  ])("routes $input locally while blocked=$blocked and busy=$busy without consuming attachments", async ({ input, blocked, busy }) => {
+    const onSubmit = vi.fn(async () => {});
+    const onSubmissionBlocked = vi.fn();
+    const pastedState = createPastedContentsState({ 4: { id: 4, type: "text", content: "keep attachment" } });
+    harness.appState.workbench = {
+      ...getDefaultWorkbenchState(),
+      attachments: [{ id: "file:src/keep.ts", kind: "file", label: "src/keep.ts", path: "src/keep.ts" }],
+      composerAttachmentIds: ["file:src/keep.ts"],
+      agentComposerAttachmentIds: ["file:src/keep.ts"],
+    };
+    const rendered = await renderPromptInput({
+      input, mode: "prompt", isLoading: busy, onSubmit,
+      pastedContents: pastedState.current, setPastedContents: pastedState.setPastedContents,
+      submissionBlockedReason: blocked ? "Editor synchronization is pending." : null,
+      onSubmissionBlocked,
+    });
+    try {
+      const baseProps = await waitForPromptInputProps();
+      pastedState.setPastedContents.mockClear();
+      await (baseProps.onSubmit as (value: string) => Promise<void>)(input);
+      expect(onSubmit).toHaveBeenCalledWith(input, expect.any(Object));
+      expect(onSubmissionBlocked).not.toHaveBeenCalled();
+      expect(harness.processBashCommand).not.toHaveBeenCalled();
+      expect(pastedState.setPastedContents).not.toHaveBeenCalled();
+      expect(harness.appState.workbench).toMatchObject({ composerAttachmentIds: ["file:src/keep.ts"] });
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test.each([
+    { input: "/tasks", mode: "bash" },
+    { input: "/swarm off", mode: "prompt" },
+    { input: "/tasks\nchange files", mode: "prompt" },
+    { input: "change files", mode: "prompt" },
+  ] as const)("keeps $mode input $input behind the Editor guard", async ({ input, mode }) => {
+    const onSubmit = vi.fn(async () => {});
+    const onSubmissionBlocked = vi.fn();
+    const rendered = await renderPromptInput({ input, mode, onSubmit, submissionBlockedReason: "Editor synchronization is pending.", onSubmissionBlocked });
+    try {
+      const baseProps = await waitForPromptInputProps();
+      await (baseProps.onSubmit as (value: string) => Promise<void>)(input);
+      expect(onSubmissionBlocked).toHaveBeenCalledWith("Editor synchronization is pending.");
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(harness.processBashCommand).not.toHaveBeenCalled();
+      expect(harness.clearBuffer).not.toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
   test("blocks before bash routing without clearing the draft or attachments", async () => {
     const onSubmit = vi.fn(async () => {});
     const onInputChange = vi.fn();

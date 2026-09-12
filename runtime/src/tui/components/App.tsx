@@ -132,7 +132,9 @@ import { getCronScheduler } from "../../utils/cronScheduler.js";
 import {
   parseSlashCommand,
   dispatchSlashCommand,
+  type ParsedSlashCommand,
 } from "../../commands/dispatcher.js";
+import { parseLocalControlCommand } from "../../commands/local-control.js";
 import { buildDefaultRegistry } from "../../commands/registry.js";
 import {
   setGlobalCommandRegistry,
@@ -199,6 +201,10 @@ import type {
   McpSurfaceTool,
 } from "../../session/session.js";
 import { useSessionTranscript } from "../session-transcript.js";
+import { useDaemonProcessTasks } from "../hooks/useDaemonProcessTasks.js";
+import { useDaemonWorkerTasks } from "../hooks/useDaemonWorkerTasks.js";
+import type { DaemonSessionSnapshot } from "../state/daemonWorkerTasks.js";
+import { configuredContextWindow, projectResidentContextUsage, type ResidentContextBreakdown } from "../../session/resident-context-usage.js";
 import { useToolJSX } from "../tool-jsx-state.js";
 import { executeRealtimeComposerCommand } from "../realtime/commands.js";
 import { RealtimePanel } from "../realtime/RealtimePanel.js";
@@ -2942,6 +2948,28 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   });
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
+  const reportProcessRefreshError = useCallback((message: string) => {
+    addNotification({ key: "daemon-process-refresh-error", text: message, color: "error", priority: "high" });
+  }, [addNotification]);
+  useDaemonProcessTasks(props.session, setAppState, reportProcessRefreshError);
+  const reportWorkerRefreshError = useCallback((message: string) => {
+    addNotification({ key: "daemon-worker-refresh-error", text: message, color: "error", priority: "high" });
+  }, [addNotification]);
+  const [residentContext, setResidentContext] = useState<{
+    readonly session: AgenCBridgeSession;
+    readonly conversationId: string;
+    readonly signature: string | undefined;
+    readonly breakdown: ResidentContextBreakdown | undefined;
+  } | null>(null);
+  const observeDaemonSnapshot = useCallback((snapshot: DaemonSessionSnapshot) => {
+    const conversationId = props.session.conversationId;
+    const breakdown = snapshot.contextBreakdown;
+    const signature = JSON.stringify(breakdown);
+    setResidentContext(previous => previous?.session === props.session &&
+      previous.conversationId === conversationId && previous.signature === signature ? previous
+      : { session: props.session, conversationId, signature, breakdown });
+  }, [props.session]);
+  useDaemonWorkerTasks(props.session, setAppState, reportWorkerRefreshError, observeDaemonSnapshot);
   useEffect(() => {
     if (props.session.agentDefinitions !== undefined) {
       return;
@@ -4620,31 +4648,28 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     }
     return null;
   }, [transcript.messages]);
-  // Real context-window usage for the workbench status strip. Recomputed only
-  // when a new assistant message lands (its usage block carries the token
-  // counts) or the model/permission mode changes — never per streaming delta.
-  // Derivation mirrors StatusLine so both surfaces show the same number.
+  // The workbench and /context share the daemon's resident estimate. Custom
+  // StatusLine scripts retain their separate provider-reported usage contract.
   const resolvedMainLoopModel = useMainLoopModel();
   const contextPctLabel = useMemo(() => {
-    const messages = transcriptMessagesRef.current as any[];
-    // Daemon-bridge transcripts synthesize assistant messages with zero
-    // usage (and a synthetic model getTokenUsage skips), so the message walk
-    // finds nothing there — prefer the bridge's latest token_count usage and
-    // fall back to the message walk for embedded/local transcripts.
-    const usage = transcript.latestUsage ?? getCurrentUsage(messages);
+    if (props.session.getDaemonSessionSnapshot !== undefined) {
+      if (residentContext?.session !== props.session ||
+          residentContext.conversationId !== props.session.conversationId ||
+          residentContext.breakdown === undefined) return null;
+      const usage = projectResidentContextUsage(residentContext.breakdown, {
+        providerEnvironment: remoteAuthSessionContext.environment,
+        model: resolvedMainLoopModel,
+        contextWindowTokens: configuredContextWindow(config),
+      });
+      return `ctx ${usage.usedPercentage}%`;
+    }
+    const usage = transcript.latestUsage ?? getCurrentUsage(transcriptMessagesRef.current as any[]);
     if (!usage) return null;
-    const windowSize = getContextWindowForModelForContext(
-      resolvedMainLoopModel,
-      remoteAuthSessionContext,
-    );
+    const windowSize = getContextWindowForModelForContext(resolvedMainLoopModel, remoteAuthSessionContext);
     const { used } = calculateContextPercentages(usage, windowSize);
     return used === null ? null : `ctx ${used}%`;
-  }, [
-    lastAssistantMessageId,
-    transcript.latestUsage,
-    resolvedMainLoopModel,
-    remoteAuthSessionContext,
-  ]);
+  }, [props.session, props.session.conversationId, residentContext, config, lastAssistantMessageId, transcript.latestUsage,
+    resolvedMainLoopModel, remoteAuthSessionContext]);
   const realtimeState = useRealtimeState(props.session.realtime);
   const [toolJSX, setToolJSX] = useToolJSX();
   const setModel = useCallback(
@@ -5114,6 +5139,28 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       setToolJSX,
     ],
   );
+  const runLocalControlCommand = useCallback(async (parsed: ParsedSlashCommand): Promise<void> => {
+    cancelTransientResult(true);
+    try {
+      if (commandRegistry.find(parsed.name) === undefined) {
+        throw new Error(`Local command unavailable: /${parsed.name}`);
+      }
+      const { result } = await dispatchSlashCommand(
+        parsed,
+        createSlashCommandContext(parsed.argsRaw),
+        commandRegistry,
+      );
+      if (result.kind === "error") {
+        showTransientResult(result.message, { display: "error" });
+      } else if (result.kind === "text" || result.kind === "compact") {
+        showTransientResult(result.text);
+      } else if (result.kind !== "skip") {
+        throw new Error(`Local control /${parsed.name} returned an unsupported result`);
+      }
+    } catch (error) {
+      showTransientResult(error instanceof Error ? error.message : String(error), { display: "error" });
+    }
+  }, [cancelTransientResult, commandRegistry, createSlashCommandContext, showTransientResult]);
   const openCanonicalModelMenu = useCallback(async (): Promise<void> => {
     cancelTransientResult(true);
     try {
@@ -5495,6 +5542,23 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         workspaceEditorBlockers,
         submissionWorkspaceView,
       );
+      const localControl = parseLocalControlCommand(text_0);
+      if (
+        localControl !== null &&
+        retry === null &&
+        !options?.fromQueue &&
+        !options?.requireModelSubmission &&
+        options?.editorInteraction === undefined &&
+        (workspaceSubmissionBlocker !== null ||
+          effectiveInputBusyRef.current ||
+          (submissionWorkspaceView === "editor" && hasPendingEditorProposalReview()))
+      ) {
+        // Inspection and owned-task controls need no model admission or Editor
+        // lease. Keep this turn's state and the composer's attachments intact.
+        setComposerInputForView(submissionWorkspaceView, "");
+        await runLocalControlCommand(localControl);
+        return;
+      }
       if (workspaceSubmissionBlocker !== null) {
         showTransientResult(workspaceSubmissionBlocker, {
           display: "error",
@@ -5989,6 +6053,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               persistent: [
                 "login",
                 "logout",
+                "grok-login",
+                "grok-logout",
+                "openai-login",
+                "openai-logout",
                 "whoami",
                 "subscription",
                 "usage",
@@ -6147,6 +6215,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       commandRegistry,
       createSlashCommandContext,
       commands,
+      runLocalControlCommand,
       submitToSession,
       workbenchEnabled,
       workspaceEditorBlockers.agent,

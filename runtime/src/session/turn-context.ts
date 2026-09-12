@@ -731,7 +731,9 @@ export interface TurnContext {
 /**
  * Effective context window: model's context window * `effectiveContextWindowPercent` / 100.
  */
-export function modelContextWindow(ctx: TurnContext): number | undefined {
+export function modelContextWindow(ctx: {
+  readonly modelInfo: Pick<ModelInfo, "contextWindow" | "effectiveContextWindowPercent">;
+}): number | undefined {
   const cw = ctx.modelInfo.contextWindow;
   if (cw === undefined) return undefined;
   return Math.floor((cw * ctx.modelInfo.effectiveContextWindowPercent) / 100);

@@ -51,6 +51,8 @@ import type {
   SessionPreviewFileRewindResult,
   SessionRewindFilesToMessageResult,
   SessionSnapshotResult,
+  SessionProcessesListResult,
+  SessionProcessesStopResult,
   SessionTranscriptResult,
   SessionTranscriptV2Result,
   SessionHookConfigShape,
@@ -534,6 +536,11 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentSnapshotSessionParams,
   ): Promise<SessionSnapshotResult>;
+  listAgentSessionProcesses?(agentId: string): Promise<SessionProcessesListResult>;
+  stopAgentSessionProcess?(
+    agentId: string,
+    taskId: string,
+  ): Promise<SessionProcessesStopResult>;
   getAgentSessionTranscript?(
     agentId: string,
     params: { readonly sessionId: string },

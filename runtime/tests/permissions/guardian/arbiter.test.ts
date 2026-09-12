@@ -73,6 +73,31 @@ function approvalCtx(inv = invocation()): ApprovalCtx {
 }
 
 describe("guardian arbiter", () => {
+  test("defers new maintenance approval without invoking the foreground resolver", async () => {
+    const defer = vi.fn();
+    const request = vi.fn(async () => APPROVED);
+    const result = await requestApproval({
+      ctx: approvalCtx(invocation({ services: { deferInteractiveApprovals: defer } })),
+      resolver: { request },
+    });
+    expect(result).toMatchObject({ decision: { kind: "abort" },
+      reason: "background_maintenance_requires_approval" });
+    expect(defer).toHaveBeenCalledWith("exec_command");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("retains existing permission hook authority during noninteractive maintenance", async () => {
+    const defer = vi.fn();
+    const request = vi.fn(async () => APPROVED);
+    const result = await requestApproval({
+      ctx: approvalCtx(invocation({ services: { deferInteractiveApprovals: defer } })),
+      hooks: [async () => APPROVED], resolver: { request },
+    });
+    expect(result).toEqual({ decision: APPROVED, source: "hook" });
+    expect(defer).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
   test("fsync-journals the request and linked answer around every shared resolver", async () => {
     const events: Event[] = [];
     let sequence = 0;

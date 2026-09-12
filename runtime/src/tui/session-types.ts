@@ -63,6 +63,8 @@ import type {
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
   SessionShellExecuteResult,
+  SessionProcessesListResult,
+  SessionProcessesStopResult,
   SessionStatusLinePresentation,
   SessionStatusLineExecuteResult,
 } from "../app-server/protocol/index.js";
@@ -91,6 +93,8 @@ export interface AgenCShellExecuteParams {
 }
 
 export interface AgenCBridgeSession extends AgenCCompactProgressControls {
+  listDaemonSessionProcesses?(): Promise<SessionProcessesListResult | undefined>;
+  stopDaemonSessionProcess?(taskId: string): Promise<SessionProcessesStopResult>;
   executeDaemonStatusLine?(
     presentation: SessionStatusLinePresentation,
     signal?: AbortSignal,
@@ -173,6 +177,8 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   }>;
   getDaemonSessionSnapshot?(): Promise<{
     readonly sessionId: string;
+    readonly contextBreakdown?: import("../app-server/protocol/index.js").SessionSnapshotResult["contextBreakdown"];
+    readonly nativeWorkers?: readonly import("../app-server/protocol/index.js").SessionNativeWorkerSnapshot[];
     readonly turnCount: number;
     readonly tokenUsage: {
       readonly inputTokens: number;

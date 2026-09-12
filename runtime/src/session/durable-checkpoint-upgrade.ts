@@ -436,14 +436,16 @@ type UpgradeHistoryOutcome =
       readonly failure: DurableCheckpointUpgradeDeferral;
     };
 
-function updateUpgradeHistory(params: {
+interface UpgradeHistoryParams {
   readonly history: ToolResultIntegrityResponseItem[];
   readonly item: RolloutItem;
   readonly itemIndex: number;
   readonly runId: string;
   readonly historyDerivationWork: number;
   readonly maxHistoryDerivationWork: number;
-}): UpgradeHistoryOutcome {
+}
+
+function updateUpgradeHistory(params: UpgradeHistoryParams): UpgradeHistoryOutcome {
   const { history, item } = params;
   if (item.type === "response_item") {
     history.push(item.payload);
@@ -483,42 +485,49 @@ function updateUpgradeHistory(params: {
     item.type === "event_msg" &&
     item.payload.msg.type === "thread_rolled_back"
   ) {
-    const numTurns = validRollbackTurnCount(item.payload.msg.payload);
-    if (numTurns === undefined) {
-      return invalid(
-        "rollback_invalid",
-        params.itemIndex,
-        "thread_rolled_back numTurns must be a non-negative safe integer",
-      );
-    }
-    if (numTurns === 0 || history.length === 0) {
-      return updatedHistory(history, params.historyDerivationWork);
-    }
-    const reservedWork = reserveHistoryDerivationWork(
-      params.historyDerivationWork,
-      history.length,
-      ROLLBACK_HISTORY_PASSES,
-      params.maxHistoryDerivationWork,
-    );
-    if (reservedWork === undefined) {
-      return {
-        status: "deferred",
-        failure: {
-          kind: "operational_deferral",
-          code: "history_derivation_work_limit",
-          itemIndex: params.itemIndex,
-          reason: `rollback history derivation would exceed the aggregate history-derivation work limit of ${params.maxHistoryDerivationWork} message visits`,
-        },
-      };
-    }
-    // Keep rollback's canonical trimming semantics without running the reducer
-    // for every response item. The complete worst-case visit/copy cost was
-    // reserved above before the reducer can allocate or traverse the history.
-    const state = emptyReducedState();
-    state.history = history;
-    return updatedHistory(reduce(state, item).state.history, reservedWork);
+    return rollbackUpgradeHistory(params, item.payload.msg.payload);
   }
   return updatedHistory(history, params.historyDerivationWork);
+}
+
+function rollbackUpgradeHistory(
+  params: UpgradeHistoryParams,
+  payload: unknown,
+): UpgradeHistoryOutcome {
+  const numTurns = validRollbackTurnCount(payload);
+  if (numTurns === undefined) {
+    return invalid(
+      "rollback_invalid",
+      params.itemIndex,
+      "thread_rolled_back numTurns must be a non-negative safe integer",
+    );
+  }
+  if (numTurns === 0 || params.history.length === 0) {
+    return updatedHistory(params.history, params.historyDerivationWork);
+  }
+  const reservedWork = reserveHistoryDerivationWork(
+    params.historyDerivationWork,
+    params.history.length,
+    ROLLBACK_HISTORY_PASSES,
+    params.maxHistoryDerivationWork,
+  );
+  if (reservedWork === undefined) {
+    return {
+      status: "deferred",
+      failure: {
+        kind: "operational_deferral",
+        code: "history_derivation_work_limit",
+        itemIndex: params.itemIndex,
+        reason: `rollback history derivation would exceed the aggregate history-derivation work limit of ${params.maxHistoryDerivationWork} message visits`,
+      },
+    };
+  }
+  // Keep rollback's canonical trimming semantics without running the reducer
+  // for every response item. The complete worst-case visit/copy cost was
+  // reserved above before the reducer can allocate or traverse the history.
+  const state = emptyReducedState();
+  state.history = params.history;
+  return updatedHistory(reduce(state, params.item).state.history, reservedWork);
 }
 
 function validRollbackTurnCount(payload: unknown): number | undefined {

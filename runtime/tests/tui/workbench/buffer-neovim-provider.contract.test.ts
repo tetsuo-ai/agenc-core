@@ -69,6 +69,100 @@ function normalizedTestPath(pathValue: string): string {
 }
 
 describe("embedded Neovim BUFFER provider", () => {
+  it("preserves a rejected host save across redraws until a successful retry", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider(harness.options);
+    try {
+      await provider.open({ filePath: "target.txt" });
+      harness.emitDirty(true);
+      harness.session.saveBuffer.mockRejectedValueOnce(
+        new Error("Workspace write authority denied the save."),
+      );
+
+      await expect(provider.save()).resolves.toBe(false);
+      harness.emitGrid("still editing");
+      expect(provider.getSnapshot()).toMatchObject({
+        providerStatus: "error",
+        providerMessage: "Workspace write authority denied the save.",
+        error: "Workspace write authority denied the save.",
+        dirty: true,
+      });
+      expect(provider.handleInput({
+        input: ":",
+        key: baseKey(),
+        context: { rows: 8, columns: 40 },
+      })).toBe(true);
+      await flush();
+      expect(harness.session.input).toHaveBeenCalledWith(":");
+      harness.emitGrid("native command line", "cmdline_normal");
+      expect(provider.getSnapshot().error).toBe(
+        "Workspace write authority denied the save.",
+      );
+
+      await expect(provider.save()).resolves.toBe(true);
+      harness.emitGrid("saved");
+      expect(provider.getSnapshot()).toMatchObject({
+        providerStatus: "ready",
+        providerMessage: null,
+        error: null,
+        dirty: false,
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("does not publish a successful save when Neovim redraws before its acknowledgement", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider(harness.options);
+    const write = controlled<boolean>();
+    try {
+      await provider.open({ filePath: "target.txt" });
+      harness.session.saveBuffer.mockReturnValueOnce(write.promise);
+      const saving = provider.save();
+      await flush();
+      expect(harness.session.saveBuffer).toHaveBeenCalled();
+      harness.emitGrid("write pending");
+      expect(provider.getSnapshot().providerStatus).toBe("saving");
+      write.resolve(true);
+      await expect(saving).resolves.toBe(true);
+      expect(provider.getSnapshot().providerStatus).toBe("ready");
+    } finally {
+      write.resolve(false);
+      await provider.cleanup();
+    }
+  });
+
+  it("preserves a disk conflict across redraws", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider(harness.options);
+    try {
+      await provider.open({ filePath: "target.txt" });
+      harness.emitDirty(true);
+      vi.mocked(harness.options.readFileSnapshot).mockResolvedValue(
+        snapshotFor("target.txt", 2),
+      );
+
+      await expect(provider.save()).resolves.toBe(false);
+      const conflict = provider.getSnapshot();
+      expect(conflict).toMatchObject({
+        providerStatus: "conflict",
+        conflictKind: "disk",
+        error: expect.any(String),
+      });
+      harness.emitGrid("still editing");
+      expect(provider.getSnapshot()).toMatchObject({
+        providerStatus: "conflict",
+        conflictKind: "disk",
+        error: conflict.error,
+        providerMessage: conflict.providerMessage,
+      });
+      expect(harness.session.saveBuffer).not.toHaveBeenCalled();
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
   it("binds input RPC and mode acknowledgements to an exact queued sequence without rendering", async () => {
     const { fixture, records, provider } = createTracedProviderFixture();
     const input = controlled<boolean>();

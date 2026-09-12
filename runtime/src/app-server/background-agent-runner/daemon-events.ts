@@ -298,6 +298,9 @@ export function notificationFromDaemonEvent(
             ? event.eventId!
             : payload.callId,
         callId: payload.callId,
+        ...(typeof payload.sourceConversationId === "string"
+          ? { sourceConversationId: payload.sourceConversationId }
+          : {}),
         ...(typeof payload.toolName === "string"
           ? { toolName: payload.toolName }
           : {}),

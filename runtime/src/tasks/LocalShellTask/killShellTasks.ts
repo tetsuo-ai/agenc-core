@@ -15,7 +15,7 @@ type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
 
 export function killTask(taskId: string, setAppState: SetAppStateFn): void {
   updateTaskState(taskId, setAppState, task => {
-    if (task.status !== 'running' || !isLocalShellTask(task)) {
+    if (task.status !== 'running' || !isLocalShellTask(task) || task.daemonProcess !== undefined) {
       return task
     }
 

@@ -1339,6 +1339,7 @@ describe("BufferSurface", () => {
   it("renders terminal Neovim snapshots and terminal-specific footer status", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
     let nativeCommandLine: string | null = null;
+    let saveError: string | null = null;
     let providerListener: (() => void) | null = null;
     const identity = {
       kind: "neovim" as const,
@@ -1354,8 +1355,9 @@ describe("BufferSurface", () => {
       }),
       getSnapshot: vi.fn(() => ({
         ...emptyProviderSnapshot(identity),
-        status: "ready",
-        providerStatus: "ready",
+        status: saveError === null ? "ready" : "error",
+        providerStatus: saveError === null ? "ready" : "error",
+        error: saveError,
         filePath: "target.ts",
         absolutePath: join(dir, "target.ts"),
         terminal: {
@@ -1441,14 +1443,29 @@ describe("BufferSurface", () => {
       expect(frame).toContain("alt+lAI");
 
       provider.save.mockClear();
+      provider.save.mockImplementationOnce(async () => {
+        saveError = "Workspace write authority denied the save.";
+        providerListener?.();
+        return false;
+      });
       stdin.write("\x1b[27;5;115~");
       await sleep();
       expect(provider.save).toHaveBeenCalledWith({ hasInFlightAgent: false });
+      expect(output()).toContain("Workspacewriteauthoritydeniedthesave.");
       expect(provider.handleInput).not.toHaveBeenCalledWith(
         "s",
         expect.objectContaining({ ctrl: true }),
         expect.anything(),
       );
+      provider.save.mockImplementationOnce(async () => {
+        saveError = null;
+        providerListener?.();
+        return true;
+      });
+      stdin.write("\x13");
+      await sleep();
+      expect(provider.save).toHaveBeenCalledTimes(2);
+      expect(getWorkbenchBufferStore().getSnapshot().error).toBeNull();
 
       nativeCommandLine = "set number relativenumber wrapscan";
       expect(output()).not.toContain("CMDLINE_NORMAL");

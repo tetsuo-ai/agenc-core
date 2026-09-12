@@ -186,7 +186,7 @@ function taskProgressLabel(task: TaskState): string {
 
 function taskElapsedLabel(task: TaskState): string {
   if (typeof task.startTime !== "number" || task.startTime <= 0) return "—";
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - task.startTime) / 1000));
+  const elapsedSeconds = Math.max(0, Math.floor(((task.endTime ?? Date.now()) - task.startTime) / 1000));
   if (elapsedSeconds >= 3600) return `${Math.floor(elapsedSeconds / 3600)}h`;
   if (elapsedSeconds >= 60) return `${Math.floor(elapsedSeconds / 60)}m`;
   return `${elapsedSeconds}s`;
@@ -313,6 +313,12 @@ function buildTaskDetailRows(
   switch (task.type) {
     case "local_bash":
       addDetailRows(rows, "shell", "command", task.command, "text2");
+      if (task.daemonProcess) {
+        addDetailRows(rows, "shell", "cwd", task.daemonProcess.cwd, "subtle");
+        addDetailRows(rows, "shell", "owner", task.daemonProcess.ownerId, "subtle");
+      }
+      if (task.stopRequested) addDetailRows(rows, "shell", "stop", "Stopping process…", "inactive");
+      addDetailRows(rows, "shell", "stop error", task.stopError, "error");
       if (task.result) {
         addDetailRows(rows, "shell", "exit", `code ${task.result.code}`, task.result.code === 0 ? "success" : "error");
         addDetailRows(rows, "shell", "interrupted", task.result.interrupted ? "yes" : "no", task.result.interrupted ? "error" : "inactive");
@@ -392,6 +398,62 @@ function setAppStateFromContext(toolUseContext: unknown): ReturnType<typeof useS
   return null;
 }
 
+function shellOutputTailForTask(
+  task: TaskState | null,
+  shellOutputTails: Readonly<Record<string, ShellOutputTail | undefined>>,
+): ShellOutputTail | undefined {
+  if (task?.type !== "local_bash") return undefined;
+  if (task.daemonProcess !== undefined) {
+    return {
+      content: task.daemonProcess.outputTail,
+      bytesTotal: task.daemonProcess.outputBytes,
+    };
+  }
+  return shellOutputTails[task.id];
+}
+
+function TaskPreview({
+  task,
+  textWidth,
+  nameByAgentId,
+}: {
+  readonly task: TaskState;
+  readonly textWidth: number;
+  readonly nameByAgentId: ReadonlyMap<string, string>;
+}): React.ReactNode {
+  const detail = taskDetail(task);
+  return (
+    <Box flexDirection="column">
+      <ThemedText color={taskStatusColor(task.status)} bold={true}>
+        Task details
+      </ThemedText>
+      <ThemedText color="text2" wrap="truncate-end">
+        {truncateToWidth(`${task.status} · ${task.type} · ${formatBackgroundAgentIdentity(task, nameByAgentId) ?? taskTitle(task)}`, textWidth)}
+      </ThemedText>
+      <ThemedText color="inactive">{truncateToWidth(`id: ${task.id}`, textWidth)}</ThemedText>
+      {detail ? (
+        <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(detail, textWidth)}</ThemedText>
+      ) : null}
+      {"command" in task && task.command ? (
+        <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`command: ${task.command}`, textWidth)}</ThemedText>
+      ) : null}
+      {task.type === "local_bash" && task.stopRequested ? (
+        <ThemedText color="inactive">Stopping process…</ThemedText>
+      ) : null}
+      {task.type === "local_bash" && task.stopError ? (
+        <ThemedText color="error">{task.stopError}</ThemedText>
+      ) : null}
+      {"prompt" in task && task.prompt ? (
+        <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`prompt: ${task.prompt}`, textWidth)}</ThemedText>
+      ) : null}
+      <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(
+        task.type === "local_bash" && task.daemonProcess
+          ? "Open task detail to view output"
+          : `view output: ${task.outputFile}`, textWidth)}</ThemedText>
+    </Box>
+  );
+}
+
 export function BackgroundTasksPanel({
   onDone,
   initialDetailTaskId,
@@ -445,8 +507,8 @@ export function BackgroundTasksPanel({
     sorted.findIndex((task) => task.id === selectedTaskId),
   );
   const selectedTask = sorted[selectedIndex] ?? null;
-  const selectedShellOutputTail =
-    selectedTask?.type === "local_bash" ? shellOutputTails[selectedTask.id] : undefined;
+  const selectedDaemonProcess = selectedTask?.type === "local_bash" ? selectedTask.daemonProcess : undefined;
+  const selectedShellOutputTail = shellOutputTailForTask(selectedTask, shellOutputTails);
   const nameByAgentId = React.useMemo(() => {
     const inverted = new Map<string, string>();
     for (const [name, id] of agentNameRegistry ?? []) {
@@ -467,7 +529,7 @@ export function BackgroundTasksPanel({
     setDetailIndex((current) => Math.min(current, Math.max(0, detailRows.length - 1)));
   }, [detailRows.length]);
   React.useEffect(() => {
-    if (!showDetail || selectedTask?.type !== "local_bash") {
+    if (!showDetail || selectedTask?.type !== "local_bash" || selectedDaemonProcess !== undefined) {
       return;
     }
     let cancelled = false;
@@ -501,7 +563,7 @@ export function BackgroundTasksPanel({
         clearInterval(timer);
       }
     };
-  }, [showDetail, selectedTask?.id, selectedTask?.status, selectedTask?.type]);
+  }, [showDetail, selectedTask?.id, selectedTask?.status, selectedTask?.type, selectedDaemonProcess !== undefined]);
   const selectRelative = React.useCallback(
     (delta: number) => {
       const nextIndex = (selectedIndex + delta + sorted.length) % sorted.length;
@@ -626,7 +688,6 @@ export function BackgroundTasksPanel({
   }
 
   const listSelectedTask = selectedTask!;
-  const listSelectedTaskDetail = taskDetail(listSelectedTask);
   const listSelectedTaskStopAction = tuiStopActionForTask(listSelectedTask);
   const listSelectedTaskCanStop = listSelectedTaskStopAction !== null;
 
@@ -647,25 +708,11 @@ export function BackgroundTasksPanel({
       ]}
       hint={truncateToWidth("kinds · teammate · bash · local", taskTextWidth)}
       preview={
-        <Box flexDirection="column">
-          <ThemedText color={taskStatusColor(listSelectedTask.status)} bold={true}>
-            Task details
-          </ThemedText>
-          <ThemedText color="text2" wrap="truncate-end">
-            {truncateToWidth(`${listSelectedTask.status} · ${listSelectedTask.type} · ${formatBackgroundAgentIdentity(listSelectedTask, nameByAgentId) ?? taskTitle(listSelectedTask)}`, taskTextWidth)}
-          </ThemedText>
-          <ThemedText color="inactive">{truncateToWidth(`id: ${listSelectedTask.id}`, taskTextWidth)}</ThemedText>
-          {listSelectedTaskDetail ? (
-            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(listSelectedTaskDetail, taskTextWidth)}</ThemedText>
-          ) : null}
-          {"command" in listSelectedTask && listSelectedTask.command ? (
-            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`command: ${listSelectedTask.command}`, taskTextWidth)}</ThemedText>
-          ) : null}
-          {"prompt" in listSelectedTask && listSelectedTask.prompt ? (
-            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`prompt: ${listSelectedTask.prompt}`, taskTextWidth)}</ThemedText>
-          ) : null}
-          <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`view output: ${listSelectedTask.outputFile}`, taskTextWidth)}</ThemedText>
-        </Box>
+        <TaskPreview
+          task={listSelectedTask}
+          textWidth={taskTextWidth}
+          nameByAgentId={nameByAgentId}
+        />
       }
       renderRow={(task, _index, active) => [
         <ThemedText key="icon" color={taskKindColor(task)}>{taskKindIcon(task)}</ThemedText>,

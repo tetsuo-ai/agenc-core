@@ -25,6 +25,7 @@ import {
 import { resolveAgenCDaemonRequestTimeoutMs } from "./daemon-request-policy.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
+  AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   JSON_RPC_VERSION,
   type AgentAttachParams,
   type AgentAttachResult,
@@ -121,6 +122,7 @@ export interface AgenCDaemonTuiConnectionState {
 }
 
 export interface AgenCJsonLineDaemonTuiClient extends AgenCJsonLineDaemonRequestClient {
+  supportsMethod?(method: string): boolean;
   subscribeToNotifications(cb: (event: JsonObject) => void): () => void;
   subscribeToSessionEvents(
     sessionId: string,
@@ -419,6 +421,7 @@ async function createReconnectableDaemonTuiClient(options: {
   readonly initializeParams: JsonObject;
 }): Promise<AgenCJsonLineDaemonTuiClient> {
   const { socketPath, timeoutMs, initializeParams } = options;
+  let advertisedMethods = new Set<string>();
   const sessionListeners = new Map<string, Set<(event: JsonObject) => void>>();
   // Mirror the persistent client's pre-subscribe buffer so agent.attach
   // replay that arrives before the TUI wires subscribeToSessionEvents is not
@@ -560,8 +563,13 @@ async function createReconnectableDaemonTuiClient(options: {
         socketPath,
         timeoutMs,
       );
+      let nextMethods: string[] = [];
       try {
-        await nextClient.request("initialize", initializeParams);
+        const initialized = await nextClient.request("initialize", initializeParams);
+        const methods = isRecord(initialized.capabilities)
+          ? initialized.capabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]
+          : undefined;
+        if (isRecord(methods)) nextMethods = Object.keys(methods).filter(method => methods[method] === true);
         await reattachSessions(nextClient);
       } catch (error) {
         await nextClient.close().catch(() => {});
@@ -571,6 +579,7 @@ async function createReconnectableDaemonTuiClient(options: {
         await nextClient.close().catch(() => {});
         throw new Error("Daemon connection is closed");
       }
+      advertisedMethods = new Set(nextMethods);
       attachInnerClient(nextClient);
       return nextClient;
     };
@@ -619,6 +628,7 @@ async function createReconnectableDaemonTuiClient(options: {
   };
 
   const client: AgenCJsonLineDaemonTuiClient = {
+    supportsMethod: (method) => !closedByClient && advertisedMethods.has(method),
     request: async (method, params = {}, requestOptions = {}) => {
       if (requestOptions.signal?.aborted === true) {
         throw new Error("Daemon request cancelled");

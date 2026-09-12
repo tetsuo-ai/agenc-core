@@ -111,6 +111,7 @@ import { clearSystemPromptSections } from "../prompts/sections.js";
 import {
   resolveLatestSessionId,
   resolveResumeSessionId,
+  reproveResumeSessionAfterDaemonReady,
   type ResolvedResumeSession,
 } from "./resume-session.js";
 import {
@@ -2556,7 +2557,10 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
   | "reportEditorPredictionFeedback"
 >;
 
-type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
+type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & Pick<
+  AgenCTuiBridgeSession,
+  "listDaemonSessionProcesses" | "stopDaemonSessionProcess"
+> & {
   readonly workflowApprovalControls?: WorkflowApprovalControls;
   executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
   executeDaemonStatusLine?: AgenCTuiBridgeSession["executeDaemonStatusLine"];
@@ -3592,6 +3596,17 @@ async function createDeferredDaemonPromptTuiSession(params: {
     services: deferredServices,
     mcpSurfaceSnapshot: currentMcpSurfaceSnapshot,
     refreshMcpSurface: refreshCurrentMcpSurface,
+    // Process polling is observational: opening /tasks must not provision an
+    // agent or consume the first model-turn slot in an idle deferred TUI.
+    listDaemonSessionProcesses: async () =>
+      deferredSessionClosed ? undefined : liveSession?.listDaemonSessionProcesses?.(),
+    stopDaemonSessionProcess: async (taskId) => {
+      const live = liveSession;
+      if (deferredSessionClosed || typeof live?.stopDaemonSessionProcess !== "function") {
+        throw new Error("No live daemon session is available to stop this process.");
+      }
+      return live.stopDaemonSessionProcess(taskId);
+    },
     subscribeToMcpSurface: (cb) => {
       mcpSurfaceSubscribers.add(cb);
       const live = liveSession;
@@ -5353,6 +5368,10 @@ async function resumeResolvedTUIEntry(
     try {
       await deps.ensureDaemonReady(process.env)();
       assertResumeCwdProof(authoritative.cwd, cwdProof);
+      authoritative = reproveResumeSessionAfterDaemonReady(
+        authoritative,
+        options.agencHome,
+      );
     } catch (error) {
       process.stderr.write(
         `agenc: unable to resume session '${displayId}': ${

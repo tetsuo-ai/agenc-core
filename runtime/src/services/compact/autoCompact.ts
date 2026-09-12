@@ -229,7 +229,7 @@ export function getEffectiveContextWindowSize(
 }
 
 export function getEffectiveContextWindowSizeForEnvironment(
-  modelOrContext: string | CompactContext | undefined,
+  modelOrContext: string | Pick<CompactContext, "options"> | undefined,
   environment: ProviderEnvironment,
 ): number {
   const context = typeof modelOrContext === "object" ? modelOrContext : undefined;
@@ -252,7 +252,7 @@ export function getAutoCompactThreshold(
 }
 
 export function getAutoCompactThresholdForEnvironment(
-  modelOrContext: string | CompactContext | undefined,
+  modelOrContext: string | Pick<CompactContext, "options"> | undefined,
   environment: ProviderEnvironment,
 ): number {
   const contextWindow = getEffectiveContextWindowSizeForEnvironment(

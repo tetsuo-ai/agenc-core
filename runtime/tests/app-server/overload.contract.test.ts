@@ -20,6 +20,7 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonControlMessage(request("request.cancel"))).toBe(true);
     expect(isDaemonControlMessage(request("run.cancel"))).toBe(true);
     expect(isDaemonControlMessage(request("session.cancelTurn"))).toBe(true);
+    expect(isDaemonControlMessage(request("session.processes.stop"))).toBe(true);
     expect(isDaemonControlMessage(request("tool.cancel"))).toBe(true);
     expect(isDaemonControlMessage(request("commandExec.terminate"))).toBe(true);
 
@@ -61,6 +62,7 @@ describe("AgenC daemon overload control messages", () => {
       "run.evidence",
       "session.list",
       "session.snapshot",
+      "session.processes.list",
       "session.hooks.status",
       "health.ping",
       "health.ready",
@@ -117,6 +119,9 @@ describe("AgenC daemon overload control messages", () => {
     });
 
     expect(limiter.tryStart(request("session.cancelTurn"), 0)).toMatchObject({
+      admitted: true,
+    });
+    expect(limiter.tryStart(request("session.processes.stop"), 0)).toMatchObject({
       admitted: true,
     });
     expect(limiter.tryStart(request("run.cancel"), 0)).toMatchObject({

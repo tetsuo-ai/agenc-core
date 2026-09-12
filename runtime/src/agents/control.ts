@@ -280,6 +280,20 @@ export interface ListedAgent {
   readonly lastTaskMessage?: string;
 }
 
+/** Current native workers under one parent; closed handles are absent. */
+export interface NativeWorkerSnapshot {
+  readonly agentId: string;
+  readonly agentPath: string;
+  readonly nickname: string;
+  readonly role: string;
+  readonly prompt?: string;
+  readonly status: AgentStatus["status"];
+  readonly error?: string;
+  readonly toolUseCount: number;
+  readonly tokenCount: number;
+  readonly timing?: import("./status.js").NativeWorkerTiming;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Live handle an AgentControl returns on spawn
 // ─────────────────────────────────────────────────────────────────────
@@ -1314,7 +1328,8 @@ export class AgentControl {
     if (!agent.abortController.signal.aborted) {
       agent.abortController.abort(reason);
     }
-    agent.status.markInterrupted(agent.agentId, reason);
+    const interruptedStatus = agent.status.value;
+    agent.status.markInterrupted("turnId" in interruptedStatus ? interruptedStatus.turnId : agent.agentId, reason);
 
     // Cascade to descendants.
     for (const descendant of this.descendantsOf(agent.agentPath)) {
@@ -1856,6 +1871,36 @@ export class AgentControl {
       });
     }
 
+    return result;
+  }
+
+  snapshotNativeWorkers(parentThreadId: ThreadId): readonly NativeWorkerSnapshot[] {
+    const children = this.liveThreadSpawnChildren();
+    const pending = [parentThreadId];
+    const seen = new Set<ThreadId>(pending);
+    const result: NativeWorkerSnapshot[] = [];
+    for (let index = 0; index < pending.length; index++) {
+      for (const [id, metadata] of children.get(pending[index]!) ?? []) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const agent = this.live.get(id);
+        if (agent === undefined) continue;
+        pending.push(id);
+        const status = agent.status.value;
+        result.push({
+          agentId: id,
+          agentPath: agent.agentPath,
+          nickname: agent.nickname,
+          role: agent.role.name,
+          ...(metadata.lastTaskMessage !== undefined ? { prompt: metadata.lastTaskMessage } : {}),
+          status: status.status,
+          ...(status.status === "errored" ? { error: status.error } : {}),
+          toolUseCount: agent.toolCallCount,
+          tokenCount: agent.tokenUsage.totalTokens,
+          ...(agent.status.timing !== undefined ? { timing: { ...agent.status.timing } } : {}),
+        });
+      }
+    }
     return result;
   }
 

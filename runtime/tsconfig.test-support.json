@@ -17,6 +17,7 @@
   },
   "include": [
     "src/types/**/*.d.ts",
+    "tests/tui/session-transcript.typed-contract.test.ts",
     "tests/helpers/abort-harness.ts",
     "tests/helpers/bounded-file-io.ts",
     "tests/helpers/bounded-repository-filesystem.ts",

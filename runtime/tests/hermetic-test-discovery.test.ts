@@ -32,6 +32,8 @@ const LIVE_TEST_FILES = [
   "tests/live/eval-executor-docker.live.test.ts",
   "tests/live/eval-executor-egress.live.test.ts",
   "tests/live/grok-full-surface-e2e.live.test.ts",
+  "tests/live/imagine-image-backends.live.test.ts",
+  "tests/live/imagine-video-backends.live.test.ts",
   "tests/live/imagine-video-e2e.live.test.ts",
   "tests/live/xsearch-retry.live.test.ts",
   "tests/llm/provider.integration.test.ts",
@@ -93,6 +95,7 @@ const DEFAULT_POWERSHELL_TEST_FILES = [
 
 const NEOVIM_TEST_FILES = [
   "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
+  "tests/tui/workbench/buffer-neovim-host-save.real-neovim.test.ts",
 ] as const;
 
 function listTestFiles(config: string): string[] {
@@ -363,7 +366,7 @@ describe("hermetic test discovery", () => {
   it("real-Neovim discovery is an exact fail-closed hosted allowlist", () => {
     expect(listTestFiles("vitest.neovim.config.ts")).toEqual([
       ...NEOVIM_TEST_FILES,
-    ]);
+    ].sort());
     const capabilitySource = readFileSync(
       resolve(runtimeRoot, NEOVIM_TEST_FILES[0]),
       "utf8",

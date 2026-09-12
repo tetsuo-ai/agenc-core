@@ -553,7 +553,8 @@ async function resolveApproval(
     !requiresUserInteraction &&
     opts.guardianApprovalReviewer !== undefined &&
     shouldRouteApprovalToGuardian(opts.ctx);
-  if (shouldUseGuardian || opts.resolver) {
+  const defer = opts.ctx.invocation.session.services.deferInteractiveApprovals;
+  if (shouldUseGuardian || opts.resolver || defer !== undefined) {
     if (!activeApprovalTurnStillMatches(opts.ctx, opts.getActiveTurnId)) {
       return {
         decision: { kind: "abort" },
@@ -606,6 +607,11 @@ async function resolveApproval(
               ? { reason: result.reason }
               : {}),
         };
+      }
+      if (defer !== undefined) {
+        defer(opts.ctx.toolName);
+        return { decision: { kind: "abort" }, source: "aborted",
+          reason: "background_maintenance_requires_approval" };
       }
       const decision = await opts.resolver!.request({
         ...opts.ctx,

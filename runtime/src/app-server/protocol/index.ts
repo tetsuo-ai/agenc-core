@@ -31,10 +31,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.9 adds admitted shell execution on the daemon-owned live session for
  * internal clients.
  * 1.10 adds daemon-owned local routines and opt-in routine invalidations.
+ * 1.13 adds session-owned background process inspection and acknowledged stop.
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.12.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.13.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -124,6 +125,8 @@ export const AGENC_DAEMON_METHODS = [
   "session.terminate",
   "session.clear",
   "session.snapshot",
+  "session.processes.list",
+  "session.processes.stop",
   "session.transcript",
   "session.transcript.v2",
   "session.cancelTurn",
@@ -504,6 +507,20 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Read live turn and token-usage counters for a daemon-owned session.",
+  },
+  "session.processes.list": {
+    method: "session.processes.list",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "List yielded command processes and recent outcomes for a live session.",
+  },
+  "session.processes.stop": {
+    method: "session.processes.stop",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Stop a session-owned background process by opaque task ID and await its exit.",
   },
   "session.transcript": {
     method: "session.transcript",
@@ -1528,6 +1545,37 @@ export interface SessionSnapshotParams extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface SessionProcessesListParams extends JsonObject {
+  readonly sessionId: string;
+}
+
+export interface SessionProcessesStopParams extends JsonObject {
+  readonly sessionId: string;
+  readonly taskId: string;
+}
+
+export interface SessionProcessSnapshot extends JsonObject {
+  readonly taskId: string;
+  readonly command: string;
+  readonly cwd: string;
+  readonly tty: boolean;
+  readonly ownerId?: string;
+  readonly startedAt: number;
+  readonly endedAt?: number;
+  readonly status: "running" | "completed" | "failed" | "killed";
+  readonly exitCode?: number;
+  readonly outputTail: string;
+  readonly outputBytes: number;
+}
+
+export interface SessionProcessesListResult extends JsonObject {
+  readonly processes: SessionProcessSnapshot[];
+}
+
+export interface SessionProcessesStopResult extends JsonObject {
+  readonly stopped: boolean;
+}
+
 export interface SessionCancelTurnParams extends JsonObject {
   readonly sessionId: string;
   readonly reason?: string;
@@ -2428,6 +2476,8 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
+  | AgenCDaemonRequestWithParams<"session.processes.list", SessionProcessesListParams>
+  | AgenCDaemonRequestWithParams<"session.processes.stop", SessionProcessesStopParams>
   | AgenCDaemonRequestWithParams<"session.transcript", SessionTranscriptParams>
   | AgenCDaemonRequestWithParams<
       "session.transcript.v2",
@@ -3139,8 +3189,28 @@ export interface SessionResolveToolCallResult extends JsonObject {
 }
 
 /** Counters from the daemon-owned in-process session. */
+export interface SessionNativeWorkerSnapshot extends JsonObject {
+  readonly agentId: string;
+  readonly agentPath: string;
+  readonly nickname: string;
+  readonly role: string;
+  readonly prompt?: string;
+  readonly status: "pending_init" | "running" | "idle" | "completed" | "errored" | "shutdown" | "not_found" | "interrupted";
+  readonly error?: string;
+  readonly toolUseCount: number;
+  readonly tokenCount: number;
+  /** Current assignment's Unix-ms execution interval, when known by the daemon. */
+  readonly timing?: {
+    readonly turnId: string;
+    readonly startedAt: number;
+    readonly endedAt?: number;
+  };
+}
+
 export interface SessionSnapshotResult extends JsonObject {
   readonly sessionId: string;
+  /** Current native descendants of this session; omitted by older daemons. */
+  readonly nativeWorkers?: readonly SessionNativeWorkerSnapshot[];
   /** Number of completed turns recorded in the session's history. */
   readonly turnCount: number;
   readonly tokenUsage: {
@@ -3173,6 +3243,8 @@ export interface SessionSnapshotResult extends JsonObject {
     readonly estimated?: boolean;
     /** The model's real window, so shares are against the truth. */
     readonly windowTokens: number;
+    /** Daemon-owned capacity after effective-model and compaction-window policy. */
+    readonly effectiveWindowTokens?: number;
     readonly messageTokens: number;
     readonly systemPromptTokens: number;
     /** Always-loaded built-in tool schemas. */
@@ -3968,6 +4040,8 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.terminate": SessionTerminateResult;
   readonly "session.clear": SessionClearResult;
   readonly "session.snapshot": SessionSnapshotResult;
+  readonly "session.processes.list": SessionProcessesListResult;
+  readonly "session.processes.stop": SessionProcessesStopResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.transcript.v2": SessionTranscriptV2Result;
   readonly "session.cancelTurn": SessionCancelTurnResult;

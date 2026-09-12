@@ -655,6 +655,7 @@ vi.mock("./dialogs/CostThresholdDialog.js", async () => {
 
 vi.mock("./PromptInput/PromptInput.js", async () => {
   const React = await import("react");
+  const { parseLocalControlCommand } = await import("../../../src/commands/local-control.js");
   return {
     default: ({
       input,
@@ -720,7 +721,8 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       const guardedOnSubmit: typeof onSubmit = async (...args) => {
         if (
           submissionBlockedReason !== null &&
-          submissionBlockedReason !== undefined
+          submissionBlockedReason !== undefined &&
+          !(mode === "prompt" && parseLocalControlCommand(args[0]) !== null)
         ) {
           onSubmissionBlocked?.(submissionBlockedReason);
           return;
@@ -5575,6 +5577,46 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test.each([false, true])("shares daemon resident context between header and /context (effective capacity: %s)", async effective => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { contextCommand } = await import("../../../src/commands/session-compact.js");
+    const snapshot = {
+      sessionId: "daemon-context-session", turnCount: 7,
+      tokenUsage: { inputTokens: 838_609, outputTokens: 5_000, totalTokens: 843_609, costUsd: 1 },
+      cacheStats: { requestCount: 10, cacheReadInputTokens: 8_000, cacheCreationInputTokens: 400, cacheTotalInputTokens: 10_000, hitRate: 0.8 },
+      contextBreakdown: {
+        model: "grok-4.3", windowTokens: effective ? 2_000_000 : 500_000,
+        ...(effective ? { effectiveWindowTokens: 500_000 } : {}),
+        messageTokens: 50_000, systemPromptTokens: 3_000, systemToolTokens: 1_000, systemToolCount: 2,
+        mcpToolTokens: 300, mcpToolCount: 1, memoryFileTokens: 24, memoryFileCount: 1,
+        deferredToolTokens: 200_000, deferredToolCount: 10,
+      },
+    };
+    const read = vi.fn(async () => snapshot);
+    const session = {
+      ...createSession(), getDaemonSessionSnapshot: read,
+      getInitialTranscriptEvents: () => [{ type: "token_count", payload: { promptTokens: 110_000, completionTokens: 500 } }],
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+    fullscreenProbe.fullscreen = true;
+    process.env.AGENC_TUI_WORKBENCH = "1";
+    try {
+      await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+        await vi.waitFor(() => expect(providerProbe.workbenchLayoutProps.at(-1)?.contextPctLabel).toBe("ctx 11%"));
+        const modal = vi.fn();
+        await contextCommand.execute({ session: session as never, argsRaw: "", cwd: process.cwd(), home: "", appState: { setToolJSX: modal } });
+        const report = modal.mock.calls[0]![0].jsx.props.text as string;
+        expect(report).toContain("Context: 54,324 / 500,000 tokens (11% of hard limit)");
+        expect(report).toContain("prompt cache: 80% hit");
+        expect(report).not.toContain("838,609");
+        expect(read).toHaveBeenCalledTimes(2); // one shared poll plus explicit /context
+        Object.assign(session, { conversationId: "replacement-conversation" });
+        (providerProbe.promptProps.at(-1)?.onInputChange as (value: string) => void)("new draft");
+        await vi.waitFor(() => expect(providerProbe.workbenchLayoutProps.at(-1)?.contextPctLabel).toBeNull());
+      });
+    } finally { resetShellSurfaceProbe(); }
+  });
+
   test("passes live MCP clients and tools through the App shell", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const failedClient = {
@@ -6740,6 +6782,88 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test.each([
+    ["grok-login", "grok-login", "text"],
+    ["grok-login", "xai-login", "error"],
+    ["grok-logout", "grok-logout", "error"],
+    ["grok-logout", "xai-logout", "text"],
+    ["openai-login", "openai-login", "text"],
+    ["openai-login", "chatgpt-login", "error"],
+    ["openai-logout", "openai-logout", "error"],
+    ["openai-logout", "chatgpt-logout", "text"],
+  ] as const)("keeps provider auth outcomes visible for %s via /%s (%s)", async (canonical, invocation, kind) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { xaiAuthCommands } = await import("../../commands/xai-auth.js");
+    const { openaiAuthCommands } = await import("../../commands/openai-auth.js");
+    const command = [...xaiAuthCommands, ...openaiAuthCommands].find(
+      (candidate) => candidate.name === canonical,
+    )!;
+    const message = `${canonical} ${kind} outcome`;
+    const expectedDisplay = kind === "error" ? `Error: ${message}` : message;
+    // Keep the actual registry and dispatcher, including canonical alias
+    // resolution. Replace only the credential-bearing command execution.
+    const execute = vi.spyOn(command, "execute").mockImplementation(async (ctx) => {
+      if (canonical.endsWith("-login")) {
+        ctx.appState?.setToolJSX?.({
+          jsx: React.createElement("ink-text", null, "authorization pending"),
+          isLocalJSXCommand: true,
+          shouldHidePromptInput: false,
+        });
+        ctx.appState?.setToolJSX?.({
+          jsx: null,
+          shouldHidePromptInput: false,
+          clearLocalJSX: true,
+        });
+      }
+      return kind === "error"
+        ? { kind, message }
+        : { kind, text: message };
+    });
+    const submit = vi.fn(async () => {});
+    const session = { ...createSession(), submit } satisfies AgenCBridgeSession;
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    resetShellSurfaceProbe();
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async ({ output }) => {
+          vi.useFakeTimers();
+          try {
+            await providerProbe.promptSubmits.at(-1)!(`/${invocation}`, helpers);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(stripAnsi(output()).replaceAll(/\s/g, "")).toContain(
+              `${kind}outcome`,
+            );
+            await vi.advanceTimersByTimeAsync(4_000);
+            await vi.advanceTimersByTimeAsync(50);
+            // Inspect the current rendered state, not accumulated terminal
+            // output, which also contains messages that already disappeared.
+            expect(providerProbe.messageProps.at(-1)?.toolJSX).toMatchObject({
+              jsx: { props: { children: { props: { children: expectedDisplay } } } },
+              shouldHidePromptInput: false,
+            });
+            expect(execute).toHaveBeenCalledOnce();
+            expect(submit).not.toHaveBeenCalled();
+
+            await providerProbe.promptSubmits.at(-1)!("/unknown-auth-result-fixture", helpers);
+            await vi.advanceTimersByTimeAsync(4_000);
+            await vi.advanceTimersByTimeAsync(50);
+            expect(providerProbe.messageProps.at(-1)?.toolJSX).toBeNull();
+            expect(submit).not.toHaveBeenCalled();
+          } finally {
+            vi.useRealTimers();
+          }
+        },
+      );
+    } finally {
+      execute.mockRestore();
+    }
+  });
+
   test("keeps the canonical model menu open after a prior transient result expires", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const dispatcher = await import("../../commands/dispatcher.js");
@@ -7847,6 +7971,74 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test.each([
+    { command: "/tasks", blocked: true, busy: true },
+    { command: "/jobs", blocked: true, busy: false },
+    { command: "/status", blocked: false, busy: true },
+    { command: "/swarm status", blocked: true, busy: true },
+  ])("runs $command locally with Editor blocked=$blocked and turn busy=$busy", async ({ command, blocked, busy }) => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { tasksCommand } = await import("../../../src/commands/tasks.js");
+    const { statusCommand } = await import("../../../src/commands/status.js");
+    const { swarmCommand } = await import("../../../src/commands/swarm.js");
+    const { applyWorkbenchCommand } = await import("../workbench/state.js");
+    const { getWorkbenchBufferProviderController } =
+      await import("../workbench/buffer/providers/BufferProviderController.js");
+    const { getCommandQueueSnapshot, resetCommandQueueForTesting } =
+      await import("../../utils/messageQueueManager.js");
+    const controller = getWorkbenchBufferProviderController();
+    const snapshot = controller.getSnapshot();
+    const snapshotSpy = vi.spyOn(controller, "getSnapshot").mockReturnValue({
+      ...snapshot,
+      provider: { ...snapshot.provider, kind: "neovim", label: "embedded Neovim" },
+      providerStatus: "ready",
+      workspaceAuthorityRequired: blocked,
+    });
+    const target = command === "/status" ? statusCommand : command.startsWith("/swarm") ? swarmCommand : tasksCommand;
+    const execute = vi.spyOn(target, "execute");
+    const submit = vi.fn(async () => {});
+    const session = {
+      ...createSession(),
+      submit,
+      ...(busy ? { activeTurn: { unsafePeek: () => ({ turnId: "busy-parent" }) } } : {}),
+    } satisfies AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    const pastedContents = { 12: { id: 12, type: "image", content: "keep-image", mediaType: "image/png", filename: "keep.png" } };
+    resetShellSurfaceProbe();
+    resetCommandQueueForTesting();
+    fullscreenProbe.fullscreen = true;
+    process.env.AGENC_TUI_WORKBENCH = "1";
+    try {
+      await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} initialComposerText={command} />, async ({ output }) => {
+        await vi.waitFor(() => {
+          expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(busy);
+          if (blocked) expect(providerProbe.promptProps.at(-1)?.submissionBlockedReason).toContain("does not support authoritative Editor");
+        });
+        providerProbe.setAppState!(state => applyWorkbenchCommand(state as never, {
+          type: "attach", attachment: { id: "file:src/keep.ts", kind: "file", label: "src/keep.ts", path: "src/keep.ts" },
+        }) as never);
+        (providerProbe.promptProps.at(-1)?.setPastedContents as (next: Record<number, unknown>) => void)(pastedContents);
+        await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ pastedContents }));
+        await providerProbe.promptSubmits.at(-1)!(command, helpers);
+        expect(execute).toHaveBeenCalledTimes(1);
+        expect(submit).not.toHaveBeenCalled();
+        expect(getCommandQueueSnapshot()).toHaveLength(0);
+        if (target === tasksCommand) {
+          await vi.waitFor(() => expect(stripAnsi(output()).replaceAll(/\s/g, "")).toContain("Nobackgroundtasks"));
+          execute.mock.calls[0]![0].appState!.setToolJSX!({ jsx: null, shouldHidePromptInput: false, clearLocalJSX: true });
+        }
+        await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "", pastedContents, isLoading: busy }));
+        expect((providerProbe.currentAppState?.workbench as { composerAttachmentIds?: string[] }).composerAttachmentIds).toEqual(["file:src/keep.ts"]);
+        expect(helpers.clearBuffer).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      execute.mockRestore();
+      snapshotSpy.mockRestore();
+      resetCommandQueueForTesting();
+      resetShellSurfaceProbe();
+    }
+  });
+
   test("fails closed and preserves Agent input while editor authority is blocked", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const { applyWorkbenchCommand } = await import("../workbench/state.js");
@@ -8717,6 +8909,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const session = {
       ...createSession({
         configStore: createAppConfigStore(defaultConfig(), agencHome),
+        authBackend: { saveByokKey: vi.fn(async () => {}) } as never,
       }),
       submit: vi.fn(async () => {}),
       setPendingProviderSwitch: vi.fn(),
@@ -8726,7 +8919,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     // for the hosted-access path, breaking the scripted anonymous flow.
     const previousAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = agencHome;
-    const fetchSpy = mockOfflineOnboardingFetch();
+    // A starter turn requires verified model access; configuring later must
+    // finish onboarding without silently admitting an unauthenticated turn.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
     providerProbe.promptSubmits.length = 0;
     try {
       const helpers = {
@@ -8774,8 +8971,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             "PressEntertokeepgrok,ortypeanumberorproviderslug.",
           );
           await submit("2", "OPENAI_API_KEY");
-          await submit("skip", "PressEntertoruntheconnectioncheck");
-          await submit("test", "Sandboxworkspace-write");
+          await submit("sk-onboarding-app-fixture", "ApproveBYOKAPIkey");
+          await submit("yes", "PressEntertokeepthesedefaults.");
           await submit("", "PressEntertofinishonboarding");
           await submit("", "spinner:requesting:");
 
@@ -9029,7 +9226,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           expect(session.setPendingProviderSwitch).toHaveBeenCalledTimes(1);
           expect(session.setPendingProviderSwitch).toHaveBeenCalledWith({
             provider: "deepseek",
-            model: "deepseek-v4-flash",
+            model: "deepseek-flash",
           });
           expect(savedKeys.get("deepseek")).toBe(
             "sk-deepseek-onboarding-test",
@@ -9039,8 +9236,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             "utf8",
           );
           expect(configToml).toContain('"model_provider" = "deepseek"');
-          expect(configToml).toContain('"model" = "deepseek-v4-flash"');
-          expect(configToml).toContain('"default_model" = "deepseek-v4-flash"');
+          expect(configToml).toContain('"model" = "deepseek-flash"');
+          expect(configToml).toContain('"default_model" = "deepseek-flash"');
         },
       );
     } finally {

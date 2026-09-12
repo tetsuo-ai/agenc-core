@@ -1514,6 +1514,38 @@ describe("embedded Neovim lifecycle", () => {
     expect(dirtyFlagFromRpcNotificationParams([])).toBe(false);
   });
 
+  it.each([false, true])("starts with dirty-state tracking when BufModifiedSet support is %s", async (supportsBufModifiedSet) => {
+    const filePath = join(dir, "target.txt");
+    const registered: string[] = [];
+    vi.spyOn(NeovimRpcTransport.prototype, "request").mockImplementation(async (method, params = []) => {
+      if (method === "nvim_eval") return supportsBufModifiedSet ? 1 : 0;
+      if (method === "nvim_buf_get_name") return filePath;
+      if (method === "nvim_exec_lua") return bufferManifest(false);
+      if (method === "nvim_command" && String(params[0]).startsWith("autocmd ")) {
+        const command = String(params[0]);
+        if (!supportsBufModifiedSet && command.includes("BufModifiedSet")) {
+          throw new NeovimRpcError(method, 1, [0, "E216: No such group or event: BufModifiedSet"]);
+        }
+        registered.push(command);
+      }
+      return null;
+    });
+    const session = await startEmbeddedNeovim({
+      executable: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: dir, filePath, line: 1, column: 0,
+      size: { rows: 6, columns: 40 }, cleanupTimeoutMs: 20,
+      onSnapshot: () => {}, onError: () => {}, onExit: () => {},
+    });
+    try {
+      expect(registered.some((command) => command.includes("BufModifiedSet"))).toBe(supportsBufModifiedSet);
+      expect(registered).toContain("autocmd OptionSet endofline,modified call AgenCBufferPublishState()");
+      expect(registered.some((command) => command.includes("TextChanged"))).toBe(true);
+    } finally {
+      await session.cleanup();
+    }
+  });
+
   it("preflights every dirty buffer before Save All and writes by stable handle", async () => {
     const child = fakeChild({
       exitCode: 0,

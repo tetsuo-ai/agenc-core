@@ -940,7 +940,7 @@ jobs:
           fi
           test "$(nvim --version | sed -n '1p')" = "NVIM v0.12.1"
 
-      - name: Run the exact real-Neovim lifecycle suite
+      - name: Run the exact real-Neovim lifecycle and host-save suites
         shell: bash
         run: |
           set -euo pipefail
@@ -960,15 +960,17 @@ jobs:
           const [resultsPath] = process.argv.slice(2);
           if (!resultsPath) throw new Error("missing Neovim-test results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
-          const expectedFile =
-            "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts";
+          const expectedFiles = [
+            "tests/tui/workbench/buffer-neovim-host-save.real-neovim.test.ts",
+            "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
+          ];
           const exactCounts = {
-            numTotalTestSuites: 2,
-            numPassedTestSuites: 2,
+            numTotalTestSuites: 4,
+            numPassedTestSuites: 4,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 18,
-            numPassedTests: 18,
+            numTotalTests: 21,
+            numPassedTests: 21,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -983,20 +985,19 @@ jobs:
           if (
             results.success !== true ||
             !Array.isArray(results.testResults) ||
-            results.testResults.length !== 1
+            results.testResults.length !== expectedFiles.length
           ) {
-            throw new Error("Neovim-test result did not report one successful file");
+            throw new Error("Neovim-test result did not report both successful files");
           }
-          const file = relative(
-            resolve("runtime"),
-            results.testResults[0].name,
-          ).split("\\").join("/");
-          if (file !== expectedFile) {
+          const files = results.testResults.map((result) =>
+            relative(resolve("runtime"), result.name).split("\\").join("/"),
+          ).sort();
+          if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
             throw new Error(
-              `Neovim-test file was ${JSON.stringify(file)}, expected ${expectedFile}`,
+              `Neovim-test files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Neovim capability lane passed 18 tests in 1 file with zero skipped");
+          console.log("Neovim capability lane passed 21 tests in 2 files with zero skipped");
           NODE
 
       - name: Run provider and observed-descendant platform contracts
@@ -1025,8 +1026,8 @@ jobs:
             "tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
           ];
           const exactCounts = {
-            numTotalTests: 68,
-            numPassedTests: 68,
+            numTotalTests: 71,
+            numPassedTests: 71,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
             numFailedTests: 0,
@@ -1054,7 +1055,7 @@ jobs:
             );
           }
           console.log(
-            "Neovim provider/observed-descendant platform lane passed 68 tests in 3 files with zero skipped",
+            "Neovim provider/observed-descendant platform lane passed 71 tests in 3 files with zero skipped",
           );
           NODE
 

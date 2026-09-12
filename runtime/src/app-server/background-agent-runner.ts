@@ -18,6 +18,8 @@ import {
   completedEventReplayRequired,
 } from "./background-agent-runner/completed-event-cache.js";
 import { roughTokenCountEstimation } from "../llm/token-estimation.js";
+import { modelContextWindow } from "../session/turn-context.js";
+import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/autoCompact.js";
 import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
@@ -130,6 +132,8 @@ import type {
   SessionPreviewFileRewindResult,
   SessionRewindFilesToMessageResult,
   SessionSnapshotResult,
+  SessionProcessesListResult,
+  SessionProcessesStopResult,
   SessionTranscriptResult,
   SessionTranscriptV2Result,
   SessionPermissionRuleMutationParams,
@@ -2715,6 +2719,33 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
+  async listAgentSessionProcesses(agentId: string): Promise<SessionProcessesListResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const manager = active.bootstrap.session.services.unifiedExecManager;
+    if (manager.listBackgroundProcesses === undefined) {
+      throw new Error("Background process inspection is not available for this daemon session.");
+    }
+    return { processes: manager.listBackgroundProcesses().map((snapshot) => ({ ...snapshot })) };
+  }
+
+  async stopAgentSessionProcess(
+    agentId: string,
+    taskId: string,
+  ): Promise<SessionProcessesStopResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const manager = active.bootstrap.session.services.unifiedExecManager;
+    if (manager.stopBackgroundProcess === undefined) {
+      throw new Error("Background process control is not available for this daemon session.");
+    }
+    return manager.stopBackgroundProcess(taskId);
+  }
+
   async snapshotAgentSession(
     agentId: string,
     params: AgenCBackgroundAgentSnapshotSessionParams,
@@ -2739,9 +2770,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // items, but it's a closer signal than the raw item count.
     const turnCount = Math.max(0, Math.floor(historyLength / 2));
     const cache = await this.#sessionCacheStatsSnapshot(active);
+    if (this.#active.get(agentId) !== active || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
     const breakdown = this.#sessionContextBreakdown(active);
     return {
       sessionId: params.sessionId,
+      nativeWorkers: (active.control.snapshotNativeWorkers?.(active.bootstrap.session.conversationId) ?? [])
+        .map((worker) => ({ ...worker })),
       turnCount,
       tokenUsage: {
         inputTokens: finiteNumber(usage.inputTokens),
@@ -2855,6 +2891,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           readonly modelInfo?: {
             readonly slug?: unknown;
             readonly contextWindow?: unknown;
+            readonly effectiveContextWindowPercent?: number;
           };
         }
       ).modelInfo;
@@ -2874,11 +2911,23 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             ? sessionConfiguration.provider.slug
             : undefined;
 
+      const rawWindow = finiteNumber(liveModelInfo?.contextWindow ?? 0);
+      const effectiveModelWindow = modelContextWindow({ modelInfo: {
+        contextWindow: rawWindow,
+        effectiveContextWindowPercent: liveModelInfo?.effectiveContextWindowPercent ?? 100,
+      } });
+      const effectiveWindowTokens = rawWindow > 0
+        ? getEffectiveContextWindowSizeForEnvironment({ options: {
+          mainLoopModel: model,
+          contextWindowTokens: effectiveModelWindow,
+        } }, bootstrap.session.services.providerEnvironment ?? {})
+        : undefined;
       return {
         ...(provider !== undefined ? { provider } : {}),
         ...(model !== undefined ? { model } : {}),
         estimated: true,
-        windowTokens: finiteNumber(liveModelInfo?.contextWindow ?? 0),
+        windowTokens: rawWindow,
+        ...(effectiveWindowTokens !== undefined ? { effectiveWindowTokens } : {}),
         messageTokens: finiteNumber(messageTokens),
         systemPromptTokens: finiteNumber(estimate(instructions)),
         systemToolTokens: finiteNumber(systemToolTokens),

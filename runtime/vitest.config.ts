@@ -154,6 +154,7 @@ export const POWERSHELL_TEST_INCLUDE = Object.freeze([
 
 /** Real-Neovim integration tests executed by the pinned hosted capability lane. */
 export const NEOVIM_TEST_INCLUDE = Object.freeze([
+  "tests/tui/workbench/buffer-neovim-host-save.real-neovim.test.ts",
   "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
 ]);
 

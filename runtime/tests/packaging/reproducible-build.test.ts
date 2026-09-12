@@ -395,9 +395,14 @@ describe("reproducible install and release contract", () => {
     expect(neovimJob).toContain(
       "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
     );
-    expect(neovimJob).toContain("numTotalTestSuites: 2");
-    expect(neovimJob).toContain("numTotalTests: 18");
-    expect(neovimJob).toContain("results.testResults.length !== 1");
+    expect(neovimJob).toContain(
+      "tests/tui/workbench/buffer-neovim-host-save.real-neovim.test.ts",
+    );
+    expect(neovimJob).toContain("numTotalTestSuites: 4");
+    expect(neovimJob).toContain("numTotalTests: 21");
+    expect(neovimJob).toContain(
+      "results.testResults.length !== expectedFiles.length",
+    );
     expect(neovimJob).toContain('if test "$RUNNER_OS" = "Windows"; then');
     expect(neovimJob).toContain(
       '"$npm_command" rebuild better-sqlite3 esbuild',
