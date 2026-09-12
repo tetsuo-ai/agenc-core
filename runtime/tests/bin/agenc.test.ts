@@ -36,6 +36,7 @@ import {
   main,
   maybeReloadConfigBetweenTurns,
   oneShotCLI,
+  oneShotFinalMessageRemainder,
   parseStreamJsonPrompt,
   prepareTurnRuntimeInputs,
   resolveCliCwdForStartup,
@@ -1926,6 +1927,45 @@ describe("main() smoke", () => {
       await rm(tmpHome, { recursive: true, force: true });
       await rm(tmpCwd, { recursive: true, force: true });
     }
+  });
+
+  it("oneShotCLI writes the answer once when the daemon streams deltas and then the complete message", async () => {
+    // The daemon path emits every assistant message twice: as streamed
+    // deltas (event.message_chunk / agent_message_delta) and then as one
+    // complete agent_message transcript event. Print mode used to write
+    // both, so `agenc -p` answered "pongpong".
+    await withOneShotTestEnvironment("agenc-once-", async ({ cwd, run, stdout }) => {
+      const agentId = "agent_once";
+      const sessionId = "session_once";
+      const transcript = (eventId: string, type: string, payload: Record<string, string>) => ({
+        method: "event.session_event",
+        params: { sessionId, eventId, agentId, msg: { type, payload } },
+      });
+      installDaemonCliDepsForTest({
+        agentId,
+        sessionId,
+        cwd,
+        oneShotEvents: [
+          { method: "event.message_chunk", params: { sessionId, eventId: "once_delta_1", agentId, delta: "po" } },
+          transcript("once_delta_2", "agent_message_delta", { delta: "ng" }),
+          transcript("once_final_1", "agent_message", { message: "pong" }),
+          // A second message with no deltas at all is still written whole.
+          transcript("once_final_2", "agent_message", { message: "and done" }),
+          { method: "event.agent_status", params: { sessionId, eventId: "once_complete", agentId, status: "idle", runStatus: "completed" } },
+        ],
+      });
+      const code = await run(() => oneShotCLI("Reply with exactly the word pong"), 10_000);
+      expect(code).toBe(0);
+      expect(stdout()).toBe("pong\nand done\n");
+    });
+  });
+
+  it("oneShotFinalMessageRemainder adds only what the deltas did not carry", () => {
+    expect(oneShotFinalMessageRemainder("", "pong")).toBe("pong\n");
+    expect(oneShotFinalMessageRemainder("pong", "pong")).toBe("\n");
+    expect(oneShotFinalMessageRemainder("po", "pong")).toBe("ng\n");
+    // Disagreement keeps both texts rather than dropping either.
+    expect(oneShotFinalMessageRemainder("draft", "final answer")).toBe("\nfinal answer\n");
   });
 
   it.each([
