@@ -22,8 +22,8 @@ import {
 import {
   coerceUsage,
   collectRequestMetrics,
-  normalizeFinishReason,
   normalizeToolCalls,
+  requireMappedFinishReason,
   parseAnthropicToolChoice,
   prepareMessagesForWire,
   toAnthropicMessageContent,
@@ -571,7 +571,7 @@ export function parseAnthropicMessagesResponse(
         toolCalls.length === 0 &&
         structuredOutput
         ? "stop"
-        : normalizeFinishReason(response.stop_reason),
+        : requireMappedFinishReason("anthropic", response.stop_reason),
     requestMetrics: withEndpointMarkers(requestMetrics, "/messages", response),
     ...(structuredOutput ? { structuredOutput } : {}),
     ...(thinking.length > 0 ? { thinking } : {}),

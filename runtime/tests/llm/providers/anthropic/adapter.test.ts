@@ -954,4 +954,84 @@ describe("AnthropicProvider", () => {
     expect(headers.get("x-api-key")).toBe("anthropic-test");
     expect(headers.get("accept")).toBe("text/event-stream");
   });
+
+  test("maps chat model_context_window_exceeded to length", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_window",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4.5",
+          content: [
+            { type: "text", text: "truncated answer" },
+            {
+              type: "tool_use",
+              id: "toolu_cut",
+              name: "system.echo",
+              input: { text: "incomplete" },
+            },
+          ],
+          stop_reason: "model_context_window_exceeded",
+          usage: { input_tokens: 8, output_tokens: 4 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-sonnet-4.5",
+      fetchImpl,
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "fill the window" }],
+    );
+
+    expect(response.finishReason).toBe("length");
+    expect(response.content).toBe("truncated answer");
+  });
+
+  test("rejects chat pause_turn as an unsupported provider state", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_pause",
+          type: "message",
+          role: "assistant",
+          model: "claude-opus-4-7",
+          content: [
+            { type: "text", text: "searching" },
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_1",
+              name: "web_search",
+              input: { query: "latest news" },
+            },
+          ],
+          stop_reason: "pause_turn",
+          usage: { input_tokens: 3, output_tokens: 2 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-opus-4-7",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "search the web" }]),
+    ).rejects.toMatchObject({
+      name: "LLMInvalidResponseError",
+      message: expect.stringContaining("pause_turn"),
+    });
+  });
 });

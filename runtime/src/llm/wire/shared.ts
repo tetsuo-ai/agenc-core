@@ -8,11 +8,13 @@ import type {
   LLMChatOptions,
   LLMContentPart,
   LLMMessage,
+  LLMResponse,
   LLMTool,
   LLMToolCall,
   LLMToolChoice,
   LLMUsage,
 } from "../types.js";
+import { LLMInvalidResponseError } from "../errors.js";
 import { normalizeMessagesForAPI } from "../messages.js";
 import { validateToolCall, validateToolCallDetailed } from "../types.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
@@ -302,27 +304,56 @@ export function coerceUsage(usage: {
   };
 }
 
-export function normalizeFinishReason(
+type LLMFinishReason = LLMResponse["finishReason"];
+
+type ProviderStopOutcome =
+  | { readonly kind: "mapped"; readonly finishReason: LLMFinishReason }
+  | { readonly kind: "unsupported" };
+
+const PROVIDER_STOP_REASON_OUTCOME: {
+  readonly [reason: string]: ProviderStopOutcome;
+} = {
+  tool_calls: { kind: "mapped", finishReason: "tool_calls" },
+  tool_use: { kind: "mapped", finishReason: "tool_calls" },
+  length: { kind: "mapped", finishReason: "length" },
+  max_tokens: { kind: "mapped", finishReason: "length" },
+  model_context_window_exceeded: { kind: "mapped", finishReason: "length" },
+  content_filter: { kind: "mapped", finishReason: "content_filter" },
+  refusal: { kind: "mapped", finishReason: "content_filter" },
+  sensitive: { kind: "mapped", finishReason: "content_filter" },
+  error: { kind: "mapped", finishReason: "error" },
+  network_error: { kind: "mapped", finishReason: "error" },
+  pause_turn: { kind: "unsupported" },
+};
+
+function providerStopReasonKey(reason: unknown): string {
+  return typeof reason === "string" ? reason : "";
+}
+
+function outcomeForProviderStopReason(reason: unknown): ProviderStopOutcome {
+  return PROVIDER_STOP_REASON_OUTCOME[providerStopReasonKey(reason)] ?? {
+    kind: "mapped",
+    finishReason: "stop",
+  };
+}
+
+export function normalizeFinishReason(reason: unknown): LLMFinishReason {
+  const outcome = outcomeForProviderStopReason(reason);
+  return outcome.kind === "mapped" ? outcome.finishReason : "error";
+}
+
+export function requireMappedFinishReason(
+  providerName: string,
   reason: unknown,
-): "stop" | "tool_calls" | "length" | "content_filter" | "error" {
-  switch (String(reason ?? "")) {
-    case "tool_calls":
-    case "tool_use":
-      return "tool_calls";
-    case "length":
-    case "max_tokens":
-    case "model_context_window_exceeded":
-      return "length";
-    case "content_filter":
-    case "refusal":
-    case "sensitive":
-      return "content_filter";
-    case "error":
-    case "network_error":
-      return "error";
-    default:
-      return "stop";
+): LLMFinishReason {
+  const outcome = outcomeForProviderStopReason(reason);
+  if (outcome.kind === "unsupported") {
+    throw new LLMInvalidResponseError(
+      providerName,
+      `Unsupported provider state ${JSON.stringify(providerStopReasonKey(reason))}`,
+    );
   }
+  return outcome.finishReason;
 }
 
 export function messageTextContent(
