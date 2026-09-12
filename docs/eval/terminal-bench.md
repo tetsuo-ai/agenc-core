@@ -78,18 +78,30 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   ("Native secure storage read failed"); release 0.17.0 did not. Fixed in
   core #2424, which is the first commit a benchmark build of main must carry.
 - `exec_command` containment kills every process the agent started when the
-  command returns, and a managed background process (`run_in_background`)
-  dies when the one-shot session ends, daemon running or not (checked by
-  hand in the nginx task image). A server or daemon the agent set up is gone
-  by the time the grader runs. Three of the four failures in every AgenC
-  run were tasks of that shape (nginx, a git server with a deploy hook, an
-  sshd-based multi-branch server); Hermes and OpenCode passed them on the
-  same model. Other harnesses leave such processes alive. This is a product
-  decision still open: an opt-in way to leave a service running.
-- Even with `--dangerously-bypass-approvals-and-sandbox`, shell commands
-  that write or delete under `/etc`, `/var/www` or `/git` are refused by the
-  workspace write policy, and `workdir: /tmp` is refused as outside the
-  workspace. `--add-dir /` lifts that for the benchmark; see `add_dirs`.
+  command returns, and a managed background process (`yield_time_ms`) dies
+  when the one-shot session ends, daemon running or not (checked by hand in
+  the nginx task image). A server or daemon the agent set up was gone by the
+  time the grader ran, and the tool result never said so: the pilot
+  rollouts show the model running `nginx`, `setsid nginx`, `setsid -f ...`
+  and finally `nginx -g 'daemon off;'` under `yield_time_ms`, each time
+  finding nothing listening afterwards. Three of the four failures in every
+  AgenC run were tasks of that shape (nginx, a git server with a deploy
+  hook, an sshd-based multi-branch server); Hermes and OpenCode passed them
+  on the same model. Fixed 2026-09-12: the result now carries a note when
+  leftover processes were stopped, and `exec_command` takes `detach: true`
+  to start a service that outlives the command and the session (under the
+  `danger-full-access` sandbox only). See
+  [tools-permissions-sandbox](../reference/tools-permissions-sandbox.md#shell--process).
+- Even with `--dangerously-bypass-approvals-and-sandbox`, the shell write
+  policy refused removals outside the workspace (`unlink
+  /etc/nginx/sites-enabled/default`, `rm -rf /git/project`) and every
+  command it could not analyse, which was any command containing `$(...)`:
+  51 of 459 shell calls in the git-multibranch run, most an `echo "$(...)"`
+  beside a harmless write. Fixed 2026-09-12: with approvals bypassed and no
+  sandbox, those two guards are lifted (protected paths and the Edit/Write
+  routing for workspace files stay), and removals under `--add-dir` roots
+  count as workspace removals in every mode. `workdir` outside the workspace
+  still needs `--add-dir`; the adapter passes `add_dirs` (default `/`).
 
 ## Results
 

@@ -24,7 +24,8 @@ export interface FileMutationMetadataInput {
 export type RecoverableToolFailureKind =
   | "input_validation"
   | "mcp_tool_not_shell_command"
-  | "shell_workspace_write_policy";
+  | "shell_workspace_write_policy"
+  | "exec_detach_unavailable";
 
 export function buildRecoverableToolFailureMetadata(
   kind: RecoverableToolFailureKind,
@@ -46,7 +47,8 @@ export function recoverableFailureKind(
   if (metadata.hiddenFromTranscript !== true) return null;
   return metadata.kind === "input_validation" ||
     metadata.kind === "mcp_tool_not_shell_command" ||
-    metadata.kind === "shell_workspace_write_policy"
+    metadata.kind === "shell_workspace_write_policy" ||
+    metadata.kind === "exec_detach_unavailable"
     ? metadata.kind
     : null;
 }

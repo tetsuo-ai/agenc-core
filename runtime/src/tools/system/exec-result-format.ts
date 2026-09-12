@@ -1,5 +1,14 @@
 import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 
+/**
+ * Shown after the footer when the supervisor had to stop processes the
+ * command left behind. Without it the model saw exit 0 for `nginx` or
+ * `nohup server &`, then found nothing listening, and could not learn why:
+ * the containment that stops a command's residue never said so.
+ */
+export const RESIDUAL_PROCESSES_NOTE =
+  "[note: this command left processes running (a trailing '&', nohup, setsid, or a daemon that forked) and AgenC stopped them when the command returned. To start a service that must keep running after the command returns and after this session ends, call exec_command again with detach: true.]";
+
 export function formatUnifiedExecToolContent(
   output: ExecCommandToolOutput,
 ): string {
@@ -20,6 +29,11 @@ export function formatUnifiedExecToolContent(
   const footerLines: string[] = [];
   if (output.exitCode !== null) {
     footerLines.push(`exit_code=${output.exitCode}`);
+  } else if (output.detached === true && output.pid !== undefined) {
+    // A detached service that was still running when the yield window
+    // closed. AgenC does not track it, so there is no session_id: the pid
+    // and the log file are the handles the model has.
+    footerLines.push(`running=true pid=${output.pid}`);
   } else if (output.process_id !== undefined) {
     // exitCode is null AND a process_id is exposed → process is still
     // alive (yielded to caller, can be resumed via write_stdin / the
@@ -42,10 +56,17 @@ export function formatUnifiedExecToolContent(
   if (sessionId !== undefined) {
     footerLines.push(`session_id=${sessionId}`);
   }
+  if (output.detached === true) {
+    footerLines.push("detached=true");
+    if (output.log_path !== undefined) footerLines.push(`log=${output.log_path}`);
+  }
   // Compact one-line footer separated from output by a blank line so the
   // model sees the two sections distinctly.
   sections.push("");
   sections.push(`[exec ${footerLines.join(" ")}]`);
+  if (output.residual_processes_terminated === true) {
+    sections.push(RESIDUAL_PROCESSES_NOTE);
+  }
   return sections.join("\n");
 }
 
@@ -60,6 +81,8 @@ export function unifiedExecCodeModeResult(
 
   if (output.exitCode !== null) {
     result.exit_code = output.exitCode;
+  } else if (output.detached === true && output.pid !== undefined) {
+    result.running = true;
   } else if (output.process_id !== undefined) {
     // Process yielded and is still alive — see formatUnifiedExecToolContent
     // for the matching content-side decision. timedOut is irrelevant
@@ -74,6 +97,14 @@ export function unifiedExecCodeModeResult(
   const sessionId = output.process_id ?? output.session_id;
   if (sessionId !== undefined) {
     result.session_id = sessionId;
+  }
+  if (output.detached === true) {
+    result.detached = true;
+    if (output.pid !== undefined) result.pid = output.pid;
+    if (output.log_path !== undefined) result.log_path = output.log_path;
+  }
+  if (output.residual_processes_terminated === true) {
+    result.residual_processes_terminated = true;
   }
 
   return result;

@@ -1,7 +1,12 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  spawn,
+  type ChildProcess,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { assertReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import treeKill from "tree-kill";
 
@@ -12,6 +17,7 @@ import {
   truncateHeadTail,
 } from "./head-tail-buffer.js";
 import {
+  type DetachedProcessRequest,
   type ExecCommandRequest,
   type ExecCommandToolOutput,
   type TerminateProcessRequest,
@@ -39,7 +45,7 @@ import {
 import {
   signalProcessTree,
   spawnContainedProcess,
-  terminateProcessTreeAndWait,
+  terminateProcessTreeAndReport,
 } from "../utils/supervisedProcess.js";
 import {
   commandShellArgs,
@@ -49,6 +55,14 @@ import { withChildTempAuthority } from "../utils/subprocessEnv.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
+/**
+ * How long a detached service gets to fail before the tool returns with it
+ * running. Long enough for a daemon to bind its port or reject its config,
+ * short enough that a service which simply runs does not hold the turn.
+ */
+const DEFAULT_DETACHED_YIELD_TIME_MS = 2_000;
+/** How much of a detached service's log the early result may carry. */
+const DETACHED_LOG_READ_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250;
 const MIN_YIELD_TIME_MS = 250;
 const MIN_EMPTY_YIELD_TIME_MS = 5_000;
@@ -331,6 +345,12 @@ interface ProcessEntry {
   cleanupFailure?: Error;
   hardTimeout?: NodeJS.Timeout;
   hardTimeoutExpired?: boolean;
+  /**
+   * Set when the tree still had live members after the leader exited and the
+   * supervisor stopped them; surfaced to the model so a `nginx` or `nohup
+   * server &` that vanished is explained and pointed at `detach: true`.
+   */
+  residualProcessesTerminated?: boolean;
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
@@ -427,6 +447,11 @@ function createResult(params: {
   readonly durationMs: number;
   readonly timedOut: boolean;
   readonly maxOutputTokens?: number;
+  readonly residualProcessesTerminated?: boolean;
+  readonly detached?: {
+    readonly pid?: number;
+    readonly logPath: string;
+  };
 }): ExecCommandToolOutput {
   const maxChars = maxCharsForTokens(params.maxOutputTokens);
   const stdout = truncateHeadTail(params.stdout, maxChars);
@@ -449,7 +474,35 @@ function createResult(params: {
     timedOut: params.timedOut,
     truncated: stdout.truncated || stderr.truncated,
     original_token_count: approximateTokenCount(originalText),
+    ...(params.residualProcessesTerminated === true
+      ? { residual_processes_terminated: true }
+      : {}),
+    ...(params.detached !== undefined
+      ? {
+          detached: true,
+          log_path: params.detached.logPath,
+          ...(params.detached.pid !== undefined ? { pid: params.detached.pid } : {}),
+        }
+      : {}),
   };
+}
+
+/** The first bytes of a file, bounded; what a detached service wrote so far. */
+function readFileHead(path: string, limitBytes: number): string {
+  let fd: number | undefined;
+  try {
+    const size = statSync(path).size;
+    if (size === 0) return "";
+    fd = openSync(path, "r");
+    const buffer = Buffer.alloc(Math.min(size, limitBytes));
+    const read = readSync(fd, buffer, 0, buffer.length, 0);
+    const text = buffer.subarray(0, read).toString("utf8");
+    return size > limitBytes ? `${text}\n[log truncated; see ${path}]` : text;
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike {
@@ -698,6 +751,129 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       process_id: processId,
       session_id: processId,
     };
+  }
+
+  /**
+   * Start a service the model asked to keep running (`detach: true`). The
+   * child gets its own session and a log file for stdout/stderr, so nothing
+   * AgenC does later (command settlement, `closeAll` at session end) reaches
+   * it, and a closed pipe cannot kill it with SIGPIPE. The manager waits at
+   * most `yield_time_ms` for an early exit so a daemon that rejects its config
+   * still reports its error, then returns pid and log path. It never tracks
+   * the process: there is no session_id, `kill_process` does not know it, and
+   * the caller must have established that no sandbox applies.
+   */
+  async startDetachedProcess(
+    request: DetachedProcessRequest,
+  ): Promise<ExecCommandToolOutput> {
+    this.assertSandboxAuthorityAdmission();
+    if (request.cmd.trim().length === 0) {
+      throw new UnifiedExecError(
+        "missing_command",
+        "missing command line for unified exec request",
+      );
+    }
+    if (hasCurrentWorkspaceOperationLifetime()) {
+      throw new UnifiedExecError(
+        "create_process",
+        "detach=true is blocked while an Editor workspace fence is active because a detached process cannot be contained",
+      );
+    }
+    const cwd = resolve(request.workdir ?? this.cwd);
+    const shell = resolveShell(request.shell, this.shellPath);
+    const command = wrapCommandForShell(
+      shell,
+      this.commandWrapperArgv,
+      request.cmd,
+    );
+    const args = commandShellArgs(shell, command, request.login === true);
+    // No session temp authority here: the service outlives the session and
+    // the temp root that would be handed to it.
+    const env = buildEnv(this.baseEnv, this.env);
+    const logDir = join(this.sessionTempRoot, "detached");
+    mkdirSync(logDir, { recursive: true, mode: 0o700 });
+    const logPath = join(logDir, `${randomUUID()}.log`);
+    const logFd = openSync(logPath, "a", 0o600);
+    const startedAt = Date.now();
+    const processId = this.allocateProcessId();
+    const callId = request.callId ?? `exec-detached-${processId}`;
+    let child: ChildProcess;
+    try {
+      child = spawn(shell, args, {
+        cwd,
+        env,
+        detached: true,
+        stdio: ["ignore", logFd, logFd],
+        windowsHide: true,
+      });
+    } catch (error) {
+      this.releaseProcessId(processId);
+      throw new UnifiedExecError(
+        "create_process",
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      // The child holds its own copies of the log descriptor.
+      closeSync(logFd);
+    }
+    request.observer?.onBegin?.({
+      callId,
+      command: request.cmd,
+      cwd,
+      processId,
+      tty: false,
+    });
+    let settled: (ExitState & { readonly error?: Error }) | null = null;
+    const exit = new Promise<void>((resolveExit) => {
+      child.once("exit", (code, signal) => {
+        settled = { exitCode: code, signal };
+        resolveExit();
+      });
+      child.once("error", (error) => {
+        settled = { exitCode: 1, signal: null, error };
+        resolveExit();
+      });
+    });
+    const yieldMs = clampExecYield(
+      request.yield_time_ms ?? DEFAULT_DETACHED_YIELD_TIME_MS,
+    );
+    try {
+      await Promise.race([
+        delay(yieldMs, undefined, { signal: request.__abortSignal }),
+        exit,
+      ]);
+    } catch (error) {
+      // An aborted turn stops waiting; the service was asked for and stays.
+      if (!isAbortError(error)) throw error;
+    }
+    child.unref();
+    const outcome = settled as (ExitState & { readonly error?: Error }) | null;
+    const output = readFileHead(logPath, DETACHED_LOG_READ_LIMIT_BYTES);
+    const durationMs = Date.now() - startedAt;
+    const result = createResult({
+      stdout: output,
+      stderr: outcome?.error === undefined ? "" : outcome.error.message,
+      exitCode: outcome?.exitCode ?? null,
+      durationMs,
+      timedOut: false,
+      maxOutputTokens: request.max_output_tokens,
+      detached: {
+        logPath,
+        ...(outcome === null && child.pid !== undefined ? { pid: child.pid } : {}),
+      },
+    });
+    request.observer?.onEnd?.({
+      callId,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      durationMs,
+      processId,
+      sessionId: processId,
+      tty: false,
+    });
+    this.releaseProcessId(processId);
+    return result;
   }
 
   async writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput> {
@@ -1150,10 +1326,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (settlementStarted) return;
       settlementStarted = true;
       setTimeout(() => {
-        void terminateProcessTreeAndWait(child, {
+        void terminateProcessTreeAndReport(child, {
           label: `exec_command process ${params.processId}`,
         }).then(
-          () => {
+          (outcome) => {
+            // Optional chaining: test doubles of the supervisor resolve void.
+            if (outcome?.residualProcessesTerminated === true) {
+              entry.residualProcessesTerminated = true;
+            }
             if (spawnError !== undefined) {
               notifyData("stderr", spawnError.message);
             }
@@ -1359,6 +1539,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       durationMs: (entry.endedAt ?? Date.now()) - entry.startedAt,
       timedOut: entry.hardTimeoutExpired === true || timedOut,
       maxOutputTokens: options.maxOutputTokens,
+      ...(entry.residualProcessesTerminated === true
+        ? { residualProcessesTerminated: true }
+        : {}),
     });
   }
 

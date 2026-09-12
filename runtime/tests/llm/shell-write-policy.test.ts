@@ -299,3 +299,88 @@ describe("classifyShellWorkspaceWritePolicy", () => {
     });
   });
 });
+
+describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
+  /** Approvals bypassed and no sandbox: `--dangerously-bypass-approvals-and-sandbox`. */
+  function classifyBypassed(command: string) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: true,
+      bypassesApprovalsAndSandbox: true,
+    });
+  }
+
+  it("lets a command with an unresolvable target run and still reports it indeterminate", () => {
+    // The Terminal-Bench git-multibranch run lost 51 of 459 shell calls to
+    // this refusal, most of them an `echo "$(...)"` next to a harmless write.
+    const decision = classifyBypassed(
+      'for f in refs/heads/*; do echo "$f: $(cat $f)"; done > /tmp/agenc-bypass/refs.txt',
+    );
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(false);
+    expect(decision.message).toBeUndefined();
+  });
+
+  it("allows removals outside the workspace", () => {
+    const decision = classifyBypassed("rm -f /etc/nginx/sites-enabled/default");
+    expect(decision.blocked).toBe(false);
+    expect(decision.blockedDeletions).toEqual([]);
+    // Outside the workspace, so nothing for the file-history sidecar to back up.
+    expect(decision.deletionTargets).toEqual([]);
+  });
+
+  it.each(["rm -rf /", "rm .git/config", `rm -rf ${WORKSPACE_ROOT}`])(
+    "keeps refusing the protected roots: %s",
+    (command) => {
+      const decision = classifyBypassed(command);
+      expect(decision.blocked).toBe(true);
+      expect(decision.message).toContain("protected paths");
+    },
+  );
+
+  it("still routes workspace content writes to Edit and Write", () => {
+    const decision = classifyBypassed("cat > src/output.txt");
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toContain("/repo/src/output.txt");
+  });
+
+  it("changes nothing while a prompt or a sandbox still gates the command", () => {
+    const decision = classify('echo "$(id)" > /tmp/agenc-bypass/out.txt', true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.message).toContain("Unable to confirm workspace write targets");
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy with added directories", () => {
+  const ADDED_ROOT = "/srv/agenc-added-root";
+
+  function classifyWithAdded(command: string, allowWorkspaceDeletions: boolean) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions,
+      additionalRoots: [ADDED_ROOT],
+    });
+  }
+
+  it("treats a removal under an added directory like a workspace removal", () => {
+    const promptFree = classifyWithAdded(`rm ${ADDED_ROOT}/stale.log`, true);
+    expect(promptFree.blocked).toBe(false);
+    // Granted by the user, but not a workspace path: no sidecar backup.
+    expect(promptFree.deletionTargets).toEqual([]);
+
+    const prompting = classifyWithAdded(`rm ${ADDED_ROOT}/stale.log`, false);
+    expect(prompting.blocked).toBe(true);
+    expect(prompting.message).toContain("shell_workspace_file_delete_requires_approval");
+    expect(prompting.message).not.toContain("only inside the workspace");
+  });
+
+  it("still refuses a removal outside every root", () => {
+    const decision = classifyWithAdded("rm /srv/agenc-elsewhere/file.txt", true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.message).toContain("only inside the workspace");
+  });
+});
