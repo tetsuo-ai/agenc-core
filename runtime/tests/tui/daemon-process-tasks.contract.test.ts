@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AgenCDaemonResponseError } from "../../src/app-server/agent-cli.js";
 import type { SessionProcessSnapshot, SessionProcessesListResult } from "../../src/app-server/protocol/index.js";
 import type { LocalShellTaskState } from "../../src/tasks/types.js";
 import { getDefaultAppState } from "../../src/tui/state/AppStateStore.js";
@@ -156,4 +157,21 @@ it("routes advertised daemon process methods with session and opaque task identi
     ["session.processes.list", { sessionId: "parent-session" }],
     ["session.processes.stop", { sessionId: "parent-session", taskId }],
   ]);
+});
+
+it.each([
+  { failure: "transport", error: new Error("connection lost") },
+  { failure: "server", error: new AgenCDaemonResponseError({ code: -32603, message: "process lookup failed" }) },
+])("preserves $failure errors when stopping daemon processes", async ({ error }) => {
+  const session = createDaemonTuiSessionFixture({
+    baseSession: { conversationId: "parent-session", services: {} },
+    sessionId: "parent-session",
+    clientId: "tui",
+    client: {
+      request: async () => { throw error; },
+      supportsMethod: () => true,
+      subscribeToSessionEvents: () => () => {},
+    },
+  });
+  await expect(session.stopDaemonSessionProcess?.(taskId)).rejects.toBe(error);
 });

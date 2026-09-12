@@ -33,7 +33,7 @@ describe("daemon swarm configuration propagation", () => {
     mkdirSync(home);
     mkdirSync(cwd);
     const openStore = async () => {
-      const store = new ConfigStore({ home, cwd, projectTrusted: true, env: { AGENC_HOME: home } });
+      const store = new ConfigStore({ home, cwd, projectRoot: cwd, projectTrusted: true, env: { AGENC_HOME: home } });
       cleanups.push(() => store.stateRepository.close());
       await store.reload();
       return store;

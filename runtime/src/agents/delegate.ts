@@ -141,6 +141,18 @@ export type DelegateOutcome =
       readonly effectDisposition?: ToolEffectDispositionEvidence;
     };
 
+function delegateModelOptions(
+  opts: DelegateOpts,
+): Pick<DelegateOpts, "model" | "reasoningEffort" | "serviceTier"> {
+  return {
+    ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.reasoningEffort !== undefined
+      ? { reasoningEffort: opts.reasoningEffort }
+      : {}),
+    ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // delegate — main entry
 // ─────────────────────────────────────────────────────────────────────
@@ -433,13 +445,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(opts.deferInteractiveApprovals !== undefined
         ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
-      ...(opts.model !== undefined ? { model: opts.model } : {}),
-      ...(opts.reasoningEffort !== undefined
-        ? { reasoningEffort: opts.reasoningEffort }
-        : {}),
-      ...(opts.serviceTier !== undefined
-        ? { serviceTier: opts.serviceTier }
-        : {}),
+      ...delegateModelOptions(opts),
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
         : {}),

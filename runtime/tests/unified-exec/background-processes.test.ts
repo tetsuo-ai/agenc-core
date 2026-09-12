@@ -77,7 +77,7 @@ describe("operator background process control", () => {
     buffer.append("stdout", "x".repeat(10_000));
     buffer.append("stderr", "é-end");
     const snapshot = buffer.snapshot();
-    expect(snapshot.outputTail.length).toBe(8192);
+    expect(snapshot.outputTail).toHaveLength(8192);
     expect(snapshot.outputTail.endsWith("é-end")).toBe(true);
     expect(snapshot.outputBytes).toBe(Buffer.byteLength("already-readerror" + "x".repeat(10_000) + "é-end"));
     expect(buffer.snapshot()).toEqual(snapshot);

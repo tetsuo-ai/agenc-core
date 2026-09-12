@@ -356,6 +356,14 @@ function enforceOwnerAccess(
   }
 }
 
+function backgroundProcessStatus(
+  entry: ProcessEntry,
+): UnifiedExecBackgroundProcess["status"] {
+  if (entry.exitState === null) return "running";
+  if (entry.stopRequested) return "killed";
+  return entry.exitState.exitCode === 0 ? "completed" : "failed";
+}
+
 function makeDeferredExit(): {
   readonly promise: Promise<ExitState>;
   readonly resolve: (state: ExitState) => void;
@@ -807,7 +815,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const entry = [...this.processes.values()].find(
       (candidate) => candidate.backgrounded && candidate.taskId === taskId,
     );
-    if (entry === undefined || entry.exitState !== null) return { stopped: false };
+    if (entry?.exitState !== null) return { stopped: false };
     entry.stopRequested = true;
     entry.stopPromise ??= this.closeProcessStrict(entry).finally(() => {
       entry.stopPromise = undefined;
@@ -819,11 +827,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   private backgroundProcessSnapshot(entry: ProcessEntry): UnifiedExecBackgroundProcess {
-    const status = entry.exitState === null
-      ? "running"
-      : entry.stopRequested
-        ? "killed"
-        : entry.exitState.exitCode === 0 ? "completed" : "failed";
     return {
       taskId: entry.taskId,
       command: entry.command,
@@ -832,7 +835,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ...(entry.ownerId !== undefined ? { ownerId: entry.ownerId } : {}),
       startedAt: entry.startedAt,
       ...(entry.endedAt !== undefined ? { endedAt: entry.endedAt } : {}),
-      status,
+      status: backgroundProcessStatus(entry),
       ...(entry.exitState?.exitCode != null ? { exitCode: entry.exitState.exitCode } : {}),
       ...entry.output.snapshot(),
     };

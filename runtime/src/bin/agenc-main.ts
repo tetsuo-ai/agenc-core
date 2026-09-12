@@ -2557,12 +2557,13 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
   | "reportEditorPredictionFeedback"
 >;
 
-type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
+type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & Pick<
+  AgenCTuiBridgeSession,
+  "listDaemonSessionProcesses" | "stopDaemonSessionProcess"
+> & {
   readonly workflowApprovalControls?: WorkflowApprovalControls;
   executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
   executeDaemonStatusLine?: AgenCTuiBridgeSession["executeDaemonStatusLine"];
-  listDaemonSessionProcesses?: AgenCTuiBridgeSession["listDaemonSessionProcesses"];
-  stopDaemonSessionProcess?: AgenCTuiBridgeSession["stopDaemonSessionProcess"];
   readonly services?: {
     readonly mcpManager?: NonNullable<Session["services"]["mcpManager"]>;
     readonly [key: string]: unknown;

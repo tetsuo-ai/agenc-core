@@ -109,7 +109,8 @@ function swarmStatus(ctx: SlashCommandContext): SlashCommandResult {
   const persisted = store === null
     ? getSettingsForSource("userSettings")?.swarmMode
     : readCanonicalUserConfigSnapshotSync(store.homeContext.configTomlPath).raw.swarmMode;
-  const saved = persisted === undefined ? "" : ` (${persisted ? "saved on" : "saved off"})`;
+  const savedMode = persisted ? "saved on" : "saved off";
+  const saved = persisted === undefined ? "" : ` (${savedMode})`;
   return {
     kind: "text",
     text: [

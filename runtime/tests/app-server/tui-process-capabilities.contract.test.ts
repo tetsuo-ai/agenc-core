@@ -63,3 +63,61 @@ it("refreshes advertised process capabilities after reconnect and clears them on
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+it("explains unavailable process stops after reconnect without claiming a successful stop", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agenc-review-stop-reconnect-"));
+  const socketPath = join(dir, "daemon.sock");
+  let generation = 0;
+  let disconnect = () => {};
+  const stopGenerations: number[] = [];
+  const server = new AgenCUnixSocketServer({
+    socketPath,
+    onMessage: async (message, context) => {
+      if (message.method === "initialize") {
+        generation += 1;
+        disconnect = () => context.close();
+        await context.send({ jsonrpc: "2.0", id: message.id, result: {
+          type: "initialized", protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+          capabilities: { "daemon.methods": {
+            "session.processes.list": generation === 1,
+            "session.processes.stop": generation === 1,
+          } },
+        } });
+      } else if (message.method === "session.processes.stop") {
+        stopGenerations.push(generation);
+        await context.send({ jsonrpc: "2.0", id: message.id,
+          error: { code: -32601, message: "Method unavailable" } });
+      } else {
+        await context.send({ jsonrpc: "2.0", id: message.id, result: { processes: [] } });
+      }
+    },
+  });
+  await server.listen();
+  const client = await createConnectedAgenCJsonLineDaemonTuiClient({ socketPath, authCookie: "test-cookie" });
+  const session = createDaemonTuiSessionFixture({
+    baseSession: { conversationId: "session", services: {} }, sessionId: "session", clientId: "tui",
+    client: { request: client.request, supportsMethod: client.supportsMethod,
+      subscribeToSessionEvents: client.subscribeToSessionEvents },
+  });
+  try {
+    expect(client.supportsMethod?.("session.processes.stop")).toBe(true);
+    disconnect();
+    await vi.waitFor(() => expect(client.getConnectionState().status).toBe("disconnected"));
+    expect(client.supportsMethod?.("session.processes.stop")).toBe(true);
+    await expect(session.stopDaemonSessionProcess?.("old-task-id")).rejects.toMatchObject({
+      message: "This daemon does not support stopping session processes",
+      cause: { code: -32601, message: "Method unavailable" },
+    });
+    expect(generation).toBe(2);
+    expect(client.supportsMethod?.("session.processes.stop")).toBe(false);
+    expect(await session.listDaemonSessionProcesses?.()).toBeUndefined();
+    await expect(session.stopDaemonSessionProcess?.("old-task-id")).rejects.toThrow(
+      "This daemon does not support stopping session processes",
+    );
+    expect(stopGenerations).toEqual([2]);
+  } finally {
+    await client.close();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

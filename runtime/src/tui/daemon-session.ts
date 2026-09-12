@@ -1578,16 +1578,24 @@ export function createDaemonTuiSession<
       try {
         return await client.request("session.processes.list", { sessionId });
       } catch (error) {
-        // Reconnect can replace an advertised daemon with an older version.
+        // A reconnected daemon may no longer provide the advertised method.
         if (error instanceof AgenCDaemonResponseError && error.code === -32601) return undefined;
         throw error;
       }
     },
     stopDaemonSessionProcess: async (taskId: string) => {
+      const unsupportedMessage = "This daemon does not support stopping session processes";
       if (client.supportsMethod?.("session.processes.stop") !== true) {
-        throw new Error("This daemon does not support stopping session processes");
+        throw new Error(unsupportedMessage);
       }
-      return client.request("session.processes.stop", { sessionId, taskId });
+      try {
+        return await client.request("session.processes.stop", { sessionId, taskId });
+      } catch (error) {
+        if (error instanceof AgenCDaemonResponseError && error.code === -32601) {
+          throw new Error(unsupportedMessage, { cause: error });
+        }
+        throw error;
+      }
     },
     executeShellCommand: async ({ command, commandId, signal }) => {
       if (inFlightShellExecutionCount === 0) {

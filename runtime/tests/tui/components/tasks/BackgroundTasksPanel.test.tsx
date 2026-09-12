@@ -116,6 +116,16 @@ function makeTeammateTask(overrides: Record<string, unknown> = {}) {
 }
 
 describe('BackgroundTasksPanel', () => {
+  beforeEach(() => {
+    appStateMock.state = { tasks: {} }
+    appStateMock.setAppState.mockClear()
+    terminalSizeMock.size = { columns: 100, rows: 30 }
+    inputHandler.current = undefined
+    killTaskMock.mockClear()
+    killAsyncAgentMock.mockClear()
+    requestTeammateShutdownMock.mockClear()
+  })
+
   it('shows daemon process tail and stop failure in task detail', async () => {
     appStateMock.state = { tasks: { managed: makeShellTask({
       id: 'managed', outputFile: '', stopError: 'Stop failed: daemon disconnected',
@@ -128,16 +138,6 @@ describe('BackgroundTasksPanel', () => {
     expect(output).toContain('server ready on loopback')
     expect(output).toContain('Stop failed: daemon disconnected')
     expect(output).not.toContain('loading output tail')
-  })
-
-  beforeEach(() => {
-    appStateMock.state = { tasks: {} }
-    appStateMock.setAppState.mockClear()
-    terminalSizeMock.size = { columns: 100, rows: 30 }
-    inputHandler.current = undefined
-    killTaskMock.mockClear()
-    killAsyncAgentMock.mockClear()
-    requestTeammateShutdownMock.mockClear()
   })
 
   it('opens the requested task directly into a detail and action surface', async () => {

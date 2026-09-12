@@ -71,6 +71,16 @@ type TestStdin = PassThrough & {
 };
 
 describe("ShellSurface", () => {
+  beforeEach(() => {
+    shellHarness.deferredTaskIds = new Set();
+    shellHarness.handlers = {};
+    shellHarness.logError.mockReset();
+    shellHarness.pendingReads = new Map();
+    shellHarness.readCounts = {};
+    shellHarness.rejectOnRead = {};
+    shellHarness.tails = {};
+  });
+
   it("renders daemon output and stop errors without reading a local task file", async () => {
     const output = await renderToString(
       <AppStateProvider initialState={{
@@ -87,16 +97,6 @@ describe("ShellSurface", () => {
     expect(output).toContain("server ready on loopback");
     expect(output).toContain("Stop failed: daemon disconnected");
     expect(shellHarness.readCounts).toEqual({});
-  });
-
-  beforeEach(() => {
-    shellHarness.deferredTaskIds = new Set();
-    shellHarness.handlers = {};
-    shellHarness.logError.mockReset();
-    shellHarness.pendingReads = new Map();
-    shellHarness.readCounts = {};
-    shellHarness.rejectOnRead = {};
-    shellHarness.tails = {};
   });
 
   it("ignores stale selected ids that point at non-shell tasks", async () => {
