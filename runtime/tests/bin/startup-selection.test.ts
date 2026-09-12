@@ -132,6 +132,65 @@ describe("readStartupCliFlags --permission-mode validation", () => {
     expect(flags.permissionMode).toBe("plan");
   });
 
+  it("maps --bypass-approvals to the bypassPermissions mode with the sandbox kept", () => {
+    const flags = readStartupCliFlags([
+      "node",
+      "agenc",
+      "--bypass-approvals",
+      "-p",
+      "explain",
+    ]);
+    expect(flags.permissionMode).toBe("bypassPermissions");
+    expect(flags.bypassApprovals).toBe(true);
+    // Only the dangerous flag drops the sandbox.
+    expect(flags).not.toHaveProperty("dangerouslyBypassApprovalsAndSandbox");
+  });
+
+  it("accepts --bypass-approvals alongside --permission-mode bypassPermissions", () => {
+    const flags = readStartupCliFlags([
+      "node",
+      "agenc",
+      "--bypass-approvals",
+      "--permission-mode",
+      "bypassPermissions",
+    ]);
+    expect(flags.permissionMode).toBe("bypassPermissions");
+    expect(flags.bypassApprovals).toBe(true);
+  });
+
+  it("rejects --bypass-approvals combined with a different --permission-mode", () => {
+    expect(() =>
+      readStartupCliFlags([
+        "node",
+        "agenc",
+        "--bypass-approvals",
+        "--permission-mode",
+        "plan",
+      ]),
+    ).toThrow(/--bypass-approvals conflicts with --permission-mode plan/u);
+  });
+
+  it("keeps both bypass flags when the dangerous one is also present", () => {
+    const flags = readStartupCliFlags([
+      "node",
+      "agenc",
+      "--bypass-approvals",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
+    expect(flags.permissionMode).toBe("bypassPermissions");
+    expect(flags.bypassApprovals).toBe(true);
+    expect(flags.dangerouslyBypassApprovalsAndSandbox).toBe(true);
+  });
+
+  it("parses --bypass-approvals only in the startup option region", () => {
+    expect(
+      readStartupCliFlags(["node", "agenc", "explain", "--bypass-approvals"]),
+    ).not.toHaveProperty("bypassApprovals");
+    expect(
+      readStartupCliFlags(["node", "agenc", "--", "--bypass-approvals"]),
+    ).not.toHaveProperty("bypassApprovals");
+  });
+
   it("defaults (undefined) when --permission-mode is absent", () => {
     const flags = readStartupCliFlags(["node", "agenc"]);
     expect(flags.permissionMode).toBeUndefined();

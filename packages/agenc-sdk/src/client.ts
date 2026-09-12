@@ -264,6 +264,19 @@ export interface AgencCreateSessionParams extends SessionCreateParams {
    * Existing sessions retain the authority captured when they were created.
    */
   readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
+  /**
+   * Disable approval prompts but keep the OS sandbox: the session starts in
+   * `bypassPermissions` mode with the daemon's configured sandbox policy.
+   * Mirrors the CLI `--bypass-approvals` flag. Conflicts with a different
+   * explicit `permissionMode`.
+   */
+  readonly bypassApprovals?: boolean;
+  /** Session-wide permission mode for the spawned agent (`agent.create`). */
+  readonly permissionMode?: AgentCreateParams["permissionMode"];
+  /** Model override for the spawned agent (`agent.create`). */
+  readonly model?: string;
+  /** Provider override for the spawned agent (`agent.create`). */
+  readonly provider?: string;
 }
 
 export interface AgencPromptOptions {
@@ -980,10 +993,26 @@ export class AgencClient {
     const {
       pluginStorageRoot: requestedPluginStorageRoot,
       dangerouslyBypassApprovalsAndSandbox = false,
+      bypassApprovals = false,
+      permissionMode: explicitPermissionMode,
+      model,
+      provider,
       initialPrompt,
       metadata,
       ...sessionParams
     } = params;
+    if (
+      bypassApprovals &&
+      explicitPermissionMode !== undefined &&
+      explicitPermissionMode !== "bypassPermissions"
+    ) {
+      throw new Error(
+        `AgencClient.createSession: bypassApprovals conflicts with permissionMode "${explicitPermissionMode}"; pass one of them`,
+      );
+    }
+    const permissionMode = bypassApprovals
+      ? ("bypassPermissions" as const)
+      : explicitPermissionMode;
     const pluginStorageRoot = normalizePluginStorageRoot(
       requestedPluginStorageRoot,
     );
@@ -1020,6 +1049,9 @@ export class AgencClient {
       cwd,
       initialContent: initialPrompt === undefined ? [] : initialPrompt,
       ...(metadata !== undefined ? { metadata } : {}),
+      ...(permissionMode !== undefined ? { permissionMode } : {}),
+      ...(model !== undefined && model.length > 0 ? { model } : {}),
+      ...(provider !== undefined && provider.length > 0 ? { provider } : {}),
       runtimeOptions: safeSdkRuntimeOptions(
         pluginStorageRoot,
         dangerouslyBypassApprovalsAndSandbox,

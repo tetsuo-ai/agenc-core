@@ -391,9 +391,23 @@ the RPC is refused with "requires explicit consent for this exact cwd"
 unless stored accept-bypass consent already matches.
 
 `--permission-mode bypassPermissions` is an explicit startup opt-in for the
-current session and workspace; it does not write durable consent. The
+current session and workspace; it does not write durable consent.
+`--bypass-approvals` is the same opt-in as a dedicated flag: approval prompts
+off, the configured OS sandbox kept (Seatbelt on macOS, bubblewrap or Landlock
+on Linux). It is the right default for unattended runs. When the host cannot
+sandbox at all (`probeSandboxExecutionStatus` reports `unavailable`, for
+example Windows or a Linux box without user namespaces and Landlock) the run
+would otherwise fail closed on its first tool call, so the flag degrades that
+session to `danger-full-access` and prints one stderr line naming the reason
+(`runtime/src/bin/bypass-approvals.ts`). The
 `--dangerously-bypass-approvals-and-sandbox` flag is the separate combined
-escape hatch for bypassed prompts and `danger-full-access`.
+escape hatch for bypassed prompts and `danger-full-access` on every host.
+Passing `--bypass-approvals` together with a different `--permission-mode` is
+an error.
+
+The SDK mirrors the split: `createSession({ bypassApprovals: true })` sends
+`permissionMode: "bypassPermissions"` and leaves the sandbox on, while
+`dangerouslyBypassApprovalsAndSandbox: true` remains the no-sandbox option.
 
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).

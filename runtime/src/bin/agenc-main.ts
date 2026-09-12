@@ -289,6 +289,10 @@ import {
   type StartupCliFlags,
 } from "./startup-selection.js";
 import {
+  resolveStartupSandboxBypass,
+  writeStartupSandboxBypassNotice,
+} from "./bypass-approvals.js";
+import {
   isProjectTrustedSync,
   trustProject,
 } from "../permissions/trust/project-trust.js";
@@ -436,6 +440,7 @@ export function formatCliHelpText(): string {
     "  --model <id|provider:id>                 Override model for this session",
     "  --permission-mode <mode>                 Override the startup permission mode",
     "  --autonomous                             Enable autonomous tick mode",
+    "  --bypass-approvals                       Skip approval prompts but keep the OS sandbox",
     "  --dangerously-bypass-approvals-and-sandbox",
     "                                           Bypass approvals and sandbox checks",
     "  --image <file|url|data-url>              Attach a startup image",
@@ -2063,10 +2068,15 @@ export async function oneShotCLI(
     const startupCliFlags =
       parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
     const sessionEnv = process.env;
+    const sandboxBypass = resolveStartupSandboxBypass(startupCliFlags, {
+      cwd: process.cwd(),
+      env: sessionEnv,
+    });
+    writeStartupSandboxBypassNotice(sandboxBypass);
     const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
       simpleMode: startupCliFlags.simpleMode === true,
       dangerouslyBypassApprovalsAndSandbox:
-        startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
+        sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
     });
     validateAgencHome();
     throwIfAborted("validateAgencHome");
@@ -4558,10 +4568,15 @@ async function resumeColdDaemonSession(params: {
 }): Promise<AgentSummary> {
   const startupFlags = params.startupCliFlags;
   const sessionEnv = process.env;
+  const sandboxBypass = resolveStartupSandboxBypass(startupFlags, {
+    cwd: params.descriptor.cwd,
+    env: sessionEnv,
+  });
+  writeStartupSandboxBypassNotice(sandboxBypass);
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupFlags.simpleMode === true,
     dangerouslyBypassApprovalsAndSandbox:
-      startupFlags.dangerouslyBypassApprovalsAndSandbox === true,
+      sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
   });
   const startupLayers = startupConfigLayerOptions({
     cli: startupFlags,
@@ -4621,10 +4636,15 @@ export async function bootTUIEntry(
   const startupCliFlags =
     parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
   const sessionEnv = process.env;
+  const sandboxBypass = resolveStartupSandboxBypass(startupCliFlags, {
+    cwd: process.cwd(),
+    env: sessionEnv,
+  });
+  writeStartupSandboxBypassNotice(sandboxBypass);
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupCliFlags.simpleMode === true,
     dangerouslyBypassApprovalsAndSandbox:
-      startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
+      sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
   });
   return runWithAgentRuntimeOptions(runtimeOptions, async () => {
     setIsRemoteMode(runtimeOptions.remoteMode);

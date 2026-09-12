@@ -143,6 +143,10 @@ import {
   startupConfigLayerOptions,
   type StartupCliFlags,
 } from "./startup-selection.js";
+import {
+  resolveStartupSandboxBypass,
+  writeStartupSandboxBypassNotice,
+} from "./bypass-approvals.js";
 import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
 import { findSuitableShell } from "../utils/Shell.js";
 import { subprocessEnv } from "../utils/subprocessEnv.js";
@@ -804,8 +808,14 @@ export async function bootstrapLocalRuntimeSession(
     options.runtimeOptions ??
     resolveAgentRuntimeOptions(env, {
       simpleMode: cli.simpleMode === true,
-      dangerouslyBypassApprovalsAndSandbox:
-        cli.dangerouslyBypassApprovalsAndSandbox === true,
+      dangerouslyBypassApprovalsAndSandbox: (() => {
+        const sandboxBypass = resolveStartupSandboxBypass(cli, {
+          cwd: process.cwd(),
+          env,
+        });
+        writeStartupSandboxBypassNotice(sandboxBypass);
+        return sandboxBypass.dangerouslyBypassApprovalsAndSandbox;
+      })(),
     });
   const commandShellPath = await findSuitableShell(parsedRuntimeOptions, env);
   options.signal?.throwIfAborted();

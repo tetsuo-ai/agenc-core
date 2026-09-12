@@ -25,6 +25,7 @@ import {
 } from "./cli-option-region.js";
 import {
   AUTONOMOUS_FLAG,
+  BYPASS_APPROVALS_FLAG,
   DANGEROUS_BYPASS_FLAG,
   findRetiredStartupFlag,
   retiredStartupFlagError,
@@ -102,6 +103,7 @@ const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--debug-to-stderr",
   "-d2e",
   AUTONOMOUS_FLAG,
+  BYPASS_APPROVALS_FLAG,
   DANGEROUS_BYPASS_FLAG,
 ] as const);
 
