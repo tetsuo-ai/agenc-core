@@ -291,16 +291,34 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
 /**
  * 6. agent_tool — guidance for the multi-agent delegation surface.
  *
- * The host exposes delegation through the primary agent tool spec.
+ * Emitted only when the primary `spawn_agent` tool (agents/v2/spawn.ts) is
+ * in the catalog. This is the home of the delegation discipline that used to
+ * ride inside the spawn_agent tool description on every request: when to
+ * delegate, how to design subtasks, what to do after delegating, parallel
+ * patterns. The description now states only what the schema needs and points
+ * here; the rules live in the cacheable static head so they are sent once per
+ * prefix, not once per tool catalog, and in fewer words.
+ *
  * Do not add separate prompt guidance for AgenC's compatibility
- * `system.agent.delegate` compatibility shim; surfacing that tool here
- * causes the model to bypass the supported task-name/background semantics.
+ * `system.agent.delegate` shim; surfacing that tool here causes the model to
+ * bypass the supported task-name/background semantics.
  */
 export function getAgentToolSection(
   enabledTools: ReadonlySet<string>,
 ): string | null {
-  void enabledTools;
-  return null;
+  if (!enabledTools.has("spawn_agent")) return null;
+  const items: Array<string | string[]> = [
+    `Plan first: identify the critical-path step you must do locally right now and the bounded sidecar tasks that can run in parallel without blocking it. Never hand the immediate blocking step to a subagent and then wait on it.`,
+    `Delegate concrete, self-contained subtasks that materially advance the task and can run beside your own work. Keep work local when it is tightly coupled, urgent, likely to block your next step, or too hard to specify well.`,
+    `Before spawning a reviewer, tester, or verifier, create the artifact it must inspect and do the smallest local check that it exists.`,
+    `Do not duplicate work between yourself and subagents, and do not issue another delegate call on the same unresolved thread unless the new task is genuinely different and necessary. Narrow each ask to the concrete output you need next.`,
+    `For coding work, prefer bounded runner subtasks with a clear write scope over read-only scanner analysis. Tell the worker to edit files directly in its workspace and to list the paths it changed in its final answer. Give parallel code-edit subtasks disjoint write sets and isolation: "worktree"; require each worker to commit and report the commit, the changed files, and the verification it ran; integrate one exact verified base_commit..integration_ref range at a time, and never infer an integration target from a mutable worker branch or treat completion as merge approval. A deliverable under an ignored path must be explicitly unignored or force-added and committed.`,
+    `The spawned agent inherits your working directory and receives the same Environment section. Refer to files relative to that cwd; do not embed absolute paths from memory or invent a project root in the message.`,
+    `Omit fork_turns for the default clean fork and make the message fully self-contained (background, goal, constraints, relevant paths and snippets): the agent has not seen this conversation. Use fork_turns "all" only when the subtask genuinely needs the whole conversation; it then inherits your role, model, and effort and cannot be combined with agent_type, model, or reasoning_effort overrides. A positive integer string such as "3" forks only the most recent turns.`,
+    `After delegating, call wait_agent only when the next critical-path step is blocked on the result; otherwise do meaningful non-overlapping work and never wait by reflex. Do not redo delegated work. When a coding task returns, review the changes, then integrate or refine them.`,
+    `Run independent information-seeking subtasks in parallel, split implementation into disjoint slices for parallel agents when write scopes do not overlap, and delegate verification only when it can run beside implementation and is likely to catch a concrete risk before integration.`,
+  ];
+  return joinSection("# Subagents", items);
 }
 
 /**

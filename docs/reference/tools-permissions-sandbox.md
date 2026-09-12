@@ -290,13 +290,27 @@ Canonical v2 surface (`runtime/src/agents/v2/`). Details:
 | `assign_task` | New task (triggers turn) |
 | `send_message` | Follow-up (no turn trigger) |
 | `list_agents` | Inspect agent tree |
-| `spawn_agents_on_csv` | Batch CSV agent jobs |
-| `report_agent_job_result` | Record CSV job item result |
-| `inspect_csv_agent_job` | Read a bounded summary and keyset-paginated item page |
-| `read_csv_agent_job_result` | Read one bounded base64 result chunk |
-| `list_csv_job_reviews` | Bounded page of unknown-outcome CSV reviews |
-| `show_csv_job_review` | One bounded review record |
-| `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence |
+| `spawn_agents_on_csv` | Batch CSV agent jobs (deferred) |
+| `report_agent_job_result` | Record CSV job item result (visible: row subagents call it) |
+| `inspect_csv_agent_job` | Read a bounded summary and keyset-paginated item page (deferred) |
+| `read_csv_agent_job_result` | Read one bounded base64 result chunk (deferred) |
+| `list_csv_job_reviews` | Bounded page of unknown-outcome CSV reviews (deferred) |
+| `show_csv_job_review` | One bounded review record (deferred) |
+| `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence (deferred) |
+
+The CSV job family is deferred (`metadata.deferred`) because a coding turn
+almost never touches it and its six schemas cost about 4 KB of every request.
+`system.searchTools` lists and loads them (`select:spawn_agents_on_csv`), and
+the loaded `spawn_agents_on_csv` description names its companion tools.
+`report_agent_job_result` stays visible because the row subagents a job spawns
+must call it without a discovery step.
+
+The `spawn_agent` description states only what its schema needs. The
+delegation rules (foreground vs background, parallel launches, how to brief an
+agent, never predicting a result) live in the static `# Subagents` system
+prompt section (`getAgentToolSection` in `runtime/src/prompts/system-prompt.ts`),
+which is emitted only when `spawn_agent` is in the catalog and rides the cached
+prefix once instead of the tool catalog of every request.
 
 ### MCP helpers (built-in) + bridge
 
@@ -323,11 +337,12 @@ Exact visibility is request-scoped and config-dependent. As coded in
   `FileRead`, `Edit`, `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`,
   `AskUserQuestion`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`,
   `system.searchTools`, plus non-deferred model-facing tools (web, multi-agent
-  v2, Skill, CSV jobs, Imagine when registered). Task* / Cron* / `WorkflowTool`
-  are **deferred**.
+  v2, Skill, `report_agent_job_result`, Imagine when registered). Task* /
+  Cron* / `WorkflowTool` are **deferred**.
 - **Deferred / discoverable examples:** `system.bash`, git/symbol `system.*`
-  intel tools, MCP tools when `deferMcpTools` is on, MCP resource helpers,
-  passthrough `StructuredOutput`, and other tools marked
+  intel tools, the CSV job family (`spawn_agents_on_csv` and its five
+  inspection/review tools), MCP tools when `deferMcpTools` is on, MCP resource
+  helpers, passthrough `StructuredOutput`, and other tools marked
   `metadata.deferred`.
 
 Coordinator mode further **allowlists** orchestration tools only — see

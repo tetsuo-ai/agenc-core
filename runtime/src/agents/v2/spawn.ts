@@ -53,40 +53,6 @@ import {
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
   "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
 
-const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
-### When to delegate vs. do the subtask yourself
-- First, quickly analyze the overall user task and form a succinct high-level plan. Identify which tasks are immediate blockers on the critical path, and which tasks are sidecar tasks that are needed but can run in parallel without blocking the next local step. As part of that plan, explicitly decide what immediate task you should do locally right now. Do this planning step before delegating to agents so you do not hand off the immediate blocking task to a submodel and then waste time waiting on it.
-- Use a subagent when a subtask is easy enough for it to handle and can run in parallel with your local work. Prefer delegating concrete, bounded sidecar tasks that materially advance the main task without blocking your immediate next local step.
-- Do not delegate urgent blocking work when your immediate next step depends on that result. If the very next action is blocked on that task, the main rollout should usually do it locally to keep the critical path moving.
-- Keep work local when the subtask is too difficult to delegate well and when it is tightly coupled, urgent, or likely to block your immediate next step.
-- For reviewer, tester, or verifier agents, first create the artifact they are supposed to inspect and do the smallest local check that it exists. Agents asked to review missing files waste the user's time and produce confusing output.
-
-### Designing delegated subtasks
-- Subtasks must be concrete, well-defined, and self-contained.
-- Delegated subtasks must materially advance the main task.
-- Do not duplicate work between the main rollout and delegated subtasks.
-- Avoid issuing multiple delegate calls on the same unresolved thread unless the new delegated task is genuinely different and necessary.
-- Narrow the delegated ask to the concrete output you need next.
-- For coding tasks, prefer delegating concrete code-change runner subtasks over read-only scanner analysis when the subagent can make a bounded patch in a clear write scope.
-- When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
-- For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
-- For parallel code-edit subtasks, use \`isolation: "worktree"\`. Require the worker to commit its changes and report the commit, changed files, and verification it ran. Review and integrate one exact verified \`base_commit..integration_ref\` range at a time; never infer an integration target from a mutable worker branch or treat completion as merge approval. An intended deliverable under an ignored path must be explicitly unignored or force-added and committed.
-- The spawned agent inherits its working directory from the parent session and receives the same Environment section. Do NOT embed absolute filesystem paths from memory in the \`message\` body and do NOT invent project root paths. Refer to files relative to the cwd the spawned agent will already know.
-- Omit \`fork_turns\` for a clean fork: the spawned agent starts fresh with ONLY your task as its context, so make the \`message\` fully self-contained (background, goal, constraints, relevant file paths/snippets) — it has NOT seen this conversation. This is the default and the cheap path for an N-agent fan-out. Use \`fork_turns: "all"\` only when the subtask genuinely needs the full parent conversation, or a positive integer string such as \`"3"\` for just the most recent turns. Full-history forks inherit the parent role/model/effort and cannot be combined with \`agent_type\`, \`model\`, or \`reasoning_effort\` overrides.
-
-### After you delegate
-- Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
-- Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
-- While the subagent is running in the background, do meaningful non-overlapping work immediately.
-- Do not repeatedly wait by reflex.
-- When a delegated coding task returns, quickly review the uploaded changes, then integrate or refine them.
-
-### Parallel delegation patterns
-- Run multiple independent information-seeking subtasks in parallel when you have distinct questions that can be answered independently.
-- Split implementation into disjoint codebase slices and spawn multiple agents for them in parallel when the write scopes do not overlap.
-- Delegate verification only when it can run in parallel with ongoing implementation and is likely to catch a concrete risk before final integration.
-- The key is to find opportunities to spawn multiple independent subtasks in parallel within the same round, while ensuring each subtask is well-defined, self-contained, and materially advances the main task.`;
-
 function buildSpawnAgentDescription(session: Session | null): string {
   const base = `Spawns an agent to work on the specified task.
 
@@ -104,7 +70,12 @@ The new agent's canonical task name will be provided to it along with the messag
   if (sessionIsPlanning(session) || sessionReadOnlyDelegation(session) !== undefined) {
     return `${base}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
   }
-  let result = `${base}${SPAWN_AGENT_DELEGATION_DISCIPLINE}`;
+  // The delegation rules (when to delegate, how to design subtasks, what to
+  // do after delegating, parallel patterns) live in the static `# Subagents`
+  // system prompt section (prompts/system-prompt.ts getAgentToolSection),
+  // emitted whenever this tool is in the catalog. Keeping them out of the
+  // description takes about 4.8 KB out of the tool catalog of every request.
+  let result = `${base}\nThe delegation rules are in the Subagents section of your instructions.`;
   if (cfg?.usageHintEnabled && cfg.usageHintText) {
     result = `${result}\n${cfg.usageHintText}`;
   }
