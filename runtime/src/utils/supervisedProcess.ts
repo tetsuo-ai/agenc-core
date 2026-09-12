@@ -554,11 +554,13 @@ export interface ContainedProcessSpawnOptions {
 /** What `terminateProcessTreeAndWait` found when it went to stop a tree. */
 export interface TerminateProcessTreeOutcome {
   /**
-   * True when the tree still had a live member when cleanup began, so the
-   * supervisor stopped processes the command had left behind (a shell `&`
-   * job, nohup, setsid, or a daemon that forked away from its leader). False
-   * when the tree was already gone. The Windows `taskkill` path cannot tell
-   * the two apart and reports false.
+   * True when processes the command had left behind (a shell `&` job, nohup,
+   * setsid, or a daemon that forked away from its leader) were stopped:
+   * either the tree still had a live member when cleanup began, or the
+   * Linux subreaper broker reports that it stopped residual descendants
+   * itself when the leader exited. False when the tree was already gone on
+   * its own. The Windows `taskkill` path cannot tell the two apart and
+   * reports false.
    */
   readonly residualProcessesTerminated: boolean;
 }
@@ -2162,7 +2164,12 @@ export async function terminateProcessTreeAndReport(
   if (!isProcessTreeAlive(child)) {
     assertObservedBoundarySnapshotUsable(child, options.label ?? "process");
     await releaseLinuxCgroupBoundary(child);
-    return TREE_ALREADY_GONE;
+    // The subreaper broker stops orphaned descendants on its own when the
+    // leader exits and has closed by the time settlement looks, so the tree
+    // reads as gone here; its residual flag is the record that it did.
+    return linuxSubreaperBoundaries.get(child)?.residual === true
+      ? RESIDUE_TERMINATED
+      : TREE_ALREADY_GONE;
   }
   signalProcessTree(child, "SIGTERM");
   if (

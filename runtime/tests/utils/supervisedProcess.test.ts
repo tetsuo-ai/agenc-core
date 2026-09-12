@@ -1984,6 +1984,10 @@ describe("terminateProcessTreeAndReport", () => {
         lingering.once("spawn", resolve);
         lingering.once("error", reject);
       });
+      // Subscribe before terminating: the close event can fire while the
+      // supervisor awaits, and the leader stays a zombie (kill(pid, 0) still
+      // succeeds) until Node has reaped it.
+      const closed = waitForChildClose(lingering, 5_000);
 
       const whileAlive = await terminateProcessTreeAndReport(lingering, {
         terminateGraceMs: 50,
@@ -1991,9 +1995,7 @@ describe("terminateProcessTreeAndReport", () => {
         label: "test process",
       });
       expect(whileAlive.residualProcessesTerminated).toBe(true);
-      // The leader is a zombie until Node reaps it on the next tick, and
-      // kill(pid, 0) still succeeds on a zombie; wait for the close event.
-      await waitForChildClose(lingering, 5_000);
+      await closed;
       expect(processIsRunning(lingering.pid!)).toBe(false);
     },
   );
