@@ -345,7 +345,7 @@ async function readCommandPath(
   if (command.path === undefined) return [];
   if (await pathIsDirectory(command.path)) {
     const commandPath = command.path;
-    const files = await collectCommandMarkdownFiles(command.path);
+    const files = await collectCommandMarkdownFiles(plugin.root, command.path);
     return Promise.all(
       files.map(async (filePath) =>
         readFileAsCommand(plugin, filePath, commandPath, loadedPaths, command.metadata),
@@ -372,8 +372,11 @@ async function readCommandPath(
   ].filter((entry): entry is PluginMarkdownCommand => entry !== null);
 }
 
-async function collectCommandMarkdownFiles(root: string): Promise<readonly string[]> {
-  const files = await collectMarkdownFiles(root);
+async function collectCommandMarkdownFiles(
+  pluginRoot: string,
+  root: string,
+): Promise<readonly string[]> {
+  const files = await collectMarkdownFiles(pluginRoot, root);
   const skillDirs = new Set(
     files
       .filter((filePath) => isSkillFile(filePath))
@@ -398,7 +401,7 @@ async function readFileAsCommand(
 ): Promise<PluginMarkdownCommand | null> {
   if (loadedPaths.has(filePath)) return null;
   loadedPaths.add(filePath);
-  const file = await readMarkdownFile(filePath, baseDir);
+  const file = await readMarkdownFile(filePath, baseDir, plugin.root);
   if (!file) return null;
   return {
     plugin,
@@ -448,7 +451,7 @@ async function loadSkillEntriesFromPath(
 ): Promise<readonly PluginMarkdownCommand[]> {
   const paths = skillsPath.toLowerCase().endsWith(".md")
     ? [skillsPath]
-    : await collectMarkdownFiles(skillsPath);
+    : await collectMarkdownFiles(plugin.root, skillsPath);
   const entries = await Promise.all(
     paths
       .filter((filePath) => isSkillFile(filePath))
@@ -458,7 +461,7 @@ async function loadSkillEntriesFromPath(
         const baseDir = skillsPath.toLowerCase().endsWith(".md")
           ? dirname(skillsPath)
           : skillsPath;
-        const file = await readMarkdownFile(filePath, baseDir);
+        const file = await readMarkdownFile(filePath, baseDir, plugin.root);
         return file
           ? {
               plugin,

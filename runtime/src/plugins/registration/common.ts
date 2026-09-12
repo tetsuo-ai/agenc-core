@@ -7,9 +7,15 @@
  * records and never imports from the compatibility scaffolding tree.
  */
 
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { load as loadYaml } from "js-yaml";
+import {
+  PLUGIN_MARKDOWN_WALK,
+  bindContainedRoot,
+  readContainedUtf8,
+  walkContainedFiles,
+} from "../../fs/root-contained-read.js";
 
 import { parseArguments } from "../../tui/slash/argument-substitution.js";
 import {
@@ -42,9 +48,6 @@ import type {
 type PluginRuntimeOptionSchema = Readonly<
   Record<string, PluginUserConfigOption>
 >;
-
-const MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES = 512;
-const MAX_PLUGIN_REGISTRATION_SCAN_DEPTH = 8;
 
 export interface PluginRuntimeLoadOptions {
   readonly readOnly?: boolean;
@@ -154,59 +157,29 @@ export function splitFrontmatter(raw: string): {
 export async function readMarkdownFile(
   filePath: string,
   baseDir: string,
+  pluginRoot: string,
 ): Promise<ParsedMarkdownFile | null> {
-  try {
-    const raw = await readFile(filePath, "utf8");
-    const parsed = splitFrontmatter(raw);
-    return {
-      filePath,
-      baseDir,
-      frontmatter: parsed.frontmatter,
-      markdown: parsed.markdown,
-    };
-  } catch {
-    return null;
-  }
+  const root = await bindContainedRoot(pluginRoot);
+  if (root === null) return null;
+  const read = await readContainedUtf8(root, filePath);
+  if (!read.ok) return null;
+  const parsed = splitFrontmatter(read.text);
+  return {
+    filePath,
+    baseDir,
+    frontmatter: parsed.frontmatter,
+    markdown: parsed.markdown,
+  };
 }
 
-export async function collectMarkdownFiles(root: string): Promise<readonly string[]> {
-  const out: string[] = [];
-  const queue: Array<{ readonly path: string; readonly depth: number }> = [
-    { path: root, depth: 0 },
-  ];
-  const visited = new Set<string>();
-  while (queue.length > 0) {
-    if (out.length >= MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES) break;
-    const current = queue.shift()!;
-    if (current.depth > MAX_PLUGIN_REGISTRATION_SCAN_DEPTH) continue;
-    const identity = await maybeRealpath(current.path);
-    if (visited.has(identity)) continue;
-    visited.add(identity);
-    let entries;
-    try {
-      entries = await readdir(current.path, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (out.length >= MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES) break;
-      const path = join(current.path, entry.name);
-      if (entry.isDirectory()) {
-        queue.push({ path, depth: current.depth + 1 });
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-        out.push(path);
-      }
-    }
-  }
-  return out.sort((a, b) => a.localeCompare(b));
-}
-
-async function maybeRealpath(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch {
-    return path;
-  }
+export async function collectMarkdownFiles(
+  pluginRoot: string,
+  start: string,
+): Promise<readonly string[]> {
+  const root = await bindContainedRoot(pluginRoot);
+  if (root === null) return [];
+  const walked = await walkContainedFiles(root, start, PLUGIN_MARKDOWN_WALK);
+  return walked.files;
 }
 
 export async function pathIsDirectory(path: string): Promise<boolean> {
