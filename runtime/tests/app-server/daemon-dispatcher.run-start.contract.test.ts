@@ -7,7 +7,8 @@
  * Nothing here touches a network or spawns a model.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -377,7 +378,7 @@ function makeHarness(): Harness {
   const home = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-home-"));
   const repoDir = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-repo-"));
   const nonGitDir = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-plain-"));
-  mkdirSync(join(repoDir, ".git"));
+  execFileSync("git", ["init", "-q"], { cwd: repoDir });
   const driver = openStateDatabases({ cwd: repoDir, agencHome: home });
   const repo = new StateRunDurabilityRepository(driver);
   const admission = new FakeAdmission();

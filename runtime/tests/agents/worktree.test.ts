@@ -207,9 +207,15 @@ describe("findGitRoot", () => {
     expect(findGitRoot(nested)).toBe(canonicalRoot);
   });
 
-  it("falls back to the local root when .git is just a plain gitdir file", () => {
+  it("skips a dangling ancestor gitdir file and keeps a linked worktree canonical root", () => {
     writeFileSync(join(tmpRoot, ".git"), "gitdir: /elsewhere/.git/worktrees/x");
-    expect(findGitRoot(tmpRoot)).toBe(tmpRoot);
+    const canonicalRoot = join(tmpRoot, "origin-repo");
+    const worktreeRoot = join(tmpRoot, "linked-wt");
+    const nested = join(worktreeRoot, "pkg");
+    createLinkedWorktree(canonicalRoot, worktreeRoot, "feat");
+    mkdirSync(nested, { recursive: true });
+    expect(findGitRoot(nested)).toBe(canonicalRoot);
+    expect(findGitRoot(tmpRoot)).toBeNull();
   });
 
   it("returns null when no .git ancestor", () => {
