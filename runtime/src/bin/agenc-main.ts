@@ -1543,7 +1543,19 @@ function daemonNestedTranscriptEvent(event: unknown): JsonObject | null {
   return params;
 }
 
-function daemonOneShotMessageChunk(event: unknown): string | null {
+/**
+ * Assistant text carried by one daemon event: a streamed delta, or the
+ * complete message the daemon emits once the deltas are done. The daemon
+ * sends both for the same message, so the caller must reconcile them
+ * (see oneShotFinalMessageRemainder) or print mode writes the answer twice.
+ */
+type OneShotMessageChunk =
+  | { readonly kind: "delta"; readonly text: string }
+  | { readonly kind: "final"; readonly text: string };
+
+function daemonOneShotMessageChunk(
+  event: unknown,
+): OneShotMessageChunk | null {
   if (!isJsonRecord(event)) return null;
   const params = daemonEventParams(event);
   if (
@@ -1551,7 +1563,7 @@ function daemonOneShotMessageChunk(event: unknown): string | null {
     params !== null &&
     typeof params.delta === "string"
   ) {
-    return params.delta;
+    return { kind: "delta", text: params.delta };
   }
   const transcriptEvent = daemonNestedTranscriptEvent(event);
   if (transcriptEvent === null) return null;
@@ -1563,16 +1575,31 @@ function daemonOneShotMessageChunk(event: unknown): string | null {
     payload !== null &&
     typeof payload.delta === "string"
   ) {
-    return payload.delta;
+    return { kind: "delta", text: payload.delta };
   }
   if (
     transcriptEvent.type === "agent_message" &&
     payload !== null &&
     typeof payload.message === "string"
   ) {
-    return `${payload.message}\n`;
+    return { kind: "final", text: payload.message };
   }
   return null;
+}
+
+/**
+ * What the complete message adds beyond the deltas already written, plus
+ * the newline that ends it. With no deltas the whole message is new; when
+ * the message extends the deltas only the tail is; when the two disagree
+ * both are kept on separate lines, since dropping text is the worse fault.
+ */
+export function oneShotFinalMessageRemainder(
+  streamed: string,
+  message: string,
+): string {
+  if (streamed.length === 0) return `${message}\n`;
+  if (message.startsWith(streamed)) return `${message.slice(streamed.length)}\n`;
+  return `\n${message}\n`;
 }
 
 function writeOneShotJsonLine(value: unknown): void {
@@ -1752,6 +1779,9 @@ async function awaitDaemonOneShotRun(params: {
   let printedAssistantOutput = false;
   let assistantOutput = "";
   let lastPrintedChar = "";
+  // Deltas of the assistant message currently streaming; reset by its
+  // complete message so the two are never written twice.
+  let streamedMessage = "";
   const collectedEvents: unknown[] = [];
   // In continue mode the stream id we choose is the daemon's turn id, so
   // terminal events of any other turn (a replayed history item, an unrelated
@@ -1924,13 +1954,24 @@ async function awaitDaemonOneShotRun(params: {
           }
 
           const chunk = daemonOneShotMessageChunk(event);
-          if (chunk !== null && chunk.length > 0) {
-            assistantOutput += chunk;
-            if (outputFormat === "text") {
-              process.stdout.write(chunk);
+          if (chunk !== null) {
+            // Deltas stream as they arrive; the complete message that
+            // follows them contributes only what was not streamed, so the
+            // answer is written once whichever events the daemon sends.
+            const text =
+              chunk.kind === "delta"
+                ? chunk.text
+                : oneShotFinalMessageRemainder(streamedMessage, chunk.text);
+            streamedMessage =
+              chunk.kind === "delta" ? streamedMessage + chunk.text : "";
+            if (text.length > 0) {
+              assistantOutput += text;
+              if (outputFormat === "text") {
+                process.stdout.write(text);
+              }
+              printedAssistantOutput = true;
+              lastPrintedChar = text.at(-1) ?? lastPrintedChar;
             }
-            printedAssistantOutput = true;
-            lastPrintedChar = chunk.at(-1) ?? lastPrintedChar;
           }
 
           activeTurnId ??= daemonOneShotStartedTurnId(event);
