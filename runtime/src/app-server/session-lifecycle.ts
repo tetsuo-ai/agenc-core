@@ -849,6 +849,7 @@ function storedThreadToSessionSummary(
 ): SessionSummary {
   const roleWorkspace = roleWorkspaceFromThreadSource(thread.source);
   const metadata: JsonObject = {
+    ...(thread.parentThreadId !== undefined ? { parentThreadId: thread.parentThreadId } : {}),
     source:
       thread.source === undefined
         ? undefined
