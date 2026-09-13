@@ -1425,6 +1425,14 @@ export interface AgentRuntimeOptionsParams extends JsonObject {
   readonly simpleMode: boolean;
   /** Omission by an older client is normalized to false. */
   readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
+  /**
+   * The creating client cannot answer questions or permission requests: the
+   * one-shot `agenc -p` CLI and its headless continue/resume. The daemon then
+   * hides tools whose only purpose is a human answer (AskUserQuestion), so a
+   * model never spends a turn asking nobody. Omission by an older client is
+   * normalized to false.
+   */
+  readonly nonInteractive?: boolean;
   readonly stdinDataMode: boolean;
   readonly remoteMode: boolean;
   readonly remoteMemoryRoot?: string;

@@ -2466,6 +2466,10 @@ export async function oneShotCLI(
       simpleMode: startupCliFlags.simpleMode === true,
       dangerouslyBypassApprovalsAndSandbox:
         sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
+      // Print mode has no human attached: every permission request is
+      // auto-denied below, so tools that only exist to ask a person must not
+      // be offered in the first place.
+      nonInteractive: true,
     });
     validateAgencHome();
     throwIfAborted("validateAgencHome");

@@ -94,6 +94,10 @@ import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
+  NON_INTERACTIVE_HIDDEN_TOOLS,
+  withDisabledTools,
+} from "../tools/config.js";
+import {
   UnifiedExecProcessManager,
   type UnifiedExecSandboxAuthorityQuiesceToken,
 } from "../unified-exec/process-manager.js";
@@ -1290,8 +1294,14 @@ async function bootstrapLocalRuntimeSessionScoped(
       : null;
   const csvAgentJobsRepositories =
     options.csvAgentJobsRepositories ?? ownedCsvAgentJobsRepositories!;
-  const baseToolsConfig =
+  const configuredToolsConfig =
     options.toolRegistryOptions?.toolsConfig ?? startup.config.tools_config;
+  // A session nobody can answer (one-shot `agenc -p`) must not offer tools
+  // that exist only to ask a person: the client auto-denies every request,
+  // so the question would end the turn instead of getting an answer.
+  const baseToolsConfig = runtimeOptions.nonInteractive
+    ? withDisabledTools(configuredToolsConfig, NON_INTERACTIVE_HIDDEN_TOOLS)
+    : configuredToolsConfig;
   const registry = buildBootstrapToolRegistry({
     workspaceRoot,
     agencHome,

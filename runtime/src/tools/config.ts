@@ -113,3 +113,30 @@ export function toolConfigAllowsTool(
 
   return true;
 }
+
+/**
+ * Tools whose only purpose is a human answer. A session nobody can answer
+ * (one-shot `agenc -p`, headless continue/resume) must not offer them: the
+ * model would spend its turn asking, the client would auto-deny, and the run
+ * would end with a denial instead of an answer.
+ */
+export const NON_INTERACTIVE_HIDDEN_TOOLS: readonly string[] = Object.freeze([
+  "AskUserQuestion",
+]);
+
+/**
+ * Return a tools config that additionally disables `names`. `disabled_tools`
+ * wins over `enabled_tools` in {@link toolConfigAllowsTool}, so an operator
+ * allowlist cannot re-enable a tool hidden this way.
+ */
+export function withDisabledTools(
+  config: ToolsConfig | undefined,
+  names: readonly string[],
+): ToolsConfig {
+  const existing = readStringArray(config?.disabled_tools) ?? [];
+  const merged = [...existing];
+  for (const name of names) {
+    if (!merged.includes(name)) merged.push(name);
+  }
+  return Object.freeze({ ...(config ?? {}), disabled_tools: Object.freeze(merged) });
+}

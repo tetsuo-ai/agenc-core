@@ -65,7 +65,7 @@ For an unreleased build of main:
 
 ```bash
 AGENC_ARTIFACT_PROFILE=container-local AGENC_RELEASE_OUT_DIR=./dist \
-  node packages/agenc/scripts/build-runtime-tarball.mjs      # on linux-x64
+  node packages/agenc/scripts/build-runtime-tarball.mjs      # on linux-x64, in node:26-bullseye
 python3 -m http.server 8765 --directory ./dist &
 harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal:8765/<tarball>
 ```
@@ -126,8 +126,19 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   21 of the first 71 trials of the full run on a 4 Mbit/s Wi-Fi link) and
   concurrent pulls starve the tasks that download data. Pull all 89 images
   first (`docker pull alexgshaw/<task>:20251031`) and only then run.
-- `qemu-startup` is Debian 11 (glibc 2.31); the runtime build needs glibc
-  2.34, so the daemon cannot start there. Counted as a failure.
+- `qemu-startup` (Debian 11) and `wdm-design` (miniforge on the same glibc
+  2.31) cannot start the daemon: the CLI runs, but the daemon loads
+  `better_sqlite3.node`, and that binary, built in the `node:26-bookworm`
+  image, needs `GLIBC_2.33`. The CLI reported only "daemon startup failed
+  and replacement cleanup could not be verified"; the real line sits in
+  `$AGENC_HOME/daemon-spawn-stderr.log`. Build the benchmark tarball in
+  `node:26-bullseye` (glibc 2.31) so the native modules run on those images.
+- GPT-6 Astra answered a task with conflicting data by calling
+  `AskUserQuestion`. In print mode nobody can answer, the client auto-denied
+  it, and the turn ended with exit 2 (`NonZeroAgentExitCodeError`, reward 0).
+  The one-shot CLI now creates its session with
+  `runtimeOptions.nonInteractive`, which hides the tool; the adapter also sets
+  `tools_config.disabled_tools` for older runtimes.
 
 ## Results
 

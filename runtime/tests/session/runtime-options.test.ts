@@ -61,6 +61,7 @@ describe("agent runtime options", () => {
     expect(result).toEqual({
       simpleMode: true,
       dangerouslyBypassApprovalsAndSandbox: false,
+      nonInteractive: false,
       stdinDataMode: true,
       remoteMode: false,
       posixShellPath: "/bin/zsh",
@@ -221,6 +222,34 @@ describe("agent runtime options", () => {
     [{ AGENC_BARE: "0" }, "AGENC_BARE was removed; use --bare"],
   ])("rejects invalid or obsolete boundary input", (env, message) => {
     expect(() => resolveAgentRuntimeOptions(env)).toThrow(message);
+  });
+
+  test("nonInteractive is an explicit override, false by default, boolean on the wire", () => {
+    const pluginStorageRoot = join(makeTemporaryDirectory(), "headless-plugins");
+    expect(resolveAgentRuntimeOptions({}).nonInteractive).toBe(false);
+    expect(
+      resolveAgentRuntimeOptions({}, { nonInteractive: true }).nonInteractive,
+    ).toBe(true);
+    expect(
+      validateAgentRuntimeOptions({
+        simpleMode: false,
+        nonInteractive: true,
+        stdinDataMode: false,
+        remoteMode: false,
+        pluginStorageRoot,
+        allowUntrustedHooks: false,
+      }).nonInteractive,
+    ).toBe(true);
+    expect(() =>
+      validateAgentRuntimeOptions({
+        simpleMode: false,
+        nonInteractive: "yes",
+        stdinDataMode: false,
+        remoteMode: false,
+        pluginStorageRoot,
+        allowUntrustedHooks: false,
+      }),
+    ).toThrow("runtimeOptions.nonInteractive must be boolean");
   });
 
   test("wire validation is strict and preserves explicit values", () => {

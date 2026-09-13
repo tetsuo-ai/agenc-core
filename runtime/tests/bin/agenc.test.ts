@@ -2318,6 +2318,13 @@ describe("main() smoke", () => {
       expect(daemon.requests.some((r) => r.method === "tool.approve")).toBe(
         false,
       );
+      // The daemon is told up front that nobody can answer, so it hides the
+      // tools that exist only to ask a person instead of offering them.
+      expect(
+        daemon.requests.find((r) => r.method === "agent.create")?.params,
+      ).toMatchObject({
+        runtimeOptions: expect.objectContaining({ nonInteractive: true }),
+      });
     } finally {
       stdoutSpy.mockRestore();
       for (const key of Object.keys(process.env)) {

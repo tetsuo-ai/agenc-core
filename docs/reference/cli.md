@@ -69,7 +69,10 @@ From `formatCliHelpText()`:
 - `agenc -c -p "<prompt>"` and `agenc --resume <id> -p "<prompt>"` continue a prior session headless: the session is revived from its rollout (or reused when a TUI or the desktop still has it live), the prompt is submitted as a new turn, output streams to stdout, and the exit code is the turn's outcome. A session this run revived is stopped again afterwards; a live one keeps running. Only explicit `--model`, `--provider` and `--profile` overrides travel; otherwise the session keeps the provider and model it was recorded with. No prior session for the project exits 1 with `agenc: no previous session found for this project`.
 
 - `--print` / `-p` and `--no-tui` select non-interactive runs suitable for
-  scripts and CI.
+  scripts and CI. Nobody can answer a question in print mode, so the daemon
+  hides `AskUserQuestion` from the model for these sessions (the run is
+  created with `runtimeOptions.nonInteractive`); a permission request that
+  still reaches the client is denied, never granted.
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport
   (`promptViaSubprocess` in `@tetsuo-ai/agenc-sdk`).

@@ -213,7 +213,7 @@ its server-side native search through a separately authenticated Grok backend.
 
 | Name | Notes |
 | --- | --- |
-| `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default**. `requiresUserInteraction()` is true, so bypass/allowlist/hooks cannot skip the picker. Malformed or unanswered calls are confirmed no-effect. |
+| `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default** in interactive sessions. Hidden in one-shot print mode (`agenc -p`, headless `-c`/`--resume`), where no human could answer. `requiresUserInteraction()` is true, so bypass/allowlist/hooks cannot skip the picker. Malformed or unanswered calls are confirmed no-effect. |
 | `request_user_input` | Elicitation / free-form user input |
 | `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
 | `ledger_wallet_cli_status` | Read-only Ledger Wallet CLI / device status |

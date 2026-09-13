@@ -59,6 +59,15 @@ class AgencOptions(InstalledAgentOptions):
         default=None,
         description="Explicit release manifest URL, for a release candidate mirror.",
     )
+    base_url: str | None = Field(
+        default=None,
+        description=(
+            "Provider base URL exported to the agent as <PROVIDER>_BASE_URL "
+            "(XAI_BASE_URL for grok, OPENAI_BASE_URL for openai, ...). Used to "
+            "route the containers through a local gateway, for example a proxy "
+            "that holds one xAI sign-in for every trial."
+        ),
+    )
     runtime_url: str | None = Field(
         default=None,
         description=(
@@ -205,6 +214,9 @@ class Agenc(BaseInstalledAgent):
     ) -> None:
         provider, model = self._provider_and_model()
         env = self._key_env(provider)
+        if self.options.base_url:
+            prefix = PROVIDER_KEY_ENV.get(provider, (f"{provider.upper()}_API_KEY",))[0]
+            env[prefix.replace("_API_KEY", "_BASE_URL")] = str(self.options.base_url)
         env["HARBOR_INSTRUCTION"] = instruction
         effort = shlex.quote(str(self.options.effort))
         add_dir_flags = " ".join(
@@ -221,6 +233,8 @@ class Agenc(BaseInstalledAgent):
             'AH="${AGENC_HOME:-$HOME/.agenc}"; mkdir -p "$AH" /logs/agent; '
             f"printf '%s' '{trust}' > \"$AH/trusted-projects.json\"; "
             f"agenc config set reasoning_effort {effort} >/dev/null; "
+            # Headless run: nobody can answer a question, so the interactive tool must not be offered.
+            "agenc config set tools_config.disabled_tools '[\"AskUserQuestion\"]' >/dev/null; "
             "agenc --dangerously-bypass-approvals-and-sandbox "
             f"{add_dir_flags + ' ' if add_dir_flags else ''}"
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
