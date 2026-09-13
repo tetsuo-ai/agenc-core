@@ -1,5 +1,6 @@
 import {
   assertTokenAccountingWithinContext,
+  conservativeBytesPerToken,
   createTokenAccountingRequest,
   estimateTokenAccountingRequest,
   requireAdmissibleTokenAccounting,
@@ -37,6 +38,42 @@ const COMPACTION_STRUCTURED_TRANSCRIPT_KIND =
 const COMPACTION_DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const COMPACTION_DEFAULT_OUTPUT_RESERVE_TOKENS = 4_000;
 const COMPACTION_MINIMUM_INPUT_TOKEN_BUDGET = 1_024;
+/**
+ * Upper bound on bytes per token for the summarizer's own input. The
+ * catalogued ratios describe ordinary prompts (prose, code, tool output); the
+ * compaction transcript is canonical JSON, which tokenizes far denser. Measured
+ * 2026-09-13 on grok-4.6 (catalogue: 4 bytes per token): a 1,401,825-byte
+ * source history counted 612,000 tokens at the provider, 2.29 bytes per token,
+ * so the planner packed it into one 500k-window call, the provider answered
+ * 400, and a 55-minute session ended with `compact_failed`. Planning at 2
+ * keeps every summarizer call inside the window; the exact provider counts
+ * still govern the aggregate budget afterwards.
+ */
+const COMPACTION_INPUT_BYTES_PER_TOKEN_BOUND = 2;
+
+/** Bytes per token the compaction planner assumes for its own summarizer calls. */
+export function compactionInputBytesPerToken(
+  providerName: string,
+  model: string,
+): number {
+  return Math.min(
+    conservativeBytesPerToken(providerName, model),
+    COMPACTION_INPUT_BYTES_PER_TOKEN_BOUND,
+  );
+}
+
+function denseCompactionInputTokens(
+  messages: readonly LLMMessage[],
+  options: LLMChatOptions,
+  providerName: string,
+  model: string,
+): number {
+  const bytes = Buffer.byteLength(
+    JSON.stringify({ system: options.systemPrompt ?? "", messages }),
+    "utf8",
+  );
+  return Math.ceil(bytes / compactionInputBytesPerToken(providerName, model));
+}
 
 interface StructuredMessageV1 {
   readonly role: string;
@@ -985,17 +1022,36 @@ function accountCallWithoutContextAssertion(
       "model context leaves no bounded compaction input budget after output reserve",
     );
   }
-  const result = estimateTokenAccountingRequest(
-    createTokenAccountingRequest({
-      provider: providerName,
-      model,
-      messages,
-      options,
-      contextWindowTokens: contextWindow,
-      reservedOutputTokens: outputReserve,
-    }),
+  const result = requireAdmissibleTokenAccounting(
+    estimateTokenAccountingRequest(
+      createTokenAccountingRequest({
+        provider: providerName,
+        model,
+        messages,
+        options,
+        contextWindowTokens: contextWindow,
+        reservedOutputTokens: outputReserve,
+      }),
+    ),
   );
-  return requireAdmissibleTokenAccounting(result);
+  // The catalogued estimate is an upper bound for ordinary prompts, not for
+  // the canonical-JSON transcript the summarizer reads. Hold the denser bound
+  // whenever it is larger, so the packing never plans a call the provider
+  // will refuse.
+  const denseInputTokens = denseCompactionInputTokens(
+    messages,
+    options,
+    providerName,
+    model,
+  );
+  if (denseInputTokens <= result.inputTokens) return result;
+  return {
+    ...result,
+    inputTokens: denseInputTokens,
+    totalTokens: denseInputTokens + result.reservedOutputTokens,
+    source: "conservative_fallback",
+    confidence: "conservative",
+  };
 }
 
 function compactionMapReduceTopology(

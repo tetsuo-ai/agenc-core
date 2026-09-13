@@ -140,6 +140,14 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   resulting `.node` files need only glibc 2.29 and no `GLIBCXX` symbol (a
   gcc-12 build without the static flag needs `GLIBCXX_3.4.29`, which the
   same images lack). The daemon then starts on `wdm-design`.
+- A 55-minute grok-4.6 session on `wdm-design` (191 tool calls) reached the
+  auto-compaction threshold at 356k tokens and died with `compact_failed`: the
+  planner packed the whole 1,401,825-byte canonical-JSON history into one
+  summarizer call because the catalogued 4 bytes per token said it fit a
+  500k window, the provider counted 612,000 tokens (2.29 bytes per token) and
+  answered 400, and the transaction treated that as a durable failure. The
+  planner now bounds its own input at 2 bytes per token, which splits such a
+  history into several map calls.
 - Subagents (`spawn_agent`) under the same full bypass with `--add-dir /` were
   refused on every path outside the workspace ("Access denied: Path is
   outside allowed directories" on `Glob path=/tmp`, three Astra trials) while
