@@ -48,6 +48,8 @@ import {
   buildEnvInfoSection,
   DEFAULT_AGENT_PROMPT,
   getActionsSection,
+  getHeadlessCompletionSection,
+  HEADLESS_COMPLETION_CONTRACT_ENV,
   getAgentToolSection,
   getLanguageSection,
   getMcpInstructionsSection,
@@ -168,6 +170,34 @@ describe("static section emitters", () => {
     expect(s).not.toContain("/issue");
     expect(s).not.toContain("/share");
     expect(s).not.toContain(["Open", "Cla", "ude"].join(""));
+  });
+
+  test("headless_completion is emitted only for non-interactive sessions", () => {
+    expect(getHeadlessCompletionSection({ nonInteractive: undefined, env: {} })).toBeNull();
+    expect(getHeadlessCompletionSection({ nonInteractive: false, env: {} })).toBeNull();
+    const s = getHeadlessCompletionSection({ nonInteractive: true, env: {} });
+    expect(s).toContain("# Completing work without a human");
+    expect(s).toContain("restate the task as a checklist of concrete, checkable requirements");
+    expect(s).toContain("re-run every check the task implies");
+    expect(s).toContain("Never ask for clarification or confirmation");
+    expect(s).toContain("The final message lists which requirements you verified and how");
+  });
+
+  test("headless_completion honours the environment switch", () => {
+    for (const off of ["0", "false", "off"]) {
+      expect(
+        getHeadlessCompletionSection({
+          nonInteractive: true,
+          env: { [HEADLESS_COMPLETION_CONTRACT_ENV]: off },
+        }),
+      ).toBeNull();
+    }
+    expect(
+      getHeadlessCompletionSection({
+        nonInteractive: true,
+        env: { [HEADLESS_COMPLETION_CONTRACT_ENV]: "1" },
+      }),
+    ).toContain("# Completing work without a human");
   });
 
   test("actions section calls out destructive-op confirmation", () => {
@@ -885,6 +915,41 @@ describe("assembleSystemPrompt", () => {
     });
     expect(simple).not.toContain("# auto memory");
     expect(simple).not.toContain("# Memory directories");
+  });
+
+  test("base instructions carry the completion contract only for non-interactive sessions", async () => {
+    const registry = { tools: [{ name: "FileRead" }, { name: "exec_command" }] };
+    const assemble = (runtimeOptions: Record<string, unknown>, env?: NodeJS.ProcessEnv) =>
+      assembleBaseInstructionsForModel({
+        session: {
+          services: {
+            runtimeOptions,
+            ...(env === undefined ? {} : { userShell: { childEnvironment: env } }),
+          },
+        },
+        ctx: fakeCtx(),
+        registry,
+        provider: "grok",
+        permissionContext: null,
+        profile: "standard",
+      });
+    const interactive = await assemble({ nonInteractive: false });
+    expect(interactive).not.toContain("# Completing work without a human");
+
+    const headless = await assemble({ nonInteractive: true });
+    expect(headless).toContain("# Completing work without a human");
+    expect(headless.indexOf("# Executing actions with care")).toBeLessThan(
+      headless.indexOf("# Completing work without a human"),
+    );
+    expect(headless.indexOf("# Completing work without a human")).toBeLessThan(
+      headless.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY),
+    );
+
+    const switchedOff = await assemble(
+      { nonInteractive: true },
+      { [HEADLESS_COMPLETION_CONTRACT_ENV]: "0" },
+    );
+    expect(switchedOff).not.toContain("# Completing work without a human");
   });
 
   test("typed simple mode → ultra-minimal prompt", async () => {

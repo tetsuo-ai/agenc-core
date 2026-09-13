@@ -36,8 +36,10 @@ Options (`--ak key=value`): `version` (pin a release), `manifest_url`,
 `runtime_url`, `effort` (default `medium`), `add_dirs` (extra workspace
 roots passed as `--add-dir`, default `/`: the tasks configure the whole
 container and AgenC's shell write policy otherwise refuses writes outside
-the task directory, a boundary the other harnesses do not have), and
-`stop_daemon` (default false).
+the task directory, a boundary the other harnesses do not have), `env`
+(extra `KEY=VALUE` pairs for the agent process, comma separated, which is
+how a runtime switch such as `AGENC_COMPLETION_CONTRACT=0` is measured
+against the default), and `stop_daemon` (default false).
 
 The same file carries `HermesCurrent`, Harbor's Hermes adapter with its
 install check fixed (the current Hermes CLI has no `version` subcommand) and
@@ -172,6 +174,21 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   The one-shot CLI now creates its session with
   `runtimeOptions.nonInteractive`, which hides the tool; the adapter also sets
   `tools_config.disabled_tools` for older runtimes.
+- With the harness bugs above fixed, the remaining failures were graded
+  failures after the agent had declared the task done: sessions ended after a
+  fraction of the turns the leaderboard agents spend on the same tasks (a
+  grok trial reported success after 19 tool calls; Astra sessions averaged
+  19 minutes against 35 to 47 for the Codex rows), and the final messages
+  claimed checks the transcript does not contain. The prompt the model
+  received was the interactive one: it tells the model to stop and report once
+  the change is verified, and to check with the user before anything risky,
+  guidance that assumes a human reads the reply and steers. Non-interactive
+  sessions now carry a completion contract section (`# Completing work
+  without a human`): restate the task as a checklist of checkable
+  requirements, run the checks the task implies before the final message,
+  never end the turn waiting for input, report what was verified.
+  `--ak env=AGENC_COMPLETION_CONTRACT=0` runs the same build without it, which
+  is how its effect is measured.
 
 ## Results
 

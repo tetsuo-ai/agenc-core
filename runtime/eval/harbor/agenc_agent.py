@@ -12,6 +12,9 @@ Options (``--ak key=value``):
   version       release to pin (default: latest public release)
   manifest_url  explicit release manifest (a release candidate mirror)
   effort        reasoning effort written to config (default: medium)
+  env           extra KEY=VALUE pairs for the agent process, comma separated
+                (for example ``env=AGENC_COMPLETION_CONTRACT=0`` to measure a
+                run without the headless completion contract)
 """
 
 from __future__ import annotations
@@ -80,6 +83,14 @@ class AgencOptions(InstalledAgentOptions):
     effort: str = Field(
         default="medium",
         description="reasoning_effort written to the AgenC config before the run.",
+    )
+    env: str | None = Field(
+        default=None,
+        description=(
+            "Extra KEY=VALUE pairs exported to the agent process, comma "
+            "separated. Runtime switches such as AGENC_COMPLETION_CONTRACT=0 "
+            "go here so one build can be measured with and without them."
+        ),
     )
     add_dirs: str = Field(
         default="/",
@@ -217,6 +228,12 @@ class Agenc(BaseInstalledAgent):
         if self.options.base_url:
             prefix = PROVIDER_KEY_ENV.get(provider, (f"{provider.upper()}_API_KEY",))[0]
             env[prefix.replace("_API_KEY", "_BASE_URL")] = str(self.options.base_url)
+        for pair in str(self.options.env or "").split(","):
+            if "=" not in pair:
+                continue
+            name, value = pair.split("=", 1)
+            if name.strip():
+                env[name.strip()] = value
         env["HARBOR_INSTRUCTION"] = instruction
         effort = shlex.quote(str(self.options.effort))
         add_dir_flags = " ".join(

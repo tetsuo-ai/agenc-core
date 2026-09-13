@@ -40,6 +40,7 @@ import { platform as osPlatform, type as osType, release as osRelease } from "no
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { ConfigStore } from "../config/store.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import { isEnvDefinedFalsy } from "../utils/envBoolean.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { gitChildEnvironment } from "../sandbox/git-environment.js";
 import { hardenGitWorktreeMutationArgs } from "../sandbox/worktree-permissions.js";
@@ -182,6 +183,44 @@ Examples of the kind of risky actions that warrant user confirmation:
 - Uploading content to third-party web tools (diagram renderers, pastebins, gists) publishes it - consider whether it could be sensitive before sending, since it may be cached or indexed even if later deleted.
 
 When you encounter an obstacle, do not use destructive actions as a shortcut to simply make it go away. For instance, try to identify root causes and fix underlying issues rather than bypassing safety checks (e.g. --no-verify). If you discover unexpected state like unfamiliar files, branches, or configuration, investigate before deleting or overwriting, as it may represent the user's in-progress work. For example, typically resolve merge conflicts rather than discarding changes; similarly, if a lock file exists, investigate what process holds it rather than deleting it. In short: only take risky actions carefully, and when in doubt, ask before acting. Follow both the spirit and letter of these instructions - measure twice, cut once.`;
+}
+
+/**
+ * Environment switch for {@link getHeadlessCompletionSection}. Unset means
+ * on for non-interactive sessions; a defined falsy value turns it off.
+ */
+export const HEADLESS_COMPLETION_CONTRACT_ENV = "AGENC_COMPLETION_CONTRACT";
+
+/**
+ * 4b. headless_completion — the completion contract for sessions nobody
+ * reviews while they run (`agenc -p`, routines, evaluation harnesses).
+ *
+ * An interactive session can stop early because the human reads the reply
+ * and steers; a non-interactive session has no such correction, so the
+ * final message must carry its own evidence. The section is only emitted
+ * when the session was created with `runtimeOptions.nonInteractive`; the
+ * environment switch exists so one run can be measured with and without
+ * it.
+ */
+export function getHeadlessCompletionSection(input: {
+  readonly nonInteractive: boolean | undefined;
+  readonly env: NodeJS.ProcessEnv;
+}): string | null {
+  if (input.nonInteractive !== true) return null;
+  if (isEnvDefinedFalsy(input.env[HEADLESS_COMPLETION_CONTRACT_ENV])) {
+    return null;
+  }
+  const items = [
+    `Nobody reviews this session while it runs, nobody answers questions, and your final message is the whole deliverable. It is judged only by whether the result actually works when someone checks it after you stop.`,
+    `Before you act, restate the task as a checklist of concrete, checkable requirements: every input, output, file, path, name, format, command, and edge case the task states or clearly implies. Small requirements (an exact filename, an exact output format, a "must not modify", a bound on time or memory) count as much as the main deliverable, and missing one fails the whole task.`,
+    `Ask what the task's author would check, and check it yourself. Run the program on the examples the task gives, on empty and malformed input, and on the boundaries. If the task ships tests, run them. If it does not, write a quick check and run it. Read the actual output; do not infer it from the code.`,
+    `A result that should work is not done; a result you have run and watched working is done. Do not stop at the first version that looks right. When a check fails, fix the cause and re-run the whole checklist, not only the failing item, because a fix can break something that passed before.`,
+    `Your own summary is a claim that needs evidence. Before writing the final message, re-run every check the task implies and confirm each item on the checklist has been observed to pass. If something cannot be verified, say exactly what and why instead of implying success.`,
+    `Never ask for clarification or confirmation and never end your turn waiting for input: decide, act, and state the assumption you made. When the task is ambiguous, choose the reading that satisfies the most likely check. Actions the task requires are authorized by the task; actions it does not require and that would be hard to reverse are still off limits.`,
+    `Turns and time are not the constraint; an unverified answer is. Keep working until every item on the checklist has been observed to pass, then stop.`,
+    `The final message lists which requirements you verified and how, in a few lines.`,
+  ];
+  return joinSection("# Completing work without a human", items);
 }
 
 /**
@@ -1081,9 +1120,9 @@ export async function assembleSystemPrompt(
   // slotted right after `# Using your tools` so multi-agent guidance lives
   // next to per-tool guidance.
   // Section order:
-  //   intro → system → doing_tasks → actions → using_your_tools
-  //   → (agent_tool) → (session_guidance) → tone_and_style
-  //   → output_efficiency → (auto memory)
+  //   intro → system → doing_tasks → actions → (headless_completion)
+  //   → using_your_tools → (agent_tool) → (session_guidance)
+  //   → tone_and_style → output_efficiency → (auto memory)
   const staticSections: Array<string | null> = [
     getSimpleIntroSection(opts.outputStyle != null),
     getSimpleSystemSection(),
@@ -1091,6 +1130,13 @@ export async function assembleSystemPrompt(
       ? getSimpleDoingTasksSection()
       : null,
     getActionsSection(),
+    getHeadlessCompletionSection({
+      nonInteractive: session.services?.runtimeOptions?.nonInteractive,
+      env:
+        session.services?.userShell?.childEnvironment ??
+        session.services?.providerEnvironment ??
+        {},
+    }),
     getUsingYourToolsSection(enabledTools),
     getAgentToolSection(enabledTools),
     getSessionGuidanceSection(enabledTools, agentsEnabled),

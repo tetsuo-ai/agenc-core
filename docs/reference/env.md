@@ -298,6 +298,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | Var | Typical use |
 | --- | --- |
 | `AGENC_DISABLE_AUTO_COMPACT` | Skip automatic compaction and its pre-sampling, mid-turn, and notice gates. `/compact` still runs |
+| `AGENC_COMPLETION_CONTRACT` | Set to `0` to leave the completion contract (`# Completing work without a human`) out of non-interactive sessions such as `agenc -p`. Interactive sessions never receive it |
 | `AGENC_DISABLE_COMPACT` | Make `autoCompactIfNeeded` return without compacting. This does not disable `/compact` or the mid-turn outer gate. A resulting `compact_failed` stop emits canonical `turn_failed` and makes daemon-backed `--print` / `--no-tui` exit 1. Keep-alive sessions stay promptable, but the compatibility `runAgent` path with `keepAlive: false` fails. See [daemon.md](daemon.md#compact-skip-stays-per-turn) |
 | `AGENC_AUTO_COMPACT_WINDOW` | Positive integer context-window override used by compaction thresholds |
 | `AGENC_AUTOCOMPACT_PCT_OVERRIDE` | Percentage `1` to `100`; can only make automatic compaction fire earlier than the safety default |
@@ -349,7 +350,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_C*
 
-`AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
+`AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
 
 ### AGENC_D*
 

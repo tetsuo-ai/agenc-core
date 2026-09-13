@@ -72,7 +72,13 @@ From `formatCliHelpText()`:
   scripts and CI. Nobody can answer a question in print mode, so the daemon
   hides `AskUserQuestion` from the model for these sessions (the run is
   created with `runtimeOptions.nonInteractive`); a permission request that
-  still reaches the client is denied, never granted.
+  still reaches the client is denied, never granted. These sessions also
+  receive the completion contract, a system prompt section that tells the
+  model nobody reviews the run while it happens: restate the task as a
+  checklist of checkable requirements, run the checks the task implies
+  before the final message, never end the turn waiting for input, and report
+  what was verified. `AGENC_COMPLETION_CONTRACT=0` in the CLI environment
+  leaves the section out; interactive sessions never receive it.
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport
   (`promptViaSubprocess` in `@tetsuo-ai/agenc-sdk`).
