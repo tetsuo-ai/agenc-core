@@ -33,7 +33,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "../../wire/mcp-tool-naming.js";
-import { LLMProviderError, mapLLMError } from "../../errors.js";
+import { LLMProviderError, LLMStreamTruncatedError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
   assertProviderStructuredOutputCompatibility,
@@ -1839,7 +1839,7 @@ export class GrokProvider implements LLMProvider {
 
       if (!receivedTerminalEvent && finishReason === "stop") {
         finishReason = "error";
-        responseError = responseError ?? new LLMProviderError(
+        responseError = responseError ?? new LLMStreamTruncatedError(
           this.name,
           "Stream closed without a response.completed or response.failed event",
         );

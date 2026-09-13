@@ -133,6 +133,12 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   and replacement cleanup could not be verified"; the real line sits in
   `$AGENC_HOME/daemon-spawn-stderr.log`. Build the benchmark tarball in
   `node:26-bullseye` (glibc 2.31) so the native modules run on those images.
+- One upstream socket drop on the proxy host (`EHOSTUNREACH` at 09:39Z) ended
+  a grok trial after 1.5 h of work: the truncated stream came back as a plain
+  provider error ("Stream closed without a response.completed or
+  response.failed event"), which neither retry classifier recognized, so the
+  turn failed and the one-shot exited 1. The adapters now raise the typed
+  `LLMStreamTruncatedError`, retried through the same ladder as `stream_idle`.
 - GPT-6 Astra answered a task with conflicting data by calling
   `AskUserQuestion`. In print mode nobody can answer, the client auto-denied
   it, and the turn ended with exit 2 (`NonZeroAgentExitCodeError`, reward 0).

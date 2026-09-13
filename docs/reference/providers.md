@@ -630,6 +630,10 @@ Its retry behavior is:
 
 - **429 is not retried** (`retry429: false`). 5xx and transport (network/timeout)
   are. Caller abort is not. One extra TLS-cert retry on attempt 0 only.
+- A stream that ends before its terminal event (`response.completed` or
+  `response.failed`) surfaces as `LLMStreamTruncatedError`, which the turn's
+  reconnect ladder retries like `stream_idle`; the transport saw a clean end,
+  so only the typed error identifies it.
 - **Retry-After > 300s** aborts the retry.
 - Session backoff base is **200 ms**.
 - After budget admission, model calls set `singleWireAttempt: true`: **no HTTP

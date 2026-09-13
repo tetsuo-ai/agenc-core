@@ -13,6 +13,7 @@ import {
   LLMMessageValidationError,
   LLMRateLimitError,
   LLMServerError,
+  LLMStreamTruncatedError,
   LLMTimeoutError,
 } from "../llm/errors.js";
 import type { LLMToolCall } from "../llm/types.js";
@@ -294,6 +295,9 @@ export function isRetryableStreamError(error: unknown): boolean {
   if (cause instanceof LLMServerError) return true;
   if (cause instanceof LLMTimeoutError) return true;
   if (cause instanceof LLMRateLimitError) return true;
+  // A stream that ended before its terminal event: nothing definitive came
+  // back, so the request is re-sent through the same ladder as stream_idle.
+  if (cause instanceof LLMStreamTruncatedError) return true;
 
   // Transient node networking via error `code`.
   const code = (cause as { code?: unknown } | null | undefined)?.code;

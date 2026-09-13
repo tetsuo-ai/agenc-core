@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { LLMStreamTruncatedError } from "../../../../src/llm/errors.js";
 import { OpenAIProvider } from "../../../../src/llm/providers/openai/adapter.js";
 
 const PROVIDER_TEST_LABEL = "Open" + "AI";
@@ -155,6 +156,27 @@ describe("OpenAIProvider streaming gaps", () => {
     expect(response.partial).toBe(true);
     expect(response.finishReason).toBe("error");
     expect(response.error).toBeInstanceOf(Error);
+  });
+
+  test("a Responses stream that ends before response.completed throws the typed truncation error", async () => {
+    // A gateway dropped the upstream socket after the first delta: the SSE
+    // body ends cleanly with no terminal event. The error must be the typed
+    // transient one so the turn reconnects instead of failing.
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+      ]),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-6-astra",
+      useResponsesApi: true,
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chatStream([{ role: "user", content: "go" }], () => {}),
+    ).rejects.toBeInstanceOf(LLMStreamTruncatedError);
   });
 
   test("still throws when a malformed function_call arrives before any output", async () => {
