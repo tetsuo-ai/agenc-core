@@ -1255,7 +1255,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(state.messages[0]?.content).toContain(
       "This exact Write call already failed 3 times with the same error in this turn and will not run again.",
     );
-    expect(state.messages[0]?.content).toContain("stop retrying");
+    expect(state.messages[0]?.content).toContain("Take a different action now");
     expect(warnings).toContain("repeated_failing_call_blocked");
     // Started/completed events still pair up for the refused call.
     expect(
@@ -1266,8 +1266,32 @@ describe("executeTools — T7 gap #109 pipeline", () => {
           event.msg.payload?.callId === "write-4",
       ),
     ).toHaveLength(2);
-    // The refusal ends the turn after the batch, as a no-progress stop with
-    // the backstop's wording rather than as a completed turn.
+    // The first refusal keeps the turn alive: the model is told to change
+    // approach and gets the sample in which to do it.
+    expect(state.preventContinuation).toBe(false);
+    expect(state.noProgressStop).toBeUndefined();
+  });
+
+  test("a second refusal of the same call ends the turn as a no-progress stop", async () => {
+    const { state, ctx, session, call, failures, run, executed } =
+      repeatedFailureFixture();
+    state.completedToolResults.push(...failures(3), {
+      callId: "write-refused",
+      toolName: call.name,
+      arguments: call.arguments,
+      content: JSON.stringify({ error: "refused once" }),
+      isError: true,
+      metadata: { repeatedFailingCallBlocked: true, repeatedFailures: 3 },
+    });
+    state.toolUseBlocks = [
+      { type: "tool_use", id: call.id, name: call.name, input: {} },
+    ];
+    await run();
+
+    expect(executed()).toBe(0);
+    expect(state.messages[0]?.content).toContain(
+      "This is the second refusal of the same call, so the turn stops here.",
+    );
     expect(state.preventContinuation).toBe(true);
     expect(state.needsFollowUp).toBe(false);
     expect(state.noProgressStop).toEqual({
@@ -1276,6 +1300,8 @@ describe("executeTools — T7 gap #109 pipeline", () => {
         "times with the same error and was refused (count=3). No further progress " +
         "was being made. No task was completed.",
     });
+    expect(session).toBeDefined();
+    expect(ctx).toBeDefined();
   });
 
   /**

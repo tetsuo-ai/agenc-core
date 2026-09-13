@@ -2357,9 +2357,11 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       yielded.push(event);
     }
 
-    // Three failures ran; the fourth identical call was refused instead.
+    // Three failures ran; the fourth identical call was refused and the model
+    // was given one more sample to change approach. It repeated the same call,
+    // so the second refusal stopped the turn.
     expect(executed).toBe(3);
-    expect(calls).toBe(4);
+    expect(calls).toBe(5);
     const last = yielded.at(-1);
     expect(last?.type).toBe("turn_complete");
     if (last?.type !== "turn_complete") throw new Error("unreachable");

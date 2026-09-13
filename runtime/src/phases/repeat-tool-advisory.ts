@@ -22,7 +22,10 @@
  * turn is not executed again. Nothing about the call or the runtime has
  * changed, so the result cannot change either; re-running it only burns a
  * model round trip. That case is refused before dispatch with a plain
- * explanation and ends the turn after the batch.
+ * explanation telling the model to change approach. The first refusal lets
+ * the turn continue, because an unattended session can only act on that
+ * advice by sampling again; a second refusal of the same call means the
+ * advice did not land, and the turn ends after the batch.
  *
  * @module
  */
@@ -218,17 +221,40 @@ function blockedCallMessage(
   call: LLMToolCall,
   count: number,
   lastError: string,
+  endsTurn: boolean,
 ): string {
   const preview =
     lastError.length > LAST_ERROR_PREVIEW_CHARS
       ? `${lastError.slice(0, LAST_ERROR_PREVIEW_CHARS)}…`
       : lastError;
+  const consequence = endsTurn
+    ? "This is the second refusal of the same call, so the turn stops here."
+    : "Take a different action now: change the arguments, use another tool, " +
+      "work around what is failing, or finish with what you have. Issuing " +
+      "this same call again stops the turn.";
   return (
     `This exact ${call.name} call already failed ${count} times with the ` +
     "same error in this turn and will not run again. The error is not going " +
-    "to change; stop retrying, and if you cannot proceed without it, tell " +
-    `the user. Last error: ${preview}`
+    `to change. ${consequence} Last error: ${preview}`
   );
+}
+
+/**
+ * Refusals already recorded for this exact call in this turn. The first
+ * refusal hands the model the message above and lets it sample again, which
+ * is the only way an unattended session can act on the advice; a second
+ * refusal of the same call means the advice did not land, and the turn ends.
+ */
+function priorRefusalCount(state: TurnState, call: LLMToolCall): number {
+  const key = canonicalCallKey(call);
+  let count = 0;
+  for (const record of state.completedToolResults) {
+    if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] !== true) {
+      continue;
+    }
+    if (completedRecordKey(record) === key) count += 1;
+  }
+  return count;
 }
 
 /**
@@ -284,12 +310,14 @@ export function blockRepeatedFailingCall(
 ): ToolDispatchResult | null {
   const { count, lastError } = identicalFailureRun(state, call);
   if (count < REPEATED_FAILURE_BLOCK_THRESHOLD) return null;
-  const message = blockedCallMessage(call, count, lastError);
+  const endsTurn = priorRefusalCount(state, call) >= 1;
+  const message = blockedCallMessage(call, count, lastError, endsTurn);
   emitWarning(
     session.eventLog,
     session.nextInternalSubId(),
     "repeated_failing_call_blocked",
-    `${call.name} refused: identical call failed ${count} times with the same error in this turn`,
+    `${call.name} refused: identical call failed ${count} times with the same error in this turn` +
+      (endsTurn ? "; refused twice, stopping the turn" : "; the model may change approach"),
   );
   return {
     content: JSON.stringify({ error: message }),
@@ -298,7 +326,7 @@ export function blockRepeatedFailingCall(
       [REPEATED_FAILURE_BLOCKED_METADATA_KEY]: true,
       repeatedFailures: count,
     },
-    preventContinuation: true,
+    ...(endsTurn ? { preventContinuation: true } : {}),
   };
 }
 

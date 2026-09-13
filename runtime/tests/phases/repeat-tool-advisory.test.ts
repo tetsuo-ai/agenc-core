@@ -267,22 +267,59 @@ describe("blockRepeatedFailingCall", () => {
     const blocked = blockRepeatedFailingCall(mkState(failures), session, write);
     expect(blocked).not.toBeNull();
     expect(blocked?.isError).toBe(true);
-    expect(blocked?.preventContinuation).toBe(true);
+    // The first refusal does not end the turn: the model is told to change
+    // approach and gets the sample in which to do it.
+    expect(blocked?.preventContinuation).toBeUndefined();
     expect(blocked?.metadata).toMatchObject({
       [REPEATED_FAILURE_BLOCKED_METADATA_KEY]: true,
       repeatedFailures: 3,
     });
     expect(JSON.parse(blocked!.content).error).toBe(
-      "This exact Write call already failed 3 times with the same error in this turn and will not run again. The error is not going to change; stop retrying, and if you cannot proceed without it, tell the user. Last error: " +
+      "This exact Write call already failed 3 times with the same error in this turn and will not run again. The error is not going to change. Take a different action now: change the arguments, use another tool, work around what is failing, or finish with what you have. Issuing this same call again stops the turn. Last error: " +
         DENIAL,
     );
     expect(warnings).toEqual([
       {
         cause: "repeated_failing_call_blocked",
         message:
-          "Write refused: identical call failed 3 times with the same error in this turn",
+          "Write refused: identical call failed 3 times with the same error in this turn; the model may change approach",
       },
     ]);
+  });
+
+  test("a second refusal of the same call ends the turn", () => {
+    const { session, warnings } = mkSessionStub();
+    const failures = Array.from({ length: REPEATED_FAILURE_BLOCK_THRESHOLD }, (_, i) =>
+      completed(call(write.name, write.arguments, `w-${i}`), DENIAL, true),
+    );
+    const firstRefusal = completed(
+      call(write.name, write.arguments, "w-refused"),
+      JSON.stringify({ error: "refused" }),
+      true,
+      { [REPEATED_FAILURE_BLOCKED_METADATA_KEY]: true, repeatedFailures: 3 },
+    );
+    const blocked = blockRepeatedFailingCall(
+      mkState([...failures, firstRefusal]),
+      session,
+      write,
+    );
+    expect(blocked?.preventContinuation).toBe(true);
+    expect(JSON.parse(blocked!.content).error).toContain(
+      "This is the second refusal of the same call, so the turn stops here.",
+    );
+    expect(warnings[0]?.message).toContain("refused twice, stopping the turn");
+    // A refusal of a different call is independent: it gets its own chance.
+    const other = call("Write", { file_path: "/root/other.md", content: "x" }, "o-1");
+    const otherFailures = Array.from({ length: REPEATED_FAILURE_BLOCK_THRESHOLD }, (_, i) =>
+      completed(call(other.name, other.arguments, `o-${i}`), DENIAL, true),
+    );
+    expect(
+      blockRepeatedFailingCall(
+        mkState([...failures, firstRefusal, ...otherFailures]),
+        session,
+        other,
+      )?.preventContinuation,
+    ).toBeUndefined();
   });
 
   // Live incident (session conv-mtjdmlfc, 2026-09-02): one `npm start` was
