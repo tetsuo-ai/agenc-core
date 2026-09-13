@@ -214,10 +214,12 @@ environment; in a Docker wave one of them raises
 Harbor job, cancelling every sibling trial in it. They are excluded from
 Docker runs, which leaves 63 evaluable tasks.
 
-Configuration for every trial: `agenc_agent:Agenc`, grok-4.6 at
-`effort=high`, the official 8 hour agent cap
-(`--agent-timeout-multiplier 1`), `--verifier-timeout-multiplier 3`,
-`--add-dir /`, one trial per task. The runtime is a tarball built from an
+Configuration: `agenc_agent:Agenc`, grok-4.6 at `effort=high`,
+`--verifier-timeout-multiplier 3`, `--add-dir /`, one trial per task. The
+agent cap is the official 8 hours (`--agent-timeout-multiplier 1`) for every
+trial except the first wave, which ran at `0.25` (2 hours) and cut three
+trials off mid-work; those tasks were rerun under the full cap, so a trial's
+cap has to be read from its own job rather than assumed. The runtime is a tarball built from an
 exact commit and installed with `--ak runtime_url=...`, so the build under
 test is named by its commit rather than by a release.
 
@@ -233,9 +235,12 @@ comparison:
   the same 63 non-GPU tasks their rate is 66/315.
 - Trials per task. One trial per task compares only against their per-trial
   rate, never against their pass@2 to pass@5 columns.
-- Metrics that exist on both sides. Pass rate, output tokens and wall time
-  per trial. The published row carries no per-trial tool counts, so no
-  tool-call or turn comparison can be made from it.
+- Metrics that exist on both sides. Pass rate, and wall time per trial: the
+  per-task chart artifact published with that run carries each trial's
+  execution seconds, so wall time compares trial to trial. Token counts do
+  not: the leaderboard row gives one aggregate total for the whole run, not
+  per trial. Neither artifact carries tool or turn counts, so no tool-call
+  comparison can be drawn from them at all.
 
 ### Trials that do not measure the agent
 
