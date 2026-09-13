@@ -179,6 +179,9 @@ describe("static section emitters", () => {
     expect(s).toContain("# Completing work without a human");
     expect(s).toContain("restate the task as a checklist of concrete, checkable requirements");
     expect(s).toContain("re-run every check the task implies");
+    // The verification round must widen coverage, not repeat what already passed.
+    expect(s).toContain("proves that path, not the requirement");
+    expect(s).toContain("Re-running a check that already passed adds nothing");
     expect(s).toContain("Never ask for clarification or confirmation");
     expect(s).toContain("The final message lists which requirements you verified and how");
   });
