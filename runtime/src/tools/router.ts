@@ -31,7 +31,6 @@
  * @module
  */
 
-import { dirname, isAbsolute, resolve } from "node:path";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import {
@@ -108,7 +107,7 @@ import {
   readToolRuntimeContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
-import { withSignedAllowedRoots } from "./system/filesystem.js";
+import { filesystemRootsForDispatch } from "./filesystem-dispatch-roots.js";
 import {
   hasExactLedgerMention,
   REQUEST_LEDGER_TRANSFER_TOOL_NAME,
@@ -560,7 +559,7 @@ export class ToolRouter {
       // boundary (e.g. code_mode js_repl helper calls). These are a
       // TRUSTED INTERNAL channel for runtime-injected filesystem scoping
       // and must never be supplied by the model; runtime values are
-      // merged in later (execution.ts / withApprovedFilesystemRoot).
+      // merged in later (execution.ts / filesystemRootsForDispatch).
       let executionArgs = stripModelSuppliedAgenCInternalArgs(args);
       const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
       if (initialPreflight !== null) return initialPreflight;
@@ -679,12 +678,15 @@ export class ToolRouter {
           directDispatchAttempt += 1;
           const executionPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
           if (executionPreflight !== null) return executionPreflight;
-          const dispatchArgs = dispatchContext.approvalResolved
-            ? withApprovedFilesystemRoot(
-                nameDisplay(invocation.toolName),
-                executionArgs,
-              )
-            : executionArgs;
+          const dispatchArgs = filesystemRootsForDispatch(
+            nameDisplay(invocation.toolName),
+            executionArgs,
+            {
+              approvalResolved: dispatchContext.approvalResolved,
+              sandboxMode: sandbox,
+              session: invocation.session,
+            },
+          );
           const dispatchPayload =
             dispatchArgs === executionArgs
               ? executionPayload
@@ -1287,9 +1289,15 @@ export class ToolRouter {
           orchestrateDispatchAttempt += 1;
           const executionPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
           if (executionPreflight !== null) return executionPreflight;
-          const dispatchArgs = dispatchContext.approvalResolved
-            ? withApprovedFilesystemRoot(toolCall.name, executionArgs)
-            : executionArgs;
+          const dispatchArgs = filesystemRootsForDispatch(
+            toolCall.name,
+            executionArgs,
+            {
+              approvalResolved: dispatchContext.approvalResolved,
+              sandboxMode: sandbox,
+              session: opts.session,
+            },
+          );
           const dispatchPayload =
             dispatchArgs === executionArgs
               ? executionPayload
@@ -1657,41 +1665,6 @@ function stripModelSuppliedAgenCInternalArgs(
     out[key] = value;
   }
   return out;
-}
-
-const APPROVED_FILE_PATH_TOOLS = new Set([
-  "FileRead",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
-]);
-
-function approvedFilePathForTool(
-  toolName: string,
-  args: Record<string, unknown>,
-): string | null {
-  if (!APPROVED_FILE_PATH_TOOLS.has(toolName)) return null;
-  const filePath = args["file_path"];
-  return typeof filePath === "string" && filePath.trim().length > 0
-    ? filePath
-    : null;
-}
-
-function withApprovedFilesystemRoot(
-  toolName: string,
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  const filePath = approvedFilePathForTool(toolName, args);
-  if (filePath === null) return args;
-
-  const cwd =
-    typeof args["cwd"] === "string" && args["cwd"].trim().length > 0
-      ? args["cwd"]
-      : process.cwd();
-  const resolvedPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-  const approvedRoot = dirname(resolvedPath);
-  return withSignedAllowedRoots(args, [approvedRoot]);
 }
 
 function planFileContextForApproval(

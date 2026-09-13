@@ -224,7 +224,7 @@ class Agenc(BaseInstalledAgent):
             "agenc --dangerously-bypass-approvals-and-sandbox "
             f"{add_dir_flags + ' ' if add_dir_flags else ''}"
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
-            f'-p "$HARBOR_INSTRUCTION" 2>&1 | stdbuf -oL tee {AGENT_LOG}'
+            f'-p -- "$HARBOR_INSTRUCTION" 2>&1 | stdbuf -oL tee {AGENT_LOG}'
         )
         try:
             await self.exec_as_agent(environment, command=run_cmd, env=env)

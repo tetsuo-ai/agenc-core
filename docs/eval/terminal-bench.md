@@ -114,6 +114,20 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   refused by the Editor workspace fence, which the dispatcher keeps around
   every tool call; a detached service is now outside that fence. `tty: true`
   is still refused by the same fence in one-shot runs (pre-existing, open).
+  The full run then showed the file-tool refusal again on FileRead of
+  `/build/gcc-13.2.0/...` (custom-memory-heap-crash): under the full bypass
+  the permission evaluator does not run, so the permission-layer fix never
+  executed; the dispatcher now widens the root itself (2026-09-13).
+- A task whose instruction starts with `-` (pytorch-model-recovery) made the
+  CLI reject the prompt as an unknown option. The adapter now passes the
+  instruction after `--`.
+- Harbor pulls each task image when the trial starts, with a 600 s limit.
+  On a slow line the multi-GB images time out (`EnvironmentStartTimeoutError`,
+  21 of the first 71 trials of the full run on a 4 Mbit/s Wi-Fi link) and
+  concurrent pulls starve the tasks that download data. Pull all 89 images
+  first (`docker pull alexgshaw/<task>:20251031`) and only then run.
+- `qemu-startup` is Debian 11 (glibc 2.31); the runtime build needs glibc
+  2.34, so the daemon cannot start there. Counted as a failure.
 
 ## Results
 
