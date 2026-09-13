@@ -106,6 +106,39 @@ describe("Grok stream server failures are retried, never after a streamed tool c
     }
   });
 
+  test.each(["status", "statusCode", "status_code"])(
+    "an explicit numeric %s wins over a symbolic server code in response.failed",
+    async (field) => {
+      for (const [status, expected] of [[400, false], [401, false], [403, false], [413, false], [422, false], [503, true]] as const) {
+        const response = await streamOnce([
+          failed({ code: "server_error", [field]: status, message: "Internal error during token generation" }),
+        ]);
+        expect({ field, status, retryable: retryable(response) }).toEqual({ field, status, retryable: expected });
+        expect(response.error instanceof LLMServerError).toBe(expected);
+      }
+    },
+  );
+
+  test.each(["status", "statusCode", "status_code"])(
+    "an explicit numeric %s wins over a symbolic server code in an error event",
+    async (field) => {
+      for (const [status, expected] of [[400, false], [401, false], [403, false], [413, false], [422, false], [503, true]] as const) {
+        const response = await streamOnce([
+          { type: "error", error: { code: "server_error", [field]: status, message: "Internal error during token generation" } },
+        ]);
+        expect({ field, status, retryable: retryable(response) }).toEqual({ field, status, retryable: expected });
+      }
+    },
+  );
+
+  test("a non-numeric status never hides a nested explicit 4xx", async () => {
+    const response = await streamOnce([
+      { type: "error", status: "failed", error: { status: 400, code: "server_error", message: "Internal error during token generation" } },
+    ]);
+    expect(response.error).not.toBeInstanceOf(LLMServerError);
+    expect(retryable(response)).toBe(false);
+  });
+
   test("client and authentication failures stay terminal", async () => {
     const invalid = await streamOnce([failed({ code: 400, message: "invalid request" })]);
     expect(invalid.error).toBeInstanceOf(LLMProviderError);

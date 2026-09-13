@@ -824,6 +824,25 @@ function errorMessageFromStreamEvent(event: unknown): string {
     : "Provider stream returned an error event";
 }
 
+/**
+ * The first field that holds an explicit numeric HTTP status, in the order given.
+ * A non-numeric value (a response status such as "failed", or a symbolic code
+ * such as "server_error") is skipped rather than ending the search, so a later
+ * explicit 4xx is never hidden behind it.
+ */
+function firstNumericStatus(...values: readonly unknown[]): number | undefined {
+  for (const value of values) {
+    const parsed =
+      typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? Number.parseInt(value, 10)
+          : Number.NaN;
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 function statusFromStreamEvent(event: unknown): number | undefined {
   if (!event || typeof event !== "object") return undefined;
   const record = event as Record<string, unknown>;
@@ -833,17 +852,15 @@ function statusFromStreamEvent(event: unknown): number | undefined {
     !Array.isArray(record.error)
       ? (record.error as Record<string, unknown>)
       : undefined;
-  const raw =
-    record.status ??
-    record.status_code ??
-    record.statusCode ??
-    nestedError?.status ??
-    nestedError?.status_code ??
-    nestedError?.statusCode ??
-    nestedError?.code;
-  const parsed =
-    typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  return firstNumericStatus(
+    record.status,
+    record.status_code,
+    record.statusCode,
+    nestedError?.status,
+    nestedError?.status_code,
+    nestedError?.statusCode,
+    nestedError?.code,
+  );
 }
 
 function codeFromStreamEvent(event: unknown): unknown {
@@ -3275,11 +3292,14 @@ export class GrokProvider implements LLMProvider {
             ? "Provider returned failed response status"
             : "Provider returned error response")
     );
-    const codeRaw = errorObj?.code ?? errorObj?.status ?? errorObj?.statusCode;
-    const parsedStatus = typeof codeRaw === "number"
-      ? codeRaw
-      : Number.parseInt(String(codeRaw ?? ""), 10);
-    const statusCode = Number.isFinite(parsedStatus) ? parsedStatus : undefined;
+    // Explicit status fields take precedence over `code`: a symbolic code must
+    // never override an explicit 4xx, and a numeric code is only a fallback.
+    const statusCode = firstNumericStatus(
+      errorObj?.status,
+      errorObj?.statusCode,
+      errorObj?.status_code,
+      errorObj?.code,
+    );
     const serverFailure = xaiStatuslessServerFailure(
       this.name,
       message,
