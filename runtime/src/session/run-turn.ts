@@ -1048,6 +1048,7 @@ async function runSamplingRequest(
   querySource: string,
   assistantOutputSink?: AssistantOutputStreamSink,
   beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
+  beforeOutageRetry?: () => void,
 ): Promise<SamplingRequestResult> {
   const trackingState = getAttachmentTrackingState(session);
   const previousSwarmChoiceTurnId = trackingState.lastSwarmSpawnToolChoiceTurnId;
@@ -1172,6 +1173,9 @@ async function runSamplingRequest(
     );
     await abortableSleep(delayMs, signal);
     if (signal.aborted) throw samplingAbortError(signal, "aborted");
+    // The fast recovery counter remains spent. This is a new physical sample,
+    // so persist a distinct identity without reusing its unknown reservation.
+    beforeOutageRetry?.();
   }
 }
 
@@ -2659,6 +2663,12 @@ async function* runTurnKernelInner(
           }
           session.bindProviderConversation();
           return false;
+        },
+        () => {
+          advanceModelSampleOrdinal(state);
+          persistNewResponseItems();
+          emitTurnCheckpoint("iteration", { force: true });
+          checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
         },
       );
       for (const ev of pending) {

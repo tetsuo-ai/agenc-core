@@ -25,6 +25,7 @@ import {
 } from "../../src/session/durable-checkpoint-reader.js";
 import type { RolloutReconstruction } from "../../src/session/rollout-reconstruction.js";
 import { runTurn } from "../../src/session/run-turn.js";
+import * as recovery from "../../src/recovery/fallback-ladder.js";
 import type {
   PreparedProviderBinding,
   ProviderBinding,
@@ -302,6 +303,117 @@ function reconciledStepIds(
 }
 
 describe("admitted model sample identity", () => {
+  test("admits each slow outage retry separately and preserves unknown charges", async () => {
+    const timeline: string[] = [];
+    let attempts = 0;
+    const reserve = recovery.reserveRecoveryReentry;
+    const spent = vi.spyOn(recovery, "reserveRecoveryReentry")
+      .mockImplementation(async (session, state, options) => {
+        state.recoveryReentryCount = recovery.MAX_RECOVERY_REENTRIES;
+        return reserve(session, state, options);
+      });
+    try {
+      await withAdmittedHarness(["recovered"], async ({ session, admission, ctx }) => {
+        const store = session.services.configStore!;
+        const config = vi.spyOn(store, "current").mockReturnValue({
+          ...store.current(), provider_outage_wait_ms: 100, provider_outage_retry_ms: 1,
+        });
+        const checkpoints = captureTurnCheckpoints(session, (payload) => {
+          const state = payload.resumableState as { modelSampleOrdinal?: number };
+          timeline.push(`checkpoint:${state.modelSampleOrdinal}`);
+        });
+        try {
+          await drain(runTurn(session, ctx, "answer the question"));
+          expect(attempts).toBe(4);
+          const journal = admission.client.replayJournal?.() ?? [];
+          const dispatched = journal.filter((event) => event.event === "dispatched");
+          const unknown = journal.filter((event) => event.event === "held_unknown");
+          expect(dispatched).toHaveLength(4);
+          expect(new Set(dispatched.map((event) => event.stepId)).size).toBe(4);
+          expect(unknown).toHaveLength(3);
+          expect(reconciledStepIds(admission)).toEqual([dispatched[3]!.stepId]);
+          expect(journal.filter((event) => event.event === "voided")).toHaveLength(0);
+          for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
+            expect(timeline.indexOf(`checkpoint:${ordinal}`)).toBeGreaterThan(
+              timeline.indexOf(`provider:${ordinal}`),
+            );
+            expect(timeline.indexOf(`checkpoint:${ordinal}`)).toBeLessThan(
+              timeline.indexOf(`provider:${ordinal + 1}`),
+            );
+          }
+          expect(checkpoints).toContainEqual(expect.objectContaining({
+            resumableState: expect.objectContaining({
+              modelSampleOrdinal: 3, recoveryReentryCount: recovery.MAX_RECOVERY_REENTRIES,
+            }),
+          }));
+        } finally {
+          config.mockRestore();
+        }
+      }, () => {
+        attempts += 1;
+        timeline.push(`provider:${attempts}`);
+        if (attempts <= 3) throw Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+      });
+    } finally {
+      spent.mockRestore();
+    }
+  });
+
+  test.each(["cancelled wait", "failed checkpoint"] as const)(
+    "does not dispatch a slow outage retry after %s",
+    async (failure) => {
+      let attempts = 0;
+      const abort = new AbortController();
+      const reserve = recovery.reserveRecoveryReentry;
+      const spent = vi.spyOn(recovery, "reserveRecoveryReentry")
+        .mockImplementation(async (session, state, options) => {
+          state.recoveryReentryCount = recovery.MAX_RECOVERY_REENTRIES;
+          return reserve(session, state, options);
+        });
+      try {
+        await withAdmittedHarness(["must not dispatch"], async ({ session, admission, ctx }) => {
+          const store = session.services.configStore!;
+          const config = vi.spyOn(store, "current").mockReturnValue({
+            ...store.current(), provider_outage_wait_ms: 100, provider_outage_retry_ms: 1,
+          });
+          let waitObserved = false;
+          const unsubscribe = session.eventLog.subscribe((event) => {
+            if (event.msg.type === "warning" && event.msg.payload.cause === "provider_outage_wait") {
+              waitObserved = true;
+              if (failure === "cancelled wait") abort.abort(new Error("operator stopped"));
+            }
+          });
+          let checkpointFailed = false;
+          captureTurnCheckpoints(session, (payload) => {
+            if (failure === "failed checkpoint" &&
+                (payload.resumableState as { modelSampleOrdinal?: number }).modelSampleOrdinal === 1) {
+              checkpointFailed = true;
+              throw new Error("outage checkpoint append failed");
+            }
+          });
+          try {
+            await drain(runTurn(session, ctx, "answer the question", { signal: abort.signal }));
+            expect(waitObserved).toBe(true);
+            expect(checkpointFailed).toBe(failure === "failed checkpoint");
+            expect(attempts).toBe(1);
+            const journal = admission.client.replayJournal?.() ?? [];
+            expect(journal.filter((event) => event.event === "dispatched")).toHaveLength(1);
+            expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(1);
+            expect(reconciledStepIds(admission)).toEqual([]);
+          } finally {
+            unsubscribe();
+            config.mockRestore();
+          }
+        }, () => {
+          attempts += 1;
+          throw Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+        });
+      } finally {
+        spent.mockRestore();
+      }
+    },
+  );
+
   test("keeps the upgrade-compatible first id and bounds later ordinals", () => {
     const ctx = { subId: "turn-stream" };
     const base = {
