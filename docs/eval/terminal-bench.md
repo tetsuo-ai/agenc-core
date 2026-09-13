@@ -205,6 +205,49 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   `AGENC_CONTEXT_IMAGE_BUDGET_BYTES` (6 MiB) of inline images, newest first,
   and replaces older ones with a placeholder on the wire only.
 
+## Terminal-Bench 4.0 run, 2026-09-13
+
+The 4.0 dataset is 66 tasks. Three of them (`fp8-rmsnorm-gemm`,
+`jax-speedrun-gpu`, `math-eval-grader`) declare a GPU and need a GPU-capable
+environment; in a Docker wave one of them raises
+`RuntimeError: Task requires 1 GPU(s)` at trial start and aborts the entire
+Harbor job, cancelling every sibling trial in it. They are excluded from
+Docker runs, which leaves 63 evaluable tasks.
+
+Configuration for every trial: `agenc_agent:Agenc`, grok-4.6 at
+`effort=high`, the official 8 hour agent cap
+(`--agent-timeout-multiplier 1`), `--verifier-timeout-multiplier 3`,
+`--add-dir /`, one trial per task. The runtime is a tarball built from an
+exact commit and installed with `--ak runtime_url=...`, so the build under
+test is named by its commit rather than by a release.
+
+### Comparing against a published row
+
+The public leaderboard row for the same model is Grok Build with Grok 4.6 at
+effort high: 20.3%, 67 successes of 330 trials, 4.00 billion total tokens of
+which 3.88 billion cached input, 32.6 million output, and $3,591.58. That run
+is five trials per task over all 66 tasks. Three alignments matter before any
+comparison:
+
+- Task subset. Their 330 trials include the three GPU tasks. Restricted to
+  the same 63 non-GPU tasks their rate is 66/315.
+- Trials per task. One trial per task compares only against their per-trial
+  rate, never against their pass@2 to pass@5 columns.
+- Metrics that exist on both sides. Pass rate, output tokens and wall time
+  per trial. The published row carries no per-trial tool counts, so no
+  tool-call or turn comparison can be made from it.
+
+### Trials that do not measure the agent
+
+A trial whose runtime hit a harness defect measures the defect. Those trials
+are rerun on a build that provably contains the fix, and a graded failure is
+never rerun to improve a score. The rerun build is chosen by provenance, not
+by filename: each build writes a manifest next to its archive recording the
+full source commit and the archive's SHA-256, and the selector verifies the
+checksum before reading the commit and checking that the required fix is an
+ancestor of it. With no verified archive containing the fix, nothing is
+rerun.
+
 ## Results
 
 Pilot, 2026-09-12: 11 tasks, one trial each, DeepSeek V4 Pro direct at
