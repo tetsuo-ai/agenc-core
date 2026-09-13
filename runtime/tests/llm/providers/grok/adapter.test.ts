@@ -740,7 +740,12 @@ describe("GrokProvider incremental continuation", () => {
     };
   }
 
-  test("retries once unstored when xAI cannot store a large response", async () => {
+  function completedStreamEvent(id: string, text: string): Record<string, unknown> {
+    return { type: "response.completed", response: buildXaiResponse(id, text) };
+  }
+
+  /** A provider whose first request is refused for storage and whose second gets `second()`. */
+  function refusingProvider(second: () => unknown) {
     const warnings: Array<{ cause: string; message: string }> = [];
     const provider = new GrokProvider({
       apiKey: "xai-test",
@@ -748,7 +753,12 @@ describe("GrokProvider incremental continuation", () => {
       emitWarning: (warning) => warnings.push(warning),
     });
     const requestBodies: Record<string, unknown>[] = [];
-    (provider as any).client = storeRefusalClient(requestBodies, () =>
+    (provider as any).client = storeRefusalClient(requestBodies, second);
+    return { provider, warnings, requestBodies };
+  }
+
+  test("retries once unstored when xAI cannot store a large response", async () => {
+    const { provider, warnings, requestBodies } = refusingProvider(() =>
       withResponse(buildXaiResponse("resp_unstored", "done")),
     );
     const result = await provider.chat(currentMessages);
@@ -760,22 +770,8 @@ describe("GrokProvider incremental continuation", () => {
   });
 
   test("retries the stream once unstored when xAI cannot store a large response", async () => {
-    const warnings: Array<{ cause: string; message: string }> = [];
-    const provider = new GrokProvider({
-      apiKey: "xai-test",
-      model: "grok-4-fast",
-      emitWarning: (warning) => warnings.push(warning),
-    });
-    const requestBodies: Record<string, unknown>[] = [];
-    (provider as any).client = storeRefusalClient(requestBodies, () =>
-      withResponse(
-        streamFromEvents([
-          {
-            type: "response.completed",
-            response: buildXaiResponse("resp_unstored_stream", "stream done"),
-          },
-        ]),
-      ),
+    const { provider, warnings, requestBodies } = refusingProvider(() =>
+      withResponse(streamFromEvents([completedStreamEvent("resp_unstored_stream", "stream done")])),
     );
     const result = await provider.chatStream(currentMessages, () => {});
     expect(result.content).toBe("stream done");
@@ -786,17 +782,10 @@ describe("GrokProvider incremental continuation", () => {
   });
 
   test("under an admitted single wire attempt the store refusal is a retryable rebuild and the next attempt is unstored", async () => {
-    const warnings: Array<{ cause: string; message: string }> = [];
-    const provider = new GrokProvider({
-      apiKey: "xai-test",
-      model: "grok-4-fast",
-      emitWarning: (warning) => warnings.push(warning),
-    });
-    primeStoredContinuation(provider, "resp_stored_prev", true, previousMessages);
-    const requestBodies: Record<string, unknown>[] = [];
-    (provider as any).client = storeRefusalClient(requestBodies, () =>
+    const { provider, warnings, requestBodies } = refusingProvider(() =>
       withResponse(buildXaiResponse("resp_unstored_next", "done")),
     );
+    primeStoredContinuation(provider, "resp_stored_prev", true, previousMessages);
 
     await expect(
       provider.chat(currentMessages, { singleWireAttempt: true }),
@@ -815,17 +804,8 @@ describe("GrokProvider incremental continuation", () => {
   });
 
   test("under an admitted single wire attempt the streaming store refusal is a retryable rebuild", async () => {
-    const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4-fast" });
-    const requestBodies: Record<string, unknown>[] = [];
-    (provider as any).client = storeRefusalClient(requestBodies, () =>
-      withResponse(
-        streamFromEvents([
-          {
-            type: "response.completed",
-            response: buildXaiResponse("resp_unstored_stream_next", "stream done"),
-          },
-        ]),
-      ),
+    const { provider, requestBodies } = refusingProvider(() =>
+      withResponse(streamFromEvents([completedStreamEvent("resp_unstored_stream_next", "stream done")])),
     );
 
     await expect(
