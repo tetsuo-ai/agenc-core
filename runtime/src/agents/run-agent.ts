@@ -2631,28 +2631,44 @@ export function injectChildToolArgs(
   // Source tool closures may belong to the root registry, so fill defaults
   // from the current Session rather than retaining an ancestor wrapper.
   const executionCwd = opts.worktree?.path ?? childSession?.sessionConfiguration.cwd;
+  return withChildToolDefaultCwd(injectedArgs, toolName, executionCwd);
+}
+
+/** Path normalization only: permission review must not receive new authority. */
+function withChildToolDefaultCwd(
+  args: Record<string, unknown>,
+  toolName: string,
+  executionCwd: string | undefined,
+): Record<string, unknown> {
   if (executionCwd) {
     // Each tool names its working-directory field differently. exec_command
     // takes `workdir` and rejects `cwd` as a removed alias, so injecting
     // `cwd` there made every exec_command in a worktree child fail with a
     // message that blamed the model for a field it never sent.
     const field = WORKTREE_CWD_FIELD_BY_TOOL[toolName];
-    const value = field === undefined ? undefined : injectedArgs[field];
+    const value = field === undefined ? undefined : args[field];
     const isSearch = toolName === "Glob" || toolName === "Grep";
-    // Search closures retain the original registry root. Supply the current
-    // caller's default without replacing explicit paths or malformed values.
-    // Glob treats whitespace-only cwd as absent; Grep treats it as a path.
+    // These file tools and Glob treat whitespace-only cwd as absent. Grep
+    // and Write treat it as a path, so preserve that explicit spelling.
+    const blankDefaultCwd =
+      (toolName === "Glob" || toolName === "FileRead" ||
+        toolName === "Edit" || toolName === "MultiEdit") &&
+      typeof value === "string" && value.trim().length === 0;
+    // Source closures retain the original registry root. Supply the current
+    // caller's default while preserving each tool's explicit input semantics.
     const missingSearchCwd = value === undefined || value === null || value === "" ||
-      (toolName === "Glob" && typeof value === "string" && value.trim().length === 0);
+      blankDefaultCwd;
     if (
       field !== undefined &&
-      (isSearch ? missingSearchCwd : typeof value !== "string" || value.length === 0)
+      (isSearch ? missingSearchCwd : typeof value !== "string" || value.length === 0 || blankDefaultCwd)
     ) {
-      injectedArgs[field] = executionCwd;
+      return { ...args, [field]: executionCwd };
     }
   }
-  return injectedArgs;
+  return args;
 }
+
+const CHILD_FILE_CWD_TOOLS = new Set(["FileRead", "Write", "Edit", "MultiEdit"]);
 
 /** Tools pinned to the child's worktree, and the argument that carries it. */
 export const WORKTREE_CWD_FIELD_BY_TOOL: Readonly<Record<string, string>> = {
@@ -2661,6 +2677,10 @@ export const WORKTREE_CWD_FIELD_BY_TOOL: Readonly<Record<string, string>> = {
   apply_patch: "cwd",
   Glob: "cwd",
   Grep: "cwd",
+  FileRead: "cwd",
+  Write: "cwd",
+  Edit: "cwd",
+  MultiEdit: "cwd",
 };
 
 async function applyChildToolPolicy(
@@ -2726,22 +2746,44 @@ function wrapToolForChild(
   const executionOpts = { ...opts, ...(policy !== undefined ? { childToolPolicy: policy } : {}) };
   const wrapped = inheritBuiltinToolProvenance(source, {
     ...source,
-    ...(policy !== undefined ? {
+    ...(policy !== undefined || (source.checkPermissions !== undefined && CHILD_FILE_CWD_TOOLS.has(source.name)) ? {
       async checkPermissions(input, context) {
         if (input === null || typeof input !== "object" || Array.isArray(input)) {
           return { behavior: "deny" as const, message: "Child tool input must be an object" };
         }
-        const decision = await policy(source,
-          stripModelSuppliedChildArgs(input as Record<string, unknown>));
+        const sanitized = stripModelSuppliedChildArgs(input as Record<string, unknown>);
+        const decision = policy === undefined
+          ? { behavior: "allow" as const, updatedInput: sanitized }
+          : await policy(source, sanitized);
         if (decision.behavior === "deny") {
           return { behavior: "deny" as const, message: decision.message,
             decisionReason: { type: "other" as const, reason: "child_tool_policy" } };
         }
         // Restriction runs before the interactive boundary. An allow here only
         // narrows/normalizes input; the ordinary tool permission still decides.
-        return source.checkPermissions?.(decision.updatedInput ?? input, context) ?? {
-          behavior: "passthrough" as const, updatedInput: decision.updatedInput ?? input,
+        const currentInput = decision.updatedInput ?? sanitized;
+        const reviewedInput = CHILD_FILE_CWD_TOOLS.has(source.name)
+          ? withChildToolDefaultCwd(
+              currentInput,
+              source.name,
+              opts.worktree?.path ?? opts.getSession?.()?.sessionConfiguration.cwd,
+            )
+          : currentInput;
+        const result = await source.checkPermissions?.(reviewedInput, context) ?? {
+          behavior: "passthrough" as const, updatedInput: reviewedInput,
         };
+        // cwd is execution-only for file tools. The caller revalidates a
+        // permission rewrite against the public schema before execution.
+        // Preserve the hook's policy/grant updates, but do not publish the
+        // internal default; execution independently injects that same cwd.
+        if (reviewedInput !== currentInput && result.updatedInput !== undefined &&
+          result.updatedInput.cwd === reviewedInput.cwd) {
+          const updatedInput = { ...result.updatedInput };
+          if (Object.hasOwn(currentInput, "cwd")) updatedInput.cwd = currentInput.cwd;
+          else delete updatedInput.cwd;
+          return { ...result, updatedInput };
+        }
+        return result;
       },
     } : {}),
     async execute(args) {

@@ -78,6 +78,7 @@ import {
 } from "../sandbox/execution-broker.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
@@ -135,6 +136,9 @@ import { bindExplicitDangerBoundary, explicitDangerBroker } from "../helpers/exp
 import { registerBuiltinTool } from "../../src/tools/builtin-provenance.js";
 import { createGlobTool } from "../../src/tools/system/glob.js";
 import { createGrepTool } from "../../src/tools/system/grep.js";
+import { createFileReadTool } from "../../src/tools/system/file-read.js";
+import { createFileWriteTool } from "../../src/tools/system/file-write.js";
+import { createFileEditTool, createFileMultiEditTool } from "../../src/tools/system/file-edit.js";
 import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
 import { cloneFileStateCache } from "../utils/fileStateCache.js";
 import { normalizeLspServerConfig } from "../services/lsp/config.js";
@@ -1765,6 +1769,190 @@ describe("runAgent", () => {
     } finally {
       await child.shutdown();
       await disposeSandboxExecutionBroker(broker);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["scanner", "execute"], ["scanner", "dispatch"],
+    ["writer", "execute"], ["writer", "dispatch"],
+  ] as const)("resolves nested FileRead from the %s caller through %s", async (role, boundary) => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-delegated-file-cwd-"));
+    const implementationCwd = join(workspace, "implementation");
+    const childCwd = role === "scanner" ? implementationCwd : join(workspace, "writer");
+    const alternate = join(childCwd, "alternate");
+    mkdirSync(implementationCwd, { recursive: true });
+    mkdirSync(alternate, { recursive: true });
+    writeFileSync(join(workspace, "README.md"), "parent-only-content\n");
+    writeFileSync(join(childCwd, "README.md"), "child-only-content\n");
+    writeFileSync(join(alternate, "README.md"), "alternate-only-content\n");
+    const tool = registerBuiltinTool(createFileReadTool({ allowedPaths: [workspace] }));
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: childCwd });
+    const admission = makeChildToolAdmission({ runId: "file-child", sessionId: "file-child" });
+    const child = makeStubSession({
+      conversationId: "file-child",
+      sessionConfiguration: mkSessionConfiguration({ cwd: childCwd }),
+      services: {
+        executionAdmission: admission.client,
+        sandboxExecutionBroker: broker,
+        ...(role === "scanner" ? { readOnlyDelegation: { kind: "read-only", ownerThreadId: "implementation" } as const } : {}),
+      },
+    });
+    const ancestor = buildFilteredRegistry({ ...mkRegistry(), tools: [tool] }, {
+      childConversationId: "implementation",
+      worktree: { path: implementationCwd, branch: "implementation", gitRoot: workspace, created: false },
+    });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: child.conversationId, getSession: () => child,
+      sandboxExecutionBroker: broker,
+      ...(role === "writer" ? { worktree: { path: childCwd, branch: "writer", gitRoot: workspace, created: false } } : {}),
+    });
+    let calls = 0;
+    const invoke = (extra: Record<string, unknown> = {}) => {
+      const args = { file_path: "README.md", ...extra };
+      return boundary === "execute" ? nested.tools[0]!.execute(args)
+        : nested.dispatch({ name: "FileRead", id: `file-read-${++calls}`, arguments: JSON.stringify(args) });
+    };
+    try {
+      for (const cwd of [undefined, null, "", "  ", 42]) {
+        const result = await invoke(cwd === undefined ? {} : { cwd });
+        expect(result.isError, result.content).not.toBe(true);
+        expect(result.content).toContain("child-only-content");
+        expect(result.content).not.toContain("parent-only-content");
+      }
+      writeFileSync(join(childCwd, "README.md"), "updated-child-content\n");
+      expect((await invoke()).content).toContain("updated-child-content");
+      expect((await invoke({ cwd: alternate })).content).toContain("alternate-only-content");
+      expect((await invoke({ file_path: "alternate/README.md" })).content).toContain("alternate-only-content");
+      expect((await invoke({ file_path: join(alternate, "README.md"), cwd: workspace })).content).toContain("alternate-only-content");
+      if (role === "scanner") {
+        expect(await invoke({ file_path: join(workspace, "README.md") })).toMatchObject({
+          isError: true, content: expect.stringContaining("Read-only delegation cannot read"),
+        });
+        expect(await invoke({ cwd: workspace })).toMatchObject({
+          isError: true, content: expect.stringContaining("outside delegated read authority"),
+        });
+      }
+    } finally {
+      await child.shutdown();
+      await disposeSandboxExecutionBroker(broker);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["Write", "execute"], ["Write", "dispatch"],
+    ["Edit", "execute"], ["Edit", "dispatch"],
+    ["MultiEdit", "execute"], ["MultiEdit", "dispatch"],
+  ] as const)("resolves nested %s mutations inside the writer cwd through %s", async (toolName, boundary) => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-delegated-mutation-cwd-"));
+    const implementationCwd = join(workspace, "implementation");
+    const childCwd = join(workspace, "writer");
+    const alternate = join(childCwd, "alternate");
+    mkdirSync(implementationCwd, { recursive: true });
+    mkdirSync(alternate, { recursive: true });
+    const config = { allowedPaths: [workspace] };
+    const tools = [createFileReadTool(config), createFileWriteTool(config), createFileEditTool(config), createFileMultiEditTool(config)].map(registerBuiltinTool);
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: childCwd });
+    const admission = makeChildToolAdmission({ runId: "file-writer", sessionId: "file-writer" });
+    const child = makeStubSession({
+      conversationId: "file-writer",
+      sessionConfiguration: mkSessionConfiguration({ cwd: childCwd }),
+      services: { executionAdmission: admission.client, sandboxExecutionBroker: broker },
+    });
+    const ancestor = buildFilteredRegistry({ ...mkRegistry(), tools }, {
+      childConversationId: "implementation",
+      worktree: { path: implementationCwd, branch: "implementation", gitRoot: workspace, created: false },
+    });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: child.conversationId, getSession: () => child,
+      sandboxExecutionBroker: broker,
+      worktree: { path: childCwd, branch: "writer", gitRoot: workspace, created: false },
+    });
+    let calls = 0;
+    const invoke = (name: string, args: Record<string, unknown>) => boundary === "execute"
+      ? nested.tools.find((tool) => tool.name === name)!.execute(args)
+      : nested.dispatch({ name, id: `file-mutate-${++calls}`, arguments: JSON.stringify(args) });
+    try {
+      for (const [index, cwd] of [undefined, toolName === "Write" ? "" : "  ", alternate].entries()) {
+        const name = `target-${index}.txt`;
+        const target = join(cwd === alternate ? alternate : childCwd, name);
+        if (toolName !== "Write") {
+          writeFileSync(join(workspace, name), "parent-old\n");
+          writeFileSync(target, "child-old\n");
+          const read = await invoke("FileRead", { file_path: target });
+          expect(read.isError, read.content).not.toBe(true);
+        }
+        const args = {
+          file_path: name,
+          ...(cwd === undefined ? {} : { cwd }),
+          ...(toolName === "Write" ? { content: "child-new\n" }
+            : toolName === "Edit" ? { old_string: "child-old", new_string: "child-new" }
+            : { edits: [{ old_string: "child-old", new_string: "child-new" }] }),
+        };
+        const result = await invoke(toolName, args);
+        expect(result.isError, result.content).not.toBe(true);
+        expect(readFileSync(target, "utf8")).toBe("child-new\n");
+        if (toolName === "Write") expect(existsSync(join(workspace, name))).toBe(false);
+        else expect(readFileSync(join(workspace, name), "utf8")).toBe("parent-old\n");
+      }
+      if (toolName === "Write") {
+        const whitespace = await invoke(toolName, { file_path: "whitespace.txt", content: "unchanged", cwd: "  " });
+        expect(whitespace).toMatchObject({ isError: true });
+        expect(existsSync(join(childCwd, "whitespace.txt"))).toBe(false);
+      }
+    } finally {
+      await child.shutdown();
+      await disposeSandboxExecutionBroker(broker);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["FileRead", false], ["FileRead", true], ["Write", false], ["Write", true],
+    ["Edit", false], ["Edit", true], ["MultiEdit", false], ["MultiEdit", true],
+  ] as const)("checks nested %s permissions on the execution cwd with policy=%s", async (toolName, withPolicy) => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-file-permission-cwd-"));
+    const childCwd = join(workspace, "child");
+    mkdirSync(childCwd);
+    const config = { allowedPaths: [workspace] };
+    const tools = [createFileReadTool(config), createFileWriteTool(config), createFileEditTool(config), createFileMultiEditTool(config)];
+    const tool = tools.find((candidate) => candidate.name === toolName)!;
+    const check = vi.spyOn(tool, "checkPermissions");
+    const child = makeStubSession({
+      conversationId: "file-permission-child",
+      sessionConfiguration: mkSessionConfiguration({ cwd: childCwd }),
+    });
+    const nested = buildFilteredRegistry(buildFilteredRegistry({ ...mkRegistry(), tools: [tool] }, {
+      childConversationId: "implementation",
+      worktree: { path: join(workspace, "implementation"), branch: "implementation", gitRoot: workspace, created: false },
+    }), {
+      childConversationId: child.conversationId, getSession: () => child,
+      ...(withPolicy ? { childToolPolicy: (_tool: unknown, args: Record<string, unknown>) => ({ behavior: "allow" as const, updatedInput: { ...args, policySeen: true } }) } : {}),
+    });
+    let permissions = createEmptyToolPermissionContext({
+      mode: "acceptEdits",
+      alwaysDenyRules: { session: [`${toolName === "FileRead" ? "FileRead" : "Edit"}(${join(childCwd, "denied.txt")})`] },
+    });
+    const context = { session: child, getAppState: () => ({ toolPermissionContext: permissions, denialTracking: freshDenialTracking(), autoModeActive: false }) };
+    const args = { file_path: "denied.txt", content: "new", old_string: "old", new_string: "new", edits: [{ old_string: "old", new_string: "new" }] };
+    try {
+      expect(await nested.tools[0]!.checkPermissions!(args, context)).toMatchObject({ behavior: "deny" });
+      expect(check.mock.calls[0]![0]).toMatchObject({ cwd: childCwd });
+      expect(check.mock.calls[0]![0]).not.toHaveProperty(SESSION_ALLOWED_ROOTS_ARG);
+      expect(check.mock.calls[0]![0]).not.toHaveProperty(SESSION_ID_ARG);
+      permissions = createEmptyToolPermissionContext({ mode: "default" });
+      const allowed = await nested.tools[0]!.checkPermissions!({ ...args, file_path: "allowed.txt" }, context);
+      expect(allowed).toMatchObject({
+        behavior: toolName === "FileRead" ? "allow" : "ask",
+      });
+      expect(allowed.updatedInput).not.toHaveProperty("cwd");
+      const explicit = join(childCwd, "explicit");
+      await nested.tools[0]!.checkPermissions!({ ...args, cwd: explicit }, context);
+      expect(check.mock.lastCall?.[0]).toMatchObject({ cwd: explicit });
+    } finally {
+      check.mockRestore();
+      await child.shutdown();
       rmSync(workspace, { recursive: true, force: true });
     }
   });
@@ -5138,7 +5326,10 @@ describe("runAgent", () => {
     }
   });
 
-  it("admits a nested worker under the calling implementation session and reads its current worktree", async () => {
+  it.each([
+    ["worker", "bypassPermissions"], ["scanner", "bypassPermissions"],
+    ["worker", "default"], ["scanner", "default"],
+  ] as const)("admits a nested %s in %s mode and reads its current worktree", async (role, permissionMode) => {
     const previousHome = process.env.AGENC_HOME;
     const home = mkdtempSync(join(tmpdir(), "agenc-nested-parent-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-nested-parent-workspace-"));
@@ -5165,22 +5356,25 @@ describe("runAgent", () => {
       const base = { content: "complete", toolCalls: [], usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12, availability: "reported" as const, provenance: "provider" as const }, model: "fake-model", finishReason: "stop" as const };
       if (nested && !readRequested) {
         readRequested = true;
-        return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-read", name: "FileRead", arguments: JSON.stringify({ file_path: join(worktreePath, "revision.txt") }) }] };
+        return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-read", name: "FileRead", arguments: JSON.stringify({ file_path: "revision.txt" }) }] };
       }
       if (!nested && !spawned) {
         spawned = true;
-        return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-spawn", name: "spawn_agent", arguments: JSON.stringify({ message: "nested-worker-task", task_name: "worker", fork_turns: "none" }) }] };
+        return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-spawn", name: "spawn_agent", arguments: JSON.stringify({ message: "nested-worker-task", task_name: "worker", fork_turns: "none", isolation: "none", ...(role === "scanner" ? { agent_type: "scanner" } : {}) }) }] };
       }
       return base;
     });
     const tools: ToolRegistry["tools"][number][] = [];
     const fileRead = buildProductionToolRegistry({ workspaceRoot: cwd, requireAdmission: false }).tools.find((tool) => tool.name === "FileRead")!;
     const read = vi.spyOn(fileRead, "execute");
+    // The observer wrapper changes execute's identity. Register that trusted
+    // test wrapper so the scanner retains the actual builtin implementation.
+    registerBuiltinTool(fileRead);
     tools.push(fileRead);
     const broker = new SandboxExecutionBroker({ cwd, mode: "danger_full_access" });
     const session = makeStubSession({
       conversationId: "nested-root",
-      services: { provider, executionAdmission: rootAdmission, admissionRequired: true, sandboxExecutionBroker: broker, permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({ mode: "bypassPermissions", isBypassPermissionsModeAvailable: true, bypassPermissionsAcceptedIn: [cwd] })), registry: { ...mkRegistry(), tools } },
+      services: { provider, executionAdmission: rootAdmission, admissionRequired: true, sandboxExecutionBroker: broker, permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({ mode: permissionMode, isBypassPermissionsModeAvailable: true, bypassPermissionsAcceptedIn: [cwd], alwaysAllowRules: { session: ["spawn_agent"] } })), registry: { ...mkRegistry(), tools } },
       sessionConfiguration: mkSessionConfiguration({ cwd, sandboxPolicy: { value: "danger_full_access" }, provider: { slug: "fake" } as SessionConfiguration["provider"] }),
       config: { ...mkConfig(), cwd }, modelInfo: { ...mkModelInfo(), maxOutputTokens: 32 },
     });
@@ -5191,16 +5385,35 @@ describe("runAgent", () => {
     const { control, registry, live } = await spawnLive(session);
     tools.push(...createMultiAgentV2Tools({ getSession: () => session, workspace: session.roleWorkspace, ensureAgentControl: () => ({ control, registry }) }));
     const unsubscribe = observeChildApprovalSessions(session, (child) => { children.push(child); return () => {}; });
+    const shutdowns = new Map<Session, Promise<void>>();
+    const shutdown = Session.prototype.shutdown;
+    const observeShutdown = vi.spyOn(Session.prototype, "shutdown").mockImplementation(function (this: Session) {
+      const pending = shutdown.call(this);
+      shutdowns.set(this, pending);
+      void pending.catch(() => {});
+      return pending;
+    });
     try {
       const { result } = await collectRun(runAgent({ live, parent: session, initialMessages: [{ role: "user", content: "implementation-parent-task" }], taskPrompt: "implementation-parent-task", worktree: { path: worktreePath, branch: "implementation", gitRoot: cwd, created: false } }));
       expect(result.outcome, String(result.error)).toBe("completed");
       await vi.waitFor(() => expect(children, JSON.stringify(vi.mocked(provider.chatStream).mock.calls.at(-1)?.[0].filter((message) => message.role === "tool"))).toHaveLength(2));
       expect(children[1]!.services.executionAdmission!.scope.parentRunId).toBe(live.agentId);
       expect(children[1]!.sessionConfiguration.cwd).toBe(worktreePath);
+      if (role === "scanner") expect(children[1]!.services.readOnlyDelegation?.kind).toBe("read-only");
       expect(store.getThreadSpawnEdge(children[1]!.conversationId)?.parentThreadId).toBe(live.agentId);
-      await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(read,
+        JSON.stringify(vi.mocked(provider.chatStream).mock.calls.flatMap(([messages]) => messages.filter((message) => message.role === "tool"))),
+      ).toHaveBeenCalledOnce());
       expect(read.mock.calls[0]![0][SESSION_ID_ARG]).toBe(children[1]!.conversationId);
-      expect(readSandboxExecutionBroker(read.mock.calls[0]![0])).toBe(children[1]!.services.sandboxExecutionBroker);
+      const readBroker = readSandboxExecutionBroker(read.mock.calls[0]![0]);
+      if (role === "scanner") {
+        // Read-only admission attenuates the session broker for this call.
+        expect(readBroker?.cwd).toBe(worktreePath);
+        expect(readBroker?.executionAuthority?.().mode).toBe("read_only");
+        expect(readBroker).not.toBe(broker);
+      } else {
+        expect(readBroker).toBe(children[1]!.services.sandboxExecutionBroker);
+      }
       expect((await read.mock.results[0]!.value).content).toContain("current implementation revision");
       const admissionEvents = () => readFileSync(children[1]!.rolloutStore!.rolloutPath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((item) => item.type === "event_msg" && item.payload.msg.type === "execution_admission").map((item) => item.payload.msg.payload);
       await vi.waitFor(() => expect(admissionEvents().filter((event) => event.event === "allowed").map((event) => event.kind)).toEqual(expect.arrayContaining(["model_turn", "tool_exec"])));
@@ -5209,7 +5422,11 @@ describe("runAgent", () => {
       unsubscribe();
       read.mockRestore();
       await control.shutdownAll("nested test cleanup");
-      await Promise.all(children.map((child) => child.shutdown()));
+      // Abort the owned runners, then join their cleanup. Calling shutdown
+      // again here races the runner's durable terminal finalizer.
+      await vi.waitFor(() => expect(children.every((child) => shutdowns.has(child))).toBe(true));
+      await Promise.all(children.map((child) => shutdowns.get(child)!));
+      observeShutdown.mockRestore();
       await session.shutdown();
       await disposeSandboxExecutionBroker(broker);
       kernel.close();
