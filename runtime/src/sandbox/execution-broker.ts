@@ -12,7 +12,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { probeLandlock, resolveLandlockRun } from "./landlock-run.js";
-import { realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import path, { basename, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1322,6 +1331,23 @@ function rebasePermissionProfile(
   nextCwd: string,
 ): PermissionProfile {
   if (profile.fileSystem.kind !== "restricted") return profile;
+  const sharedGitMetadata = verifiedSharedGitMetadata(previousCwd, nextCwd);
+  const rebasePath = (candidate: string): string => {
+    if (sharedGitMetadata !== null && path.isAbsolute(candidate)) {
+      const relative = path.relative(sharedGitMetadata, candidate);
+      if (
+        relative !== ".." &&
+        !relative.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(relative)
+      ) {
+        // A linked worktree's .git is a pointer file. The existing grants and
+        // restrictions on its common metadata must retain their original
+        // authority, rather than becoming impossible child/.git/config paths.
+        return candidate;
+      }
+    }
+    return rebaseWorkspacePath(candidate, previousCwd, nextCwd);
+  };
   const entries = profile.fileSystem.entries.map((entry) => {
     switch (entry.path.kind) {
       case "path":
@@ -1329,11 +1355,7 @@ function rebasePermissionProfile(
           ...entry,
           path: {
             kind: "path" as const,
-            path: rebaseWorkspacePath(
-              entry.path.path,
-              previousCwd,
-              nextCwd,
-            ),
+            path: rebasePath(entry.path.path),
           },
         };
       case "glob":
@@ -1341,11 +1363,7 @@ function rebasePermissionProfile(
           ...entry,
           path: {
             kind: "glob" as const,
-            pattern: rebaseWorkspacePath(
-              entry.path.pattern,
-              previousCwd,
-              nextCwd,
-            ),
+            pattern: rebasePath(entry.path.pattern),
           },
         };
       case "special":
@@ -1356,11 +1374,7 @@ function rebasePermissionProfile(
             kind: "special" as const,
             value: {
               ...entry.path.value,
-              path: rebaseWorkspacePath(
-                entry.path.value.path,
-                previousCwd,
-                nextCwd,
-              ),
+              path: rebasePath(entry.path.value.path),
             },
           },
         };
@@ -1373,6 +1387,65 @@ function rebasePermissionProfile(
       entries,
     },
   };
+}
+
+/**
+ * Recognize Git's registered linked-worktree relationship without executing Git.
+ * This adds no grant: only already-present common-metadata entries may remain
+ * anchored. Unregistered, foreign, missing or symlinked pointers retain the
+ * ordinary rebase, which fails closed when it cannot express a policy.
+ */
+function verifiedSharedGitMetadata(
+  previousCwd: string,
+  nextCwd: string,
+): string | null {
+  const originalMetadata = path.join(previousCwd, ".git");
+  const pointerPath = path.join(nextCwd, ".git");
+  try {
+    if (!lstatSync(originalMetadata).isDirectory()) return null;
+    const common = realpathSync(originalMetadata);
+    const pointer = readSmallGitPointer(pointerPath);
+    if (pointer === null || !pointer.startsWith("gitdir: ")) return null;
+    const admin = path.resolve(nextCwd, pointer.slice("gitdir: ".length));
+    const worktrees = path.join(common, "worktrees");
+    if (
+      path.dirname(admin) !== worktrees ||
+      realpathSync(worktrees) !== worktrees ||
+      realpathSync(admin) !== admin
+    ) return null;
+    const commonPointer = readSmallGitPointer(path.join(admin, "commondir"));
+    const worktreePointer = readSmallGitPointer(path.join(admin, "gitdir"));
+    if (commonPointer === null || worktreePointer === null) return null;
+    if (realpathSync(path.resolve(admin, commonPointer)) !== common) return null;
+    if (
+      realpathSync(path.resolve(admin, worktreePointer)) !==
+      realpathSync(pointerPath)
+    ) return null;
+    return originalMetadata;
+  } catch {
+    return null;
+  }
+}
+
+function readSmallGitPointer(file: string): string | null {
+  // Pointer records are tiny. Bound reads and refuse final-component symlinks
+  // and hard links instead of following model-editable metadata as authority.
+  if (!lstatSync(file).isFile()) return null;
+  const fd = openSync(
+    file,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+  );
+  try {
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 4096) return null;
+    const bytes = Buffer.alloc(4097);
+    const length = readSync(fd, bytes, 0, bytes.length, 0);
+    if (length > 4096) return null;
+    const value = bytes.subarray(0, length).toString("utf8").trim();
+    return value.length > 0 && !/[\0\r\n]/u.test(value) ? value : null;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function rebaseWorkspacePath(

@@ -1,6 +1,7 @@
 import {
   spawn,
   spawnSync,
+  execFileSync,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -33,6 +34,7 @@ import { findSystemBubblewrapInPath } from "../../../src/sandbox/linux-launcher/
 import { bindWorkspaceDirectoryReadCapability } from "../../../src/workspace/file-mutation-transaction.js";
 import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
 import { createTestConfigStore, mkSession } from "../../fixtures.js";
+import { captureWorktreeTurnEvidence, getOrCreateWorktree, removeAgentWorktree } from "../../../src/agents/worktree.js";
 
 const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const launcherEntry = join(runtimeRoot, "bin", "agenc-linux-sandbox");
@@ -43,6 +45,59 @@ const builtLauncher = join(
   "linux-launcher",
   "main.js",
 );
+
+test("removes a verified clean worktree without a deletion-target mount or peer damage", { timeout: 30_000 }, async () => {
+  expect(process.platform).toBe("linux");
+  const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-remove-worktree-kernel-")));
+  const project = join(root, "project");
+  const temporary = join(root, "temp");
+  mkdirSync(project);
+  mkdirSync(temporary);
+  const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: project, encoding: "utf8" }).trim();
+  try {
+    git(["init", "-q"]);
+    writeFileSync(join(project, "tracked.txt"), "preserved sibling\n");
+    git(["add", "tracked.txt"]);
+    git(["-c", "user.name=AgenC Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "seed"]);
+    const baseCommit = git(["rev-parse", "HEAD"]);
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: project, sessionTempRoot: temporary, agencLinuxSandboxExe: launcherEntry });
+    expect(broker.status().kind).toBe("ready");
+    const target = await getOrCreateWorktree({ gitRoot: project, slug: "target", sandboxExecutionBroker: broker });
+    const sibling = await getOrCreateWorktree({ gitRoot: project, slug: "sibling", sandboxExecutionBroker: broker });
+    const evidence = await captureWorktreeTurnEvidence({ locator: target, baseCommit, sandboxExecutionBroker: broker });
+    expect(evidence.state).toBe("unchanged_clean");
+    const admin = readFileSync(join(target.path, ".git"), "utf8").trim().slice("gitdir: ".length);
+    await removeAgentWorktree({ ...target, sandboxExecutionBroker: broker });
+    expect(existsSync(target.path)).toBe(false);
+    expect(existsSync(admin)).toBe(false);
+    expect(readFileSync(join(sibling.path, "tracked.txt"), "utf8")).toBe("preserved sibling\n");
+    expect(git(["worktree", "list", "--porcelain"])).toContain(sibling.path);
+    mkdirSync(join(root, "external-worktrees"));
+    const external = await getOrCreateWorktree({ gitRoot: project, slug: "external", workspaceRoot: join(root, "external-worktrees"), sandboxExecutionBroker: broker });
+    const externalMarker = readFileSync(join(external.path, ".git"), "utf8");
+    await expect(removeAgentWorktree({ ...external, sandboxExecutionBroker: broker })).rejects.toThrow(/existing workspace write authority/u);
+    expect(readFileSync(join(external.path, "tracked.txt"), "utf8")).toBe("preserved sibling\n");
+    expect(readFileSync(join(external.path, ".git"), "utf8")).toBe(externalMarker);
+    expect(existsSync(externalMarker.trim().slice("gitdir: ".length))).toBe(true);
+
+    const protectedBroker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: project, sessionTempRoot: temporary, agencLinuxSandboxExe: launcherEntry,
+      permissionProfile: { fileSystem: { kind: "restricted", entries: [
+        { path: { kind: "special", value: { kind: "root" } }, access: "read" },
+        { path: { kind: "path", path: project }, access: "write" },
+        { path: { kind: "path", path: join(sibling.path, "tracked.txt") }, access: "read" },
+      ] }, network: "disabled" },
+    });
+    await expect(removeAgentWorktree({ ...sibling, sandboxExecutionBroker: protectedBroker })).rejects.toThrow(/sandbox mount or protected path/u);
+    expect(readFileSync(join(sibling.path, "tracked.txt"), "utf8")).toBe("preserved sibling\n");
+    const siblingMarker = readFileSync(join(sibling.path, ".git"), "utf8");
+    writeFileSync(join(sibling.path, ".git"), `gitdir: ${join(root, "foreign-metadata")}\n`);
+    await expect(removeAgentWorktree({ ...sibling, sandboxExecutionBroker: broker })).rejects.toThrow(/refused before mutation/u);
+    expect(readFileSync(join(sibling.path, "tracked.txt"), "utf8")).toBe("preserved sibling\n");
+    expect(existsSync(siblingMarker.trim().slice("gitdir: ".length))).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("renders a status command with ordinary workspace-write isolation and a captured system PATH", { timeout: 30_000 }, async () => {
   expect(process.platform).toBe("linux");

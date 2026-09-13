@@ -23,6 +23,8 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
+import { delegate } from "./delegate.js";
+import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
@@ -2805,6 +2807,180 @@ describe("runAgent", () => {
       expect(firstReceiptContent).not.toContain(secondHead);
       await stopKeepAliveRun(iter, live.abortController);
     } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("preserves a delegated worktree across three assignments until close (commits=%s)", async (commitResults) => {
+    const repo = makeWorktreeEvidenceRepo();
+    const worktreePath = join(repo, ".agenc-worktrees", "reusable");
+    const turns: Extract<RunAgentProgressEvent, { kind: "turn_complete" }>[] = [];
+    const baseProvider = makeProvider([
+      { content: "first result" },
+      { content: "second result" },
+      { content: "third result" },
+    ]);
+    let turnIndex = 0;
+    const provider: LLMProvider = {
+      ...baseProvider,
+      chatStream: vi.fn(async (...args) => {
+        turnIndex += 1;
+        if (commitResults) {
+          const filename = `result-${turnIndex}.txt`;
+          writeFileSync(join(worktreePath, filename), `result ${turnIndex}\n`);
+          git(worktreePath, "add", filename);
+          git(worktreePath, "commit", "-m", `task result ${turnIndex}`);
+        }
+        return baseProvider.chatStream(...args);
+      }),
+    };
+    const session = makeStubSession({
+      sessionConfiguration: mkSessionConfiguration({ cwd: repo }),
+      services: {
+        provider,
+        sandboxExecutionBroker: explicitDangerBroker.forkForCwd(repo),
+      },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    let thread: AgentThread | undefined;
+    try {
+      const outcome = await delegate({
+        parent: session,
+        parentPath: "/root",
+        control,
+        registry,
+        agentName: "reusable",
+        taskPrompt: "first assignment",
+        taskId: "reusable-task-1",
+        isolation: "worktree",
+        worktreeSlug: "reusable",
+        keepAlive: true,
+        runInBackground: true,
+        onProgress: (event) => {
+          if (event.kind === "turn_complete") turns.push(event);
+        },
+      });
+      expect(outcome.kind).toBe("async_launched");
+      if (outcome.kind !== "async_launched") {
+        throw new Error("delegate did not launch");
+      }
+      thread = outcome.thread;
+      const agentId = thread.live.agentId;
+      let firstReceipt = "";
+      for (let index = 1; index <= 3; index += 1) {
+        if (index > 1) {
+          control.assignTask(agentId, {
+            author: "/root",
+            recipient: thread.live.agentPath,
+            content: `assignment ${index}`,
+            taskId: `reusable-task-${index}`,
+          });
+        }
+        await vi.waitFor(() => {
+          expect(turns).toHaveLength(index);
+          expect(thread!.live.status.value.status).toBe("idle");
+        });
+        expect(thread.live.agentId).toBe(agentId);
+        expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("base\n");
+        expect(existsSync(join(repo, ".git", "worktrees", "reusable"))).toBe(true);
+        const receipt = session.mailbox.drain().find(
+          (message) => message.metadata?.lifecycle === "turn" &&
+            message.metadata.taskId === `reusable-task-${index}`,
+        );
+        expect(receipt).toBeDefined();
+        expect(turns[index - 1]?.worktreeEvidence?.state).toBe(
+          commitResults ? "committed_clean" : "unchanged_clean",
+        );
+        if (index === 1) firstReceipt = receipt!.content;
+        if (commitResults) {
+          const head = git(worktreePath, "rev-parse", "HEAD");
+          expect(receipt!.content).toContain(`"integration_ref":"${head}"`);
+          expect(readFileSync(join(worktreePath, `result-${index}.txt`), "utf8")).toBe(`result ${index}\n`);
+          if (index > 1) {
+            expect(firstReceipt).not.toContain(head);
+            const previousEvidence = turns[index - 2]?.worktreeEvidence;
+            if (previousEvidence?.state !== "committed_clean") {
+              throw new Error("previous assignment has no immutable commit evidence");
+            }
+            expect(turns[index - 1]?.worktreeEvidence).toMatchObject({
+              baseCommit: previousEvidence.headCommit,
+            });
+          }
+        }
+      }
+      expect(new Set(turns.map((turn) => turn.turnId)).size).toBe(3);
+      await control.shutdown(thread.threadId, "test explicit close");
+      await thread.join();
+      expect(existsSync(worktreePath)).toBe(commitResults);
+      expect(existsSync(join(repo, ".git", "worktrees", "reusable"))).toBe(commitResults);
+    } finally {
+      if (thread) {
+        await control.shutdown(thread.threadId, "test cleanup");
+        await thread.join();
+      }
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a delegated worktree when child evidence cannot be verified by its broker", async () => {
+    const repo = makeWorktreeEvidenceRepo();
+    const worktreePath = join(repo, ".agenc-worktrees", "unverifiable");
+    const parentBroker = explicitDangerBroker.forkForCwd(repo);
+    const childBroker = explicitDangerBroker.forkForCwd(worktreePath);
+    const prepareSpawn = vi.spyOn(childBroker, "prepareSpawn").mockImplementation(() => {
+      throw new Error("child Git evidence authority is unavailable");
+    });
+    const originalFork = parentBroker.forkForCwd.bind(parentBroker);
+    const fork = vi.spyOn(parentBroker, "forkForCwd").mockImplementation((cwd) =>
+      cwd === worktreePath ? childBroker : originalFork(cwd),
+    );
+    const session = makeStubSession({
+      sessionConfiguration: mkSessionConfiguration({ cwd: repo }),
+      services: {
+        provider: makeProvider([{ content: "read-only task complete" }]),
+        sandboxExecutionBroker: parentBroker,
+      },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    let thread: AgentThread | undefined;
+    try {
+      const outcome = await delegate({
+        parent: session,
+        parentPath: "/root",
+        control,
+        registry,
+        taskPrompt: "read-only assignment",
+        taskId: "unverifiable-task",
+        isolation: "worktree",
+        worktreeSlug: "unverifiable",
+        keepAlive: true,
+        runInBackground: true,
+      });
+      expect(outcome.kind).toBe("async_launched");
+      if (outcome.kind !== "async_launched") {
+        throw new Error("delegate did not launch");
+      }
+      thread = outcome.thread;
+      expect((await thread.join()).outcome).toBe("completed");
+      const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+      expect(prepareSpawn).toHaveBeenCalled();
+      expect(receipt?.metadata?.worktreeEvidence).toMatchObject({ state: "unverifiable" });
+      expect(receipt?.content).not.toContain("integration_ref");
+      expect(thread.live.status.value.status).toBe("completed");
+      expect(() => control.assignTask(thread!.live.agentId, {
+        author: "/root",
+        recipient: thread!.live.agentPath,
+        content: "unsafe reuse",
+        taskId: "unsafe-reuse",
+      })).toThrow("not an idle reusable worker");
+      expect(existsSync(join(repo, ".git", "worktrees", "unverifiable"))).toBe(true);
+      expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("base\n");
+    } finally {
+      if (thread) await control.shutdown(thread.threadId, "test cleanup");
+      fork.mockRestore();
+      prepareSpawn.mockRestore();
       rmSync(repo, { recursive: true, force: true });
     }
   });

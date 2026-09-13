@@ -34,7 +34,7 @@ import {
   type AgentPath,
 } from "./registry.js";
 import type { ForkMode } from "./fork-context.js";
-import type { WorktreeHandle } from "./worktree.js";
+import type { WorktreeHandle, WorktreeTurnEvidence } from "./worktree.js";
 import type { AgentThread } from "./thread.js";
 import type {
   ChildToolPolicy,
@@ -221,6 +221,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
   let baseCommit: string | null = null;
   let worktreeSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let preserveLiveAfterRoleProvenanceFailure = false;
+  let worktreeEvidenceRequiringReview: WorktreeTurnEvidence | undefined;
   if (isolation === "worktree") {
     const worktreeSlug = opts.worktreeSlug!;
     const workspaceRoot =
@@ -450,7 +451,17 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         ? { resumeManager: opts.resumeManager }
         : {}),
       ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
-      ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
+      onProgress: (event, thread) => {
+        if (
+          event.kind === "turn_complete" &&
+          event.worktreeEvidence !== undefined &&
+          event.worktreeEvidence.state !== "unchanged_clean" &&
+          event.worktreeEvidence.state !== "committed_clean"
+        ) {
+          worktreeEvidenceRequiringReview = event.worktreeEvidence;
+        }
+        return opts.onProgress?.(event, thread);
+      },
       ...(opts.finalMessageSink !== undefined
         ? { finalMessageSink: opts.finalMessageSink }
         : {}),
@@ -492,6 +503,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
             registry: opts.registry,
             parent: opts.parent,
             shutdownAgent,
+            ...(worktreeEvidenceRequiringReview !== undefined
+              ? { worktreeEvidenceRequiringReview }
+              : {}),
             ...(baseCommit !== null ? { baseCommit } : {}),
           });
         }
@@ -514,6 +528,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         registry: opts.registry,
         parent: opts.parent,
         shutdownAgent: true,
+        ...(worktreeEvidenceRequiringReview !== undefined
+          ? { worktreeEvidenceRequiringReview }
+          : {}),
         ...(baseCommit !== null ? { baseCommit } : {}),
       });
     }
@@ -823,6 +840,7 @@ async function teardown(opts: {
   readonly registry: AgentRegistry;
   readonly parent: Session;
   readonly shutdownAgent: boolean;
+  readonly worktreeEvidenceRequiringReview?: WorktreeTurnEvidence;
   readonly baseCommit?: string;
 }): Promise<void> {
   void opts.registry;
@@ -834,6 +852,18 @@ async function teardown(opts: {
 
   // If we own a worktree, decide keep-vs-remove.
   if (opts.thread.worktree && opts.baseCommit) {
+    // A terminal worker can still have uncertain effects. A fresh query under
+    // the parent's authority must not override the child's canonical evidence
+    // and turn a fail-closed receipt into destructive automatic cleanup.
+    if (opts.worktreeEvidenceRequiringReview !== undefined) {
+      emitWarning(
+        opts.parent.eventLog,
+        opts.parent.nextInternalSubId(),
+        "worktree_evidence_preserved",
+        `worktree ${opts.thread.worktree.path} was preserved for explicit review (evidence=${opts.worktreeEvidenceRequiringReview.state})`,
+      );
+      return;
+    }
     // A resumed worktree may contain commits retained from an earlier run.
     // The turn-start base only distinguishes this turn's output; it does not
     // prove the pre-existing worktree is safe to delete. Auto-cleanup is
