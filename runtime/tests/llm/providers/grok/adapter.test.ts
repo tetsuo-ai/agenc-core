@@ -645,6 +645,104 @@ describe("GrokProvider incremental continuation", () => {
     );
   });
 
+  test("retries once unstored when xAI cannot store a large response", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      emitWarning: (warning) => warnings.push(warning),
+    });
+    const requestBodies: Record<string, unknown>[] = [];
+    (provider as any).client = {
+      responses: {
+        create: vi
+          .fn()
+          .mockImplementationOnce((params: Record<string, unknown>) => {
+            requestBodies.push(params);
+            throw Object.assign(
+              new Error(
+                "Response is too large to store. You can avoid this error by setting `store` to false in your request.",
+              ),
+              { status: 400 },
+            );
+          })
+          .mockImplementationOnce((params: Record<string, unknown>) => {
+            requestBodies.push(params);
+            return withResponse(buildXaiResponse("resp_unstored", "done"));
+          }),
+      },
+    };
+    const result = await provider.chat(currentMessages);
+    expect(result.content).toBe("done");
+    expect(requestBodies[0]?.store).toBe(true);
+    expect(requestBodies[1]?.store).toBe(false);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({ cause: "xai_store_too_large" }),
+    );
+  });
+
+  test("retries the stream once unstored when xAI cannot store a large response", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      emitWarning: (warning) => warnings.push(warning),
+    });
+    const requestBodies: Record<string, unknown>[] = [];
+    (provider as any).client = {
+      responses: {
+        create: vi
+          .fn()
+          .mockImplementationOnce((params: Record<string, unknown>) => {
+            requestBodies.push(params);
+            throw Object.assign(
+              new Error("Response is too large to store. You can avoid this error by setting `store` to false in your request."),
+              { status: 400 },
+            );
+          })
+          .mockImplementationOnce((params: Record<string, unknown>) => {
+            requestBodies.push(params);
+            return withResponse(
+              streamFromEvents([
+                {
+                  type: "response.completed",
+                  response: buildXaiResponse("resp_unstored_stream", "stream done"),
+                },
+              ]),
+            );
+          }),
+      },
+    };
+    const result = await provider.chatStream(currentMessages, () => {});
+    expect(result.content).toBe("stream done");
+    expect(requestBodies[0]?.store).toBe(true);
+    expect(requestBodies[1]?.store).toBe(false);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({ cause: "xai_store_too_large" }),
+    );
+  });
+
+  test("does not retry the store error when the request was already unstored", async () => {
+    const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4-fast" });
+    // An operator who opted out of stored responses (AGENC_XAI_STORE=0) already
+    // sends store: false; the provider must not loop on the same refusal.
+    const buildRequestPlan = (provider as any).buildRequestPlan.bind(provider);
+    vi.spyOn(provider as any, "buildRequestPlan").mockImplementation((...args: unknown[]) => {
+      const plan = buildRequestPlan(...args);
+      plan.params.store = false;
+      return plan;
+    });
+    const requestBodies: Record<string, unknown>[] = [];
+    const create = vi.fn().mockImplementation((params: Record<string, unknown>) => {
+      requestBodies.push(params);
+      throw Object.assign(new Error("Response is too large to store."), { status: 400 });
+    });
+    (provider as any).client = { responses: { create } };
+    await expect(provider.chat(currentMessages)).rejects.toThrow(/too large to store/);
+    expect(requestBodies[0]?.store).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   test("reuses previous_response_id and retries streaming with full history on expiry", async () => {
     const warnings: Array<{ cause: string; message: string }> = [];
     const provider = new GrokProvider({

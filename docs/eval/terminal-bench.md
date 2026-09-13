@@ -140,6 +140,11 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   resulting `.node` files need only glibc 2.29 and no `GLIBCXX` symbol (a
   gcc-12 build without the static flag needs `GLIBCXX_3.4.29`, which the
   same images lack). The daemon then starts on `wdm-design`.
+- `heat-pump-warranty` on grok-4.6 died after 6 minutes with the provider's
+  "Response is too large to store. You can avoid this error by setting
+  `store` to false in your request." as its last line: the grok provider
+  stores responses by default for speed and had no fallback. It now retries
+  the request once unstored.
 - A 55-minute grok-4.6 session on `wdm-design` (191 tool calls) reached the
   auto-compaction threshold at 356k tokens and died with `compact_failed`: the
   planner packed the whole 1,401,825-byte canonical-JSON history into one

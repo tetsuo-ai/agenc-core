@@ -634,6 +634,11 @@ Its retry behavior is:
   `response.failed`) surfaces as `LLMStreamTruncatedError`, which the turn's
   reconnect ladder retries like `stream_idle`; the transport saw a clean end,
   so only the typed error identifies it.
+- xAI answers "Response is too large to store" when a response exceeds its
+  server-side storage limit. Stored responses are only the speed default
+  (`AGENC_XAI_STORE`), so the grok provider sends the same request once more
+  with `store: false` (warning `xai_store_too_large`) instead of failing the
+  turn; a request that was already unstored is not retried.
 - **Retry-After > 300s** aborts the retry.
 - Session backoff base is **200 ms**.
 - After budget admission, model calls set `singleWireAttempt: true`: **no HTTP
