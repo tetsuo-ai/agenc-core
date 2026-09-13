@@ -63,9 +63,11 @@ import {
   canWritePathWithCwd,
   getUnreadableGlobsWithCwd,
   getWritableRootsWithCwd,
+  resolvePermissionPath,
   type AdditionalPermissionProfile,
 } from "../sandbox/engine/index.js";
 import { effectivePermissionProfile } from "../sandbox/engine/policy-transforms.js";
+import { canonicalAuthorityPath } from "../sandbox/desktop-authority-protection.js";
 import { readBoundedRegularFileSync } from "../utils/bounded-regular-file.js";
 import {
   hardenGitWorktreeMutationArgs,
@@ -253,6 +255,15 @@ function resolveCanonicalGitRoot(gitRoot: string): string {
   }
 }
 
+function sameExistingDirectory(left: string | null, right: string): boolean {
+  if (left === null) return false;
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return false;
+  }
+}
+
 function resolveWorktreeGitDir(worktreePath: string): string | null {
   const dotGit = join(worktreePath, ".git");
   try {
@@ -381,7 +392,7 @@ export async function getOrCreateWorktree(
     // Fast resume.
     if (existsSync(path) && existsSync(join(path, ".git"))) {
       const existingGitRoot = findGitRoot(path);
-      if (existingGitRoot === opts.gitRoot) {
+      if (sameExistingDirectory(existingGitRoot, opts.gitRoot)) {
         touchWorktreeMtime(path);
         return { path, branch, gitRoot: opts.gitRoot, created: false };
       }
@@ -590,10 +601,7 @@ export async function captureWorktreeTurnEvidence(
     return unverifiable("base commit is not a full Git object id");
   }
   const canonicalGitRoot = findGitRoot(locator.path);
-  if (
-    canonicalGitRoot === null ||
-    resolvePath(canonicalGitRoot) !== resolvePath(locator.gitRoot)
-  ) {
+  if (!sameExistingDirectory(canonicalGitRoot, locator.gitRoot)) {
     return unverifiable(
       "worktree locator does not match its canonical Git root",
     );
@@ -901,6 +909,7 @@ function assertWorktreeRemovalBoundary(opts: RemoveWorktreeOpts): void {
   const runtime = opts.sandboxExecutionBroker.runtimeSandbox("child_agent");
   if (runtime === undefined) return;
   const target = resolvePath(opts.path);
+  let canonicalTarget: string;
   const refuse = (reason: string): never => {
     throw new WorktreePreconditionError(
       `worktree removal refused before mutation: ${reason}`,
@@ -909,9 +918,10 @@ function assertWorktreeRemovalBoundary(opts: RemoveWorktreeOpts): void {
   // Only a verified registered linked worktree can use the common metadata
   // mutation grant. Do not let a crafted .git pointer select another tree.
   try {
-    if (!lstatSync(target).isDirectory() || realpathSync(target) !== target) {
-      refuse("target is not a canonical directory");
+    if (!lstatSync(target).isDirectory()) {
+      refuse("target is not a non-symlink directory");
     }
+    canonicalTarget = realpathSync(target);
     const marker = readBoundedRegularFileSync(join(target, ".git"), 4096).trim();
     if (!marker.startsWith("gitdir: ") || /[\0\r\n]/u.test(marker)) {
       refuse("invalid linked-worktree pointer");
@@ -920,11 +930,16 @@ function assertWorktreeRemovalBoundary(opts: RemoveWorktreeOpts): void {
       resolveGitMetadataRoot(findGitRoot(opts.gitRoot) ?? opts.gitRoot),
     );
     const worktrees = join(common, "worktrees");
-    const admin = resolvePath(target, marker.slice("gitdir: ".length));
+    const adminPath = resolvePath(target, marker.slice("gitdir: ".length));
+    if (
+      !lstatSync(adminPath).isDirectory() ||
+      !lstatSync(dirname(adminPath)).isDirectory()
+    ) refuse("linked-worktree metadata is not a non-symlink directory");
+    const admin = realpathSync(adminPath);
     if (
       dirname(admin) !== worktrees ||
-      realpathSync(worktrees) !== worktrees ||
-      realpathSync(admin) !== admin
+      realpathSync(dirname(adminPath)) !== worktrees ||
+      realpathSync(worktrees) !== worktrees
     ) {
       refuse("linked-worktree metadata is outside the registered common directory");
     }
@@ -951,7 +966,7 @@ function assertWorktreeRemovalBoundary(opts: RemoveWorktreeOpts): void {
   ) refuse("target and parent need existing workspace write authority");
 
   const withinTarget = (candidate: string): boolean => {
-    const relative = pathRelative(target, candidate);
+    const relative = pathRelative(canonicalTarget, canonicalAuthorityPath(candidate));
     return relative !== ".." &&
       !relative.startsWith(`..${pathSeparator}`) &&
       !isAbsolutePath(relative);
@@ -959,6 +974,17 @@ function assertWorktreeRemovalBoundary(opts: RemoveWorktreeOpts): void {
   for (const root of getWritableRootsWithCwd(profile.fileSystem, cwd, temp)) {
     if (withinTarget(root.root) || root.readOnlySubpaths.some(withinTarget)) {
       refuse("target contains a sandbox mount or protected path");
+    }
+  }
+  // A policy may name a protected descendant through another spelling of an
+  // ancestor symlink. Compare physical identities without rewriting grants.
+  if (profile.fileSystem.kind === "restricted") {
+    for (const entry of profile.fileSystem.entries) {
+      if (entry.access === "write") continue;
+      const protectedPath = resolvePermissionPath(entry.path, cwd, temp);
+      if (protectedPath !== null && withinTarget(protectedPath)) {
+        refuse("target contains a sandbox mount or protected path");
+      }
     }
   }
   if (getUnreadableGlobsWithCwd(profile.fileSystem, cwd).length > 0) {

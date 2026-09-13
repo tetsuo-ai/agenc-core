@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getOrCreateWorktree, removeAgentWorktree } from "../../src/agents/worktree.js";
+import { captureWorktreeTurnEvidence, getOrCreateWorktree, removeAgentWorktree } from "../../src/agents/worktree.js";
 import type { FileSystemSandboxEntry } from "../../src/sandbox/engine/index.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
@@ -13,10 +13,12 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(external = false) {
+async function fixture(external = false, aliased = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-remove-boundary-")));
   roots.push(root);
-  const project = join(root, "project");
+  const prefix = aliased ? join(root, "alias") : root;
+  if (aliased) symlinkSync(root, prefix, "dir");
+  const project = join(prefix, "project");
   mkdirSync(project);
   const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: project, encoding: "utf8" });
   git(["init", "-q"]);
@@ -35,6 +37,32 @@ async function fixture(external = false) {
 }
 
 describe("worktree removal boundary", () => {
+  it.skipIf(process.platform === "win32")("resumes, verifies and removes a worktree under a symlinked workspace prefix", async () => {
+    const f = await fixture(false, true);
+    const baseCommit = f.git(["rev-parse", "HEAD"]).trim();
+    const resumed = await getOrCreateWorktree({ gitRoot: f.project, slug: "target", sandboxExecutionBroker: f.broker });
+    expect(resumed.created).toBe(false);
+    const evidence = await captureWorktreeTurnEvidence({ locator: resumed, baseCommit, sandboxExecutionBroker: f.broker });
+    expect(evidence.state).toBe("unchanged_clean");
+    f.bind();
+    await removeAgentWorktree({ ...resumed, sandboxExecutionBroker: f.broker });
+    expect(existsSync(resumed.path)).toBe(false);
+    expect(existsSync(f.admin)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32").each(["protected-descendant", "target-bind"] as const)("refuses a %s reached through a different workspace spelling", async (kind) => {
+    const f = await fixture(false, true);
+    f.entries.push(kind === "target-bind"
+      ? { path: { kind: "path", path: realpathSync(f.worktree.path) }, access: "write" }
+      : { path: { kind: "path", path: realpathSync(join(f.worktree.path, "tracked.txt")) }, access: "read" });
+    f.bind();
+    const prepare = vi.spyOn(f.broker, "prepareSpawn");
+    await expect(removeAgentWorktree({ ...f.worktree, sandboxExecutionBroker: f.broker })).rejects.toThrow(/sandbox mount or protected path/u);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(readFileSync(join(f.worktree.path, "tracked.txt"), "utf8")).toBe("preserve me\n");
+    expect(existsSync(f.admin)).toBe(true);
+  });
+
   it("does not add a self-bind or parent grant to an already writable project target", async () => {
     const f = await fixture();
     const sibling = await getOrCreateWorktree({ gitRoot: f.project, slug: "sibling", sandboxExecutionBroker: f.broker });

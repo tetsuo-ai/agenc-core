@@ -451,17 +451,15 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         ? { resumeManager: opts.resumeManager }
         : {}),
       ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
-      onProgress: (event, thread) => {
+      onWorktreeEvidence: (evidence) => {
         if (
-          event.kind === "turn_complete" &&
-          event.worktreeEvidence !== undefined &&
-          event.worktreeEvidence.state !== "unchanged_clean" &&
-          event.worktreeEvidence.state !== "committed_clean"
+          evidence.state !== "unchanged_clean" &&
+          evidence.state !== "committed_clean"
         ) {
-          worktreeEvidenceRequiringReview = event.worktreeEvidence;
+          worktreeEvidenceRequiringReview = evidence;
         }
-        return opts.onProgress?.(event, thread);
       },
+      ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       ...(opts.finalMessageSink !== undefined
         ? { finalMessageSink: opts.finalMessageSink }
         : {}),
@@ -618,6 +616,7 @@ async function runDelegateAgentLoop(opts: {
   readonly serviceTier?: string;
   readonly resumeManager?: ResumeManager;
   readonly keepAlive?: boolean;
+  readonly onWorktreeEvidence: (evidence: WorktreeTurnEvidence) => void;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
     thread: AgentThread,
@@ -659,6 +658,7 @@ async function runDelegateAgentLoop(opts: {
           ? { serviceTier: opts.serviceTier }
           : {}),
         ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
+        onWorktreeEvidence: opts.onWorktreeEvidence,
         ...(opts.finalMessageSink !== undefined
           ? { finalMessageSink: opts.finalMessageSink }
           : {}),

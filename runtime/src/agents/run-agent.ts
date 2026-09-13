@@ -202,6 +202,8 @@ export interface RunAgentParams {
   readonly taskId?: string;
   /** Exact commit captured at the start of this worktree-backed run. */
   readonly worktreeBaseCommit?: string;
+  /** Internal cleanup evidence, including receipts that cannot be persisted. */
+  readonly onWorktreeEvidence?: (evidence: WorktreeTurnEvidence) => void;
   /** Backpressured provider-delta sink for bounded workflow handoffs. */
   readonly finalMessageSink?: AssistantOutputStreamSink;
 }
@@ -3304,21 +3306,13 @@ export async function* runAgent(
     options: { readonly deferParentNotification?: boolean } = {},
   ): Promise<boolean> => {
     if (currentTurnReceiptCommitted) return false;
-    if (childSession === null) {
-      // Session construction has not reached the child-owned EventLog yet.
-      // Reserve this exactly-once outcome; finally() writes it into the
-      // minimal child journal before sealing run_terminal and only then
-      // projects the correlated parent receipt.
-      pendingPreconstructionReceipt = receipt;
-      currentTurnReceiptCommitted = true;
-      return true;
-    }
     let receiptToCommit = receipt;
     if (params.worktree !== undefined) {
       let evidence: WorktreeTurnEvidence;
       if (
         currentWorktreeBaseCommit !== undefined &&
-        childSandboxExecutionBroker !== undefined
+        childSandboxExecutionBroker !== undefined &&
+        childSession !== null
       ) {
         evidence = await captureWorktreeTurnEvidence({
           locator: {
@@ -3338,12 +3332,26 @@ export async function* runAgent(
             gitRoot: params.worktree.gitRoot,
           },
           error:
-            currentWorktreeBaseCommit === undefined
-              ? "turn-start base commit is unavailable"
-              : "worktree sandbox authority is unavailable",
+            childSession === null
+              ? "child session is unavailable for worktree evidence"
+              : currentWorktreeBaseCommit === undefined
+                ? "turn-start base commit is unavailable"
+                : "worktree sandbox authority is unavailable",
         };
       }
       receiptToCommit = { ...receipt, worktreeEvidence: evidence };
+      // Cleanup must observe evidence on every exit path, independently of
+      // progress events or whether this receipt can reach durable storage.
+      params.onWorktreeEvidence?.(evidence);
+    }
+    if (childSession === null) {
+      // Session construction has not reached the child-owned EventLog yet.
+      // Reserve this exactly-once outcome; finally() writes it into the
+      // minimal child journal before sealing run_terminal and only then
+      // projects the correlated parent receipt.
+      pendingPreconstructionReceipt = receiptToCommit;
+      currentTurnReceiptCommitted = true;
+      return true;
     }
     try {
       childSession.emit(
@@ -3491,6 +3499,11 @@ export async function* runAgent(
       once: true,
     });
   }
+  // Abort events are not replayed for listeners registered after cancellation.
+  // Observe the initial state before MCP readiness or any provider dispatch.
+  if (parent.abortController.signal.aborted) onParentAbort();
+  if (live.abortController.signal.aborted) onLiveAbort();
+  if (params.externalSignal?.aborted) onExternalAbort?.();
 
   try {
     relayAgentEvent({

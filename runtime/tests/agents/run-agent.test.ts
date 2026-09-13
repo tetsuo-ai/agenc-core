@@ -1647,6 +1647,51 @@ describe("runAgent", () => {
     expect(receipt?.content).toContain('"outcome":"interrupted"');
   });
 
+  it.each(["external", "parent", "live"] as const)("does not dispatch after a pre-aborted %s signal", async (source) => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-pre-aborted-run-"));
+    const sentinel = join(cwd, "unexpected-provider-effect");
+    const baseProvider = makeProvider([{ content: "must not run" }]);
+    const provider: LLMProvider = {
+      ...baseProvider,
+      chatStream: vi.fn(async (...args) => {
+        writeFileSync(sentinel, "unexpected dispatch\n");
+        return baseProvider.chatStream(...args);
+      }),
+    };
+    const session = makeStubSession({
+      sessionConfiguration: mkSessionConfiguration({ cwd }),
+      services: { provider },
+    });
+    const { live, control } = await spawnLive(session);
+    const external = new AbortController();
+    const controller = source === "external" ? external
+      : source === "parent" ? session.abortController : live.abortController;
+    controller.abort("already cancelled");
+    try {
+      const { events, result } = await collectRun(runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "must not execute" }],
+        taskPrompt: "must not execute",
+        taskId: "pre-aborted-task",
+        externalSignal: external.signal,
+      }));
+      expect(provider.chatStream).not.toHaveBeenCalled();
+      expect(provider.chat).not.toHaveBeenCalled();
+      expect(existsSync(sentinel)).toBe(false);
+      expect(result.outcome).toBe("aborted");
+      expect(events.some((event) => event.kind === "run_interrupted")).toBe(true);
+      expect(events.some((event) => event.kind === "run_complete")).toBe(false);
+      const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+      expect(receipt?.metadata).toMatchObject({
+        outcome: "interrupted", taskId: "pre-aborted-task",
+      });
+    } finally {
+      await control.shutdown(live.agentId, "test cleanup");
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("removes the external abort listener after completion", async () => {
     const provider = makeProvider([{ content: "ok" }]);
     const session = makeStubSession({ services: { provider } });
@@ -2923,7 +2968,13 @@ describe("runAgent", () => {
     }
   });
 
-  it("preserves a delegated worktree when child evidence cannot be verified by its broker", async () => {
+  it.each([
+    ...(["keep-alive", "one-shot", "sync", "workflow"] as const).flatMap((mode) =>
+      (["completed", "errored", "interrupted"] as const).map((terminal) => ({ mode, terminal })),
+    ),
+    { mode: "sync", terminal: "preconstruction" } as const,
+    { mode: "sync", terminal: "receipt-failure" } as const,
+  ])("preserves a delegated worktree with unverifiable child evidence ($mode, $terminal)", async ({ mode, terminal }) => {
     const repo = makeWorktreeEvidenceRepo();
     const worktreePath = join(repo, ".agenc-worktrees", "unverifiable");
     const parentBroker = explicitDangerBroker.forkForCwd(repo);
@@ -2935,15 +2986,35 @@ describe("runAgent", () => {
     const fork = vi.spyOn(parentBroker, "forkForCwd").mockImplementation((cwd) =>
       cwd === worktreePath ? childBroker : originalFork(cwd),
     );
+    const provider = makeProvider([{ content: "read-only task complete" }]);
+    if (terminal === "errored") {
+      vi.mocked(provider.chatStream).mockRejectedValue(new Error("injected provider failure"));
+    }
     const session = makeStubSession({
       sessionConfiguration: mkSessionConfiguration({ cwd: repo }),
       services: {
-        provider: makeProvider([{ content: "read-only task complete" }]),
+        provider,
         sandboxExecutionBroker: parentBroker,
+        ...(terminal === "interrupted" ? {
+          guardianRejectionCircuitBreaker: {
+            clearTurn: vi.fn(),
+            isOpen: vi.fn(() => true),
+          } as never,
+        } : {}),
       },
     });
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
+    const external = new AbortController();
+    const originalEmit = Session.prototype.emit;
+    const emit = terminal === "receipt-failure"
+      ? vi.spyOn(Session.prototype, "emit").mockImplementation(function (this: Session, event, options) {
+          if (this !== session && event.msg.type === "subagent_turn_outcome") {
+            throw new Error("injected receipt fsync failure");
+          }
+          return originalEmit.call(this, event, options);
+        })
+      : undefined;
     let thread: AgentThread | undefined;
     try {
       const outcome = await delegate({
@@ -2955,29 +3026,57 @@ describe("runAgent", () => {
         taskId: "unverifiable-task",
         isolation: "worktree",
         worktreeSlug: "unverifiable",
-        keepAlive: true,
-        runInBackground: true,
+        externalSignal: external.signal,
+        onProgress: (event) => {
+          if (terminal === "preconstruction" && event.kind === "status") {
+            external.abort("injected early abort");
+          }
+        },
+        keepAlive: mode === "keep-alive",
+        runInBackground: mode === "keep-alive" || mode === "one-shot",
+        forceSynchronous: mode === "sync" || mode === "workflow",
+        ...(mode === "workflow" ? {
+          finalMessageSink: { reset() {}, writeCanonicalDelta() {} },
+        } : {}),
       });
-      expect(outcome.kind).toBe("async_launched");
-      if (outcome.kind !== "async_launched") {
+      expect(outcome.kind).toBe(
+        mode === "sync" || mode === "workflow" ? "sync_completed" : "async_launched",
+      );
+      if (outcome.kind === "rejected") {
         throw new Error("delegate did not launch");
       }
       thread = outcome.thread;
-      expect((await thread.join()).outcome).toBe("completed");
+      const result = outcome.kind === "sync_completed" ? outcome.result : await thread.join();
+      expect(result.outcome).toBe(
+        terminal === "preconstruction" ? "aborted"
+          : terminal === "receipt-failure" ? "errored" : terminal,
+      );
       const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
-      expect(prepareSpawn).toHaveBeenCalled();
-      expect(receipt?.metadata?.worktreeEvidence).toMatchObject({ state: "unverifiable" });
-      expect(receipt?.content).not.toContain("integration_ref");
-      expect(thread.live.status.value.status).toBe("completed");
+      if (terminal === "preconstruction") {
+        expect(prepareSpawn).not.toHaveBeenCalled();
+        expect(provider.chatStream).not.toHaveBeenCalled();
+      } else {
+        expect(prepareSpawn).toHaveBeenCalled();
+      }
+      if (terminal === "receipt-failure") {
+        expect(receipt).toBeUndefined();
+        expect(result.error?.message).toContain("task receipt durability failed");
+      } else {
+        expect(receipt?.metadata?.outcome).toBe(terminal === "preconstruction" ? "interrupted" : terminal);
+        expect(receipt?.metadata?.worktreeEvidence).toMatchObject({ state: "unverifiable" });
+        expect(receipt?.content).not.toContain("integration_ref");
+      }
+      expect(thread.live.status.value.status).not.toBe("idle");
       expect(() => control.assignTask(thread!.live.agentId, {
         author: "/root",
         recipient: thread!.live.agentPath,
         content: "unsafe reuse",
         taskId: "unsafe-reuse",
-      })).toThrow("not an idle reusable worker");
+      })).toThrow();
       expect(existsSync(join(repo, ".git", "worktrees", "unverifiable"))).toBe(true);
       expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("base\n");
     } finally {
+      emit?.mockRestore();
       if (thread) await control.shutdown(thread.threadId, "test cleanup");
       fork.mockRestore();
       prepareSpawn.mockRestore();

@@ -1406,12 +1406,17 @@ function verifiedSharedGitMetadata(
     const common = realpathSync(originalMetadata);
     const pointer = readSmallGitPointer(pointerPath);
     if (pointer === null || !pointer.startsWith("gitdir: ")) return null;
-    const admin = path.resolve(nextCwd, pointer.slice("gitdir: ".length));
+    const adminPath = path.resolve(nextCwd, pointer.slice("gitdir: ".length));
+    if (
+      !lstatSync(adminPath).isDirectory() ||
+      !lstatSync(path.dirname(adminPath)).isDirectory()
+    ) return null;
+    const admin = realpathSync(adminPath);
     const worktrees = path.join(common, "worktrees");
     if (
       path.dirname(admin) !== worktrees ||
-      realpathSync(worktrees) !== worktrees ||
-      realpathSync(admin) !== admin
+      realpathSync(path.dirname(adminPath)) !== worktrees ||
+      realpathSync(worktrees) !== worktrees
     ) return null;
     const commonPointer = readSmallGitPointer(path.join(admin, "commondir"));
     const worktreePointer = readSmallGitPointer(path.join(admin, "gitdir"));
