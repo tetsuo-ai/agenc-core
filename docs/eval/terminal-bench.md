@@ -168,3 +168,134 @@ columns: only AgenC's adapter reports usage from its rollouts; Harbor's
 Hermes adapter reports none and the OpenCode adapter only the last message.
 Raw job directories with per-trial rollouts and grader output are kept
 outside the repo (`~/claude-agenc/bench-harbor/jobs` on the run host).
+
+## Full run, 2026-09-13
+
+All 89 tasks, AgenC main (618d2e0db for the first 35 tasks, f43416a00 after
+the dispatch-root fix merged), DeepSeek V4 Pro at medium effort, one clean
+trial per task, on a 24-thread Ryzen 9900X Ubuntu 26.04 host with native
+x86 Docker. Reruns were used only for trials that never produced an agent
+run (image pull or grader timeouts), for the two trials the old adapter
+could not start, and for failures where the file tools were refused before
+f43416a00; a pass was never replaced by a later failure.
+
+**AgenC (main 618d2e0db and f43416a00), DeepSeek V4 Pro, one clean trial per task: 61/89 passed of 89 tasks.**
+
+Failures by cause: 16 tasks failed the grader outright, 7 hit the task's agent timeout, 2 hit the grader's own 600 s timeout, 2 run on Debian 11 images the runtime cannot start on, and 1 (pytorch-model-recovery) is counted from the trial the old adapter could not start plus two grader timeouts on the retries. Total cost of the run including reruns: about 19 USD of DeepSeek credit; 146 trials in all.
+
+What the number contains:
+
+- Seven tasks hit their own agent timeout (900 to 3600 s) and count as
+  failures; two more (model-extraction-relu-logits, path-tracing-reverse)
+  timed out in one attempt but passed the grader in another and count as
+  passes.
+- Two tasks (`qemu-startup`, `qemu-alpine-ssh`) run on Debian 11 images with
+  glibc 2.31; the runtime build needs 2.34, so the daemon cannot start and
+  they count as failures. Hermes (Python) and OpenCode (a static binary) do
+  not have this limit.
+- Three grader timeouts (`torch-tensor-parallelism`, `torch-pipeline-parallelism`,
+  `pytorch-model-recovery`): the grader installs `torch==2.7.1` at test time
+  and the host's 4 Mbit/s line could not deliver it inside the 600 s
+  verifier limit. They count as failures.
+- `caffe-cifar-10` died with exit 137 inside the task's 4 GiB memory limit
+  (AgenC's daemon plus the training run). Counted as a failure.
+- The agent chose `detach: true` for a service in 11 tasks; the
+  residue note fired in 10 trials.
+
+| task | pass | agent s | shell calls | detach | note |
+| --- | --- | --- | --- | --- | --- |
+| adaptive-rejection-sampler | 1 | 882 | 11 |  |  |
+| bn-fit-modify | 1 | 368 | 19 |  |  |
+| break-filter-js-from-html | 1 | 62 | 7 |  |  |
+| build-cython-ext | 1 | 486 | 28 |  |  |
+| build-pmars | 1 | 671 | 28 |  |  |
+| build-pov-ray | 1 | 1172 | 69 |  |  |
+| caffe-cifar-10 | 0 | 1200 | 7 |  | timeout |
+| cancel-async-tasks | 0 | 131 | 4 |  |  |
+| chess-best-move | 0 | 868 | 33 |  |  |
+| circuit-fibsqrt | 1 | 822 | 7 |  |  |
+| cobol-modernization | 1 | 328 | 22 |  |  |
+| code-from-image | 0 | 247 | 15 |  |  |
+| compile-compcert | 1 | 2229 | 98 | 7 |  |
+| configure-git-webserver | 0 | 205 | 20 | 1 |  |
+| constraints-scheduling | 1 | 68 | 0 |  |  |
+| count-dataset-tokens | 1 | 203 | 8 |  |  |
+| crack-7z-hash | 1 | 167 | 22 |  |  |
+| custom-memory-heap-crash | 1 | 265 | 27 |  |  |
+| db-wal-recovery | 1 | 578 | 37 |  |  |
+| distribution-search | 1 | 153 | 3 |  |  |
+| dna-assembly | 0 | 957 | 16 |  |  |
+| dna-insert | 0 | 550 | 17 |  |  |
+| extract-elf | 1 | 206 | 19 |  |  |
+| extract-moves-from-video | 0 | 1800 | 35 |  | timeout |
+| feal-differential-cryptanalysis | 1 | 136 | 4 |  |  |
+| feal-linear-cryptanalysis | 1 | 585 | 9 |  |  |
+| filter-js-from-html | 0 | 389 | 12 |  |  |
+| financial-document-processor | 1 | 273 | 20 |  |  |
+| fix-code-vulnerability | 1 | 56 | 8 |  |  |
+| fix-git | 1 | 62 | 15 |  |  |
+| fix-ocaml-gc | 1 | 482 | 12 |  |  |
+| gcode-to-text | 0 | 900 | 26 |  | timeout |
+| git-leak-recovery | 1 | 35 | 13 |  |  |
+| git-multibranch | 1 | 261 | 36 | 2 |  |
+| gpt2-codegolf | 0 | 900 | 12 |  | timeout |
+| headless-terminal | 1 | 162 | 14 |  |  |
+| hf-model-inference | 1 | 123 | 7 | 1 |  |
+| install-windows-3.11 | 1 | 3019 | 128 | 7 |  |
+| kv-store-grpc | 1 | 104 | 7 | 1 |  |
+| large-scale-text-editing | 1 | 316 | 12 |  |  |
+| largest-eigenval | 0 | 597 | 30 |  |  |
+| llm-inference-batching-scheduler | 1 | 848 | 28 |  |  |
+| log-summary-date-ranges | 1 | 27 | 9 |  |  |
+| mailman | 1 | 866 | 96 | 2 |  |
+| make-doom-for-mips | 0 | 900 | 87 |  | timeout |
+| make-mips-interpreter | 0 | 1631 | 89 |  |  |
+| mcmc-sampling-stan | 1 | 908 | 54 |  |  |
+| merge-diff-arc-agi-task | 1 | 172 | 17 |  |  |
+| model-extraction-relu-logits | 1 | 900 | 14 |  | timeout |
+| modernize-scientific-stack | 1 | 32 | 1 |  |  |
+| mteb-leaderboard | 1 | 70 | 0 |  |  |
+| mteb-retrieve | 0 | 78 | 8 |  |  |
+| multi-source-data-merger | 1 | 131 | 8 |  |  |
+| nginx-request-logging | 1 | 85 | 7 | 1 |  |
+| openssl-selfsigned-cert | 1 | 164 | 9 |  |  |
+| overfull-hbox | 0 | 336 | 13 |  |  |
+| password-recovery | 1 | 150 | 17 |  |  |
+| path-tracing | 1 | 552 | 20 |  |  |
+| path-tracing-reverse | 1 | 1628 | 35 |  |  |
+| polyglot-c-py | 0 | 315 | 11 |  |  |
+| polyglot-rust-c | 0 | 405 | 4 |  |  |
+| portfolio-optimization | 1 | 268 | 12 |  |  |
+| protein-assembly | 0 | 985 | 16 |  |  |
+| prove-plus-comm | 1 | 46 | 4 |  |  |
+| pypi-server | 1 | 68 | 12 | 1 |  |
+| pytorch-model-cli | 1 | 237 | 23 |  |  |
+| pytorch-model-recovery | 0 | 1 | 0 |  | agent exit exit 2 |
+| qemu-alpine-ssh | 0 |  | 0 |  | glibc 2.31 host |
+| qemu-startup | 0 | 2 | 0 |  | glibc 2.31 host |
+| query-optimize | 0 | 656 | 18 |  |  |
+| raman-fitting | 0 | 900 | 35 |  | timeout |
+| regex-chess | 1 | 2505 | 13 |  |  |
+| regex-log | 1 | 136 | 6 |  |  |
+| reshard-c4-data | 1 | 380 | 22 |  |  |
+| rstan-to-pystan | 1 | 1100 | 48 |  |  |
+| sam-cell-seg | 0 | 1167 | 36 |  |  |
+| sanitize-git-repo | 1 | 146 | 10 |  |  |
+| schemelike-metacircular-eval | 1 | 565 | 16 |  |  |
+| sparql-university | 1 | 115 | 5 |  |  |
+| sqlite-db-truncate | 1 | 249 | 9 |  |  |
+| sqlite-with-gcov | 1 | 339 | 27 |  |  |
+| torch-pipeline-parallelism | 0 | 532 | 6 |  | verifier timeout |
+| torch-tensor-parallelism | 0 | 193 | 4 |  | verifier timeout |
+| train-fasttext | 0 | 3602 | 37 | 1 | timeout |
+| tune-mjcf | 1 | 499 | 19 |  |  |
+| video-processing | 1 | 752 | 32 |  |  |
+| vulnerable-secret | 1 | 44 | 7 |  |  |
+| winning-avg-corewars | 1 | 926 | 43 |  |  |
+| write-compressor | 1 | 526 | 10 |  |  |
+
+The workspace write policy's remaining refusal, a shell content write into
+the workspace ("use Edit or Write instead"), appeared in 23 of the 146
+trials, 16 times in build-pov-ray alone. It is the one deliberate guard
+left that costs turns under the full bypass; whether to lift it there is an
+open product decision.
