@@ -33,19 +33,23 @@ function mkSession(overrides?: Record<string, unknown>): Session & {
   } as unknown as Session & { emit: ReturnType<typeof vi.fn> };
 }
 
+function toolResult(id: string) {
+  return { callId: id, toolName: "Bash", arguments: "{}", content: "ok", isError: false };
+}
+
+function answer(text: string, extra?: Record<string, unknown>) {
+  return [{ uuid: "a1", role: "assistant", text, toolCalls: [], ...extra }];
+}
+
 function mkState(overrides?: Partial<TurnState>): TurnState {
   return {
     messages: [{ role: "user", content: "Build the thing" }],
-    assistantMessages: [
-      { uuid: "a1", role: "assistant", text: "Done. The thing is built.", toolCalls: [] },
-    ],
+    assistantMessages: answer("Done. The thing is built."),
     toolUseBlocks: [],
     needsFollowUp: false,
     transition: undefined,
     turnCount: 3,
-    completedToolResults: [
-      { callId: "c1", toolName: "Bash", arguments: "{}", content: "ok", isError: false },
-    ],
+    completedToolResults: [toolResult("c1")],
     completionGate: { maxRounds: 3, taskText: "Build the thing" },
     completionGateRound: 0,
     completionGateToolLedgerMark: 0,
@@ -57,6 +61,16 @@ function mkState(overrides?: Partial<TurnState>): TurnState {
     stopHookActive: true,
     ...overrides,
   } as unknown as TurnState;
+}
+
+/** A state after one gate injection whose next answer is `text`, with `tools` completed calls in total. */
+function laterAnswer(text: string, tools: number): TurnState {
+  return mkState({
+    completionGateRound: 1,
+    completionGateToolLedgerMark: 1,
+    completedToolResults: Array.from({ length: tools }, (_, i) => toolResult(`c${i + 1}`)),
+    assistantMessages: answer(text),
+  } as Partial<TurnState>);
 }
 
 function gateEvents(session: { emit: ReturnType<typeof vi.fn> }) {
@@ -202,8 +216,8 @@ describe("completionGate", () => {
       mkState({ toolUseBlocks: [{ id: "t", name: "Bash", arguments: "{}" }] } as Partial<TurnState>),
       mkState({ needsFollowUp: true }),
       mkState({ transition: { reason: "continuation_nudge" } }),
-      mkState({ assistantMessages: [{ uuid: "a", role: "assistant", text: "   ", toolCalls: [] }] } as Partial<TurnState>),
-      mkState({ assistantMessages: [{ uuid: "a", role: "assistant", text: "x", toolCalls: [], apiError: "boom" }] } as Partial<TurnState>),
+      mkState({ assistantMessages: answer("   ") } as Partial<TurnState>),
+      mkState({ assistantMessages: answer("x", { apiError: "boom" }) } as Partial<TurnState>),
       mkState({ turnCount: 10 }),
     ]) {
       await completionGate(state, mkCtx(), session);
@@ -258,17 +272,7 @@ describe("completionGate", () => {
 
   test("accepts a later answer backed by tool calls with no unmet items", async () => {
     const session = mkSession();
-    const state = mkState({
-      completionGateRound: 1,
-      completionGateToolLedgerMark: 1,
-      completedToolResults: [
-        { callId: "c1", toolName: "Bash", arguments: "{}", content: "ok", isError: false },
-        { callId: "c2", toolName: "Bash", arguments: "{}", content: "3 passed", isError: false },
-      ],
-      assistantMessages: [
-        { uuid: "a2", role: "assistant", text: "- [x] tests pass: pytest, 3 passed\n- [-] no GPU here\nDone.", toolCalls: [] },
-      ],
-    } as Partial<TurnState>);
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed\n- [-] no GPU here\nDone.", 2);
     await completionGate(state, mkCtx(), session);
     expect(state.transition).toBeUndefined();
     expect(state.completionGateSettled).toBe(true);
@@ -280,7 +284,7 @@ describe("completionGate", () => {
 
   test("re-injects when no tool ran since the request", async () => {
     const session = mkSession();
-    const state = mkState({ completionGateRound: 1, completionGateToolLedgerMark: 1 });
+    const state = laterAnswer("Done, really.", 1);
     await completionGate(state, mkCtx(), session);
     expect(state.completionGateRound).toBe(2);
     expect(state.transition).toEqual({ reason: "completion_gate" });
@@ -292,17 +296,7 @@ describe("completionGate", () => {
 
   test("re-injects the unmet items when the checklist still has open boxes", async () => {
     const session = mkSession();
-    const state = mkState({
-      completionGateRound: 1,
-      completionGateToolLedgerMark: 1,
-      completedToolResults: [
-        { callId: "c1", toolName: "Bash", arguments: "{}", content: "ok", isError: false },
-        { callId: "c2", toolName: "Bash", arguments: "{}", content: "ok", isError: false },
-      ],
-      assistantMessages: [
-        { uuid: "a2", role: "assistant", text: "- [x] built\n- [ ] output file exists\n```\n- [ ] fenced\n```", toolCalls: [] },
-      ],
-    } as Partial<TurnState>);
+    const state = laterAnswer("- [x] built\n- [ ] output file exists\n```\n- [ ] fenced\n```", 2);
     await completionGate(state, mkCtx(), session);
     expect(state.completionGateRound).toBe(2);
     expect(state.completionGateToolLedgerMark).toBe(2);
@@ -320,7 +314,8 @@ describe("completionGate", () => {
 
   test("accepts at the round cap instead of looping", async () => {
     const session = mkSession();
-    const state = mkState({ completionGateRound: 3, completionGateToolLedgerMark: 1 });
+    const state = laterAnswer("Done.", 1);
+    state.completionGateRound = 3;
     await completionGate(state, mkCtx(), session);
     expect(state.transition).toBeUndefined();
     expect(state.completionGateRound).toBe(3);
