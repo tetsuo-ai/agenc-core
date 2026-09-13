@@ -33,7 +33,9 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "../../wire/mcp-tool-naming.js";
-import { LLMProviderError, LLMStreamTruncatedError, mapLLMError } from "../../errors.js";
+import { LLMProviderError, LLMStreamTruncatedError, mapLLMError,
+  LLMRequestRebuiltError,
+} from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
   assertProviderStructuredOutputCompatibility,
@@ -859,6 +861,12 @@ export class GrokProvider implements LLMProvider {
 
   private client: unknown | null = null;
   private readonly config: GrokProviderConfig;
+  /**
+   * Set once xAI refused to store a response for this session: every later
+   * plan is unstored with full history (an unstored response cannot be
+   * continued), so the refusal cannot repeat on the next admitted attempt.
+   */
+  private storeRefused = false;
   /** I-2 / I-14 tracker — zeroed by AgenC post-compact cleanup via
    *  clearAllResponseIds(); used to send delta input with
    *  previous_response_id when the request shape is unchanged. */
@@ -1036,6 +1044,7 @@ export class GrokProvider implements LLMProvider {
     messages: readonly LLMMessage[],
     options: LLMChatOptions | undefined,
   ): ReturnType<GrokProvider["buildRequestPlan"]> {
+    this.noteStoreRefusal();
     this.emitRuntimeWarning(
       "xai_store_too_large",
       `${this.name} could not store the response; retrying once with store: false`,
@@ -1045,6 +1054,34 @@ export class GrokProvider implements LLMProvider {
     });
     (plan.params as Record<string, unknown>).store = false;
     return plan;
+  }
+
+  /**
+   * Latch the store refusal for the session and drop the continuation the
+   * refused request may have been extending: an unstored conversation is
+   * resent in full on every later call.
+   */
+  private noteStoreRefusal(): void {
+    if (this.storeRefused) return;
+    this.storeRefused = true;
+    this.incrementalTracker.clearResponseId();
+  }
+
+  /**
+   * Under an admitted single wire attempt the adapter must not retry in
+   * band; it rebuilds its plan (unstored from now on) and hands the ladder a
+   * retryable error so the next admitted attempt carries the new plan.
+   */
+  private storeRefusalUnderAdmission(): LLMRequestRebuiltError {
+    this.noteStoreRefusal();
+    this.emitRuntimeWarning(
+      "xai_store_too_large",
+      `${this.name} could not store the response; the next admitted attempt resends the conversation with store: false`,
+    );
+    return new LLMRequestRebuiltError(
+      this.name,
+      "xAI could not store the response; the request is resent unstored on the next attempt",
+    );
   }
 
   private emitRuntimeWarning(cause: string, message: string): void {
@@ -1290,10 +1327,12 @@ export class GrokProvider implements LLMProvider {
       return parsed;
       } catch (err: unknown) {
       if (
-        options?.singleWireAttempt !== true &&
         isResponseTooLargeToStore(err) &&
         (plan.params as Record<string, unknown>).store !== false
       ) {
+        if (options?.singleWireAttempt === true) {
+          throw this.storeRefusalUnderAdmission();
+        }
         const retryPlan = this.unstoredRetryPlan(messages, options);
         return await retryWithAuthRefresh(
           String(this.config.apiKey),
@@ -1489,11 +1528,10 @@ export class GrokProvider implements LLMProvider {
           options?.signal,
         );
       } catch (err) {
-        if (
-          options?.singleWireAttempt !== true &&
-          isResponseTooLargeToStore(err) &&
-          params.store !== false
-        ) {
+        if (isResponseTooLargeToStore(err) && params.store !== false) {
+          if (options?.singleWireAttempt === true) {
+            throw this.storeRefusalUnderAdmission();
+          }
           plan = this.unstoredRetryPlan(messages, options);
           params = { ...plan.params, stream: true };
           result = await withTimeout(
@@ -2183,7 +2221,7 @@ export class GrokProvider implements LLMProvider {
       options?.tools,
     );
     const built = this.buildParams(messages, {
-      store: xaiResponseStoreDefault(),
+      store: this.storeRefused ? false : xaiResponseStoreDefault(),
       allowedToolNames: options?.toolRouting?.allowedToolNames,
       toolChoice: options?.toolChoice,
       maxOutputTokens: options?.maxOutputTokens,
@@ -2195,7 +2233,7 @@ export class GrokProvider implements LLMProvider {
       toolSelection,
       promptCacheKey: options?.promptCacheKey?.trim() || undefined,
       systemPrompt: options?.systemPrompt?.trim() || undefined,
-      disableIncremental: overrides?.disableIncremental,
+      disableIncremental: overrides?.disableIncremental || this.storeRefused,
     });
     return {
       params: built.params,

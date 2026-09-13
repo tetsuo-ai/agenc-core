@@ -15,6 +15,7 @@ import {
   LLMAuthenticationError,
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
+  LLMRequestRebuiltError,
   LLMStreamTruncatedError,
   LLMMessageValidationError,
   LLMManagedAdmissionError,
@@ -387,6 +388,7 @@ function isTransientProviderErrorInner(
   if (depth > 4) return false;
   if (isExplicitNonTransientProviderError(err)) return false;
   if (err instanceof LLMStreamTruncatedError) return true;
+  if (err instanceof LLMRequestRebuiltError) return true;
   if (err instanceof Error) {
     const msg = err.message.toLowerCase();
     if (TRANSIENT_PROVIDER_MESSAGE_PARTS.some((part) => msg.includes(part))) {

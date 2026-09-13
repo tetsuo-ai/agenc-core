@@ -12,6 +12,7 @@ import {
   LLMContextWindowExceededError,
   LLMMessageValidationError,
   LLMRateLimitError,
+  LLMRequestRebuiltError,
   LLMServerError,
   LLMStreamTruncatedError,
   LLMTimeoutError,
@@ -298,6 +299,9 @@ export function isRetryableStreamError(error: unknown): boolean {
   // A stream that ended before its terminal event: nothing definitive came
   // back, so the request is re-sent through the same ladder as stream_idle.
   if (cause instanceof LLMStreamTruncatedError) return true;
+  // The adapter already rebuilt its plan (xAI store refusal under an admitted
+  // single wire attempt): nothing was sampled, the next attempt carries it.
+  if (cause instanceof LLMRequestRebuiltError) return true;
 
   // Transient node networking via error `code`.
   const code = (cause as { code?: unknown } | null | undefined)?.code;

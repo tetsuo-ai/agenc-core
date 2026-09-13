@@ -14,6 +14,7 @@ import {
   isResampleableStreamInterruption,
 } from "./api-errors.js";
 import {
+  LLMRequestRebuiltError,
   LLMProviderError,
   LLMStreamTruncatedError,
   mapLLMError,
@@ -113,6 +114,12 @@ describe("isResampleableStreamInterruption", () => {
   test("a streamed tool call or a non-transient fault keeps the partial response", () => {
     expect(isResampleableStreamInterruption(new Error("terminated"), 1)).toBe(false);
     expect(isResampleableStreamInterruption(new Error("invalid request"), 0)).toBe(false);
+  });
+});
+
+describe("LLMRequestRebuiltError", () => {
+  test("is transient: the adapter already rebuilt its plan for the next attempt", () => {
+    expect(isTransientProviderError(new LLMRequestRebuiltError("grok", "store refused"))).toBe(true);
   });
 });
 

@@ -645,7 +645,12 @@ Its retry behavior is:
   server-side storage limit. Stored responses are only the speed default
   (`AGENC_XAI_STORE`), so the grok provider sends the same request once more
   with `store: false` (warning `xai_store_too_large`) instead of failing the
-  turn; a request that was already unstored is not retried.
+  turn; a request that was already unstored is not retried. The refusal is
+  latched for the session: every later request is unstored with full history
+  (an unstored response cannot be continued). Under an admitted single wire
+  attempt, where the adapter must not retry in band, it throws
+  `LLMRequestRebuiltError`, which the turn's reconnect ladder treats as
+  transient, so the next admitted attempt carries the unstored plan.
 - **Retry-After > 300s** aborts the retry.
 - Session backoff base is **200 ms**.
 - After budget admission, model calls set `singleWireAttempt: true`: **no HTTP

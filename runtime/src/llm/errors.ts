@@ -380,6 +380,20 @@ export class LLMStreamTruncatedError extends LLMProviderError {
 }
 
 /**
+ * Error thrown when the provider refused the shape of a request and the
+ * adapter has already changed its plan for the next attempt (for example
+ * xAI refusing to store a response, after which the conversation is resent
+ * with `store: false`). Nothing was sampled, so the turn's reconnect policy
+ * treats it as transient and the next admitted attempt carries the new plan.
+ */
+export class LLMRequestRebuiltError extends LLMProviderError {
+  constructor(providerName: string, message: string) {
+    super(providerName, message);
+    this.name = "LLMRequestRebuiltError";
+  }
+}
+
+/**
  * Error thrown when a provider transport succeeds but the returned response
  * envelope is malformed or contradicts the requested capability contract.
  */

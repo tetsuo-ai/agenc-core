@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { LLMMessage, LLMTool } from "../../types.js";
-import { LLMTimeoutError } from "../../errors.js";
+import {
+  LLMRequestRebuiltError, LLMTimeoutError } from "../../errors.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "../../wire/shared.js";
 import { encodeMcpToolNameForWire } from "../../wire/mcp-tool-naming.js";
 import { DEFAULT_REQUEST_OPEN_TIMEOUT_MS, GrokProvider } from "./adapter.js";
@@ -765,6 +766,66 @@ describe("GrokProvider incremental continuation", () => {
     expect(warnings).toContainEqual(
       expect.objectContaining({ cause: "xai_store_too_large" }),
     );
+  });
+
+  test("under an admitted single wire attempt the store refusal is a retryable rebuild and the next attempt is unstored", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      emitWarning: (warning) => warnings.push(warning),
+    });
+    (provider as any).incrementalTracker.recordRequest(
+      (provider as any).buildIncrementalRequestShape({ model: "grok-4-fast", store: true }),
+      previousMessages,
+    );
+    (provider as any).incrementalTracker.recordResponse({
+      previousResponseId: "resp_stored_prev",
+      itemsAdded: [{ role: "assistant", content: "hi" }],
+      recordedAtMs: Date.now(),
+    });
+    const requestBodies: Record<string, unknown>[] = [];
+    (provider as any).client = storeRefusalClient(requestBodies, () =>
+      withResponse(buildXaiResponse("resp_unstored_next", "done")),
+    );
+
+    await expect(
+      provider.chat(currentMessages, { singleWireAttempt: true }),
+    ).rejects.toBeInstanceOf(LLMRequestRebuiltError);
+    // No in-band retry on the admitted attempt.
+    expect(requestBodies).toHaveLength(1);
+    expect(requestBodies[0]?.store).toBe(true);
+    expect(warnings).toContainEqual(expect.objectContaining({ cause: "xai_store_too_large" }));
+
+    // The next admitted attempt carries the rebuilt plan: unstored, full history.
+    const result = await provider.chat(currentMessages, { singleWireAttempt: true });
+    expect(result.content).toBe("done");
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[1]?.store).toBe(false);
+    expect(requestBodies[1]).not.toHaveProperty("previous_response_id");
+  });
+
+  test("under an admitted single wire attempt the streaming store refusal is a retryable rebuild", async () => {
+    const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4-fast" });
+    const requestBodies: Record<string, unknown>[] = [];
+    (provider as any).client = storeRefusalClient(requestBodies, () =>
+      withResponse(
+        streamFromEvents([
+          {
+            type: "response.completed",
+            response: buildXaiResponse("resp_unstored_stream_next", "stream done"),
+          },
+        ]),
+      ),
+    );
+
+    await expect(
+      provider.chatStream(currentMessages, () => {}, { singleWireAttempt: true }),
+    ).rejects.toBeInstanceOf(LLMRequestRebuiltError);
+    expect(requestBodies).toHaveLength(1);
+    const result = await provider.chatStream(currentMessages, () => {}, { singleWireAttempt: true });
+    expect(result.content).toBe("stream done");
+    expect(requestBodies.map((body) => body.store)).toEqual([true, false]);
   });
 
   test("does not retry the store error when the request was already unstored", async () => {
