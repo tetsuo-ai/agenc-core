@@ -93,6 +93,23 @@ function useDeterministicFallbackTimers(): () => void {
   };
 }
 
+function primeStoredContinuation(
+  provider: GrokProvider,
+  responseId: string,
+  store: boolean,
+  messages: readonly LLMMessage[],
+): void {
+  (provider as any).incrementalTracker.recordRequest(
+    (provider as any).buildIncrementalRequestShape({ model: "grok-4-fast", store }),
+    messages,
+  );
+  (provider as any).incrementalTracker.recordResponse({
+    previousResponseId: responseId,
+    itemsAdded: [{ role: "assistant", content: "hi" }],
+    recordedAtMs: Date.now(),
+  });
+}
+
 describe("GrokProvider incremental continuation", () => {
   const previousMessages: LLMMessage[] = [
     { role: "user", content: "hello" },
@@ -775,15 +792,7 @@ describe("GrokProvider incremental continuation", () => {
       model: "grok-4-fast",
       emitWarning: (warning) => warnings.push(warning),
     });
-    (provider as any).incrementalTracker.recordRequest(
-      (provider as any).buildIncrementalRequestShape({ model: "grok-4-fast", store: true }),
-      previousMessages,
-    );
-    (provider as any).incrementalTracker.recordResponse({
-      previousResponseId: "resp_stored_prev",
-      itemsAdded: [{ role: "assistant", content: "hi" }],
-      recordedAtMs: Date.now(),
-    });
+    primeStoredContinuation(provider, "resp_stored_prev", true, previousMessages);
     const requestBodies: Record<string, unknown>[] = [];
     (provider as any).client = storeRefusalClient(requestBodies, () =>
       withResponse(buildXaiResponse("resp_unstored_next", "done")),
@@ -857,18 +866,7 @@ describe("GrokProvider incremental continuation", () => {
       emitWarning: (warning) => warnings.push(warning),
     });
 
-    (provider as any).incrementalTracker.recordRequest(
-      (provider as any).buildIncrementalRequestShape({
-        model: "grok-4-fast",
-        store: false,
-      }),
-      previousMessages,
-    );
-    (provider as any).incrementalTracker.recordResponse({
-      previousResponseId: "resp_prev_stream",
-      itemsAdded: [{ role: "assistant", content: "hi" }],
-      recordedAtMs: Date.now(),
-    });
+    primeStoredContinuation(provider, "resp_prev_stream", false, previousMessages);
 
     const requestBodies: Record<string, unknown>[] = [];
     (provider as any).client = {
