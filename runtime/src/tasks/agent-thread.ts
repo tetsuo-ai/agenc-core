@@ -158,12 +158,20 @@ export function observeAgentThreadTask(
     });
     if (signature === lastSignature) return;
     lastSignature = signature;
-    onSnapshot(projected);
-    if (isTerminalTaskStatus(projected.status)) unsubscribe();
+    try {
+      onSnapshot(projected);
+    } finally {
+      if (isTerminalTaskStatus(projected.status)) unsubscribe();
+    }
   };
   unsubscribe = lifecycle.subscribe(threadId, forward);
   const current = lifecycle.get(threadId);
-  if (current !== undefined) forward(current);
+  try {
+    if (current !== undefined) forward(current);
+  } catch (error) {
+    unsubscribe();
+    throw error;
+  }
   return unsubscribe;
 }
 

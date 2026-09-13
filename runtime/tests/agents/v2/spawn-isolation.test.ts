@@ -16,6 +16,7 @@ import { defaultConfig } from "../../../src/config/schema.js";
 import { validationErrorToolResult } from "../../../src/tools/results.js";
 import { bindLiveAgentSession } from "../../../src/agents/live-session.js";
 import type { LiveAgent } from "../../../src/agents/control.js";
+import { BehaviorSubject } from "../../../src/utils/behavior-subject.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
 const ROLE_CATALOG = new AgentRoleCatalog(ROLE_WORKSPACE);
@@ -71,6 +72,7 @@ function makeSession(): Session {
     conversationId: "conv-1",
     abortController: new AbortController(),
     onBeforeDurableClose: () => () => {},
+    agentStatus: new BehaviorSubject({ status: "idle" }),
     roleWorkspace: ROLE_WORKSPACE,
     emit: (event: unknown) => emitted.push(event),
     nextInternalSubId: () => `sub-${emitted.length}`,

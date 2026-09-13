@@ -120,4 +120,26 @@ describe("detached spawn lifecycle observation", () => {
     });
     expect(emitted).toHaveLength(settled);
   });
+
+  it("releases a subscription when the initial snapshot callback throws", () => {
+    const { lifecycle, thread } = registeredThread();
+    const failure = new Error("initial projection failed");
+    const callback = vi.fn(() => { throw failure; });
+    expect(() => observeAgentThreadTask(lifecycle, thread, callback)).toThrow(failure);
+    expect(() => lifecycle.updateAgentProgress("agent-1", { toolUseCount: 1, tokenCount: 1 })).not.toThrow();
+    expect(callback).toHaveBeenCalledOnce();
+  });
+
+  it("releases a terminal subscription while preserving the callback error", () => {
+    const { lifecycle, thread } = registeredThread();
+    const failure = new Error("terminal projection failed");
+    const callback = vi.fn((snapshot: BackgroundTaskSnapshot) => {
+      if (snapshot.status === "failed") throw failure;
+    });
+    observeAgentThreadTask(lifecycle, thread, callback);
+    expect(() => lifecycle.fail("agent-1", "worker failed")).toThrow(failure);
+    const count = callback.mock.calls.length;
+    expect(() => lifecycle.appendOutput("agent-1", "late output")).not.toThrow();
+    expect(callback).toHaveBeenCalledTimes(count);
+  });
 });

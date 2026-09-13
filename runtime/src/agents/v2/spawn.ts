@@ -32,6 +32,7 @@ import {
   backgroundTaskLifecycle,
   observeAgentThreadTask,
   registerAgentThreadTask,
+  isTerminalTaskStatus,
   type BackgroundTaskSnapshot,
 } from "../../tasks/index.js";
 import { syncBackgroundTaskSnapshotToAppState } from "../../tasks/app-state-bridge.js";
@@ -53,6 +54,48 @@ import {
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
   "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
+
+/** Status projection belongs to the spawning Session, not the worker lifetime. */
+function ownTaskStatusProjection(session: Session): {
+  readonly active: () => boolean;
+  readonly own: (unsubscribe: () => void) => void;
+  readonly close: () => void;
+} {
+  let closed = session.isShuttingDown;
+  const subscriptions = new Set<() => void>();
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    for (const unsubscribe of subscriptions) unsubscribe();
+    subscriptions.clear();
+  };
+  const own = (unsubscribe: () => void): void => {
+    // Both Session status and task observation can replay synchronously.
+    if (closed) unsubscribe();
+    else subscriptions.add(unsubscribe);
+  };
+  if (!closed) {
+    try {
+      own(session.onBeforeDurableClose(close));
+      // A failed durable finalizer intentionally skips later finalizers.
+      // The owner shutdown status still releases projection subscriptions.
+      own(session.agentStatus.subscribe(() => {
+        if (session.isShuttingDown) close();
+      }));
+    } catch (error) {
+      close();
+      throw error;
+    }
+  }
+  return {
+    active: () => {
+      if (session.isShuttingDown) close();
+      return !closed;
+    },
+    own,
+    close,
+  };
+}
 
 function buildSpawnAgentDescription(session: Session | null): string {
   const base = `Spawns an agent to work on the specified task.
@@ -771,38 +814,43 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return json({ error: "spawn_agent did not return an agent thread" }, true);
     }
     const live = thread.live;
+    const projection = ownTaskStatusProjection(session);
     const emitTaskStatus = (snapshot: BackgroundTaskSnapshot): void => {
-      if (snapshot.status === "pending") return;
-      emit(session, {
-        type: "collab_agent_status",
-        payload: {
-          callId,
-          senderThreadId: current.threadId,
-          threadId: live.agentId,
-          ...(live.status.timing !== undefined ? { timing: live.status.timing } : {}),
-          agentPath: live.agentPath,
-          agentNickname: live.nickname,
-          agentRole: live.role.name,
-          agentRoleDisplayName: formatAgentRoleLabel(live.role.name),
-          prompt,
-          model: model ?? session.sessionConfiguration.collaborationMode.model,
-          reasoningEffort:
-            reasoningEffort ??
-            session.sessionConfiguration.collaborationMode.reasoningEffort,
-          status: snapshot.status,
-          // Forward the live per-agent tool-use + token counts so the fan-out
-          // rail / fleet panel show real activity for collab-spawned agents
-          // instead of a frozen `tools 0 tokens 0`. The snapshot's progress is
-          // refreshed from the live handle by registerAgentThreadTask.
-          ...(snapshot.progress?.toolUseCount !== undefined
-            ? { toolUseCount: snapshot.progress.toolUseCount }
-            : {}),
-          ...(snapshot.progress?.tokenCount !== undefined
-            ? { tokenCount: snapshot.progress.tokenCount }
-            : {}),
-          ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
-        },
-      });
+      if (snapshot.status === "pending" || !projection.active()) return;
+      try {
+        emit(session, {
+          type: "collab_agent_status",
+          payload: {
+            callId,
+            senderThreadId: current.threadId,
+            threadId: live.agentId,
+            ...(live.status.timing !== undefined ? { timing: live.status.timing } : {}),
+            agentPath: live.agentPath,
+            agentNickname: live.nickname,
+            agentRole: live.role.name,
+            agentRoleDisplayName: formatAgentRoleLabel(live.role.name),
+            prompt,
+            model: model ?? session.sessionConfiguration.collaborationMode.model,
+            reasoningEffort:
+              reasoningEffort ??
+              session.sessionConfiguration.collaborationMode.reasoningEffort,
+            status: snapshot.status,
+            // Forward the live per-agent tool-use + token counts so the fan-out
+            // rail / fleet panel show real activity for collab-spawned agents
+            // instead of a frozen `tools 0 tokens 0`. The snapshot's progress is
+            // refreshed from the live handle by registerAgentThreadTask.
+            ...(snapshot.progress?.toolUseCount !== undefined
+              ? { toolUseCount: snapshot.progress.toolUseCount }
+              : {}),
+            ...(snapshot.progress?.tokenCount !== undefined
+              ? { tokenCount: snapshot.progress.tokenCount }
+              : {}),
+            ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
+          },
+        });
+      } finally {
+        if (isTerminalTaskStatus(snapshot.status)) projection.close();
+      }
     };
     try {
       registerAgentThreadTask(backgroundTaskLifecycle, thread, {
@@ -813,7 +861,24 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         // is preserved separately on the task's `prompt` field.
         description: shortAgentTaskTitle(taskName, prompt),
         prompt,
-        onSnapshot: (snapshot) => {
+      });
+    } catch (error) {
+      if (
+        !(error instanceof BackgroundTaskError) ||
+        error.code !== "already_exists"
+      ) {
+        projection.close();
+        throw error;
+      }
+    }
+    try {
+      // The daemon may already own registration. In either case, status
+      // projection has a separate subscription scoped to this Session.
+      projection.own(observeAgentThreadTask(
+        backgroundTaskLifecycle,
+        thread,
+        (snapshot) => {
+          if (!projection.active()) return;
           syncBackgroundTaskSnapshotToAppState(
             (
               session as unknown as {
@@ -826,46 +891,30 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           );
           emitTaskStatus(snapshot);
         },
+      ));
+      emit(session, {
+        type: "collab_agent_spawn_end",
+        payload: {
+          callId,
+          senderThreadId: current.threadId,
+          newThreadId: live.agentId,
+          ...(live.status.timing !== undefined ? { timing: live.status.timing } : {}),
+          newAgentPath: live.agentPath,
+          newAgentNickname: live.nickname,
+          newAgentRole: live.role.name,
+          newAgentRoleDisplayName: formatAgentRoleLabel(live.role.name),
+          prompt,
+          model: model ?? session.sessionConfiguration.collaborationMode.model,
+          reasoningEffort:
+            reasoningEffort ??
+            session.sessionConfiguration.collaborationMode.reasoningEffort,
+          status: live.status.value,
+        },
       });
     } catch (error) {
-      if (
-        !(error instanceof BackgroundTaskError) ||
-        error.code !== "already_exists"
-      ) {
-        throw error;
-      }
-      /*
-       * The daemon pre-registers agent threads, so this registration — and
-       * with it the onSnapshot hook that carries `collab_agent_status` to
-       * attached UIs — was silently skipped: clients saw the spawn begin
-       * and end, then nothing. No status, no live tool/token counts. Wire
-       * the same telemetry straight to the live handle instead.
-       */
-      observeAgentThreadTask(
-        backgroundTaskLifecycle,
-        thread,
-        emitTaskStatus,
-      );
+      projection.close();
+      throw error;
     }
-    emit(session, {
-      type: "collab_agent_spawn_end",
-      payload: {
-        callId,
-        senderThreadId: current.threadId,
-        newThreadId: live.agentId,
-        ...(live.status.timing !== undefined ? { timing: live.status.timing } : {}),
-        newAgentPath: live.agentPath,
-        newAgentNickname: live.nickname,
-        newAgentRole: live.role.name,
-        newAgentRoleDisplayName: formatAgentRoleLabel(live.role.name),
-        prompt,
-        model: model ?? session.sessionConfiguration.collaborationMode.model,
-        reasoningEffort:
-          reasoningEffort ??
-          session.sessionConfiguration.collaborationMode.reasoningEffort,
-        status: live.status.value,
-      },
-    });
     return json({
       task_name: live.agentPath,
       ...(!hideSpawnAgentMetadata(session)
