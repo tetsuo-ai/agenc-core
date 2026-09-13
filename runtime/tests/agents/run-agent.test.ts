@@ -131,7 +131,10 @@ import {
   withSignedAllowedRoots,
 } from "../tools/system/filesystem.js";
 import { signSessionId } from "../agents/_deps/filesystem-args.js";
-import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import { bindExplicitDangerBoundary, explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import { registerBuiltinTool } from "../../src/tools/builtin-provenance.js";
+import { createGlobTool } from "../../src/tools/system/glob.js";
+import { createGrepTool } from "../../src/tools/system/grep.js";
 import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
 import { cloneFileStateCache } from "../utils/fileStateCache.js";
 import { normalizeLspServerConfig } from "../services/lsp/config.js";
@@ -1652,6 +1655,117 @@ describe("runAgent", () => {
       await child.shutdown();
       await disposeSandboxExecutionBroker(parentBroker);
       await disposeSandboxExecutionBroker(childBroker);
+    }
+  });
+
+  it.each([
+    ["Glob", "read-only", "execute"], ["Glob", "read-only", "dispatch"],
+    ["Grep", "read-only", "execute"], ["Grep", "read-only", "dispatch"],
+    ["Glob", "writer", "execute"], ["Glob", "writer", "dispatch"],
+    ["Grep", "writer", "execute"], ["Grep", "writer", "dispatch"],
+  ] as const)("defaults nested %s for a %s child to its live cwd through %s", async (toolName, role, boundary) => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-delegated-search-cwd-"));
+    const implementationCwd = join(workspace, "implementation");
+    const childCwd = role === "writer" ? join(workspace, "writer") : implementationCwd;
+    const alternate = join(childCwd, "alternate");
+    mkdirSync(implementationCwd, { recursive: true });
+    mkdirSync(alternate, { recursive: true });
+    mkdirSync(join(workspace, "src"));
+    mkdirSync(join(childCwd, "src"));
+    writeFileSync(join(workspace, "parent-cwd-hit.txt"), "cwd-proof-token\n");
+    writeFileSync(join(workspace, "src", "parent-src-hit.txt"), "cwd-proof-token\n");
+    writeFileSync(join(childCwd, "src", "child-src-hit.txt"), "cwd-proof-token\n");
+    writeFileSync(join(childCwd, "child-cwd-hit.txt"), "cwd-proof-token\n");
+    writeFileSync(join(alternate, "alternate-cwd-hit.txt"), "cwd-proof-token\n");
+    // Exercise actual search results and delegated path checks. Subprocess
+    // confinement has its own kernel suite; this owned unit fixture declares
+    // the host mechanics explicitly instead of depending on a built launcher.
+    const tool = registerBuiltinTool(bindExplicitDangerBoundary(toolName === "Glob"
+      ? createGlobTool({ allowedPaths: [workspace] })
+      : createGrepTool({ allowedPaths: [workspace] })));
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: childCwd });
+    const admission = makeChildToolAdmission({ runId: "search-child", sessionId: "search-child" });
+    const child = makeStubSession({
+      conversationId: "search-child",
+      sessionConfiguration: mkSessionConfiguration({ cwd: childCwd }),
+      services: { executionAdmission: admission.client, sandboxExecutionBroker: broker,
+        ...(role === "read-only" ? { readOnlyDelegation: { kind: "read-only", ownerThreadId: "implementation" } as const } : {}),
+      },
+    });
+    const ancestor = buildFilteredRegistry({ ...mkRegistry(), tools: [tool] }, {
+      childConversationId: "implementation",
+      worktree: { path: implementationCwd, branch: "implementation", gitRoot: workspace, created: false },
+    });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: child.conversationId, getSession: () => child,
+      sandboxExecutionBroker: broker,
+      ...(role === "writer" ? { worktree: { path: childCwd, branch: "writer", gitRoot: workspace, created: false } } : {}),
+    });
+    const pattern = toolName === "Glob" ? "*.txt" : "cwd-proof-token";
+    let calls = 0;
+    const invoke = (extra: Record<string, unknown> = {}) => {
+      const args = { pattern, ...extra };
+      return boundary === "execute" ? nested.tools[0]!.execute(args)
+        : nested.dispatch({ name: toolName, id: `search-${++calls}`, arguments: JSON.stringify(args) });
+    };
+    try {
+      const first = await invoke();
+      expect(first.isError, first.content).not.toBe(true);
+      expect(first.content).toContain("child-cwd-hit.txt");
+      expect(first.content).not.toContain("parent-cwd-hit.txt");
+
+      // Reuse the same live child registry after its first completed search.
+      writeFileSync(join(childCwd, "later-cwd-hit.txt"), "cwd-proof-token\n");
+      const reused = await invoke({ path: "", cwd: "" });
+      expect(reused.isError, reused.content).not.toBe(true);
+      expect(reused.content).toContain("later-cwd-hit.txt");
+      expect(reused.content).not.toContain("parent-cwd-hit.txt");
+
+      const explicitCwd = await invoke({ cwd: alternate });
+      expect(explicitCwd.isError, explicitCwd.content).not.toBe(true);
+      expect(explicitCwd.content).toContain("alternate-cwd-hit.txt");
+      expect(explicitCwd.content).not.toContain("child-cwd-hit.txt");
+      const explicitPath = await invoke({ path: alternate, cwd: workspace });
+      expect(explicitPath.isError, explicitPath.content).not.toBe(true);
+      expect(explicitPath.content).toContain("alternate-cwd-hit.txt");
+      expect(explicitPath.content).not.toContain("parent-cwd-hit.txt");
+      const malformedCwd = await invoke({ cwd: 42 });
+      if (toolName === "Glob" && role === "writer") {
+        // Glob ignores a non-string cwd; do not silently normalize it here.
+        expect(malformedCwd.content).toContain("parent-cwd-hit.txt");
+      } else {
+        expect(malformedCwd).toMatchObject({ isError: true });
+      }
+      const nullDefault = await invoke({ path: null, cwd: null });
+      expect(nullDefault.isError, nullDefault.content).not.toBe(true);
+      expect(nullDefault.content).toContain("child-cwd-hit.txt");
+      expect(nullDefault.content).not.toContain("parent-cwd-hit.txt");
+
+      // Explicit relative paths keep their existing registry-root resolution.
+      // Caller-relative explicit paths are a separate issue from omitted cwd.
+      for (const relativePath of [".", "src"]) {
+        const relative = await invoke({ path: relativePath });
+        if (role === "read-only") {
+          expect(relative).toMatchObject({
+            isError: true, content: expect.stringContaining("outside delegated read authority"),
+          });
+        } else {
+          expect(relative.isError, relative.content).not.toBe(true);
+          expect(relative.content).toContain("parent-src-hit.txt");
+        }
+      }
+      if (role === "read-only") {
+        expect(await invoke({ path: workspace })).toMatchObject({
+          isError: true, content: expect.stringContaining("Read-only delegation cannot read"),
+        });
+        expect(await invoke({ cwd: workspace })).toMatchObject({
+          isError: true, content: expect.stringContaining("Read-only delegation cannot read"),
+        });
+      }
+    } finally {
+      await child.shutdown();
+      await disposeSandboxExecutionBroker(broker);
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 

@@ -2637,10 +2637,16 @@ export function injectChildToolArgs(
     // `cwd` there made every exec_command in a worktree child fail with a
     // message that blamed the model for a field it never sent.
     const field = WORKTREE_CWD_FIELD_BY_TOOL[toolName];
+    const value = field === undefined ? undefined : injectedArgs[field];
+    const isSearch = toolName === "Glob" || toolName === "Grep";
+    // Search closures retain the original registry root. Supply the current
+    // caller's default without replacing explicit paths or malformed values.
+    // Glob treats whitespace-only cwd as absent; Grep treats it as a path.
+    const missingSearchCwd = value === undefined || value === null || value === "" ||
+      (toolName === "Glob" && typeof value === "string" && value.trim().length === 0);
     if (
       field !== undefined &&
-      (typeof injectedArgs[field] !== "string" ||
-        (injectedArgs[field] as string).length === 0)
+      (isSearch ? missingSearchCwd : typeof value !== "string" || value.length === 0)
     ) {
       injectedArgs[field] = executionCwd;
     }
@@ -2653,6 +2659,8 @@ export const WORKTREE_CWD_FIELD_BY_TOOL: Readonly<Record<string, string>> = {
   "system.bash": "cwd",
   exec_command: "workdir",
   apply_patch: "cwd",
+  Glob: "cwd",
+  Grep: "cwd",
 };
 
 async function applyChildToolPolicy(
