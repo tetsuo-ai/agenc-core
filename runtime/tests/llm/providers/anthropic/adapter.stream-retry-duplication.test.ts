@@ -107,6 +107,64 @@ describe("AnthropicProvider stream retry duplication (audit #10)", () => {
   );
 
   test(
+    "re-throws a transport fault that cuts a text-only stream so the turn re-samples it",
+    async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
+        Promise.resolve(
+          sseResponseThenError(
+            [TEXT_DELTA],
+            Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+          ),
+        ),
+      );
+      const provider = new AnthropicProvider({
+        apiKey: "anthropic-test",
+        model: "claude-3-7-sonnet",
+        fetchImpl,
+      });
+      const textChunks: string[] = [];
+
+      await expect(
+        provider.chatStream([{ role: "user", content: "hello" }], (chunk) => {
+          if (chunk.content) textChunks.push(chunk.content);
+        }),
+      ).rejects.toThrow(/socket hang up/);
+      // No in-band retry and no replay: the turn's reconnect ladder re-samples.
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(textChunks).toEqual(["partial"]);
+    },
+  );
+
+  test(
+    "keeps the partial response when a transport fault follows a streamed tool block",
+    async () => {
+      const toolStart =
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"exec_command","input":{}}}\n\n';
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
+        Promise.resolve(
+          sseResponseThenError(
+            [TEXT_DELTA, toolStart],
+            Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+          ),
+        ),
+      );
+      const provider = new AnthropicProvider({
+        apiKey: "anthropic-test",
+        model: "claude-3-7-sonnet",
+        fetchImpl,
+      });
+
+      const response = await provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+      );
+      expect(response.finishReason).toBe("error");
+      expect(response.partial).toBe(true);
+      expect(response.content).toBe("partial");
+    },
+  );
+
+  test(
     "still retries when a wait/overload error is thrown before any content",
     async () => {
       // First attempt errors immediately (no content emitted) -> retry occurs.

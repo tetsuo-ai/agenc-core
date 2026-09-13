@@ -22,7 +22,10 @@ import {
   ProviderHttpError,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
-import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
+import {
+  isFallbackTriggeredError,
+  isResampleableStreamInterruption,
+} from "../../../recovery/api-errors.js";
 import {
   assertNonEmptyApiKey,
   buildBearerAuthHeaders,
@@ -926,7 +929,16 @@ export class AnthropicProvider implements LLMProvider {
         throw new LLMAuthenticationError(this.name, error.status);
       }
       const mappedError = mapLLMError(this.name, error, timeoutMs ?? 0);
-      if (content.length > 0) {
+      // A transport fault before any tool block streamed is re-sampled by the
+      // turn's reconnect ladder; a partial response is surfaced only when the
+      // fault is not transient or a tool call may already have dispatched.
+      if (
+        content.length > 0 &&
+        !isResampleableStreamInterruption(
+          mappedError,
+          toolBlocks.size + completedToolCalls.length,
+        )
+      ) {
         const partialToolCalls: LLMToolCall[] = completedToolCalls.flatMap(
           (toolCall) => {
             if (!parseToolInputObject(toolCall.arguments)) return [];

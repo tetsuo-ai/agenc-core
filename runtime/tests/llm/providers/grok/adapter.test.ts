@@ -414,6 +414,61 @@ describe("GrokProvider incremental continuation", () => {
     }
   });
 
+  test("re-throws a transport fault that cuts a text-only stream so the turn re-samples it", async () => {
+    const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4-fast" });
+    const create = vi.fn(() =>
+      withResponse(
+        streamFromEventsThenThrow(
+          [{ type: "response.output_text.delta", delta: "partial" }],
+          new TypeError("terminated"),
+        ),
+      ),
+    );
+    (provider as any).client = { responses: { create } };
+    const chunks: string[] = [];
+
+    await expect(
+      provider.chatStream([{ role: "user", content: "hello" }], (chunk) => {
+        if (chunk.content) chunks.push(chunk.content);
+      }),
+    ).rejects.toThrow(/terminated/);
+    // No in-band retry: the turn's reconnect ladder owns the re-sample.
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(chunks).toEqual(["partial"]);
+  });
+
+  test("keeps the partial response when a transport fault follows a streamed tool call", async () => {
+    const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4-fast" });
+    const functionCall = {
+      type: "function_call",
+      id: "fc_partial",
+      call_id: "call_partial",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "ls" }),
+    };
+    (provider as any).client = {
+      responses: {
+        create: vi.fn(() =>
+          withResponse(
+            streamFromEventsThenThrow(
+              [
+                { type: "response.output_text.delta", delta: "running" },
+                { type: "response.output_item.added", output_index: 0, item: functionCall },
+                { type: "response.output_item.done", output_index: 0, item: functionCall },
+              ],
+              Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+            ),
+          ),
+        ),
+      },
+    };
+
+    const response = await provider.chatStream([{ role: "user", content: "hello" }], () => {});
+    expect(response.partial).toBe(true);
+    expect(response.finishReason).toBe("error");
+    expect(response.toolCalls.map((call) => call.id)).toEqual(["call_partial"]);
+  });
+
   test("honors request-scoped model overrides when building requests", () => {
     const provider = new GrokProvider({
       apiKey: "xai-test",

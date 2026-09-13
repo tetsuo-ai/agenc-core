@@ -352,6 +352,20 @@ const TRANSIENT_PROVIDER_MESSAGE_PARTS = [
   "terminated",
 ];
 
+/**
+ * A stream that a transport fault cut before any tool call had streamed can
+ * be sampled again by the turn's reconnect ladder: nothing executed, and the
+ * text emitted so far is discarded with the failed attempt. Once a tool call
+ * has streamed, the executor may already have dispatched it, so the adapter
+ * must surface a partial response instead.
+ */
+export function isResampleableStreamInterruption(
+  err: unknown,
+  streamedToolCalls: number,
+): boolean {
+  return streamedToolCalls === 0 && isTransientProviderError(err);
+}
+
 function isExplicitNonTransientProviderError(err: unknown): boolean {
   return (
     err instanceof LLMAuthenticationError ||

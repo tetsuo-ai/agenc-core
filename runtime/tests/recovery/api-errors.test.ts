@@ -11,6 +11,7 @@ import {
   isWithheld413Message,
   isWithheldMaxOutputTokens,
   parsePromptTooLongTokenCounts,
+  isResampleableStreamInterruption,
 } from "./api-errors.js";
 import {
   LLMProviderError,
@@ -99,6 +100,19 @@ describe("Media / max-output-tokens / withhold helpers", () => {
       isWithheld413Message(mkMsg("", { apiError: "context_window_exceeded" })),
     ).toBe(true);
     expect(isWithheld413Message(mkMsg("Prompt is too long"))).toBe(true);
+  });
+});
+
+describe("isResampleableStreamInterruption", () => {
+  test("transient faults before any streamed tool call can be re-sampled", () => {
+    const cut = Object.assign(new Error("terminated"), {});
+    expect(isResampleableStreamInterruption(cut, 0)).toBe(true);
+    expect(isResampleableStreamInterruption(Object.assign(new Error("x"), { code: "ECONNRESET" }), 0)).toBe(true);
+  });
+
+  test("a streamed tool call or a non-transient fault keeps the partial response", () => {
+    expect(isResampleableStreamInterruption(new Error("terminated"), 1)).toBe(false);
+    expect(isResampleableStreamInterruption(new Error("invalid request"), 0)).toBe(false);
   });
 });
 

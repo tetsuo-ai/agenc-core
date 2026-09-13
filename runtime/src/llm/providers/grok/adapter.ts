@@ -89,7 +89,10 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
-import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
+import {
+  isFallbackTriggeredError,
+  isResampleableStreamInterruption,
+} from "../../../recovery/api-errors.js";
 import {
   buildXaiResponsesInputItems,
   resolveXaiResponsesToolChoice,
@@ -2017,7 +2020,13 @@ export class GrokProvider implements LLMProvider {
       this.notifyCapabilityDrift(err);
       const mappedError = this.mapError(err, attemptPhaseTimeoutMs);
       this.logPromptOverflowDiagnostics(mappedError, params);
-      if (content.length > 0) {
+      // A transport fault before any tool call streamed is re-sampled by the
+      // turn's reconnect ladder; a partial response is surfaced only when the
+      // fault is not transient or a tool call may already have dispatched.
+      if (
+        content.length > 0 &&
+        !isResampleableStreamInterruption(mappedError, toolCallAccum.size)
+      ) {
         const partialToolCalls: LLMToolCall[] = Array.from(toolCallAccum.values());
 
         onChunk({ content: "", done: true, toolCalls: partialToolCalls });

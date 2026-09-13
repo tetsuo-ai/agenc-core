@@ -634,6 +634,13 @@ Its retry behavior is:
   `response.failed`) surfaces as `LLMStreamTruncatedError`, which the turn's
   reconnect ladder retries like `stream_idle`; the transport saw a clean end,
   so only the typed error identifies it.
+- A transport fault that cuts a stream after text but before any tool call
+  (undici's bare `terminated`, `ECONNRESET`, a 5xx mid-stream) is re-thrown
+  instead of surfacing a partial response, so the same reconnect ladder
+  samples again; nothing executed, and the text already streamed is discarded
+  with the failed attempt. Once a tool call has streamed, the partial
+  response is kept: the executor may have dispatched it. The Anthropic
+  adapter applies the same rule.
 - xAI answers "Response is too large to store" when a response exceeds its
   server-side storage limit. Stored responses are only the speed default
   (`AGENC_XAI_STORE`), so the grok provider sends the same request once more
