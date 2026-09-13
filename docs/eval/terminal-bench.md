@@ -65,7 +65,7 @@ For an unreleased build of main:
 
 ```bash
 AGENC_ARTIFACT_PROFILE=container-local AGENC_RELEASE_OUT_DIR=./dist \
-  node packages/agenc/scripts/build-runtime-tarball.mjs      # on linux-x64, in node:26-bullseye
+  node packages/agenc/scripts/build-runtime-tarball.mjs      # on linux-x64; see the glibc note below
 python3 -m http.server 8765 --directory ./dist &
 harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal:8765/<tarball>
 ```
@@ -131,8 +131,15 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   `better_sqlite3.node`, and that binary, built in the `node:26-bookworm`
   image, needs `GLIBC_2.33`. The CLI reported only "daemon startup failed
   and replacement cleanup could not be verified"; the real line sits in
-  `$AGENC_HOME/daemon-spawn-stderr.log`. Build the benchmark tarball in
-  `node:26-bullseye` (glibc 2.31) so the native modules run on those images.
+  `$AGENC_HOME/daemon-spawn-stderr.log`. Building in `node:26-bullseye`
+  does not work: its gcc 10 cannot compile Node 26's C++20 headers
+  (`<source_location>`), and the upstream better-sqlite3 prebuilds also need
+  glibc 2.34. What works is `gcc:12-bullseye` with the Node 26.5.0 binary
+  tarball, `npm_config_build_from_source=true` (so node-pty and better-sqlite3
+  skip their prebuilds) and `LDFLAGS="-static-libstdc++ -static-libgcc"`: the
+  resulting `.node` files need only glibc 2.29 and no `GLIBCXX` symbol (a
+  gcc-12 build without the static flag needs `GLIBCXX_3.4.29`, which the
+  same images lack). The daemon then starts on `wdm-design`.
 - Subagents (`spawn_agent`) under the same full bypass with `--add-dir /` were
   refused on every path outside the workspace ("Access denied: Path is
   outside allowed directories" on `Glob path=/tmp`, three Astra trials) while
