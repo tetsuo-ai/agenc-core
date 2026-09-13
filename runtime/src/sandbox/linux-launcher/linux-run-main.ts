@@ -1,3 +1,4 @@
+import type { BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -108,13 +109,14 @@ async function runLinuxSandboxOptions(
   );
   if (
     options.inheritedCwd &&
+    options.boundReadOnlyCwd === undefined &&
     !hasFullDiskReadAccess(runtimePermissions.fileSystem)
   ) {
     throw new Error(
       "inherited read-only cwd requires full disk read access in the source permission profile",
     );
   }
-  const fileSystem = options.inheritedCwd
+  const fileSystem = options.inheritedCwd && options.boundReadOnlyCwd === undefined
     ? restrictedFileSystemPolicy(
         [
           {
@@ -154,6 +156,14 @@ async function runLinuxSandboxOptions(
       )
     : undefined;
   try {
+    if (options.boundReadOnlyCwd !== undefined) {
+      if (inheritedCwdFd === undefined) throw new Error("bound inherited cwd descriptor is missing");
+      const identity = fs.fstatSync(inheritedCwdFd, { bigint: true });
+      const expected = options.boundReadOnlyCwd;
+      if (!identity.isDirectory() || String(identity.dev) !== expected.dev || String(identity.ino) !== expected.ino || String(identity.mode) !== expected.mode) {
+        throw new Error("bound inherited cwd descriptor identity changed");
+      }
+    }
     let bwrapArgs = createBwrapCommandArgs(
       innerCommand,
       fileSystem,
@@ -168,6 +178,7 @@ async function runLinuxSandboxOptions(
         extraWritableBindRoots,
         extraDeviceBindPaths,
         inheritedReadOnlyCwd: options.inheritedCwd,
+        ...(options.boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd: options.boundReadOnlyCwd }),
       },
     );
     if (!bwrapArgs.usesBubblewrap) {
@@ -183,6 +194,7 @@ async function runLinuxSandboxOptions(
       requireNamespaces: true,
     });
     if (launcher === null) {
+      if (options.boundReadOnlyCwd !== undefined) throw new Error("narrow descriptor-bound search requires bubblewrap with --ro-bind-fd");
       // Bubblewrap is unusable. Before failing, try the Landlock rung: a
       // kernel allow-list needing no namespaces, carrying the same network
       // seccomp program bwrap would have applied. The plan refuses loudly
@@ -211,6 +223,7 @@ async function runLinuxSandboxOptions(
         sandboxPolicyCwd: options.sandboxPolicyCwd,
         commandCwd: options.commandCwd,
         inheritedCwdFd,
+        ...(options.boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd: options.boundReadOnlyCwd }),
         networkMode,
         sessionTempRoot: options.sessionTempRoot,
       })
@@ -229,6 +242,7 @@ async function runLinuxSandboxOptions(
           extraWritableBindRoots,
           extraDeviceBindPaths,
           inheritedReadOnlyCwd: options.inheritedCwd,
+          ...(options.boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd: options.boundReadOnlyCwd }),
         },
       );
     }
@@ -608,6 +622,7 @@ function preflightProcMountSupport(options: {
   readonly sandboxPolicyCwd: string;
   readonly commandCwd: string;
   readonly inheritedCwdFd?: number;
+  readonly boundReadOnlyCwd?: BoundReadOnlyCwdIdentity;
   readonly networkMode: BwrapNetworkMode;
   readonly sessionTempRoot: string;
 }): boolean {
@@ -621,6 +636,7 @@ function preflightProcMountSupport(options: {
       networkMode: options.networkMode,
       sessionTempRoot: options.sessionTempRoot,
       inheritedReadOnlyCwd: options.inheritedCwdFd !== undefined,
+      ...(options.boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd: options.boundReadOnlyCwd }),
     },
   );
   if (!args.usesBubblewrap) return true;

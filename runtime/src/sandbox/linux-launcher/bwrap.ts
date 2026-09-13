@@ -21,6 +21,7 @@ import {
   INHERITED_CWD_FD,
   INHERITED_CWD_SANDBOX_PATH,
 } from "./config.js";
+import type { BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
 
 export type BwrapNetworkMode = "full-access" | "isolated" | "proxy-only";
 
@@ -40,6 +41,7 @@ export interface BwrapOptions {
    */
   readonly extraDeviceBindPaths?: readonly string[];
   readonly inheritedReadOnlyCwd?: boolean;
+  readonly boundReadOnlyCwd?: BoundReadOnlyCwdIdentity;
 }
 
 export interface BwrapCommandArgs {
@@ -72,12 +74,35 @@ export function createBwrapCommandArgs(
   }
   if (
     options.inheritedReadOnlyCwd === true &&
-    (!hasFullDiskReadAccess(fileSystemSandboxPolicy) ||
+    ((options.boundReadOnlyCwd === undefined && !hasFullDiskReadAccess(fileSystemSandboxPolicy)) ||
       unreadableGlobs.length > 0)
   ) {
     throw new Error(
       "inherited read-only cwd requires full disk-read policy without deny globs",
     );
+  }
+  if (options.boundReadOnlyCwd !== undefined) {
+    if (options.inheritedReadOnlyCwd !== true || hasFullDiskReadAccess(fileSystemSandboxPolicy) ||
+        fileSystemSandboxPolicy.entries.some(entry => entry.access !== "read" || entry.path.kind === "glob")) {
+      throw new Error("invalid narrow inherited cwd policy");
+    }
+    const roots = [
+      ...getReadableRootsWithCwd(fileSystemSandboxPolicy, sandboxPolicyCwd, options.sessionTempRoot),
+      ...(includePlatformDefaults(fileSystemSandboxPolicy) ? ["/bin", "/sbin", "/lib", "/lib64", "/usr", "/etc", "/nix/store", "/run/current-system/sw"] : []),
+      ...(options.extraReadOnlyBindRoots ?? []),
+    ];
+    for (const root of roots) {
+      if (root === INHERITED_CWD_SANDBOX_PATH) continue;
+      const canonical = canonicalAuthorityPath(root);
+      if ([root, canonical].some(candidate =>
+        isWithinAuthorityPath(candidate, options.boundReadOnlyCwd!.path) || isWithinAuthorityPath(options.boundReadOnlyCwd!.path, candidate) ||
+        isWithinAuthorityPath(INHERITED_CWD_SANDBOX_PATH, candidate))) {
+        throw new Error("narrow inherited cwd cannot retain an overlapping public read mount");
+      }
+    }
+    if ((options.extraWritableBindRoots?.length ?? 0) > 0 || (options.extraDeviceBindPaths?.length ?? 0) > 0) {
+      throw new Error("narrow inherited cwd cannot retain writable or device mounts");
+    }
   }
   if (fullWrite && options.networkMode === "full-access" && options.seccompFd === undefined) {
     return { args: [...command], usesBubblewrap: false, protectedCreateTargets: [] };
@@ -242,6 +267,7 @@ function createFilesystemArgs(
         options.sessionTempRoot,
       )
     ) {
+      if (options.boundReadOnlyCwd !== undefined && root === INHERITED_CWD_SANDBOX_PATH) continue;
       appendReadOnlyIfExists(args, root);
     }
   }
@@ -303,6 +329,10 @@ function createFilesystemArgs(
     [...writableRoots.map((root) => root.root), ...(options.extraWritableBindRoots ?? [])],
     commandCwd,
     protectedCreateTargets,
+    options.boundReadOnlyCwd === undefined ? undefined : {
+      identity: options.boundReadOnlyCwd,
+      explicitReadRoots: policy.entries.flatMap(entry => entry.path.kind === "path" ? [entry.path.path] : []),
+    },
   );
 }
 
@@ -446,9 +476,11 @@ function physicalFilesystemArgs(
   writablePaths: readonly string[],
   commandCwd: string,
   protectedCreateTargets: string[],
+  boundReadOnly?: { readonly identity: BoundReadOnlyCwdIdentity; readonly explicitReadRoots: readonly string[] },
 ): { readonly args: string[]; readonly commandCwd: string } {
   const narrow = args[0] === "--tmpfs" && args[1] === "/";
-  const hostPaths = [...aliasPaths];
+  const hostPaths = [...aliasPaths, ...(boundReadOnly?.explicitReadRoots ?? [])];
+  const bindPaths = new Set<string>();
   const translate = (physical: (target: string) => string): string[] => {
     const translated: string[] = [];
     for (let index = 0; index < args.length;) {
@@ -457,6 +489,8 @@ function physicalFilesystemArgs(
       switch (flag) {
         case "--bind":
         case "--ro-bind":
+          bindPaths.add(args[index]!);
+          bindPaths.add(args[index + 1]!);
           translated.push(physical(args[index++]!), physical(args[index++]!));
           break;
         case "--dev-bind":
@@ -485,6 +519,25 @@ function physicalFilesystemArgs(
     if (resolved === undefined) throw new Error(`unobserved sandbox filesystem path: ${target}`);
     return resolved;
   };
+  if (boundReadOnly !== undefined) {
+    // Use the same observed identities and paths that generate the mounts.
+    // A coherent retarget between an earlier check and this snapshot must
+    // still be rejected, not accepted as a new public route to the cwd.
+    for (const target of bindPaths) {
+      for (const candidate of [normalizePathForPolicy(target), physical(target)]) {
+        if (isWithinAuthorityPath(candidate, boundReadOnly.identity.path) ||
+            isWithinAuthorityPath(boundReadOnly.identity.path, candidate) ||
+            isWithinAuthorityPath(INHERITED_CWD_SANDBOX_PATH, candidate)) {
+          throw new Error("narrow inherited cwd cannot retain an overlapping public read mount");
+        }
+      }
+    }
+    for (const target of boundReadOnly.explicitReadRoots) {
+      if (target !== INHERITED_CWD_SANDBOX_PATH && physical(target) !== normalizePathForPolicy(target)) {
+        throw new Error("narrow inherited cwd cannot retain an aliased read root");
+      }
+    }
+  }
   const translated = translate(physical);
   const physicalCommandCwd = physical(commandCwd);
   const physicalProtectedTargets = protectedCreateTargets.map(physical);

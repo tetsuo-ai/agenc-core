@@ -124,7 +124,26 @@ AgenC cannot narrow a host-owned policy. The spawn uses `cwd: "."` and
 through an already-open directory descriptor instead of a live absolute
 pathname.
 
-On Landlock-fallback hosts this is why search still works while shell and
+On Linux with bubblewrap, a search with a narrow read profile can use an
+authenticated directory capability when an existing grant covers that whole
+directory. The launcher checks the held directory's device and inode, then
+mounts it read-only at a private path. It removes intersecting public-path
+grants rather than reopening the workspace name, and does not add full-disk
+read access. The capability expires when its directory helper closes.
+
+This narrow path currently refuses read-deny or glob policy entries,
+retained aliased read roots, and platform or launcher mounts overlapping the
+bound directory. Exact-file capabilities do not authorize a whole-directory
+mount. These unsupported shapes fail before the search payload runs; they
+are not retried with a weaker policy. Narrow descriptor-bound searches also
+require bubblewrap with `--ro-bind-fd`; the existing full-disk-read search
+path retains its Landlock fallback support. Retained mounts are checked for
+overlap using the same verified path snapshot used to plan mounts. Ordinary
+executable and platform dependency roots must remain trusted and outside
+workload write authority; those host mounts are not all descriptor-pinned.
+This change does not protect them from arbitrary external same-user mutation.
+
+For full-disk-read profiles on Landlock-fallback hosts, search still works while shell and
 workspace-write stdio MCP fail. The broker skips workspace-write Landlock
 pre-flight for `inherited_readonly` (that check would refuse the session
 profile, not the narrowed child). The planner then admits inherited-readonly

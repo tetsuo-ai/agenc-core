@@ -83,6 +83,7 @@ import {
 } from "../../workspace/mutation-coordinator.js";
 import {
   bindWorkspaceDirectoryReadCapability,
+  workspaceBoundReadOnlyCwd,
   type WorkspaceBoundReadCapability,
   type WorkspaceBoundReadIdentity,
 } from "../../workspace/file-mutation-transaction.js";
@@ -480,6 +481,7 @@ function assertRipgrepFilesArgvWithinLimits(
 const BOUND_RIPGREP_COMMAND_CWD = ".";
 
 function prepareBoundRipgrepFilesCommand(params: {
+  readonly readCapability?: WorkspaceBoundReadCapability;
   readonly toolArgs: Record<string, unknown>;
   readonly fallbackCwd: string;
   readonly program: string;
@@ -495,6 +497,7 @@ function prepareBoundRipgrepFilesCommand(params: {
     // transformed command off live absolute pathnames.
     cwd: BOUND_RIPGREP_COMMAND_CWD,
     cwdBinding: "inherited_readonly",
+    ...(params.readCapability === undefined ? {} : { cwdCapability: workspaceBoundReadOnlyCwd(params.readCapability) }),
     env: params.env,
   });
   return command;
@@ -569,6 +572,7 @@ async function runRipgrepFilesWithIgnorePaths(
     let command: SandboxSpawnCommand | SandboxPreparedSpawn;
     try {
       command = prepareBoundRipgrepFilesCommand({
+        readCapability: params.readCapability,
         toolArgs: params.toolArgs,
         fallbackCwd: params.cwd,
         program: params.command,

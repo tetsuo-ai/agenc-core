@@ -99,6 +99,7 @@ import {
 } from "./ripgrep-protocol.js";
 import {
   bindWorkspaceDirectoryReadCapability,
+  workspaceBoundReadOnlyCwd,
   bindWorkspaceFileReadCapability,
   type WorkspaceBoundReadCapability,
   type WorkspaceBoundReadIdentity,
@@ -497,6 +498,7 @@ function isExecutableUnavailable(error: unknown): boolean {
 const BOUND_RIPGREP_COMMAND_CWD = ".";
 
 function prepareBoundRipgrepCommand(params: {
+  readonly readCapability?: WorkspaceBoundReadCapability;
   readonly toolArgs: Record<string, unknown>;
   readonly fallbackCwd: string;
   readonly program: string;
@@ -512,6 +514,7 @@ function prepareBoundRipgrepCommand(params: {
     // An absolute transformed cwd would reintroduce a live-path race.
     cwd: BOUND_RIPGREP_COMMAND_CWD,
     cwdBinding: "inherited_readonly",
+    ...(params.readCapability === undefined ? {} : { cwdCapability: workspaceBoundReadOnlyCwd(params.readCapability) }),
     env: params.env,
   });
   return command;
@@ -560,6 +563,7 @@ async function isRipgrepAvailable(
   if (readCapability !== undefined) {
     const probeArgs = ["--no-config", "--no-follow", "--version"];
     const command = prepareBoundRipgrepCommand({
+      readCapability,
       toolArgs,
       fallbackCwd: cwd,
       program: ripgrepPath,
@@ -2014,6 +2018,7 @@ async function runRipgrepCollectRecords(params: {
 
   if (params.readCapability !== undefined) {
     const command = prepareBoundRipgrepCommand({
+        readCapability: params.readCapability,
       toolArgs: params.toolArgs,
       fallbackCwd: params.cwd,
       program: ripgrepPath,

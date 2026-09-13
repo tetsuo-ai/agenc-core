@@ -1,3 +1,4 @@
+import type { BoundReadOnlyCwdCapability } from "../bound-readonly-cwd.js";
 /**
  * Cross-platform sandbox engine primitives.
  *
@@ -100,6 +101,7 @@ export interface SandboxCommand {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
   readonly cwdBinding?: "inherited_readonly";
+  readonly cwdCapability?: BoundReadOnlyCwdCapability;
   readonly additionalPermissions?: AdditionalPermissionProfile;
 }
 

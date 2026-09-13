@@ -1,3 +1,4 @@
+import type { BoundReadOnlyCwdCapability } from "../../sandbox/bound-readonly-cwd.js";
 /**
  * TOOL-03 / TOOL-04: apply the same platform sandbox transform used by
  * unified-exec `exec_command` to other shell spawns (system.bash direct
@@ -31,6 +32,7 @@ export interface SandboxSpawnCommand {
   readonly cwd: string;
   readonly env: Record<string, string>;
   readonly cwdBinding?: "inherited_readonly";
+  readonly cwdCapability?: BoundReadOnlyCwdCapability;
   readonly argv0?: string;
 }
 
@@ -42,6 +44,7 @@ interface ApplyRuntimeSandboxToSpawnParams {
   readonly cwd: string;
   readonly env: Record<string, string>;
   readonly cwdBinding?: "inherited_readonly";
+  readonly cwdCapability?: BoundReadOnlyCwdCapability;
   readonly sandboxManager?: SandboxManager;
   readonly surface?: SandboxExecutionSurface;
 }
@@ -90,6 +93,7 @@ function applyRuntimeSandboxToSpawnWithCapabilities(
       cwd: params.cwd,
       env: params.env,
       argv0: basename(params.program),
+      ...(params.cwdCapability !== undefined ? { cwdCapability: params.cwdCapability } : {}),
       ...(params.cwdBinding !== undefined
         ? { cwdBinding: params.cwdBinding }
         : {}),
@@ -118,6 +122,7 @@ function applyRuntimeSandboxToSpawnWithCapabilities(
       cwd: params.cwd,
       env: params.env,
       argv0: basename(params.program),
+      ...(params.cwdCapability !== undefined ? { cwdCapability: params.cwdCapability } : {}),
       ...(params.cwdBinding !== undefined
         ? { cwdBinding: params.cwdBinding }
         : {}),
@@ -128,6 +133,7 @@ function applyRuntimeSandboxToSpawnWithCapabilities(
     args: params.args,
     cwd: params.cwd,
     env: params.env,
+    ...(params.cwdCapability !== undefined ? { cwdCapability: params.cwdCapability } : {}),
     ...(params.cwdBinding !== undefined
       ? { cwdBinding: params.cwdBinding }
       : {}),
@@ -222,6 +228,7 @@ export function transformWithRuntimeSandbox(params: {
   readonly cwd: string;
   readonly env: Record<string, string>;
   readonly cwdBinding?: "inherited_readonly";
+  readonly cwdCapability?: BoundReadOnlyCwdCapability;
   readonly runtimeSandbox: UnifiedExecRuntimeSandbox;
   readonly sandboxManager?: SandboxManager;
 }): SandboxSpawnCommand {

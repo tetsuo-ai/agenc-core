@@ -105,6 +105,23 @@ describe("Linux sandbox launcher", () => {
     ).toThrow(/cannot be combined/u);
   });
 
+  it("preserves precise inherited cwd identity and rejects malformed wire authority", () => {
+    const identity = { path: "/workspace", dev: "9007199254740993", ino: "18446744073709551615", mode: "16832" };
+    const args = (value: unknown, inherited = true) => [
+      ...(inherited ? ["--inherited-readonly-command-cwd"] : []),
+      "--permission-profile", JSON.stringify(workspaceWriteProfile("/workspace", "disabled")),
+      "--session-temp-root", os.tmpdir(),
+      "--bound-readonly-cwd-identity", JSON.stringify(value), "--", "/bin/true",
+    ];
+    expect(parseLinuxSandboxLauncherArgs(args(identity)).boundReadOnlyCwd).toEqual(identity);
+    for (const invalid of [
+      { ...identity, dev: 9007199254740993 }, { ...identity, ino: "01" },
+      { ...identity, mode: "-1" }, { ...identity, path: "relative" },
+      { ...identity, path: "/workspace/../outside" }, { ...identity, extra: true },
+    ]) expect(() => parseLinuxSandboxLauncherArgs(args(invalid))).toThrow("invalid inherited cwd identity");
+    expect(() => parseLinuxSandboxLauncherArgs(args(identity, false))).toThrow("bound cwd identity requires inherited read-only cwd");
+  });
+
   it("rejects malformed handoff input", () => {
     expect(() => parseLinuxSandboxLauncherArgs([])).toThrow(LinuxSandboxCliError);
     expect(() =>
@@ -601,6 +618,38 @@ describe("Linux sandbox launcher", () => {
     } finally {
       readlink.mockRestore();
     }
+  });
+
+  it.each(["overlap", "disjoint"] as const)("refuses a retained read-root retarget before the final mount snapshot (%s)", (targetKind) => {
+    const root = withTempDir("agenc-narrow-cwd-alias-snapshot-");
+    const workspace = path.join(root, "workspace");
+    const retained = path.join(root, "retained");
+    const outside = path.join(root, "outside");
+    for (const directory of [workspace, retained, outside]) fs.mkdirSync(directory);
+    const identity = fs.statSync(workspace, { bigint: true });
+    const originalExists = fs.existsSync;
+    let changed = false;
+    const exists = vi.spyOn(fs, "existsSync").mockImplementation((target => {
+      const result = originalExists(target);
+      if (String(target) === retained && !changed) {
+        changed = true;
+        fs.renameSync(retained, path.join(root, "retained-old"));
+        fs.symlinkSync(targetKind === "overlap" ? workspace : outside, retained, "dir");
+      }
+      return result;
+    }) as typeof fs.existsSync);
+    try {
+      expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+        { path: { kind: "path", path: INHERITED_CWD_SANDBOX_PATH }, access: "read" },
+        ...(targetKind === "disjoint" ? [{ path: { kind: "path" as const, path: retained }, access: "read" as const }] : []),
+      ], { includePlatformDefaults: false }), INHERITED_CWD_SANDBOX_PATH, INHERITED_CWD_SANDBOX_PATH, {
+        mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+        inheritedReadOnlyCwd: true,
+        boundReadOnlyCwd: { path: workspace, dev: String(identity.dev), ino: String(identity.ino), mode: String(identity.mode) },
+        ...(targetKind === "overlap" ? { extraReadOnlyBindRoots: [retained] } : {}),
+      })).toThrow(/overlapping public read mount|aliased read root/u);
+      expect(changed).toBe(true);
+    } finally { exists.mockRestore(); }
   });
 
   it("binds tmpdir specials to each explicit session root outside ambient context", () => {

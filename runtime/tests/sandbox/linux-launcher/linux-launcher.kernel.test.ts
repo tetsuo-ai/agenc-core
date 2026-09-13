@@ -24,14 +24,16 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "vitest";
 
-import { SandboxExecutionBroker } from "../../../src/sandbox/execution-broker.js";
+import { SandboxExecutionBroker, attachSandboxExecutionBroker } from "../../../src/sandbox/execution-broker.js";
+import { createGlobTool } from "../../../src/tools/system/glob.js";
+import { createGrepTool } from "../../../src/tools/system/grep.js";
 import { ExecutionAdmissionKernel } from "../../../src/budget/execution-admission-kernel.js";
 import { createHookExecutionAuthority } from "../../../src/hooks/execution-authority.js";
 import { executeSessionStatusLine } from "../../../src/hooks/status-line-executor.js";
 import { UnifiedExecProcessManager } from "../../../src/unified-exec/process-manager.js";
 import { INHERITED_CWD_SANDBOX_PATH } from "../../../src/sandbox/linux-launcher/config.js";
 import { findSystemBubblewrapInPath } from "../../../src/sandbox/linux-launcher/launcher.js";
-import { bindWorkspaceDirectoryReadCapability } from "../../../src/workspace/file-mutation-transaction.js";
+import { bindWorkspaceDirectoryReadCapability, bindWorkspaceFileReadCapability, workspaceBoundReadOnlyCwd } from "../../../src/workspace/file-mutation-transaction.js";
 import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
 import { createTestConfigStore, mkSession } from "../../fixtures.js";
 import { captureWorktreeTurnEvidence, getOrCreateWorktree, removeAgentWorktree } from "../../../src/agents/worktree.js";
@@ -45,6 +47,130 @@ const builtLauncher = join(
   "linux-launcher",
   "main.js",
 );
+
+test.each([["Glob", false], ["Grep", false], ["Glob", true], ["Grep", true]] as const)("runs production %s with narrow descriptor-bound read authority (exchange=%s)", { timeout: 30_000 }, async (name, exchange) => {
+  const root = realpathSync(mkdtempSync("/var/tmp/agenc-narrow-search-kernel-"));
+  const cwd = join(root, "workspace");
+  const temporary = join(root, "temp");
+  mkdirSync(cwd); mkdirSync(temporary);
+  writeFileSync(join(cwd, "readable.txt"), "needle public\n");
+  writeFileSync(join(root, "outside.txt"), "needle outside\n");
+  const outside = join(root, "outside");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "outside.txt"), "needle outside\n");
+  const environment = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") };
+  try {
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write", cwd, env: environment, sessionTempRoot: temporary,
+      agencLinuxSandboxExe: launcherEntry,
+      permissionProfile: { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
+        { path: { kind: "path", path: cwd }, access: "write" },
+        { path: { kind: "path", path: dirname(runtimeRoot) }, access: "read" },
+        { path: { kind: "path", path: dirname(process.execPath) }, access: "read" },
+        { path: { kind: "path", path: temporary }, access: "write" },
+      ] }, network: "disabled" },
+    });
+    expect(broker.status().kind).toBe("ready");
+    const config = { allowedPaths: [cwd], ...(exchange ? { __testAfterFinalPathCheck: async () => {
+      renameSync(cwd, join(root, "displaced"));
+      symlinkSync(outside, cwd, "dir");
+    } } : {}) };
+    const tool = name === "Glob" ? createGlobTool(config) : createGrepTool(config);
+    const args: Record<string, unknown> = { pattern: name === "Glob" ? "*.txt" : "needle", path: cwd, includeIgnored: true, ...(name === "Grep" ? { output_mode: "content" } : {}) };
+    attachSandboxExecutionBroker(args, broker);
+    const result = await tool.execute(args);
+    expect(result.isError, result.content).not.toBe(true);
+    expect(result.content).toContain("readable.txt");
+    expect(result.content).not.toContain("outside.txt");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test.each(["Glob", "Grep"] as const)("refuses unsupported narrow %s read-deny policy before dispatch", { timeout: 30_000 }, async (name) => {
+  const root = realpathSync(mkdtempSync("/var/tmp/agenc-narrow-deny-kernel-"));
+  const cwd = join(root, "workspace");
+  mkdirSync(cwd);
+  writeFileSync(join(cwd, "secret.txt"), "needle confidential\n");
+  try {
+    for (const deny of [
+      { kind: "path" as const, path: join(cwd, "secret.txt") },
+      { kind: "glob" as const, pattern: join(cwd, "*.txt") },
+    ]) {
+      const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd,
+        env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") }, agencLinuxSandboxExe: launcherEntry,
+        permissionProfile: { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
+          { path: { kind: "path", path: cwd }, access: "write" },
+          { path: { kind: "path", path: dirname(runtimeRoot) }, access: "read" },
+          { path: { kind: "path", path: dirname(process.execPath) }, access: "read" },
+          { path: deny, access: "none" },
+        ] }, network: "disabled" },
+      });
+      const tool = name === "Glob" ? createGlobTool({ allowedPaths: [cwd] }) : createGrepTool({ allowedPaths: [cwd] });
+      const args: Record<string, unknown> = { pattern: name === "Glob" ? "*.txt" : "needle", path: cwd, includeIgnored: true };
+      attachSandboxExecutionBroker(args, broker);
+      await expect(tool.execute(args)).rejects.toThrow("cannot represent read-deny or glob policy entries");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("rejects copied, forged, revoked, exact-file and mismatched cwd capabilities before payload execution", { timeout: 30_000 }, async () => {
+  const root = realpathSync(mkdtempSync("/var/tmp/agenc-narrow-capability-kernel-"));
+  const cwd = join(root, "workspace");
+  const foreign = join(root, "foreign");
+  mkdirSync(cwd); mkdirSync(foreign);
+  writeFileSync(join(cwd, "file.txt"), "content");
+  writeFileSync(join(foreign, "secret.txt"), "outside-secret");
+  const environment = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") };
+  const capability = await bindWorkspaceDirectoryReadCapability(cwd);
+  const other = await bindWorkspaceDirectoryReadCapability(foreign);
+  const file = await bindWorkspaceFileReadCapability(join(cwd, "file.txt"));
+  try {
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd, env: environment, agencLinuxSandboxExe: launcherEntry,
+      permissionProfile: { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
+        { path: { kind: "path", path: cwd }, access: "write" },
+        { path: { kind: "path", path: dirname(runtimeRoot) }, access: "read" },
+        { path: { kind: "path", path: dirname(process.execPath) }, access: "read" },
+      ] }, network: "disabled" },
+    });
+    const token = workspaceBoundReadOnlyCwd(capability)!;
+    expect(token).toBeDefined();
+    const command = { program: process.execPath, args: ["--input-type=module", "--eval", "import fs from 'node:fs';fs.writeFileSync('payload-ran','unexpected');"], cwd: ".", cwdBinding: "inherited_readonly" as const, env: environment };
+    expect(() => broker.prepareSpawn("tool", { ...command, cwdCapability: workspaceBoundReadOnlyCwd(other) })).toThrow("not wholly covered");
+    for (const invalid of [{ ...token }, { path: cwd, dev: "1", ino: "1", mode: "16832" }, workspaceBoundReadOnlyCwd(file)]) {
+      expect(() => broker.prepareSpawn("tool", { ...command, cwdCapability: invalid as never })).toThrow("current source-owned directory capability");
+    }
+    const confined = await broker.prepareSpawn("tool", { ...command, cwdCapability: token, args: [
+      "--input-type=module", "--eval", `
+        import fs from 'node:fs';
+        const attempt = fn => { try { fn(); return 'ALLOWED'; } catch (error) { return error.code; } };
+        process.stdout.write(JSON.stringify({
+          inside: fs.readFileSync('file.txt', 'utf8'),
+          write: attempt(() => fs.writeFileSync('payload-ran', 'unexpected')),
+          outside: attempt(() => fs.readFileSync(process.argv[1])),
+          publicCwd: attempt(() => fs.readFileSync(process.argv[2])),
+        }));
+      `, join(foreign, "secret.txt"), join(cwd, "file.txt"),
+    ] }).run(resolved => capability.runRipgrep({
+      program: resolved.program, args: resolved.args, env: resolved.env, argv0: resolved.argv0, timeoutMs: 10_000, maxOutputBytes: 16 * 1024,
+    }));
+    expect(confined.exitCode, confined.stderr.toString()).toBe(0);
+    const confinedEvidence = JSON.parse(confined.stdout.toString());
+    expect(confinedEvidence.inside).toBe("content");
+    for (const key of ["write", "outside", "publicCwd"]) expect(confinedEvidence[key], JSON.stringify(confinedEvidence)).not.toBe("ALLOWED");
+    const mismatch = await broker.prepareSpawn("tool", { ...command, cwdCapability: token }).run(resolved => other.runRipgrep({
+      program: resolved.program, args: resolved.args, env: resolved.env, argv0: resolved.argv0, timeoutMs: 10_000, maxOutputBytes: 16 * 1024,
+    }));
+    expect(mismatch.exitCode).not.toBe(0);
+    expect(mismatch.stderr.toString()).toContain("descriptor identity changed");
+    expect(existsSync(join(foreign, "payload-ran"))).toBe(false);
+    const disposing = capability.dispose();
+    expect(() => broker.prepareSpawn("tool", { ...command, cwdCapability: token })).toThrow("current source-owned directory capability");
+    await disposing;
+    expect(existsSync(join(cwd, "payload-ran"))).toBe(false);
+  } finally {
+    await Promise.all([capability.dispose(), other.dispose(), file.dispose()]);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test.each([false, true])("supports an aliased command cwd without expanding filesystem access (narrow=%s)", { timeout: 30_000 }, async (narrow) => {
   const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-alias-cwd-kernel-")));

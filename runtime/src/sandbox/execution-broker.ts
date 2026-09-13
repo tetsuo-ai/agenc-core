@@ -1,3 +1,4 @@
+import type { BoundReadOnlyCwdCapability } from "./bound-readonly-cwd.js";
 /**
  * Final process-execution boundary for commands that do not naturally pass
  * through the model-tool router (hooks, MCP stdio, and direct interactive
@@ -138,6 +139,7 @@ export interface SandboxSpawnCommand {
   readonly argv0?: string;
   /** Keep cwd attached to the caller's open directory and expose it read-only. */
   readonly cwdBinding?: "inherited_readonly";
+  readonly cwdCapability?: BoundReadOnlyCwdCapability;
   /** Narrow, surface-owned grants required by the child process. */
   readonly additionalPermissions?: AdditionalPermissionProfile;
   /** Require the executable itself to be outside every sandbox-writable root. */
@@ -1894,6 +1896,7 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
         args: params.args,
         cwd: params.cwd,
         env: params.env,
+        ...(params.cwdCapability !== undefined ? { cwdCapability: params.cwdCapability } : {}),
         ...(params.cwdBinding !== undefined
           ? { cwdBinding: params.cwdBinding }
           : {}),

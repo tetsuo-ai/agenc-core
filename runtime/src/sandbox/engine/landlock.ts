@@ -7,6 +7,7 @@
  */
 
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import type { BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
 import {
   type PermissionProfile,
 } from "./index.js";
@@ -35,6 +36,7 @@ export function createLinuxSandboxCommandArgsForPermissionProfile(
   allowNetworkForProxyValue: boolean,
   sessionTempRoot: string,
   inheritedReadOnlyCwd = false,
+  boundReadOnlyCwd?: BoundReadOnlyCwdIdentity,
 ): string[] {
   const args = [
     ...(inheritedReadOnlyCwd
@@ -50,6 +52,7 @@ export function createLinuxSandboxCommandArgsForPermissionProfile(
     "--session-temp-root",
     sessionTempRoot,
   ];
+  if (boundReadOnlyCwd !== undefined) args.push("--bound-readonly-cwd-identity", JSON.stringify(boundReadOnlyCwd));
   if (allowNetworkForProxyValue) args.push("--allow-network-for-proxy");
   args.push("--", ...command);
   return args;

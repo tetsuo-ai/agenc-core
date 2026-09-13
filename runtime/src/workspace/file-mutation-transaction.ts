@@ -26,6 +26,7 @@ import {
   type WorkspaceMutationObservedState,
 } from "./mutation-coordinator.js";
 import { windowsCommandLineUtf16CodeUnits } from "../utils/supervisedProcess.js";
+import { issueBoundReadOnlyCwdCapability, type BoundReadOnlyCwdCapability } from "../sandbox/bound-readonly-cwd.js";
 
 type WorkspaceMutationAdmissionResult =
   WorkspaceMutationAdmission | { readonly decision: "uncoordinated" };
@@ -280,6 +281,13 @@ export interface WorkspaceBoundReadCapability {
     readonly signal?: AbortSignal;
   }) => Promise<WorkspaceBoundRipgrepResult>;
   readonly dispose: () => Promise<void>;
+}
+
+const boundReadCwds = new WeakMap<WorkspaceBoundReadCapability, BoundReadOnlyCwdCapability>();
+
+/** Exact-file and structurally forged capabilities cannot authorize a directory mount. */
+export function workspaceBoundReadOnlyCwd(capability: WorkspaceBoundReadCapability): BoundReadOnlyCwdCapability | undefined {
+  return boundReadCwds.get(capability);
 }
 
 export interface WorkspaceBoundFileReadCapability extends WorkspaceBoundReadCapability {
@@ -2794,6 +2802,15 @@ class BoundDirectoryHelper {
   #closed = false;
   #parentBound = false;
   #readRootPath: string;
+  #readRootIdentity: BoundReadIdentity | undefined;
+
+  readOnlyCwdCapability(): BoundReadOnlyCwdCapability {
+    const identity = this.#readRootIdentity;
+    const rootPath = this.#readRootPath;
+    if (identity === undefined || this.#closed) throw new Error("directory read capability is not active");
+    return issueBoundReadOnlyCwdCapability({ path: rootPath, ...identity }, () =>
+      !this.#closed && !this.#child.stdin.destroyed && this.#readRootPath === rootPath && this.#readRootIdentity === identity);
+  }
 
   private constructor(
     child: ChildProcessWithoutNullStreams,
@@ -2945,6 +2962,7 @@ class BoundDirectoryHelper {
       throw new WorkspacePathIdentityChangedError(input.directoryPath);
     }
     this.#readRootPath = input.directoryPath;
+    this.#readRootIdentity = message.readIdentity;
   }
 
   async mutate(input: {
@@ -3408,6 +3426,7 @@ class BoundDirectoryHelper {
   }
 
   async dispose(): Promise<void> {
+    this.#readRootIdentity = undefined;
     if (this.#closed) return;
     const exited = once(this.#child, "exit");
     try {
@@ -3559,7 +3578,7 @@ function workspaceBoundReadCapability(input: {
     input.exactFile?.relativePath === relativePath
       ? input.exactFile.identity
       : undefined;
-  return {
+  const capability: WorkspaceBoundReadCapability = {
     rootPath: input.rootPath,
     readRelativeFile: (relativePath, maxBytes, options) =>
       input.helper.readRelativeFile({
@@ -3614,8 +3633,13 @@ function workspaceBoundReadCapability(input: {
           : {}),
         ...(runInput.signal !== undefined ? { signal: runInput.signal } : {}),
       }),
-    dispose: () => input.helper.dispose(),
+    dispose: () => {
+      boundReadCwds.delete(capability);
+      return input.helper.dispose();
+    },
   };
+  if (input.exactFile === undefined) boundReadCwds.set(capability, input.helper.readOnlyCwdCapability());
+  return capability;
 }
 
 async function preciseStats(path: string): Promise<BigIntStats> {
