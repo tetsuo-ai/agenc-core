@@ -133,6 +133,13 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   and replacement cleanup could not be verified"; the real line sits in
   `$AGENC_HOME/daemon-spawn-stderr.log`. Build the benchmark tarball in
   `node:26-bullseye` (glibc 2.31) so the native modules run on those images.
+- Subagents (`spawn_agent`) under the same full bypass with `--add-dir /` were
+  refused on every path outside the workspace ("Access denied: Path is
+  outside allowed directories" on `Glob path=/tmp`, three Astra trials) while
+  the parent session searched the same directories freely: child tool calls
+  skip the dispatcher that widens the roots. A probe container reproduced it
+  (parent fine, child refused on `/tmp/probe-dir` and `/root/.cache`). The
+  child tool path now applies the same widening.
 - One upstream socket drop on the proxy host (`EHOSTUNREACH` at 09:39Z) ended
   a grok trial after 1.5 h of work: the truncated stream came back as a plain
   provider error ("Stream closed without a response.completed or

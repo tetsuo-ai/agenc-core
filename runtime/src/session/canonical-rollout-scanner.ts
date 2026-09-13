@@ -1496,6 +1496,18 @@ function observeAdmission(
   if (attempt.terminal) return;
   const item = record.item;
   if (isUsageObservation(item)) return;
+  // The strict journal validator has already checked this event's complete
+  // schema, sequence and identity. A child status update is observational: it
+  // changes neither source history nor this attempt's execution admissions.
+  // Keep the exception bound to a distinct child of the source session.
+  if (
+    item.type === "event_msg" &&
+    item.payload.msg.type === "collab_agent_status" &&
+    item.payload.msg.payload.senderThreadId === attempt.intent?.source.session_id &&
+    item.payload.msg.payload.callId.length > 0 &&
+    item.payload.msg.payload.threadId.length > 0 &&
+    item.payload.msg.payload.threadId !== item.payload.msg.payload.senderThreadId
+  ) return;
   if (
     (item.type === "compaction_committed" ||
       item.type === "compaction_failed") &&

@@ -475,7 +475,11 @@ dispatch time (`filesystemRootsForDispatch`): a `file_path` inside a directory
 the user added, or any `file_path` when the mode is `bypassPermissions` and
 the sandbox is `danger_full_access`, carries its signed directory; `Glob` and
 `Grep` get the search directory itself (`path`, or the directory an absolute
-Glob pattern starts with) under the same conditions. The safety
+Glob pattern starts with) under the same conditions. Subagent tool calls
+do not pass through the dispatcher, so the child tool path applies the same
+rule from the parent-owned permission context the child shares; before, a
+subagent under the full bypass with `--add-dir /` was refused on every path
+outside its workspace. The safety
 gates (`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
 
 Neither bypass setting removes a planning worker's permanent read-only
