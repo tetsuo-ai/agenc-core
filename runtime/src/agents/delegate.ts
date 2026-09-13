@@ -72,6 +72,8 @@ export type DelegateFinalMessageSink = AssistantOutputStreamSink;
 export interface DelegateOpts {
   readonly parent: Session;
   readonly parentPath: AgentPath;
+  /** Source-owned caller binding check, repeated across asynchronous setup. */
+  readonly assertParentSessionActive?: () => void;
   readonly control: AgentControl;
   readonly registry: AgentRegistry;
   readonly taskPrompt: string;
@@ -289,6 +291,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
   // Spawn the live agent (AgentControl owns depth + slot + metadata).
   let live: LiveAgent;
   try {
+    opts.assertParentSessionActive?.();
     live = await opts.control.spawn({
       parentPath: opts.parentPath,
       ...(opts.role !== undefined ? { roleName: opts.role } : {}),
@@ -336,6 +339,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
   // Build the fork context.
   let fork: Awaited<ReturnType<typeof forkSubagent>>;
   try {
+    opts.assertParentSessionActive?.();
     const parentMessages =
       opts.parentMessagesOverride ?? opts.parent.snapshotHistoryMessages();
     fork = await forkSubagent({
@@ -354,6 +358,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         : {}),
       ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),
     });
+    opts.assertParentSessionActive?.();
   } catch (error) {
     const cleanupFailures: string[] = [];
     await opts.control
@@ -422,8 +427,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       },
     );
 
-  const execute = async (thread: AgentThread): Promise<RunAgentResult> =>
-    runDelegateAgentLoop({
+  const execute = async (thread: AgentThread): Promise<RunAgentResult> => {
+    opts.assertParentSessionActive?.();
+    return runDelegateAgentLoop({
       thread,
       parent: opts.parent,
       parentPath: opts.parentPath,
@@ -467,6 +473,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         preserveLiveAfterRoleProvenanceFailure = true;
       },
     });
+  };
 
   if (
     !opts.forceSynchronous &&

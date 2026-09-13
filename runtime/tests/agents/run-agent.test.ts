@@ -29,6 +29,8 @@ import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
 import { AgentRegistry } from "./registry.js";
+import { createMultiAgentV2Tools } from "./v2/index.js";
+import { bindLiveAgentSession, liveAgentSession } from "./live-session.js";
 import {
   buildFilteredRegistry,
   initMcpForAgent,
@@ -1586,6 +1588,70 @@ describe("runAgent", () => {
       expect(isApprovalSessionOwnedBy(child!, parent)).toBe(false);
     } finally {
       unsubscribe();
+    }
+  });
+
+  it("revokes live Session authority synchronously at shutdown and permits a fresh binding after close", async () => {
+    const parent = makeStubSession();
+    const { control, live } = await spawnLive(parent);
+    const child = makeStubSession({ conversationId: live.agentId });
+    const revoke = bindLiveAgentSession(live, child);
+    expect(liveAgentSession(live)).toBe(child);
+    child.beginShutdown();
+    expect(liveAgentSession(live)).toBeUndefined();
+    await child.shutdown();
+    const replacement = makeStubSession({ conversationId: live.agentId });
+    bindLiveAgentSession(live, replacement);
+    revoke();
+    expect(liveAgentSession(live)).toBe(replacement);
+    await replacement.shutdown();
+    expect(liveAgentSession(live)).toBeUndefined();
+    const closing = makeStubSession({ conversationId: live.agentId });
+    closing.beginShutdown();
+    expect(() => bindLiveAgentSession(live, closing)).toThrow(/shutting down/);
+    await closing.shutdown();
+    await control.shutdownAll();
+    await parent.shutdown();
+  });
+
+  it.each(["execute", "dispatch"] as const)("keeps nested %s on its own broker and identity while retaining ancestor policies", async (boundary) => {
+    const parentBroker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp/parent" });
+    const childBroker = new SandboxExecutionBroker({ mode: "read_only", cwd: "/tmp/child" });
+    const admission = makeChildToolAdmission({ runId: "nested-child", sessionId: "nested-child" });
+    const child = makeStubSession({ conversationId: "nested-child", sessionConfiguration: mkSessionConfiguration({ cwd: "/tmp/child" }), services: { executionAdmission: admission.client, sandboxExecutionBroker: childBroker } });
+    let parentDeny = false;
+    let childDeny = false;
+    let childRewrites = false;
+    const execute = vi.fn(async (args: Record<string, unknown>) => ({ content: JSON.stringify({ parentChecked: args.parentChecked, childChecked: args.childChecked }) }));
+    const ancestor = buildFilteredRegistry({ ...mkRegistry(), tools: [{ name: "exec_command", description: "fixture command", inputSchema: { type: "object" }, execute }, { name: "hidden", description: "hidden", inputSchema: { type: "object" }, execute }] }, {
+      childConversationId: "parent-child", sandboxExecutionBroker: parentBroker, disabledTools: new Set(["hidden"]),
+      worktree: { path: "/tmp/parent", branch: "parent", gitRoot: "/tmp", created: false },
+      childToolPolicy: (_tool, args) => parentDeny || args.redirected === true ? { behavior: "deny", message: "ancestor denies" } : { behavior: "allow", updatedInput: { ...args, parentChecked: true } },
+    });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: child.conversationId, sandboxExecutionBroker: childBroker, getSession: () => child,
+      childToolPolicy: (_tool, args) => childDeny ? { behavior: "deny", message: "child denies" } : { behavior: "allow", updatedInput: { ...args, childChecked: true, redirected: childRewrites } },
+    });
+    const invoke = () => boundary === "execute" ? nested.tools[0]!.execute({ __agencSessionId: "forged" }) : nested.dispatch({ name: "exec_command", id: "nested-policy", arguments: JSON.stringify({ __agencSessionId: "forged" }) });
+    try {
+      expect(nested.tools.map((tool) => tool.name)).toEqual(["exec_command"]);
+      expect(await invoke()).toMatchObject({ content: JSON.stringify({ parentChecked: true, childChecked: true }) });
+      expect(execute.mock.calls[0]![0][SESSION_ID_ARG]).toBe(child.conversationId);
+      expect(execute.mock.calls[0]![0].workdir).toBe("/tmp/child");
+      expect(readSandboxExecutionBroker(execute.mock.calls[0]![0])).toBe(childBroker);
+      parentDeny = true;
+      expect(await invoke()).toMatchObject({ isError: true, content: expect.stringContaining("ancestor denies") });
+      parentDeny = false;
+      childDeny = true;
+      expect(await invoke()).toMatchObject({ isError: true, content: expect.stringContaining("child denies") });
+      childDeny = false;
+      childRewrites = true;
+      expect(await invoke()).toMatchObject({ isError: true, content: expect.stringContaining("ancestor denies") });
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      await child.shutdown();
+      await disposeSandboxExecutionBroker(parentBroker);
+      await disposeSandboxExecutionBroker(childBroker);
     }
   });
 
@@ -4953,6 +5019,87 @@ describe("runAgent", () => {
       await disposeSandboxExecutionBroker(parentBroker);
       if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
       else process.env.AGENC_HOME = previousAgencHome;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("admits a nested worker under the calling implementation session and reads its current worktree", async () => {
+    const previousHome = process.env.AGENC_HOME;
+    const home = mkdtempSync(join(tmpdir(), "agenc-nested-parent-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-nested-parent-workspace-"));
+    const worktreePath = join(cwd, "implementation");
+    const git = (directory: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: directory, stdio: "pipe" });
+    git(cwd, "init", "-q");
+    writeFileSync(join(cwd, "revision.txt"), "stale root revision");
+    git(cwd, "add", "revision.txt");
+    git(cwd, "commit", "-qm", "initial fixture");
+    git(cwd, "worktree", "add", "-qb", "implementation", worktreePath);
+    writeFileSync(join(worktreePath, "revision.txt"), "current implementation revision");
+    git(worktreePath, "add", "revision.txt");
+    git(worktreePath, "commit", "-qm", "implementation fixture change");
+    process.env.AGENC_HOME = home;
+    const kernel = new ExecutionAdmissionKernel({ agencHome: home, ownerId: "nested-parent-test", ownerPid: process.pid });
+    const rootAdmission = kernel.bindClient({ cwd, scope: { runId: "nested-root", sessionId: "nested-root", autonomous: false } });
+    const children: Session[] = [];
+    let spawned = false;
+    let readRequested = false;
+    const provider = makeProvider([]);
+    provider.getExecutionProfile = async () => ({ provider: "fake", model: "fake-model", usageReporting: "authoritative", supportsMaxOutputTokens: true });
+    vi.mocked(provider.chatStream).mockImplementation(async (messages) => {
+      const nested = messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("nested-worker-task"));
+      const base = { content: "complete", toolCalls: [], usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12, availability: "reported" as const, provenance: "provider" as const }, model: "fake-model", finishReason: "stop" as const };
+      if (nested && !readRequested) {
+        readRequested = true;
+        return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-read", name: "FileRead", arguments: JSON.stringify({ file_path: join(worktreePath, "revision.txt") }) }] };
+      }
+      if (!nested && !spawned) {
+        spawned = true;
+        return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-spawn", name: "spawn_agent", arguments: JSON.stringify({ message: "nested-worker-task", task_name: "worker", fork_turns: "none" }) }] };
+      }
+      return base;
+    });
+    const tools: ToolRegistry["tools"][number][] = [];
+    const fileRead = buildProductionToolRegistry({ workspaceRoot: cwd, requireAdmission: false }).tools.find((tool) => tool.name === "FileRead")!;
+    const read = vi.spyOn(fileRead, "execute");
+    tools.push(fileRead);
+    const broker = new SandboxExecutionBroker({ cwd, mode: "danger_full_access" });
+    const session = makeStubSession({
+      conversationId: "nested-root",
+      services: { provider, executionAdmission: rootAdmission, admissionRequired: true, sandboxExecutionBroker: broker, permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({ mode: "bypassPermissions", isBypassPermissionsModeAvailable: true, bypassPermissionsAcceptedIn: [cwd] })), registry: { ...mkRegistry(), tools } },
+      sessionConfiguration: mkSessionConfiguration({ cwd, sandboxPolicy: { value: "danger_full_access" }, provider: { slug: "fake" } as SessionConfiguration["provider"] }),
+      config: { ...mkConfig(), cwd }, modelInfo: { ...mkModelInfo(), maxOutputTokens: 32 },
+    });
+    const store = new RolloutStore({ cwd, sessionId: session.conversationId, agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd, originator: "nested-parent-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    session.onBeforeDurableClose(bindExecutionAdmissionJournal(session, rootAdmission));
+    const { control, registry, live } = await spawnLive(session);
+    tools.push(...createMultiAgentV2Tools({ getSession: () => session, workspace: session.roleWorkspace, ensureAgentControl: () => ({ control, registry }) }));
+    const unsubscribe = observeChildApprovalSessions(session, (child) => { children.push(child); return () => {}; });
+    try {
+      const { result } = await collectRun(runAgent({ live, parent: session, initialMessages: [{ role: "user", content: "implementation-parent-task" }], taskPrompt: "implementation-parent-task", worktree: { path: worktreePath, branch: "implementation", gitRoot: cwd, created: false } }));
+      expect(result.outcome, String(result.error)).toBe("completed");
+      await vi.waitFor(() => expect(children, JSON.stringify(vi.mocked(provider.chatStream).mock.calls.at(-1)?.[0].filter((message) => message.role === "tool"))).toHaveLength(2));
+      expect(children[1]!.services.executionAdmission!.scope.parentRunId).toBe(live.agentId);
+      expect(children[1]!.sessionConfiguration.cwd).toBe(worktreePath);
+      expect(store.getThreadSpawnEdge(children[1]!.conversationId)?.parentThreadId).toBe(live.agentId);
+      await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+      expect(read.mock.calls[0]![0][SESSION_ID_ARG]).toBe(children[1]!.conversationId);
+      expect(readSandboxExecutionBroker(read.mock.calls[0]![0])).toBe(children[1]!.services.sandboxExecutionBroker);
+      expect((await read.mock.results[0]!.value).content).toContain("current implementation revision");
+      const admissionEvents = () => readFileSync(children[1]!.rolloutStore!.rolloutPath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((item) => item.type === "event_msg" && item.payload.msg.type === "execution_admission").map((item) => item.payload.msg.payload);
+      await vi.waitFor(() => expect(admissionEvents().filter((event) => event.event === "allowed").map((event) => event.kind)).toEqual(expect.arrayContaining(["model_turn", "tool_exec"])));
+      expect(admissionEvents().some((event) => JSON.stringify(event).includes("ancestor_parent_ambiguous"))).toBe(false);
+    } finally {
+      unsubscribe();
+      read.mockRestore();
+      await control.shutdownAll("nested test cleanup");
+      await Promise.all(children.map((child) => child.shutdown()));
+      await session.shutdown();
+      await disposeSandboxExecutionBroker(broker);
+      kernel.close();
+      if (previousHome === undefined) delete process.env.AGENC_HOME; else process.env.AGENC_HOME = previousHome;
       rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
     }

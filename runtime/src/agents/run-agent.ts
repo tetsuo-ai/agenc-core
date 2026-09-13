@@ -27,6 +27,7 @@ import {
 import { attachReadOnlyDelegationReadGuard } from "../permissions/readonly-read-guard.js";
 import { LRUCache } from "lru-cache";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "./child-approval-context.js";
+import { bindLiveAgentSession } from "./live-session.js";
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
 import { createChildAbortController } from "../utils/abortController.js";
 import type {
@@ -2233,11 +2234,6 @@ export function buildFilteredRegistry(
     .filter((tool) => isEligible(tool.name))
     .map((tool) => wrapToolForChild(tool, opts));
   const wrappedByName = new Map(wrappedTools.map((tool) => [tool.name, tool]));
-  const baseByName = new Map(
-    base.tools
-      .filter((tool) => isEligible(tool.name))
-      .map((tool) => [tool.name, tool]),
-  );
   const fallbackAdvertisedTools = () =>
     wrappedTools.map((tool) => ({
       type: "function" as const,
@@ -2307,13 +2303,17 @@ export function buildFilteredRegistry(
       const parsedArgs = stripModelSuppliedChildArgs(parseResult.args);
       const wrappedTool = wrappedByName.get(toolCall.name);
       if (wrappedTool) {
-        const baseTool = baseByName.get(toolCall.name);
-        if (baseTool === undefined) {
+        const binding = childToolBindings.get(wrappedTool);
+        if (binding === undefined) {
           throw new AdmissionDeniedError(
             "child_tool_admission_descriptor_unavailable",
           );
         }
-        const prepared = await prepareChildToolCall(baseTool, parsedArgs, opts);
+        const baseTool = binding.source;
+        const prepared = await prepareChildToolCall(baseTool, parsedArgs, {
+          ...opts,
+          ...(binding.policy !== undefined ? { childToolPolicy: binding.policy } : {}),
+        });
         if ("result" in prepared) return prepared.result;
         const session = opts.getSession?.() ?? null;
         if (session === null) {
@@ -2627,7 +2627,11 @@ export function injectChildToolArgs(
   if (opts.worktree?.path) {
     injectedArgs = withSignedAllowedRoots(injectedArgs, [opts.worktree.path]);
   }
-  if (opts.worktree?.path) {
+  // A descendant without a new worktree still inherits its caller's cwd.
+  // Source tool closures may belong to the root registry, so fill defaults
+  // from the current Session rather than retaining an ancestor wrapper.
+  const executionCwd = opts.worktree?.path ?? childSession?.sessionConfiguration.cwd;
+  if (executionCwd) {
     // Each tool names its working-directory field differently. exec_command
     // takes `workdir` and rejects `cwd` as a removed alias, so injecting
     // `cwd` there made every exec_command in a worktree child fail with a
@@ -2638,7 +2642,7 @@ export function injectChildToolArgs(
       (typeof injectedArgs[field] !== "string" ||
         (injectedArgs[field] as string).length === 0)
     ) {
-      injectedArgs[field] = opts.worktree.path;
+      injectedArgs[field] = executionCwd;
     }
   }
   return injectedArgs;
@@ -2680,6 +2684,14 @@ async function applyChildToolPolicy(
   return { args: decision.updatedInput ?? args };
 }
 
+// Flatten only wrappers constructed here. Ancestor eligibility/visibility is
+// still evaluated by buildFilteredRegistry, and every inherited policy remains
+// in force; only identity and broker injection belong to the current child.
+const childToolBindings = new WeakMap<Tool, {
+  readonly source: Tool;
+  readonly policy?: ChildToolPolicy;
+}>();
+
 function wrapToolForChild(
   tool: Tool,
   opts: {
@@ -2690,14 +2702,28 @@ function wrapToolForChild(
     readonly getSession?: () => Session | null | undefined;
   },
 ): Tool {
-  return inheritBuiltinToolProvenance(tool, {
-    ...tool,
-    ...(opts.childToolPolicy !== undefined ? {
+  const inherited = childToolBindings.get(tool);
+  const source = inherited?.source ?? tool;
+  const parentPolicy = inherited?.policy;
+  const currentPolicy = opts.childToolPolicy;
+  const policy: ChildToolPolicy | undefined = parentPolicy === undefined
+    ? currentPolicy : currentPolicy === undefined ? parentPolicy
+    : async (candidate, input) => {
+      // Preserve nested-wrapper order: ancestor restrictions must inspect
+      // input after the current child has normalized it.
+      const currentDecision = await currentPolicy(candidate, input);
+      return currentDecision.behavior === "deny" ? currentDecision
+        : parentPolicy(candidate, currentDecision.updatedInput ?? input);
+    };
+  const executionOpts = { ...opts, ...(policy !== undefined ? { childToolPolicy: policy } : {}) };
+  const wrapped = inheritBuiltinToolProvenance(source, {
+    ...source,
+    ...(policy !== undefined ? {
       async checkPermissions(input, context) {
         if (input === null || typeof input !== "object" || Array.isArray(input)) {
           return { behavior: "deny" as const, message: "Child tool input must be an object" };
         }
-        const decision = await opts.childToolPolicy!(tool,
+        const decision = await policy(source,
           stripModelSuppliedChildArgs(input as Record<string, unknown>));
         if (decision.behavior === "deny") {
           return { behavior: "deny" as const, message: decision.message,
@@ -2705,18 +2731,20 @@ function wrapToolForChild(
         }
         // Restriction runs before the interactive boundary. An allow here only
         // narrows/normalizes input; the ordinary tool permission still decides.
-        return tool.checkPermissions?.(decision.updatedInput ?? input, context) ?? {
+        return source.checkPermissions?.(decision.updatedInput ?? input, context) ?? {
           behavior: "passthrough" as const, updatedInput: decision.updatedInput ?? input,
         };
       },
     } : {}),
     async execute(args) {
-      const prepared = await prepareChildToolCall(tool, args, opts);
+      const prepared = await prepareChildToolCall(source, args, executionOpts);
       return "result" in prepared
         ? prepared.result
-        : tool.execute(prepared.args);
+        : source.execute(prepared.args);
     },
   });
+  childToolBindings.set(wrapped, { source, ...(policy !== undefined ? { policy } : {}) });
+  return wrapped;
 }
 
 /**
@@ -3228,6 +3256,7 @@ export async function* runAgent(
   params: RunAgentParams,
 ): AsyncGenerator<RunAgentProgressEvent, RunAgentResult, void> {
   const startedAt = Date.now();
+  let revokeLiveSession: (() => void) | undefined;
   let turnId: string = crypto.randomUUID();
   const { live, parent } = params;
   let childSession: ChildSession | null = null;
@@ -3743,6 +3772,7 @@ export async function* runAgent(
       childAuthority,
       terminalResultForPendingWorker,
     );
+    revokeLiveSession = bindLiveAgentSession(live, childSession);
     const {
       history,
       userMessage,
@@ -4427,6 +4457,7 @@ export async function* runAgent(
     return result;
   } finally {
     let taskReceiptFinalizeError: unknown;
+    revokeLiveSession?.();
     const acceptedNotStarted =
       live.assignment?.state === "accepted" ? live.assignment : undefined;
     if (acceptedNotStarted !== undefined && childSession !== null) {

@@ -3582,6 +3582,11 @@ export class Session {
     await pending;
   }
 
+  /** Whether this Session has stopped accepting new work. */
+  get isShuttingDown(): boolean {
+    return this.lifecycleState !== "open";
+  }
+
   /**
    * Synchronous shutdown transition used by the outer lifecycle before it
    * awaits active work. It closes the startup admission race, cancels an MCP

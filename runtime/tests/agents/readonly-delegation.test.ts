@@ -95,6 +95,31 @@ describe("read-only delegation authority", () => {
     expect(await checkRuleBasedPermissions(forged, {}, context)).toMatchObject({ behavior: "deny" });
   });
 
+  it("retains read-only constraints, allowlists and disabled tools through nested wrappers", async () => {
+    const base = buildToolRegistry({ workspaceRoot: process.cwd(), requireAdmission: false });
+    const constraint = { kind: "read-only" as const, ownerThreadId: "owner" };
+    const ancestor = buildFilteredRegistry(base, {
+      childConversationId: "implementation",
+      executionConstraint: constraint,
+      allowlist: ["FileRead", "FileWrite", "Glob"],
+      disabledTools: new Set(["Glob"]),
+    });
+    const { session } = authoritySession("bypassPermissions");
+    Object.assign(session.services, { readOnlyDelegation: { ...constraint, deniedRules: ["FileRead(**/secret.txt)"] } });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: "worker", getSession: () => session,
+      executionConstraint: constraint,
+    });
+    expect(nested.tools.map((tool) => tool.name)).toEqual(["FileRead"]);
+    for (const name of ["FileWrite", "Glob", "exec_command"]) {
+      expect((await nested.dispatch({ name, arguments: "{}" })).isError).toBe(true);
+    }
+    // This refusal must happen before filesystem dispatch, even under YOLO.
+    const result = await nested.tools[0]!.execute({ file_path: "secret.txt" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("cannot read");
+  });
+
   it("persists original read denials when live rules are cleared in YOLO", () => {
     const { session, replaceContext } = authoritySession();
     replaceContext({ ...session.permissionModeRegistry.current(), alwaysDenyRules: { session: ["FileRead(**/secret.txt)"] } });

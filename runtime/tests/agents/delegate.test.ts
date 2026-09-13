@@ -158,6 +158,24 @@ function makeRealDelegateHarness(
 }
 
 describe("delegate lifecycle recovery", () => {
+  it.each(["spawn", "fork"] as const)("retires a new live slot if caller authority expires during %s setup", async (stage) => {
+    const live = makeLive("thread-expired", "/root/implementation/worker");
+    let active = true;
+    const control = {
+      spawn: vi.fn(async () => { if (stage === "spawn") active = false; return live; }),
+      shutdown: vi.fn(async () => {}),
+    };
+    if (stage === "fork") mockForkSubagent.mockImplementationOnce(async () => {
+      active = false;
+      return { messages: [{ role: "user", content: "seed" }] } as never;
+    });
+    const runCount = mockRunAgent.mock.calls.length;
+    const outcome = await delegate({ parent: makeParentSession() as never, parentPath: "/root/implementation", control: control as never, registry: {} as never, taskPrompt: "go", assertParentSessionActive: () => { if (!active) throw new Error("caller session revoked"); } });
+    expect(outcome).toMatchObject({ kind: "rejected", reason: expect.stringContaining("caller session revoked") });
+    expect(control.shutdown).toHaveBeenCalledWith(live.agentId, "delegate_fork_failed");
+    expect(mockRunAgent.mock.calls).toHaveLength(runCount);
+  });
+
   it("retires a transferred live slot when fork setup fails", async () => {
     const live = makeLive("thread-fork-failure", "/root/fork_failure");
     const control = {

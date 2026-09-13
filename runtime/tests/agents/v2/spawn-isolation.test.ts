@@ -14,6 +14,8 @@ import { signSessionId } from "../_deps/filesystem-args.js";
 import { StaticModelsManager } from "../../../src/llm/models-manager.js";
 import { defaultConfig } from "../../../src/config/schema.js";
 import { validationErrorToolResult } from "../../../src/tools/results.js";
+import { bindLiveAgentSession } from "../../../src/agents/live-session.js";
+import type { LiveAgent } from "../../../src/agents/control.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
 const ROLE_CATALOG = new AgentRoleCatalog(ROLE_WORKSPACE);
@@ -67,6 +69,8 @@ function makeSession(): Session {
   const emitted: unknown[] = [];
   return {
     conversationId: "conv-1",
+    abortController: new AbortController(),
+    onBeforeDurableClose: () => () => {},
     roleWorkspace: ROLE_WORKSPACE,
     emit: (event: unknown) => emitted.push(event),
     nextInternalSubId: () => `sub-${emitted.length}`,
@@ -108,6 +112,65 @@ function makeOptions(
 describe("spawn_agent isolation", () => {
   beforeEach(() => {
     mockDelegate.mockReset();
+  });
+
+  function callerFixture() {
+    const root = makeSession();
+    const child = { ...makeSession(), conversationId: "calling-child", sessionConfiguration: { ...root.sessionConfiguration, cwd: "/repo/implementation" }, services: { ...root.services, sandboxExecutionBroker: { authority: "child-only" } } } as unknown as Session;
+    const live = { agentId: child.conversationId, agentPath: "/root/implementation", nickname: "implementation", role: { name: "default" }, abortController: new AbortController() } as LiveAgent;
+    const liveById: Record<string, LiveAgent> = { [live.agentId]: live };
+    const revoke = bindLiveAgentSession(live, child);
+    const opts = makeOptions(root, liveById);
+    return { child, live, liveById, revoke, opts, args: { message: "inspect", task_name: "worker", __agencSessionId: live.agentId, __agencSessionIdSig: signSessionId(live.agentId) } };
+  }
+
+  it("uses the authenticated child's session and retains the root control namespace", async () => {
+    const fixture = callerFixture();
+    const ensure = vi.spyOn(fixture.opts, "ensureAgentControl");
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]![0].parent).toBe(fixture.child);
+    expect(mockDelegate.mock.calls[0]![0].parent.services.sandboxExecutionBroker).toBe(fixture.child.services.sandboxExecutionBroker);
+    expect(ensure.mock.calls.every(([session]) => session === fixture.opts.getSession())).toBe(true);
+  });
+
+  it.each(["missing", "copied", "revoked", "aborted", "closing", "changed_path", "forged"] as const)("refuses %s caller authority before delegation", async (kind) => {
+    const fixture = callerFixture();
+    if (kind === "missing") delete fixture.liveById[fixture.live.agentId];
+    if (kind === "copied") fixture.liveById[fixture.live.agentId] = { ...fixture.live };
+    if (kind === "revoked") fixture.revoke();
+    if (kind === "aborted") fixture.live.abortController.abort();
+    if (kind === "closing") Object.defineProperty(fixture.child, "isShuttingDown", { value: true });
+    if (kind === "changed_path") Object.defineProperty(fixture.live, "agentPath", { value: "/root/sibling" });
+    if (kind === "forged") fixture.args.__agencSessionIdSig = "forged";
+    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition).toBeDefined();
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it("cannot bind a sibling's Session to another live agent", () => {
+    const fixture = callerFixture();
+    fixture.revoke();
+    expect(() => bindLiveAgentSession(fixture.live, { ...fixture.child, conversationId: "sibling" } as Session)).toThrow(/does not match/);
+  });
+
+  it.each(["revoked", "replaced"] as const)("rechecks a caller %s during model validation", async (kind) => {
+    const fixture = callerFixture();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const list = vi.spyOn(fixture.child.services.modelsManager, "listModels").mockImplementation(async () => { await pending; return [{ slug: "test-model" }] as never; });
+    const call = createSpawnAgentTool(fixture.opts).execute({ ...fixture.args, model: "test-model" });
+    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
+    fixture.revoke();
+    if (kind === "replaced") bindLiveAgentSession(fixture.live, { ...fixture.child } as Session);
+    release();
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("no longer live");
+    expect(result.effectDisposition).toBeDefined();
+    expect(mockDelegate).not.toHaveBeenCalled();
   });
 
   it.each([true, false])("preserves only authoritative delegate refusal evidence: %s", async (confirmed) => {
@@ -302,14 +365,20 @@ describe("spawn_agent isolation", () => {
         agentPath: "/root/parent_a",
         nickname: "parent-a",
         role: { name: "default" },
+        abortController: new AbortController(),
       },
       "parent-b": {
         agentId: "parent-b",
         agentPath: "/root/parent_b",
         nickname: "parent-b",
         role: { name: "default" },
+        abortController: new AbortController(),
       },
     };
+    const parentA = { ...makeSession(), conversationId: "parent-a" } as Session;
+    const parentB = { ...makeSession(), conversationId: "parent-b" } as Session;
+    bindLiveAgentSession(liveById["parent-a"] as LiveAgent, parentA);
+    bindLiveAgentSession(liveById["parent-b"] as LiveAgent, parentB);
     const tool = createSpawnAgentTool(makeOptions(session, liveById));
     let threadCounter = 0;
     mockDelegate.mockImplementation(async (delegateOpts) => {
@@ -346,6 +415,8 @@ describe("spawn_agent isolation", () => {
     const secondOpts = mockDelegate.mock.calls[1]?.[0];
     expect(firstOpts?.parentPath).toBe("/root/parent_a");
     expect(secondOpts?.parentPath).toBe("/root/parent_b");
+    expect(firstOpts?.parent).toBe(parentA);
+    expect(secondOpts?.parent).toBe(parentB);
     expect(firstOpts?.worktreeSlug).not.toBe(secondOpts?.worktreeSlug);
     expect(firstOpts?.worktreeSlug).toMatch(
       /^shared_writer-[a-f0-9]{32}$/u,

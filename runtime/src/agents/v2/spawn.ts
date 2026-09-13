@@ -7,6 +7,7 @@ import { validationErrorToolResult } from "../../tools/results.js";
 import type { Session } from "../../session/session.js";
 import type { ModelInfo, ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
+import { liveAgentSession } from "../live-session.js";
 import { READ_ONLY_DELEGATION_PROMPT, sessionIsPlanning, sessionReadOnlyDelegation } from "../readonly-delegation.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
@@ -395,7 +396,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     if (!("conversationId" in sessionOrError)) {
       return confirmedNoSpawn(sessionOrError);
     }
-    const session = sessionOrError;
+    const rootSession = sessionOrError;
     const strict = strictArgs(args, {
       allowed: new Set([
         "message",
@@ -442,7 +443,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     try {
       assertAgentRoleWorkspaceMatches(
-        session.roleWorkspace,
+        rootSession.roleWorkspace,
         opts.workspace.id,
       );
     } catch (error) {
@@ -450,7 +451,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         error instanceof Error ? error.message : String(error),
       );
     }
-    const { control, registry } = opts.ensureAgentControl(session);
+    const { control, registry } = opts.ensureAgentControl(rootSession);
     try {
       control.assertRoleWorkspace(opts.workspace);
     } catch (error) {
@@ -458,8 +459,26 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         error instanceof Error ? error.message : String(error),
       );
     }
-    const current = currentAgentContext(session, args, opts);
+    const current = currentAgentContext(rootSession, args, opts);
     if (isCurrentAgentContextError(current)) return confirmedNoSpawn(current);
+    const caller = current.threadId === rootSession.conversationId
+      ? undefined : control.getLive(current.threadId);
+    const session = current.threadId === rootSession.conversationId
+      ? rootSession : caller === undefined ? undefined : liveAgentSession(caller);
+    const callerIsCurrent = (): boolean => session !== undefined &&
+      (caller === undefined
+        ? session === rootSession
+        : control.getLive(current.threadId) === caller &&
+          caller.agentId === current.threadId && caller.agentPath === current.agentPath &&
+          liveAgentSession(caller) === session);
+    if (session === undefined || !callerIsCurrent()) {
+      return spawnValidationError("invalid-runtime-identity: calling agent session is not live");
+    }
+    try {
+      assertAgentRoleWorkspaceMatches(session.roleWorkspace, opts.workspace.id);
+    } catch (error) {
+      return spawnValidationError(error instanceof Error ? error.message : String(error));
+    }
     const rawRole = stringValue(args.agent_type);
     // The session catalog performs exact-name lookup before public alias
     // fallback. Canonicalizing here would make an executable plugin/workspace
@@ -666,6 +685,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
+    // Model/tier validation can await. Never delegate using a child Session
+    // that closed or was replaced while those checks were pending.
+    if (!callerIsCurrent()) {
+      return failSpawn("invalid-runtime-identity: calling agent session is no longer live");
+    }
     let thread: AgentThread | undefined;
     let rejectedEffectDisposition: ToolResult["effectDisposition"];
     try {
@@ -681,6 +705,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       const outcome = await delegate({
         parent: session,
         parentPath: current.agentPath,
+        ...(caller !== undefined ? {
+          assertParentSessionActive: () => {
+            if (!callerIsCurrent()) throw new Error("invalid-runtime-identity: calling agent session is no longer live");
+          },
+        } : {}),
         control,
         registry,
         taskPrompt: prompt,
