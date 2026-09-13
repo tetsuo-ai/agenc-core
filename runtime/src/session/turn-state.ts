@@ -17,6 +17,7 @@
  */
 
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
+import type { CompletionGatePlan } from "../phases/completion-gate.js";
 import { readTextToolCallCorrection, type TextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
 import type { TokenBudgetDecision as BoundaryTokenBudgetDecision } from "../conversation/token-budget.js";
 import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
@@ -67,7 +68,8 @@ export type ContinueReason =
   | "token_budget_continuation"
   | "plan_tool_required"
   | "text_tool_call_correction"
-  | "continuation_nudge";
+  | "continuation_nudge"
+  | "completion_gate";
 
 export interface Continue {
   readonly reason: ContinueReason;
@@ -404,6 +406,16 @@ export interface TurnState {
    *  AgenC query.ts:1456. */
   continuationNudgeCount: number;
 
+  // ── Phase 4b — completion gate (non-interactive verification) — turn-scoped ──
+  /** Resolved once per turn; undefined = the gate does not apply to this turn. */
+  completionGate: CompletionGatePlan | undefined;
+  /** Verification prompts injected this turn. Checkpointed; bounds the loop. */
+  completionGateRound: number;
+  /** `completedToolResults.length` when the last gate prompt was injected. */
+  completionGateToolLedgerMark: number;
+  /** Latched once a final answer was accepted (verified, exhausted or skipped). */
+  completionGateSettled: boolean;
+
   // ── Phase 5 — execute tools (AgenC query.ts:572, 1467-1635) ──
   /** Streaming tool executor instance (T7). Kept loop-local so the
    *  next iteration can await pending executor completion before
@@ -552,6 +564,11 @@ export function buildInitialTurnState(
     modelSampleResumePrompt: undefined,
     // Phase 4
     continuationNudgeCount: 0,
+    // Phase 4b
+    completionGate: undefined,
+    completionGateRound: 0,
+    completionGateToolLedgerMark: 0,
+    completionGateSettled: false,
     // Phase 5
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
@@ -613,6 +630,7 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
+    completionGateRound?: number;
     editorToolCallsAdmitted?: number;
     pendingAdmissionFallback?: PendingAdmissionFallback;
     modelSampleOrdinal?: number;
@@ -634,6 +652,9 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     planToolRequiredRetryCount: state.planToolRequiredRetryCount,
     modelSampleOrdinal: state.modelSampleOrdinal,
   };
+  if (state.completionGateRound > 0) {
+    slice.completionGateRound = state.completionGateRound;
+  }
   if (state.editorToolCallsAdmitted > 0) {
     slice.editorToolCallsAdmitted = state.editorToolCallsAdmitted;
   }
@@ -693,6 +714,7 @@ const CONTINUE_REASONS: ReadonlySet<string> = new Set<ContinueReason>([
   "plan_tool_required",
   "text_tool_call_correction",
   "continuation_nudge",
+  "completion_gate",
 ]);
 
 /**
@@ -753,6 +775,13 @@ export function restoreFromCheckpoint(
     slice.editorToolCallsAdmitted >= 0
   ) {
     state.editorToolCallsAdmitted = slice.editorToolCallsAdmitted;
+  }
+  if (
+    slice.completionGateRound !== undefined &&
+    Number.isSafeInteger(slice.completionGateRound) &&
+    slice.completionGateRound >= 0
+  ) {
+    state.completionGateRound = slice.completionGateRound;
   }
   if (
     slice.pendingAdmissionFallback !== undefined &&
@@ -849,4 +878,7 @@ export function resetIterationFields(state: TurnState): void {
   // turn-scoped (like `turnCount`), not iteration-scoped. Clearing them
   // here would reset the no-progress detector every iteration and defeat
   // the whole backstop. (Asserted by the run-turn progress test suite.)
+  //
+  // completionGate* fields are turn-scoped too: the round counter bounds
+  // the verification loop across every iteration of the turn.
 }

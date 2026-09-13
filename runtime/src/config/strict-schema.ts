@@ -278,6 +278,18 @@ function validateDurableTurns(value: unknown): void {
   }
 }
 
+function validateCompletionGate(value: unknown): void {
+  if (value === undefined) return;
+  const field = "completion_gate";
+  const record = requirePlainObject(value, field);
+  rejectUnknownFields(record, new Set(["mode", "max_rounds"]), field);
+  optionalEnum(record.mode, `${field}.mode`, ["auto", "always", "never"]);
+  optionalPositiveInteger(record.max_rounds, `${field}.max_rounds`);
+  if (typeof record.max_rounds === "number" && record.max_rounds > 10) {
+    throw new InvalidStrictConfigError(`${field}.max_rounds`, "exceeds the maximum of 10 rounds");
+  }
+}
+
 function validateDaemon(value: unknown): void {
   if (value === undefined) return;
   const field = "daemon";
@@ -638,6 +650,7 @@ const ROOT_FIELD_VALIDATORS = {
   pluginTrustMessage: fieldValidator("pluginTrustMessage", optionalString),
   agent: delegatedObjectValidator("agent"),
   durableTurns: validateDurableTurns,
+  completion_gate: validateCompletionGate,
   stream_watchdog_timeout_ms: fieldValidator("stream_watchdog_timeout_ms", optionalNonNegativeInteger),
   provider_outage_wait_ms: fieldValidator("provider_outage_wait_ms", optionalNonNegativeInteger),
   provider_outage_retry_ms: fieldValidator("provider_outage_retry_ms", optionalPositiveInteger),

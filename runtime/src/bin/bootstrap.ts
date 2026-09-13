@@ -542,6 +542,9 @@ function buildDeferredConfig(
     ...(config.durableTurns !== undefined
       ? { durableTurns: config.durableTurns }
       : {}),
+    ...(config.completion_gate !== undefined
+      ? { completionGate: config.completion_gate }
+      : {}),
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }
       : {}),

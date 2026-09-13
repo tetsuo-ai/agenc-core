@@ -323,8 +323,10 @@ The slice always carries `turnCount`, `recoveryReentryCount`,
 `stopHookBlockingCount`, `planToolRequiredRetryCount`, and
 `modelSampleOrdinal`. It optionally stores `modelSampleResumePrompt` as
 `continuation_nudge` or `empty_response`. It also stores
-`editorToolCallsAdmitted` after an editor admission and
-`pendingAdmissionFallback` while a provider swap awaits admission. The
+`editorToolCallsAdmitted` after an editor admission,
+`pendingAdmissionFallback` while a provider swap awaits admission, and
+`completionGateRound` once the non-interactive completion gate has injected
+a verification request (so a resumed turn cannot restart the bounded loop). The
 reader validates those fields before `restoreFromCheckpoint` applies them.
 Crash recovery can restore the runtime-only state and derive the same next
 sample step ID from the checkpointed ordinal. See

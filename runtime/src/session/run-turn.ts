@@ -82,6 +82,10 @@ import {
   continuationNudge,
   injectNudgeMessage,
 } from "../phases/continuation-nudge.js";
+import {
+  completionGate,
+  planCompletionGateForTurn,
+} from "../phases/completion-gate.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
@@ -988,6 +992,11 @@ async function tryRunSamplingRequest(
       state.textToolCallCorrectionFailure === undefined &&
       state.transition?.reason !== "text_tool_call_correction") {
     await continuationNudge(state, ctx, session, signal);
+    // Phase 4b: the non-interactive completion gate judges a tool-free final
+    // answer only when the nudge left the sample alone.
+    if (state.transition === undefined) {
+      await completionGate(state, ctx, session, signal);
+    }
   }
 
   return {
@@ -1758,6 +1767,7 @@ export async function* runTurnKernel(
         ...(ledgerRootTurnGuidance !== undefined
           ? { ledgerRootTurnGuidance }
           : {}),
+        ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
         signalCleanups,
       },
     );
@@ -1799,6 +1809,8 @@ interface RunTurnKernelCommons {
   };
   /** Trusted, non-durable system guidance scoped to an exact root @ledger turn. */
   readonly ledgerRootTurnGuidance?: string;
+  /** Display text of the root human turn; undefined for every other turn kind. */
+  readonly rootHumanTurnText?: string;
   // Disposers for the merged abort signals built inside the kernel. The
   // outer `runTurnKernel` finally invokes these so listeners on long-lived
   // signals (the session-level abort) are removed on every turn exit.
@@ -1986,6 +1998,14 @@ async function* runTurnKernelInner(
     restoreFromCheckpoint(state, opts.resume.restoreSlice);
     restoreModelSampleResumePrompt(state);
   }
+  // Phase 4b eligibility is a per-turn decision; the checkpointed round
+  // counter restored above keeps a resumed turn's verification loop bounded.
+  state.completionGate = planCompletionGateForTurn({
+    ctx,
+    session,
+    isRootHumanTurn: commons.rootHumanTurnText !== undefined,
+    taskText: commons.rootHumanTurnText,
+  });
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
   const rolloutPersistenceActive = (): boolean =>

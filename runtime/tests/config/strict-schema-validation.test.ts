@@ -120,6 +120,10 @@ describe("strict schema-v2 validation coverage", () => {
       /durableTurns\.resume\.replayTools/u,
     ],
     ["budget unknown field", { budget: { weekly_usd: 5 } }, /budget\.weekly_usd/u],
+    ["completion gate unknown field", { completion_gate: { rounds: 2 } }, /completion_gate\.rounds/u],
+    ["completion gate mode", { completion_gate: { mode: "sometimes" } }, /completion_gate\.mode/u],
+    ["completion gate rounds bound", { completion_gate: { max_rounds: 11 } }, /completion_gate\.max_rounds/u],
+    ["completion gate rounds integer", { completion_gate: { max_rounds: 0 } }, /completion_gate\.max_rounds/u],
     ["budget threshold", { budget: { soft_threshold: 1 } }, /budget\.soft_threshold/u],
     [
       "heartbeat active hours",
@@ -337,6 +341,7 @@ describe("strict schema-v2 validation coverage", () => {
           buildPinning: true,
         },
       },
+      completion_gate: { mode: "always", max_rounds: 2 },
       budget: {
         enabled: true,
         daily_usd: 0,
@@ -396,6 +401,7 @@ describe("strict schema-v2 validation coverage", () => {
 
     expect(config.daemon).toEqual({ autostart: true });
     expect(config.durableTurns?.resume?.onRestart).toBe(true);
+    expect(config.completion_gate).toEqual({ mode: "always", max_rounds: 2 });
     expect(config.providers?.grok?.remote_mcp?.servers?.[0]?.server_label).toBe("docs");
     expect(config.providers?.grok?.remote_mcp?.servers?.[0]?.authorization_env).toBe(
       "AGENC_CREDENTIAL_DOCS_MCP",

@@ -34,7 +34,7 @@ import type {
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
 import type { SessionEditorInteraction } from "./autonomous-mode.js";
-import type { DurableTurnsConfig } from "../config/schema.js";
+import type { CompletionGateConfig, DurableTurnsConfig } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep structural types. Keep these narrow so TurnContext can carry
@@ -507,6 +507,8 @@ export interface Config {
   readonly maxBudgetUsd?: number;
   /** Canonical durable checkpoint/resume policy captured for this session. */
   readonly durableTurns?: DurableTurnsConfig;
+  /** Completion gate policy for non-interactive verification rounds. */
+  readonly completionGate?: CompletionGateConfig;
   readonly experimental_realtime_start_instructions?: string;
   readonly experimental_realtime_ws_backend_prompt?: string;
   // Expanded as further config surfaces land.

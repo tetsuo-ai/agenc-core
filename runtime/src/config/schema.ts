@@ -246,6 +246,18 @@ export interface DurableTurnsConfig {
   readonly resume?: DurableTurnsResumeConfig;
 }
 
+/**
+ * Completion gate for sessions nobody reviews while they run: the first
+ * final answer of a tool-using turn is not accepted until a verification
+ * round backed by executed tool calls.
+ */
+export interface CompletionGateConfig {
+  /** `auto` (default): only non-interactive sessions such as `agenc -p`. */
+  readonly mode?: "auto" | "always" | "never";
+  /** Verification prompts per turn; default 3, at most 10. */
+  readonly max_rounds?: number;
+}
+
 export interface HookCommand {
   readonly type: "command";
   readonly command: string;
@@ -909,6 +921,7 @@ export interface AgenCConfig {
   // ── AgenC-specific additions ──────────────────────────────────────
   readonly agent?: AgentConfig;
   readonly durableTurns?: DurableTurnsConfig;
+  readonly completion_gate?: CompletionGateConfig;
   readonly stream_watchdog_timeout_ms?: number;
   readonly provider_outage_wait_ms?: number;
   readonly provider_outage_retry_ms?: number;
@@ -1063,6 +1076,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "browser",
   "heartbeat",
   "durableTurns",
+  "completion_gate",
   "_unknown",
 ]);
 

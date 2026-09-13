@@ -26,6 +26,7 @@ export const LEGACY_TURN_CHECKPOINT_SLICE_KEYS = Object.freeze([
 
 export const TURN_CHECKPOINT_SLICE_KEYS = Object.freeze([
   ...LEGACY_TURN_CHECKPOINT_SLICE_KEYS,
+  "completionGateRound",
   "editorToolCallsAdmitted",
   "pendingAdmissionFallback",
   "textToolCallCorrectionCount",
@@ -55,6 +56,7 @@ export interface TurnCheckpointSliceLine {
   readonly continuationNudgeCount: number;
   readonly stopHookBlockingCount: number;
   readonly planToolRequiredRetryCount?: number;
+  readonly completionGateRound?: number;
   readonly editorToolCallsAdmitted?: number;
   readonly pendingAdmissionFallback?: PendingAdmissionFallbackSlice;
   readonly modelSampleOrdinal?: number;
@@ -76,7 +78,7 @@ export interface TurnCheckpointSliceLine {
 
 export type LegacyTurnCheckpointSliceLine = Omit<
   TurnCheckpointSliceLine,
-  "editorToolCallsAdmitted" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection"
+  "completionGateRound" | "editorToolCallsAdmitted" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection"
 > & {
   readonly editorToolCallsAdmitted?: never;
   readonly pendingAdmissionFallback?: never;

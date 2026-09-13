@@ -439,6 +439,7 @@ const isCheckpointSlice = objectShape(
   },
   {
     planToolRequiredRetryCount: isNonNegativeInteger,
+    completionGateRound: isNonNegativeInteger,
     editorToolCallsAdmitted: isNonNegativeInteger,
     pendingAdmissionFallback: isPendingAdmissionFallback,
     modelSampleOrdinal: isNonNegativeInteger,
@@ -972,6 +973,24 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       fromIteration: isNonNegativeInteger,
     },
     { haltedSideEffectingTools: isStringArray },
+  ),
+  completion_gate: objectShape(
+    {
+      turnId: isString,
+      round: isNonNegativeInteger,
+      maxRounds: isPositiveInteger,
+      outcome: oneOf("injected", "verified", "exhausted", "skipped"),
+      reason: oneOf(
+        "initial",
+        "no_verification",
+        "unmet_items",
+        "verified_with_tools",
+        "rounds_exhausted",
+        "no_tool_use",
+      ),
+      toolCallsSinceInjection: isNonNegativeInteger,
+    },
+    { unmetItems: isStringArray },
   ),
   thread_rolled_back: objectShape(
     { numTurns: isNonNegativeInteger },

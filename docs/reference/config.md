@@ -377,7 +377,18 @@ cannot survive process exit; if storage failed before a recovery file became
 durable, shutdown or a forced kill can still lose that unpersisted state.
 
 `max_turns` is unset by default; an unset turn cap does not impose a
-synthetic stop. `stream_watchdog_timeout_ms` defaults to `600000` (ten
+synthetic stop. `completion_gate` defaults to `mode = "auto"` with
+`max_rounds = 3`: in a non-interactive session (`agenc -p`, a routine, an
+evaluation harness) the first tool-free final answer of a turn that used
+tools is not accepted; the runtime injects a durable `<completion_gate>`
+user message that quotes the task and asks for a checklist backed by
+executed checks, and accepts the next answer once at least one tool call ran
+after the request and the answer has no unchecked `- [ ]` item. A turn that
+never called a tool (a plain question) is not gated. At `max_rounds` the
+answer is accepted anyway, recorded as `exhausted` in the `completion_gate`
+event; the turn still completes. `mode = "never"` turns the gate off,
+`mode = "always"` applies it to interactive sessions too.
+`stream_watchdog_timeout_ms` defaults to `600000` (ten
 minutes of provider silence): the runtime warns at half that time and aborts
 the stream with a retryable `stream_idle` error at the deadline. Set it to
 `0` to permit provider silence indefinitely. The *default* applies to session
@@ -778,6 +789,7 @@ keybinding file or watcher.
 | `durableTurns` | Durable-turn block. |
 | `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. `enabled` defaults to `true`. When false, restart reports `no-checkpoint` and opens a fresh turn. `minIntervalMs` throttles ordinary `iteration` and `postAssistant` writes. It does not defer the forced pre-admission checkpoint after `modelSampleOrdinal` advances. |
 | `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. When false, startup opens a fresh turn with reason `disabled`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
+| `completion_gate`, `completion_gate.mode`, `completion_gate.max_rounds` | Non-interactive verification round. `mode` is `auto` (default: only sessions created with `runtimeOptions.nonInteractive`), `always`, or `never`; `max_rounds` is `1..10`, default `3`. See [Built-in defaults](#built-in-defaults). |
 | `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume fail-closes when an enabled guard finds a lease or build-id mismatch. The switches enable or disable individual guards. They do not select an idempotent replay policy. |
 
 ### Gateway

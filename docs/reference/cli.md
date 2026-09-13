@@ -78,7 +78,13 @@ From `formatCliHelpText()`:
   checklist of checkable requirements, run the checks the task implies
   before the final message, never end the turn waiting for input, and report
   what was verified. `AGENC_COMPLETION_CONTRACT=0` in the CLI environment
-  leaves the section out; interactive sessions never receive it.
+  leaves the section out; interactive sessions never receive it. The
+  contract is also enforced structurally: the first tool-free final answer of
+  a turn that used tools is held back while the runtime injects a
+  `<completion_gate>` verification request, and the answer is accepted once
+  a tool-backed one arrives (or after `completion_gate.max_rounds`, default
+  3). `completion_gate.mode = "never"` in the config turns that off; see
+  [config.md](config.md#built-in-defaults).
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport
   (`promptViaSubprocess` in `@tetsuo-ai/agenc-sdk`).

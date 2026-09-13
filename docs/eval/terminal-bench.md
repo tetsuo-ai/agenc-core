@@ -188,7 +188,15 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   requirements, run the checks the task implies before the final message,
   never end the turn waiting for input, report what was verified.
   `--ak env=AGENC_COMPLETION_CONTRACT=0` runs the same build without it, which
-  is how its effect is measured.
+  is how its effect is measured. The same rule is enforced structurally by
+  the completion gate (`phases/completion-gate.ts`, config `completion_gate`):
+  the first tool-free final answer of a tool-using non-interactive turn is
+  held while a durable `<completion_gate>` message quoting the task asks for
+  a checklist backed by executed checks; the answer is accepted once a
+  tool-backed one arrives, or after three rounds. Every decision is a
+  `completion_gate` rollout event, so a trial's transcript shows whether the
+  verification round happened. `agenc config set completion_gate.mode never`
+  runs a build without the gate.
 
 ## Results
 

@@ -224,6 +224,7 @@ describe("durable checkpoint reader", () => {
     const legacy = legacyCheckpoint("a".repeat(64));
     const resumableState = {
       ...(legacy.resumableState as Record<string, unknown>),
+      completionGateRound: 2,
       editorToolCallsAdmitted: 3,
       pendingAdmissionFallback: {
         fromModel: "gemini-3.1-pro",
@@ -246,6 +247,7 @@ describe("durable checkpoint reader", () => {
       checkpoint: {
         checkpointVersion: 3,
         resumableState: {
+          completionGateRound: 2,
           editorToolCallsAdmitted: 3,
           pendingAdmissionFallback: {
             fromModel: "gemini-3.1-pro",

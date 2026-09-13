@@ -294,6 +294,30 @@ export interface TurnResumedEvent {
   readonly haltedSideEffectingTools?: ReadonlyArray<string>;
 }
 
+/**
+ * One decision of the non-interactive completion gate (phase 4b): a
+ * verification prompt was injected, or a final answer was accepted as
+ * verified, accepted because the rounds ran out, or the turn was not gated.
+ */
+export interface CompletionGateEvent {
+  readonly turnId: string;
+  /** Gate prompts injected so far in this turn, after this decision. */
+  readonly round: number;
+  readonly maxRounds: number;
+  readonly outcome: "injected" | "verified" | "exhausted" | "skipped";
+  readonly reason:
+    | "initial"
+    | "no_verification"
+    | "unmet_items"
+    | "verified_with_tools"
+    | "rounds_exhausted"
+    | "no_tool_use";
+  /** Tool calls that completed between the last injection and this decision. */
+  readonly toolCallsSinceInjection: number;
+  /** Unchecked checklist items quoted back to the model, when any. */
+  readonly unmetItems?: ReadonlyArray<string>;
+}
+
 export interface AgentMessageEvent {
   readonly message: string;
 }
@@ -1183,6 +1207,7 @@ export type EventMsg =
       readonly payload: TurnCheckpointEvent;
     }
   | { readonly type: "turn_resumed"; readonly payload: TurnResumedEvent }
+  | { readonly type: "completion_gate"; readonly payload: CompletionGateEvent }
   | {
       readonly type: "thread_rolled_back";
       readonly payload: ThreadRolledBackEvent;
@@ -1443,6 +1468,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "turn_failed",
     "turn_checkpoint",
     "turn_resumed",
+    "completion_gate",
     "thread_rolled_back",
     "error",
     "stream_error",
