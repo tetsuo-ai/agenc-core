@@ -366,6 +366,20 @@ export class LLMServerError extends RuntimeError {
 }
 
 /**
+ * Error thrown when a provider stream ends before its terminal event
+ * (`response.completed` / `response.failed`). The transport delivered a clean
+ * end, so no HTTP status or socket code marks the failure, yet nothing
+ * definitive came from the provider: the request is safe to send again, and
+ * the turn's reconnect policy treats it as transient, like `stream_idle`.
+ */
+export class LLMStreamTruncatedError extends LLMProviderError {
+  constructor(providerName: string, message: string) {
+    super(providerName, message);
+    this.name = "LLMStreamTruncatedError";
+  }
+}
+
+/**
  * Error thrown when a provider transport succeeds but the returned response
  * envelope is malformed or contradicts the requested capability contract.
  */

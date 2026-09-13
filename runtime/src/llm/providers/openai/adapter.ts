@@ -24,6 +24,7 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMProviderError,
+  LLMStreamTruncatedError,
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
   LLMRateLimitError,
@@ -1312,7 +1313,7 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       if (!completedResponse) {
-        throw new LLMProviderError(
+        throw new LLMStreamTruncatedError(
           this.name,
           "Stream closed without a response.completed payload",
         );

@@ -105,7 +105,9 @@ import {
   LLMAuthenticationError,
   LLMCaptivePortalError,
   LLMContextWindowExceededError,
+  LLMProviderError,
   LLMServerError,
+  LLMStreamTruncatedError,
 } from "../llm/errors.js";
 import { FallbackTriggeredError } from "../recovery/api-errors.js";
 import type {
@@ -7046,6 +7048,24 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     const typed = new LLMServerError("openai", 504, "Gateway Timeout");
     const wrapped = new StreamModelError(typed);
     expect(isRetryableStreamError(wrapped)).toBe(true);
+  });
+
+  test("a stream that ended before its terminal event is retryable", () => {
+    // A Terminal-Bench trial died after 1.5 h when one upstream socket dropped
+    // mid-stream: the adapter returned a plain provider error and the turn
+    // failed instead of reconnecting. The typed truncation error takes the
+    // same ladder as stream_idle.
+    const truncated = new LLMStreamTruncatedError(
+      "grok",
+      "Stream closed without a response.completed or response.failed event",
+    );
+    expect(isRetryableStreamError(new StreamModelError(truncated))).toBe(true);
+    // The same words on an untyped provider error stay non-retryable.
+    expect(
+      isRetryableStreamError(
+        new StreamModelError(new LLMProviderError("grok", truncated.message)),
+      ),
+    ).toBe(false);
   });
 
   test("LLMContextWindowExceededError containing '504' in metadata is NOT retryable", () => {
