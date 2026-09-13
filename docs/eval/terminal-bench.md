@@ -197,6 +197,13 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   `completion_gate` rollout event, so a trial's transcript shows whether the
   verification round happened. `agenc config set completion_gate.mode never`
   runs a build without the gate.
+- A GUI task driven through VNC screenshots (legacy-utility-triage) grew a
+  conversation with 54 inline screenshots: 10.8 MB of a 11.1 MB request,
+  while the provider counted only 120k tokens. Every full-history resend
+  after the reconnect ladder was answered 500, and the stored-response
+  refusal followed. The query projection now keeps at most
+  `AGENC_CONTEXT_IMAGE_BUDGET_BYTES` (6 MiB) of inline images, newest first,
+  and replaces older ones with a placeholder on the wire only.
 
 ## Results
 
