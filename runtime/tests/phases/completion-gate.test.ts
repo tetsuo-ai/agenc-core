@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { Lexer } from "marked";
 
 import {
   buildCompletionGateMessage,
@@ -9,7 +10,7 @@ import {
 } from "../../src/phases/completion-gate.js";
 import type { Session } from "../../src/session/session.js";
 import type { TurnContext } from "../../src/session/turn-context.js";
-import type { TurnState } from "../../src/session/turn-state.js";
+import type { CompletedToolResultRecord, TurnState } from "../../src/session/turn-state.js";
 
 function mkCtx(overrides?: Record<string, unknown>): TurnContext {
   return {
@@ -33,8 +34,8 @@ function mkSession(overrides?: Record<string, unknown>): Session & {
   } as unknown as Session & { emit: ReturnType<typeof vi.fn> };
 }
 
-function toolResult(id: string) {
-  return { callId: id, toolName: "Bash", arguments: "{}", content: "ok", isError: false };
+function toolResult(id: string, overrides?: Partial<CompletedToolResultRecord>): CompletedToolResultRecord {
+  return { callId: id, toolName: "Bash", arguments: "{}", content: "ok", isError: false, ...overrides };
 }
 
 function answer(text: string, extra?: Record<string, unknown>) {
@@ -74,7 +75,15 @@ function laterAnswer(text: string, tools: number): TurnState {
 }
 
 function gateEvents(session: { emit: ReturnType<typeof vi.fn> }) {
-  return session.emit.mock.calls.map(([event]) => event.msg.payload);
+  return session.emit.mock.calls
+    .filter(([event]) => event.msg.type === "completion_gate")
+    .map(([event]) => event.msg.payload);
+}
+
+function warningEvents(session: { emit: ReturnType<typeof vi.fn> }) {
+  return session.emit.mock.calls
+    .filter(([event]) => event.msg.type === "warning")
+    .map(([event]) => event.msg.payload);
 }
 
 describe("resolveCompletionGatePolicy", () => {
@@ -172,6 +181,21 @@ describe("extractUncheckedChecklistItems", () => {
     const many = Array.from({ length: 30 }, (_, i) => `- [ ] item ${i}`).join("\n");
     expect(extractUncheckedChecklistItems(many)).toHaveLength(20);
     expect(extractUncheckedChecklistItems(`- [ ] ${"y".repeat(300)}`)[0]?.length).toBe(203);
+  });
+
+  test.each([
+    ["shorter closing fence", "````text", "```", "````"],
+    ["different closing character", "```text", "~~~", "```"],
+    ["closing fence with trailing text", "```text", "``` not a close", "```"],
+    ["shorter tilde closing fence", "~~~~text", "~~~", "~~~~"],
+  ])("ignores %s and still finds the item outside the matching fence", (_name, open, invalidClose, close) => {
+    const text = [open, invalidClose, "- [ ] fenced example", close, "- [ ] actual unmet requirement"].join("\n");
+    expect(extractUncheckedChecklistItems(text)).toEqual(["actual unmet requirement"]);
+  });
+
+  test("accepts a longer matching closing fence and keeps blocked items out of its public result", () => {
+    const text = ["```text", "- [ ] example", "````", "- [-] blocked", "- [ ] actual unmet requirement"].join("\n");
+    expect(extractUncheckedChecklistItems(text)).toEqual(["actual unmet requirement"]);
   });
 });
 
@@ -300,9 +324,18 @@ describe("completionGate", () => {
     ]);
   });
 
-  test("accepts a later answer backed by tool calls with no unmet items", async () => {
+  test.each([
+    "- [x] tests pass: pytest, 3 passed\nDone.",
+    "- [X] tests pass: pytest, 3 passed",
+    "* [x] tests pass: pytest, 3 passed",
+    "+ [x] tests pass: pytest, 3 passed",
+    "- [x] tests pass: pytest, 3 passed\n```text\n- [ ] example\n- [?] example\n```",
+    "- [x] checked\n- [docs](url)",
+    "- [x] checked\n-     [-] example",
+    "- [x] checked\n-     [x] example",
+  ])("accepts a nonempty checked checklist backed by a successful tool: %s", async (text) => {
     const session = mkSession();
-    const state = laterAnswer("- [x] tests pass: pytest, 3 passed\n- [-] no GPU here\nDone.", 2);
+    const state = laterAnswer(text, 2);
     await completionGate(state, mkCtx(), session);
     expect(state.transition).toBeUndefined();
     expect(state.completionGateSettled).toBe(true);
@@ -310,11 +343,199 @@ describe("completionGate", () => {
     expect(gateEvents(session)).toEqual([
       expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", toolCallsSinceInjection: 1 }),
     ]);
+    expect(warningEvents(session)).toEqual([]);
+  });
+
+  test.each([
+    ["plain final answer", "Done."],
+    ["ordinary prose bullets", "- Tests passed."],
+    ["checklist only inside a fence", "```markdown\n- [x] tests pass\n```"],
+    ["checklist only inside a blockquote", "> - [x] tests pass"],
+    ["checklist only inside indented code", "    - [x] tests pass"],
+    ["checklist only inside inline code", "`- [x] tests pass`"],
+    ["link whose label resembles a checkbox", "- [x](url)"],
+    ["checked marker without a separating space", "- [x]no-space"],
+    ["empty checked item", "- [x]"],
+    ["empty uppercase checked item", "- [X]   "],
+    ["empty unchecked item", "- [ ]"],
+    ["empty blocked item", "- [-]"],
+    ["unknown checkbox state", "- [?] tests pass"],
+    ["malformed checkbox spacing", "- [x ] tests pass"],
+    ["missing checkbox state", "- [] tests pass"],
+    ["valid and malformed items", "- [x] tests pass\n- [?] output exists"],
+    ["valid and empty items", "- [x] tests pass\n- [x]   "],
+    ["valid item and a missing closing bracket", "- [x] checked\n- [x missing bracket"],
+  ])("rejects %s even after a successful tool call", async (_name, text) => {
+    const session = mkSession();
+    const state = laterAnswer(text, 2);
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(false);
+    expect(state.completionGateRound).toBe(2);
+    expect(state.completionGateToolLedgerMark).toBe(2);
+    expect(state.transition).toEqual({ reason: "completion_gate" });
+    expect(state.messages.at(-1)?.role).toBe("user");
+    expect(state.messages.at(-1)).not.toHaveProperty("runtimeOnly");
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "no_checklist", toolCallsSinceInjection: 1 }),
+    ]);
+  });
+
+  test("requests a new checklist if Markdown parsing fails", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 2);
+    const lexer = vi.spyOn(Lexer, "lex").mockImplementationOnce(() => {
+      throw new Error("Markdown parser failure");
+    });
+    try {
+      await completionGate(state, mkCtx(), session);
+      expect(state.completionGateSettled).toBe(false);
+      expect(state.transition).toEqual({ reason: "completion_gate" });
+      expect(gateEvents(session)).toEqual([
+        expect.objectContaining({ outcome: "injected", reason: "no_checklist" }),
+      ]);
+    } finally {
+      lexer.mockRestore();
+    }
+  });
+
+  test.each([
+    ["unchecked", "- [x] tests pass\n- [ ] output file exists", "output file exists"],
+    ["blocked", "- [x] tests pass\n- [-] GPU test cannot run here", "GPU test cannot run here"],
+    ["only blocked", "- [-] GPU test cannot run here", "GPU test cannot run here"],
+    ["unchecked after a list-scoped fence", "- [x] checked\n\n    ```\n- [ ] unmet", "unmet"],
+  ])("does not verify a checklist with %s requirements", async (_name, text, unmetItem) => {
+    const session = mkSession();
+    const state = laterAnswer(text, 2);
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(false);
+    expect(state.transition).toEqual({ reason: "completion_gate" });
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "unmet_items", unmetItems: [unmetItem] }),
+    ]);
+    expect(String(state.messages.at(-1)?.content)).toContain(unmetItem);
+  });
+
+  test.each([
+    { content: "pytest: 1 failed", metadata: { exitCode: 1 } },
+    { content: "command timed out", metadata: { exitCode: null, timedOut: true } },
+    { content: "permission denied" },
+  ])("does not count an unsuccessful post-injection tool: $content", async (failure) => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 1);
+    state.completedToolResults.push(toolResult("failed-verification", { ...failure, isError: true }));
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(false);
+    expect(state.completionGateToolLedgerMark).toBe(2);
+    expect(state.transition).toEqual({ reason: "completion_gate" });
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "no_verification", toolCallsSinceInjection: 1 }),
+    ]);
+  });
+
+  test("accepts successful verification after a failed exploratory tool in the same round", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 1);
+    state.completedToolResults.push(
+      toolResult("explore", { content: "file not found", isError: true }),
+      toolResult("verify", { content: "3 passed", metadata: { exitCode: 0 } }),
+    );
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(true);
+    expect(state.transition).toBeUndefined();
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", toolCallsSinceInjection: 2 }),
+    ]);
+    expect(warningEvents(session)).toEqual([]);
+  });
+
+  test.each(["exec_command", "write_stdin"])("does not count a yielded %s process as completed verification", async (toolName) => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 1);
+    state.completedToolResults.push(toolResult("yielded-verification", {
+      toolName,
+      content: "Process running with session ID 42",
+      isError: false,
+      metadata: { exitCode: null, processId: 42 },
+    }));
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(false);
+    expect(state.transition).toEqual({ reason: "completion_gate" });
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "no_verification", toolCallsSinceInjection: 1 }),
+    ]);
+  });
+
+  test("accepts a successful poll after a yielded verification process", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 1);
+    state.completedToolResults.push(
+      toolResult("start-tests", {
+        toolName: "exec_command",
+        content: "Process running with session ID 42",
+        metadata: { exitCode: null, processId: 42 },
+      }),
+      toolResult("poll-tests", {
+        toolName: "write_stdin",
+        content: "3 passed",
+        metadata: { exitCode: 0, sessionId: 42 },
+      }),
+    );
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(true);
+    expect(state.transition).toBeUndefined();
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", toolCallsSinceInjection: 2 }),
+    ]);
+  });
+
+  test("requires fresh successful verification after a failed round and then permits recovery", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 1);
+    state.completedToolResults.push(toolResult("failed-verification", { isError: true, content: "1 failed" }));
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateToolLedgerMark).toBe(2);
+    expect(state.completionGateRound).toBe(2);
+    state.transition = undefined;
+    state.completedToolResults.push(toolResult("recheck", { content: "3 passed" }));
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(true);
+    expect(state.transition).toBeUndefined();
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "no_verification", toolCallsSinceInjection: 1 }),
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", toolCallsSinceInjection: 1 }),
+    ]);
+  });
+
+  test.each([
+    ["unchecked", "- [ ] late requirement", "unmet_items"],
+    ["blocked", "- [-] late requirement cannot run", "unmet_items"],
+    ["malformed", "- [?] late requirement", "no_checklist"],
+  ])("scans beyond twenty checked items for a %s requirement", async (_name, finalItem, reason) => {
+    const session = mkSession();
+    const checkedItems = Array.from({ length: 25 }, (_, i) => `- [x] requirement ${i}: checked`).join("\n");
+    const state = laterAnswer(`${checkedItems}\n${finalItem}`, 2);
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(false);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason }),
+    ]);
+  });
+
+  test("bounds blocked-item diagnostics while still rejecting the checklist", async () => {
+    const session = mkSession();
+    const blockedItems = Array.from({ length: 30 }, (_, i) => `- [-] item ${i}: ${"y".repeat(300)}`).join("\n");
+    const state = laterAnswer(`- [x] tests pass\n${blockedItems}`, 2);
+    await completionGate(state, mkCtx(), session);
+    const [event] = gateEvents(session);
+    expect(event).toMatchObject({ outcome: "injected", reason: "unmet_items" });
+    expect(event.unmetItems).toHaveLength(20);
+    expect(event.unmetItems.every((item: string) => item.length <= 203)).toBe(true);
+    expect(state.completionGateSettled).toBe(false);
   });
 
   test("re-injects when no tool ran since the request", async () => {
     const session = mkSession();
-    const state = laterAnswer("Done, really.", 1);
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 1);
     await completionGate(state, mkCtx(), session);
     expect(state.completionGateRound).toBe(2);
     expect(state.transition).toEqual({ reason: "completion_gate" });
@@ -342,9 +563,14 @@ describe("completionGate", () => {
     ]);
   });
 
-  test("accepts at the round cap instead of looping", async () => {
+  test.each([
+    ["missing checklist", "Done.", 2],
+    ["no verification", "- [x] tests pass: pytest, 3 passed", 1],
+    ["unchecked requirement", "- [x] tests pass\n- [ ] output exists", 2],
+    ["blocked requirement", "- [x] tests pass\n- [-] no GPU here", 2],
+  ])("exhausts %s at the round cap and warns exactly once without re-entering", async (_name, text, tools) => {
     const session = mkSession();
-    const state = laterAnswer("Done.", 1);
+    const state = laterAnswer(text, tools);
     state.completionGateRound = 3;
     await completionGate(state, mkCtx(), session);
     expect(state.transition).toBeUndefined();
@@ -354,5 +580,29 @@ describe("completionGate", () => {
     expect(gateEvents(session)).toEqual([
       expect.objectContaining({ outcome: "exhausted", reason: "rounds_exhausted" }),
     ]);
+    expect(warningEvents(session)).toEqual([
+      {
+        cause: "completion_gate_exhausted",
+        message: "completion gate exhausted after 3 rounds; the final answer was not verified",
+        turnId: "turn-gate",
+      },
+    ]);
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toHaveLength(1);
+    expect(warningEvents(session)).toHaveLength(1);
+    expect(state.transition).toBeUndefined();
+  });
+
+  test("verifies a successful checked answer at the round cap without warning", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 2);
+    state.completionGateRound = 3;
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(true);
+    expect(state.transition).toBeUndefined();
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", round: 3 }),
+    ]);
+    expect(warningEvents(session)).toEqual([]);
   });
 });

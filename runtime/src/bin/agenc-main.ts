@@ -1543,6 +1543,25 @@ function daemonNestedTranscriptEvent(event: unknown): JsonObject | null {
   return params;
 }
 
+function daemonOneShotCompletionWarning(
+  event: unknown,
+  sessionId: string,
+  turnId: string | undefined,
+): { readonly id: string; readonly message: string } | null {
+  const params = daemonEventParams(event);
+  const transcriptEvent = daemonNestedTranscriptEvent(event);
+  if (params?.sessionId !== sessionId || turnId === undefined ||
+      transcriptEvent?.type !== "warning" || !isJsonRecord(transcriptEvent.payload)) return null;
+  const payload = transcriptEvent.payload;
+  if (payload.cause !== "completion_gate_exhausted" || typeof payload.message !== "string") return null;
+  const scopes = [params.turnId, transcriptEvent.turnId, payload.turnId].filter(
+    (scope): scope is string => typeof scope === "string",
+  );
+  if (scopes.length === 0 || scopes.some((scope) => scope !== turnId)) return null;
+  const id = params.eventId ?? transcriptEvent.id;
+  return typeof id === "string" && id.length > 0 ? { id, message: payload.message } : null;
+}
+
 /**
  * Assistant text carried by one daemon event: a streamed delta, or the
  * complete message the daemon emits once the deltas are done. The daemon
@@ -1783,6 +1802,7 @@ async function awaitDaemonOneShotRun(params: {
   // complete message so the two are never written twice.
   let streamedMessage = "";
   const collectedEvents: unknown[] = [];
+  const printedCompletionWarnings = new Set<string>();
   // In continue mode the stream id we choose is the daemon's turn id, so
   // terminal events of any other turn (a replayed history item, an unrelated
   // client's turn) never settle this run.
@@ -1975,6 +1995,13 @@ async function awaitDaemonOneShotRun(params: {
           }
 
           activeTurnId ??= daemonOneShotStartedTurnId(event);
+          if (outputFormat === "text") {
+            const warning = daemonOneShotCompletionWarning(event, sessionId, activeTurnId);
+            if (warning !== null && !printedCompletionWarnings.has(warning.id)) {
+              printedCompletionWarnings.add(warning.id);
+              process.stderr.write(`${warning.message}\n`);
+            }
+          }
           const finalStatus = daemonOneShotFinalStatus(event, activeTurnId);
           if (finalStatus === null) return;
           void finalize(finalStatus).catch((error: unknown) => {

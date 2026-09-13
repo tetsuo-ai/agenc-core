@@ -382,11 +382,20 @@ synthetic stop. `completion_gate` defaults to `mode = "auto"` with
 evaluation harness) the first tool-free final answer of a turn that used
 tools is not accepted; the runtime injects a durable `<completion_gate>`
 user message that quotes the task and asks for a checklist backed by
-executed checks, and accepts the next answer once at least one tool call ran
-after the request and the answer has no unchecked `- [ ]` item. A turn that
-never called a tool (a plain question) is not gated. At `max_rounds` the
-answer is accepted anyway, recorded as `exhausted` in the `completion_gate`
-event; the turn still completes. `mode = "never"` turns the gate off,
+executed checks. Acceptance requires at least one successful tool result
+after the latest request and a nonempty checked `- [x]` item outside code
+fences. Unchecked `- [ ]`, explicitly unverified `- [-]`, or malformed
+checklist items prevent verification. A tool error or an explicitly
+still-running command (`metadata.exitCode = null`) does not count as a
+successful check; a later successful result can satisfy the requirement.
+The gate checks this structure, not whether the evidence proves every task
+requirement or whether the delivered work is correct. A turn that never
+called a tool (a plain question) is not gated. At `max_rounds` the answer is
+recorded as `exhausted`, not `verified`, in the `completion_gate` event.
+A `completion_gate_exhausted` warning states that the final answer was not
+verified. The turn still completes with its existing stop reason and exit
+code; text-mode `agenc -p` prints the warning to stderr, and structured
+output includes the warning event. `mode = "never"` turns the gate off,
 `mode = "always"` applies it to interactive sessions too.
 `stream_watchdog_timeout_ms` defaults to `600000` (ten
 minutes of provider silence): the runtime warns at half that time and aborts

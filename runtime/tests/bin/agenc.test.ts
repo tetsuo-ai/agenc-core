@@ -1758,6 +1758,47 @@ async function withOneShotTestEnvironment<T>(
   }
 }
 
+function completionWarningOneShotFixture(includeExhaustion: boolean) {
+  const agentId = "agent_gate";
+  const sessionId = "session_gate";
+  const turnId = "turn_gate";
+  const warningMessage = "completion gate exhausted after 2 rounds; the final answer was not verified";
+  const transcript = (
+    id: string,
+    type: string,
+    payload: Record<string, unknown>,
+    scope: { sessionId?: string; turnId?: string } = {},
+  ) => ({
+    method: "event.session_event",
+    params: {
+      sessionId, agentId, turnId, eventId: id, ...scope,
+      event: { id, type, payload },
+    },
+  });
+  const warning = transcript("gate-warning", "warning", {
+    cause: "completion_gate_exhausted", message: warningMessage,
+  });
+  const { turnId: _warningTurnId, ...unscopedWarningParams } = warning.params;
+  const events = [
+    transcript("started", "turn_started", { turnId }),
+    transcript("unrelated", "warning", { cause: "skill_listing_truncated", message: "unrelated warning" }),
+    transcript("gate-warning", "warning", { cause: "completion_gate_exhausted", message: "another session" }, { sessionId: "other-session" }),
+    transcript("gate-warning", "warning", { cause: "completion_gate_exhausted", message: "another turn" }, { turnId: "old-turn" }),
+    { ...warning, params: unscopedWarningParams },
+    transcript("conflicting", "warning", { cause: "completion_gate_exhausted", message: "conflicting turn", turnId: "old-turn" }),
+    ...(includeExhaustion ? [
+      warning,
+      // Replay retains the canonical identity even if the producer sub-id differs.
+      { ...warning, params: { ...warning.params, event: { ...warning.params.event, id: "replayed-producer" } } },
+      // A distinct canonical event may reuse the same producer sub-id.
+      { ...warning, params: { ...warning.params, eventId: "second-warning" } },
+    ] : []),
+    transcript("answer", "agent_message", { message: "final answer" }),
+    transcript("completed", "turn_complete", { turnId, lastAgentMessage: "final answer" }),
+  ];
+  return { agentId, sessionId, warning, warningMessage, events };
+}
+
 describe("main() smoke", () => {
   it("loads mcp serve config only when the route needs configured defaults", () => {
     expect(shouldLoadMcpCliConfig(["mcp"])).toBe(false);
@@ -1958,6 +1999,42 @@ describe("main() smoke", () => {
       expect(code).toBe(0);
       expect(stdout()).toBe("pong\nand done\n");
     });
+  });
+
+  it.each([
+    { format: "text", exhausted: true },
+    { format: "text", exhausted: false },
+    { format: "json", exhausted: true },
+    { format: "stream-json", exhausted: true },
+  ])("oneShotCLI preserves successful $format output with exhausted=$exhausted", async ({ format, exhausted }) => {
+    const fixture = completionWarningOneShotFixture(exhausted);
+    const previousArgv = process.argv;
+    process.argv = ["node", "agenc", "--print", `--output-format=${format}`, "work"];
+    try {
+      await withOneShotTestEnvironment("agenc-gate-warning-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd,
+          oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(0);
+        expect(stderr()).toBe(format === "text" && exhausted ? `${fixture.warningMessage}\n`.repeat(2) : "");
+        if (format === "text") {
+          expect(stdout()).toBe("final answer\n");
+        } else if (format === "json") {
+          expect(JSON.parse(stdout())).toMatchObject({
+            type: "result", exitCode: 0, finalMessage: "final answer", events: fixture.events,
+          });
+        } else {
+          const records = stdout().trim().split("\n").map((line) => JSON.parse(line));
+          expect(records.filter((record) => record.type === "event").map((record) => record.event)).toEqual(fixture.events);
+          expect(records.at(-1)).toMatchObject({ type: "result", exitCode: 0, finalMessage: "final answer" });
+        }
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+      });
+    } finally {
+      process.argv = previousArgv;
+    }
   });
 
   it("oneShotFinalMessageRemainder adds only what the deltas did not carry", () => {

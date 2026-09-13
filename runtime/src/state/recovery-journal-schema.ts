@@ -983,6 +983,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       reason: oneOf(
         "initial",
         "no_verification",
+        "no_checklist",
         "unmet_items",
         "verified_with_tools",
         "rounds_exhausted",
@@ -1004,7 +1005,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     { cause: isString, message: isString },
     { provider: isString, status: isNumber },
   ),
-  warning: objectShape({ cause: isString, message: isString }),
+  warning: objectShape({ cause: isString, message: isString }, { turnId: isString }),
   effect_intent: objectShape(
     {
       runId: isString,

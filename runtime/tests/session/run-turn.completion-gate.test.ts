@@ -1,5 +1,12 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
+import {
+  correlateDaemonEvent,
+  daemonEventFromUnboundSessionEvent,
+  notificationFromDaemonEvent,
+} from "../../src/app-server/background-agent-runner/daemon-events.js";
+import type { ActiveBackgroundAgent } from "../../src/app-server/background-agent-runner/shared.js";
+import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
 import type { LLMMessage, LLMResponse } from "../../src/llm/types.js";
 import type { PhaseEvent } from "../../src/phases/events.js";
 import { runTurn } from "../../src/session/run-turn.js";
@@ -11,6 +18,8 @@ import {
 } from "../../src/session/turn-state.js";
 import { isCanonicalEventPayload } from "../../src/state/recovery-journal-schema.js";
 import type { Event } from "../../src/session/session.js";
+import type { ToolRegistry } from "../../src/tool-registry.js";
+import type { Tool, ToolResult } from "../../src/tools/types.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
 const TASK = "Create /app/out.txt containing the word done and make the tests pass";
@@ -18,7 +27,7 @@ const TASK = "Create /app/out.txt containing the word done and make the tests pa
 function toolStep(id: string): Partial<LLMResponse> {
   return {
     content: "",
-    toolCalls: [{ id, name: "Bash", arguments: "{}" }],
+    toolCalls: [{ id, name: "completion_probe", arguments: "{}" }],
     finishReason: "tool_calls",
   };
 }
@@ -47,12 +56,46 @@ function scriptedProvider(script: readonly Partial<LLMResponse>[]) {
   return { provider, requests };
 }
 
+function toolRegistry(
+  execute: Tool["execute"] = async () => ({ content: "ok", isError: false }),
+): ToolRegistry {
+  const tool: Tool = {
+    name: "completion_probe",
+    description: "Return the next scripted work or verification result",
+    inputSchema: { type: "object" },
+    isReadOnly: true,
+    requiresApproval: false,
+    recoveryCategory: "idempotent",
+    execute,
+  };
+  return {
+    tools: [tool],
+    toLLMTools: () => [{
+      type: "function",
+      function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
+    }],
+    dispatch: async () => ({ content: "unexpected legacy dispatch", isError: true }),
+  } as ToolRegistry;
+}
+
+function queuedToolRegistry(results: readonly ToolResult[]) {
+  const pending = [...results];
+  const execute = vi.fn(async () => {
+    const result = pending.shift();
+    if (result === undefined) throw new Error("Unexpected tool execution after scripted results");
+    return result;
+  });
+  return { registry: toolRegistry(execute), execute };
+}
+
 function headlessSession(
   provider: ReturnType<typeof mkProvider>,
   nonInteractive: boolean,
+  registry = toolRegistry(),
 ) {
   return mkSession({
     provider,
+    registry,
     services: {
       runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive }),
     },
@@ -65,6 +108,21 @@ function gatePayloads(events: readonly Event[]) {
     .map((event) => event.msg.payload as Record<string, unknown>);
 }
 
+function gateWarnings(events: readonly Event[]) {
+  return events.flatMap((event) =>
+    event.msg.type === "warning" && event.msg.payload.cause === "completion_gate_exhausted"
+      ? [event.msg.payload]
+      : [],
+  );
+}
+
+function expectCompletedTurn(events: readonly Event[]) {
+  expect(events.flatMap((event) => {
+    const terminal = classifyTurnTerminal(event.msg);
+    return terminal === undefined ? [] : [terminal];
+  })).toEqual([expect.objectContaining({ outcome: "completed", code: 0 })]);
+}
+
 function lastUserText(request: readonly LLMMessage[]): string {
   const last = [...request].reverse().find((message) => message.role === "user");
   return typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
@@ -74,6 +132,17 @@ async function collect(session: ReturnType<typeof mkSession>["session"], ctx = m
   const phases: PhaseEvent[] = [];
   for await (const phase of runTurn(session, ctx, TASK)) phases.push(phase);
   return phases;
+}
+
+async function exhaustGate(maxRounds: number) {
+  const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep("Done.")]);
+  const { session, events } = headlessSession(provider, true);
+  const ctx = mkCtx();
+  const phases = await collect(session, {
+    ...ctx,
+    config: { ...(ctx.config as Record<string, unknown>), completionGate: { max_rounds: maxRounds } },
+  } as typeof ctx);
+  return { requests, events, ctx, phases };
 }
 
 describe("completion gate in the turn loop", () => {
@@ -96,6 +165,7 @@ describe("completion gate in the turn loop", () => {
     expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed" });
     expect(events.filter((event) => event.msg.type === "turn_complete")).toHaveLength(1);
     expect(events.some((event) => event.msg.type === "turn_failed")).toBe(false);
+    expect(gateWarnings(events)).toEqual([]);
     expect(gatePayloads(events)).toEqual([
       expect.objectContaining({ outcome: "injected", reason: "initial", round: 1, maxRounds: 3 }),
       expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", toolCallsSinceInjection: 1 }),
@@ -109,6 +179,121 @@ describe("completion gate in the turn loop", () => {
         (message) => message.role === "user" && String(message.content).includes("<completion_gate"),
       ),
     ).toBe(true);
+  });
+
+  test("a failed verification tool cannot back a checked claim, but a later successful check can", async () => {
+    const failedClaim = "- [x] /app/out.txt contains done: checked the file\n- [x] tests pass";
+    const verifiedAnswer = "- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed";
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"),
+      textStep("Done."),
+      toolStep("verify-failed"),
+      textStep(failedClaim),
+      toolStep("verify-success"),
+      textStep(verifiedAnswer),
+    ]);
+    const { registry, execute } = queuedToolRegistry([
+      { content: "Wrote /app/out.txt", isError: false },
+      { content: "Verification command failed", isError: true },
+      { content: "done\n3 passed", isError: false },
+    ]);
+    const { session, events, state } = headlessSession(provider, true, registry);
+    const phases = await collect(session);
+
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(requests).toHaveLength(6);
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "initial", round: 1 }),
+      expect.objectContaining({
+        outcome: "injected", reason: "no_verification", round: 2, toolCallsSinceInjection: 1,
+      }),
+      expect.objectContaining({
+        outcome: "verified", reason: "verified_with_tools", round: 2, toolCallsSinceInjection: 1,
+      }),
+    ]);
+    // These closures and durable results are produced by the real execution
+    // pipeline, which also populates the completion gate's tool-result ledger.
+    expect(events.flatMap((event) =>
+      event.msg.type === "tool_call_completed" ? [event.msg.payload] : [],
+    )).toEqual([
+      expect.objectContaining({ callId: "work-1", isError: false }),
+      expect.objectContaining({ callId: "verify-failed", isError: true }),
+      expect.objectContaining({ callId: "verify-success", isError: false }),
+    ]);
+    expect(state.history.filter((message) => message.role === "tool")).toEqual([
+      expect.objectContaining({ toolCallId: "work-1", content: expect.stringContaining("Wrote /app/out.txt") }),
+      expect.objectContaining({
+        toolCallId: "verify-failed", content: expect.stringContaining("Verification command failed"),
+      }),
+      expect.objectContaining({ toolCallId: "verify-success", content: expect.stringContaining("done\n3 passed") }),
+    ]);
+    const injections = state.history.filter(
+      (message) => message.role === "user" && String(message.content).includes("<completion_gate"),
+    );
+    expect(injections).toHaveLength(2);
+    expect(injections.map((message) => message.content)).toEqual([
+      lastUserText(requests[2] ?? []),
+      lastUserText(requests[4] ?? []),
+    ]);
+    for (const message of injections) expect(message).not.toHaveProperty("runtimeOnly");
+    expect(state.history).toContainEqual(expect.objectContaining({ role: "assistant", content: failedClaim }));
+    expect(state.history.at(-1)).toMatchObject({ role: "assistant", content: verifiedAnswer });
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed" });
+    expectCompletedTurn(events);
+    expect(gateWarnings(events)).toEqual([]);
+  });
+
+  test("a successful tool result without a checklist triggers another verification round", async () => {
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"),
+      textStep("Done."),
+      toolStep("verify-1"),
+      textStep("The file contains done and all three tests pass."),
+      toolStep("verify-2"),
+      textStep("- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed"),
+    ]);
+    const { session, events, state } = headlessSession(provider, true);
+    await collect(session);
+
+    expect(requests).toHaveLength(6);
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "initial", round: 1 }),
+      expect.objectContaining({
+        outcome: "injected", reason: "no_checklist", round: 2, toolCallsSinceInjection: 1,
+      }),
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", round: 2 }),
+    ]);
+    const reinjection = lastUserText(requests[4] ?? []);
+    expect(reinjection).toContain('<completion_gate round="2" of="3">');
+    expect(reinjection).toContain("checklist");
+    expect(state.history).toContainEqual({ role: "user", content: reinjection });
+    for (const payload of gatePayloads(events)) {
+      expect(isCanonicalEventPayload("completion_gate", payload)).toBe(true);
+    }
+    expectCompletedTurn(events);
+  });
+
+  test("a blocked checklist item prevents verification even when another item is checked", async () => {
+    const blockedItem = "tests: pytest is unavailable";
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"),
+      textStep("Done."),
+      toolStep("verify-1"),
+      textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${blockedItem}`),
+      toolStep("verify-2"),
+      textStep("- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed"),
+    ]);
+    const { session, events } = headlessSession(provider, true);
+    await collect(session);
+
+    expect(requests).toHaveLength(6);
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "initial" }),
+      expect.objectContaining({ outcome: "injected", reason: "unmet_items", unmetItems: [blockedItem] }),
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" }),
+    ]);
+    expect(lastUserText(requests[4] ?? [])).toContain(blockedItem);
+    expectCompletedTurn(events);
   });
 
   test("an unmet checklist stays quoted untrusted data in durable user re-entry", async () => {
@@ -186,26 +371,64 @@ describe("completion gate in the turn loop", () => {
   });
 
   test("a model that never verifies is bounded by max_rounds and still completes", async () => {
-    const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep("Done.")]);
-    const { session, events } = headlessSession(provider, true);
-    const ctx = mkCtx();
-    const phases = await collect(session, {
-      ...ctx,
-      config: { ...(ctx.config as Record<string, unknown>), completionGate: { max_rounds: 2 } },
-    } as typeof ctx);
+    const { requests, events, ctx, phases } = await exhaustGate(2);
 
     // one work sample, one premature answer, two re-injected answers
     expect(requests).toHaveLength(4);
     expect(lastUserText(requests[2] ?? [])).toContain('<completion_gate round="1" of="2">');
     expect(lastUserText(requests[3] ?? [])).toContain('<completion_gate round="2" of="2">');
-    expect(lastUserText(requests[3] ?? [])).toContain("did not run any check");
+    expect(lastUserText(requests[3] ?? [])).toContain("successful");
     expect(gatePayloads(events).map((payload) => [payload.outcome, payload.reason])).toEqual([
       ["injected", "initial"],
       ["injected", "no_verification"],
       ["exhausted", "rounds_exhausted"],
     ]);
     expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed" });
-    expect(events.some((event) => event.msg.type === "turn_failed")).toBe(false);
+    expectCompletedTurn(events);
+    expect(gateWarnings(events)).toEqual([{
+      turnId: ctx.subId,
+      cause: "completion_gate_exhausted",
+      message: "completion gate exhausted after 2 rounds; the final answer was not verified",
+    }]);
+  });
+
+  test("a fresh agent projects the real exhaustion warning with its canonical turn scope", async () => {
+    const { events, ctx } = await exhaustGate(1);
+    const warning = events.find((event) =>
+      event.msg.type === "warning" && event.msg.payload.cause === "completion_gate_exhausted",
+    );
+    expect(warning?.msg.type).toBe("warning");
+    if (warning?.msg.type !== "warning") throw new Error("Expected an emitted exhaustion warning");
+    expect(warning.msg.payload.turnId).toBe(ctx.subId);
+    expect(isCanonicalEventPayload("warning", warning.msg.payload)).toBe(true);
+    expect(isCanonicalEventPayload("warning", { ...warning.msg.payload, turnId: 42 })).toBe(false);
+
+    const daemonEvent = daemonEventFromUnboundSessionEvent(warning);
+    expect(daemonEvent).not.toBeNull();
+    if (daemonEvent === null) throw new Error("Expected the warning to cross the daemon bridge");
+    // A fresh agent.create run has no message submission to supply turn scope.
+    const active = {
+      thread: { threadId: "fresh-agent-run" },
+      historyEpoch: "fresh-history-epoch",
+      messageSubmission: undefined,
+    } as ActiveBackgroundAgent;
+    const correlated = correlateDaemonEvent(active, daemonEvent);
+    expect(correlated.turnId).toBe(ctx.subId);
+    const notification = notificationFromDaemonEvent("fresh-session", "fresh-agent", correlated);
+    expect(notification).toMatchObject({
+      method: "event.session_event",
+      params: {
+        sessionId: "fresh-session",
+        agentId: "fresh-agent",
+        eventId: warning.eventId,
+        sequence: warning.seq,
+        runId: "fresh-agent-run",
+        historyEpoch: "fresh-history-epoch",
+        turnId: ctx.subId,
+        event: { id: warning.id, type: "warning", payload: warning.msg.payload },
+      },
+    });
+    expectCompletedTurn(events);
   });
 
   test("a plain answer that used no tool is not gated", async () => {
@@ -262,6 +485,12 @@ describe("completion gate in the turn loop", () => {
     expect(gatePayloads(events)).toEqual([
       expect.objectContaining({ outcome: "exhausted", reason: "rounds_exhausted", round: 3 }),
     ]);
+    expectCompletedTurn(events);
+    expect(gateWarnings(events)).toEqual([{
+      turnId: "turn-resumed-gate",
+      cause: "completion_gate_exhausted",
+      message: "completion gate exhausted after 3 rounds; the final answer was not verified",
+    }]);
   });
 
   test("the checkpoint slice carries the round only once the gate has fired", () => {

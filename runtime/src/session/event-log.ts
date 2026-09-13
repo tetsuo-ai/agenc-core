@@ -308,13 +308,14 @@ export interface CompletionGateEvent {
   readonly reason:
     | "initial"
     | "no_verification"
+    | "no_checklist"
     | "unmet_items"
     | "verified_with_tools"
     | "rounds_exhausted"
     | "no_tool_use";
   /** Tool calls that completed between the last injection and this decision. */
   readonly toolCallsSinceInjection: number;
-  /** Unchecked checklist items quoted back to the model, when any. */
+  /** Unchecked or explicitly unverified checklist items, when any. */
   readonly unmetItems?: ReadonlyArray<string>;
 }
 
@@ -477,6 +478,8 @@ export interface StreamErrorEvent {
 export interface WarningEvent {
   readonly cause: string;
   readonly message: string;
+  /** Explicit scope for warnings produced before a daemon message submission. */
+  readonly turnId?: string;
 }
 
 /**

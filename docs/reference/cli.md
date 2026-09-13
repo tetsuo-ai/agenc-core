@@ -81,9 +81,16 @@ From `formatCliHelpText()`:
   leaves the section out; interactive sessions never receive it. The
   contract is also enforced structurally: the first tool-free final answer of
   a turn that used tools is held back while the runtime injects a
-  `<completion_gate>` verification request, and the answer is accepted once
-  a tool-backed one arrives (or after `completion_gate.max_rounds`, default
-  3). `completion_gate.mode = "never"` in the config turns that off; see
+  `<completion_gate>` verification request. Verification requires a
+  nonempty checked checklist item and a successful tool result since the
+  latest request, with no unchecked, unverified or malformed checklist
+  items. Failed tools and explicitly still-running commands do not count.
+  This is a structural check, not a guarantee of task correctness. After
+  `completion_gate.max_rounds` (default 3), an unverified answer still ends
+  the turn with the existing exit code, but a warning is printed to stderr
+  in text mode and included in structured-output events. The gate records
+  `exhausted`, not `verified`. `completion_gate.mode = "never"` in the
+  config turns that off; see
   [config.md](config.md#built-in-defaults).
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport
