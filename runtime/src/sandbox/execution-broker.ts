@@ -62,6 +62,7 @@ import {
   type SandboxPreparedSpawn,
 } from "./execution-prepared-spawn.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
+import { cronLockAuthorityRoot, protectCronAuthority } from "./cron-authority-protection.js";
 import { desktopAuthorityRoot, protectDesktopAuthority } from "./desktop-authority-protection.js";
 
 export {
@@ -526,6 +527,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   >;
   readonly #windowsSandboxPrivateDesktop: boolean;
   readonly #desktopAuthorityRoot: string;
+  readonly #cronAuthorityRoot: string;
   #allowGpu: boolean;
   #permissionProfile: PermissionProfile | undefined;
   readonly #probe: NonNullable<SandboxExecutionBrokerOptions["probe"]>;
@@ -549,6 +551,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#cwd = path.resolve(options.cwd);
     this.#env = { ...(options.env ?? process.env) };
     this.#desktopAuthorityRoot = desktopAuthorityRoot(undefined, this.#env);
+    this.#cronAuthorityRoot = cronLockAuthorityRoot();
     this.#platform = options.platform ?? process.platform;
     this.#sandboxManager = options.sandboxManager ?? defaultSandboxManager;
     this.#explicitLinuxHelper = options.agencLinuxSandboxExe;
@@ -1034,13 +1037,13 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     if (!this.required) return undefined;
     const status = this.#assertReadyAfterLifecycleAdmission(surface);
     return {
-      permissionProfile: protectDesktopAuthority(
+      permissionProfile: protectCronAuthority(protectDesktopAuthority(
         this.#permissionProfile ??
         permissionProfileForSandboxMode(this.mode, {
           cwd: this.#cwd,
         }),
         this.#desktopAuthorityRoot,
-      ),
+      ), this.#cronAuthorityRoot),
       sandboxPolicyCwd: this.#cwd,
       sessionTempRoot: this.#sessionTempRoot,
       preference: "require",
@@ -1084,7 +1087,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         this.mode === "workspace_write"
           ? {
               ...modeSandbox,
-              permissionProfile: protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot),
+              permissionProfile: protectCronAuthority(protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot), this.#cronAuthorityRoot),
             }
           : modeSandbox;
       const resolvedProgram = resolveSpawnExecutable({

@@ -1,3 +1,4 @@
+import "./helpers/cron-os-home.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

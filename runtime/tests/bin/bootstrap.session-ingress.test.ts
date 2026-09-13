@@ -486,6 +486,41 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
     }
   });
 
+  it("emits a visible cron storage warning when persisted jobs cannot be restored", async () => {
+    const providerMod = await import("../llm/provider.js");
+    const chat = vi.fn();
+    vi.spyOn(providerMod, "createProvider").mockReturnValue({ name: "stub", chat } as never);
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const cronTasks = await import("../utils/cronTasks.js");
+    vi.spyOn(cronTasks, "readCronTasks").mockRejectedValue(
+      Object.assign(new Error("descriptor-confined I/O is unsupported on darwin"), { code: "DESCRIPTOR_UNSUPPORTED" }),
+    );
+    const modelFacingTools = await import("./model-facing-tools.js");
+    const startCron = vi.spyOn(modelFacingTools, "startCronSchedulerRunner").mockResolvedValue(undefined);
+    vi.spyOn(modelFacingTools, "resumeInterruptedAgentJobs").mockResolvedValue(0);
+    const boot = await bootstrapLocalRuntimeSession({
+      apiKey: "test-key", conversationId: "cron_restore_unavailable",
+      deferSessionStartHooks: true, deferAgentStartupSideEffects: true,
+      env: { ...process.env, AGENC_HOME: home, AGENC_WORKSPACE: workspace, HOME: home },
+    });
+    const events: unknown[] = [];
+    boot.session.eventLog.subscribe((event) => events.push(event));
+    boot.session.installTurnDriverHooks({ submit: (async () => {}) as never });
+    try {
+      await boot.session.submit("ordinary work");
+      expect(events).toContainEqual(expect.objectContaining({ msg: {
+        type: "warning", payload: {
+          cause: "cron_storage_unavailable",
+          message: expect.stringContaining("descriptor-confined I/O is unsupported on darwin"),
+        },
+      } }));
+      expect(startCron).not.toHaveBeenCalled();
+      expect(chat).not.toHaveBeenCalled();
+    } finally {
+      await boot.shutdown();
+    }
+  });
+
   it("closes deferred startup admission synchronously through the bootstrap handle", async () => {
     const providerMod = await import("../llm/provider.js");
     vi.spyOn(providerMod, "createProvider").mockImplementation(

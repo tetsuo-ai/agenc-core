@@ -1,3 +1,4 @@
+import "../helpers/cron-os-home.js";
 import {
   existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   rmSync, symlinkSync, writeFileSync,

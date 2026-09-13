@@ -149,6 +149,32 @@ describe("CronScheduler", () => {
   beforeEach(() => {
     setScheduledTasksEnabled(true);
   });
+
+  test.each(["reschedule", "restart"])("does not report a stale failed load after a successful %s", async (transition) => {
+    const stale = Promise.withResolvers<CronTask[]>();
+    const onLoadError = vi.fn();
+    const clock = new FakeClock(0);
+    const scheduler = new CronScheduler({
+      now: () => clock.nowMs,
+      monotonicNow: () => clock.monoMs,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+      loadTasks: vi.fn().mockReturnValueOnce(stale.promise).mockResolvedValue([]),
+      onLoadError,
+      enqueue: vi.fn(),
+    });
+    scheduler.start(TEST_ACTIVATION);
+    if (transition === "restart") {
+      scheduler.stop();
+      scheduler.start(TEST_ACTIVATION);
+    }
+    await scheduler.reschedule();
+    stale.reject(new Error("old storage capability failure"));
+    await flush();
+    expect(onLoadError).not.toHaveBeenCalled();
+    expect(clock.pendingCount()).toBe(0);
+    scheduler.stop();
+  });
   afterEach(() => {
     resetStateForTests();
     vi.restoreAllMocks();

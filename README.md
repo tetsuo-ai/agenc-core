@@ -51,6 +51,9 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   concurrency, cancellation, and evidence across interactive/background work,
   including heartbeat / cron / hooks. Design:
   [`docs/design/execution-admission-kernel.md`](docs/design/execution-admission-kernel.md).
+- **Durable scheduled prompts** — require Linux directory descriptors and a
+  local OS-account home for protected locks. Stop older scheduler/gateway
+  processes before upgrading; see [storage and platform requirements](docs/durable-cron-storage.md).
 - **Guided onboarding** — `agenc onboard` includes AgenC account sign-in,
   X / xAI sign-in for Grok, provider API keys, and local providers without
   requiring slash commands; follow-on acts: `identity`, `channel`, `autonomy`,

@@ -1,3 +1,4 @@
+import "../helpers/cron-os-home.js";
 /**
  * T6 gap #119 — turn-lifecycle emit callsites.
  *
@@ -998,6 +999,9 @@ describe("daemon-owned scheduled turns", () => {
         session.abortController.abort();
       }
       session.installTurnDriverHooks({ submit: attempt });
+      // Readiness starts a real asynchronous scan; await that initial re-arm
+      // before moving virtual time, without invalidating later in-flight wakes.
+      await scheduler.reschedule();
       await advance();
       await scheduler.drain();
       expect(attempt).toHaveBeenCalledTimes(closed ? 0 : 1);

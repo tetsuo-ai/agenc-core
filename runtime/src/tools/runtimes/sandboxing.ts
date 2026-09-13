@@ -35,6 +35,7 @@ import { analyzeApplyPatchRuntimeWrites } from "./apply-patch.js";
 import { resolveRuntimePathTarget } from "./paths.js";
 import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
+import { cronLockAuthorityRoot, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
 import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
 
 export interface RuntimeSandboxProfileOptions {
@@ -294,10 +295,10 @@ export function permissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  return protectDesktopAuthority(
+  return protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
-  );
+  ));
 }
 
 function runtimeDesktopAuthorityRoot(context: ToolRuntimeAttemptContext): string {
@@ -401,7 +402,13 @@ export function enforceRuntimeSandboxAttempt(
     ? { targets: [], indeterminate: false, knownSafeWhenTargetless: false }
     : analyzeWrites(input.tool, input.args, cwd);
   const authorityRoot = runtimeDesktopAuthorityRoot(input.context);
+  const cronAuthorityRoot = cronLockAuthorityRoot();
   for (const target of writes.targets) {
+    if (overlapsCronAuthority(target, cronAuthorityRoot)) {
+      throw new SandboxDeniedError("Cron locks are reserved for the native host", {
+        denial: "filesystem", target, policy,
+      });
+    }
     if (overlapsDesktopAuthority(target, authorityRoot)) {
       throw new SandboxDeniedError("Desktop authority records are reserved for the native host", {
         denial: "filesystem", target, policy,

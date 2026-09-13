@@ -1,5 +1,6 @@
+import { cronOsHomeWorkerPrelude } from "../helpers/cron-os-home.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -11,11 +12,12 @@ const DUE_AT = CREATED_AT + 60_000;
 const runnerUrl = new URL("../../src/gateway/cron-delivery.ts", import.meta.url).href;
 const outboxUrl = new URL("../../src/gateway/cron-outbox.ts", import.meta.url).href;
 const workerSource = `
+${cronOsHomeWorkerPrelude}
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { once } from "node:events";
-import { startCronDelivery } from ${JSON.stringify(runnerUrl)};
-import { CronDeliveryOutboxStore } from ${JSON.stringify(outboxUrl)};
+const { startCronDelivery } = await import(${JSON.stringify(runnerUrl)});
+const { CronDeliveryOutboxStore } = await import(${JSON.stringify(outboxUrl)});
 const [workspace, mode, nowText] = process.argv.slice(1);
 const now = Number(nowText);
 const record = async (event) => appendFile(join(workspace, "external-effects.jsonl"), JSON.stringify(event) + "\\n", { mode: 0o600 });
@@ -93,11 +95,13 @@ afterEach(async () => {
   await rm(workspace, { recursive: true, force: true });
 });
 
-function launch(mode: string, now = DUE_AT) {
+function launch(mode: string, now = DUE_AT, workspacePath = workspace) {
   const child = spawn(process.execPath, [
     "--import", "tsx", "--input-type=module", "--eval", workerSource,
-    workspace, mode, String(now),
-  ], { cwd: join(import.meta.dirname, "../.."), stdio: "pipe" });
+    workspacePath, mode, String(now),
+  ], { cwd: join(import.meta.dirname, "../.."), stdio: "pipe",
+    env: { ...process.env, HOME: join(workspace, `os-env-${mode}`), AGENC_HOME: join(workspace, `agent-home-${mode}`) },
+  });
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
@@ -141,13 +145,17 @@ describe("cron delivery process recovery", () => {
     expect((await readCronFile(workspace)).tasks).toEqual([]);
   }, 30_000);
 
-  test("prevents concurrent gateway execution even when a live owner's lease has expired", async () => {
+  test("shares an execution lock across processes, aliases, and homes even after lease expiry", async () => {
     const owner = launch("hold");
     await owner.waitForModel();
     const before = (await readCronFile(workspace)).deliveryOutbox!.occurrences[0]!;
     const contenderTime = DUE_AT + CRON_DELIVERY_LEASE_MS + 1;
     expect(before.lease!.expiresAt).toBeLessThan(contenderTime);
-    const contender = await launch("finish", contenderTime).completion;
+    const alias = `${workspace}-alias`;
+    await symlink(workspace, alias, "dir");
+    let contender: Awaited<ReturnType<typeof launch>["completion"]>;
+    try { contender = await launch("finish", contenderTime, alias).completion; }
+    finally { await rm(alias); }
     expect(contender.code, contender.stderr).toBe(0);
     expect(contender.stdout).toContain("delivery deferred");
     expect((await effects()).filter((event) => event.kind === "model")).toHaveLength(1);

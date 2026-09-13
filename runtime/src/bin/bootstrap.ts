@@ -2177,8 +2177,16 @@ async function bootstrapLocalRuntimeSessionScoped(
                   session: s,
                 });
               }
-            } catch {
-              /* cron re-arm is best-effort; tools re-arm on next CronCreate */
+            } catch (error) {
+              if (!startupWasCancelled()) {
+                s.emit({
+                  id: s.nextInternalSubId(),
+                  msg: { type: "warning", payload: {
+                    cause: "cron_storage_unavailable",
+                    message: `Scheduled tasks could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+                  } },
+                });
+              }
             }
             assertStartupActive();
           };

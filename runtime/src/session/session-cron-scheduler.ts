@@ -76,6 +76,12 @@ export async function startSessionCronScheduler(
     workspaceOwners.set(canonicalRoot, owners);
     let currentOwner: SessionCronOwner;
     const scheduler = new CronScheduler({
+      onLoadError: (error) => {
+        if (currentOwner.closed) return;
+        emitWarning(session.eventLog, session.nextInternalSubId(),
+          "cron_storage_unavailable",
+          `Scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      },
       loadTasks: async (directory, conversationId) => {
         const tasks = await listAllCronTasks(directory, conversationId);
         if (currentOwner.closed) return [];
