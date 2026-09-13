@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -91,6 +91,50 @@ describe("filesystemRootsForDispatch", () => {
       session: session("default"),
     });
     expect(args).toBe(input);
+  });
+
+  test("Glob and Grep get their search directory itself under the full bypass", async () => {
+    // The first 4.0 trial: `Glob path=/` refused while FileRead /etc/... passed.
+    const glob = filesystemRootsForDispatch("Glob", { pattern: "**/*", path: outside }, {
+      approvalResolved: false,
+      sandboxMode: "danger_full_access",
+      session: session("bypassPermissions"),
+    });
+    expect(signedRoots(glob)).toContain(outside);
+    const file = join(outside, "notes.txt");
+    await writeFile(file, "x\n");
+    const grep = filesystemRootsForDispatch("Grep", { pattern: "x", path: file }, {
+      approvalResolved: false,
+      sandboxMode: "danger_full_access",
+      session: session("bypassPermissions"),
+    });
+    expect(signedRoots(grep)).toContain(outside);
+    await mkdir(join(outside, "src"));
+    const absolutePattern = filesystemRootsForDispatch("Glob", { pattern: join(outside, "src", "**", "*.ts") }, {
+      approvalResolved: false,
+      sandboxMode: "danger_full_access",
+      session: session("bypassPermissions"),
+    });
+    expect(signedRoots(absolutePattern)).toContain(join(outside, "src"));
+  });
+
+  test("a Glob of the workspace and a search in a prompting session stay untouched", () => {
+    const relative = { pattern: "**/*.ts" };
+    expect(
+      filesystemRootsForDispatch("Glob", relative, {
+        approvalResolved: false,
+        sandboxMode: "danger_full_access",
+        session: session("bypassPermissions"),
+      }),
+    ).toBe(relative);
+    const prompting = { pattern: "x", path: outside };
+    expect(
+      filesystemRootsForDispatch("Grep", prompting, {
+        approvalResolved: false,
+        sandboxMode: "danger_full_access",
+        session: session("default"),
+      }),
+    ).toBe(prompting);
   });
 
   test("tools without a file_path and unknown sessions are never widened", () => {

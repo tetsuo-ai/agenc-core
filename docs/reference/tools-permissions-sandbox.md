@@ -473,7 +473,9 @@ such an allow ended in the tool's own `Path is outside allowed directories`
 bypass the evaluator does not run at all, so the dispatcher does the same at
 dispatch time (`filesystemRootsForDispatch`): a `file_path` inside a directory
 the user added, or any `file_path` when the mode is `bypassPermissions` and
-the sandbox is `danger_full_access`, carries its signed directory. The safety
+the sandbox is `danger_full_access`, carries its signed directory; `Glob` and
+`Grep` get the search directory itself (`path`, or the directory an absolute
+Glob pattern starts with) under the same conditions. The safety
 gates (`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
 
 Neither bypass setting removes a planning worker's permanent read-only
