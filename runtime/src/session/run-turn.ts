@@ -740,36 +740,6 @@ async function prepareSamplingRequestBoundary(
       permissionContext.mode,
     ).messages;
   }
-  // Inline screenshots are bounded on the wire only; the durable history
-  // keeps every image. See query-image-budget.ts.
-  const imageBudgetBytes = resolveContextImageBudgetBytes(
-    session.services.userShell?.childEnvironment ?? process.env,
-  );
-  const boundedImages = boundContextImageBytes(
-    state.messagesForQuery,
-    imageBudgetBytes,
-  );
-  if (boundedImages.omitted > 0) {
-    state.messagesForQuery = boundedImages.messages;
-    const tracked = state as TurnState & { contextImagesOmitted?: number };
-    if (tracked.contextImagesOmitted !== boundedImages.omitted) {
-      tracked.contextImagesOmitted = boundedImages.omitted;
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "context_images_omitted",
-            message:
-              `${boundedImages.omitted} inline image(s) left out of the request: ` +
-              `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
-              `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
-              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
-          },
-        },
-      });
-    }
-  }
   const userInput = extractLastUserText(state.messagesForQuery);
   const rootHumanTurn = session.currentRootHumanTurn();
   if (ctx.editorInteraction === undefined) {
@@ -834,6 +804,38 @@ async function prepareSamplingRequestBoundary(
     }
   }
   if (retention !== undefined) state.attachmentsAnchoredForTurn = true;
+
+  // Bound the fully assembled query, including fresh image mentions from
+  // attachment producers. Durable history and retained attachments keep
+  // every image; only this request projection changes.
+  const imageBudgetBytes = resolveContextImageBudgetBytes(
+    session.services.userShell?.childEnvironment ?? process.env,
+  );
+  const boundedImages = boundContextImageBytes(
+    state.messagesForQuery,
+    imageBudgetBytes,
+  );
+  if (boundedImages.omitted > 0) {
+    state.messagesForQuery = boundedImages.messages;
+    const tracked = state as TurnState & { contextImagesOmitted?: number };
+    if (tracked.contextImagesOmitted !== boundedImages.omitted) {
+      tracked.contextImagesOmitted = boundedImages.omitted;
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "context_images_omitted",
+            message:
+              `${boundedImages.omitted} inline image(s) left out of the request: ` +
+              `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
+              `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
+              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
+          },
+        },
+      });
+    }
+  }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
   const swarmToolChoice = claimRequiredSwarmToolChoice({
