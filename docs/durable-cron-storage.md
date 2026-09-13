@@ -14,12 +14,20 @@ or unsafe cron storage does not prevent unrelated commands from using a valid
 configured AgenC home. No code in this change creates or changes permissions
 on the OS account home itself.
 
+If OS account lookup fails, ordinary sandbox policies retain any previously
+verified cron reservations. A process that first builds a policy without a
+trusted OS identity keeps durable cron disabled until restart, even if account
+lookup later recovers. `HOME` and `AGENC_HOME` never supply the missing authority.
+The separate existing POSIX credential-account check still requires OS identity
+when creating a new home context or broker; this change does not relax that check.
+
 Unsafe or unsupported storage is reported by CronList as an error, by session
 startup and active schedulers as `cron_storage_unavailable` warnings, and by
 the gateway as a delivery-state diagnostic including the concrete cause.
 Only missing or malformed task records retain the empty-list behavior. Failed
-loads do not enqueue model work; later explicit rescheduling can retry after
-storage is repaired. Warnings from superseded scheduler scans are discarded.
+durable loads admit only the owning conversation's in-memory jobs; they do not
+dispatch durable jobs. Later rescheduling can retry after storage is repaired.
+Warnings from superseded scheduler scans are discarded.
 
 Stop **all older AgenC scheduler and gateway processes using a workspace before
 upgrading its writers**, and do the same before rolling back. Old versions use

@@ -107,7 +107,7 @@ const defaultDeps: CronSchedulerDeps = {
   clearTimer: (handle) => clearTimeout(handle),
   loadTasks: (dir, conversationId) => listAllCronTasks(dir, conversationId),
   onLoadError: (error) => logForDebugging(
-    `[CronScheduler] scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    `[CronScheduler] durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`,
     { level: "warn" },
   ),
   enqueue: () => {
@@ -428,10 +428,12 @@ export class CronScheduler {
           activation.queueOwner.conversationId,
         );
     } catch (error) {
-      if (this.isCurrentActivation(activation, generation)) this.deps.onLoadError(error, activation);
-      // No timer/model work is armed for a failed load. A subsequent explicit
-      // reschedule retries after the operator repairs storage.
-      return [];
+      if (!this.isCurrentActivation(activation, generation)) return [];
+      this.deps.onLoadError(error, activation);
+      // Unavailable durable storage must not suppress independently owned
+      // in-memory jobs. Keep durable reads/listing failures visible and admit
+      // only this conversation's memory tasks through the normal filters.
+      tasks = listSessionCronTasks(activation.queueOwner.conversationId);
     }
     return tasks.filter(
       (task) =>

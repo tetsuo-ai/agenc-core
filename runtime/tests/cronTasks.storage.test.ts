@@ -6,7 +6,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CronDeliveryOutboxStore } from "../src/gateway/cron-outbox.js";
-import { setScheduledTasksEnabled } from "../src/bootstrap/state.js";
+import { addSessionCronTask, getSessionCronTasks, resetStateForTests, setScheduledTasksEnabled } from "../src/bootstrap/state.js";
 import { EventLog, type Event } from "../src/session/event-log.js";
 import { startSessionCronScheduler } from "../src/session/session-cron-scheduler.js";
 import type { Session } from "../src/session/session.js";
@@ -60,6 +60,52 @@ afterEach(async () => {
 });
 
 describe("descriptor-confined durable cron storage", () => {
+  test("default in-memory creation still fires when durable storage is unavailable", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
+    await writeCronTasks([task("durable-kept")], workspace);
+    const before = await readFile(getCronFilePath(workspace), "utf8");
+    hooks.descriptorUnavailable = true;
+    const events: Event[] = [];
+    const eventLog = new EventLog();
+    eventLog.subscribe((event) => events.push(event));
+    const closes: Array<() => Promise<void>> = [];
+    const abortController = new AbortController();
+    const submit = vi.fn(async (_prompt: string, options: { onAccepted: () => Promise<void> }) => { await options.onAccepted(); });
+    const session = {
+      conversationId: "memory-with-unavailable-storage", abortController, eventLog,
+      services: { mcpStartupCancellationToken: { signal: abortController.signal } },
+      nextInternalSubId: () => "memory-storage-warning",
+      onBeforeDurableClose: (close: () => Promise<void>) => { closes.push(close); },
+      onTurnDriverReady: (ready: () => void) => { ready(); return () => {}; },
+      submit,
+    } as unknown as Session;
+    addSessionCronTask({ ...task("foreign-memory"), queueOwner: { kind: "session", conversationId: "foreign-owner" } });
+    setScheduledTasksEnabled(true);
+    try {
+      const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
+      const create = createModelFacingTools({ workspaceRoot: workspace, getSession: () => session }).find((tool) => tool.name === "CronCreate")!;
+      // No workspace-write context: this is the ordinary mixed scheduler path,
+      // and omitted durable uses CronCreate's documented in-memory default.
+      const result = await create.execute({ cron: "* * * * *", prompt: "owned memory work", recurring: false });
+      expect(result.isError).toBeFalsy();
+      const scheduler = await startSessionCronScheduler(session, workspace);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await scheduler.drain();
+      expect(submit).toHaveBeenCalledExactlyOnceWith("owned memory work", expect.objectContaining({ onAccepted: expect.any(Function) }));
+      expect(getSessionCronTasks().map((entry) => entry.id)).toEqual(["foreign-memory"]);
+      expect(events.some((event) => event.msg.type === "warning" &&
+        event.msg.payload.cause === "cron_storage_unavailable" &&
+        event.msg.payload.message.startsWith("Durable scheduled tasks unavailable:"))).toBe(true);
+      expect(await readFile(getCronFilePath(workspace), "utf8")).toBe(before);
+      await expect(readCronTasks(workspace)).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+    } finally {
+      await Promise.all(closes.map((close) => close()));
+      vi.useRealTimers();
+      resetStateForTests();
+    }
+  });
+
   test("fails closed before any metadata write when directory aliases are unavailable", async () => {
     hooks.descriptorUnavailable = true;
     await expect(appendCronTask(task("new"), workspace)).rejects.toThrow(/descriptor-confined I\/O is unsupported/);

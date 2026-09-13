@@ -2183,7 +2183,7 @@ async function bootstrapLocalRuntimeSessionScoped(
                   id: s.nextInternalSubId(),
                   msg: { type: "warning", payload: {
                     cause: "cron_storage_unavailable",
-                    message: `Scheduled tasks could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+                    message: `Durable scheduled tasks could not be restored: ${error instanceof Error ? error.message : String(error)}`,
                   } },
                 });
               }

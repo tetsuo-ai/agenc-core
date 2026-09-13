@@ -80,7 +80,7 @@ export async function startSessionCronScheduler(
         if (currentOwner.closed) return;
         emitWarning(session.eventLog, session.nextInternalSubId(),
           "cron_storage_unavailable",
-          `Scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`);
+          `Durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`);
       },
       loadTasks: async (directory, conversationId) => {
         const tasks = await listAllCronTasks(directory, conversationId);
