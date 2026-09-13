@@ -1468,6 +1468,38 @@ autostart = true
     }
   });
 
+  it("keeps the startup cause in the message when the dead daemon's cleanup cannot be verified", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    // The child lives long enough to be recorded and identified, then dies
+    // before becoming ready. Its recorded identity can no longer be proven, so
+    // the cleanup after the failed start throws too. Pre-fix the wrapper said
+    // only "replacement cleanup could not be verified" and the real cause,
+    // the daemon's own stderr, never reached the operator.
+    await writeFile(
+      join(agencHome, "daemon-spawn-stderr.log"),
+      "agenc: daemon state recovery failed: GLIBC_2.33 not found\n",
+    );
+    let readinessChecks = 0;
+    host.cancelSpawnedDaemon = () => {
+      throw new Error("cancel refused by host");
+    };
+    await expect(
+      ensureAgenCDaemonAutostart({
+        host,
+        waitTimeoutMs: 60_000,
+        isReady: ({ pid }) => {
+          readinessChecks += 1;
+          if (readinessChecks === 1) host.runningPids.delete(pid);
+          return false;
+        },
+      }),
+    ).rejects.toThrow(
+      /replacement cleanup could not be verified \(pid \d+\): AgenC daemon exited before becoming ready.*GLIBC_2\.33 not found; cleanup: cancel refused by host/s,
+    );
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("fails fast with the exit diagnosis when the spawned daemon dies before ready", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

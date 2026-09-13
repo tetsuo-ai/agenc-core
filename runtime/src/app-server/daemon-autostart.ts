@@ -1400,14 +1400,21 @@ async function failStartedAgenCDaemonReplacement(params: {
   try {
     await cleanupUnverifiedStartedAgenCDaemon(params);
   } catch (cleanupError) {
+    // Both causes belong in the message: the CLI prints only `error.message`,
+    // and the startup failure (which carries the daemon's own stderr, e.g. a
+    // native module that needs a newer glibc) is what the operator must see.
     throw new AggregateError(
       [params.error, cleanupError],
       `AgenC daemon startup failed and replacement cleanup could not be verified${
         params.spawnedPid === null ? "" : ` (pid ${params.spawnedPid})`
-      }`,
+      }: ${describeAutostartFailure(params.error)}; cleanup: ${describeAutostartFailure(cleanupError)}`,
     );
   }
   throw params.error;
+}
+
+function describeAutostartFailure(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function cleanupUnverifiedStartedAgenCDaemon(params: {
