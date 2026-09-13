@@ -1143,8 +1143,8 @@ export class VerifiedChangeWorkflowController {
           }),
         ),
         estimate: ZERO_ESTIMATE,
-        execute: async () =>
-          this.#executeVerificationCommand(ctx, command, attempt),
+        execute: async (signal) =>
+          this.#executeVerificationCommand(ctx, command, attempt, signal),
       });
       const record = result.evidence.command;
       if (result.outcome === "committed" && record !== undefined) {
@@ -1240,6 +1240,7 @@ export class VerifiedChangeWorkflowController {
     ctx: RunContext,
     command: { readonly label: string; readonly script: string },
     attempt: number,
+    signal: AbortSignal,
   ): Promise<EffectExecution> {
     const handle = this.#requireHandle(ctx);
     const startedAt = performance.now();
@@ -1250,10 +1251,13 @@ export class VerifiedChangeWorkflowController {
     let truncated = false;
     let durationMs: number;
     try {
+      signal.throwIfAborted();
       const result = await this.#deps.commands.run({
         script: command.script,
         cwd: handle.path,
+        signal,
       });
+      signal.throwIfAborted();
       exitCode = result.exitCode;
       stdout = result.stdout;
       stderr = result.stderr;
@@ -1261,6 +1265,9 @@ export class VerifiedChangeWorkflowController {
       truncated = result.truncated;
       durationMs = result.durationMs;
     } catch (error) {
+      // Preserve admission cancellation for #driveEffect's cancelled result
+      // and held-unknown accounting, including a runner that resolves on abort.
+      if (signal.aborted) throw error;
       // A runner crash is a failing command with diagnostic stderr, never a
       // silently missing record (verification.ts discipline).
       exitCode = 127;

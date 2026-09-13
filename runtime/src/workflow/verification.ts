@@ -36,6 +36,8 @@ export interface WorkflowCommandRunner {
     readonly cwd: string;
     /** Optional operator-supplied deadline. Omitted means unbounded. */
     readonly timeoutMs?: number;
+    /** Owning admission cancellation; the runner must settle process cleanup. */
+    readonly signal?: AbortSignal;
   }): Promise<WorkflowCommandResult>;
 }
 

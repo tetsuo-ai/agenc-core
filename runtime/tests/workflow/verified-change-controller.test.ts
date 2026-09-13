@@ -465,7 +465,7 @@ class FakeCommands implements WorkflowCommandRunner {
   readonly byScript = new Map<string, Partial<WorkflowCommandResult>>();
   readonly executed: string[] = [];
 
-  async run(input: { script: string }): Promise<WorkflowCommandResult> {
+  async run(input: Parameters<WorkflowCommandRunner["run"]>[0]): Promise<WorkflowCommandResult> {
     this.executed.push(input.script);
     return {
       exitCode: 0,
@@ -975,6 +975,59 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(terminal.status).toBe("cancelled");
     expect(terminal.exitCode).toBe(1);
   });
+
+  it.each(["reject", "resolve"] as const)(
+    "cancels dispatched verification when the runner settles by %s",
+    async (settlement) => {
+      harness.cleanup();
+      let client: ExecutionAdmissionClient;
+      harness = makeHarness({ admission: () => client });
+      const kernel = new ExecutionAdmissionKernel({
+        agencHome: harness.home,
+        ownerId: "workflow-command-cancel-test",
+        ownerPid: process.pid,
+      });
+      const dispatched = Promise.withResolvers<void>();
+      let observedAbort = false;
+      const run = vi.spyOn(harness.commands, "run").mockImplementation(async (input) => {
+        const signal = (input as { signal?: AbortSignal }).signal;
+        dispatched.resolve();
+        return new Promise<WorkflowCommandResult>((resolve, reject) => {
+          const guard = setTimeout(() => reject(new Error("cancellation did not reach verification")), 500);
+          signal?.addEventListener("abort", () => {
+            clearTimeout(guard);
+            observedAbort = true;
+            if (settlement === "reject") reject(signal.reason);
+            else resolve({ exitCode: 0, stdout: new Uint8Array(), stderr: new Uint8Array(),
+              timedOut: false, truncated: false, durationMs: 1 });
+          }, { once: true });
+        });
+      });
+      try {
+        client = kernel.bindClient({ cwd: harness.cwd,
+          scope: { runId: RUN_ID, sessionId: RUN_ID, autonomous: true } });
+        const started = await harness.controller.start(startParams(harness, {
+          requiredVerification: [{ label: "running", script: "running-test" },
+            { label: "later", script: "must-not-run" }],
+        }));
+        await dispatched.promise;
+        // This is the real admission cancellation cascade used by run.cancel.
+        client.cancelRun("operator cancelled during command verification");
+        await harness.controller.awaitRun(started.runId);
+        expect(observedAbort).toBe(true);
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "cancelled" });
+        expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")).toMatchObject({
+          outcome: "cancelled",
+          evidence: { failure: { reason: "cancelled_after_dispatch" } },
+        });
+        expect(harness.spawner.spawns.map((spawn) => spawn.kind)).toEqual(["plan", "implement"]);
+        expect(harness.worktrees.cleanups).toHaveLength(0);
+      } finally {
+        kernel.close();
+      }
+    },
+  );
 });
 
 describe("VerifiedChangeWorkflowController — prerequisite gating", () => {

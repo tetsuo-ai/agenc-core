@@ -777,6 +777,7 @@ export function createWorkflowSessionSeams(
 
   const commands: WorkflowCommandRunner = {
     run: async (input): Promise<WorkflowCommandResult> => {
+      input.signal?.throwIfAborted();
       const runId = worktreeRunIds.get(input.cwd);
       const entry = await requireEntry(runId, "commands.run");
       const broker = sessionBroker(entry, input.cwd);
@@ -795,10 +796,14 @@ export function createWorkflowSessionSeams(
       const startedAt = performance.now();
       const result = await runSupervisedProcess(command, {
         maxOutputBytes: COMMAND_MAX_OUTPUT_BYTES,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
         ...(input.timeoutMs !== undefined
           ? { timeoutMs: input.timeoutMs }
           : {}),
       });
+      // The supervisor settles the owned process tree before cancellation
+      // propagates to the workflow controller.
+      input.signal?.throwIfAborted();
       return {
         exitCode:
           result.stopReason === "spawn_error"
