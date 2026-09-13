@@ -24,6 +24,7 @@ import type {
   DurableRunTerminalRecord,
 } from "../../state/run-durability.js";
 import { deriveAllStageProjections, readWorkflowStepEvidence } from "./steps.js";
+import type { PermissionMode } from "../../permissions/types.js";
 
 export interface WorkflowStatusStep {
   readonly stepId: string;
@@ -36,7 +37,9 @@ export interface WorkflowStatusStep {
 
 export interface WorkflowRunStatus {
   readonly runId: string;
-  readonly effectivePermissionMode?: WorkflowSpec["permissionMode"];
+  readonly requestedPermissionMode?: WorkflowSpec["permissionMode"];
+  /** Only a live, owned Session can supply this field; durable projection cannot. */
+  readonly effectivePermissionMode?: PermissionMode;
   readonly steps: readonly WorkflowStatusStep[];
   readonly terminal?: {
     readonly status: RunTerminalStatus;
@@ -119,7 +122,7 @@ export function projectWorkflowStatus(input: {
   return {
     runId: input.runId,
     ...(permissionMode === "default" || permissionMode === "plan" || permissionMode === "acceptEdits" || permissionMode === "bypassPermissions"
-      ? { effectivePermissionMode: permissionMode }
+      ? { requestedPermissionMode: permissionMode }
       : {}),
     steps,
     ...(input.terminal !== undefined

@@ -66,6 +66,7 @@ import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 import { applyUnattendedPermissionPolicyToContext } from "../../permissions/unattended-policy.js";
 import type { PermissionModeRegistry } from "../../permissions/permission-mode.js";
+import type { PermissionMode } from "../../permissions/types.js";
 import type { StateRunDurabilityRepository } from "../../state/run-durability.js";
 import {
   ReviewInvocationError,
@@ -380,12 +381,20 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
   readonly #contexts = new Map<string, StepJournalContext>();
   #lastSequence = 0;
 
-  constructor(entry: RunSessionEntry, onClose: () => Promise<void>) {
+  constructor(
+    entry: RunSessionEntry,
+    onClose: () => Promise<void>,
+    private readonly readPermissionMode: () => PermissionMode | undefined,
+  ) {
     this.#entry = entry;
     this.#onClose = onClose;
     this.runId = entry.runId;
     this.sessionId = entry.bootstrap.session.conversationId;
     this.epoch = entry.bootstrap.rolloutStore.runEpoch;
+  }
+
+  get effectivePermissionMode(): PermissionMode | undefined {
+    return this.readPermissionMode();
   }
 
   #emitDurable(msg: EventMsg, what: string): Event {
@@ -614,6 +623,7 @@ export function createWorkflowSessionSeams(
   });
   const runtimeOptions = resolveAgentRuntimeOptions(environment);
   const entries = new Map<string, Promise<RunSessionEntry>>();
+  const readyEntries = new Map<Promise<RunSessionEntry>, RunSessionEntry>();
   const worktreeRunIds = new Map<string, string>();
 
   const openEntry = (
@@ -675,9 +685,14 @@ export function createWorkflowSessionSeams(
       };
     })();
     entries.set(runId, pending);
-    pending.catch(() => {
-      if (entries.get(runId) === pending) entries.delete(runId);
-    });
+    pending.then(
+      (entry) => {
+        if (entries.get(runId) === pending) readyEntries.set(pending, entry);
+      },
+      () => {
+        if (entries.get(runId) === pending) entries.delete(runId);
+      },
+    );
     return pending;
   };
 
@@ -685,6 +700,7 @@ export function createWorkflowSessionSeams(
     const pending = entries.get(runId);
     if (pending === undefined) return;
     entries.delete(runId);
+    readyEntries.delete(pending);
     try {
       const entry = await pending;
       entry.unregisterApprovals();
@@ -714,10 +730,23 @@ export function createWorkflowSessionSeams(
     return pending;
   };
 
+  const currentEntry = (runId: string): RunSessionEntry | undefined => {
+    const pending = entries.get(runId);
+    const entry = pending === undefined ? undefined : readyEntries.get(pending);
+    return entry?.bootstrap.session.isShuttingDown === true ? undefined : entry;
+  };
   const journal: WorkflowJournalWriter = {
+    currentPermissionMode: (runId) =>
+      currentEntry(runId)?.bootstrap.session.permissionModeRegistry.current().mode,
     open: async (runId, context) => {
       const entry = await openEntry(runId, context?.repoPath, context?.policy);
-      return new SessionWorkflowJournal(entry, () => closeEntry(runId));
+      return new SessionWorkflowJournal(
+        entry,
+        () => closeEntry(runId),
+        () => currentEntry(runId) === entry
+          ? entry.bootstrap.session.permissionModeRegistry.current().mode
+          : undefined,
+      );
     },
   };
 

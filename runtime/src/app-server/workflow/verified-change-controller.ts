@@ -86,6 +86,7 @@ import {
   type ReviewerInvoker,
 } from "../../workflow/independent-review.js";
 import type { ReviewOutput } from "../../session/review.js";
+import type { PermissionMode } from "../../permissions/types.js";
 import {
   parseVerificationVerdict,
   type WorkflowCommandRunner,
@@ -138,6 +139,8 @@ export interface WorkflowEffectEventRef {
  */
 export interface WorkflowRunJournal {
   readonly runId: string;
+  /** Current Session authority, absent when the owned Session is unavailable. */
+  readonly effectivePermissionMode?: PermissionMode;
   /** Subordinate daemon session identity — never substitutes for runId. */
   readonly sessionId: string;
   /** Current durable lifecycle epoch (initial epoch ensured on open). */
@@ -218,6 +221,8 @@ export interface WorkflowRunSessionPolicy {
 }
 
 export interface WorkflowJournalWriter {
+  /** Read only. Never opens a Session or substitutes a frozen requested mode. */
+  currentPermissionMode?(runId: string): PermissionMode | undefined;
   open(
     runId: string,
     context?: {
@@ -371,7 +376,8 @@ export interface WorkflowStartParams {
 
 export interface WorkflowStartResult {
   readonly runId: string;
-  readonly effectivePermissionMode: WorkflowSpec["permissionMode"];
+  readonly requestedPermissionMode: WorkflowSpec["permissionMode"];
+  readonly effectivePermissionMode?: PermissionMode;
   readonly specDigest: Sha256Digest;
   readonly baseCommit: string;
   readonly baseDirty: WorkflowSpec["baseDirty"];
@@ -649,6 +655,7 @@ export class VerifiedChangeWorkflowController {
         terminal.finalMessage ?? terminal.status,
       );
     }
+    const effectivePermissionMode = journal.effectivePermissionMode;
     const pipeline = this.#continue(ctx);
     this.#active.set(runId, pipeline);
     return {
@@ -656,7 +663,8 @@ export class VerifiedChangeWorkflowController {
       specDigest,
       baseCommit: spec.baseCommit,
       baseDirty: spec.baseDirty,
-      effectivePermissionMode: spec.permissionMode,
+      requestedPermissionMode: spec.permissionMode,
+      ...(effectivePermissionMode !== undefined ? { effectivePermissionMode } : {}),
     };
   }
 
@@ -669,17 +677,29 @@ export class VerifiedChangeWorkflowController {
     return [...this.#active.keys()];
   }
 
+  /** Observe live authority without opening or bootstrapping a run. */
+  currentPermissionMode(runId: string): PermissionMode | undefined {
+    return this.#deps.journal.currentPermissionMode?.(runId);
+  }
+
   /** Durable status projection — works after restart, no live state needed. */
   status(runId: string): WorkflowRunStatus | undefined {
     const repo = this.#deps.durability({ runId });
     const effects = repo.listEffects(runId);
     const terminal = repo.getCurrentTerminalResult(runId);
     if (effects.length === 0 && terminal === undefined) return undefined;
-    return projectWorkflowStatus({
+    const projected = projectWorkflowStatus({
       runId,
       effects,
       ...(terminal !== undefined ? { terminal } : {}),
     });
+    const effectivePermissionMode = terminal === undefined
+      ? this.currentPermissionMode(runId)
+      : undefined;
+    return {
+      ...projected,
+      ...(effectivePermissionMode !== undefined ? { effectivePermissionMode } : {}),
+    };
   }
 
   /**

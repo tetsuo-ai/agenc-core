@@ -60,6 +60,9 @@ let repo: StateRunDurabilityRepository;
 let bootstrapCalls: FakeBootstrapCall[];
 let bootstrapEvents: Event[];
 let resolvedPolicies: (WorkflowRunSessionPolicy | undefined)[];
+let actualBootstrapMode: ToolPermissionContext["mode"] | undefined;
+let bootstrapShuttingDown: boolean;
+let bootstrapBarrier: Promise<void> | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "agenc-m5-policy-home-"));
@@ -70,6 +73,9 @@ beforeEach(() => {
   bootstrapCalls = [];
   bootstrapEvents = [];
   resolvedPolicies = [];
+  actualBootstrapMode = undefined;
+  bootstrapShuttingDown = false;
+  bootstrapBarrier = undefined;
 });
 
 afterEach(() => {
@@ -95,6 +101,7 @@ function baseContext(mode: ToolPermissionContext["mode"]): ToolPermissionContext
  * bootstrap implements via startup-selection.
  */
 const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
+  await bootstrapBarrier;
   const argv = options.argv;
   let mode: ToolPermissionContext["mode"] = "default";
   if (argv !== undefined) {
@@ -104,7 +111,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
       mode = argv[flag + 1] as ToolPermissionContext["mode"];
     }
   }
-  const registry = new PermissionModeRegistry(baseContext(mode));
+  const registry = new PermissionModeRegistry(baseContext(actualBootstrapMode ?? mode));
   const eventLog = new EventLog();
   eventLog.subscribe((event) => bootstrapEvents.push(event));
   bootstrapCalls.push({
@@ -118,6 +125,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
     session: {
       conversationId: options.conversationId ?? RUN_ID,
       permissionModeRegistry: registry,
+      get isShuttingDown() { return bootstrapShuttingDown; },
       emit: (event: Event) => eventLog.emit(event),
       services: {},
     },
@@ -150,6 +158,79 @@ function makeSeams(
 }
 
 describe("A2 — spec permission policy on the run session", () => {
+  it("reports actual default after bootstrap demotes requested bypass without overriding trust", async () => {
+    actualBootstrapMode = "default";
+    const seams = makeSeams();
+    const journal = await seams.journal.open(RUN_ID, {
+      repoPath: cwd,
+      policy: { permissionMode: "bypassPermissions" },
+    });
+    expect(bootstrapCalls[0].argv).toContain("bypassPermissions");
+    expect(bootstrapCalls[0].registry.current().mode).toBe("default");
+    expect(journal.effectivePermissionMode).toBe("default");
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBe("default");
+    await seams.close();
+    expect(journal.effectivePermissionMode).toBeUndefined();
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBeUndefined();
+  });
+
+  it("reads live registry changes and omits a shutting-down session", async () => {
+    const seams = makeSeams();
+    const journal = await seams.journal.open(RUN_ID, {
+      repoPath: cwd,
+      policy: { permissionMode: "bypassPermissions" },
+    });
+    expect(journal.effectivePermissionMode).toBe("bypassPermissions");
+    await bootstrapCalls[0].registry.update(baseContext("plan"));
+    expect(journal.effectivePermissionMode).toBe("plan");
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBe("plan");
+    bootstrapShuttingDown = true;
+    expect(journal.effectivePermissionMode).toBeUndefined();
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBeUndefined();
+    await seams.close();
+  });
+
+  it("does not bootstrap unknown lookups or retain a closed generation's mode on resume", async () => {
+    const seams = makeSeams(() => ({ permissionMode: "bypassPermissions" }));
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBeUndefined();
+    expect(bootstrapCalls).toHaveLength(0);
+    const old = await seams.journal.open(RUN_ID, { repoPath: cwd });
+    expect(old.effectivePermissionMode).toBe("bypassPermissions");
+    await old.close();
+    actualBootstrapMode = "default";
+    const resumed = await seams.journal.open(RUN_ID);
+    expect(resumed.effectivePermissionMode).toBe("default");
+    expect(old.effectivePermissionMode).toBeUndefined();
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBe("default");
+    await seams.close();
+  });
+
+  it("does not publish a still-pending or already-closed bootstrap generation", async () => {
+    let release!: () => void;
+    bootstrapBarrier = new Promise<void>((resolve) => { release = resolve; });
+    const seams = makeSeams();
+    const opened = seams.journal.open(RUN_ID, {
+      repoPath: cwd, policy: { permissionMode: "bypassPermissions" },
+    });
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBeUndefined();
+    const closed = seams.close();
+    release();
+    const journal = await opened;
+    await closed;
+    expect(journal.effectivePermissionMode).toBeUndefined();
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBeUndefined();
+  });
+
+  it("reports the actual unattended mode without reducing it to the requested default", async () => {
+    const seams = makeSeams();
+    const journal = await seams.journal.open(RUN_ID, {
+      repoPath: cwd, policy: { permissionMode: "default", unattendedAllow: ["FileRead"] },
+    });
+    expect(journal.effectivePermissionMode).toBe("unattended");
+    expect(seams.journal.currentPermissionMode?.(RUN_ID)).toBe("unattended");
+    await seams.close();
+  });
+
   it("captures untrusted-hook authority at the workflow automation boundary", async () => {
     const seams = makeSeams(() => undefined, {
       AGENC_ALLOW_UNTRUSTED_HOOKS: "true",

@@ -1,3 +1,4 @@
+import { ALL_PERMISSION_MODES, type InternalPermissionMode } from "../types/permissions.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -60,6 +61,8 @@ export class AgenCDaemonRunInspectionError extends Error {
 }
 
 export interface AgenCDaemonRunInspectionOptions {
+  /** Read only from an already-owned live workflow session; never open or resume it. */
+  readonly effectivePermissionMode?: (runId: string) => InternalPermissionMode | undefined;
   readonly pendingApprovals?: (runId: string) => readonly import("./protocol/index.js").PendingToolApproval[];
   /**
    * Fresh discovery on every request keeps projects created after daemon
@@ -175,11 +178,13 @@ const MAX_RUN_TREE_IDS = 1_000;
  * a terminal assistant payload that was never persisted.
  */
 export class AgenCDaemonRunInspectionService {
+  readonly #effectivePermissionMode: AgenCDaemonRunInspectionOptions["effectivePermissionMode"];
   readonly #pendingApprovals: AgenCDaemonRunInspectionOptions["pendingApprovals"];
   readonly #stateDatabasePaths: () => readonly StateDatabasePaths[];
   readonly #agencHome: string | undefined;
 
   constructor(options: AgenCDaemonRunInspectionOptions) {
+    this.#effectivePermissionMode = options.effectivePermissionMode;
     this.#pendingApprovals = options.pendingApprovals;
     this.#stateDatabasePaths = options.stateDatabasePaths;
     this.#agencHome = options.agencHome;
@@ -192,9 +197,17 @@ export class AgenCDaemonRunInspectionService {
     const result = withReadonlyStateDatabase(located.paths, (db) =>
       buildRunStatus(db, located, runId),
     );
-    return this.#pendingApprovals === undefined ? result : {
+    const mode = result.workflow !== undefined && !result.terminal
+      ? this.#effectivePermissionMode?.(runId)
+      : undefined;
+    return {
       ...result,
-      pendingRequests: result.terminal ? [] : this.#pendingApprovals(runId),
+      ...(mode !== undefined && (ALL_PERMISSION_MODES as readonly string[]).includes(mode)
+        ? { workflow: { ...result.workflow!, effectivePermissionMode: mode } }
+        : {}),
+      ...(this.#pendingApprovals !== undefined
+        ? { pendingRequests: result.terminal ? [] : this.#pendingApprovals(runId) }
+        : {}),
     };
   }
 
@@ -720,7 +733,7 @@ function workflowStatusProjection(
         ? { artifacts: step.artifacts.map(workflowArtifactPointer) }
         : {}),
     })),
-    ...(projected.effectivePermissionMode !== undefined ? { effectivePermissionMode: projected.effectivePermissionMode } : {}),
+    ...(projected.requestedPermissionMode !== undefined ? { requestedPermissionMode: projected.requestedPermissionMode } : {}),
     ...(projected.stopReason !== undefined
       ? { stopReason: projected.stopReason }
       : {}),

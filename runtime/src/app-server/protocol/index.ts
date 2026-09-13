@@ -2883,6 +2883,11 @@ export interface RunStartBaseDirty extends JsonObject {
   readonly fileCount: number;
 }
 
+/** Live runtime modes, declared as a pure wire union for SDK generation. */
+export type RunEffectivePermissionMode =
+  | "default" | "acceptEdits" | "plan" | "bypassPermissions"
+  | "dontAsk" | "auto" | "unattended" | "bubble";
+
 export interface RunStartResult extends JsonObject {
   readonly runId: string;
   /** Canonical digest of the frozen WorkflowSpec (the spec's durable identity). */
@@ -2890,7 +2895,10 @@ export interface RunStartResult extends JsonObject {
   /** Exact base commit recorded before any work began. */
   readonly baseCommit: string;
   readonly baseDirty: RunStartBaseDirty;
-  readonly effectivePermissionMode?: RunStartParams["permissionMode"];
+  /** Mode requested in the frozen workflow spec; does not establish live authority. */
+  readonly requestedPermissionMode?: RunStartParams["permissionMode"];
+  /** Actual mode observed from the owning live session; absent when unavailable. */
+  readonly effectivePermissionMode?: RunEffectivePermissionMode;
 }
 
 export interface CsvJobReviewEvidenceProjection extends JsonObject {
@@ -3035,12 +3043,15 @@ export interface RunWorkflowStatusStep extends JsonObject {
 
 /**
  * M5 verified-change workflow projection, present on `run.status` only for
- * runs that recorded workflow steps (additive; derived read-only from
- * durable `run_effects` rows).
+ * runs that recorded workflow steps. Stages and requested mode derive from
+ * durable `run_effects` rows; effective mode requires an owned live session.
  */
 export interface RunWorkflowStatus extends JsonObject {
   readonly steps: readonly RunWorkflowStatusStep[];
-  readonly effectivePermissionMode?: RunStartParams["permissionMode"];
+  /** Mode requested in the frozen workflow spec; does not establish live authority. */
+  readonly requestedPermissionMode?: RunStartParams["permissionMode"];
+  /** Actual mode observed from the owning live session; absent when unavailable. */
+  readonly effectivePermissionMode?: RunEffectivePermissionMode;
   /** Present when the run terminated with a frozen workflow stop reason. */
   readonly stopReason?: string;
 }

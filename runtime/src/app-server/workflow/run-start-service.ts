@@ -189,7 +189,10 @@ export class DaemonWorkflowStartService {
     return {
       runId: started.runId,
       specDigest: started.specDigest,
-      effectivePermissionMode: started.effectivePermissionMode,
+      requestedPermissionMode: started.requestedPermissionMode,
+      ...(started.effectivePermissionMode !== undefined
+        ? { effectivePermissionMode: started.effectivePermissionMode }
+        : {}),
       baseCommit: started.baseCommit,
       baseDirty: {
         dirty: started.baseDirty.dirty,

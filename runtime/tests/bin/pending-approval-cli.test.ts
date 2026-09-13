@@ -64,6 +64,37 @@ describe("pending approval CLI projections", () => {
     expect(output.text()).toContain("--session workflow-root --scope once approval-1");
   });
 
+  it.each(["start", "status"] as const)("distinguishes requested bypass from actual default in %s", async (surface) => {
+    const output = captureOutput();
+    const request = vi.fn(async () => ({
+      runId: "workflow-root", specDigest: "digest", baseCommit: "base",
+      baseDirty: { dirty: false, fileCount: 0 }, status: "running", terminal: false,
+      requestedPermissionMode: "bypassPermissions", effectivePermissionMode: "default",
+      workflow: { steps: [], requestedPermissionMode: "bypassPermissions", effectivePermissionMode: "default" },
+    }));
+    await runAgenCRunCli(surface === "start" ? { kind: "start", goal: "fix", verify: [] } : { kind: "status", runId: "workflow-root" }, {
+      io: output.io, ensureDaemonReady: async () => {},
+      client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+    });
+    expect(output.text().split("\n")).toContain("permission mode: default");
+    expect(output.text().split("\n")).toContain("requested permission mode: bypassPermissions");
+    expect(output.text().split("\n")).not.toContain("permission mode: bypassPermissions");
+  });
+
+  it("labels a cold workflow's frozen mode as requested without fabricating an effective mode", async () => {
+    const output = captureOutput();
+    const request = vi.fn(async () => ({
+      runId: "workflow-root", status: "running", terminal: false,
+      workflow: { steps: [], requestedPermissionMode: "bypassPermissions" },
+    }));
+    await runAgenCRunCli({ kind: "status", runId: "workflow-root" }, {
+      io: output.io, ensureDaemonReady: async () => {},
+      client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+    });
+    expect(output.text().split("\n")).toContain("requested permission mode: bypassPermissions");
+    expect(output.text().split("\n").some(line => line.startsWith("permission mode:"))).toBe(false);
+  });
+
   it("shows a live follow approval once, then observes settlement without auto-approving", async () => {
     const output = captureOutput();
     let statusReads = 0;

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { WorkflowApprovalFailure } from "../../src/permissions/approval-failure.js";
+import type { PermissionMode } from "../../src/permissions/types.js";
 
 import {
   resolveWorkflowPermissionMode,
@@ -85,6 +86,7 @@ class TestJournal implements WorkflowRunJournal {
   constructor(
     private readonly repo: StateRunDurabilityRepository,
     readonly runId: string,
+    private readonly readPermissionMode?: () => PermissionMode | undefined,
   ) {
     this.sessionId = `${runId}-session`;
     this.repo.ensureInitialEpoch({
@@ -102,6 +104,10 @@ class TestJournal implements WorkflowRunJournal {
   #next(): { eventId: string; sequence: number } {
     this.#seq += 1;
     return { eventId: `evt-${this.runId}-${this.#seq}`, sequence: this.#seq };
+  }
+
+  get effectivePermissionMode(): PermissionMode | undefined {
+    return this.readPermissionMode?.();
   }
 
   appendIntent(input: Parameters<WorkflowRunJournal["appendIntent"]>[0]) {
@@ -497,7 +503,11 @@ interface Harness {
   warnings: string[];
   controller: VerifiedChangeWorkflowController;
   /** Test seams: `failJournalOpenWith` makes the next journal open throw. */
-  hooks: { failJournalOpenWith?: Error };
+  hooks: {
+    failJournalOpenWith?: Error;
+    effectivePermissionMode?: PermissionMode;
+    currentPermissionMode?: PermissionMode;
+  };
   cleanup(): void;
 }
 
@@ -530,8 +540,9 @@ function makeHarness(
         if (hooks.failJournalOpenWith !== undefined) {
           throw hooks.failJournalOpenWith;
         }
-        return new TestJournal(repo, runId);
+        return new TestJournal(repo, runId, () => hooks.effectivePermissionMode);
       },
+      currentPermissionMode: () => hooks.currentPermissionMode,
     },
     admission: ({ runId }) => {
       if (options.admission !== undefined) return options.admission();
@@ -662,6 +673,48 @@ describe("retry prompts", () => {
 });
 
 describe("permission mode at start", () => {
+  it("reports actual default separately from requested bypass and keeps the frozen spec unchanged", async () => {
+    harness.hooks.effectivePermissionMode = "default";
+    harness.hooks.currentPermissionMode = "default";
+    const result = await harness.controller.start(startParams(harness, { permissionMode: "bypassPermissions" }));
+    try {
+      expect(result.effectivePermissionMode).toBe("default");
+      expect(result.requestedPermissionMode).toBe("bypassPermissions");
+      expect(harness.controller.status(RUN_ID)).toMatchObject({
+        requestedPermissionMode: "bypassPermissions", effectivePermissionMode: "default",
+      });
+      harness.hooks.currentPermissionMode = "plan";
+      expect(harness.controller.status(RUN_ID)?.effectivePermissionMode).toBe("plan");
+      delete harness.hooks.currentPermissionMode;
+      expect(harness.controller.status(RUN_ID)?.effectivePermissionMode).toBeUndefined();
+    } finally {
+      await harness.controller.awaitRun(RUN_ID);
+    }
+    expect(harness.repo.getEffect(RUN_ID, "workflow.intake")?.evidence).toMatchObject({
+      spec: { permissionMode: "bypassPermissions" },
+    });
+    harness.hooks.currentPermissionMode = "bypassPermissions";
+    expect(harness.controller.status(RUN_ID)?.effectivePermissionMode).toBeUndefined();
+  });
+
+  it("reports trusted effective bypass and leaves unknown journal authority absent", async () => {
+    harness.hooks.effectivePermissionMode = "bypassPermissions";
+    const trusted = await harness.controller.start(startParams(harness, { permissionMode: "bypassPermissions" }));
+    try {
+      expect(trusted.effectivePermissionMode).toBe("bypassPermissions");
+    } finally {
+      await harness.controller.awaitRun(RUN_ID);
+    }
+    delete harness.hooks.effectivePermissionMode;
+    const unknown = await harness.controller.start(startParams(harness, { runId: RUN_ID + "-unknown", permissionMode: "bypassPermissions" }));
+    try {
+      expect(unknown.effectivePermissionMode).toBeUndefined();
+      expect(unknown.requestedPermissionMode).toBe("bypassPermissions");
+    } finally {
+      await harness.controller.awaitRun(unknown.runId);
+    }
+  });
+
   it("preserves an explicit default mode and retains the omitted-mode default", () => {
     expect(resolveWorkflowPermissionMode("default")).toBe("default");
     expect(resolveWorkflowPermissionMode(undefined)).toBe("acceptEdits");

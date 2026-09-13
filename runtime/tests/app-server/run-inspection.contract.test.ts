@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
@@ -855,7 +855,7 @@ describe("M5 workflow run inspection (additive fields)", () => {
   const WORKFLOW_RUN_ID = "wf-run-inspection";
   let sequence = 0;
 
-  function seedWorkflowEffects(): void {
+  function seedWorkflowEffects(permissionMode?: "bypassPermissions"): void {
     sequence = 0;
     const durability = new StateRunDurabilityRepository(driver);
     durability.ensureInitialEpoch({ runId: WORKFLOW_RUN_ID, openedAt: NOW });
@@ -900,7 +900,7 @@ describe("M5 workflow run inspection (additive fields)", () => {
     complete("workflow.intake", {
       stage: "workflow.intake",
       attempt: 1,
-      spec: { runId: WORKFLOW_RUN_ID, goal: "fix it", repoPath: cwd },
+      spec: { runId: WORKFLOW_RUN_ID, goal: "fix it", repoPath: cwd, ...(permissionMode !== undefined ? { permissionMode } : {}) },
       specDigest: `sha256:${"2".repeat(64)}`,
     });
     begin("workflow.worktree", "workflow.worktree", "idempotent");
@@ -943,6 +943,45 @@ describe("M5 workflow run inspection (additive fields)", () => {
 
     // Ordinary runs stay untouched: no workflow field at all.
     expect(service.status({ runId: "run-complete" }).workflow).toBeUndefined();
+  });
+
+  it("keeps frozen requested bypass separate from the current live mode and omits unavailable authority", () => {
+    seedDurableRuns();
+    seedWorkflowEffects("bypassPermissions");
+    expect(service.status({ runId: WORKFLOW_RUN_ID }).workflow).toMatchObject({ requestedPermissionMode: "bypassPermissions" });
+    expect(service.status({ runId: WORKFLOW_RUN_ID }).workflow).not.toHaveProperty("effectivePermissionMode");
+    let mode: import("../../src/types/permissions.js").InternalPermissionMode | undefined = "default";
+    const lookup = vi.fn((runId: string) => { expect(runId).toBe(WORKFLOW_RUN_ID); return mode; });
+    const live = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [paths], agencHome: home, effectivePermissionMode: lookup,
+    });
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow).toMatchObject({
+      requestedPermissionMode: "bypassPermissions", effectivePermissionMode: "default",
+    });
+    mode = "unattended";
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow!.effectivePermissionMode).toBe("unattended");
+    mode = undefined;
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow).not.toHaveProperty("effectivePermissionMode");
+    mode = "invalid-runtime-mode" as never;
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow).not.toHaveProperty("effectivePermissionMode");
+    lookup.mockClear();
+    expect(live.status({ runId: "run-live" }).workflow).toBeUndefined();
+    expect(lookup).not.toHaveBeenCalled();
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.recordTerminalResult({
+      epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+      eventId: `evt-${++sequence}`,
+      result: {
+        runId: WORKFLOW_RUN_ID, status: "cancelled", exitCode: 1,
+        stopReason: "user_cancelled", finalMessage: "cancelled", usage: null,
+        lastSequence: sequence, finishedAt: NOW,
+      },
+    });
+    const terminal = live.status({ runId: WORKFLOW_RUN_ID });
+    expect(terminal.terminal).toBe(true);
+    expect(terminal.workflow).toMatchObject({ requestedPermissionMode: "bypassPermissions" });
+    expect(terminal.workflow).not.toHaveProperty("effectivePermissionMode");
+    expect(lookup).not.toHaveBeenCalled();
   });
 
   it("carries the frozen workflow stop reason through the projection", () => {

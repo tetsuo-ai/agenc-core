@@ -395,9 +395,7 @@ async function runStartCommand(
       [
         `run ${result.runId}`,
         `spec ${result.specDigest}`,
-        ...(result.effectivePermissionMode === undefined
-          ? []
-          : [`permission mode: ${result.effectivePermissionMode}`]),
+        ...formatWorkflowPermissionModes(result),
         `base ${result.baseCommit}` +
           (result.baseDirty.dirty
             ? ` (checkout dirty: ${result.baseDirty.fileCount} file(s); recorded, never touched)`
@@ -422,7 +420,7 @@ async function followRun(
     ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   let afterSequence = 0;
   let previousPendingRequests = "[]";
-  let previousPermissionMode: RunStartResult["effectivePermissionMode"];
+  let previousPermissionModes = "";
   for (;;) {
     const replay: RunReplayResult = await client.request("run.replay", {
       runId,
@@ -448,10 +446,10 @@ async function followRun(
       io.stdout.write(`run ${runId} terminal: ${status.status}\n`);
       return status.status === "completed" ? 0 : 1;
     }
-    const mode = status.workflow?.effectivePermissionMode;
-    if (mode !== undefined && mode !== previousPermissionMode) {
-      io.stdout.write(`permission mode: ${mode}\n`);
-      previousPermissionMode = mode;
+    const modes = status.workflow === undefined ? "" : formatWorkflowPermissionModes(status.workflow).join("\n");
+    if (modes.length > 0 && modes !== previousPermissionModes) {
+      io.stdout.write(`${modes}\n`);
+      previousPermissionModes = modes;
     }
     const requests = status.pendingRequests ?? [];
     const pendingRequests = JSON.stringify(requests);
@@ -476,14 +474,25 @@ function hasWorkflowStatus(
   );
 }
 
+function formatWorkflowPermissionModes(
+  modes: Pick<RunStartResult, "requestedPermissionMode" | "effectivePermissionMode">,
+): string[] {
+  return [
+    ...(modes.effectivePermissionMode !== undefined
+      ? [`permission mode: ${modes.effectivePermissionMode}`]
+      : []),
+    ...(modes.requestedPermissionMode !== undefined && modes.requestedPermissionMode !== modes.effectivePermissionMode
+      ? [`requested permission mode: ${modes.requestedPermissionMode}`]
+      : []),
+  ];
+}
+
 export function formatWorkflowStatusTable(
   result: RunStatusResult & { readonly workflow: RunWorkflowStatus },
 ): string {
   const lines = [
     `run ${result.runId} — ${result.status}${result.terminal ? " (terminal)" : ""}`,
-    ...(result.workflow.effectivePermissionMode === undefined
-      ? []
-      : [`permission mode: ${result.workflow.effectivePermissionMode}`]),
+    ...formatWorkflowPermissionModes(result.workflow),
     "STAGE                 STATUS           ATTEMPTS  VERDICT",
   ];
   for (const step of result.workflow.steps) {
