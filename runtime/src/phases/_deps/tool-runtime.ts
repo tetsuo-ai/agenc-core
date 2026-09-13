@@ -32,7 +32,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import { isWorkflowApprovalSession } from "../../permissions/approval-failure.js";
-import { dirname, isAbsolute, resolve } from "node:path";
+import {
+  filesystemRootsForDispatch,
+  type FilesystemRootSessionLike,
+} from "../../tools/filesystem-dispatch-roots.js";
 import type { LLMToolCall } from "../../llm/types.js";
 import { signedSessionPlanFileArgs } from "../../agents/_deps/filesystem-args.js";
 import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
@@ -85,7 +88,6 @@ import {
   SESSION_AGENC_HOME_ARG,
   SESSION_ID_SIG_ARG,
   signSessionId,
-  withSignedAllowedRoots,
 } from "../../tools/system/filesystem.js";
 import {
   routerFromRegistry as realRouterFromRegistry,
@@ -114,42 +116,6 @@ interface ToolRegistryLike {
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResultLike>;
 }
 
-const APPROVED_FILE_PATH_TOOLS = new Set([
-  "FileRead",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
-]);
-
-function approvedFilePathForTool(
-  toolName: string,
-  args: Record<string, unknown>,
-): string | null {
-  if (!APPROVED_FILE_PATH_TOOLS.has(toolName)) return null;
-  const filePath = args["file_path"];
-  return typeof filePath === "string" && filePath.trim().length > 0
-    ? filePath
-    : null;
-}
-
-function withApprovedFilesystemRoot(
-  toolName: string,
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  const filePath = approvedFilePathForTool(toolName, args);
-  if (filePath === null) return args;
-
-  const cwd =
-    typeof args["cwd"] === "string" && args["cwd"].trim().length > 0
-      ? args["cwd"]
-      : process.cwd();
-  const resolvedPath = isAbsolute(filePath)
-    ? filePath
-    : resolve(cwd, filePath);
-  const approvedRoot = dirname(resolvedPath);
-  return withSignedAllowedRoots(args, [approvedRoot]);
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Re-exports (back-compat with previous stub surface)
@@ -952,7 +918,7 @@ export class StreamingToolExecutor {
                 message: `approval required for ${ctx.toolName} but no resolver is wired`,
               });
             },
-            dispatch: async (_sandbox, dispatchContext) => {
+            dispatch: async (sandbox, dispatchContext) => {
               if (tool.cancelBeforeDispatch) {
                 return buildTerminalToolResult({
                   toolCall: tool.toolCall,
@@ -978,9 +944,15 @@ export class StreamingToolExecutor {
                 sessionWithId.conversationId.length > 0
                   ? sessionWithId.conversationId
                   : null;
-              const dispatchArgs = dispatchContext.approvalResolved
-                ? withApprovedFilesystemRoot(tool.toolCall.name, effectiveArgs)
-                : effectiveArgs;
+              const dispatchArgs = filesystemRootsForDispatch(
+                tool.toolCall.name,
+                effectiveArgs,
+                {
+                  approvalResolved: dispatchContext.approvalResolved,
+                  sandboxMode: sandbox,
+                  session: session as FilesystemRootSessionLike | undefined,
+                },
+              );
               const dispatchCall: LLMToolCall = {
                 ...tool.toolCall,
                 // Re-stringify so the registry sees the (possibly)

@@ -469,8 +469,12 @@ signs onto their input. When the layer allows a path outside the cwd on its
 own, through `--add-dir`, an allow rule, or `bypassPermissions`, it hands the
 tool that path's directory the same way it does after an approval; before,
 such an allow ended in the tool's own `Path is outside allowed directories`
-(the half-bypass seen with Edit on `/etc/nginx/nginx.conf`). The safety gates
-(`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
+(the half-bypass seen with Edit on `/etc/nginx/nginx.conf`). Under the full
+bypass the evaluator does not run at all, so the dispatcher does the same at
+dispatch time (`filesystemRootsForDispatch`): a `file_path` inside a directory
+the user added, or any `file_path` when the mode is `bypassPermissions` and
+the sandbox is `danger_full_access`, carries its signed directory. The safety
+gates (`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
 
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).
