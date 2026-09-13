@@ -111,9 +111,15 @@ describe("session-store flush diagnostic reentry (#2032)", () => {
         ).batchOpenedAtMs = -1_000_000;
         store.flushBatch(false);
         const afterFlush = readFileSync(store.rolloutPath, "utf8");
-        expect(afterFlush).toContain("event_log_batch_delayed");
+        // The suspend window is never a raw row: an unsequenced row would
+        // make the canonical journal mixed-format. It reaches the rollout
+        // through the sequenced diagnostic channel once the flush drains.
+        expect(afterFlush).not.toContain("event_log_batch_delayed");
         expect(afterFlush).toContain("before-suspend");
         expectDeferredThenReleased(store);
+        expect(readFileSync(store.rolloutPath, "utf8")).toContain(
+          "live-event_log_batch_delayed",
+        );
       },
     },
     {

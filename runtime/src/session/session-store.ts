@@ -2064,53 +2064,26 @@ export class SessionStore {
     }
     this.flushDepth += 1;
     try {
-      // I-83 suspend detection: if the batch was open for > 10s (e.g.
-      // system suspend/resume gap), emit TWO marker events (warning +
-      // sentinel system_resumed_from) AHEAD of the pending batch.
-      // The markers are informational warnings (non-state-mutating in the
-      // reducer); the queued durable response_item / session_state lines
-      // that straddle the suspend window MUST be preserved and flushed,
-      // not discarded — dropping them permanently loses in-flight history.
+      // I-83 suspend detection: if the batch was open for > 10s (e.g. a
+      // host suspend/resume gap), record the window as a diagnostic. The
+      // queued durable response_item / session_state lines that straddle
+      // the window MUST be preserved and flushed, not discarded — dropping
+      // them permanently loses in-flight history.
+      //
+      // The window is NOT written here as a raw rollout row. Rows appended
+      // outside the EventLog carry no `seq`, and the canonical journal must
+      // be entirely sequenced or entirely legacy: one unsequenced row makes
+      // every later validation of that rollout fail
+      // ("canonical journal mixes sequenced and legacy events"), which
+      // refuses compaction for the rest of the session and ends the turn at
+      // the context limit. The diagnostic below reaches the rollout through
+      // the session's own emit path, properly stamped.
       if (
         this.batchOpenedAtMs !== null &&
         monotonicMs() - this.batchOpenedAtMs > I83_SUSPEND_DETECTION_MS
       ) {
         const durationMs = Math.round(monotonicMs() - this.batchOpenedAtMs);
         this.batchOpenedAtMs = null;
-        // Prepend the two I-83 marker events so the log shows (a) the
-        // operator-visible warning and (b) a structural sentinel the
-        // reducer can reason about, while the original pending items
-        // remain queued behind them.
-        const warning: RolloutItem = {
-          type: "event_msg",
-          payload: {
-            id: "system",
-            msg: {
-              type: "warning",
-              payload: {
-                cause: "event_log_batch_delayed",
-                message: `event-log batch delayed ${durationMs}ms (I-83)`,
-              },
-            },
-          },
-        };
-        // Sentinel encoded as a warning with cause=system_resumed_from
-        // so it round-trips through the 24-variant EventMsg union
-        // without adding a new variant.
-        const sentinel: RolloutItem = {
-          type: "event_msg",
-          payload: {
-            id: "system",
-            msg: {
-              type: "warning",
-              payload: {
-                cause: "system_resumed_from",
-                message: `${durationMs}`,
-              },
-            },
-          },
-        };
-        this.pending = [warning, sentinel, ...this.pending];
         this.emitDiagnostic({
           at: Date.now(),
           level: "warning",
