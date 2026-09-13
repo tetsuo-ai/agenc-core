@@ -12,6 +12,7 @@ import {
   REPEAT_TOOL_THRESHOLDS,
   REPEATED_FAILURE_BLOCK_THRESHOLD,
   REPEATED_FAILURE_BLOCKED_METADATA_KEY,
+  REPEATED_FAILURE_SAMPLE_METADATA_KEY,
   repeatedFailingCallStopExplanation,
   failureSignature,
 } from "../../src/phases/repeat-tool-advisory.js";
@@ -248,8 +249,33 @@ describe("blockRepeatedFailingCall", () => {
     };
   }
 
-  function mkState(records: readonly CompletedToolResultRecord[]): TurnState {
-    return { completedToolResults: [...records] } as unknown as TurnState;
+  function mkState(
+    records: readonly CompletedToolResultRecord[],
+    modelSampleOrdinal = 4,
+  ): TurnState {
+    return {
+      completedToolResults: [...records],
+      modelSampleOrdinal,
+    } as unknown as TurnState;
+  }
+
+  /** The refusal executeTools records for `call` in sample `ordinal`. */
+  function refusalRecord(
+    toolCall: LLMToolCall,
+    ordinal: number | undefined,
+  ): CompletedToolResultRecord {
+    return completed(
+      { ...toolCall, id: `${toolCall.id}-refused` },
+      JSON.stringify({ error: "refused" }),
+      true,
+      {
+        [REPEATED_FAILURE_BLOCKED_METADATA_KEY]: true,
+        ...(ordinal === undefined
+          ? {}
+          : { [REPEATED_FAILURE_SAMPLE_METADATA_KEY]: ordinal }),
+        repeatedFailures: 3,
+      },
+    );
   }
 
   const write = call("Write", { file_path: "/root/memory/style.md", content: "x" });
@@ -287,19 +313,13 @@ describe("blockRepeatedFailingCall", () => {
     ]);
   });
 
-  test("a second refusal of the same call ends the turn", () => {
+  test("a refusal repeated in a LATER sample ends the turn", () => {
     const { session, warnings } = mkSessionStub();
     const failures = Array.from({ length: REPEATED_FAILURE_BLOCK_THRESHOLD }, (_, i) =>
       completed(call(write.name, write.arguments, `w-${i}`), DENIAL, true),
     );
-    const firstRefusal = completed(
-      call(write.name, write.arguments, "w-refused"),
-      JSON.stringify({ error: "refused" }),
-      true,
-      { [REPEATED_FAILURE_BLOCKED_METADATA_KEY]: true, repeatedFailures: 3 },
-    );
     const blocked = blockRepeatedFailingCall(
-      mkState([...failures, firstRefusal]),
+      mkState([...failures, refusalRecord(write, 3)], 4),
       session,
       write,
     );
@@ -315,11 +335,51 @@ describe("blockRepeatedFailingCall", () => {
     );
     expect(
       blockRepeatedFailingCall(
-        mkState([...failures, firstRefusal, ...otherFailures]),
+        mkState([...failures, refusalRecord(write, 3), ...otherFailures], 4),
         session,
         other,
       )?.preventContinuation,
     ).toBeUndefined();
+
+    // A refusal with no recorded sample predates this batch (resumed turn,
+    // legacy record) and still ends the turn.
+    expect(
+      blockRepeatedFailingCall(
+        mkState([...failures, refusalRecord(write, undefined)], 4),
+        session,
+        write,
+      )?.preventContinuation,
+    ).toBe(true);
+  });
+
+  test("the same failing call twice in one model output is refused twice and still yields the sample", () => {
+    const { session } = mkSessionStub();
+    const failures = Array.from({ length: REPEATED_FAILURE_BLOCK_THRESHOLD }, (_, i) =>
+      completed(call(write.name, write.arguments, `w-${i}`), DENIAL, true),
+    );
+    // executeTools records each refusal before it considers the next call of
+    // the same batch; no sampling happens in between.
+    const state = mkState(failures, 4);
+    const first = blockRepeatedFailingCall(state, session, write);
+    expect(first?.preventContinuation).toBeUndefined();
+    state.completedToolResults.push(
+      completed(call(write.name, write.arguments, "w-dup-1"), first!.content, true, first!.metadata),
+    );
+    const second = blockRepeatedFailingCall(state, session, {
+      ...write,
+      id: "w-dup-2",
+    });
+    expect(state.modelSampleOrdinal).toBe(4);
+    expect(second?.preventContinuation).toBeUndefined();
+    expect(second?.metadata).toMatchObject({
+      [REPEATED_FAILURE_SAMPLE_METADATA_KEY]: 4,
+    });
+    // The next sample repeating it stops the turn.
+    state.modelSampleOrdinal = 5;
+    expect(
+      blockRepeatedFailingCall(state, session, { ...write, id: "w-next" })
+        ?.preventContinuation,
+    ).toBe(true);
   });
 
   // Live incident (session conv-mtjdmlfc, 2026-09-02): one `npm start` was

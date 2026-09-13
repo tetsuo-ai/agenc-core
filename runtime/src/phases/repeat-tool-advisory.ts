@@ -68,6 +68,15 @@ export const REPEATED_FAILURE_BLOCK_THRESHOLD = 3;
 /** Metadata marker on the synthetic refusal so it never counts as a failure. */
 export const REPEATED_FAILURE_BLOCKED_METADATA_KEY = "repeatedFailingCallBlocked";
 
+/**
+ * Model sample the refusal belongs to. The turn ends on a refusal that
+ * repeats one from an EARLIER sample, so the opportunity to change approach
+ * is one sampling generation, not one result row: a model output carrying
+ * the same failing call twice is refused twice inside the same generation
+ * and still gets its sample.
+ */
+export const REPEATED_FAILURE_SAMPLE_METADATA_KEY = "repeatedFailingCallSample";
+
 /** Cap on the last error quoted inside the refusal. */
 const LAST_ERROR_PREVIEW_CHARS = 300;
 
@@ -240,21 +249,30 @@ function blockedCallMessage(
 }
 
 /**
- * Refusals already recorded for this exact call in this turn. The first
- * refusal hands the model the message above and lets it sample again, which
- * is the only way an unattended session can act on the advice; a second
- * refusal of the same call means the advice did not land, and the turn ends.
+ * Whether this exact call was already refused in an EARLIER model sample.
+ * The first refusal hands the model the message above and lets it sample
+ * again, which is the only way an unattended session can act on the advice.
+ * A refusal recorded before the current sample means the advice did not
+ * land, so the turn ends. Refusals from the current sample do not count:
+ * `executeTools` records each refusal as it goes, so a model output that
+ * repeats the same failing call twice would otherwise consume the
+ * opportunity inside the batch that created it, before the model could read
+ * anything. A refusal without a recorded sample predates this turn's
+ * batch (a resumed turn, a legacy record) and counts as earlier.
  */
-function priorRefusalCount(state: TurnState, call: LLMToolCall): number {
+function refusedInEarlierSample(state: TurnState, call: LLMToolCall): boolean {
   const key = canonicalCallKey(call);
-  let count = 0;
+  const currentSample = state.modelSampleOrdinal;
   for (const record of state.completedToolResults) {
     if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] !== true) {
       continue;
     }
-    if (completedRecordKey(record) === key) count += 1;
+    if (completedRecordKey(record) !== key) continue;
+    if (record.metadata?.[REPEATED_FAILURE_SAMPLE_METADATA_KEY] !== currentSample) {
+      return true;
+    }
   }
-  return count;
+  return false;
 }
 
 /**
@@ -310,7 +328,7 @@ export function blockRepeatedFailingCall(
 ): ToolDispatchResult | null {
   const { count, lastError } = identicalFailureRun(state, call);
   if (count < REPEATED_FAILURE_BLOCK_THRESHOLD) return null;
-  const endsTurn = priorRefusalCount(state, call) >= 1;
+  const endsTurn = refusedInEarlierSample(state, call);
   const message = blockedCallMessage(call, count, lastError, endsTurn);
   emitWarning(
     session.eventLog,
@@ -324,6 +342,7 @@ export function blockRepeatedFailingCall(
     isError: true,
     metadata: {
       [REPEATED_FAILURE_BLOCKED_METADATA_KEY]: true,
+      [REPEATED_FAILURE_SAMPLE_METADATA_KEY]: state.modelSampleOrdinal,
       repeatedFailures: count,
     },
     ...(endsTurn ? { preventContinuation: true } : {}),
