@@ -18,12 +18,16 @@ interface PermissionContextLike {
 
 function fakeChildSession(
   context: PermissionContextLike,
-  sandboxPolicy: string,
+  sandboxPolicy: Session["sessionConfiguration"]["sandboxPolicy"]["value"],
 ): Session {
   const registry = { current: () => context };
+  const configuration = {
+    cwd: "/repo",
+    sandboxPolicy: { value: sandboxPolicy },
+  } satisfies Pick<Session["sessionConfiguration"], "cwd" | "sandboxPolicy">;
   return {
     conversationId: "child-1",
-    sessionConfiguration: { cwd: "/repo", sandboxPolicy },
+    sessionConfiguration: configuration,
     permissionModeRegistry: registry,
     services: { permissionModeRegistry: registry },
   } as unknown as Session;
@@ -111,6 +115,26 @@ describe("child tool calls widen filesystem roots like the parent dispatcher", (
       fakeChildSession(
         { mode: "default", additionalWorkingDirectories: new Map() },
         "workspace_write",
+      ),
+    );
+    expect(verifiedRoots(args)).toEqual([]);
+  });
+
+  it("keeps workspace confinement when only approvals are bypassed", async () => {
+    const args = await runGlob(
+      fakeChildSession(
+        { mode: "bypassPermissions", additionalWorkingDirectories: new Map() },
+        "workspace_write",
+      ),
+    );
+    expect(verifiedRoots(args)).toEqual([]);
+  });
+
+  it("does not substitute sandbox bypass for an unresolved approval", async () => {
+    const args = await runGlob(
+      fakeChildSession(
+        { mode: "default", additionalWorkingDirectories: new Map() },
+        "danger_full_access",
       ),
     );
     expect(verifiedRoots(args)).toEqual([]);

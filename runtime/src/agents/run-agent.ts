@@ -2736,7 +2736,7 @@ function widenChildFilesystemRoots(
   args: Record<string, unknown>,
   childSession: Session | null | undefined,
 ): Record<string, unknown> {
-  const sandboxPolicy = childSession?.sessionConfiguration?.sandboxPolicy;
+  const sandboxPolicy = childSession?.sessionConfiguration?.sandboxPolicy?.value;
   return filesystemRootsForDispatch(toolName, args, {
     approvalResolved: false,
     ...(typeof sandboxPolicy === "string" ? { sandboxMode: sandboxPolicy } : {}),
