@@ -19,6 +19,7 @@
 
 import { normalize } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
 import {
   attachToolRuntimeContext,
   readToolRuntimeContext,
@@ -2718,6 +2719,33 @@ function wrapToolForChild(
   });
 }
 
+/**
+ * The parent's dispatcher hands file and search tools the directory they are
+ * about to touch, signed, whenever the session already allows it: an approval,
+ * a directory the user added, or the full bypass. Child tool calls never pass
+ * through that dispatcher, so a subagent under the same bypass with
+ * `--add-dir /` was still refused on every path outside its workspace
+ * ("Access denied: Path is outside allowed directories" on Glob /tmp while the
+ * parent session searched the same directory freely). Apply the same rule
+ * here, from the parent-owned permission context the child session shares.
+ * Runs before the non-enumerable runtime context is attached: the widening
+ * returns a copy of the args.
+ */
+function widenChildFilesystemRoots(
+  toolName: string,
+  args: Record<string, unknown>,
+  childSession: Session | null | undefined,
+): Record<string, unknown> {
+  const sandboxPolicy = childSession?.sessionConfiguration?.sandboxPolicy;
+  return filesystemRootsForDispatch(toolName, args, {
+    approvalResolved: false,
+    ...(typeof sandboxPolicy === "string" ? { sandboxMode: sandboxPolicy } : {}),
+    ...(childSession !== undefined && childSession !== null
+      ? { session: childSession }
+      : {}),
+  });
+}
+
 async function prepareChildToolCall(
   tool: Tool,
   args: Record<string, unknown>,
@@ -2751,7 +2779,11 @@ async function prepareChildToolCall(
       return { result: { content: safeStringify({ error: refusal }), isError: true, metadata: { childPolicyDenied: true } } };
     }
   }
-  const childArgs = injectChildToolArgs(policyResult.args, tool.name, opts);
+  const childArgs = widenChildFilesystemRoots(
+    tool.name,
+    injectChildToolArgs(policyResult.args, tool.name, opts),
+    childSession,
+  );
   // Policy replacement and signed child-argument copies omit non-enumerable
   // fields. Preserve the authenticated per-attempt grant, not model-provided
   // private keys, so the execution sink does not fall back to the base sandbox.
