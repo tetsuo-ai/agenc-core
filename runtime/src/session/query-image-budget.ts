@@ -7,9 +7,11 @@
  * Terminal-Bench reached 54 screenshots (10.8 MB of a 11.1 MB request), and
  * every full-history resend after that was refused by the provider. The
  * durable history keeps every image; only what the model is shown on the
- * wire is bounded. When the inline images exceed the budget, the newest are
- * kept up to half of it (so the prefix does not move on every screenshot)
- * and every older image is replaced by a short text placeholder.
+ * wire is bounded. Keep a contiguous suffix of the newest inline images up
+ * to the full budget. Once an image does not fit, omit it and every older
+ * inline image rather than showing an older screen in place of a newer one.
+ * This stateless policy can change the retained prefix on every new image
+ * at capacity; it does not promise prompt-cache hysteresis.
  *
  * @module
  */
@@ -20,6 +22,8 @@ export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;
 export const CONTEXT_IMAGE_BUDGET_ENV = "AGENC_CONTEXT_IMAGE_BUDGET_BYTES";
 export const OMITTED_IMAGE_TEXT =
   "[image omitted: an earlier screenshot is no longer in context; capture or read it again if it is still needed]";
+export const OVERSIZED_IMAGE_TEXT =
+  "[image omitted: this image exceeds the inline image request limit; resize it or capture a smaller version before sending it again]";
 
 /** `0` disables the budget; an unset or malformed value uses the default. */
 export function resolveContextImageBudgetBytes(
@@ -64,9 +68,9 @@ export function boundContextImageBytes(
   if (budgetBytes <= 0 || totalBytes <= budgetBytes) {
     return { messages: [...messages], omitted: 0, retainedBytes: totalBytes, totalBytes };
   }
-  // Keep the newest images up to half the budget so the retained prefix
-  // survives the next few screenshots instead of moving on every one.
-  const keepBytes = Math.floor(budgetBytes / 2);
+  // Do not skip a newer image to fill leftover space with an older one.
+  // The newest image can use the full budget on its own.
+  let suffixFull = false;
   let retainedBytes = 0;
   let omitted = 0;
   const out: LLMMessage[] = new Array(messages.length);
@@ -85,12 +89,16 @@ export function boundContextImageBytes(
         parts[j] = part;
         continue;
       }
-      if (retainedBytes + bytes <= keepBytes) {
+      if (!suffixFull && retainedBytes + bytes <= budgetBytes) {
         retainedBytes += bytes;
         parts[j] = part;
         continue;
       }
-      parts[j] = { type: "text", text: OMITTED_IMAGE_TEXT };
+      suffixFull = true;
+      parts[j] = {
+        type: "text",
+        text: bytes > budgetBytes ? OVERSIZED_IMAGE_TEXT : OMITTED_IMAGE_TEXT,
+      };
       omitted += 1;
       changed = true;
     }

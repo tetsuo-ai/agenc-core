@@ -761,7 +761,7 @@ async function prepareSamplingRequestBoundary(
           payload: {
             cause: "context_images_omitted",
             message:
-              `${boundedImages.omitted} earlier inline image(s) left out of the request: ` +
+              `${boundedImages.omitted} inline image(s) left out of the request: ` +
               `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
               `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
               `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
