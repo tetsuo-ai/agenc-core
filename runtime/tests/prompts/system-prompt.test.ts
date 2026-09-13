@@ -181,7 +181,9 @@ describe("static section emitters", () => {
     expect(s).toContain("re-run every check the task implies");
     // The verification round must widen coverage, not repeat what already passed.
     expect(s).toContain("proves that path, not the requirement");
-    expect(s).toContain("Re-running a check that already passed adds nothing");
+    expect(s).toContain("reconfirms it but adds no coverage");
+    // The coverage rule must not contradict the re-run-after-a-fix rule.
+    expect(s).toContain("Re-run the affected checks after every change");
     expect(s).toContain("Never ask for clarification or confirmation");
     expect(s).toContain("The final message lists which requirements you verified and how");
   });
