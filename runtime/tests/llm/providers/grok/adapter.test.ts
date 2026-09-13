@@ -645,6 +645,28 @@ describe("GrokProvider incremental continuation", () => {
     );
   });
 
+  const STORE_REFUSAL =
+    "Response is too large to store. You can avoid this error by setting `store` to false in your request.";
+  function storeRefusalClient(
+    requestBodies: Record<string, unknown>[],
+    second: () => unknown,
+  ): { responses: { create: ReturnType<typeof vi.fn> } } {
+    return {
+      responses: {
+        create: vi
+          .fn()
+          .mockImplementationOnce((params: Record<string, unknown>) => {
+            requestBodies.push(params);
+            throw Object.assign(new Error(STORE_REFUSAL), { status: 400 });
+          })
+          .mockImplementationOnce((params: Record<string, unknown>) => {
+            requestBodies.push(params);
+            return second();
+          }),
+      },
+    };
+  }
+
   test("retries once unstored when xAI cannot store a large response", async () => {
     const warnings: Array<{ cause: string; message: string }> = [];
     const provider = new GrokProvider({
@@ -653,29 +675,12 @@ describe("GrokProvider incremental continuation", () => {
       emitWarning: (warning) => warnings.push(warning),
     });
     const requestBodies: Record<string, unknown>[] = [];
-    (provider as any).client = {
-      responses: {
-        create: vi
-          .fn()
-          .mockImplementationOnce((params: Record<string, unknown>) => {
-            requestBodies.push(params);
-            throw Object.assign(
-              new Error(
-                "Response is too large to store. You can avoid this error by setting `store` to false in your request.",
-              ),
-              { status: 400 },
-            );
-          })
-          .mockImplementationOnce((params: Record<string, unknown>) => {
-            requestBodies.push(params);
-            return withResponse(buildXaiResponse("resp_unstored", "done"));
-          }),
-      },
-    };
+    (provider as any).client = storeRefusalClient(requestBodies, () =>
+      withResponse(buildXaiResponse("resp_unstored", "done")),
+    );
     const result = await provider.chat(currentMessages);
     expect(result.content).toBe("done");
-    expect(requestBodies[0]?.store).toBe(true);
-    expect(requestBodies[1]?.store).toBe(false);
+    expect(requestBodies.map((body) => body.store)).toEqual([true, false]);
     expect(warnings).toContainEqual(
       expect.objectContaining({ cause: "xai_store_too_large" }),
     );
@@ -689,34 +694,19 @@ describe("GrokProvider incremental continuation", () => {
       emitWarning: (warning) => warnings.push(warning),
     });
     const requestBodies: Record<string, unknown>[] = [];
-    (provider as any).client = {
-      responses: {
-        create: vi
-          .fn()
-          .mockImplementationOnce((params: Record<string, unknown>) => {
-            requestBodies.push(params);
-            throw Object.assign(
-              new Error("Response is too large to store. You can avoid this error by setting `store` to false in your request."),
-              { status: 400 },
-            );
-          })
-          .mockImplementationOnce((params: Record<string, unknown>) => {
-            requestBodies.push(params);
-            return withResponse(
-              streamFromEvents([
-                {
-                  type: "response.completed",
-                  response: buildXaiResponse("resp_unstored_stream", "stream done"),
-                },
-              ]),
-            );
-          }),
-      },
-    };
+    (provider as any).client = storeRefusalClient(requestBodies, () =>
+      withResponse(
+        streamFromEvents([
+          {
+            type: "response.completed",
+            response: buildXaiResponse("resp_unstored_stream", "stream done"),
+          },
+        ]),
+      ),
+    );
     const result = await provider.chatStream(currentMessages, () => {});
     expect(result.content).toBe("stream done");
-    expect(requestBodies[0]?.store).toBe(true);
-    expect(requestBodies[1]?.store).toBe(false);
+    expect(requestBodies.map((body) => body.store)).toEqual([true, false]);
     expect(warnings).toContainEqual(
       expect.objectContaining({ cause: "xai_store_too_large" }),
     );

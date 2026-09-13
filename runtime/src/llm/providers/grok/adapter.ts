@@ -1024,6 +1024,26 @@ export class GrokProvider implements LLMProvider {
     this.incrementalTracker.recordResponse(snapshot);
   }
 
+  /**
+   * One unstored retry of the same request after xAI refused to store the
+   * response: full history (an unstored response cannot be continued) and
+   * `store: false`. Shared by the non-streaming and streaming paths.
+   */
+  private unstoredRetryPlan(
+    messages: readonly LLMMessage[],
+    options: LLMChatOptions | undefined,
+  ): ReturnType<GrokProvider["buildRequestPlan"]> {
+    this.emitRuntimeWarning(
+      "xai_store_too_large",
+      `${this.name} could not store the response; retrying once with store: false`,
+    );
+    const plan = this.buildRequestPlan(messages, options, {
+      disableIncremental: true,
+    });
+    (plan.params as Record<string, unknown>).store = false;
+    return plan;
+  }
+
   private emitRuntimeWarning(cause: string, message: string): void {
     this.config.emitWarning?.({ cause, message });
   }
@@ -1271,14 +1291,7 @@ export class GrokProvider implements LLMProvider {
         isResponseTooLargeToStore(err) &&
         (plan.params as Record<string, unknown>).store !== false
       ) {
-        this.emitRuntimeWarning(
-          "xai_store_too_large",
-          `${this.name} could not store the response; retrying once with store: false`,
-        );
-        const retryPlan = this.buildRequestPlan(messages, options, {
-          disableIncremental: true,
-        });
-        (retryPlan.params as Record<string, unknown>).store = false;
+        const retryPlan = this.unstoredRetryPlan(messages, options);
         return await retryWithAuthRefresh(
           String(this.config.apiKey),
           async () => run(retryPlan),
@@ -1478,14 +1491,8 @@ export class GrokProvider implements LLMProvider {
           isResponseTooLargeToStore(err) &&
           params.store !== false
         ) {
-          this.emitRuntimeWarning(
-            "xai_store_too_large",
-            `${this.name} could not store the response; retrying once with store: false`,
-          );
-          plan = this.buildRequestPlan(messages, options, {
-            disableIncremental: true,
-          });
-          params = { ...plan.params, stream: true, store: false };
+          plan = this.unstoredRetryPlan(messages, options);
+          params = { ...plan.params, stream: true };
           result = await withTimeout(
             async (signal) =>
               createWithResponseMetadata<AsyncIterable<any>>(
