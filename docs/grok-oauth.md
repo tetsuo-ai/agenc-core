@@ -62,7 +62,8 @@ request carries `referrer=agenc` so xAI can attribute usage (their request).
   Service, or a DPAPI-protected file under `AGENC_HOME` on Windows; no
   plaintext fallback). Tokens refresh automatically (~6 h access tokens with
   rotating refresh tokens). xAI expired bearers are often **403**; refresh
-  runs on 401 and 403 (two attempts). Admitted turns do not in-band retry:
+  runs on 401 and 403 (two attempts), except for the spending-limit refusal
+  under Troubleshooting, which no refresh can lift. Admitted turns do not in-band retry:
   they pre-flight refresh if the stored token is near expiry. Transient
   refresh failure does not force `/grok-login`.
 - The OAuth bearer is only ever sent to `api.x.ai` / `*.grok.com`. A custom
@@ -71,6 +72,12 @@ request carries `referrer=agenc` so xAI can attribute usage (their request).
 
 ## Troubleshooting
 
+- **"xAI refused the request: the account has run out of credits, reached its
+  spending limit, or needs a Grok subscription"**: xAI answered HTTP 403 with
+  `personal-team-blocked:spending-limit` (its own text: "You have run out of
+  credits or need a Grok subscription"). Signing in again does not help, and
+  AgenC does not refresh the token for it. Add credits or raise the limit on
+  grok.com, or upgrade the subscription, then retry.
 - **403 "no active Grok subscription"** right after a successful login:
   xAI enforces entitlement at request time, keyed by account email. Make
   sure your X account and grok.com account use the **same email**, or fall
