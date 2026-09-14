@@ -280,6 +280,63 @@ function zaiInsufficientBalanceErrorMessage(): string {
   ].join(" ");
 }
 
+/**
+ * Z.AI codes that refuse a request for the account's plan, usage quota or
+ * entitlement (docs.z.ai/api-reference/api-code). Each arrives as HTTP 429,
+ * yet none clears within a turn: the usage limits name a reset 5 hours, 7 days
+ * or a month away, and the rest need a renewal, a plan change or another key.
+ * 1302 (request rate) and 1305 (overload) are the 429 codes that clear on
+ * their own, and they stay retryable.
+ */
+const ZAI_PLAN_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "1308", // usage limit for {number} {unit}, resets at {next_flush_time}
+  "1309", // GLM Coding Plan package expired
+  "1310", // weekly or monthly limit exhausted, resets at {next_flush_time}
+  "1311", // the plan does not include the model
+  "1313", // Fair Usage Policy limited the request frequency
+  "1314", // enterprise package expired
+  "1315", // key limited to enterprise coding package scenarios
+  "1316", // 5-hour usage limit, no balance for extra usage
+  "1317", // 7-day usage limit, no balance for extra usage
+  "1318", // 5-hour usage limit, monthly spend limit blocks extra usage
+  "1319", // 7-day usage limit, monthly spend limit blocks extra usage
+  "1320", // 5-hour usage limit, monthly spend limit blocks extra usage
+  "1321", // 7-day usage limit, monthly spend limit blocks extra usage
+]);
+
+/** Z.AI's own refusal text carries the reset time; keep it, on one bounded line. */
+const ZAI_REFUSAL_DETAIL_MAX_CHARS = 300;
+
+interface ZaiPlanRefusal {
+  readonly code: string;
+  readonly detail?: string;
+}
+
+function readZaiPlanRefusal(args: {
+  readonly providerName: string;
+  readonly body: unknown;
+}): ZaiPlanRefusal | undefined {
+  if (!isZaiProviderName(args.providerName)) return undefined;
+  const body = readZaiErrorBody(args.body);
+  const code = readNestedProviderCode(body);
+  if (code === undefined || !ZAI_PLAN_REFUSAL_CODES.has(code)) return undefined;
+  const detail = readNestedProviderMessage(body)
+    ?.replace(/\s+/g, " ")
+    .trim()
+    .slice(0, ZAI_REFUSAL_DETAIL_MAX_CHARS)
+    .trim();
+  return detail ? { code, detail } : { code };
+}
+
+function zaiPlanRefusalErrorMessage(refusal: ZaiPlanRefusal): string {
+  const reason = `Z.AI code ${refusal.code} refuses the request for the account's plan or quota`;
+  return [
+    refusal.detail ? `${reason}: ${refusal.detail.replace(/[.\s]+$/, "")}.` : `${reason}.`,
+    "This is not a transient rate limit, so it is not retried.",
+    "It clears only at the reset time Z.AI names, or after the account's plan, renewal or key changes.",
+  ].join(" ");
+}
+
 function openRouterBudgetLimitErrorMessage(): string {
   return [
     "This hosted model request is too large for the current allowance.",
@@ -448,6 +505,14 @@ function mapOpenAIHttpFailureToError(args: {
     return new LLMProviderError(
       args.providerName,
       zaiInsufficientBalanceErrorMessage(),
+      args.status,
+    );
+  }
+  const zaiPlanRefusal = readZaiPlanRefusal(args);
+  if (zaiPlanRefusal !== undefined) {
+    return new LLMProviderError(
+      args.providerName,
+      zaiPlanRefusalErrorMessage(zaiPlanRefusal),
       args.status,
     );
   }

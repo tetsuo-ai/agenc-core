@@ -8984,16 +8984,18 @@ describe("provider outage wait (#2212)", () => {
     }
   });
 
-  test("does not wait out a Z.AI billing refusal as a provider outage", async () => {
-    // Terminal-Bench 4.0, 2026-09-14: an exhausted Z.AI balance answered GLM-5.3 streams with HTTP 429, code 1113
-    // and no content-type header. The turn retried the refusal as a rate limit, then kept waiting it out as an outage.
+  // Terminal-Bench 4.0, 2026-09-14: an exhausted Z.AI balance answered GLM-5.3 streams with HTTP 429, code 1113 and no
+  // content-type header. The turn retried the refusal as a rate limit, then kept waiting it out as an outage. The GLM
+  // Coding Plan's spent usage windows (1308, 1310, 1316-1321) arrive the same way and reset hours or days later.
+  test.each([
+    ["billing refusal", "1113", "Insufficient balance or no resource package. Please recharge."],
+    ["plan usage limit", "1316", "Usage limit reached for the past 5 hours. Insufficient balance for extra usage. Resets at 2026-09-15 01:46:49."],
+  ])("does not wait out a Z.AI %s as a provider outage", async (_kind, code, providerMessage) => {
     const restore = await spentLadder();
     try {
       const model = "glm-5.3";
       const fetchImpl = vi.fn<typeof fetch>(async () => new Response(
-        new TextEncoder().encode(
-          '{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}',
-        ),
+        new TextEncoder().encode(JSON.stringify({ error: { code, message: providerMessage } })),
         { status: 429 },
       ));
       const provider = createProvider("zai", {
@@ -9028,7 +9030,7 @@ describe("provider outage wait (#2212)", () => {
       ).toBe(false);
       expect(events).toContainEqual(expect.objectContaining({ msg: expect.objectContaining({
         type: "turn_failed",
-        payload: expect.objectContaining({ message: expect.stringMatching(/code 1113/) }),
+        payload: expect.objectContaining({ message: expect.stringContaining(`Z.AI code ${code} `) }),
       }) }));
     } finally {
       restore();

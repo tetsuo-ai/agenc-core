@@ -1370,12 +1370,79 @@ describe("Z.AI billing refusal on a streaming request", () => {
     expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
   });
 
-  test("a 429 with another code and no content-type stays a retryable rate limit", async () => {
+  test.each([
+    ["1302", "Rate limit reached for requests"],
+    ["1305", "The service may be temporarily overloaded, please try again later"],
+  ])("a 429 with code %s, which clears on its own, stays a retryable rate limit", async (code, message) => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
-      refusal('{"error":{"code":"1302","message":"Rate limit reached for requests"}}'));
+      refusal(JSON.stringify({ error: { code, message } })));
     const error = await failureOf(new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl }));
     expect(error).toBeInstanceOf(LLMRateLimitError);
     expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  // The GLM Coding Plan refuses with the same shape once a usage window is spent or the plan does not cover the call,
+  // and those limits reset hours or days later. Retried as rate limits, each would have waited out a provider outage.
+  const planProvider = (fetchImpl: typeof fetch) =>
+    new ZaiCodingPlanProvider({ apiKey: "coding-plan-test", model: "glm-5.3", fetchImpl });
+
+  test.each([
+    ["1308", "Usage limit reached for 5 hour. Your limit will reset at 2026-09-15 01:46:49"],
+    ["1309", "Your GLM Coding Plan package has expired and is temporarily unavailable. You can resume using it after renewing the subscription on the official website."],
+    ["1310", "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-09-20 08:21:49"],
+    ["1311", "Your current subscription plan does not yet include access to glm-5.3"],
+    ["1313", "Your account's current usage pattern does not comply with the Fair Usage Policy, and your request frequency has been limited."],
+    ["1314", "Your enterprise package has expired. Please contact your enterprise administrator."],
+    ["1315", "This API Key is limited to enterprise coding package scenarios. Please go to the official website to replace the API Key."],
+    ["1316", "Usage limit reached for the past 5 hours. Insufficient balance for extra usage. Resets at 2026-09-15 01:46:49."],
+    ["1317", "Usage limit reached for the past 7 days. Insufficient balance for extra usage. Resets at 2026-09-20 08:21:49."],
+    ["1318", "Usage limit reached for the past 5 hours. Extra usage is not available due to monthly spend limit. Resets at 2026-09-15 01:46:49."],
+    ["1319", "Usage limit reached for the past 7 days. Extra usage is not available due to monthly spend limit. Resets at 2026-09-20 08:21:49."],
+    ["1320", "Usage limit reached for the past 5 hours. Extra usage is not available due to monthly spend limit. Resets at 2026-09-15 01:46:49."],
+    ["1321", "Usage limit reached for the past 7 days. Extra usage is not available due to monthly spend limit. Resets at 2026-09-20 08:21:49."],
+  ])("plan refusal code %s ends on a terminal error that keeps Z.AI's reason, after one request", async (code, message) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      refusal(JSON.stringify({ error: { code, message } })));
+    const error = await failureOf(planProvider(fetchImpl));
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(error).not.toBeInstanceOf(LLMRateLimitError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(isTransientProviderError(error)).toBe(false);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+    expect(String(error)).toContain(
+      `Z.AI code ${code} refuses the request for the account's plan or quota: ${message.replace(/\.$/, "")}. `,
+    );
+  });
+
+  test("a plan refusal on the Pay-As-You-Go provider is terminal too, even on a single wire attempt", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      refusal('{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-09-20 08:21:49"}}'));
+    const error = await failureOf(
+      new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl }),
+      { singleWireAttempt: true },
+    );
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(error).not.toBeInstanceOf(LLMRateLimitError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  test("a plan refusal keeps Z.AI's reason on one bounded line", async () => {
+    const detail = `Usage limit reached for the past 5 hours.\n\tResets at 2026-09-15 01:46:49.${" More.".repeat(80)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      refusal(JSON.stringify({ error: { code: "1316", message: detail } })));
+    const message = String(await failureOf(planProvider(fetchImpl)));
+    expect(message).toContain("plan or quota: Usage limit reached for the past 5 hours. Resets at 2026-09-15 01:46:49.");
+    expect(message).not.toMatch(/[\n\t]/);
+    expect(message.length).toBeLessThan(700);
+  });
+
+  test("a plan refusal without a message still names its code", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal('{"error":{"code":"1317"}}'));
+    const error = await failureOf(planProvider(fetchImpl));
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(String(error)).toContain(
+      "Z.AI code 1317 refuses the request for the account's plan or quota. This is not a transient rate limit",
+    );
   });
 
   test("a plain-text 429 stays a retryable rate limit", async () => {
