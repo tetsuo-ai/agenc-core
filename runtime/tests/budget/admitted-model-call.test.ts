@@ -1202,3 +1202,58 @@ describe("runAdmittedModelCall local providers (#1752)", () => {
     expect(state.reconcile).toHaveBeenCalled();
   });
 });
+
+// Terminal-Bench 4.0, 2026-09-14: DeepSeek reported 27% more prompt tokens than the fallback estimated, and the next
+// admitted request kept its full output reservation past the context window.
+describe("runAdmittedModelCall provider-usage calibration", () => {
+  const messages = [{ role: "user" as const, content: `photonic geometry ${"x ".repeat(20_000)}` }];
+
+  async function admittedCall(
+    state: ReturnType<typeof harness>,
+    contextWindowTokens: number,
+    reportedPromptTokens: (admittedInputTokens: number) => number = (input) => input,
+  ): Promise<{ input: number; output: number | undefined }> {
+    let output: number | undefined;
+    await runAdmittedModelCall({
+      session: state.session,
+      provider: state.provider,
+      messages,
+      options: { maxOutputTokens: 4_096, contextWindowTokens },
+      stepId: `model:calibration:${state.acquire.mock.calls.length + 1}`,
+      model: "grok-4.5",
+      providerName: "grok",
+      invoke: async (options) => {
+        output = options.maxOutputTokens;
+        const promptTokens = reportedPromptTokens(state.acquire.mock.calls.at(-1)![0].maxInputTokens);
+        return response({
+          usage: {
+            promptTokens,
+            completionTokens: 50,
+            totalTokens: promptTokens + 50,
+            availability: "reported",
+            provenance: "provider",
+            cachedInputTokens: 0,
+            reasoningOutputTokens: 0,
+            webSearchRequests: 0,
+          },
+        });
+      },
+    });
+    return { input: state.acquire.mock.calls.at(-1)![0].maxInputTokens, output };
+  }
+
+  test("a reported undercount clamps the next admitted output reservation in the same conversation only", async () => {
+    const state = harness({});
+    Object.assign(state.session, { conversationId: "calibration-undercount" });
+    const first = await admittedCall(state, 1_048_576, (input) => Math.ceil(input * 1.271));
+    const factor = Math.ceil(first.input * 1.271) / first.input;
+    const calibrated = Math.ceil(first.input * factor * 1.02);
+    const window = calibrated + 2_048;
+
+    expect(await admittedCall(state, window)).toEqual({ input: calibrated, output: 2_048 });
+
+    const control = harness({});
+    Object.assign(control.session, { conversationId: "calibration-control" });
+    expect(await admittedCall(control, window)).toEqual({ input: first.input, output: 4_096 });
+  });
+});

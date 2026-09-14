@@ -28,6 +28,16 @@ export const MAX_TOKEN_COUNT_WAITER_BYTES = 4_194_304;
 export const MAX_TOKEN_ACCOUNTING_REQUEST_BYTES = 16_777_216;
 export const TOKEN_COUNT_PROVIDER_TIMEOUT_MS = 5_000;
 export const TOKEN_ACCOUNTING_METRICS_MAX_PARTITIONS = 4_096;
+/**
+ * Provider-usage calibration of the conservative fallback. When a provider reports more input tokens than the fallback
+ * estimated, later fallback estimates in the same conversation, for the same provider, model and endpoint, are scaled
+ * by the largest ratio seen, plus headroom because the ratio drifts as a transcript grows. The ratio is empirical, not
+ * a bound: a first request, a restart, or content with a different byte-to-token ratio can still undercount. The factor
+ * cap and the scope limit are resource controls.
+ */
+export const TOKEN_ACCOUNTING_CALIBRATION_HEADROOM = 1.02;
+export const TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR = 4;
+export const TOKEN_ACCOUNTING_CALIBRATION_MAX_SCOPES = 256;
 export const TOKEN_FALLBACK_MARGIN_RATIO = 0.1;
 export const TOKEN_FALLBACK_MARGIN_TOKENS = 256;
 
@@ -163,6 +173,14 @@ export interface TokenAccountingCoverage {
   readonly uncertainComponents: readonly string[];
 }
 
+export interface TokenAccountingCalibration {
+  /** Largest ratio of provider-reported to estimated input tokens seen in this scope, capped. */
+  readonly factor: number;
+  /** The uncalibrated fallback estimate the factor was applied to. */
+  readonly basisInputTokens: number;
+  readonly headroom: number;
+}
+
 export interface TokenAccountingResult {
   readonly inputTokens: number;
   readonly reservedOutputTokens: number;
@@ -176,6 +194,8 @@ export interface TokenAccountingResult {
   readonly calibrationVersion: string;
   readonly safetyMarginTokens: number;
   readonly admissible: boolean;
+  /** Present only when a provider-usage calibration scaled this conservative fallback estimate. */
+  readonly calibration?: TokenAccountingCalibration;
 }
 
 export interface ProviderNativeTokenCountResult {
@@ -212,6 +232,8 @@ export interface TokenAccountingRequest {
   readonly endpointCapabilityVersion?: string;
   readonly contextWindowTokens?: number;
   readonly reservedOutputTokens: number;
+  /** Conversation whose reported usage calibrates this request's conservative fallback estimate. */
+  readonly calibrationScope?: string;
 }
 
 export interface CreateTokenAccountingRequestOptions {
@@ -228,6 +250,7 @@ export interface CreateTokenAccountingRequestOptions {
   readonly endpointCapabilityVersion?: string;
   readonly contextWindowTokens?: number;
   readonly reservedOutputTokens?: number;
+  readonly calibrationScope?: string;
 }
 
 export interface TokenAccountingCountOptions {
@@ -245,6 +268,7 @@ export interface TokenAccountingServiceLimits {
   readonly maxWaiterBytes?: number;
   readonly maxRequestBytes?: number;
   readonly providerTimeoutMs?: number;
+  readonly calibrationMaxScopes?: number;
 }
 
 export interface TokenAccountingServiceOptions extends TokenAccountingServiceLimits {
@@ -347,11 +371,17 @@ export class TokenAccountingService {
   readonly #maxWaiterBytes: number;
   readonly #maxRequestBytes: number;
   readonly #providerTimeoutMs: number;
+  readonly #calibrationMaxScopes: number;
 
   readonly #cache = new Map<string, CacheEntry>();
   readonly #flights = new Map<string, TokenCountFlight>();
   readonly #abandonedDigests = new Set<string>();
   readonly #metrics = new Map<string, MutableTokenAccountingMetric>();
+  readonly #calibrationFactors = new Map<string, number>();
+  readonly #calibrationBases = new WeakMap<
+    TokenAccountingResult,
+    { readonly key: string; readonly basisInputTokens: number }
+  >();
 
   #cacheBytes = 0;
   #physicalFlights = 0;
@@ -396,11 +426,22 @@ export class TokenAccountingService {
       options.providerTimeoutMs,
       TOKEN_COUNT_PROVIDER_TIMEOUT_MS,
     );
+    this.#calibrationMaxScopes = positiveLimit(
+      options.calibrationMaxScopes,
+      TOKEN_ACCOUNTING_CALIBRATION_MAX_SCOPES,
+    );
   }
 
   async count(
     request: TokenAccountingRequest,
     options: TokenAccountingCountOptions = {},
+  ): Promise<TokenAccountingResult> {
+    return this.#calibrate(request, await this.#countUncalibrated(request, options));
+  }
+
+  async #countUncalibrated(
+    request: TokenAccountingRequest,
+    options: TokenAccountingCountOptions,
   ): Promise<TokenAccountingResult> {
     throwIfAborted(options.signal);
     const prepared = prepareAccountingRequest(
@@ -436,6 +477,40 @@ export class TokenAccountingService {
       return withCacheStatus(prepared.fallback, "bypass");
     }
     return this.#awaitFlight(flight, prepared.fallback, options.signal, shared);
+  }
+
+  /**
+   * Scales a conservative fallback estimate by the calibration its scope has learned. It runs after any shared cache
+   * read and is never written back, so a scaled result cannot reach another scope or an unscoped caller.
+   */
+  #calibrate(
+    request: TokenAccountingRequest,
+    result: TokenAccountingResult,
+  ): TokenAccountingResult {
+    const scope = request.calibrationScope;
+    if (
+      scope === undefined ||
+      scope.length === 0 ||
+      result.source !== "conservative_fallback"
+    ) {
+      return result;
+    }
+    const key = calibrationKeyFor(scope, request);
+    const factor = this.#calibrationFactors.get(key);
+    if (factor !== undefined) {
+      // Reading a scope keeps it recent, so an active conversation is not the one evicted.
+      this.#calibrationFactors.delete(key);
+      this.#calibrationFactors.set(key, factor);
+    }
+    const calibrated =
+      factor !== undefined && factor > 1
+        ? withCalibration(result, factor)
+        : { ...result };
+    this.#calibrationBases.set(calibrated, {
+      key,
+      basisInputTokens: result.inputTokens,
+    });
+    return calibrated;
   }
 
   recordProviderUsage(
@@ -502,6 +577,35 @@ export class TokenAccountingService {
       );
     }
     this.#metrics.set(key, metric);
+    const calibration = this.#calibrationBases.get(result);
+    if (
+      calibration !== undefined &&
+      result.source === "conservative_fallback" &&
+      reportedInputTokens > 0 &&
+      calibration.basisInputTokens > 0
+    ) {
+      this.#learnCalibration(
+        calibration.key,
+        reportedInputTokens / calibration.basisInputTokens,
+      );
+    }
+  }
+
+  /** Raises a scope's factor to the reported ratio. It never lowers one; the ratio is measured against the basis. */
+  #learnCalibration(key: string, ratio: number): void {
+    if (!Number.isFinite(ratio) || ratio <= 1) return;
+    const factor = Math.min(
+      TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR,
+      Math.max(this.#calibrationFactors.get(key) ?? 1, ratio),
+    );
+    this.#calibrationFactors.delete(key);
+    this.#calibrationFactors.set(key, factor);
+    while (this.#calibrationFactors.size > this.#calibrationMaxScopes) {
+      const oldest = this.#calibrationFactors.keys().next().value as
+        string | undefined;
+      if (oldest === undefined) break;
+      this.#calibrationFactors.delete(oldest);
+    }
   }
 
   metricsSnapshot(): readonly TokenAccountingMetric[] {
@@ -530,6 +634,7 @@ export class TokenAccountingService {
     this.#cache.clear();
     this.#cacheBytes = 0;
     this.#metrics.clear();
+    this.#calibrationFactors.clear();
   }
 
   #readCache(digest: string): TokenAccountingResult | undefined {
@@ -770,6 +875,9 @@ export function createTokenAccountingRequest(
       : {}),
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     reservedOutputTokens,
+    ...(input.calibrationScope !== undefined && input.calibrationScope.length > 0
+      ? { calibrationScope: input.calibrationScope }
+      : {}),
   };
 }
 
@@ -814,6 +922,47 @@ export function assertTokenAccountingWithinContext(
       maxTokens: normalizedWindow,
     },
   );
+}
+
+const TOKEN_ACCOUNTING_CALIBRATION_KEY_DOMAIN = "agenc.token-accounting.calibration.v1";
+
+function calibrationKeyFor(
+  scope: string,
+  request: TokenAccountingRequest,
+): string {
+  return stableStringify({
+    domain: TOKEN_ACCOUNTING_CALIBRATION_KEY_DOMAIN,
+    scope,
+    provider: request.provider,
+    model: request.model,
+    endpoint: canonicalTokenEndpointIdentity(
+      request.endpointIdentity,
+      request.provider,
+    ),
+  });
+}
+
+function withCalibration(
+  result: TokenAccountingResult,
+  factor: number,
+): TokenAccountingResult {
+  const scaled = Math.ceil(
+    result.inputTokens * factor * TOKEN_ACCOUNTING_CALIBRATION_HEADROOM,
+  );
+  const inputTokens = Math.max(
+    result.inputTokens,
+    Math.min(Number.MAX_SAFE_INTEGER, scaled),
+  );
+  return {
+    ...result,
+    inputTokens,
+    totalTokens: safeTokenSum(inputTokens, result.reservedOutputTokens),
+    calibration: {
+      factor,
+      basisInputTokens: result.inputTokens,
+      headroom: TOKEN_ACCOUNTING_CALIBRATION_HEADROOM,
+    },
+  };
 }
 
 export function canonicalTokenEndpointIdentity(

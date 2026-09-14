@@ -515,6 +515,10 @@ export async function runAdmittedModelCall(
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,
     model: effectiveModel,
+    // The usage this call reports calibrates later fallback estimates in the conversation.
+    ...(params.session.conversationId
+      ? { calibrationScope: params.session.conversationId }
+      : {}),
     messages: accountingProjection.messages,
     options: accountingProjection.options,
     ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),

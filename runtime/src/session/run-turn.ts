@@ -1267,6 +1267,8 @@ async function preparedRequestFitsContext(
   const accounting = await tokenAccountingService.count(createTokenAccountingRequest({
     provider: providerName,
     model,
+    // Same scope as admission, so the compaction preflight and the admitted request see one calibrated estimate.
+    ...(session.conversationId ? { calibrationScope: session.conversationId } : {}),
     messages: accountingProjection.messages,
     options: accountingProjection.options,
     ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),
