@@ -23,9 +23,10 @@ function seedMessages(): LLMMessage[] {
   ];
 }
 
-// Terminal-Bench 4.0, 2026-09-14: a DeepSeek provider refusal for context length arrived as a typed stream error, not
-// a withheld assistant message, so the bounded 413 collapse never ran and the turn failed.
-function thrownOverflowFixture() {
+// A transcript long enough to collapse, on the real compaction transaction harness. `refuse` records the provider
+// refusal Terminal-Bench 4.0 hit on 2026-09-14: a typed context overflow thrown as a stream error, which never reached
+// the bounded 413 collapse.
+function overflowRecoveryFixture() {
   const messages = seedMessages().map((message, index) => ({
     ...message,
     content: index === 0 ? `start ${"x".repeat(8_000)}` : message.content,
@@ -117,31 +118,8 @@ describe("post-sample context-collapse recovery contract", () => {
   });
 
   test("withheld prompt-too-long routes through collapse once and then surfaces", async () => {
-    const messages = seedMessages().map((message, index) => ({
-      ...message,
-      content: index === 0 ? `start ${"x".repeat(8_000)}` : message.content,
-    }));
-    const harness = createCompactionTransactionHarness(
-      messages as RuntimeMessage[],
-      { compactionMode: "automatic" },
-    );
-    const ctx = {
-      ...mkCtx(),
-      provider: harness.provider,
-      modelInfo: {
-        ...mkCtx().modelInfo,
-        slug: "grok-4.5",
-        contextWindow: 64_000,
-      },
-    } as TurnContext;
+    const { harness, ctx, state } = overflowRecoveryFixture();
     const session = harness.session;
-    const state = buildInitialTurnState(
-      ctx,
-      { role: "user", content: "continue" },
-      { priorMessages: messages },
-    );
-    state.messages = [...messages];
-    state.messagesForQuery = [...messages];
     state.assistantMessages = [
       {
         uuid: "asst-413",
@@ -283,7 +261,7 @@ describe("post-sample context-collapse recovery contract", () => {
   });
 
   test("a context overflow thrown by the provider routes through collapse once and then surfaces", async () => {
-    const { harness, ctx, state, refuse } = thrownOverflowFixture();
+    const { harness, ctx, state, refuse } = overflowRecoveryFixture();
     refuse();
 
     await postSampleRecovery(state, ctx, harness.session);
@@ -309,7 +287,7 @@ describe("post-sample context-collapse recovery contract", () => {
   });
 
   test("a context overflow after a streamed tool call is left to end the turn", async () => {
-    const { messages, harness, ctx, state, refuse } = thrownOverflowFixture();
+    const { messages, harness, ctx, state, refuse } = overflowRecoveryFixture();
     state.toolUseBlocks = [{ type: "tool_use", id: "tc-streamed", name: "Write", input: {} }];
     refuse();
 
