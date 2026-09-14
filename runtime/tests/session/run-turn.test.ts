@@ -5698,6 +5698,54 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     }
   });
 
+  test("a Z.AI stream cut mid-reasoning resamples once and dispatches the later tool call exactly once", async () => {
+    // Terminal-Bench 4.0, 2026-09-14: a network cut ended a GLM-5.3 reasoning stream with an unterminated SSE event
+    // and the turn failed. The cut sample streamed no tool call, so the turn must sample again instead.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const model = "glm-5.3";
+    const frame = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`;
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      const attempt = fetchImpl.mock.calls.length;
+      const parts = attempt === 1
+        ? [
+            frame({ model, choices: [{ index: 0, delta: { reasoning_content: "synthetic reasoning" } }] }),
+            'data: {"choices":[{"index":0,"delta":{"reasoning_con',
+          ]
+        : attempt === 2
+          ? [
+              frame({ model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "synthetic-read", type: "function", function: { name: "FileRead", arguments: "{}" } }] } }] }),
+              frame({ model, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } }),
+              "data: [DONE]\n\n",
+            ]
+          : [
+              frame({ model, choices: [{ index: 0, delta: { content: "Synthetic answer" } }] }),
+              frame({ model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 2, total_tokens: 14 } }),
+              "data: [DONE]\n\n",
+            ];
+      return new Response(parts.join(""), { headers: { "content-type": "text/event-stream" } });
+    });
+    const provider = createProvider("zai", {
+      apiKey: "synthetic-zai",
+      model,
+      extra: { maxRetries: 0, fetchImpl },
+    });
+    const chatStream = vi.spyOn(provider, "chatStream");
+    const { registry, dispatch } = mkTrustedEditorReadRegistry();
+    const { session, events } = mkSession({ provider, registry, sessionConfiguration: {
+      provider: { slug: "zai" }, collaborationMode: { model },
+    } });
+    const ctx = { ...mkCtx(), modelProviderId: "zai", modelInfo: { ...mkCtx().modelInfo, slug: model }, collaborationMode: { model } };
+
+    await drain(session.runTurn("Read once and answer", { ctx }));
+
+    expect(chatStream).toHaveBeenCalledTimes(3);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(events.some((event) => event.msg.type === "turn_failed")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ msg: {
+      type: "turn_complete", payload: expect.objectContaining({ lastAgentMessage: "Synthetic answer" }),
+    } }));
+  });
+
   test("reconnects reuse one prompt snapshot across every transport attempt", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
 

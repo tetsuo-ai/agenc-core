@@ -24,6 +24,9 @@ import {
   sseResponse,
 } from "../openai-compatible-test-helpers.js";
 import { ZaiCodingPlanProvider, ZaiProvider } from "./index.js";
+import { LLMInvalidResponseError, LLMStreamTruncatedError } from "../../errors.js";
+import { StreamModelError } from "../../../phases/stream-model.js";
+import { isRetryableStreamError } from "../../../session/run-turn-stream-retry.js";
 
 const successfulChat = createSuccessfulChatResponse("chatcmpl_zai");
 
@@ -1254,4 +1257,70 @@ describe("ZaiProvider", () => {
       });
     },
   );
+});
+
+// A Terminal-Bench 4.0 GLM-5.3 trial (2026-09-14) solved its task, then lost the turn when the connection dropped
+// mid-reasoning: the strict SSE check filed the cut stream as a malformed, non-retryable response.
+describe("ZaiProvider stream cut before any terminal signal", () => {
+  const providerWith = (chunks: readonly string[]) => new ZaiProvider({
+    apiKey: "payg-test",
+    model: "glm-5.3",
+    tools: [ECHO_TOOL],
+    fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(sseResponse([...chunks])),
+  });
+  const failureOf = (chunks: readonly string[]) => providerWith(chunks)
+    .chatStream([{ role: "user", content: "go" }], () => undefined)
+    .then(() => undefined, (error: unknown) => error);
+  const reasoning = 'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"reasoning_content":"thinking about the task"}}]}\n\n';
+
+  test("a cut mid-reasoning with an unterminated fragment is a retryable truncated stream", async () => {
+    const error = await failureOf([reasoning, 'data: {"choices":[{"index":0,"delta":{"reasoning_con']);
+    expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+    expect((error as Error).message).toMatch(/unterminated event before any finish_reason/);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  test("a clean close mid-reasoning without [DONE] is a retryable truncated stream", async () => {
+    const error = await failureOf([reasoning]);
+    expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+    expect((error as Error).message).toMatch(/closed before any finish_reason/);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  test("a cut after a tool call started stays a non-retryable invalid response", async () => {
+    const error = await failureOf([
+      'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_cut","function":{"name":"system.echo","arguments":{"text":"must not run"}}}]}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_ca',
+    ]);
+    expect(error).toBeInstanceOf(LLMInvalidResponseError);
+    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+  });
+
+  test("a cut inside the first tool call frame stays a non-retryable invalid response", async () => {
+    const error = await failureOf([
+      reasoning,
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_cut","function":{"name":"system.ec',
+    ]);
+    expect(error).toBeInstanceOf(LLMInvalidResponseError);
+    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+  });
+
+  test("a complete malformed frame is still a malformed stream, not a cut", async () => {
+    const error = await failureOf([reasoning, "data: {not-json}\n\n"]);
+    expect(error).toBeInstanceOf(LLMInvalidResponseError);
+    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+  });
+
+  test("an unterminated fragment after finish_reason still fails closed", async () => {
+    const error = await failureOf([
+      'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n',
+      "data: {unterminated",
+    ]);
+    expect(error).toBeInstanceOf(LLMInvalidResponseError);
+    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
+    expect((error as Error).message).toMatch(/SSE stream ended with an unterminated event$/);
+  });
 });
