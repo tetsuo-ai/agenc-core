@@ -69,6 +69,7 @@ import {
   type AuthRefreshCallbacks,
   type AuthRefreshOutcome,
 } from "./auth-refresh.js";
+import { xaiBillingRefusalError } from "./billing-refusal.js";
 import { monotonicMs } from "../../_deps/monotonic.js";
 import { resolveContextWindowProfile } from "../../_deps/context-window.js";
 import { getSelectedProviderEnvironment } from "../../../utils/model/providers.js";
@@ -2211,7 +2212,7 @@ export class GrokProvider implements LLMProvider {
       const response = await (client as any).responses.retrieve(trimmedResponseId);
       return this.toStoredResponse(response);
     } catch (error) {
-      throw mapLLMError(this.name, error, this.config.timeoutMs ?? 0);
+      throw this.mapError(error);
     }
   }
 
@@ -2242,7 +2243,7 @@ export class GrokProvider implements LLMProvider {
             : undefined,
       };
     } catch (error) {
-      throw mapLLMError(this.name, error, this.config.timeoutMs ?? 0);
+      throw this.mapError(error);
     }
   }
 
@@ -3314,7 +3315,10 @@ export class GrokProvider implements LLMProvider {
   }
 
   private mapError(err: unknown, timeoutMs?: number): Error {
-    return mapLLMError(this.name, err, timeoutMs ?? this.config.timeoutMs ?? 0);
+    return (
+      xaiBillingRefusalError(this.name, err) ??
+      mapLLMError(this.name, err, timeoutMs ?? this.config.timeoutMs ?? 0)
+    );
   }
 
   private logPromptOverflowDiagnostics(

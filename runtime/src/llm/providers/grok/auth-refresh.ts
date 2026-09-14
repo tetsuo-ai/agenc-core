@@ -25,6 +25,8 @@
  * @module
  */
 
+import { readXaiBillingRefusal } from "./billing-refusal.js";
+
 /**
  * Default max refresh attempts. The auth manager's own state machine
  * limits recovery to about two refresh attempts before surfacing the
@@ -47,9 +49,13 @@ export function isUnauthorizedError(error: unknown): error is UnauthorizedError 
   // xAI returns 403 (not 401) for an expired OAuth bearer — observed in
   // production: sessions died silently with zero events because the
   // refresh hook never fired. Treat 403 the same: refresh once and retry;
-  // a genuine permission/quota 403 simply fails again after the single
-  // retry and bubbles up unchanged.
-  return status === 401 || status === 403;
+  // a genuine permission 403 simply fails again after the single retry and
+  // bubbles up unchanged. A billing refusal (out of credits, spending limit)
+  // is a 403 that no refresh can lift, so it is not refreshed at all.
+  return (
+    (status === 401 || status === 403) &&
+    readXaiBillingRefusal(error) === undefined
+  );
 }
 
 /**
