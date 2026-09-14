@@ -61,7 +61,12 @@ export const MAX_COMPACTION_FAN_IN = 8;
 export const MAX_COMPACTION_PROVIDER_CALLS = 73;
 export const MAX_COMPACTION_TOTAL_INPUT_TOKENS = 4_000_000;
 export const MAX_COMPACTION_INTERMEDIATE_TOKENS = 8_192;
-export const MAX_COMPACTION_WALL_MS = 300_000;
+/**
+ * Whole-transaction wall budget, and exceeding it ends the turn. Measured grok-4.6 compactions of
+ * about 356k-token sources at effort high took 109 to 290 s, and one stopped at the former 300 s
+ * bound after a 3 h 46 min run; three times that bound keeps the observed range well inside it.
+ */
+export const MAX_COMPACTION_WALL_MS = 900_000;
 export const MAX_COMPACTION_ABORT_QUIESCENCE_MS = 5_000;
 export const MAX_COMPACTION_FOCUS_UTF8_BYTES = 16_384;
 /** Canonical JSONL record ceiling shared with strict restart recovery. */
