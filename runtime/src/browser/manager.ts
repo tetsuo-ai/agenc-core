@@ -23,7 +23,8 @@ import {
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { BrowserPage, BrowserActionError } from "./page.js";
 import { BrowserProxy } from "./proxy.js";
-import { resolveBrowserExecutable } from "./executable.js";
+import { BrowserExecutableError, resolveBrowserExecutable } from "./executable.js";
+import { markEffectBoundaryNotCrossed } from "../tools/effect-boundary.js";
 import type { BrowserPolicy } from "./config.js";
 import type { HostLookup } from "./ssrf.js";
 import {
@@ -252,6 +253,21 @@ export class BrowserManager {
           [err, managerCleanupError],
           "browser launch cleanup failed",
         );
+      }
+      if (err instanceof BrowserExecutableError) {
+        // Resolution failed before the profile directory or any browser process
+        // existed, and this attempt's loopback proxy is already stopped. Only this
+        // branded error proves no effect; a launch or CDP failure stays unknown.
+        markEffectBoundaryNotCrossed(err, {
+          evidenceRef: "tool:Browser:launch-executable-not-found",
+          evidenceMaterial: JSON.stringify({
+            stage: "executable_resolution",
+            browserSpawned: false,
+            proxyStopped: true,
+            code: err.code,
+            message: err.message,
+          }),
+        });
       }
       throw err;
     }

@@ -15,7 +15,10 @@
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { validationErrorToolResult } from "../results.js";
-import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import {
+  createToolEffectDispositionEvidence,
+  readEffectBoundaryNotCrossed,
+} from "../effect-boundary.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import type { PermissionResult, PermissionUpdate } from "../../permissions/types.js";
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
@@ -521,6 +524,20 @@ export function createBrowserTool(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const result = errorResult(`Browser action failed: ${message}`);
+        const noEffect = readEffectBoundaryNotCrossed(err, new Date().toISOString());
+        if (noEffect !== undefined) {
+          // The manager branded this error: no browser was launched and the
+          // attempt's proxy is stopped, so the action provably had no effect.
+          return {
+            ...result,
+            effectDisposition: {
+              disposition: "confirmed_no_effect",
+              evidenceKind: noEffect.evidenceKind,
+              evidenceRef: noEffect.evidenceRef,
+              evidenceSha256: noEffect.evidenceSha256,
+            },
+          };
+        }
         const receipt = readBrowserNavigationFailureReceipt(err);
         if (
           receipt === undefined ||
