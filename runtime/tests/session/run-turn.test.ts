@@ -8983,4 +8983,55 @@ describe("provider outage wait (#2212)", () => {
       restore();
     }
   });
+
+  test("does not wait out a Z.AI billing refusal as a provider outage", async () => {
+    // Terminal-Bench 4.0, 2026-09-14: an exhausted Z.AI balance answered GLM-5.3 streams with HTTP 429, code 1113
+    // and no content-type header. The turn retried the refusal as a rate limit, then kept waiting it out as an outage.
+    const restore = await spentLadder();
+    try {
+      const model = "glm-5.3";
+      const fetchImpl = vi.fn<typeof fetch>(async () => new Response(
+        new TextEncoder().encode(
+          '{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}',
+        ),
+        { status: 429 },
+      ));
+      const provider = createProvider("zai", {
+        apiKey: "synthetic-zai",
+        model,
+        extra: { maxRetries: 0, fetchImpl },
+      });
+      const chatStream = vi.spyOn(provider, "chatStream");
+      const { session, events } = mkSession({
+        provider,
+        registry: mkRegistry(),
+        sessionConfiguration: { provider: { slug: "zai" }, collaborationMode: { model } },
+        configStoreBase: { provider_outage_wait_ms: 50, provider_outage_retry_ms: 1 },
+      });
+      const ctx = {
+        ...mkCtx(),
+        modelProviderId: "zai",
+        modelInfo: { ...mkCtx().modelInfo, slug: model },
+        collaborationMode: { model },
+      };
+
+      await drain(session.runTurn("hello", { ctx }));
+
+      expect(chatStream).toHaveBeenCalledOnce();
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(
+        events.some(
+          (event) =>
+            event.msg.type === "warning" &&
+            (event.msg.payload as { cause?: string }).cause === "provider_outage_wait",
+        ),
+      ).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({ msg: expect.objectContaining({
+        type: "turn_failed",
+        payload: expect.objectContaining({ message: expect.stringMatching(/code 1113/) }),
+      }) }));
+    } finally {
+      restore();
+    }
+  });
 });

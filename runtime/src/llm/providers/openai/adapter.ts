@@ -247,12 +247,29 @@ function requiresStrictChatCompletionsSse(providerName: string): boolean {
   return isZaiProviderName(providerName) || providerName === "kimi";
 }
 
+/**
+ * Z.AI refuses a streaming request without a content-type header, so the
+ * shared HTTP client keeps its JSON error body as text; a non-streaming
+ * refusal carries application/json and arrives parsed. Read that text as
+ * JSON before looking for the provider code.
+ */
+function readZaiErrorBody(body: unknown): unknown {
+  if (typeof body !== "string" || !body.trimStart().startsWith("{")) {
+    return body;
+  }
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return body;
+  }
+}
+
 function isZaiInsufficientBalanceFailure(args: {
   readonly providerName: string;
   readonly body: unknown;
 }): boolean {
   return isZaiProviderName(args.providerName) &&
-    readNestedProviderCode(args.body) === "1113";
+    readNestedProviderCode(readZaiErrorBody(args.body)) === "1113";
 }
 
 function zaiInsufficientBalanceErrorMessage(): string {

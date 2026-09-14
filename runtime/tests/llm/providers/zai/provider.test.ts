@@ -24,9 +24,15 @@ import {
   sseResponse,
 } from "../openai-compatible-test-helpers.js";
 import { ZaiCodingPlanProvider, ZaiProvider } from "./index.js";
-import { LLMInvalidResponseError, LLMStreamTruncatedError } from "../../errors.js";
+import {
+  LLMInvalidResponseError,
+  LLMProviderError,
+  LLMRateLimitError,
+  LLMStreamTruncatedError,
+} from "../../errors.js";
 import { StreamModelError } from "../../../phases/stream-model.js";
 import { isRetryableStreamError } from "../../../session/run-turn-stream-retry.js";
+import { FallbackTriggeredError, isTransientProviderError } from "../../../recovery/api-errors.js";
 
 const successfulChat = createSuccessfulChatResponse("chatcmpl_zai");
 
@@ -1322,5 +1328,85 @@ describe("ZaiProvider stream cut before any terminal signal", () => {
     expect(error).toBeInstanceOf(LLMInvalidResponseError);
     expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
     expect((error as Error).message).toMatch(/SSE stream ended with an unterminated event$/);
+  });
+});
+
+// Terminal-Bench 4.0, 2026-09-14: an exhausted Z.AI balance refused GLM-5.3 streaming requests with HTTP 429 and code
+// 1113 but no content-type header. The error body stayed text, the 1113 check missed it, and the turn retried a billing
+// refusal as a rate limit before waiting it out as a provider outage.
+describe("Z.AI billing refusal on a streaming request", () => {
+  const BILLING_BODY =
+    '{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}';
+  // The streaming refusal as api.z.ai sends it: status 429 and no content-type header at all.
+  const refusal = (body: string) => {
+    const response = new Response(new TextEncoder().encode(body), { status: 429 });
+    expect(response.headers.get("content-type")).toBeNull();
+    return response;
+  };
+  const failureOf = (
+    provider: Pick<ZaiProvider, "chatStream">,
+    options?: { readonly singleWireAttempt?: boolean },
+  ) => provider
+    .chatStream([{ role: "user", content: "go" }], () => undefined, options)
+    .then(() => undefined, (error: unknown) => error);
+  const fallbackTo = { provider: "zai", model: "glm-5.3", targets: [{ provider: "deepseek", model: "deepseek-v4-pro" }] };
+
+  test.each([
+    ["zai", false],
+    ["zai", true],
+    ["zai-coding-plan", false],
+    ["zai-coding-plan", true],
+  ] as const)("%s (singleWireAttempt %s) ends on a terminal billing error after one request", async (providerName, singleWireAttempt) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal(BILLING_BODY));
+    const provider = providerName === "zai"
+      ? new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl })
+      : new ZaiCodingPlanProvider({ apiKey: "coding-plan-test", model: "glm-5.3", fetchImpl });
+    const error = await failureOf(provider, { singleWireAttempt });
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(error).not.toBeInstanceOf(LLMRateLimitError);
+    expect(String(error)).toMatch(/code 1113.*billing/i);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(isTransientProviderError(error)).toBe(false);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+  });
+
+  test("a 429 with another code and no content-type stays a retryable rate limit", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      refusal('{"error":{"code":"1302","message":"Rate limit reached for requests"}}'));
+    const error = await failureOf(new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl }));
+    expect(error).toBeInstanceOf(LLMRateLimitError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  test("a plain-text 429 stays a retryable rate limit", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal("Too Many Requests"));
+    const error = await failureOf(new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl }));
+    expect(error).toBeInstanceOf(LLMRateLimitError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  test("a configured fallback that does not name 429 leaves the refusal terminal after one request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal(BILLING_BODY));
+    const provider = createProvider("zai", {
+      apiKey: "payg-test",
+      model: "glm-5.3",
+      extra: { fetchImpl, providerFallback: fallbackTo },
+    });
+    const error = await failureOf(provider);
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(error).not.toBeInstanceOf(LLMRateLimitError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  test("a configured fallback on 429 still hands the refused request to its target", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal(BILLING_BODY));
+    const provider = createProvider("zai", {
+      apiKey: "payg-test",
+      model: "glm-5.3",
+      extra: { fetchImpl, providerFallback: { ...fallbackTo, statuses: [429], maxFailures: 1 } },
+    });
+    const error = await failureOf(provider);
+    expect(error).toBeInstanceOf(FallbackTriggeredError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });
