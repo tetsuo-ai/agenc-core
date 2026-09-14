@@ -8,8 +8,11 @@
  * The OpenAI SDK reads `code` from inside `error`, so for this body the thrown
  * error keeps the status and the text but loses the code. Mapped as an
  * authentication failure, the refusal read "grok authentication failed
- * (HTTP 403)" with no reason, and an OAuth session refreshed its token before
- * the same refusal came back.
+ * (HTTP 403)" with no reason. The auth-refresh wrapper also took it for an
+ * expired bearer, so outside a single wire attempt an OAuth session would
+ * refresh its token and resend before the same refusal came back. That part is
+ * a code and test finding: the observed calls were single wire attempts on an
+ * API key and never refreshed.
  *
  * Only that status, that code and that wording are recognized. Another
  * `personal-team-blocked:` reason, or a permission denial that merely mentions
