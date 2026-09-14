@@ -11,14 +11,23 @@
  * (HTTP 403)" with no reason, and an OAuth session refreshed its token before
  * the same refusal came back.
  *
+ * Only that status, that code and that wording are recognized. Another
+ * `personal-team-blocked:` reason, or a permission denial that merely mentions
+ * credits, stays an authentication failure with its token refresh.
+ *
  * @module
  */
 
 import { LLMProviderError } from "../../errors.js";
 
-const BILLING_REFUSAL_STATUSES: ReadonlySet<number> = new Set([402, 403]);
-const BILLING_REFUSAL_CODE_RE = /^personal-team-blocked:/i;
-const BILLING_REFUSAL_TEXT_RE = /\brun out of credits\b|\bspending[\s-]limit\b/i;
+const SPENDING_LIMIT_STATUS = 403;
+const SPENDING_LIMIT_CODE = "personal-team-blocked:spending-limit";
+/**
+ * xAI's wording at the start of the text, as the SDK keeps it: the body's
+ * `error` string, or the thrown message `403 "<that string>"`.
+ */
+const OUT_OF_CREDITS_WORDING_RE =
+  /^(?:403 )?"?You have run out of credits or need a Grok subscription\b/;
 
 export interface XaiBillingRefusal {
   readonly status: number;
@@ -36,31 +45,21 @@ export function readXaiBillingRefusal(
   error: unknown,
 ): XaiBillingRefusal | undefined {
   const record = asRecord(error);
-  const status = record?.status ?? record?.statusCode;
-  if (
-    record === undefined ||
-    typeof status !== "number" ||
-    !BILLING_REFUSAL_STATUSES.has(status)
-  ) {
+  if (record === undefined) return undefined;
+  if ((record.status ?? record.statusCode) !== SPENDING_LIMIT_STATUS) {
     return undefined;
   }
   const nested = asRecord(record.error);
-  const code = [record.code, nested?.code]
-    .find(
-      (value): value is string =>
-        typeof value === "string" && BILLING_REFUSAL_CODE_RE.test(value.trim()),
-    )
-    ?.trim();
-  const texts = [record.error, nested?.message, record.message].filter(
-    (value): value is string => typeof value === "string",
-  );
   if (
-    code === undefined &&
-    !texts.some((text) => BILLING_REFUSAL_TEXT_RE.test(text))
+    record.code === SPENDING_LIMIT_CODE ||
+    nested?.code === SPENDING_LIMIT_CODE
   ) {
-    return undefined;
+    return { status: SPENDING_LIMIT_STATUS, code: SPENDING_LIMIT_CODE };
   }
-  return code === undefined ? { status } : { status, code };
+  const worded = [record.error, nested?.message, record.message].some(
+    (text) => typeof text === "string" && OUT_OF_CREDITS_WORDING_RE.test(text),
+  );
+  return worded ? { status: SPENDING_LIMIT_STATUS } : undefined;
 }
 
 /**

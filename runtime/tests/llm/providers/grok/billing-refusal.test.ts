@@ -46,16 +46,19 @@ describe("xAI billing refusal", () => {
 
   test.each([
     [
-      "a nested code with generic text",
+      "the evidenced code with generic text",
       403,
       { error: { code: "personal-team-blocked:spending-limit", message: "Forbidden" } },
       { status: 403, code: "personal-team-blocked:spending-limit" },
     ],
-    ["a 402 with the credits text", 402, { error: { message: "You have run out of credits." } }, { status: 402 }],
+    ["another personal-team-blocked reason", 403, { error: { code: "personal-team-blocked:organization-policy", message: "Forbidden" } }, undefined],
+    ["a denial that mentions credits and a spending-limit", 403, { error: { message: "Access denied. Request mentioned credits and a spending-limit." } }, undefined],
+    ["a denial that quotes the wording mid-sentence", 403, { error: { message: "Access denied: You have run out of credits or need a Grok subscription." } }, undefined],
     ["a plain permission 403", 403, FORBIDDEN, undefined],
     ["a 403 without a body", 403, undefined, undefined],
-    ["a 401 with the credits text", 401, SPENDING_LIMIT, undefined],
-    ["a 429 that names a spending limit", 429, { error: { message: "spending limit reached, retry later" } }, undefined],
+    ["the evidenced body on a 401", 401, SPENDING_LIMIT, undefined],
+    ["the evidenced body on a 402", 402, SPENDING_LIMIT, undefined],
+    ["the evidenced body on a 429", 429, SPENDING_LIMIT, undefined],
   ])("reads %s", (_label, status, body, expected) => {
     expect(readXaiBillingRefusal(sdkError(status, body))).toEqual(expected);
   });
