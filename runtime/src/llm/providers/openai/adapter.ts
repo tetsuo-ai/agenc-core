@@ -105,7 +105,7 @@ function decodeOpenAISseEvent(
     if (requiresStrictChatCompletionsSse(providerName)) {
       throw new LLMInvalidResponseError(
         providerName,
-        `Malformed JSON in ${providerName === "kimi" ? "Kimi" : "Z.AI"} SSE event: ${error instanceof Error ? error.message : String(error)}`,
+        `Malformed JSON in ${strictSseProviderLabel(providerName)} SSE event: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
     return undefined;
@@ -240,11 +240,17 @@ function isZaiProviderName(providerName: string): boolean {
 }
 
 function strictSseProviderLabel(providerName: string): string {
-  return providerName === "kimi" ? "Kimi" : "Z.AI";
+  if (providerName === "kimi") return "Kimi";
+  if (providerName === "deepseek") return "DeepSeek";
+  return "Z.AI";
 }
 
+/**
+ * Providers whose chat-completions streams always end with a terminal signal, so a stream that closes without one was
+ * cut. DeepSeek documents a last chunk with a non-null finish_reason and usage, then `data: [DONE]`.
+ */
 function requiresStrictChatCompletionsSse(providerName: string): boolean {
-  return isZaiProviderName(providerName) || providerName === "kimi";
+  return isZaiProviderName(providerName) || providerName === "kimi" || providerName === "deepseek";
 }
 
 /**

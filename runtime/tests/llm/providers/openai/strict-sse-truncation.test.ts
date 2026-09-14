@@ -2,6 +2,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { ZaiProvider } from "../../../../src/llm/providers/zai/index.js";
 import { KimiProvider } from "../../../../src/llm/providers/kimi/index.js";
+import { DeepSeekProvider } from "../../../../src/llm/providers/deepseek/index.js";
 import { LLMInvalidResponseError, LLMStreamTruncatedError } from "../../../../src/llm/errors.js";
 import { StreamModelError } from "../../../../src/phases/stream-model.js";
 import { isRetryableStreamError } from "../../../../src/session/run-turn-stream-retry.js";
@@ -20,13 +21,18 @@ const progress = 'data: {"choices":[{"index":0,"delta":{"content":"synthetic pro
 const terminal = 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n';
 const done = 'data: [DONE]\n\n';
 
-for (const name of ["zai", "kimi"] as const) {
+const strictProviders = {
+  zai: (config: { apiKey: string; fetchImpl: typeof fetch }) => new ZaiProvider({ ...config, model: "glm-5.3" }),
+  kimi: (config: { apiKey: string; fetchImpl: typeof fetch }) => new KimiProvider({ ...config, model: "kimi-k3" }),
+  deepseek: (config: { apiKey: string; fetchImpl: typeof fetch }) => new DeepSeekProvider({ ...config, model: "deepseek-v4-pro" }),
+};
+const strictLabels = { zai: "Z.AI", kimi: "Kimi", deepseek: "DeepSeek" } as const;
+
+for (const name of ["zai", "kimi", "deepseek"] as const) {
   function setup(parts: string[]) {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response(parts));
     const config = { apiKey: "dummy-test", fetchImpl };
-    const provider = name === "zai"
-      ? new ZaiProvider({ ...config, model: "glm-5.3" })
-      : new KimiProvider({ ...config, model: "kimi-k3" });
+    const provider = strictProviders[name](config);
     const chunks: Parameters<StreamProgressCallback>[0][] = [];
     const invoke = () => provider.chatStream([{ role: "user", content: "synthetic probe" }], chunk => chunks.push(chunk), { singleWireAttempt: true });
     return { fetchImpl, chunks, invoke };
@@ -50,17 +56,22 @@ for (const name of ["zai", "kimi"] as const) {
       const probe = setup([progress, "data: {not-json}\n\n", done]);
       const error = await probe.invoke().catch(error => error);
       expect(error).toBeInstanceOf(LLMInvalidResponseError);
+      expect((error as Error).message).toContain(`Malformed JSON in ${strictLabels[name]} SSE event`);
       expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
       expect(probe.fetchImpl).toHaveBeenCalledOnce();
     });
 
-    test("keeps explicit DONE without required finish_reason non-retryable", async () => {
-      const probe = setup([progress, done]);
-      const error = await probe.invoke().catch(error => error);
-      expect(error).toBeInstanceOf(LLMInvalidResponseError);
-      expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
-      expect(probe.fetchImpl).toHaveBeenCalledOnce();
-    });
+    // A [DONE] without any finish_reason is refused only where core declares the provider's finish reasons
+    // (capability-gating allowedFinishReasons: Z.AI and Kimi). DeepSeek declares none, and strict SSE leaves that alone.
+    if (name !== "deepseek") {
+      test("keeps explicit DONE without required finish_reason non-retryable", async () => {
+        const probe = setup([progress, done]);
+        const error = await probe.invoke().catch(error => error);
+        expect(error).toBeInstanceOf(LLMInvalidResponseError);
+        expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+        expect(probe.fetchImpl).toHaveBeenCalledOnce();
+      });
+    }
 
     test("accepts an explicit valid finish_reason with clean EOF", async () => {
       const probe = setup([progress, terminal]);
@@ -79,3 +90,21 @@ for (const name of ["zai", "kimi"] as const) {
     });
   });
 }
+
+// Terminal-Bench 4.0, 2026-09-14 (vf2-speedup-networkx): DeepSeek reset two long reasoning streams, and the benchmark
+// key proxy of the time closed each response cleanly after a plain-text error line. With no terminal signal required,
+// the runtime took each cut as a finished empty answer, and the turn failed as empty_response after one retry.
+describe("deepseek reasoning stream cut by an upstream reset", () => {
+  test("a reasoning-only stream ended by a plain-text proxy trailer is typed truncation, not an empty answer", async () => {
+    const reasoning = 'data: {"choices":[{"index":0,"delta":{"reasoning_content":"synthetic reasoning"}}]}\n\n';
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response([reasoning, reasoning, "upstream error: read ECONNRESET\n"]));
+    const provider = new DeepSeekProvider({ apiKey: "dummy-test", fetchImpl, model: "deepseek-v4-pro" });
+    const error = await provider
+      .chatStream([{ role: "user", content: "synthetic probe" }], () => undefined, { singleWireAttempt: true })
+      .catch(error => error);
+    expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+    expect((error as Error).message).toMatch(/DeepSeek SSE stream/);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+});
