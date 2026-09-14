@@ -588,6 +588,15 @@ export function chatCompletionsCapabilityHintsForProvider(
       // the wire builder still checks the original provider/model provenance.
       maxToolDefinitions: 100,
     } : {}),
+    // DeepSeek documents that every chat-completions stream ends with a chunk carrying a non-null finish_reason, then
+    // `data: [DONE]`. A stream without that signal was cut, and a tool call it carried was never finalized.
+    ...(slug === "deepseek"
+      ? {
+          requiresToolCallsFinishReason: true,
+          rejectsPartialToolCalls: true,
+          requiresExplicitFinishReason: true,
+        }
+      : {}),
     ...(reasoningEffortAllowedValues !== undefined
       ? { reasoningEffortAllowedValues }
       : {}),
