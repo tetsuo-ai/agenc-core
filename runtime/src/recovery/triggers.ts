@@ -6,7 +6,8 @@
  * error + streaming fallback), the ladder evaluates in a fixed
  * documented order:
  *
- *   1. isWithheld413         → prompt-too-long (AgenC collapse / reactive recovery)
+ *   1. isWithheld413         → prompt-too-long, withheld or thrown as a typed
+ *                              context overflow (AgenC collapse / reactive recovery)
  *   2. isWithheldMedia       → media size error (reactive recovery skips collapse)
  *   3. isWithheldMaxOutputTokens → max-output-tokens escalate/continuation
  *   4. stopHookBlocking      → stop-hook inject + re-enter
@@ -28,6 +29,7 @@ import type {
 } from "../session/turn-state.js";
 import {
   isFallbackTriggeredError,
+  isRecoverableContextOverflowStreamError,
   isStopHookBlocking,
   isStreamingFallbackOccured,
   isWithheld413Message,
@@ -93,7 +95,9 @@ export function buildDefaultTriggerOrder(
   return [
     {
       name: "isWithheld413",
-      match: (ctx) => !!ctx.lastMessage && isWithheld413Message(ctx.lastMessage),
+      match: (ctx) =>
+        (!!ctx.lastMessage && isWithheld413Message(ctx.lastMessage)) ||
+        isRecoverableContextOverflowStreamError(ctx.state, ctx.streamError),
       apply: (ctx) => actions.on413(ctx),
     },
     {

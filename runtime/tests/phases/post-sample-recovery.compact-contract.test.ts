@@ -11,6 +11,7 @@ import type { TurnContext } from "../session/turn-context.js";
 import { createCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
 import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
+import { LLMContextWindowExceededError } from "../llm/errors.js";
 
 function seedMessages(): LLMMessage[] {
   return [
@@ -20,6 +21,42 @@ function seedMessages(): LLMMessage[] {
     { role: "assistant", content: "answer 2" },
     { role: "user", content: "latest" },
   ];
+}
+
+// Terminal-Bench 4.0, 2026-09-14: a DeepSeek provider refusal for context length arrived as a typed stream error, not
+// a withheld assistant message, so the bounded 413 collapse never ran and the turn failed.
+function thrownOverflowFixture() {
+  const messages = seedMessages().map((message, index) => ({
+    ...message,
+    content: index === 0 ? `start ${"x".repeat(8_000)}` : message.content,
+  }));
+  const harness = createCompactionTransactionHarness(
+    messages as RuntimeMessage[],
+    { compactionMode: "automatic" },
+  );
+  const ctx = {
+    ...mkCtx(),
+    provider: harness.provider,
+    modelInfo: {
+      ...mkCtx().modelInfo,
+      slug: "grok-4.5",
+      contextWindow: 64_000,
+    },
+  } as TurnContext;
+  const state = buildInitialTurnState(
+    ctx,
+    { role: "user", content: "continue" },
+    { priorMessages: messages },
+  );
+  state.messages = [...messages];
+  state.messagesForQuery = [...messages];
+  const refuse = () => Object.assign(state, {
+    lastStreamError: new LLMContextWindowExceededError(
+      "deepseek",
+      "This model's maximum context length is 1048576 tokens. However, you requested 1056296 tokens (672296 in the messages, 384000 in the completion).",
+    ),
+  });
+  return { messages, harness, ctx, state, refuse };
 }
 
 describe("post-sample context-collapse recovery contract", () => {
@@ -242,6 +279,46 @@ describe("post-sample context-collapse recovery contract", () => {
 
     expect(recovered).toEqual({ kind: "applied", reason: "context_collapse" });
     expect(findToolTurnValidationIssue(state.messagesForQuery)).toBeNull();
+    harness.close();
+  });
+
+  test("a context overflow thrown by the provider routes through collapse once and then surfaces", async () => {
+    const { harness, ctx, state, refuse } = thrownOverflowFixture();
+    refuse();
+
+    await postSampleRecovery(state, ctx, harness.session);
+
+    expect(state.transition).toEqual({ reason: "collapse_drain_retry" });
+    expect(state.messagesForQuery[0]?.runtimeOnly?.compactionHistory?.kind)
+      .toBe("boundary");
+
+    // The resampled request is refused again: the latch holds, so the turn surfaces instead of collapsing twice.
+    state.transition = undefined;
+    refuse();
+    await postSampleRecovery(state, ctx, harness.session);
+
+    expect(state.transition).toBeUndefined();
+    expect(harness.store.readAll().filter((item) => item.type === "compaction_committed"))
+      .toHaveLength(1);
+    expect(harness.store.readAll().some((item) =>
+      item.type === "event_msg" &&
+      item.payload.msg.type === "error" &&
+      item.payload.msg.payload.cause === "prompt_too_long_exhausted"
+    )).toBe(true);
+    harness.close();
+  });
+
+  test("a context overflow after a streamed tool call is left to end the turn", async () => {
+    const { messages, harness, ctx, state, refuse } = thrownOverflowFixture();
+    state.toolUseBlocks = [{ type: "tool_use", id: "tc-streamed", name: "Write", input: {} }];
+    refuse();
+
+    await postSampleRecovery(state, ctx, harness.session);
+
+    expect(state.transition).toBeUndefined();
+    expect(state.messagesForQuery).toEqual(messages);
+    expect(harness.store.readAll().some((item) => item.type === "compaction_committed"))
+      .toBe(false);
     harness.close();
   });
 });

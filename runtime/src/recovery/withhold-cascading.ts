@@ -6,7 +6,9 @@
  *
  * Gates:
  *   1. `isWithheld413(lastMessage)` — message is a prompt-too-long
- *      response the stream withheld from the SDK caller.
+ *      response the stream withheld from the SDK caller, or the provider's
+ *      refusal arrived as a typed context overflow before any tool call
+ *      streamed.
  *   2. `transition.reason !== 'collapse_drain_retry'` — we haven't
  *      already tried AgenC collapse this recovery pass.
  *
@@ -22,7 +24,10 @@
  */
 
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
-import { isWithheld413Message } from "./api-errors.js";
+import {
+  isRecoverableContextOverflowStreamError,
+  isWithheld413Message,
+} from "./api-errors.js";
 
 const CONTEXT_COLLAPSE_ATTEMPTED = Symbol("agenc_context_collapse_attempted");
 
@@ -45,12 +50,15 @@ export interface WithholdGateResult {
 export function evaluateWithholdCascade(
   state: TurnState,
   lastMessage: AssistantMessage | undefined,
+  streamError?: unknown,
 ): WithholdGateResult {
-  if (!lastMessage) {
-    return { kind: "not_withheld", reason: "no_last_message" };
-  }
-  if (!isWithheld413Message(lastMessage)) {
-    return { kind: "not_withheld", reason: "not_withheld_413" };
+  if (!isRecoverableContextOverflowStreamError(state, streamError)) {
+    if (!lastMessage) {
+      return { kind: "not_withheld", reason: "no_last_message" };
+    }
+    if (!isWithheld413Message(lastMessage)) {
+      return { kind: "not_withheld", reason: "not_withheld_413" };
+    }
   }
 
   const alreadyDrained =

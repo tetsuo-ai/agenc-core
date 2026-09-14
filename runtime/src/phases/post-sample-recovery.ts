@@ -48,6 +48,7 @@ import type { TurnState } from "../session/turn-state.js";
 import { StreamModelError } from "./stream-model.js";
 import {
   isFallbackTriggeredError,
+  isRecoverableContextOverflowStreamError,
   isWithheld413Message,
 } from "../recovery/api-errors.js";
 import { RecoveryLadder } from "../recovery/fallback-ladder.js";
@@ -329,22 +330,27 @@ export async function postSampleRecovery(
   }
 
   const lastMessage = state.assistantMessages.at(-1);
-  if (!lastMessage || !isWithheld413Message(lastMessage)) {
-    resetContextCollapseAttempted(state);
-  }
   // StreamModelError may have been stashed on the budget decision
   // slot or surfaced by the caller as a thrown error. Phase-3 sees
   // a TurnState; the run-turn dispatcher forwards FallbackTriggered
   // via the `streamError` hint if it happens mid-stream.
   const streamError = (state as TurnState & { lastStreamError?: unknown })
     .lastStreamError;
+  // A provider refusal thrown as a typed context overflow is the same 413 as a
+  // withheld message, so it must not clear the one-collapse-per-overflow latch.
+  if (
+    (!lastMessage || !isWithheld413Message(lastMessage)) &&
+    !isRecoverableContextOverflowStreamError(state, streamError)
+  ) {
+    resetContextCollapseAttempted(state);
+  }
 
   // Build the ladder with T8 actions.
   const ladder = new RecoveryLadder({
     session,
     actions: {
       async on413(c) {
-        const gate = evaluateWithholdCascade(c.state, c.lastMessage);
+        const gate = evaluateWithholdCascade(c.state, c.lastMessage, c.streamError);
         if (gate.kind === "route_to_collapse_drain") {
           markContextCollapseAttempted(c.state);
           const drain = await runContextCollapseOverflowRecovery({

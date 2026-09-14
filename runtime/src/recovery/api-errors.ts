@@ -180,6 +180,24 @@ export function isWithheld413Message(msg: AssistantMessage): boolean {
   );
 }
 
+/**
+ * A provider refused the sample as too long for the context window, and the
+ * refusal reached the turn as a typed stream error instead of a withheld
+ * assistant message. It takes the same bounded 413 collapse, but only while no
+ * tool call from that sample has streamed: once one has, the executor may
+ * already be running it, and a collapse plus resample could issue it again.
+ */
+export function isRecoverableContextOverflowStreamError(
+  state: Pick<TurnState, "toolUseBlocks">,
+  streamError: unknown,
+): boolean {
+  return (
+    streamError instanceof LLMContextWindowExceededError &&
+    !isPartialProviderResponseError(streamError) &&
+    state.toolUseBlocks.length === 0
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Stop-hook-blocking + streaming-fallback
 // ─────────────────────────────────────────────────────────────────────
