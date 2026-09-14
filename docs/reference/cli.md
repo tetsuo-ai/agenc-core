@@ -78,7 +78,11 @@ From `formatCliHelpText()`:
   checklist of checkable requirements, run the checks the task implies
   before the final message, never end the turn waiting for input, and report
   what was verified. `AGENC_COMPLETION_CONTRACT=0` in the CLI environment
-  leaves the section out; interactive sessions never receive it. The
+  leaves the section out; interactive sessions never receive it.
+  `AGENC_COMPLETION_CONTRACT_COHERENT=1` is a measurement switch: with the
+  contract present it also leaves out three default lines that contradict it
+  (the "simplest approach, do not overdo it" line, the advice not to
+  re-verify, and the advice to escalate with the ask-user-question tool). The
   contract is also enforced structurally: the first tool-free final answer of
   a turn that used tools is held back while the runtime injects a
   `<completion_gate>` verification request. Verification requires a

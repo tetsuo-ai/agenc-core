@@ -40,7 +40,7 @@ import { platform as osPlatform, type as osType, release as osRelease } from "no
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { ConfigStore } from "../config/store.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
-import { isEnvDefinedFalsy } from "../utils/envBoolean.js";
+import { isEnvDefinedFalsy, isEnvTruthy } from "../utils/envBoolean.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { gitChildEnvironment } from "../sandbox/git-environment.js";
 import { hardenGitWorktreeMutationArgs } from "../sandbox/worktree-permissions.js";
@@ -139,7 +139,8 @@ export function getSimpleSystemSection(): string {
  * AgenC uses stable tool display names here and keeps only guidance backed
  * by live AgenC surfaces.
  */
-export function getSimpleDoingTasksSection(): string {
+export function getSimpleDoingTasksSection(options: { readonly headlessContract?: boolean } = {}): string {
+  const headlessContract = options.headlessContract === true;
   const codeStyleSubitems = [
     `Don't add features, refactor code, or make "improvements" beyond what was asked. A bug fix doesn't need surrounding code cleaned up. A simple feature doesn't need extra configurability. Don't add docstrings, comments, or type annotations to code you didn't change. Only add comments where the logic isn't self-evident.`,
     `Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal code and framework guarantees. Only validate at system boundaries (user input, external APIs). Don't use feature flags or backwards-compatibility shims when you can just change the code.`,
@@ -157,11 +158,11 @@ export function getSimpleDoingTasksSection(): string {
     `In general, do not propose changes to code you haven't read. If a user asks about or wants you to modify a file, read it first. Understand existing code before suggesting modifications.`,
     `Do not create files unless they're absolutely necessary for achieving your goal. Generally prefer editing an existing file to creating a new one, as this prevents file bloat and builds on existing work more effectively.`,
     `Avoid giving time estimates or predictions for how long tasks will take, whether for your own work or for users planning projects. Focus on what needs to be done, not how long it might take.`,
-    `If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate to the user with the ask-user-question tool only when you're genuinely stuck after investigation, not as a first response to friction.`,
+    `If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either.${headlessContract ? "" : " Escalate to the user with the ask-user-question tool only when you're genuinely stuck after investigation, not as a first response to friction."}`,
     `Be careful not to introduce security vulnerabilities such as command injection, XSS, SQL injection, and other OWASP top 10 vulnerabilities. If you notice that you wrote insecure code, immediately fix it. Prioritize writing safe, secure, and correct code.`,
     ...codeStyleSubitems,
     `Avoid backwards-compatibility hacks like renaming unused _vars, re-exporting types, adding // removed comments for removed code, etc. If you are certain that something is unused, you can delete it completely.`,
-    `Report outcomes faithfully: if tests fail, say so with the relevant output; if you did not run a verification step, say that rather than implying it succeeded. Never claim "all tests pass" when output shows failures, never suppress or simplify failing checks (tests, lints, type errors) to manufacture a green result, and never characterize incomplete or broken work as done. Equally, when a check did pass or a task is complete, state it plainly — do not hedge confirmed results with unnecessary disclaimers, downgrade finished work to "partial," or re-verify things you already checked. The goal is an accurate report, not a defensive one.`,
+    `Report outcomes faithfully: if tests fail, say so with the relevant output; if you did not run a verification step, say that rather than implying it succeeded. Never claim "all tests pass" when output shows failures, never suppress or simplify failing checks (tests, lints, type errors) to manufacture a green result, and never characterize incomplete or broken work as done. Equally, when a check did pass or a task is complete, state it plainly — do not hedge confirmed results with unnecessary disclaimers${headlessContract ? ' or downgrade finished work to "partial."' : ', downgrade finished work to "partial," or re-verify things you already checked.'} The goal is an accurate report, not a defensive one.`,
     `When the requested change is made and verified, stop and report in a few lines. Do not start adjacent work the user did not ask for.`,
   ];
 
@@ -190,6 +191,13 @@ When you encounter an obstacle, do not use destructive actions as a shortcut to 
  * on for non-interactive sessions; a defined falsy value turns it off.
  */
 export const HEADLESS_COMPLETION_CONTRACT_ENV = "AGENC_COMPLETION_CONTRACT";
+
+/**
+ * Measurement switch for the completion contract. When set and the contract is emitted, three default lines that
+ * contradict it are left out: the output-efficiency "simplest approach" line and the doing-tasks advice not to
+ * re-verify and to escalate with the ask-user-question tool. Unset leaves every section unchanged.
+ */
+export const COMPLETION_CONTRACT_COHERENT_ENV = "AGENC_COMPLETION_CONTRACT_COHERENT";
 
 /**
  * 4b. headless_completion — the completion contract for sessions nobody
@@ -370,10 +378,13 @@ export function getAgentToolSection(
 /**
  * 7. output_efficiency — brevity rules.
  */
-export function getOutputEfficiencySection(): string {
+export function getOutputEfficiencySection(options: { readonly headlessContract?: boolean } = {}): string {
+  const opening = options.headlessContract === true
+    ? "IMPORTANT: Go straight to the point. Be extra concise."
+    : "IMPORTANT: Go straight to the point. Try the simplest approach first without going in circles. Do not overdo it. Be extra concise.";
   return `# Output efficiency
 
-IMPORTANT: Go straight to the point. Try the simplest approach first without going in circles. Do not overdo it. Be extra concise.
+${opening}
 
 Keep your text output brief and direct. Lead with the answer or action, not the reasoning. Skip filler words, preamble, and unnecessary transitions. Do not restate what the user said — just do it. When explaining, include only what is necessary for the user to understand.
 
@@ -1125,25 +1136,30 @@ export async function assembleSystemPrompt(
   //   intro → system → doing_tasks → actions → (headless_completion)
   //   → using_your_tools → (agent_tool) → (session_guidance)
   //   → tone_and_style → output_efficiency → (auto memory)
+  const promptEnvironment =
+    session.services?.userShell?.childEnvironment ??
+    session.services?.providerEnvironment ??
+    {};
+  const headlessCompletionSection = getHeadlessCompletionSection({
+    nonInteractive: session.services?.runtimeOptions?.nonInteractive,
+    env: promptEnvironment,
+  });
+  const headlessContract =
+    headlessCompletionSection !== null &&
+    isEnvTruthy(promptEnvironment[COMPLETION_CONTRACT_COHERENT_ENV]);
   const staticSections: Array<string | null> = [
     getSimpleIntroSection(opts.outputStyle != null),
     getSimpleSystemSection(),
     opts.outputStyle === null || opts.outputStyle === undefined
-      ? getSimpleDoingTasksSection()
+      ? getSimpleDoingTasksSection({ headlessContract })
       : null,
     getActionsSection(),
-    getHeadlessCompletionSection({
-      nonInteractive: session.services?.runtimeOptions?.nonInteractive,
-      env:
-        session.services?.userShell?.childEnvironment ??
-        session.services?.providerEnvironment ??
-        {},
-    }),
+    headlessCompletionSection,
     getUsingYourToolsSection(enabledTools),
     getAgentToolSection(enabledTools),
     getSessionGuidanceSection(enabledTools, agentsEnabled),
     getSimpleToneAndStyleSection(),
-    getOutputEfficiencySection(),
+    getOutputEfficiencySection({ headlessContract }),
     getMemoryInstructionsSection(opts.memoryInstructions),
   ];
 

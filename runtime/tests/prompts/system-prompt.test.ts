@@ -50,6 +50,7 @@ import {
   getActionsSection,
   getHeadlessCompletionSection,
   HEADLESS_COMPLETION_CONTRACT_ENV,
+  COMPLETION_CONTRACT_COHERENT_ENV,
   getAgentToolSection,
   getLanguageSection,
   getMcpInstructionsSection,
@@ -399,6 +400,24 @@ describe("static section emitters", () => {
     // owner/repo#123 GitHub-link guidance uses neutral example text.
     expect(s).toContain("owner/repo#123");
     expect(s).not.toContain(["anthropics/", "cla", "ude-code"].join(""));
+  });
+
+  test("the coherent contract switch trims only the lines that contradict the contract", () => {
+    const doing = getSimpleDoingTasksSection({ headlessContract: true });
+    expect(doing).not.toContain("re-verify things you already checked");
+    expect(doing).not.toContain("Escalate to the user with the ask-user-question tool");
+    expect(doing).toContain('do not hedge confirmed results with unnecessary disclaimers or downgrade finished work to "partial." The goal is an accurate report');
+    expect(doing).toContain("don't abandon a viable approach after a single failure either.");
+    expect(doing).toContain("When the requested change is made and verified, stop and report in a few lines");
+    expect(getSimpleDoingTasksSection()).toContain("re-verify things you already checked");
+    expect(getSimpleDoingTasksSection()).toContain("Escalate to the user with the ask-user-question tool");
+
+    const efficiency = getOutputEfficiencySection({ headlessContract: true });
+    expect(efficiency).toContain("IMPORTANT: Go straight to the point. Be extra concise.");
+    expect(efficiency).not.toContain("Try the simplest approach first");
+    expect(efficiency).not.toContain("Do not overdo it");
+    expect(efficiency).toContain("Lead with the answer or action");
+    expect(getOutputEfficiencySection()).toContain("Try the simplest approach first without going in circles. Do not overdo it.");
   });
 
   test("output_efficiency emphasizes brevity", () => {
@@ -955,6 +974,35 @@ describe("assembleSystemPrompt", () => {
       { [HEADLESS_COMPLETION_CONTRACT_ENV]: "0" },
     );
     expect(switchedOff).not.toContain("# Completing work without a human");
+  });
+
+  test("the coherent contract switch applies only where the completion contract is emitted", async () => {
+    const registry = { tools: [{ name: "FileRead" }, { name: "exec_command" }] };
+    const assemble = (nonInteractive: boolean, env: NodeJS.ProcessEnv) =>
+      assembleBaseInstructionsForModel({
+        session: { services: { runtimeOptions: { nonInteractive }, userShell: { childEnvironment: env } } },
+        ctx: fakeCtx(),
+        registry,
+        provider: "grok",
+        permissionContext: null,
+        profile: "standard",
+      });
+    const contradictions = [
+      "Try the simplest approach first without going in circles. Do not overdo it.",
+      "re-verify things you already checked",
+      "Escalate to the user with the ask-user-question tool",
+    ];
+    const coherent = await assemble(true, { [COMPLETION_CONTRACT_COHERENT_ENV]: "1" });
+    expect(coherent).toContain("# Completing work without a human");
+    for (const line of contradictions) expect(coherent).not.toContain(line);
+
+    for (const unchanged of [
+      await assemble(true, {}),
+      await assemble(false, { [COMPLETION_CONTRACT_COHERENT_ENV]: "1" }),
+      await assemble(true, { [COMPLETION_CONTRACT_COHERENT_ENV]: "1", [HEADLESS_COMPLETION_CONTRACT_ENV]: "0" }),
+    ]) {
+      for (const line of contradictions) expect(unchanged).toContain(line);
+    }
   });
 
   test("typed simple mode → ultra-minimal prompt", async () => {
