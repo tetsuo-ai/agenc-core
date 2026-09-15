@@ -385,8 +385,9 @@ describe("Write tool", () => {
       }
     });
 
-    test("a verified rollback after a post-write fault settles as no-effect", async () => {
-      const target = join(root, "rolled-back.txt");
+    /** Seed a file the session has read, so Write may overwrite it. */
+    async function seedReadFile(name: string): Promise<string> {
+      const target = join(root, name);
       await writeFile(target, "original\n", "utf8");
       const fileStats = await stat(target);
       recordSessionRead(sessionId, target, {
@@ -394,13 +395,26 @@ describe("Write tool", () => {
         timestamp: fileStats.mtimeMs,
         viewKind: "full",
       });
-      const tool = createFileWriteTool({
+      return target;
+    }
+
+    /** A Write whose transaction faults right after the bytes land. */
+    function writeToolFaultingAfterWrite(
+      hooks: Omit<Parameters<typeof createFileWriteTool>[0], "allowedPaths" | "__testWrite"> = {},
+    ) {
+      return createFileWriteTool({
         allowedPaths: [root],
         __testWrite: async ({ write }) => {
           await write();
           throw new Error("post-write fault");
         },
+        ...hooks,
       });
+    }
+
+    test("a verified rollback after a post-write fault settles as no-effect", async () => {
+      const target = await seedReadFile("rolled-back.txt");
+      const tool = writeToolFaultingAfterWrite();
 
       const result = await tool.execute({
         file_path: target,
@@ -421,20 +435,8 @@ describe("Write tool", () => {
       // The outcome is genuinely unknown and must stay poisonable. Asserting
       // the negative keeps the fix from being widened into "never poison on
       // Write".
-      const target = join(root, "mid-write-failure.txt");
-      await writeFile(target, "original\n", "utf8");
-      const fileStats = await stat(target);
-      recordSessionRead(sessionId, target, {
-        content: "original\n",
-        timestamp: fileStats.mtimeMs,
-        viewKind: "full",
-      });
-      const tool = createFileWriteTool({
-        allowedPaths: [root],
-        __testWrite: async ({ write }) => {
-          await write();
-          throw new Error("disk exploded mid-write");
-        },
+      const target = await seedReadFile("mid-write-failure.txt");
+      const tool = writeToolFaultingAfterWrite({
         __testRestoreBackup: async () => {
           throw new Error("restore failed too");
         },

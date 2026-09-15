@@ -198,6 +198,14 @@ function preMutationErrorResult(message: string): ToolResult {
  * A failure thrown by the mutation transaction: settled as no-effect when the
  * transaction proved the file unchanged, otherwise an unknown outcome.
  */
+function formatWriteFailure(err: unknown, filePath: string): string {
+  if (err instanceof WorkspaceMutationCoordinatorError) return err.message;
+  const code = (err as NodeJS.ErrnoException)?.code;
+  return code
+    ? `${code}: failed to write ${filePath}`
+    : `failed to write ${filePath}`;
+}
+
 function mutationErrorResult(err: unknown, message: string): ToolResult {
   const evidence = workspaceMutationNoEffectEvidence(err);
   if (evidence === undefined) return errorResult(message);
@@ -599,13 +607,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
           testHooks: config,
         });
       } catch (err) {
-        const code = (err as NodeJS.ErrnoException)?.code;
-        const message = err instanceof WorkspaceMutationCoordinatorError
-          ? err.message
-          : code
-            ? `${code}: failed to write ${filePath}`
-            : `failed to write ${filePath}`;
-        return mutationErrorResult(err, message);
+        return mutationErrorResult(err, formatWriteFailure(err, filePath));
       }
 
       const lspFeedback = await collectEditFeedback(absolutePath, content);
