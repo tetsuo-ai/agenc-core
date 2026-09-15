@@ -11,6 +11,8 @@ import type {
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
+import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
+import { WEB_FETCH_TOOL_NAME } from "../../src/tools/WebFetchTool/prompt.js";
 import {
   effectSettlementMetrics,
   resolveLiveEffectPoison,
@@ -433,6 +435,49 @@ describe("runAdmittedToolCall", () => {
     });
     expect(state.holdUnknown).not.toHaveBeenCalled();
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  it("settles a successful web_fetch at zero instead of holding it as missing usage", async () => {
+    // Foodstuff-beta-activity (DeepSeek, 2026-09-15): the nested extraction call reconciled at the
+    // model boundary, then the fetch's own reservation was held as missing_tool_usage because the
+    // tool declared no estimate, and the whole session's cost turned unknown. The real tool
+    // definition is used here; only the network fetch is stubbed.
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-web-fetch-admission-"));
+    try {
+      const webFetch = createModelFacingTools({
+        workspaceRoot,
+        agencHome: workspaceRoot,
+        env: {},
+        getSession: () => null,
+      }).find((candidate) => candidate.name === WEB_FETCH_TOOL_NAME);
+      expect(webFetch).toBeDefined();
+      const state = toolHarness();
+
+      await runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-web-fetch",
+        tool: webFetch!,
+        args: { url: "https://example.com/data.json", prompt: "list the fields" },
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return { content: "page text" };
+        },
+      });
+
+      expect(state.acquire).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "tool_exec", maxCostUsd: 0 }),
+        undefined,
+      );
+      expect(state.holdUnknown).not.toHaveBeenCalled();
+      expect(state.reconcile).toHaveBeenCalledWith("tool-reservation", {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      });
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("holds the full bound when a charged tool omits usage", async () => {

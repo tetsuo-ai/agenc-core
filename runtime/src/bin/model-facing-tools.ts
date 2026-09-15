@@ -3356,6 +3356,12 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
     isReadOnly: true,
     concurrencyClass: { kind: "shared_read" },
     recoveryCategory: "idempotent",
+    // The fetch itself is an unpriced HTTPS request, and the optional prompt
+    // extraction is charged at the model boundary (runAdmittedModelFacingCall).
+    // Without an explicit zero bound the default unpriced estimate held every
+    // successful fetch as missing_tool_usage and marked the whole session's
+    // cost unknown.
+    admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
     inputSchema: {
       type: "object",
       properties: {
