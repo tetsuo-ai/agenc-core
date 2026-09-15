@@ -1511,6 +1511,8 @@ async function stopDaemonAgentBestEffort(params: {
 type DaemonOneShotFinalStatus = {
   readonly code: number;
   readonly message?: string;
+  /** `turn_failed` code (`compact_failed`, `max_turns`, …); absent for run death. */
+  readonly failureCode?: string;
 };
 
 type OneShotJsonResult = {
@@ -1518,6 +1520,8 @@ type OneShotJsonResult = {
   readonly sessionId: string;
   readonly agentId: string;
   readonly exitCode: number;
+  /** Continuation turns started after a `compact_failed` stop (#2497). */
+  readonly compactFailedRetries?: number;
   readonly finalMessage: string;
   readonly deniedPermissionRequestIds: readonly string[];
   readonly tokenUsage?: unknown;
@@ -1710,6 +1714,50 @@ const ONE_SHOT_TOOL_DENIED_MARKER =
   "tool call and gave up. Re-run with --permission-mode or " +
   "--dangerously-bypass-approvals-and-sandbox to allow tools.";
 
+/**
+ * Failure codes a print-mode run may re-enter (#2497). A `compact_failed`
+ * stop leaves the daemon session promptable with its state synced; the next
+ * turn's pre-sampling compaction gets a fresh attempt at the degraded ladder.
+ * Operator caps (`max_turns`, `max_budget_usd`) and the no-progress backstop
+ * are deliberate stops and stay terminal.
+ */
+const ONE_SHOT_RETRYABLE_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "compact_failed",
+]);
+const ONE_SHOT_COMPACT_RETRIES_ENV = "AGENC_ONE_SHOT_COMPACT_RETRIES";
+const DEFAULT_ONE_SHOT_COMPACT_RETRIES = 1;
+const MAX_ONE_SHOT_COMPACT_RETRIES = 3;
+/** Runtime-authored user turn that re-enters the task after a compact_failed stop. */
+const ONE_SHOT_COMPACT_FAILED_CONTINUATION_PROMPT =
+  "The previous turn stopped because context compaction failed; it did not " +
+  "finish the task. Continue from where it left off using the conversation " +
+  "above as your state. Do not restart work that is already done. If the " +
+  "task is already complete, give the final answer now.";
+
+function readOneShotCompactRetries(env: NodeJS.ProcessEnv): number {
+  const raw = env[ONE_SHOT_COMPACT_RETRIES_ENV]?.trim();
+  if (raw === undefined || raw.length === 0) return DEFAULT_ONE_SHOT_COMPACT_RETRIES;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_ONE_SHOT_COMPACT_RETRIES;
+  return Math.min(parsed, MAX_ONE_SHOT_COMPACT_RETRIES);
+}
+
+function oneShotCompactRetryNotice(
+  attempt: number,
+  max: number,
+  message: string | undefined,
+): string {
+  return (
+    `agenc: compaction failed mid-turn${message !== undefined && message.length > 0 ? ` (${message})` : ""}; ` +
+    `continuing the task in a new turn (retry ${attempt}/${max})`
+  );
+}
+
+type OneShotContinuation = {
+  readonly maxRetries: number;
+  readonly startTurn: (streamId: string) => Promise<MessageStreamResult>;
+};
+
 function daemonOneShotStartedTurnId(event: unknown): string | undefined {
   if (!isJsonRecord(event)) return undefined;
   const params = daemonEventParams(event);
@@ -1760,6 +1808,7 @@ function daemonOneShotFinalStatus(
   return terminal === undefined ? null : {
     code: terminal.code,
     ...(terminal.message !== undefined ? { message: terminal.message } : {}),
+    ...(terminal.outcome === "errored" ? { failureCode: terminal.failureCode } : {}),
   };
 }
 
@@ -1788,6 +1837,8 @@ async function awaitDaemonOneShotRun(params: {
   readonly signal: AbortSignal;
   /** Continue mode: submit the prompt as a new turn of the attached session. */
   readonly startTurn?: (streamId: string) => Promise<MessageStreamResult>;
+  /** Re-enter the session after a retryable bounded stop (#2497). */
+  readonly continuation?: OneShotContinuation;
 }): Promise<DaemonOneShotRunOutcome> {
   const { daemonClient, sessionId, outputFormat } = params;
   let unsubscribeEvents: (() => void) | null = null;
@@ -1804,9 +1855,13 @@ async function awaitDaemonOneShotRun(params: {
   // In continue mode the stream id we choose is the daemon's turn id, so
   // terminal events of any other turn (a replayed history item, an unrelated
   // client's turn) never settle this run.
-  const expectedTurnId =
+  let expectedTurnId: string | undefined =
     params.startTurn !== undefined ? randomUUID() : undefined;
   let activeTurnId: string | undefined = expectedTurnId;
+  let retriesUsed = 0;
+  // The failure code of the latest classified terminal event, so a terminal
+  // arriving through the `message.stream` RPC result can still be retried.
+  let lastFailureCode: string | undefined;
   try {
     const deniedPermissionRequestIds = new Set<string>();
     const code = await new Promise<number>((resolve, reject) => {
@@ -1863,6 +1918,7 @@ async function awaitDaemonOneShotRun(params: {
           agentId: params.agentId,
           exitCode: result.exitCode,
           finalMessage: result.finalMessage,
+          ...(retriesUsed > 0 ? { compactFailedRetries: retriesUsed } : {}),
           deniedPermissionRequestIds: [...deniedPermissionRequestIds],
           ...snapshotFields,
           ...(outputFormat === "json" ? { events: collectedEvents } : {}),
@@ -1882,6 +1938,36 @@ async function awaitDaemonOneShotRun(params: {
       ): Promise<void> => {
         if (finalizing) return;
         finalizing = true;
+        const continuation = params.continuation;
+        if (
+          continuation !== undefined &&
+          finalStatus.failureCode !== undefined &&
+          ONE_SHOT_RETRYABLE_FAILURE_CODES.has(finalStatus.failureCode) &&
+          retriesUsed < continuation.maxRetries
+        ) {
+          // A bounded stop the session can recover from: start one more turn
+          // on the same attached session instead of ending the run. A new
+          // stream id becomes the expected turn id, so late events of the
+          // failed turn never settle this run.
+          retriesUsed += 1;
+          const retryTurnId = randomUUID();
+          expectedTurnId = retryTurnId;
+          activeTurnId = retryTurnId;
+          lastFailureCode = undefined;
+          streamedMessage = "";
+          finalizing = false;
+          if (outputFormat === "text") {
+            if (printedAssistantOutput && lastPrintedChar !== "\n") {
+              process.stdout.write("\n");
+              lastPrintedChar = "\n";
+            }
+            process.stderr.write(
+              `${oneShotCompactRetryNotice(retriesUsed, continuation.maxRetries, finalStatus.message)}\n`,
+            );
+          }
+          dispatchTurn(continuation.startTurn, retryTurnId);
+          return;
+        }
         const finalMessage =
           finalStatus.message ?? assistantOutput.trimEnd();
         if (outputFormat === "text" && printedAssistantOutput) {
@@ -2002,6 +2088,7 @@ async function awaitDaemonOneShotRun(params: {
           }
           const finalStatus = daemonOneShotFinalStatus(event, activeTurnId);
           if (finalStatus === null) return;
+          lastFailureCode = finalStatus.failureCode;
           void finalize(finalStatus).catch((error: unknown) => {
             settle({
               error: error instanceof Error ? error : new Error(String(error)),
@@ -2010,19 +2097,25 @@ async function awaitDaemonOneShotRun(params: {
         },
       );
 
-      const startTurn = params.startTurn;
-      if (startTurn !== undefined && expectedTurnId !== undefined) {
-        // Continue mode: the session already exists, so the turn is started
-        // here, after the event subscription is live. The RPC resolves when
-        // the turn ends and carries its terminal outcome; the events above
-        // stream the output and may settle first, whichever arrives.
-        void startTurn(expectedTurnId)
+      // Continue mode and compact_failed retries: the session already
+      // exists, so the turn is started here, after the event subscription is
+      // live. The RPC resolves when the turn ends and carries its terminal
+      // outcome; the events above stream the output and may settle first,
+      // whichever arrives.
+      function dispatchTurn(
+        start: (streamId: string) => Promise<MessageStreamResult>,
+        streamId: string,
+      ): void {
+        void start(streamId)
           .then((result) => {
             if (settled || result.terminal === undefined) return;
             return finalize({
               code: result.terminal.code,
               ...(result.terminal.message !== undefined
                 ? { message: result.terminal.message }
+                : {}),
+              ...(lastFailureCode !== undefined
+                ? { failureCode: lastFailureCode }
                 : {}),
             });
           })
@@ -2031,6 +2124,10 @@ async function awaitDaemonOneShotRun(params: {
               error: error instanceof Error ? error : new Error(String(error)),
             });
           });
+      }
+      const startTurn = params.startTurn;
+      if (startTurn !== undefined && expectedTurnId !== undefined) {
+        dispatchTurn(startTurn, expectedTurnId);
       }
     });
     return { code, cancelled };
@@ -2041,6 +2138,35 @@ async function awaitDaemonOneShotRun(params: {
     stopEvents?.();
     stopConnection?.();
   }
+}
+
+/** One continuation turn per retry after a `compact_failed` stop (#2497). */
+function oneShotCompactFailedContinuation(params: {
+  readonly daemonClient: Awaited<
+    ReturnType<AgenCDaemonCliDeps["createConnectedTuiClient"]>
+  >;
+  readonly sessionId: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly signal: AbortSignal;
+}): { readonly continuation?: OneShotContinuation } {
+  const maxRetries = readOneShotCompactRetries(params.env);
+  if (maxRetries === 0) return {};
+  return {
+    continuation: {
+      maxRetries,
+      startTurn: (streamId) =>
+        params.daemonClient.request(
+          "message.stream",
+          {
+            sessionId: params.sessionId,
+            content: ONE_SHOT_COMPACT_FAILED_CONTINUATION_PROMPT,
+            clientMessageId: randomUUID(),
+            streamId,
+          },
+          { signal: params.signal },
+        ),
+    },
+  };
 }
 
 async function runDaemonOneShotPrompt(params: {
@@ -2142,6 +2268,12 @@ async function runDaemonOneShotPrompt(params: {
       agentId: started.agentId,
       outputFormat,
       signal: params.signal,
+      ...oneShotCompactFailedContinuation({
+        daemonClient,
+        sessionId,
+        env: params.env,
+        signal: params.signal,
+      }),
     });
     cancelled = run.cancelled;
     completed = !cancelled;
@@ -2409,6 +2541,12 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
           { sessionId, content, clientMessageId: randomUUID(), streamId },
           { signal: params.signal },
         ),
+      ...oneShotCompactFailedContinuation({
+        daemonClient: client,
+        sessionId,
+        env: params.env,
+        signal: params.signal,
+      }),
     });
     cancelled = run.cancelled;
     completed = !cancelled;

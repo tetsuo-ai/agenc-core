@@ -211,6 +211,20 @@ function installDaemonCliDepsForTest(
       readonly requestId: string;
       readonly emit: (event: unknown) => void;
     }) => void;
+    /**
+     * Invoked when the one-shot client starts a turn with `message.stream`
+     * (headless continue, or the compact_failed continuation). Use `emit` to
+     * deliver the events the daemon would produce for that turn.
+     */
+    readonly onMessageStream?: (info: {
+      readonly params: {
+        readonly sessionId?: string;
+        readonly content?: unknown;
+        readonly streamId?: string;
+        readonly clientMessageId?: string;
+      };
+      readonly emit: (event: unknown) => void;
+    }) => void;
     readonly createConnectedTuiClientError?: Error;
     readonly liveAgent?: boolean;
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
@@ -414,6 +428,15 @@ function installDaemonCliDepsForTest(
         };
       }
       if (method === "message.stream") {
+        options.onMessageStream?.({
+          params: (params ?? {}) as {
+            readonly sessionId?: string;
+            readonly content?: unknown;
+            readonly streamId?: string;
+            readonly clientMessageId?: string;
+          },
+          emit: (event) => queueMicrotask(() => sessionEventEmit?.(event)),
+        });
         return {
           messageId: "message_test",
           streamId:
@@ -2074,6 +2097,129 @@ describe("main() smoke", () => {
     }
   });
 
+  describe("compact_failed continuation (#2497)", () => {
+    const continuationPrompt =
+      "The previous turn stopped because context compaction failed; it did not " +
+      "finish the task. Continue from where it left off using the conversation " +
+      "above as your state. Do not restart work that is already done. If the " +
+      "task is already complete, give the final answer now.";
+    const failureMessage = "compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]; lastSamplePromptTokens=200000 limit=180000";
+
+    function compactFailedFixture(code = "compact_failed") {
+      const agentId = "agent_compact";
+      const sessionId = "session_compact";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId, eventId: id, event: { id, type, payload } },
+      });
+      const events = [
+        transcript("started", "turn_started", { turnId: "turn-1" }),
+        { method: "event.message_chunk", params: { sessionId, eventId: "partial", agentId, delta: "partial" } },
+        transcript("compact-warning", "warning", { cause: "mid_turn_compact_failed", message: failureMessage }),
+        transcript("failed", "turn_failed", { turnId: "turn-1", code, message: failureMessage }),
+      ];
+      const continuationEvents = (streamId: string, outcome: "complete" | "compact_failed") => [
+        transcript("retry-started", "turn_started", { turnId: streamId }, streamId),
+        { method: "event.message_chunk", params: { sessionId, eventId: "retry-delta", agentId, delta: "final answer" } },
+        outcome === "complete"
+          ? transcript("retry-complete", "turn_complete", { turnId: streamId, lastAgentMessage: "final answer" }, streamId)
+          : transcript("retry-failed", "turn_failed", { turnId: streamId, code: "compact_failed", message: "second compaction failure" }, streamId),
+      ];
+      return { agentId, sessionId, events, continuationEvents };
+    }
+
+    it("continues the task in a new turn on the same session and exits 0 with the continuation answer", async () => {
+      const fixture = compactFailedFixture();
+      await withOneShotTestEnvironment("agenc-compact-retry-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          onMessageStream: ({ params, emit }) => {
+            expect(params.content).toBe(continuationPrompt);
+            for (const event of fixture.continuationEvents(params.streamId!, "complete")) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(0);
+        expect(stdout()).toContain("partial");
+        expect(stdout()).toContain("final answer");
+        expect(stderr()).toContain("compact_ladder_exhausted");
+        expect(stderr()).toContain("retry 1/1");
+        const streams = daemon.requests.filter((request) => request.method === "message.stream");
+        expect(streams).toHaveLength(1);
+        expect(streams[0]?.params).toMatchObject({ sessionId: fixture.sessionId });
+        expect(typeof (streams[0]?.params as { streamId?: unknown }).streamId).toBe("string");
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+      });
+    });
+
+    it("exits 1 without a second retry when the continuation turn also stops with compact_failed", async () => {
+      const fixture = compactFailedFixture();
+      await withOneShotTestEnvironment("agenc-compact-retry-twice-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          onMessageStream: ({ params, emit }) => {
+            for (const event of fixture.continuationEvents(params.streamId!, "compact_failed")) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(1);
+        expect(daemon.requests.filter((request) => request.method === "message.stream")).toHaveLength(1);
+        expect(stderr()).toContain("second compaction failure");
+      });
+    });
+
+    it("AGENC_ONE_SHOT_COMPACT_RETRIES=0 disables the continuation", async () => {
+      const fixture = compactFailedFixture();
+      await withOneShotTestEnvironment("agenc-compact-retry-off-", async ({ cwd, run, stderr }) => {
+        process.env.AGENC_ONE_SHOT_COMPACT_RETRIES = "0";
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(1);
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(stderr()).toContain("compact_ladder_exhausted");
+        expect(stderr()).not.toContain("retry 1/");
+      });
+    });
+
+    it("does not retry a failure code that is not a compaction stop", async () => {
+      const fixture = compactFailedFixture("provider_error");
+      await withOneShotTestEnvironment("agenc-compact-retry-other-", async ({ cwd, run }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(1);
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+      });
+    });
+
+    it("writes one json result carrying compactFailedRetries and both turns' events", async () => {
+      const fixture = compactFailedFixture();
+      const previousArgv = process.argv;
+      process.argv = ["node", "agenc", "--print", "--output-format=json", "work"];
+      try {
+        await withOneShotTestEnvironment("agenc-compact-retry-json-", async ({ cwd, run, stdout }) => {
+          installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+            onMessageStream: ({ params, emit }) => {
+              for (const event of fixture.continuationEvents(params.streamId!, "complete")) emit(event);
+            },
+          });
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(0);
+          const lines = stdout().trim().split("\n");
+          expect(lines).toHaveLength(1);
+          const result = JSON.parse(lines[0]!) as { type: string; exitCode: number; compactFailedRetries?: number; events: unknown[] };
+          expect(result).toMatchObject({ type: "result", exitCode: 0, compactFailedRetries: 1 });
+          const types = result.events.map((event) =>
+            ((event as { params?: { event?: { type?: string } } }).params?.event?.type));
+          expect(types).toContain("turn_failed");
+          expect(types).toContain("turn_complete");
+        });
+      } finally {
+        process.argv = previousArgv;
+      }
+    });
+  });
+
   it("oneShotFinalMessageRemainder adds only what the deltas did not carry", () => {
     expect(oneShotFinalMessageRemainder("", "pong")).toBe("pong\n");
     expect(oneShotFinalMessageRemainder("pong", "pong")).toBe("\n");
@@ -2278,6 +2424,53 @@ describe("main() smoke", () => {
         // The revived agent is a one-shot resource and is stopped again.
         expect(daemon.requests.find((request) => request.method === "agent.stop")?.params).toEqual({
           agentId: "agent_continue",
+          reason: "one_shot_complete",
+        });
+      });
+    });
+
+    it("continues after compact_failed on the continued session with a second turn (#2497)", async () => {
+      await withOneShotTestEnvironment("agenc-continue-compact-", async ({ cwd, run, stdout }) => {
+        const home = process.env.AGENC_HOME!;
+        const sessionId = "conv-continue03";
+        await writeContinuableRollout(home, cwd, sessionId);
+        const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId: string) => ({
+          method: "event.session_event",
+          params: { sessionId, agentId: "agent_continue_compact", turnId, eventId: id, event: { id, type, payload } },
+        });
+        const daemon = installDaemonCliDepsForTest({
+          agentId: "agent_continue_compact",
+          sessionId,
+          cwd,
+          liveAgent: false,
+          oneShotEvents: [],
+          onMessageStream: ({ params, emit }) => {
+            const streamId = params.streamId!;
+            if (params.content === "second step") {
+              emit(transcript("first-started", "turn_started", { turnId: streamId }, streamId));
+              emit(transcript("first-failed", "turn_failed", { turnId: streamId, code: "compact_failed", message: "compact_ladder_exhausted" }, streamId));
+              return;
+            }
+            emit(transcript("retry-started", "turn_started", { turnId: streamId }, streamId));
+            emit({ method: "event.message_chunk", params: { sessionId, eventId: "retry-delta", agentId: "agent_continue_compact", delta: "final answer" } });
+            emit(transcript("retry-complete", "turn_complete", { turnId: streamId, lastAgentMessage: "final answer" }, streamId));
+          },
+        });
+
+        const code = await run(
+          () => oneShotCLI("second step", [], undefined, { kind: "latest" }),
+          4000,
+        );
+
+        expect(code).toBe(0);
+        expect(stdout()).toContain("final answer");
+        const streams = daemon.requests
+          .filter((request) => request.method === "message.stream")
+          .map((request) => request.params as { content?: unknown; streamId?: string });
+        expect(streams.map((stream) => stream.content)).toEqual(["second step", expect.stringContaining("compaction failed")]);
+        expect(new Set(streams.map((stream) => stream.streamId)).size).toBe(2);
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params).toEqual({
+          agentId: "agent_continue_compact",
           reason: "one_shot_complete",
         });
       });

@@ -66,6 +66,7 @@ From `formatCliHelpText()`:
 
 ### Print-mode notes
 
+- A print-mode turn that stops with `compact_failed` (compaction could not shrink the context even after the degraded ladder) is re-entered once with a runtime-authored continuation turn on the same session before the run exits 1; `AGENC_ONE_SHOT_COMPACT_RETRIES` sets the count (`0` disables). The exit code is the last turn's outcome.
 - `agenc -c -p "<prompt>"` and `agenc --resume <id> -p "<prompt>"` continue a prior session headless: the session is revived from its rollout (or reused when a TUI or the desktop still has it live), the prompt is submitted as a new turn, output streams to stdout, and the exit code is the turn's outcome. A session this run revived is stopped again afterwards; a live one keeps running. Only explicit `--model`, `--provider` and `--profile` overrides travel; otherwise the session keeps the provider and model it was recorded with. No prior session for the project exits 1 with `agenc: no previous session found for this project`.
 
 - `--print` / `-p` and `--no-tui` select non-interactive runs suitable for
