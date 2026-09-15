@@ -3,7 +3,7 @@
 Installs the public AgenC release inside the task container with the same
 one-line installer a user runs (https://get.agenc.ag/install.sh), then runs
 one headless turn: ``agenc --dangerously-bypass-approvals-and-sandbox
---provider <p> --model <m> -p "<instruction>"`` in the task's working
+--provider <p> --model <m> -p`` with the instruction on stdin in the task's working
 directory. Model names follow Harbor's ``provider/model`` convention, e.g.
 ``deepseek/deepseek-v4-pro``. The provider's API key is read from the host
 environment and forwarded only into the agent process.
@@ -252,10 +252,13 @@ class Agenc(BaseInstalledAgent):
             f"agenc config set reasoning_effort {effort} >/dev/null; "
             # Headless run: nobody can answer a question, so the interactive tool must not be offered.
             "agenc config set tools_config.disabled_tools '[\"AskUserQuestion\"]' >/dev/null; "
+            # printf is a shell builtin: the instruction never becomes a
+            # command-line argument of the AgenC controller or a helper.
+            'printf \'%s\' "$HARBOR_INSTRUCTION" | '
             "agenc --dangerously-bypass-approvals-and-sandbox "
             f"{add_dir_flags + ' ' if add_dir_flags else ''}"
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
-            f'-p -- "$HARBOR_INSTRUCTION" 2>&1 | stdbuf -oL tee {AGENT_LOG}'
+            f'-p 2>&1 | stdbuf -oL tee {AGENT_LOG}'
         )
         try:
             await self.exec_as_agent(environment, command=run_cmd, env=env)

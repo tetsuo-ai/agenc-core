@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -20,13 +21,10 @@ enum {
   AGENC_BROKER_ERROR_EXIT = 125,
   AGENC_BROKER_EXEC_EXIT = 127,
   AGENC_BROKER_STATUS_FD = 3,
-  AGENC_BROKER_PROGRAM_ARGUMENT = 1,
-  AGENC_BROKER_ARGV0_ARGUMENT = 2,
-  AGENC_BROKER_FIRST_TARGET_ARGUMENT = 3,
-  AGENC_BROKER_MINIMUM_ARGUMENT_COUNT = 3,
-  AGENC_BROKER_TARGET_ARGV0_INDEX = 0,
-  AGENC_BROKER_TARGET_FIRST_ARGUMENT = 1,
-  AGENC_BROKER_TARGET_NULL_SLOT_COUNT = 1,
+  AGENC_BROKER_BOOTSTRAP_FD = 4,
+  AGENC_BROKER_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024,
+  AGENC_BROKER_MAX_STRINGS = 65536,
+  AGENC_BROKER_BOOTSTRAP_TIMEOUT_MS = 10000,
   AGENC_BROKER_FIRST_SIGNAL_INDEX = 0,
   AGENC_BROKER_PRCTL_ENABLED = 1,
   AGENC_BROKER_PRCTL_UNUSED = 0,
@@ -59,8 +57,15 @@ struct child_signal_context {
   int signal_number;
 };
 
+struct launch_payload {
+  char *bytes;
+  char *program;
+  char **argv;
+  char **environment;
+};
+
 int main(int argc, char **argv);
-static int launch_supervised_target(int argc, char **argv, sigset_t *wait_mask);
+static int launch_supervised_target(int argc, sigset_t *wait_mask);
 static int complete_broker_cleanup(void);
 static int validate_invocation(int argc);
 static int prepare_broker(sigset_t *wait_mask);
@@ -69,7 +74,11 @@ static int enable_child_subreaper(void);
 static int install_broker_handlers(void);
 static int arm_owner_death_signal(pid_t owner_pid);
 static int verify_initial_child_ownership(void);
-static char **create_target_argv(int argc, char **argv);
+static int read_launch_payload(struct launch_payload *payload);
+static int64_t monotonic_milliseconds(void);
+static int read_bootstrap_exact(void *buffer, size_t length, int64_t deadline);
+static uint32_t bootstrap_u32(const unsigned char *bytes);
+static char *take_bootstrap_string(char **cursor, const char *end);
 static int start_root_process(const char *program, char **target_argv);
 static _Noreturn void run_target_child(const char *program, char **target_argv);
 static int monitor_root_process(const sigset_t *wait_mask, int *root_status);
@@ -116,7 +125,8 @@ int main(int argc, char **argv) {
   sigset_t wait_mask;
   int root_status = AGENC_BROKER_EMPTY_WAIT_STATUS;
 
-  if (launch_supervised_target(argc, argv, &wait_mask) !=
+  (void)argv;
+  if (launch_supervised_target(argc, &wait_mask) !=
       AGENC_BROKER_SUCCESS) {
     return AGENC_BROKER_ERROR_EXIT;
   }
@@ -129,22 +139,28 @@ int main(int argc, char **argv) {
   exit_like_root(root_status);
 }
 
-static int launch_supervised_target(int argc, char **argv,
-                                    sigset_t *wait_mask) {
-  char **target_argv;
+static int launch_supervised_target(int argc, sigset_t *wait_mask) {
+  struct launch_payload payload = {0};
   int launch_result;
 
   if (validate_invocation(argc) != AGENC_BROKER_SUCCESS ||
       prepare_broker(wait_mask) != AGENC_BROKER_SUCCESS) {
     return AGENC_BROKER_FAILURE;
   }
-  target_argv = create_target_argv(argc, argv);
-  if (target_argv == NULL) {
+  if (read_launch_payload(&payload) != AGENC_BROKER_SUCCESS) {
+    report_message("invalid private bootstrap payload");
     return AGENC_BROKER_FAILURE;
   }
+  /* No bootstrap descriptor or controller environment reaches the task. */
+  (void)close(AGENC_BROKER_BOOTSTRAP_FD);
+  char **bootstrap_environment = environ;
+  environ = payload.environment;
   launch_result =
-      start_root_process(argv[AGENC_BROKER_PROGRAM_ARGUMENT], target_argv);
-  free(target_argv);
+      start_root_process(payload.program, payload.argv);
+  environ = bootstrap_environment;
+  free(payload.argv);
+  free(payload.environment);
+  free(payload.bytes);
   if (launch_result != AGENC_BROKER_SUCCESS) {
     return AGENC_BROKER_FAILURE;
   }
@@ -171,10 +187,10 @@ static int complete_broker_cleanup(void) {
 }
 
 static int validate_invocation(int argc) {
-  if (argc >= AGENC_BROKER_MINIMUM_ARGUMENT_COUNT) {
+  if (argc == 1) {
     return AGENC_BROKER_SUCCESS;
   }
-  report_message("expected program and argv0");
+  report_message("expected private bootstrap on FD 4, no arguments");
   return AGENC_BROKER_FAILURE;
 }
 
@@ -255,26 +271,86 @@ static int verify_initial_child_ownership(void) {
   return AGENC_BROKER_SUCCESS;
 }
 
-static char **create_target_argv(int argc, char **argv) {
-  size_t target_argument_count =
-      (size_t)argc - (size_t)AGENC_BROKER_ARGV0_ARGUMENT;
-  size_t target_pointer_count =
-      target_argument_count + AGENC_BROKER_TARGET_NULL_SLOT_COUNT;
-  char **target_argv = calloc(target_pointer_count, sizeof(*target_argv));
-  int source_index;
-  size_t target_index = AGENC_BROKER_TARGET_FIRST_ARGUMENT;
+static int64_t monotonic_milliseconds(void) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+  return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
 
-  if (target_argv == NULL) {
-    return NULL;
+static int read_bootstrap_exact(void *buffer, size_t length, int64_t deadline) {
+  size_t offset = 0;
+  while (offset < length) {
+    int64_t now = monotonic_milliseconds();
+    if (now < 0 || now >= deadline) return AGENC_BROKER_FAILURE;
+    struct pollfd descriptor = {AGENC_BROKER_BOOTSTRAP_FD, POLLIN, 0};
+    int ready = poll(&descriptor, 1, (int)(deadline - now));
+    if (ready < 0 && errno == EINTR) continue;
+    if (ready <= 0) return AGENC_BROKER_FAILURE;
+    ssize_t received = read(descriptor.fd, (char *)buffer + offset, length - offset);
+    if (received < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+    if (received <= 0) return AGENC_BROKER_FAILURE;
+    offset += (size_t)received;
   }
-  target_argv[AGENC_BROKER_TARGET_ARGV0_INDEX] =
-      argv[AGENC_BROKER_ARGV0_ARGUMENT];
-  for (source_index = AGENC_BROKER_FIRST_TARGET_ARGUMENT; source_index < argc;
-       ++source_index, ++target_index) {
-    target_argv[target_index] = argv[source_index];
+  return AGENC_BROKER_SUCCESS;
+}
+
+static uint32_t bootstrap_u32(const unsigned char *bytes) {
+  return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+         ((uint32_t)bytes[2] << 8) | bytes[3];
+}
+
+static char *take_bootstrap_string(char **cursor, const char *end) {
+  char *value = *cursor;
+  char *terminator = memchr(value, 0, (size_t)(end - value));
+  if (terminator == NULL) return NULL;
+  *cursor = terminator + 1;
+  return value;
+}
+
+static int read_launch_payload(struct launch_payload *payload) {
+  /* AGB1, then big-endian payload length, argv count, environment count.
+   * The bounded body contains NUL-terminated program, argv, and NAME=VALUE
+   * strings. Transport is separate from task stdin and the status descriptor.
+   * No target instruction runs until the complete frame has been validated. */
+  unsigned char header[16];
+  int64_t now = monotonic_milliseconds();
+  if (now < 0) return AGENC_BROKER_FAILURE;
+  int64_t deadline = now + AGENC_BROKER_BOOTSTRAP_TIMEOUT_MS;
+  if (read_bootstrap_exact(header, sizeof(header), deadline) != 0 ||
+      memcmp(header, "AGB1", 4) != 0) return AGENC_BROKER_FAILURE;
+  uint32_t size = bootstrap_u32(header + 4);
+  uint32_t argc = bootstrap_u32(header + 8);
+  uint32_t envc = bootstrap_u32(header + 12);
+  if (size == 0 || size > AGENC_BROKER_MAX_PAYLOAD_BYTES || argc == 0 ||
+      argc >= AGENC_BROKER_MAX_STRINGS ||
+      envc >= AGENC_BROKER_MAX_STRINGS - argc) return AGENC_BROKER_FAILURE;
+  payload->bytes = malloc(size);
+  payload->argv = calloc((size_t)argc + 1, sizeof(char *));
+  payload->environment = calloc((size_t)envc + 1, sizeof(char *));
+  if (payload->bytes == NULL || payload->argv == NULL || payload->environment == NULL ||
+      read_bootstrap_exact(payload->bytes, size, deadline) != 0) goto failure;
+  char *cursor = payload->bytes;
+  const char *end = cursor + size;
+  payload->program = take_bootstrap_string(&cursor, end);
+  if (payload->program == NULL || payload->program[0] == 0) goto failure;
+  for (uint32_t index = 0; index < argc; ++index) {
+    payload->argv[index] = take_bootstrap_string(&cursor, end);
+    if (payload->argv[index] == NULL) goto failure;
   }
-  target_argv[target_index] = NULL;
-  return target_argv;
+  for (uint32_t index = 0; index < envc; ++index) {
+    char *entry = take_bootstrap_string(&cursor, end);
+    if (entry == NULL) goto failure;
+    char *equals = strchr(entry, '=');
+    if (equals == NULL || equals == entry) goto failure;
+    payload->environment[index] = entry;
+  }
+  if (cursor != end) goto failure;
+  return AGENC_BROKER_SUCCESS;
+failure:
+  free(payload->bytes);
+  free(payload->argv);
+  free(payload->environment);
+  return AGENC_BROKER_FAILURE;
 }
 
 static int start_root_process(const char *program, char **target_argv) {
