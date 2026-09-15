@@ -256,7 +256,7 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     readonly collaborationMode?: { readonly model?: string };
   };
   /** Preserved from the daemon/bootstrap session for immutable role discovery. */
-  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;
+  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd" | "executionBinding">;
   readonly services: {
     approvalResolver?: ApprovalResolver;
     requestUserInputResolver?: {

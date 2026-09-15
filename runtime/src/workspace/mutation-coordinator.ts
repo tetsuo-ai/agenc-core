@@ -36,6 +36,13 @@ import {
 import { createInterface as createReadlineInterface } from "node:readline";
 
 import { getCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { ExecutionCoordinatorPaths } from "../execution/coordinator-paths.js";
+import type { ExecutionWorkspace } from "../execution/workspace.js";
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey } from "../execution/types.js";
+import { resolveExecutionPermissionPath } from "../execution/permission-path.js";
+import { captureExecutionPermissionAuthority } from "../execution/permission-authority.js";
+import { WorkspaceMutationCoordinatorError } from "./mutation-error.js";
+export { WorkspaceMutationCoordinatorError } from "./mutation-error.js";
 
 const DEFAULT_LEASE_TTL_MS = 10_000;
 const MAX_SYNCED_BUFFERS = 512;
@@ -504,25 +511,6 @@ interface WorkspaceEditorSyncPlan {
   readonly quarantineSnapshot: WorkspaceQuarantineSnapshot;
 }
 
-export class WorkspaceMutationCoordinatorError extends Error {
-  readonly code:
-    | "INVALID_WORKSPACE"
-    | "INVALID_EDITOR_SYNC"
-    | "EDITOR_LEASE_CONFLICT"
-    | "EDITOR_LEASE_EXPIRED"
-    | "EDITOR_LEASE_MISMATCH"
-    | "MUTATION_AUDIT_FAILED";
-
-  constructor(
-    code: WorkspaceMutationCoordinatorError["code"],
-    message: string,
-  ) {
-    super(message);
-    this.name = "WorkspaceMutationCoordinatorError";
-    this.code = code;
-  }
-}
-
 export function workspaceEditorProposalResponseFrameBytes(
   proposal: WorkspaceMutationProposal,
   requestId: string | number = Number.MAX_SAFE_INTEGER,
@@ -592,6 +580,7 @@ export class WorkspaceMutationRejectedError extends Error {
 export interface WorkspaceMutationCoordinatorOptions {
   readonly workspaceRoot: string;
   readonly agencHome: string;
+  readonly executionPaths?: ExecutionCoordinatorPaths;
   readonly now?: () => number;
   readonly leaseTtlMs?: number;
   /** Deterministic capacity seam for proposal-admission race tests. */
@@ -631,6 +620,7 @@ export type WorkspaceMutationObservedState =
  */
 export class WorkspaceMutationCoordinator {
   readonly workspaceRoot: string;
+  readonly #executionPaths: ExecutionCoordinatorPaths | undefined;
   readonly #now: () => number;
   readonly #leaseTtlMs: number;
   readonly #maxPendingProposals: number;
@@ -679,13 +669,17 @@ export class WorkspaceMutationCoordinator {
   #mutationAdmissionTail: Promise<void> = Promise.resolve();
 
   constructor(options: WorkspaceMutationCoordinatorOptions) {
+    if (!options.executionPaths && getCanonicalSettingsAuthority()?.executionWorkspace) {
+      throw new ExecutionEnvironmentError("environment_not_ready", "Task coordinator requires explicit execution path authority", false);
+    }
     if (!isAbsolute(options.workspaceRoot)) {
       throw new WorkspaceMutationCoordinatorError(
         "INVALID_WORKSPACE",
         "workspaceRoot must be absolute",
       );
     }
-    this.workspaceRoot = canonicalizePathSync(options.workspaceRoot);
+    this.#executionPaths = options.executionPaths;
+    this.workspaceRoot = this.#executionPaths?.identity(options.workspaceRoot) ?? canonicalizePathSync(options.workspaceRoot);
     this.#now = options.now ?? Date.now;
     this.#leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
     const maxPendingProposals =
@@ -705,6 +699,7 @@ export class WorkspaceMutationCoordinator {
     this.#ledger = new WorkspaceChangeLedger({
       workspaceRoot: this.workspaceRoot,
       agencHome,
+      executionPaths: this.#executionPaths,
     });
     this.#appendLedger =
       options.appendLedger ?? ((input) => this.#ledger.append(input));
@@ -3663,7 +3658,7 @@ export class WorkspaceMutationCoordinator {
   }
 
   resolvePath(path: string): string {
-    const candidate = canonicalizePathSync(
+    const candidate = this.#executionPaths?.canonicalize(path, this.workspaceRoot) ?? canonicalizePathSync(
       isAbsolute(path) ? resolve(path) : resolve(this.workspaceRoot, path),
     );
     const rel = relative(this.workspaceRoot, candidate);
@@ -3674,6 +3669,15 @@ export class WorkspaceMutationCoordinator {
       );
     }
     return candidate;
+  }
+
+  #persistedPath(path: string): string {
+    if (!this.#executionPaths) return this.resolvePath(path);
+    const identity = this.#executionPaths.identity(path);
+    if (!isSameOrDescendantPath(this.workspaceRoot, identity)) {
+      throw new WorkspaceMutationCoordinatorError("INVALID_WORKSPACE", "Persisted task path is outside its workspace");
+    }
+    return identity;
   }
 
   async #serializeProposalResolution<Result>(
@@ -3744,7 +3748,7 @@ export class WorkspaceMutationCoordinator {
       );
     }
     this.#expireLeaseIfNeeded();
-    if (canonicalizePathSync(input.workspaceRoot) !== this.workspaceRoot) {
+    if ((this.#executionPaths?.canonicalize(input.workspaceRoot) ?? canonicalizePathSync(input.workspaceRoot)) !== this.workspaceRoot) {
       throw new WorkspaceMutationCoordinatorError(
         "EDITOR_LEASE_MISMATCH",
         "editor lease belongs to a different durable workspace scope",
@@ -4598,7 +4602,7 @@ export class WorkspaceMutationCoordinator {
       !isRecord(value) ||
       (value.version !== 1 && value.version !== 2) ||
       typeof value.workspaceRoot !== "string" ||
-      canonicalizePathSync(value.workspaceRoot) !== this.workspaceRoot ||
+      (this.#executionPaths?.identity(value.workspaceRoot) ?? canonicalizePathSync(value.workspaceRoot)) !== this.workspaceRoot ||
       !Array.isArray(value.entries) ||
       value.entries.length > MAX_SYNCED_BUFFERS ||
       (value.proposalCommitments !== undefined &&
@@ -4647,7 +4651,7 @@ export class WorkspaceMutationCoordinator {
       ) {
         throw new Error("invalid workspace quarantine entry");
       }
-      const path = this.resolvePath(candidate.path);
+      const path = this.#persistedPath(candidate.path);
       if (hydrated.has(path)) {
         throw new Error("duplicate workspace quarantine entry");
       }
@@ -4689,7 +4693,7 @@ export class WorkspaceMutationCoordinator {
         throw new Error("invalid workspace proposal commitment");
       }
       const proposalId = candidate.proposalId;
-      const path = this.resolvePath(candidate.path);
+      const path = this.#persistedPath(candidate.path);
       if (this.#proposalCommitments.has(proposalId)) {
         throw new Error("duplicate workspace proposal commitment");
       }
@@ -4719,7 +4723,7 @@ export class WorkspaceMutationCoordinator {
         throw new Error("invalid workspace proposal receipt");
       }
       const proposalId = candidate.proposalId;
-      const path = this.resolvePath(candidate.path);
+      const path = this.#persistedPath(candidate.path);
       if (
         this.#proposalReceipts.has(proposalId) ||
         this.#proposalCommitments.has(proposalId)
@@ -4771,7 +4775,7 @@ export class WorkspaceMutationCoordinator {
         typeof candidate.timestamp !== "string" ||
         Number.isNaN(Date.parse(candidate.timestamp)) ||
         typeof candidate.workspaceRoot !== "string" ||
-        canonicalizePathSync(candidate.workspaceRoot) !== this.workspaceRoot ||
+        (this.#executionPaths?.identity(candidate.workspaceRoot) ?? canonicalizePathSync(candidate.workspaceRoot)) !== this.workspaceRoot ||
         typeof candidate.path !== "string" ||
         !isAbsolute(candidate.path) ||
         !isWorkspaceMutationSource(candidate.source) ||
@@ -4795,7 +4799,7 @@ export class WorkspaceMutationCoordinator {
       ) {
         throw new Error("invalid persisted workspace change");
       }
-      const path = this.resolvePath(candidate.path);
+      const path = this.#persistedPath(candidate.path);
       this.#changes.push({
         sequence: candidate.sequence,
         timestamp: candidate.timestamp,
@@ -4836,6 +4840,7 @@ export class WorkspaceMutationCoordinator {
       const entry = persistedWorkspaceChangeLedgerEntry(
         candidate,
         this.workspaceRoot,
+        this.#executionPaths,
       );
       if (entry === null) {
         throw new Error("invalid workspace audit outbox entry");
@@ -4887,7 +4892,7 @@ export class WorkspaceMutationCoordinator {
         throw new Error("invalid workspace mutation intent");
       }
       recoveredMutationChanges.push({
-        path: this.resolvePath(candidate.path),
+        path: this.#persistedPath(candidate.path),
         source: candidate.source,
         status: "unknown_outcome",
         beforeSha256: candidate.beforeSha256,
@@ -4921,7 +4926,7 @@ export class WorkspaceMutationCoordinator {
           throw new Error("invalid workspace topology mutation target");
         }
         return {
-          path: this.resolvePath(target.path),
+          path: this.#persistedPath(target.path),
           includeDescendants: target.includeDescendants,
         };
       });
@@ -4943,7 +4948,7 @@ export class WorkspaceMutationCoordinator {
         ) {
           throw new Error("invalid workspace topology contention");
         }
-        const path = this.resolvePath(contention.path);
+        const path = this.#persistedPath(contention.path);
         if (
           seenContentions.has(path) ||
           !targets.some((target) => topologyTargetContainsPath(target, path))
@@ -5045,6 +5050,7 @@ type PersistedWorkspaceRootDiscovery =
 function inspectPersistedWorkspaceRoot(
   directory: string,
   directoryName: string,
+  executionPaths?: ExecutionCoordinatorPaths,
 ): PersistedWorkspaceRootDiscovery | null {
   const quarantinePath = join(directory, directoryName, "quarantine-v1.json");
   if (!existsSync(quarantinePath)) return null;
@@ -5058,7 +5064,7 @@ function inspectPersistedWorkspaceRoot(
       `workspace quarantine path identity changed: ${directoryName}`,
     );
   }
-  const workspaceRoot = canonicalPersistedWorkspaceRoot(persistedWorkspaceRoot);
+  const workspaceRoot = executionPaths?.identity(persistedWorkspaceRoot) ?? canonicalPersistedWorkspaceRoot(persistedWorkspaceRoot);
   if (workspaceRoot === null) {
     let observedKey: string | null = null;
     try {
@@ -5111,6 +5117,7 @@ function inspectPersistedWorkspaceRoot(
 
 function discoverPersistedWorkspaceRoots(
   agencHome: string,
+  executionPaths?: ExecutionCoordinatorPaths,
 ): PersistedWorkspaceRootDiscovery[] {
   const directory = join(agencHome, "workspace-mutations");
   const entries = (() => {
@@ -5138,7 +5145,7 @@ function discoverPersistedWorkspaceRoots(
     if (!entry.isDirectory()) {
       throw new Error(`unsafe workspace quarantine directory: ${entry.name}`);
     }
-    const root = inspectPersistedWorkspaceRoot(directory, entry.name);
+    const root = inspectPersistedWorkspaceRoot(directory, entry.name, executionPaths);
     if (root !== null) roots.push(root);
   }
   return roots;
@@ -5174,6 +5181,7 @@ function unresolvedPersistedWorkspaceRootMayOverlap(
 }
 
 export class WorkspaceMutationCoordinatorRegistry {
+  readonly #storageHome: string;
   readonly #coordinators = new Map<string, WorkspaceMutationCoordinator>();
   readonly #probedQuarantineKeys = new Set<string>();
   readonly #persistedWorkspaceRootsByHome = new Map<
@@ -5184,6 +5192,7 @@ export class WorkspaceMutationCoordinatorRegistry {
   readonly #toolOperations = new Map<string, WorkspaceToolOperationToken>();
   readonly #options: {
     readonly agencHome: string;
+    readonly executionPaths?: ExecutionCoordinatorPaths;
     readonly now?: () => number;
     readonly leaseTtlMs?: number;
   };
@@ -5191,15 +5200,30 @@ export class WorkspaceMutationCoordinatorRegistry {
   constructor(
     options: {
       readonly agencHome: string;
+      readonly executionPaths?: ExecutionCoordinatorPaths;
       readonly now?: () => number;
       readonly leaseTtlMs?: number;
     },
   ) {
+    if (!options.executionPaths && getCanonicalSettingsAuthority()?.executionWorkspace) {
+      throw new ExecutionEnvironmentError("environment_not_ready", "Task coordinator registry requires explicit execution path authority", false);
+    }
     this.#options = options;
+    this.#storageHome = options.executionPaths?.storageHome(options.agencHome) ?? options.agencHome;
+  }
+
+  /** Resolve task aliases before entering the synchronous coordinator state machine. */
+  async preparePaths<T>(paths: readonly string[], operation: () => T | Promise<T>, workspace?: ExecutionWorkspace): Promise<T> {
+    return this.#options.executionPaths ? this.#options.executionPaths.prepare(paths, operation,
+      workspace ?? getCanonicalSettingsAuthority()?.executionWorkspace) : operation();
+  }
+
+  #canonicalize(path: string): string {
+    return this.#options.executionPaths?.canonicalize(path) ?? canonicalizePathSync(path);
   }
 
   getOrCreate(workspaceRoot: string): WorkspaceMutationCoordinator {
-    const root = canonicalizePathSync(workspaceRoot);
+    const root = this.#canonicalize(workspaceRoot);
     this.#hydratePersistedCoordinatorsOverlapping(root);
     return this.#getOrCreateCanonical(root);
   }
@@ -5230,7 +5254,7 @@ export class WorkspaceMutationCoordinatorRegistry {
   }
 
   findForPath(path: string): WorkspaceMutationCoordinator | null {
-    const target = canonicalizePathSync(path);
+    const target = this.#canonicalize(path);
     this.#hydratePersistedCoordinatorsOverlapping(target);
     let bestAuthoritative: WorkspaceMutationCoordinator | null = null;
     let bestProtected: WorkspaceMutationCoordinator | null = null;
@@ -5309,7 +5333,7 @@ export class WorkspaceMutationCoordinatorRegistry {
     workspaceRoot: string,
     input: WorkspaceEditorAcquireInput,
   ): WorkspaceEditorLease {
-    const root = canonicalizePathSync(workspaceRoot);
+    const root = this.#canonicalize(workspaceRoot);
     // A pathname-only overlap check is insufficient while an admitted tool
     // keeps a directory inode alive: the directory can be renamed and reached
     // through a new pathname before the tool releases its descriptor. Fence
@@ -5352,7 +5376,7 @@ export class WorkspaceMutationCoordinatorRegistry {
     workspaceRoot: string,
     toolName: string,
   ): WorkspaceToolOperationToken {
-    const root = canonicalizePathSync(workspaceRoot);
+    const root = this.#canonicalize(workspaceRoot);
     if (this.hasProtectedEditorAuthority(root)) {
       throw new WorkspaceMutationCoordinatorError(
         "EDITOR_LEASE_CONFLICT",
@@ -5373,7 +5397,7 @@ export class WorkspaceMutationCoordinatorRegistry {
     workspaceRoot: string,
     toolName: string,
   ): WorkspaceReadToolOperation {
-    const root = canonicalizePathSync(workspaceRoot);
+    const root = this.#canonicalize(workspaceRoot);
     const requiresStrictCandidateReads = this.hasProtectedEditorAuthority(root);
     const token: WorkspaceToolOperationToken = {
       tokenId: randomUUID(),
@@ -5397,7 +5421,7 @@ export class WorkspaceMutationCoordinatorRegistry {
   }
 
   hasProtectedEditorAuthority(path: string): boolean {
-    const target = canonicalizePathSync(path);
+    const target = this.#canonicalize(path);
     this.#hydratePersistedCoordinatorsOverlapping(target);
     return [...this.#coordinators.values()].some(
       (coordinator) =>
@@ -5416,7 +5440,7 @@ export class WorkspaceMutationCoordinatorRegistry {
 
   #hydratePersistedCoordinatorsOverlapping(target: string): void {
     this.#hydratePersistedCoordinatorForPath(target);
-    const agencHome = resolve(this.#options.agencHome);
+    const agencHome = resolve(this.#storageHome);
     const previousFailure =
       this.#persistedWorkspaceRootScanFailures.get(agencHome);
     if (previousFailure !== undefined) {
@@ -5426,7 +5450,7 @@ export class WorkspaceMutationCoordinatorRegistry {
     let persistedRoots = this.#persistedWorkspaceRootsByHome.get(agencHome);
     if (persistedRoots === undefined) {
       try {
-        persistedRoots = discoverPersistedWorkspaceRoots(agencHome);
+        persistedRoots = discoverPersistedWorkspaceRoots(agencHome, this.#options.executionPaths);
         this.#persistedWorkspaceRootsByHome.set(agencHome, persistedRoots);
       } catch (error) {
         const failure = persistedWorkspaceAuthorityFailure(error);
@@ -5451,6 +5475,7 @@ export class WorkspaceMutationCoordinatorRegistry {
           const refreshed = inspectPersistedWorkspaceRoot(
             directory,
             discovered.directoryName,
+            this.#options.executionPaths,
           );
           if (refreshed === null) {
             persistedRoots.splice(index, 1);
@@ -5477,7 +5502,7 @@ export class WorkspaceMutationCoordinatorRegistry {
   }
 
   #hydratePersistedCoordinatorForPath(target: string): void {
-    const agencHome = this.#options.agencHome;
+    const agencHome = this.#storageHome;
     let candidate = target;
     for (;;) {
       const key = createHash("sha256")
@@ -5505,6 +5530,7 @@ export class WorkspaceMutationCoordinatorRegistry {
 }
 
 class WorkspaceChangeLedger {
+  readonly #executionPaths: ExecutionCoordinatorPaths | undefined;
   readonly #workspaceRoot: string;
   readonly #directory: string;
   readonly #ledgerPath: string;
@@ -5514,14 +5540,16 @@ class WorkspaceChangeLedger {
   constructor(input: {
     readonly workspaceRoot: string;
     readonly agencHome: string;
+    readonly executionPaths?: ExecutionCoordinatorPaths;
   }) {
+    this.#executionPaths = input.executionPaths;
     this.#workspaceRoot = input.workspaceRoot;
     const key = createHash("sha256")
       .update(input.workspaceRoot)
       .digest("hex")
       .slice(0, 32);
     this.#directory = join(
-      resolve(input.agencHome),
+      resolve(input.executionPaths?.storageHome(input.agencHome) ?? input.agencHome),
       "workspace-mutations",
       key,
     );
@@ -5569,7 +5597,7 @@ class WorkspaceChangeLedger {
     for (const entry of entries) {
       if (
         entry.workspaceRoot !== this.#workspaceRoot ||
-        persistedWorkspaceChangeLedgerEntry(entry, this.#workspaceRoot) === null
+        persistedWorkspaceChangeLedgerEntry(entry, this.#workspaceRoot, this.#executionPaths) === null
       ) {
         throw new WorkspaceMutationCoordinatorError(
           "MUTATION_AUDIT_FAILED",
@@ -5639,7 +5667,7 @@ class WorkspaceChangeLedger {
     for (const entry of entries) {
       if (
         entry.workspaceRoot !== this.#workspaceRoot ||
-        persistedWorkspaceChangeLedgerEntry(entry, this.#workspaceRoot) === null
+        persistedWorkspaceChangeLedgerEntry(entry, this.#workspaceRoot, this.#executionPaths) === null
       ) {
         throw new WorkspaceMutationCoordinatorError(
           "MUTATION_AUDIT_FAILED",
@@ -5790,6 +5818,7 @@ class WorkspaceChangeLedger {
           const entry = persistedWorkspaceChangeLedgerEntry(
             parsed,
             this.#workspaceRoot,
+            this.#executionPaths,
           );
           if (entry === null) {
             throw new Error(
@@ -6003,7 +6032,7 @@ class WorkspaceMutationCoordinatorAuthority {
   readonly #registries = new Map<string, WorkspaceMutationCoordinatorRegistry>();
 
   #current(): WorkspaceMutationCoordinatorRegistry {
-    return this.forHome(activeWorkspaceMutationHome());
+    return this.forHome(activeWorkspaceMutationHome(), getCanonicalSettingsAuthority()?.executionWorkspace);
   }
 
   /**
@@ -6012,7 +6041,7 @@ class WorkspaceMutationCoordinatorAuthority {
    * continue through the ConfigStore-scoped facade below and converge on the
    * same registry identity.
    */
-  forHome(agencHome: string): WorkspaceMutationCoordinatorRegistry {
+  forHome(agencHome: string, workspace: ExecutionWorkspace | undefined = getCanonicalSettingsAuthority()?.executionWorkspace): WorkspaceMutationCoordinatorRegistry {
     const trimmed = agencHome.trim();
     if (trimmed.length === 0 || !isAbsolute(trimmed)) {
       throw new WorkspaceMutationCoordinatorError(
@@ -6021,12 +6050,18 @@ class WorkspaceMutationCoordinatorAuthority {
       );
     }
     const home = resolve(trimmed);
-    let registry = this.#registries.get(home);
+    const key = workspace ? executionEnvironmentCacheKey(workspace.environment.binding, home) : home;
+    let registry = this.#registries.get(key);
     if (registry === undefined) {
-      registry = new WorkspaceMutationCoordinatorRegistry({ agencHome: home });
-      this.#registries.set(home, registry);
+      registry = new WorkspaceMutationCoordinatorRegistry({ agencHome: home,
+        ...(workspace ? { executionPaths: new ExecutionCoordinatorPaths(workspace) } : {}) });
+      this.#registries.set(key, registry);
     }
     return registry;
+  }
+
+  preparePaths<T>(paths: readonly string[], operation: () => T | Promise<T>): Promise<T> {
+    return this.#current().preparePaths(paths, operation);
   }
 
   getOrCreate(workspaceRoot: string): WorkspaceMutationCoordinator {
@@ -6285,6 +6320,7 @@ function workspaceChangeLedgerEntriesSemanticallyEqual(
 function persistedWorkspaceChangeLedgerEntry(
   value: unknown,
   workspaceRoot: string,
+  executionPaths?: ExecutionCoordinatorPaths,
 ): WorkspaceChangeLedgerEntry | null {
   const topologyEntry = isRecord(value) && value.kind === "topology";
   if (
@@ -6323,7 +6359,7 @@ function persistedWorkspaceChangeLedgerEntry(
   let persistedWorkspaceRoot: string;
   let path: string;
   try {
-    persistedWorkspaceRoot = canonicalizePathSync(value.workspaceRoot);
+    persistedWorkspaceRoot = executionPaths?.identity(value.workspaceRoot) ?? canonicalizePathSync(value.workspaceRoot);
     const persistedRootSpelling = normalizePathIdentity(
       resolve(value.workspaceRoot),
     );
@@ -6835,6 +6871,17 @@ export async function canonicalWorkspaceRoot(path: string): Promise<string> {
       "INVALID_WORKSPACE",
       "workspaceRoot must be absolute",
     );
+  }
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+  if (workspace) {
+    const authority = captureExecutionPermissionAuthority(workspace);
+    const evidence = await resolveExecutionPermissionPath(workspace.environment, path,
+      { cwd: workspace.projectRoot, homePath: workspace.homePath });
+    authority.assertCurrent();
+    if (!evidence.description || (BigInt(evidence.description.identity.mode) & 0o170000n) !== 0o040000n) {
+      throw new WorkspaceMutationCoordinatorError("INVALID_WORKSPACE", "workspaceRoot must be a directory");
+    }
+    return evidence.canonicalPath;
   }
   const resolved = resolve(path);
   try {

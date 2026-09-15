@@ -31,7 +31,8 @@ const requiredRuntimeAssetPaths = [
   "dist/yolo-classifier-prompts/auto_mode_system_prompt.txt",
   "dist/yolo-classifier-prompts/permissions_anthropic.txt",
   "dist/yolo-classifier-prompts/permissions_external.txt",
-  ...(process.platform === "linux" ? ["dist/agenc-secret-service-helper"] : []),
+  ...(process.platform === "linux" ? ["dist/agenc-secret-service-helper", "dist/agenc-filesystem-worker", "dist/agenc-task-launcher",
+    "dist/execution-host/supervisor.py", "dist/execution-host/runtime_adapter.py"] : []),
   ...(process.platform === "darwin" ? ["dist/agenc-keychain-helper"] : []),
   ...(process.platform === "win32"
     ? ["dist/agenc-process-job-broker.exe"]

@@ -1674,7 +1674,7 @@ function createMultiAgentV2RuntimeTools(
   const csvAgentJobsRepositories =
     opts.csvAgentJobsRepositories ?? UNCONFIGURED_CSV_AGENT_JOBS_REPOSITORIES;
   const roleWorkspace =
-    opts.roleCatalog?.workspace ?? createAgentRoleWorkspace(opts.workspaceRoot);
+    opts.roleCatalog?.workspace ?? opts.getSession()?.roleWorkspace ?? createAgentRoleWorkspace(opts.workspaceRoot);
 
   const emit = (
     session: Session,

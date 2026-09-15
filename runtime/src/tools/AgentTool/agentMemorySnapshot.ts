@@ -1,3 +1,6 @@
+import { getCanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
+import { readScopedExecutionText } from '../../execution/scoped-content.js'
+import { ExecutionEnvironmentError } from '../../execution/types.js'
 import { constants } from 'fs'
 import {
   lstat,
@@ -76,6 +79,9 @@ export function getSnapshotDirForAgent(
 }
 
 function ensureSnapshotDirForAgent(agentType: string, cwd: string): string {
+  if (getCanonicalSettingsAuthority()?.executionWorkspace) {
+    throw new ExecutionEnvironmentError('environment_not_ready', 'Task snapshots require protected asynchronous mutation', false)
+  }
   const parentDir = join(cwd, '.agenc', SNAPSHOT_BASE)
   const directory = migrateLegacyAgentScopedDirectory(
     parentDir,
@@ -518,6 +524,12 @@ export async function checkAgentMemorySnapshot(
   action: 'none' | 'initialize' | 'prompt-update'
   snapshotTimestamp?: string
 }> {
+  const environment = getCanonicalSettingsAuthority()?.executionWorkspace?.environment
+  if (environment) {
+    const snapshot = await readScopedExecutionText(environment, cwd, join(getSnapshotDirForAgent(agentType, cwd), SNAPSHOT_JSON))
+    if (snapshot === null) return { action: 'none' }
+    throw new ExecutionEnvironmentError('environment_not_ready', 'Task memory snapshot synchronization requires admitted protected mutations', false)
+  }
   const snapshotDir = ensureSnapshotDirForAgent(agentType, cwd)
   const snapshotMeta = await readJsonFile(
     join(snapshotDir, SNAPSHOT_JSON),
@@ -571,6 +583,7 @@ export async function initializeFromSnapshot(
   snapshotTimestamp: string,
   cwd: string = getCwd(),
 ): Promise<void> {
+  assertSnapshotMutationSupported()
   logForDebugging(
     `Initializing agent memory for ${agentType} from project snapshot`,
   )
@@ -587,6 +600,7 @@ export async function replaceFromSnapshot(
   snapshotTimestamp: string,
   cwd: string = getCwd(),
 ): Promise<void> {
+  assertSnapshotMutationSupported()
   logForDebugging(
     `Replacing agent memory for ${agentType} with project snapshot`,
   )
@@ -619,5 +633,12 @@ export async function markSnapshotSynced(
   snapshotTimestamp: string,
   cwd: string = getCwd(),
 ): Promise<void> {
+  assertSnapshotMutationSupported()
   await saveSyncedMeta(agentType, scope, snapshotTimestamp, cwd)
+}
+
+function assertSnapshotMutationSupported(): void {
+  if (getCanonicalSettingsAuthority()?.executionWorkspace) {
+    throw new ExecutionEnvironmentError('environment_not_ready', 'Task memory snapshot synchronization requires admitted protected mutations', false)
+  }
 }

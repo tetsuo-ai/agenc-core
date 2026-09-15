@@ -255,6 +255,17 @@ describe('teammate role workspace preflight', () => {
     ).toThrow('does not match role workspace')
   })
 
+  it('inherits container binding for in-process teammates and rejects host panes', () => {
+    const parentWorkspace = createAgentRoleWorkspace('/app', {
+      kind: 'docker', containerId: 'a'.repeat(64), generation: 'b'.repeat(64), processHandleNamespace: 'c'.repeat(32),
+    })
+    const options = { parentWorkspace, suppliedWorkspaceId: parentWorkspace.id,
+      suppliedWorkspaceCwd: '/app', catalogWorkspaceId: parentWorkspace.id, executionCwd: '/app', inProcess: true }
+    expect(() => assertTeammateSpawnRoleWorkspace(options)).not.toThrow()
+    expect(() => assertTeammateSpawnRoleWorkspace({ ...options, inProcess: false })).toThrow()
+    expect(() => assertTeammateSpawnRoleWorkspace({ ...options, suppliedWorkspaceId: '/app' })).toThrow()
+  })
+
   it('allows in-process execution to inherit the validated parent authority', () => {
     expect(() =>
       assertTeammateSpawnRoleWorkspace({

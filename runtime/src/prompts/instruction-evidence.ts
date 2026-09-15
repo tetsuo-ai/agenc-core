@@ -1,6 +1,7 @@
 /** Durable, content-free provenance for one model instruction envelope. */
 
 import type { InstructionTier } from "./agenc-md.js";
+import type { ExecutionEnvironmentBinding } from "../execution/types.js";
 
 export type LiveInstructionPolicy =
   | "workspace_agent"
@@ -18,6 +19,7 @@ export const LIVE_INSTRUCTION_PRECEDENCE = [
 ] as const;
 
 export interface RunInstructionSourceEvidence {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   /** File/rule tier. Higher numeric precedence wins guidance conflicts. */
   readonly tier: InstructionTier;
   /** Canonical accepted source path. Content is deliberately not persisted. */

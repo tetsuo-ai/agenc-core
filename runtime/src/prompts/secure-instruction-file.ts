@@ -7,11 +7,13 @@
  * project instructions, rules, and recursive includes.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { normalizeExternalText } from "./_deps/file-read.js";
+import { instructionFilesystem, instructionFilesystemErrorCode, type InstructionExecutionEnvironment,
+  type InstructionFileStat, type InstructionFilesystem, type InstructionFileHandle } from "./instruction-filesystem.js";
+import { readExecutionEnvironmentBinding } from "../execution/binding.js";
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey, type ExecutionEnvironmentBinding } from "../execution/types.js";
 
 /**
  * Hard ceiling for a single secure instruction file (5 MiB).
@@ -54,6 +56,7 @@ export interface InstructionFileIdentity {
 }
 
 export interface InstructionFileSnapshot {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly sourceClass: InstructionSourceClass;
   readonly workspaceRoot: string;
   readonly boundaryRoot: string;
@@ -82,6 +85,7 @@ export type InstructionReadResult =
   | InstructionReadFailure;
 
 export interface ExactExternalInstructionApprovalRequest {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly workspaceRoot: string;
   readonly includingSource: string;
   readonly includingSourceSha256: string;
@@ -98,6 +102,7 @@ export interface ExactExternalInstructionApproval
 }
 
 export interface ExternalInstructionApprovalAuditEvent {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly action: "granted" | "used" | "revoked" | "expired";
   readonly approvalId: string;
   readonly at: string;
@@ -131,6 +136,7 @@ export class ExternalInstructionApprovalStore {
     const targetIdentity = Object.freeze({ ...request.targetIdentity });
     const approval: ExactExternalInstructionApproval = Object.freeze({
       ...request,
+      ...(request.executionBinding === undefined ? {} : { executionBinding: readExecutionEnvironmentBinding(request.executionBinding) }),
       workspaceRoot: resolve(request.workspaceRoot),
       includingSource: resolve(request.includingSource),
       includingSourceSha256: request.includingSourceSha256,
@@ -157,6 +163,7 @@ export class ExternalInstructionApprovalStore {
   }
 
   findExact(input: {
+    readonly executionBinding?: ExecutionEnvironmentBinding;
     readonly workspaceRoot: string;
     readonly includingSource: string;
     readonly includingSourceSha256: string;
@@ -169,6 +176,8 @@ export class ExternalInstructionApprovalStore {
     let expired = false;
     for (const approval of this.#approvals.values()) {
       if (
+        executionEnvironmentCacheKey(approval.executionBinding ?? { kind: "local" }, "") !==
+          executionEnvironmentCacheKey(input.executionBinding ?? { kind: "local" }, "") ||
         approval.workspaceRoot !== workspaceRoot ||
         approval.includingSource !== includingSource ||
         approval.includingSourceSha256 !== input.includingSourceSha256 ||
@@ -202,6 +211,7 @@ export class ExternalInstructionApprovalStore {
     approval: ExactExternalInstructionApproval,
   ): void {
     this.#audit.push({
+      ...(approval.executionBinding === undefined ? {} : { executionBinding: approval.executionBinding }),
       action,
       approvalId: approval.id,
       at: new Date().toISOString(),
@@ -217,6 +227,7 @@ export class ExternalInstructionApprovalStore {
 }
 
 export interface ReadInstructionFileOptions {
+  readonly executionEnvironment?: InstructionExecutionEnvironment;
   readonly requestedPath: string;
   readonly boundaryRoot: string;
   readonly workspaceRoot: string;
@@ -237,7 +248,7 @@ function isSameOrChild(parent: string, candidate: string): boolean {
     (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-function identity(stats: BigIntStats): InstructionFileIdentity {
+function identity(stats: InstructionFileStat): InstructionFileIdentity {
   return {
     dev: stats.dev,
     ino: stats.ino,
@@ -300,58 +311,46 @@ function failure(
 async function hasSymlinkBelowBoundary(
   lexicalBoundary: string,
   lexicalCandidate: string,
+  filesystem: InstructionFilesystem,
 ): Promise<boolean> {
   const rel = relative(lexicalBoundary, lexicalCandidate);
-  if (rel === "") return (await lstat(lexicalCandidate)).isSymbolicLink();
+  if (rel === "") return (await filesystem.lstat(lexicalCandidate)).isSymbolicLink();
   let cursor = lexicalBoundary;
   for (const component of rel.split(sep)) {
     if (component.length === 0 || component === ".") continue;
     cursor = resolve(cursor, component);
-    if ((await lstat(cursor)).isSymbolicLink()) return true;
+    if ((await filesystem.lstat(cursor)).isSymbolicLink()) return true;
   }
   return false;
-}
-
-async function readAllBounded(
-  handle: Awaited<ReturnType<typeof open>>,
-  maximumBytes: number,
-): Promise<Uint8Array | null> {
-  const buffer = Buffer.allocUnsafe(maximumBytes + 1);
-  let offset = 0;
-  while (offset < buffer.length) {
-    const { bytesRead } = await handle.read(
-      buffer,
-      offset,
-      buffer.length - offset,
-      offset,
-    );
-    if (bytesRead === 0) break;
-    offset += bytesRead;
-  }
-  return offset > maximumBytes ? null : buffer.subarray(0, offset);
 }
 
 /** Read one stable, regular, single-link instruction object exactly once. */
 export async function readInstructionFileSnapshot(
   opts: ReadInstructionFileOptions,
 ): Promise<InstructionReadResult> {
+  const filesystem = instructionFilesystem(opts.executionEnvironment);
+  const executionBinding = opts.executionEnvironment === undefined ? undefined : readExecutionEnvironmentBinding(opts.executionEnvironment.binding);
+  if (executionBinding !== undefined && [opts.requestedPath, opts.boundaryRoot, opts.workspaceRoot].some((path) => !isAbsolute(path))) {
+    throw new TypeError("Selected task instruction paths must be absolute");
+  }
   const requestedPath = resolve(opts.requestedPath);
   const lexicalBoundary = resolve(opts.boundaryRoot);
   const workspaceRoot = resolve(opts.workspaceRoot);
   let canonicalBoundary: string;
   try {
-    canonicalBoundary = await realpath(lexicalBoundary);
-  } catch {
+    canonicalBoundary = await filesystem.realpath(lexicalBoundary);
+  } catch (error) {
+    instructionFilesystemErrorCode(error);
     return failure(opts, "boundary_unavailable", false);
   }
 
   let canonicalPath: string;
-  let pathBefore: BigIntStats;
+  let pathBefore: InstructionFileStat;
   try {
-    pathBefore = await lstat(requestedPath, { bigint: true });
-    canonicalPath = await realpath(requestedPath);
+    pathBefore = await filesystem.lstat(requestedPath);
+    canonicalPath = await filesystem.realpath(requestedPath);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
+    const code = instructionFilesystemErrorCode(error);
     return failure(opts, code === "ENOENT" ? "not_found" : "read_error", false);
   }
 
@@ -377,6 +376,7 @@ export async function readInstructionFileSnapshot(
       );
     }
     const match = opts.externalApprovals.findExact({
+      executionBinding,
       workspaceRoot,
       includingSource,
       includingSourceSha256,
@@ -398,11 +398,12 @@ export async function readInstructionFileSnapshot(
   try {
     if (
       pathBefore.isSymbolicLink() ||
-      (!external && (await hasSymlinkBelowBoundary(lexicalBoundary, requestedPath)))
+      (!external && (await hasSymlinkBelowBoundary(lexicalBoundary, requestedPath, filesystem)))
     ) {
       return failure(opts, "symlink", external, canonicalPath);
     }
-  } catch {
+  } catch (error) {
+    instructionFilesystemErrorCode(error);
     return failure(opts, "unstable", external, canonicalPath);
   }
   if (!pathBefore.isFile()) {
@@ -416,16 +417,14 @@ export async function readInstructionFileSnapshot(
   }
 
   await opts.beforeOpenForTesting?.(requestedPath);
-  const noFollow = process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
   // A regular file can be swapped for a FIFO between lstat and open. POSIX
   // O_NONBLOCK prevents that open from hanging; the opened-handle fstat below
   // then rejects every non-regular replacement. It is a no-op for regular files.
-  const nonBlock = process.platform === "win32" ? 0 : (constants.O_NONBLOCK ?? 0);
-  let handle: Awaited<ReturnType<typeof open>>;
+  let handle: InstructionFileHandle;
   try {
-    handle = await open(requestedPath, constants.O_RDONLY | noFollow | nonBlock);
+    handle = await filesystem.open(requestedPath);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
+    const code = instructionFilesystemErrorCode(error);
     return failure(
       opts,
       code === "ELOOP" ? "symlink" : code === "ENOENT" ? "unstable" : "read_error",
@@ -435,7 +434,7 @@ export async function readInstructionFileSnapshot(
   }
 
   try {
-    const opened = await handle.stat({ bigint: true });
+    const opened = await handle.stat();
     const beforeIdentity = identity(pathBefore);
     const openedIdentity = identity(opened);
     if (
@@ -450,6 +449,7 @@ export async function readInstructionFileSnapshot(
       const includingSource = opts.includedBy!;
       const includingSourceSha256 = opts.includedBySha256!;
       const match = opts.externalApprovals!.findExact({
+        executionBinding,
         workspaceRoot,
         includingSource,
         includingSourceSha256,
@@ -471,19 +471,20 @@ export async function readInstructionFileSnapshot(
       approval = match.approval;
       opts.externalApprovals!.recordUse(approval);
     }
-    const bytes = await readAllBounded(handle, opts.maximumBytes);
+    const bytes = await handle.readBounded(opts.maximumBytes);
     if (bytes === null) {
       return failure(opts, "too_large", external, canonicalPath);
     }
-    const afterOpened = await handle.stat({ bigint: true });
-    let afterPath: BigIntStats;
+    const afterOpened = await handle.stat();
+    let afterPath: InstructionFileStat;
     let afterCanonical: string;
     try {
       [afterPath, afterCanonical] = await Promise.all([
-        lstat(requestedPath, { bigint: true }),
-        realpath(requestedPath),
+        filesystem.lstat(requestedPath),
+        filesystem.realpath(requestedPath),
       ]);
-    } catch {
+    } catch (error) {
+      instructionFilesystemErrorCode(error);
       return failure(opts, "unstable", external, canonicalPath);
     }
     if (
@@ -506,6 +507,7 @@ export async function readInstructionFileSnapshot(
     return {
       ok: true,
       snapshot: {
+        ...(executionBinding === undefined ? {} : { executionBinding }),
         sourceClass: opts.sourceClass,
         workspaceRoot,
         boundaryRoot: canonicalBoundary,
@@ -519,6 +521,10 @@ export async function readInstructionFileSnapshot(
         ...(approval !== undefined ? { externalApprovalId: approval.id } : {}),
       },
     };
+  } catch (error) {
+    if (!(error instanceof ExecutionEnvironmentError)) throw error;
+    const code = instructionFilesystemErrorCode(error);
+    return failure(opts, code === "ESTALE" || code === "ENOENT" ? "unstable" : "read_error", external, canonicalPath);
   } finally {
     await handle.close();
   }

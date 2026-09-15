@@ -40,7 +40,7 @@ describe("apply_patch tool", () => {
     );
   });
 
-  test("denies (fail-closed) on an unparseable patch in checkPermissions", () => {
+  test("denies (fail-closed) on an unparseable patch in checkPermissions", async () => {
     // SECURITY (audit #2): a malformed patch must NOT fail open. The
     // previous `behavior: "allow"` let unparseable input skip the
     // per-target path-permission check entirely.
@@ -51,7 +51,7 @@ describe("apply_patch tool", () => {
       }),
     } as unknown as Parameters<NonNullable<typeof tool.checkPermissions>>[1];
 
-    const decision = tool.checkPermissions!(
+    const decision = await tool.checkPermissions!(
       { input: "this is not a valid apply_patch payload" },
       context,
     );
@@ -62,7 +62,7 @@ describe("apply_patch tool", () => {
     }
   });
 
-  test("checkPermissions ignores model-supplied __agencSessionAllowedRoots", () => {
+  test("checkPermissions ignores model-supplied __agencSessionAllowedRoots", async () => {
     // SECURITY (audit #1/#4): apply_patch must check writes against the
     // TRUSTED closure roots only. A model-supplied
     // `__agencSessionAllowedRoots:["/"]` must not widen the permitted
@@ -74,7 +74,7 @@ describe("apply_patch tool", () => {
       }),
     } as unknown as Parameters<NonNullable<typeof tool.checkPermissions>>[1];
 
-    const decision = tool.checkPermissions!(
+    const decision = await tool.checkPermissions!(
       {
         input: `*** Begin Patch
 *** Add File: /etc/agenc-escape.txt
@@ -86,7 +86,7 @@ describe("apply_patch tool", () => {
     );
 
     // The model-supplied root must not have made /etc writable.
-    expect(decision.behavior).not.toBe("allow");
+    expect(decision.behavior).toBe("ask");
   });
 
   describe("failures before any file is touched are confirmed no-effect", () => {

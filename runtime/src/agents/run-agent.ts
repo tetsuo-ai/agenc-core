@@ -2954,7 +2954,15 @@ function cloneSessionConfiguration(
         agentNickname: live.nickname,
         agentRole: live.role.name,
         ...(live.metadata.agentRoleWorkspaceId !== undefined
-          ? { agentRoleWorkspaceId: live.metadata.agentRoleWorkspaceId }
+          ? {
+              agentRoleWorkspaceId: live.metadata.agentRoleWorkspaceId,
+              ...(parent.roleWorkspace.executionBinding !== undefined
+                ? {
+                    agentRoleWorkspaceCwd: parent.roleWorkspace.cwd,
+                    agentRoleWorkspaceExecutionBinding: parent.roleWorkspace.executionBinding,
+                  }
+                : {}),
+            }
           : {}),
         ...(live.metadata.agentRoleFingerprint !== undefined
           ? { agentRoleFingerprint: live.metadata.agentRoleFingerprint }

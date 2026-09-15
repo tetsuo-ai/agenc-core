@@ -4,6 +4,7 @@ import {
   listAgentRoles,
 } from "./role.js";
 import { agentDefinitionFingerprint } from "./agent-definition-fingerprint.js";
+import { normalizeAgentRoleWorkspace, type AgentRoleWorkspace } from "./role-workspace.js";
 
 export type AgentRoleDefinition = {
   agentType: string;
@@ -20,6 +21,7 @@ export type AgentRoleDefinition = {
     | "policySettings";
   baseDir: "built-in" | "workspace-role";
   agentRoleFingerprint: string;
+  executionBinding?: AgentRole["executionBinding"];
   getSystemPrompt: () => string;
 };
 
@@ -46,6 +48,7 @@ function projectAgentRole(role: AgentRole): AgentRoleDefinition {
     baseDir:
       source === "built-in" ? "built-in" as const : "workspace-role" as const,
     getSystemPrompt: () => systemPrompt,
+    ...(role.executionBinding !== undefined ? { executionBinding: role.executionBinding } : {}),
     ...(tools !== undefined ? { tools } : {}),
     ...(role.config.disallowlist
       ? { disallowedTools: Array.from(role.config.disallowlist) }
@@ -62,7 +65,10 @@ function projectAgentRole(role: AgentRole): AgentRoleDefinition {
 }
 
 export function listAgentRoleDefinitions(
-  cwd: string,
+  workspace: string | AgentRoleWorkspace,
 ): readonly AgentRoleDefinition[] {
-  return listAgentRoles(createAgentRoleWorkspace(cwd)).map(projectAgentRole);
+  const normalized = typeof workspace === "string"
+    ? createAgentRoleWorkspace(workspace)
+    : normalizeAgentRoleWorkspace(workspace);
+  return listAgentRoles(normalized).map(projectAgentRole);
 }

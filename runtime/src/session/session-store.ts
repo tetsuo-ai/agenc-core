@@ -46,6 +46,8 @@
  * @module
  */
 
+import { assertSameExecutionEnvironment, executionEnvironmentFromSessionMeta, LOCAL_EXECUTION_ENVIRONMENT, readExecutionEnvironmentBinding } from "../execution/binding.js";
+
 import {
   accessSync,
   closeSync,
@@ -67,7 +69,7 @@ import {
   writeSync,
   unlinkSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { DEFAULT_SESSION_ROOT_MARKERS, findProjectRootSync } from "../workspace/project-root.js";
 import { timed } from "../utils/slow-store-op.js";
 import {
   basename,
@@ -76,7 +78,6 @@ import {
   join,
   relative,
   resolve,
-  sep,
 } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { projectStorageKey } from "../utils/project-storage-key.js";
@@ -252,89 +253,8 @@ export function getAgencHomeDir(agencHome?: string): string {
     : resolveHomeContext({ AGENC_HOME: agencHome }).path;
 }
 
-/**
- * Default project-root markers scanned synchronously when the caller
- * does not pass an explicit list. Mirrors `DEFAULT_PROJECT_ROOT_MARKERS`
- * in `prompts/project-instructions.ts`; duplicated here to keep the
- * session-store module sync-only (no fs/promises import) and free of
- * cross-module churn during T10.
- */
-export const DEFAULT_SESSION_ROOT_MARKERS: readonly string[] = [
-  ".git",
-  "package.json",
-  "Cargo.toml",
-  "pyproject.toml",
-  "go.mod",
-  ".hg",
-];
-
-export interface ProjectRootSearchOptions {
-  /**
-   * Exclusive ancestor boundary for marker discovery. When `cwd` is a strict
-   * descendant of this directory, markers in the boundary itself (and above
-   * it) are ignored. This prevents a workspace beneath the platform home from
-   * inheriting an unrelated home-level package manifest or VCS checkout.
-   */
-  readonly stopBefore?: string;
-}
-
-function projectRootStopBefore(
-  cwd: string,
-  requestedBoundary: string,
-): string | undefined {
-  const start = resolve(cwd);
-  const boundary = resolve(requestedBoundary);
-  const fromBoundary = relative(boundary, start);
-  if (
-    fromBoundary === "" ||
-    fromBoundary === ".." ||
-    fromBoundary.startsWith(`..${sep}`) ||
-    isAbsolute(fromBoundary)
-  ) {
-    return undefined;
-  }
-  return boundary;
-}
-
-/**
- * Synchronous ancestor walk to the nearest directory that contains one
- * of the configured project-root markers. Returns `null` when no marker
- * is found before reaching the filesystem root. By default, a workspace
- * strictly beneath the platform home does not inspect the home directory
- * itself; callers with an injected platform home can pass the same boundary
- * explicitly.
- *
- * Kept sync (unlike `findProjectRoot` in `prompts/project-instructions.ts`)
- * because `getProjectDir` and the SessionStore constructor are called
- * from synchronous init paths that cannot await. The two implementations
- * stay behaviourally equivalent: same markers list, same short-circuit
- * "first marker in first ancestor" semantics.
- */
-export function findProjectRootSync(
-  cwd: string,
-  markers: readonly string[] = DEFAULT_SESSION_ROOT_MARKERS,
-  options: ProjectRootSearchOptions = {},
-): { rootDir: string; marker: string } | null {
-  if (markers.length === 0) return null;
-  const stopBefore = projectRootStopBefore(
-    cwd,
-    options.stopBefore ?? homedir(),
-  );
-  let currentDir = cwd;
-  while (true) {
-    if (stopBefore !== undefined && resolve(currentDir) === stopBefore) {
-      return null;
-    }
-    for (const marker of markers) {
-      if (existsSync(join(currentDir, marker))) {
-        return { rootDir: currentDir, marker };
-      }
-    }
-    const parent = dirname(currentDir);
-    if (parent === currentDir) return null;
-    currentDir = parent;
-  }
-}
+/** Compatibility exports; configuration loading does not import journal code. */
+export { DEFAULT_SESSION_ROOT_MARKERS, findProjectRootSync, type ProjectRootSearchOptions } from "../workspace/project-root.js";
 
 /**
  * Resolve the slug directory for a working directory. When a project
@@ -451,6 +371,7 @@ export function readAndValidateSchemaVersionFd(
     meta.rolloutSchemaVersion,
     ROLLOUT_SCHEMA_VERSION,
   );
+  executionEnvironmentFromSessionMeta(meta);
   return meta;
 }
 
@@ -1676,10 +1597,15 @@ export class SessionStore {
           resumeHandle === undefined
             ? readAndValidateSchemaVersion(this.rolloutPath)
             : readAndValidateSchemaVersionFd(resumeHandle.fd);
+        if (existingMeta !== null) {
+          assertSameExecutionEnvironment(executionEnvironmentFromSessionMeta(existingMeta),
+            readExecutionEnvironmentBinding(meta.executionEnvironment ?? LOCAL_EXECUTION_ENVIRONMENT));
+        }
         if (
           existingMeta === null ||
           existingMeta.sessionId !== this.sessionId ||
-          !sessionCwdMatches(existingMeta.cwd, this.cwd)
+          !(executionEnvironmentFromSessionMeta(existingMeta).kind === "docker"
+            ? existingMeta.cwd === this.cwd : sessionCwdMatches(existingMeta.cwd, this.cwd))
         ) {
           throw new Error(
             "resume rollout source does not match the requested session id and cwd",
@@ -1778,11 +1704,13 @@ export class SessionStore {
         }
       } else {
         // Fresh file — write session_meta.
-        const canonicalCwd = resolveCanonicalSessionCwd(meta.cwd);
+        const executionEnvironment = readExecutionEnvironmentBinding(meta.executionEnvironment ?? LOCAL_EXECUTION_ENVIRONMENT);
+        const canonicalCwd = executionEnvironment.kind === "local" ? resolveCanonicalSessionCwd(meta.cwd) : undefined;
         const sessionMeta: SessionMetaLine = {
           ...meta,
-          ...(canonicalCwd.kind === "ok" ? { cwd: canonicalCwd.cwd } : {}),
+          ...(canonicalCwd?.kind === "ok" ? { cwd: canonicalCwd.cwd } : {}),
           rolloutSchemaVersion: ROLLOUT_SCHEMA_VERSION,
+          executionEnvironment,
         };
         const item: RolloutItem = {
           type: "session_meta",
@@ -1932,6 +1860,7 @@ export class SessionStore {
    */
   append(event: Event, opts: AppendOptions = {}): boolean {
     if (!this.opened || this.closed) return false;
+    this.assertItemExecutionEnvironment({ type: "event_msg", payload: event });
     this.lastBoundReadProof = undefined;
     // I-27: seq monotonicity check. Caller assigns via EventLog; we
     // just verify.
@@ -2021,12 +1950,25 @@ export class SessionStore {
       }
       return;
     }
+    this.assertItemExecutionEnvironment(item);
     if (this.batchOpenedAtMs === null) {
       this.batchOpenedAtMs = monotonicMs();
     }
     this.pending.push(item);
     if (durable && !this.flushBatch(true)) {
       throw new Error("durable rollout item was not fsync-committed");
+    }
+  }
+
+  private assertItemExecutionEnvironment(item: RolloutItem): void {
+    if (this.lastSessionMeta === null) throw new Error("Session execution identity is unavailable");
+    if (item.type === "session_meta" || (item.type === "event_msg" && item.payload.msg.type === "session_meta")) {
+      const meta = item.type === "session_meta" ? item.payload : item.payload.msg.payload as SessionMetaLine;
+      assertSameExecutionEnvironment(executionEnvironmentFromSessionMeta(meta), executionEnvironmentFromSessionMeta(this.lastSessionMeta));
+    } else if (item.type === "event_msg" && item.payload.msg.type === "turn_checkpoint") {
+      const checkpoint = item.payload.msg.payload;
+      assertSameExecutionEnvironment(checkpoint.checkpointVersion === 5 ? checkpoint.executionEnvironment : LOCAL_EXECUTION_ENVIRONMENT,
+        executionEnvironmentFromSessionMeta(this.lastSessionMeta));
     }
   }
 
@@ -2841,6 +2783,7 @@ export class SessionStore {
       const item = items[index];
       const line = lines[index];
       if (item === undefined || line === undefined) continue;
+      this.assertItemExecutionEnvironment(item);
       if (item.type === "event_msg" && item.payload.seq !== undefined) {
         nextOffsetsBySeq.set(item.payload.seq, offset);
         nextLastSeq = Math.max(nextLastSeq, item.payload.seq);
@@ -3199,6 +3142,7 @@ export class SessionStore {
       payload: {
         ...header.payload,
         rolloutSchemaVersion: targetVersion,
+        ...(targetVersion >= 6 ? { executionEnvironment: executionEnvironmentFromSessionMeta(header.payload) } : {}),
       },
     };
     // Legacy upgrades are one-time migrations. Keep the common current-schema

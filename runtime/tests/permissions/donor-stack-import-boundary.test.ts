@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { preProcessFile } from "typescript";
 
 import { describe, expect, it } from "vitest";
 
@@ -87,10 +89,21 @@ function currentDonorImporters(): string[] {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.endsWith(".test.ts"))
+    .filter((file) => importsDonor(readFileSync(resolve(SRC_DIR, file), "utf8")))
     .sort();
 }
 
+function importsDonor(source: string): boolean {
+  return preProcessFile(source).importedFiles.some(({ fileName }) => fileName.includes("utils/permissions/"));
+}
+
 describe("utils/permissions compatibility import boundary", () => {
+  it("distinguishes documentation references from imports and re-exports", () => {
+    expect(importsDonor('/** See utils/permissions/filesystem.ts */')).toBe(false);
+    expect(importsDonor('import { check } from "../utils/permissions/filesystem.js"')).toBe(true);
+    expect(importsDonor('export { check } from "../utils/permissions/filesystem.js"')).toBe(true);
+    expect(importsDonor('const check = import("../utils/permissions/filesystem.js")')).toBe(true);
+  });
   it("gains no new importers (the donor stack may only shrink)", () => {
     const current = currentDonorImporters();
     const baseline = new Set<string>(BASELINE);

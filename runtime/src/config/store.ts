@@ -8,8 +8,11 @@
 // integration constructs one; SIGUSR1 → reload() wiring lives in T10-I.
 
 import { dirname, resolve } from "node:path";
+import { prepareExecutionWorkspace, type ExecutionWorkspace } from "../execution/workspace.js";
+import { ExecutionEnvironmentError } from "../execution/types.js";
 
 import type { AgenCConfig } from "./schema.js";
+import { configWorkspaceCwd, type ConfigWorkspaceFilesystem } from "./workspace-filesystem.js";
 import { defaultConfig } from "./schema.js";
 import type { EnvSnapshot } from "./env.js";
 import { applyEnvOverrides } from "./env.js";
@@ -86,6 +89,7 @@ export interface PreparedConfigStoreReload {
 }
 
 export interface ConfigStoreOptions {
+  readonly workspaceFilesystem?: ConfigWorkspaceFilesystem;
   /** Override AgenC home (defaults to env-resolved path). */
   readonly home?: string;
   /** Base config (defaults to `defaultConfig()`). */
@@ -120,6 +124,7 @@ export interface ConfigStoreOptions {
 }
 
 interface ConfigStoreState {
+  readonly executionWorkspace?: ExecutionWorkspace;
   readonly snapshot: AgenCConfig;
   readonly warnings: readonly string[];
   readonly provenance: Readonly<Record<string, ConfigProvenanceEntry>>;
@@ -141,11 +146,16 @@ export class ConfigStore {
   private reloadTail: Promise<void> = Promise.resolve();
   private reloadGeneration = 0;
   private resolvedProjectRoot: string;
+  private resolvedExecutionWorkspace?: ExecutionWorkspace;
   private readonly resolvedHomeContext: HomeContext;
   private readonly resolvedManagedPaths: ManagedPathContext;
   readonly stateRepository: RuntimeStateRepository;
 
   constructor(opts: ConfigStoreOptions = {}) {
+    if (opts.workspaceFilesystem !== undefined) {
+      configWorkspaceCwd(opts.workspaceFilesystem, opts.cwd);
+      if (opts.loader !== undefined) throw new Error("Selected task configuration cannot use a host loader override");
+    }
     const sourceEnvironment = opts.env ?? process.env;
     this.environment = Object.freeze({
       ...sourceEnvironment,
@@ -222,6 +232,13 @@ export class ConfigStore {
   /** Canonical project root used for project/local layer resolution. */
   get projectRoot(): string {
     return this.resolvedProjectRoot;
+  }
+
+  get executionWorkspace(): ExecutionWorkspace | undefined {
+    if (this.opts.workspaceFilesystem !== undefined && this.resolvedExecutionWorkspace === undefined) {
+      throw new ExecutionEnvironmentError("environment_not_ready", "Task workspace has not completed configuration bootstrap", false);
+    }
+    return this.resolvedExecutionWorkspace;
   }
 
   /** Canonical home resolved from this store's own immutable environment. */
@@ -308,6 +325,7 @@ export class ConfigStore {
 
   private captureState(): ConfigStoreState {
     return {
+      executionWorkspace: this.resolvedExecutionWorkspace,
       snapshot: this.snapshot,
       warnings: this.warningMessages,
       provenance: this.provenanceSnapshot,
@@ -318,6 +336,7 @@ export class ConfigStore {
   }
 
   private applyState(state: ConfigStoreState): void {
+    this.resolvedExecutionWorkspace = state.executionWorkspace;
     this.snapshot = state.snapshot;
     this.warningMessages = [...state.warnings];
     this.provenanceSnapshot = state.provenance;
@@ -385,6 +404,7 @@ export class ConfigStore {
       const env = this.environment;
       const home = this.resolvedHomeContext;
       const repositoryOptions: LayeredConfigRepositoryOptions = {
+        ...(this.opts.workspaceFilesystem === undefined ? {} : { workspaceFilesystem: this.opts.workspaceFilesystem }),
         env,
         home,
         ...(this.opts.cwd !== undefined ? { cwd: this.opts.cwd } : {}),
@@ -415,11 +435,11 @@ export class ConfigStore {
           this.opts.retainUntrustedProjectCommandHooks === true,
       };
       let loaded = await loadLayeredConfig(repositoryOptions);
-      const projectTrusted = this.opts.projectTrusted ?? isProjectTrustedSync({
+      const projectTrusted = this.opts.projectTrusted ?? (this.opts.workspaceFilesystem !== undefined ? false : isProjectTrustedSync({
         agencHome: home.path,
         env: env as NodeJS.ProcessEnv,
         projectRoot: loaded.projectRoot,
-      });
+      }));
       if (projectTrusted && this.opts.projectTrusted === undefined) {
         loaded = await loadLayeredConfig({
           ...repositoryOptions,
@@ -433,6 +453,8 @@ export class ConfigStore {
       projectRoot = loaded.projectRoot;
     }
     const staged: ConfigStoreState = {
+      executionWorkspace: this.opts.workspaceFilesystem === undefined ? undefined : await prepareExecutionWorkspace(
+        this.opts.workspaceFilesystem.executionEnvironment, projectRoot, this.opts.workspaceFilesystem.homePath),
       snapshot: next,
       warnings: warningMessages,
       provenance,
@@ -442,6 +464,7 @@ export class ConfigStore {
     };
     const thisStore = this;
     const authority: ConfigStoreAuthority = Object.freeze({
+      get executionWorkspace() { return staged.executionWorkspace; },
       current: () => staged.snapshot,
       authoritySnapshot: () => Object.freeze({
         config: staged.snapshot,

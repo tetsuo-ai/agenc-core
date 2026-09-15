@@ -41,6 +41,7 @@
  */
 
 import { isWorkflowApprovalSession, workflowApprovalFailureFromMetadata } from "../permissions/approval-failure.js";
+import { assertSameExecutionEnvironment, LOCAL_EXECUTION_ENVIRONMENT } from "../execution/binding.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -323,6 +324,9 @@ export interface RunTurnOptions {
  * and the safe-by-default side-effect policy.
  */
 export interface TurnResumeOptions {
+  /** Missing only for pre-isolation local resume callers. */
+  readonly executionEnvironment?: import("../execution/types.js").ExecutionEnvironmentBinding;
+  readonly executionProcesses?: import("../unified-exec/process-recovery.js").ExecutionProcessRecoveryState;
   readonly turnId: string;
   readonly fromIteration: number;
   readonly fromCheckpointSeq: number;
@@ -1591,6 +1595,19 @@ export async function* runTurnKernel(
   userMessage: string | readonly LLMContentPart[],
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
+  if (opts.resume !== undefined) {
+    assertSameExecutionEnvironment(session.services.unifiedExecManager?.executionEnvironmentBinding ?? LOCAL_EXECUTION_ENVIRONMENT,
+      opts.resume.executionEnvironment ?? LOCAL_EXECUTION_ENVIRONMENT);
+    if (opts.resume.executionEnvironment?.kind === "docker") {
+      const manager = session.services.unifiedExecManager;
+      if (opts.resume.executionProcesses === undefined || manager?.restoreExecutionProcesses === undefined) {
+        throw new Error("Container turn recovery requires its original managed process state");
+      }
+      await manager.restoreExecutionProcesses(opts.resume.executionProcesses);
+    } else if (opts.resume.executionProcesses !== undefined) {
+      throw new Error("Local turn recovery cannot restore container processes");
+    }
+  }
   // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
   // invocation must flank its work with a `turn_started` +
   // `turn_context` pair and either a matching `turn_complete` (happy
@@ -2230,6 +2247,11 @@ async function* runTurnKernelInner(
       durablePrefix,
       durablePrefix.length,
     );
+    const executionEnvironment = session.services.unifiedExecManager?.executionEnvironmentBinding ?? LOCAL_EXECUTION_ENVIRONMENT;
+    const executionProcesses = session.services.unifiedExecManager?.captureExecutionProcesses?.();
+    if (executionEnvironment.kind === "docker" && executionProcesses === undefined) {
+      throw new Error("Container checkpoint requires managed process recovery state");
+    }
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -2242,6 +2264,8 @@ async function* runTurnKernelInner(
           persistedMessageCount: durablePrefix.length,
           prefixHash,
           checkpointVersion: DURABLE_CHECKPOINT_WRITE_VERSION,
+          executionEnvironment,
+          ...(executionProcesses === undefined ? {} : { executionProcesses }),
           toolResultIntegrityVersion: 1,
           prefixHashVersion: 3,
           resumableState: toCheckpointSlice(state),

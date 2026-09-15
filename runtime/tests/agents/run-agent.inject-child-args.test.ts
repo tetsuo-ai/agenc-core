@@ -30,20 +30,25 @@ describe("injectChildToolArgs pins the worktree through each tool's own field", 
     expect(Object.hasOwn(args, "cwd")).toBe(false);
   });
 
-  it("uses cwd for system.bash and apply_patch, and touches nothing else", () => {
+  it("pins file and search tools to the child cwd and leaves process listing without a cwd", () => {
     expect(injectChildToolArgs({ command: "ls" }, "system.bash", opts).cwd).toBe(
       worktree.path,
     );
     expect(injectChildToolArgs({ patch: "" }, "apply_patch", opts).cwd).toBe(
       worktree.path,
     );
-    const other = injectChildToolArgs({ path: "x" }, "FileRead", opts);
+    for (const toolName of ["FileRead", "Write", "Edit", "MultiEdit", "Glob", "Grep"]) {
+      expect(injectChildToolArgs({ path: "x" }, toolName, opts).cwd).toBe(worktree.path);
+      expect(injectChildToolArgs({ cwd: "/explicit" }, toolName, opts).cwd).toBe("/explicit");
+    }
+    const other = injectChildToolArgs({}, "list_processes", opts);
     expect(Object.hasOwn(other, "cwd")).toBe(false);
     expect(Object.hasOwn(other, "workdir")).toBe(false);
     expect(WORKTREE_CWD_FIELD_BY_TOOL).toEqual({
       "system.bash": "cwd",
       exec_command: "workdir",
       apply_patch: "cwd",
+      Glob: "cwd", Grep: "cwd", FileRead: "cwd", Write: "cwd", Edit: "cwd", MultiEdit: "cwd",
     });
   });
 

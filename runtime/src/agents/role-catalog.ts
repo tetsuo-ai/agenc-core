@@ -2,7 +2,7 @@ import type {
   AgentDefinition,
   WorkspaceAgentDefinitionsResult,
 } from "../tools/AgentTool/loadAgentsDir.js";
-import { requireAgentDefinitionRoleFingerprint } from "../tools/AgentTool/loadAgentsDir.js";
+import { requireAgentDefinitionRoleFingerprint, assertAgentDefinitionExecutionBinding, capturedProgrammaticAgentRole } from "../tools/AgentTool/loadAgentsDir.js";
 import {
   agentRoleFingerprint,
   assertAgentRoleWorkspaceMatches,
@@ -77,6 +77,7 @@ export class AgentRoleCatalog {
       );
       for (const candidate of definitions.activeAgents) {
         const definition = requireAgentDefinition(candidate);
+        assertAgentDefinitionExecutionBinding(definition, workspace);
         if (isRepositoryControlledBuiltinOverride(definition)) continue;
         if (entries.has(definition.agentType)) {
           throw new AgentRoleCatalogError(
@@ -91,7 +92,7 @@ export class AgentRoleCatalog {
           ? builtInRoles.get(definition.agentType)
           : definition.source === "flagSettings" &&
               definition.baseDir === "programmatic"
-            ? programmaticRoles.get(definition.agentType)
+            ? capturedProgrammaticAgentRole(definition, workspace) ?? programmaticRoles.get(definition.agentType)
             : undefined;
         const role = directRole ?? roleFromDefinition(definition);
         entries.set(role.name, {
@@ -205,6 +206,7 @@ function roleFromDefinition(definition: AgentDefinition): AgentRole {
   return Object.freeze({
     name: definition.agentType,
     source,
+    ...(definition.executionBinding ? { executionBinding: definition.executionBinding } : {}),
     config,
   });
 }

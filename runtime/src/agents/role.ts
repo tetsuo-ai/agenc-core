@@ -33,6 +33,9 @@
 
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { ContentFilesystem, type ContentExecutionEnvironment } from "../execution/content-filesystem.js";
+import { assertSameExecutionEnvironment, LOCAL_EXECUTION_ENVIRONMENT, readExecutionEnvironmentBinding } from "../execution/binding.js";
+import { ExecutionEnvironmentError, type ExecutionEnvironmentBinding } from "../execution/types.js";
 import type { AgentRegistry } from "./registry.js";
 import { normalizeRawConfig } from "../config/schema.js";
 import { parseToml } from "../config/loader.js";
@@ -108,6 +111,7 @@ export interface AgentRoleConfig {
 }
 
 export interface AgentRole {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly name: string;
   readonly config: AgentRoleConfig;
   /** Authority provenance; omitted inputs are normalized as programmatic. */
@@ -138,6 +142,7 @@ export function agentRoleFingerprint(role: AgentRole): string {
       stableStringify({
         name: role.name,
         source: role.source ?? "programmatic",
+        ...(role.executionBinding ? { executionBinding: role.executionBinding } : {}),
         config: role.config,
         effectiveConfigLayer,
       }),
@@ -381,8 +386,10 @@ export function registerAgentRole(
   workspace: AgentRoleWorkspace,
   role: AgentRole,
 ): void {
+  if (role.executionBinding) assertSameExecutionEnvironment(role.executionBinding, workspace.executionBinding ?? LOCAL_EXECUTION_ENVIRONMENT);
   const roles = registeredRolesByWorkspace.get(workspace.id) ?? new Map();
-  roles.set(role.name, freezeRole({ ...role, source: "programmatic" }));
+  roles.set(role.name, freezeRole({ ...role, source: "programmatic",
+    ...(workspace.executionBinding ? { executionBinding: workspace.executionBinding } : {}) }));
   registeredRolesByWorkspace.set(workspace.id, roles);
 }
 
@@ -745,6 +752,7 @@ function freezeRole(role: AgentRole): AgentRole {
   return Object.freeze({
     name: role.name,
     source: role.source ?? "programmatic",
+    ...(role.executionBinding ? { executionBinding: readExecutionEnvironmentBinding(role.executionBinding) } : {}),
     config: Object.freeze({ ...role.config, ...derived }),
   });
 }
@@ -820,6 +828,10 @@ function readRoleLayerSource(role: AgentRole): Record<string, unknown> {
   const configFile = role.config.configFile;
   if (!configFile) return {};
 
+  if (role.executionBinding?.kind === "docker") {
+    throw new ExecutionEnvironmentError("environment_not_ready", "Task role content must be captured before synchronous role resolution", false);
+  }
+
   const builtInContents =
     BUILT_IN_ROLE_CONFIG_TOML[
       configFile as keyof typeof BUILT_IN_ROLE_CONFIG_TOML
@@ -830,6 +842,18 @@ function readRoleLayerSource(role: AgentRole): Record<string, unknown> {
 
   const contents = normalizeExternalText(readFileSync(configFile, "utf8"));
   return parseRoleLayerToml(contents);
+}
+
+/** Capture a task role once for an immutable catalog; fresh discovery captures again. */
+export async function captureAgentRole(role: AgentRole, environment?: ContentExecutionEnvironment): Promise<AgentRole> {
+  if (!role.executionBinding) return role;
+  assertSameExecutionEnvironment(role.executionBinding, environment?.binding ?? LOCAL_EXECUTION_ENVIRONMENT);
+  if (!role.config.configFile || role.config.configToml !== undefined) return role;
+  const configToml = await new ContentFilesystem(environment).readText(role.config.configFile);
+  // Parse here so malformed or unavailable content cannot degrade to an empty
+  // executable layer, then retain the exact text for fingerprints and config.
+  parseRoleLayerToml(configToml);
+  return freezeRole({ ...role, config: { ...role.config, configToml } });
 }
 
 function parseRoleLayerToml(contents: string): Record<string, unknown> {

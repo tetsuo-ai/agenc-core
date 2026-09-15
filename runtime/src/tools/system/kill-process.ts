@@ -40,7 +40,7 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
   return {
     name: "kill_process",
     description:
-      "Terminate a background process started by exec_command, by its session_id. Reports terminated=false when the process already exited (killing a finished process is a benign race, not an error).",
+      "Terminate a background process started by exec_command, by its session_id. Waits for managed process cleanup before reporting terminated=true. Reports terminated=false when the process already exited or is unknown. Use list_processes to find your live session handles.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -105,7 +105,7 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       }
       const ownerId = processOwnerIdFromToolArgs(args);
       try {
-        const outcome = manager.terminateProcess({
+        const outcome = await manager.terminateProcess({
           processId: sessionId,
           ...(ownerId !== undefined ? { ownerId } : {}),
         });
@@ -133,7 +133,7 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
           isError: true,
           // The manager refuses (unknown owner, denied access) before it
           // signals the process.
-          ...(error instanceof UnifiedExecError
+          ...(error instanceof UnifiedExecError && error.code === "owner_denied"
             ? {
                 effectDisposition: createToolEffectDispositionEvidence({
                   disposition: "confirmed_no_effect",

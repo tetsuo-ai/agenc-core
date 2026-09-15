@@ -502,6 +502,7 @@ migration contract.
 | `DISABLE_COMPACT` | `AGENC_DISABLE_COMPACT` |
 | `AGENC_PROVIDER=xai` | `AGENC_PROVIDER=grok` |
 | `AGENC_INTERNAL_ARTIFACTORY_BASE_URL`, `AGENC_INTERNAL_ARTIFACTORY_REGISTRY_URL` | No replacement. The internal registry mirror was removed with the internal-build gates; downloads use the public registry only |
+| `USER_TYPE` | No effect. AgenC's internal-build gate is permanently disabled; this variable cannot enable internal features or bypass approvals or sandboxing |
 | `AGENC_PROVIDER=custom`, `AGENC_PROVIDER=openai_compatible` | `AGENC_PROVIDER=openai-compatible` |
 | `AGENC_DISABLE_STREAM_WATCHDOG` | `AGENC_STREAM_IDLE_TIMEOUT_MS=0` |
 | `AGENC_ENABLE_STREAM_WATCHDOG` | A positive `AGENC_STREAM_IDLE_TIMEOUT_MS` or `stream_watchdog_timeout_ms` in `config.toml` |

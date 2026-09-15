@@ -68,10 +68,11 @@ export type {
  * - v3: transactional compaction intents and commits.
  * - v4: durable checkpoints carry the complete version-3 writer slice.
  * - v5: checkpoint v4 binds compaction-history markers with prefix hash v3.
+ * - v6: checkpoint v5 and session metadata bind immutable execution identity.
  * On open, if rollout.schemaVersion > runtime.ROLLOUT_SCHEMA_VERSION,
  * hard-fail with migration message (I-49).
  */
-export const ROLLOUT_SCHEMA_VERSION = 5;
+export const ROLLOUT_SCHEMA_VERSION = 6;
 
 // ─────────────────────────────────────────────────────────────────────
 // Event envelope: { eventId, id, msg, seq }
@@ -114,6 +115,8 @@ export interface SessionMetaLine {
   readonly agencVersion: string;
   /** Schema version (I-49). Bump on breaking changes. */
   readonly rolloutSchemaVersion: number;
+  /** Required in schema 6; older journals retain local execution semantics. */
+  readonly executionEnvironment?: import("../execution/types.js").ExecutionEnvironmentBinding;
   readonly cliVersion?: string;
   readonly source?: string;
   readonly model?: string;
@@ -274,11 +277,22 @@ export interface TurnCheckpointV4Event extends TurnCheckpointBase<TurnCheckpoint
   readonly prefixHashVersion: 3;
 }
 
+/** Bind recovery to the original task environment, including the host receipt store. */
+export interface TurnCheckpointV5Event extends TurnCheckpointBase<TurnCheckpointSliceLine> {
+  readonly checkpointVersion: 5;
+  readonly toolResultIntegrityVersion: 1;
+  readonly prefixHashVersion: 3;
+  readonly executionEnvironment: import("../execution/types.js").ExecutionEnvironmentBinding;
+  /** Required for Docker; local checkpoints retain their historical semantics. */
+  readonly executionProcesses?: import("../unified-exec/process-recovery.js").ExecutionProcessRecoveryState;
+}
+
 export type TurnCheckpointEvent =
   | TurnCheckpointV1Event
   | TurnCheckpointV2Event
   | TurnCheckpointV3Event
-  | TurnCheckpointV4Event;
+  | TurnCheckpointV4Event
+  | TurnCheckpointV5Event;
 
 /**
  * GOAL #4b Stage 1 — emitted (fsync-durable) when a turn is resumed from a

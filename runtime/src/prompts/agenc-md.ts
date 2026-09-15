@@ -32,6 +32,9 @@ import {
 } from "../utils/settings/managedPath.js";
 
 import { normalizeExternalText } from "./_deps/file-read.js";
+import { instructionFilesystem, instructionFilesystemErrorCode, type InstructionExecutionEnvironment } from "./instruction-filesystem.js";
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey, type ExecutionEnvironmentBinding } from "../execution/types.js";
+import { readExecutionEnvironmentBinding } from "../execution/binding.js";
 import {
   type ExternalInstructionApprovalStore,
   type InstructionFileIdentity,
@@ -87,6 +90,7 @@ export type InstructionTier = "managed" | "user" | "project" | "local";
  * is the original file before expansion (useful for caching/diagnostics).
  */
 export interface TierEntry {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly tier: InstructionTier;
   readonly path: string;
   /** Canonical machine/user/workspace boundary where this tier applies. */
@@ -195,6 +199,8 @@ function trimSourcedInstructionText(
 }
 
 export interface LoadTieredInstructionsOptions extends ProjectInstructionsConfig {
+  readonly executionEnvironment?: InstructionExecutionEnvironment;
+  readonly taskHomePath?: string;
   /** Current working directory for project/local tier discovery. */
   readonly cwd: string;
   /** Override platform home for tests; runtime defaults to session authority. */
@@ -251,6 +257,7 @@ export interface DroppedInclude {
 }
 
 export interface ResolveIncludesOptions {
+  readonly executionEnvironment?: InstructionExecutionEnvironment;
   /** Directory the content originated from (for relative resolution). */
   readonly baseDir: string;
   /**
@@ -280,6 +287,7 @@ export interface ResolvedContent {
 }
 
 interface InstructionCacheProbe {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly path: string;
   readonly identity: InstructionFileIdentity | null;
 }
@@ -290,8 +298,19 @@ interface InstructionExpansionLedger {
 }
 
 interface InstructionCacheEvidence {
-  readonly probes: Map<string, string | null>;
+  readonly probes: Map<string, CachedInstructionPath>;
   cacheable: boolean;
+}
+
+interface InstructionCachePath {
+  readonly path: string;
+  readonly executionBinding?: ExecutionEnvironmentBinding;
+}
+interface CachedInstructionPath extends InstructionCachePath {
+  readonly identity: string | null;
+}
+function cacheProbeKey(probe: InstructionCachePath): string {
+  return executionEnvironmentCacheKey(probe.executionBinding ?? { kind: "local" }, probe.path);
 }
 
 function recordCacheProbe(
@@ -301,9 +320,11 @@ function recordCacheProbe(
   const key = probe.identity === null
     ? null
     : instructionFileIdentityKey(probe.identity);
-  const existing = evidence.probes.get(probe.path);
-  if (existing !== undefined && existing !== key) evidence.cacheable = false;
-  evidence.probes.set(probe.path, key);
+  const probeKey = cacheProbeKey(probe);
+  const existing = evidence.probes.get(probeKey);
+  if (existing !== undefined && existing.identity !== key) evidence.cacheable = false;
+  evidence.probes.set(probeKey, { path: probe.path, identity: key,
+    ...(probe.executionBinding === undefined ? {} : { executionBinding: probe.executionBinding }) });
 }
 
 /** Regex for `@include <path>` directives at line start. */
@@ -420,6 +441,7 @@ async function resolveIncludesWithSources(
   state.totalBytes += contentBytes;
 
   const expanded = await expandText({
+    executionEnvironment: opts.executionEnvironment,
     text: content,
     baseDir: opts.baseDir,
     projectRoot: resolve(opts.projectRoot),
@@ -462,6 +484,7 @@ function truncateUtf8Bytes(content: string, maximumBytes: number): string {
 }
 
 interface ExpandCtx {
+  executionEnvironment?: InstructionExecutionEnvironment;
   text: string;
   baseDir: string;
   projectRoot: string;
@@ -567,6 +590,7 @@ async function expandText(ctx: ExpandCtx): Promise<SourcedInstructionText> {
 
     const remainingBytes = Math.max(0, ctx.maxBytes - ctx.state.totalBytes);
     const read = await readInstructionFileSnapshot({
+      executionEnvironment: ctx.executionEnvironment,
       requestedPath: resolved,
       boundaryRoot: ctx.projectRoot,
       workspaceRoot: ctx.workspaceRoot,
@@ -580,6 +604,7 @@ async function expandText(ctx: ExpandCtx): Promise<SourcedInstructionText> {
     });
     if (!read.ok) {
       ctx.probes.push({
+        ...(ctx.executionEnvironment === undefined ? {} : { executionBinding: ctx.executionEnvironment.binding }),
         path: read.canonicalPath ?? resolved,
         identity: read.identity ?? null,
       });
@@ -622,6 +647,7 @@ async function expandText(ctx: ExpandCtx): Promise<SourcedInstructionText> {
     }
     const canonicalPath = read.snapshot.canonicalPath;
     ctx.probes.push({
+      ...(read.snapshot.executionBinding === undefined ? {} : { executionBinding: read.snapshot.executionBinding }),
       path: canonicalPath,
       identity: read.snapshot.identity,
     });
@@ -655,6 +681,7 @@ async function expandText(ctx: ExpandCtx): Promise<SourcedInstructionText> {
     ctx.included.push(canonicalPath);
     const okMarker = `<!-- @include ${match.target} -->`;
     const nested = await expandText({
+      executionEnvironment: ctx.executionEnvironment,
       text: raw,
       baseDir: pathDir(canonicalPath),
       projectRoot: ctx.projectRoot,
@@ -701,6 +728,7 @@ async function loadTier(
   expansionLedger: InstructionExpansionLedger,
   cacheEvidence: InstructionCacheEvidence,
   externalApprovals?: ExternalInstructionApprovalStore,
+  executionEnvironment?: InstructionExecutionEnvironment,
 ): Promise<TierEntry | null> {
   const remainingBytes = Math.max(
     0,
@@ -708,6 +736,7 @@ async function loadTier(
   );
   if (remainingBytes === 0) return null;
   const read = await readInstructionFileSnapshot({
+    executionEnvironment,
     requestedPath: filePath,
     boundaryRoot: boundary,
     workspaceRoot,
@@ -716,12 +745,14 @@ async function loadTier(
   });
   if (!read.ok || read.snapshot.text.trim().length === 0) return null;
   recordCacheProbe(cacheEvidence, {
+    ...(read.snapshot.executionBinding === undefined ? {} : { executionBinding: read.snapshot.executionBinding }),
     path: read.snapshot.canonicalPath,
     identity: read.snapshot.identity,
   });
   const raw = read.snapshot.text;
 
   const resolved = await resolveIncludesWithSources(raw, {
+    executionEnvironment,
     baseDir: pathDir(filePath),
     projectRoot: boundary,
     maxDepth: includeMaxDepth,
@@ -735,6 +766,7 @@ async function loadTier(
   for (const probe of resolved.probes) recordCacheProbe(cacheEvidence, probe);
 
   return rememberTierEntrySourceSegments({
+    ...(read.snapshot.executionBinding === undefined ? {} : { executionBinding: read.snapshot.executionBinding }),
     tier,
     path: filePath,
     scopePath: resolve(boundary),
@@ -782,8 +814,10 @@ async function appendUnconditionalRules(
   dependencyPaths?: string[],
   cacheEvidence?: InstructionCacheEvidence,
   resourceLedger?: RuleDiscoveryLedger,
+  executionEnvironment?: InstructionExecutionEnvironment,
 ): Promise<SourcedInstructionText> {
   const discovery = await discoverInstructionRulesDetailed({
+    executionEnvironment,
     rulesDir,
     type,
     ...(boundaryDir !== undefined ? { boundaryDir } : {}),
@@ -799,7 +833,7 @@ async function appendUnconditionalRules(
       recordCacheProbe(cacheEvidence, directory);
     }
     for (const file of discovery.files) {
-      recordCacheProbe(cacheEvidence, { path: file.path, identity: file.identity });
+      recordCacheProbe(cacheEvidence, file);
     }
   }
   const rules = discovery.rules;
@@ -851,10 +885,7 @@ async function appendUnconditionalRules(
  * {@link clearTieredInstructionsCacheForTesting}.
  */
 type CachedTieredInstructions = {
-  readonly cachedPaths: ReadonlyArray<{
-    readonly path: string;
-    readonly identity: string | null;
-  }>;
+  readonly cachedPaths: readonly CachedInstructionPath[];
   readonly result: TieredInstructions;
 };
 
@@ -881,7 +912,9 @@ function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string
     DEFAULT_INCLUDE_MAX_BYTES,
     DEFAULT_INCLUDE_MAX_BYTES,
   );
-  return [
+  return JSON.stringify([
+    executionEnvironmentCacheKey(opts.executionEnvironment?.binding ?? { kind: "local" }, ""),
+    opts.taskHomePath ?? "",
     opts.cwd,
     managedPath,
     opts.homeDir ?? "",
@@ -891,12 +924,17 @@ function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string
     includeMaxBytes,
     opts.projectDocMaxBytes ?? DEFAULT_PROJECT_DOC_MAX_BYTES,
     JSON.stringify(opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS),
-  ].join("|");
+  ]);
 }
 
-async function statIdentity(path: string): Promise<string | null> {
+async function statIdentity(probe: InstructionCachePath, environment?: InstructionExecutionEnvironment): Promise<string | null> {
+  const task = probe.executionBinding !== undefined;
+  if (task && (environment === undefined || executionEnvironmentCacheKey(environment.binding, "") !==
+      executionEnvironmentCacheKey(probe.executionBinding!, ""))) {
+    throw new ExecutionEnvironmentError("environment_changed", "Instruction cache probe belongs to another environment", false);
+  }
   try {
-    const value = await lstat(path, { bigint: true });
+    const value = await instructionFilesystem(task ? environment : undefined).lstat(probe.path);
     return [
       value.dev,
       value.ino,
@@ -906,16 +944,21 @@ async function statIdentity(path: string): Promise<string | null> {
       value.mtimeNs,
       value.ctimeNs,
     ].join(":");
-  } catch {
+  } catch (error) {
+    // Optional guidance may be absent, inaccessible or an unsupported resource.
+    // The mapper throws on authority/environment loss instead of caching it as
+    // an absent path. Explicit local environments also retain their backend.
+    if (task) instructionFilesystemErrorCode(error);
     return null;
   }
 }
 
 async function cachedTierPathsMatchDisk(
   cached: CachedTieredInstructions,
+  environment?: InstructionExecutionEnvironment,
 ): Promise<boolean> {
   for (const entry of cached.cachedPaths) {
-    const live = await statIdentity(entry.path);
+    const live = await statIdentity(entry, environment);
     if (live !== entry.identity) return false;
   }
   return true;
@@ -941,6 +984,13 @@ export function clearTieredInstructionsCacheForTesting(): void {
 export async function loadTieredInstructions(
   opts: LoadTieredInstructionsOptions,
 ): Promise<TieredInstructions> {
+  if (opts.executionEnvironment !== undefined) {
+    if (!isAbsolute(opts.cwd) || (opts.taskHomePath !== undefined && !isAbsolute(opts.taskHomePath))) {
+      throw new TypeError("Task instruction cwd and home must be absolute");
+    }
+    opts = { ...opts, executionEnvironment: Object.freeze({ filesystem: opts.executionEnvironment.filesystem,
+      binding: readExecutionEnvironmentBinding(opts.executionEnvironment.binding) }) };
+  }
   // Exact approvals are revocable and expire independently of filesystem
   // mtimes, so an approval-bearing resolution is never served from cache.
   if (opts.externalApprovals !== undefined) {
@@ -951,17 +1001,17 @@ export async function loadTieredInstructions(
   }
   const cacheKey = tieredInstructionsCacheKey(opts);
   const cached = tieredInstructionsCache.get(cacheKey);
-  if (cached !== undefined && (await cachedTierPathsMatchDisk(cached))) {
+  if (cached !== undefined && (await cachedTierPathsMatchDisk(cached, opts.executionEnvironment))) {
     return cached.result;
   }
   // Capture negative-candidate state before resolution. If a higher-priority
   // file appears while the loader is running, the before/after mismatch makes
   // this fill non-cacheable instead of pinning lower-priority content under the
   // new file's identity.
-  const candidates = [...new Set(canonicalTierPaths(opts))];
+  const candidates = [...new Map(canonicalTierPaths(opts).map((probe) => [cacheProbeKey(probe), probe])).values()];
   const beforeCandidates = new Map<string, string | null>();
   for (const candidate of candidates) {
-    beforeCandidates.set(candidate, await statIdentity(candidate));
+    beforeCandidates.set(cacheProbeKey(candidate), await statIdentity(candidate, opts.executionEnvironment));
   }
 
   const evidence: InstructionCacheEvidence = {
@@ -973,23 +1023,21 @@ export async function loadTieredInstructions(
   // Descriptor-bound file identities and stable directory-scan identities are
   // authoritative. A post-load stat only verifies that the path still names
   // that same object; it never replaces the captured identity.
-  for (const [path, expected] of evidence.probes) {
-    if ((await statIdentity(path)) !== expected) evidence.cacheable = false;
+  for (const probe of evidence.probes.values()) {
+    if ((await statIdentity(probe, opts.executionEnvironment)) !== probe.identity) evidence.cacheable = false;
   }
   for (const candidate of candidates) {
-    if (evidence.probes.has(candidate)) continue;
-    const before = beforeCandidates.get(candidate) ?? null;
-    const after = await statIdentity(candidate);
+    const key = cacheProbeKey(candidate);
+    if (evidence.probes.has(key)) continue;
+    const before = beforeCandidates.get(key) ?? null;
+    const after = await statIdentity(candidate, opts.executionEnvironment);
     if (after !== before) evidence.cacheable = false;
-    evidence.probes.set(candidate, before);
+    evidence.probes.set(key, { ...candidate, identity: before });
   }
 
   if (evidence.cacheable) {
     tieredInstructionsCache.set(cacheKey, {
-      cachedPaths: [...evidence.probes].map(([path, identity]) => ({
-        path,
-        identity,
-      })),
+      cachedPaths: [...evidence.probes.values()],
       result,
     });
   }
@@ -1010,7 +1058,7 @@ export async function loadTieredInstructions(
  * where the operator creates a project-tier AGENC.md anywhere up the
  * chain.
  */
-function canonicalTierPaths(opts: LoadTieredInstructionsOptions): string[] {
+function canonicalTierPaths(opts: LoadTieredInstructionsOptions): InstructionCachePath[] {
   const enabled = new Set<InstructionTier>(
     opts.enabledTiers ?? ["managed", "user", "project", "local"],
   );
@@ -1029,9 +1077,10 @@ function canonicalTierPaths(opts: LoadTieredInstructionsOptions): string[] {
         )
       : [];
   return [
-    ...(enabled.has("managed") ? [managedPath, managedRulesPath] : []),
-    ...(enabled.has("user") ? [userPrimary, join(agencHome, "rules")] : []),
-    ...ancestorCandidates,
+    ...(enabled.has("managed") ? [managedPath, managedRulesPath].map((path) => ({ path })) : []),
+    ...(enabled.has("user") ? [userPrimary, join(agencHome, "rules")].map((path) => ({ path })) : []),
+    ...ancestorCandidates.map((path) => ({ path,
+      ...(opts.executionEnvironment === undefined ? {} : { executionBinding: opts.executionEnvironment.binding }) })),
   ];
 }
 
@@ -1212,6 +1261,8 @@ async function loadTieredInstructionsUncached(
   const projectChain =
     enabled.has("project") && expansionLedger.totalBytes < includeMaxBytes
       ? await loadProjectInstructionChain({
+          executionEnvironment: opts.executionEnvironment,
+          taskHomePath: opts.taskHomePath,
           cwd: opts.cwd,
           projectRootMarkers:
             opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
@@ -1225,6 +1276,7 @@ async function loadTieredInstructionsUncached(
       ? (await findProjectRoot(
           opts.cwd,
           opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
+          { executionEnvironment: opts.executionEnvironment, stopBefore: opts.taskHomePath },
         ))?.rootDir
       : undefined) ?? resolve(opts.cwd);
   const projectRootDir = discoveredProjectRoot;
@@ -1245,10 +1297,12 @@ async function loadTieredInstructionsUncached(
       });
       for (const entry of entries) {
         recordCacheProbe(cacheEvidence, {
+          ...(entry.executionBinding === undefined ? {} : { executionBinding: entry.executionBinding }),
           path: entry.canonicalPath,
           identity: entry.identity,
         });
         const resolved = await resolveIncludesWithSources(entry.content, {
+          executionEnvironment: opts.executionEnvironment,
           baseDir: pathDir(entry.canonicalPath),
           projectRoot: entry.rootDir,
           maxDepth: includeMaxDepth,
@@ -1280,6 +1334,7 @@ async function loadTieredInstructionsUncached(
         projectDependencies,
         cacheEvidence,
         ruleLedger,
+        opts.executionEnvironment,
       );
       if (ruleBlock.text.length > 0) {
         parts.push(ruleBlock);
@@ -1293,6 +1348,7 @@ async function loadTieredInstructionsUncached(
           ? singleProjectContent
           : joinSourcedInstructionText(parts, "\n\n");
       projectTier = rememberTierEntrySourceSegments({
+        ...(opts.executionEnvironment === undefined ? {} : { executionBinding: opts.executionEnvironment.binding }),
         tier: "project",
         path: projectChain.at(-1)?.path ?? projectRulesDir(projectRootDir),
         scopePath: resolve(projectRootDir),
@@ -1321,6 +1377,7 @@ async function loadTieredInstructionsUncached(
     expansionLedger,
     cacheEvidence,
     opts.externalApprovals,
+    opts.executionEnvironment,
   ) : null;
 
   return { managed, user, project: projectTier, local };

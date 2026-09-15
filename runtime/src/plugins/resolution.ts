@@ -370,21 +370,23 @@ export function parsePluginInstallSource(
 
 export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
   readonly demoted: ReadonlySet<string>;
+  /** Canonical IDs remain unambiguous when controller and task source paths coincide. */
+  readonly demotedPluginIds: ReadonlySet<string>;
   readonly errors: readonly PluginDependencyIssue[];
 } {
-  const idBySource = new Map(plugins.map((plugin) => [plugin.source, pluginDependencyIdentifier(plugin)] as const));
-  const known = new Set(idBySource.values());
-  const enabled = new Set(plugins.filter((plugin) => plugin.enabled).map((plugin) => idBySource.get(plugin.source)!));
-  const pluginByIdAll = new Map(plugins.map((plugin) => [idBySource.get(plugin.source)!, plugin] as const));
-  const knownByName = pluginIdsByName(plugins, idBySource, () => true);
-  const enabledByName = pluginIdsByName(plugins, idBySource, (plugin) => plugin.enabled);
+  const idByPlugin = new Map(plugins.map((plugin) => [plugin, pluginDependencyIdentifier(plugin)] as const));
+  const known = new Set(idByPlugin.values());
+  const enabled = new Set(plugins.filter((plugin) => plugin.enabled).map((plugin) => idByPlugin.get(plugin)!));
+  const pluginByIdAll = new Map(plugins.map((plugin) => [idByPlugin.get(plugin)!, plugin] as const));
+  const knownByName = pluginIdsByName(plugins, idByPlugin, () => true);
+  const enabledByName = pluginIdsByName(plugins, idByPlugin, (plugin) => plugin.enabled);
 
   const errors: PluginDependencyIssue[] = [];
   let changed = true;
   while (changed) {
     changed = false;
     for (const plugin of plugins) {
-      const pluginId = idBySource.get(plugin.source)!;
+      const pluginId = idByPlugin.get(plugin)!;
       if (!enabled.has(pluginId)) continue;
       for (const rawDep of plugin.manifest.dependencies ?? []) {
         const parsedDep = parsePluginDependencyReference(rawDep, pluginId);
@@ -422,8 +424,8 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
 
   const pluginById = new Map(
     plugins
-      .filter((plugin) => enabled.has(idBySource.get(plugin.source)!))
-      .map((plugin) => [idBySource.get(plugin.source)!, plugin] as const),
+      .filter((plugin) => enabled.has(idByPlugin.get(plugin)!))
+      .map((plugin) => [idByPlugin.get(plugin)!, plugin] as const),
   );
   const dependencyIdsById = new Map<string, string[]>();
   for (const [id, plugin] of pluginById) {
@@ -483,7 +485,7 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
   while (changed) {
     changed = false;
     for (const plugin of plugins) {
-      const pluginId = idBySource.get(plugin.source)!;
+      const pluginId = idByPlugin.get(plugin)!;
       if (!enabled.has(pluginId)) continue;
       for (const rawDep of plugin.manifest.dependencies ?? []) {
         const parsedDep = parsePluginDependencyReference(rawDep, pluginId);
@@ -519,11 +521,10 @@ export function verifyPluginDependencyState(plugins: readonly LoadedPlugin[]): {
     }
   }
 
+  const demotedPlugins = plugins.filter((plugin) => plugin.enabled && !enabled.has(idByPlugin.get(plugin)!));
   return {
-    demoted: new Set(plugins.filter((plugin) => {
-      const pluginId = idBySource.get(plugin.source)!;
-      return plugin.enabled && !enabled.has(pluginId);
-    }).map((plugin) => plugin.source)),
+    demoted: new Set(demotedPlugins.map((plugin) => plugin.source)),
+    demotedPluginIds: new Set(demotedPlugins.map((plugin) => plugin.id)),
     errors,
   };
 }
@@ -580,13 +581,13 @@ function demotePluginForDependency(options: {
 
 function pluginIdsByName(
   plugins: readonly LoadedPlugin[],
-  idBySource: ReadonlyMap<string, string>,
+  idByPlugin: ReadonlyMap<LoadedPlugin, string>,
   include: (plugin: LoadedPlugin) => boolean,
 ): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
   for (const plugin of plugins) {
     if (!include(plugin)) continue;
-    const id = idBySource.get(plugin.source);
+    const id = idByPlugin.get(plugin);
     if (!id) continue;
     const pluginName = parsePluginIdentifier(id).name;
     const ids = out.get(pluginName) ?? new Set<string>();

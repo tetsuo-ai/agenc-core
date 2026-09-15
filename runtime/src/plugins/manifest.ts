@@ -1,6 +1,7 @@
-import { access, lstat, readFile, stat } from "node:fs/promises";
 import { lstatSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { contentPathMissing, localContentFilesystem, rethrowContentAuthorityError, type ContentFilesystem } from "../execution/content-filesystem.js";
+import { WorkspaceBoundReadFileTooLargeError } from "../workspace/bound-read-error.js";
 import {
   normalizePluginManifest,
   PluginManifestError,
@@ -23,12 +24,13 @@ export function retiredRootPluginManifestPath(pluginRoot: string): string {
 
 export async function assertNoRetiredRootPluginManifest(
   pluginRoot: string,
+  filesystem: ContentFilesystem = localContentFilesystem,
 ): Promise<void> {
   const retiredPath = retiredRootPluginManifestPath(pluginRoot);
   try {
-    await lstat(retiredPath);
+    await filesystem.stat(retiredPath, false);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if (contentPathMissing(error)) return;
     throw error;
   }
   throw new PluginManifestError(
@@ -42,23 +44,26 @@ export async function assertNoRetiredRootPluginManifest(
 
 export async function findPluginManifestPath(
   pluginRoot: string,
+  filesystem: ContentFilesystem = localContentFilesystem,
 ): Promise<string | null> {
-  await assertNoRetiredRootPluginManifest(pluginRoot);
+  await assertNoRetiredRootPluginManifest(pluginRoot, filesystem);
   const candidate = join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH);
   try {
-    await access(candidate);
+    await filesystem.stat(candidate);
     return candidate;
-  } catch {
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return null;
   }
 }
 
 export async function loadPluginManifest(
   pluginRoot: string,
+  filesystem: ContentFilesystem = localContentFilesystem,
 ): Promise<ParsedPluginManifest | null> {
-  const manifestPath = await findPluginManifestPath(pluginRoot);
+  const manifestPath = await findPluginManifestPath(pluginRoot, filesystem);
   if (!manifestPath) return null;
-  const raw = await readJsonText(manifestPath);
+  const raw = await readJsonText(manifestPath, filesystem);
   return parsePluginManifestText(raw, pluginRoot, manifestPath);
 }
 
@@ -84,8 +89,9 @@ function parsePluginManifestText(
 
 export async function loadRequiredPluginManifest(
   pluginRoot: string,
+  filesystem: ContentFilesystem = localContentFilesystem,
 ): Promise<ParsedPluginManifest> {
-  const parsed = await loadPluginManifest(pluginRoot);
+  const parsed = await loadPluginManifest(pluginRoot, filesystem);
   if (parsed) return parsed;
   throw missingRequiredPluginManifest(pluginRoot);
 }
@@ -139,12 +145,12 @@ function missingRequiredPluginManifest(pluginRoot: string): PluginManifestError 
   );
 }
 
-export async function readJsonText(path: string): Promise<string> {
-  const stats = await stat(path);
-  if (stats.size > MAX_PLUGIN_JSON_BYTES) {
+export async function readJsonText(path: string, filesystem: ContentFilesystem = localContentFilesystem): Promise<string> {
+  try { return await filesystem.readText(path, MAX_PLUGIN_JSON_BYTES); }
+  catch (error) {
+    if (!(error instanceof WorkspaceBoundReadFileTooLargeError)) throw error;
     throw new PluginManifestError("Plugin JSON file is too large", [
       { path, message: `JSON files must be at most ${MAX_PLUGIN_JSON_BYTES} bytes` },
     ]);
   }
-  return readFile(path, "utf8");
 }

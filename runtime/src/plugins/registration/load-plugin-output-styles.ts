@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import type { ContentFilesystem } from "../../execution/content-filesystem.js";
 
 import type { OutputStyleInput } from "../../prompts/system-prompt.js";
 import {
@@ -11,7 +12,9 @@ import {
   collectMarkdownFiles,
   coerceString,
   descriptionFromMarkdown,
-  loadRuntimePlugins,
+  capturePluginRuntimeOptions,
+  pluginContentFilesystem,
+  resolveRuntimePlugins,
   markdownStem,
   parseBoolean,
   pathIsDirectory,
@@ -38,10 +41,11 @@ async function loadStyleFile(
   filePath: string,
   baseDir: string,
   loadedPaths: Set<string>,
+  filesystem: ContentFilesystem,
 ): Promise<PluginOutputStyle | null> {
   if (loadedPaths.has(filePath)) return null;
   loadedPaths.add(filePath);
-  const file = await readMarkdownFile(filePath, baseDir);
+  const file = await readMarkdownFile(filePath, baseDir, filesystem);
   if (!file) return null;
   const baseName = coerceString(file.frontmatter.name) ?? markdownStem(filePath);
   const name = pluginScopedIdentifier(
@@ -70,26 +74,28 @@ async function loadStylesFromPath(
   plugin: LoadedPlugin,
   path: string,
   loadedPaths: Set<string>,
+  filesystem: ContentFilesystem,
 ): Promise<readonly PluginOutputStyle[]> {
-  if (await pathIsDirectory(path)) {
-    const files = await collectMarkdownFiles(path);
+  if (await pathIsDirectory(path, filesystem)) {
+    const files = await collectMarkdownFiles(path, filesystem);
     const styles = await Promise.all(
-      files.map((filePath) => loadStyleFile(plugin, filePath, path, loadedPaths)),
+      files.map((filePath) => loadStyleFile(plugin, filePath, path, loadedPaths, filesystem)),
     );
     return styles.filter((style): style is PluginOutputStyle => style !== null);
   }
   if (!path.toLowerCase().endsWith(".md")) return [];
-  const style = await loadStyleFile(plugin, path, plugin.root, loadedPaths);
+  const style = await loadStyleFile(plugin, path, plugin.root, loadedPaths, filesystem);
   return style ? [style] : [];
 }
 
 async function loadStylesForPlugin(
   plugin: LoadedPlugin,
+  filesystem: ContentFilesystem,
 ): Promise<readonly PluginOutputStyle[]> {
   const loadedPaths = new Set<string>();
   const paths = [...new Set(plugin.outputStylesPaths)];
   const groups = await Promise.all(
-    paths.map((path) => loadStylesFromPath(plugin, path, loadedPaths)),
+    paths.map((path) => loadStylesFromPath(plugin, path, loadedPaths, filesystem)),
   );
   return groups.flat();
 }
@@ -97,7 +103,7 @@ async function loadStylesForPlugin(
 async function resolvePlugins(
   options: PluginOutputStyleRegistrationOptions,
 ): Promise<readonly LoadedPlugin[]> {
-  return options.plugins ?? await loadRuntimePlugins(options);
+  return resolveRuntimePlugins(options);
 }
 
 async function loadPluginOutputStylesUncached(
@@ -107,7 +113,7 @@ async function loadPluginOutputStylesUncached(
   const groups = await Promise.all(
     plugins
       .filter((plugin) => !isRepositoryControlledPlugin(plugin))
-      .map(loadStylesForPlugin),
+      .map((plugin) => loadStylesForPlugin(plugin, pluginContentFilesystem(plugin, options))),
   );
   return groups
     .flat()
@@ -135,14 +141,16 @@ function usesCanonicalPluginConfig(
 export async function loadPluginOutputStyles(
   options: PluginOutputStyleRegistrationOptions,
 ): Promise<readonly PluginOutputStyle[]> {
+  options = capturePluginRuntimeOptions(options);
   const authority = getCanonicalSettingsAuthority();
-  if (authority === null || !usesCanonicalPluginConfig(options, authority)) {
+  if (options.executionEnvironment || authority === null || !usesCanonicalPluginConfig(options, authority)) {
     return loadPluginOutputStylesUncached(options);
   }
 
   const key = runtimeIdentityKey({
     cwd: options.workspaceRoot ?? options.cwd,
     pluginStorageRoot: options.pluginStorageRoot,
+    executionEnvironment: options.executionEnvironment,
   });
   const cached = pluginOutputStylesByAuthority.get(key, authority);
   if (cached !== undefined && cached.config === options.config) {

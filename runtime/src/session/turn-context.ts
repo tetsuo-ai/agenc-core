@@ -16,6 +16,7 @@
  */
 
 import type { LLMProvider } from "../llm/types.js";
+import type { ExecutionEnvironmentBinding } from "../execution/types.js";
 import {
   bindingFromProvider,
   type ProviderBinding,
@@ -445,6 +446,8 @@ export type SubAgentSource =
       readonly agentNickname?: string;
       readonly agentRole?: string;
       readonly agentRoleWorkspaceId?: string;
+      readonly agentRoleWorkspaceCwd?: string;
+      readonly agentRoleWorkspaceExecutionBinding?: ExecutionEnvironmentBinding;
       readonly agentRoleFingerprint?: string;
     }
   | { readonly kind: "memory_consolidation" }

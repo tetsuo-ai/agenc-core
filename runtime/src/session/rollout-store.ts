@@ -3393,6 +3393,7 @@ export class RolloutStore {
             payload: {
               ...meta,
               rolloutSchemaVersion: DURABLE_ROLLOUT_SCHEMA_VERSION,
+              executionEnvironment: plan.executionEnvironment,
             },
           },
           ...plan.upgradedItems,

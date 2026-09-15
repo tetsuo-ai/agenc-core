@@ -15,6 +15,22 @@ function fakeManager(
 }
 
 describe("kill_process tool", () => {
+  it("waits for cleanup acknowledgement and preserves uncertain failures", async () => {
+    let failCleanup!: (error: Error) => void;
+    const cleanup = new Promise<{ terminated: boolean }>((_resolve, reject) => { failCleanup = reject; });
+    const manager = fakeManager(true);
+    manager.terminateProcess.mockReturnValue(cleanup);
+    let settled = false;
+    const running = createKillProcessTool({ unifiedExecManager: manager }).execute({ session_id: 7 })
+      .then((result) => { settled = true; return result; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    failCleanup(new Error("cleanup cannot be proved"));
+    const result = await running;
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition).toBeUndefined();
+    expect(String(result.content)).toContain("cleanup cannot be proved");
+  });
   it("terminates a live session by session_id", async () => {
     const manager = fakeManager(true);
     const tool = createKillProcessTool({ unifiedExecManager: manager });

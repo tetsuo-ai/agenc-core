@@ -1,3 +1,4 @@
+import { createAgentRoleWorkspace, agentRoleWorkspaceMetadata } from "../../src/agents/role-workspace.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -2264,7 +2265,7 @@ autostart = false
 
 describe("resolveAgenCAgentAttachRoleWorkspace", () => {
   function attachmentWithMetadata(
-    metadata?: Record<string, string | number | undefined>,
+    metadata?: import("./protocol/index.js").JsonObject,
   ) {
     return {
       agentId: "agent_1",
@@ -2309,6 +2310,25 @@ describe("resolveAgenCAgentAttachRoleWorkspace", () => {
       id: "/daemon/authority",
       cwd: "/daemon/authority",
     });
+  });
+
+  it("preserves container identity and rejects contradictory or incomplete provenance", () => {
+    const binding = { kind: "docker" as const, containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32) };
+    const workspace = createAgentRoleWorkspace("/app", binding);
+    const metadata = agentRoleWorkspaceMetadata(workspace);
+    const result = attachmentWithMetadata(metadata);
+    expect(resolveAgenCAgentAttachRoleWorkspace(result, "/host")).toEqual(workspace);
+    const projected = { ...result, sessions: [{ ...result.sessions[0], roleWorkspace: { ...workspace } }] };
+    expect(resolveAgenCAgentAttachRoleWorkspace(projected, "/host")).toEqual(workspace);
+    for (const malformed of [
+      { ...metadata, agentRoleWorkspaceExecutionBinding: undefined },
+      { ...metadata, agentRoleWorkspaceCwd: undefined },
+      { ...metadata, agentRoleWorkspaceExecutionBinding: { ...binding, generation: "d".repeat(64) } },
+    ]) {
+      expect(() => resolveAgenCAgentAttachRoleWorkspace(attachmentWithMetadata(malformed), "/host")).toThrow();
+    }
+    projected.sessions[0].roleWorkspace = { ...createAgentRoleWorkspace("/app", { ...binding, generation: "e".repeat(64) }) };
+    expect(() => resolveAgenCAgentAttachRoleWorkspace(projected, "/host")).toThrow(/mismatch/);
   });
 
   it.each([

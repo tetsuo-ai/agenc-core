@@ -2384,7 +2384,7 @@ function activeAgentDefinitionsFromRoles(
   workspace: AgentRoleWorkspace,
 ): unknown[] {
   const available = new Map(
-    listAgentRoleDefinitions(workspace.cwd).map((definition) => [
+    listAgentRoleDefinitions(workspace).map((definition) => [
       definition.agentType,
       definition,
     ]),
@@ -2657,7 +2657,7 @@ export class Session {
     this.eventLog.setEmitDelegate((event) => this.emit(event));
     this.roleWorkspace = opts.roleWorkspace
       ? normalizeAgentRoleWorkspace(opts.roleWorkspace)
-      : createAgentRoleWorkspace(opts.initialState.sessionConfiguration.cwd);
+      : createAgentRoleWorkspace(opts.initialState.sessionConfiguration.cwd, opts.services.configStore?.executionWorkspace?.environment.binding);
     if (opts.agentDefinitions !== undefined) {
       assertAgentRoleWorkspaceMatches(
         this.roleWorkspace,

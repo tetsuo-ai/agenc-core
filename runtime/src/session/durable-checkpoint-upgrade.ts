@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { computePrefixHash } from "./durable-turns.js";
 import { emptyReducedState, reduce } from "./event-log-reducer.js";
-import type { TurnCheckpointV4Event } from "./event-log.js";
+import type { TurnCheckpointV5Event } from "./event-log.js";
+import { assertSameExecutionEnvironment, executionEnvironmentFromSessionMeta, LOCAL_EXECUTION_ENVIRONMENT, readExecutionEnvironmentBinding } from "../execution/binding.js";
+import type { ExecutionEnvironmentBinding } from "../execution/types.js";
 import type {
   RolloutItem,
   ToolResultIntegrityResponseItem,
@@ -10,9 +12,11 @@ import {
   DURABLE_CHECKPOINT_READ_VERSION,
   DURABLE_CHECKPOINT_V2,
   DURABLE_CHECKPOINT_V3,
+  DURABLE_CHECKPOINT_V4,
   DURABLE_ROLLOUT_SCHEMA_V2,
   DURABLE_ROLLOUT_SCHEMA_V3,
   DURABLE_ROLLOUT_SCHEMA_V4,
+  DURABLE_ROLLOUT_SCHEMA_V5,
   DURABLE_ROLLOUT_SCHEMA_VERSION,
   LEGACY_DURABLE_CHECKPOINT_VERSION,
   DurableCheckpointReadError,
@@ -44,10 +48,10 @@ const UPGRADE_PROJECTION_ID_DOMAIN = "agenc.checkpoint-upgrade-projection.v1";
 // bounded invocation-channel slice/map passes inside sequence validation.
 const CURRENT_CHECKPOINT_PREFIX_PASSES = 13;
 // A legacy promotion checks the source digest (1), computes the v3 digest (6),
-// and validates the generated v4 checkpoint (13).
+// and validates the generated v5 checkpoint (13).
 const LEGACY_CHECKPOINT_PREFIX_PASSES = 20;
 // A v2/v3 promotion validates the frozen v2 digest (13), computes the v3
-// digest (6), and validates the generated v4 checkpoint (13).
+// digest (6), and validates the generated v5 checkpoint (13).
 const INTEGRITY_CHECKPOINT_UPGRADE_PREFIX_PASSES = 32;
 // Canonical rollback reduction can scan the history, scan backward across
 // contextual pre-turn rows, and copy the retained prefix. Reserve all three
@@ -62,6 +66,7 @@ export const MAX_CHECKPOINT_UPGRADE_HISTORY_WORK =
   );
 
 export interface DurableCheckpointUpgradePlan {
+  readonly executionEnvironment: ExecutionEnvironmentBinding;
   readonly sourceSchemaVersion: number;
   readonly targetSchemaVersion: typeof DURABLE_ROLLOUT_SCHEMA_VERSION;
   readonly sessionMetaPromotionRequired: boolean;
@@ -77,6 +82,7 @@ export interface DurableCheckpointUpgradeFailure {
   readonly code:
     | "rollout_schema_unsupported"
     | "rollout_schema_mixed"
+    | "execution_environment_invalid"
     | "rollback_invalid"
     | "tool_result_call_id_missing"
     | "tool_result_integrity_invalid"
@@ -147,6 +153,24 @@ export function planLegacyDurableCheckpointUpgrade(params: {
     );
   }
 
+  let executionEnvironment: ExecutionEnvironmentBinding | undefined;
+  for (let index = 0; index < params.items.length; index++) {
+    const item = params.items[index]!;
+    try {
+      const candidate = item.type === "session_meta" ? executionEnvironmentFromSessionMeta(item.payload) :
+        item.type === "event_msg" && item.payload.msg.type === "turn_checkpoint" &&
+        item.payload.msg.payload.checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION
+          ? readExecutionEnvironmentBinding(item.payload.msg.payload.executionEnvironment) : undefined;
+      if (candidate !== undefined) {
+        if (executionEnvironment !== undefined) assertSameExecutionEnvironment(candidate, executionEnvironment);
+        executionEnvironment = candidate;
+      }
+    } catch (error) {
+      return invalid("execution_environment_invalid", index, error instanceof Error ? error.message : "Invalid execution environment");
+    }
+  }
+  executionEnvironment ??= LOCAL_EXECUTION_ENVIRONMENT;
+
   const transformed: RolloutItem[] = [];
   let history: ToolResultIntegrityResponseItem[] = [];
   let historyDerivationWork = 0;
@@ -177,6 +201,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
           payload: {
             ...item.payload,
             rolloutSchemaVersion: DURABLE_ROLLOUT_SCHEMA_VERSION,
+            executionEnvironment,
           },
         };
         changed = true;
@@ -307,7 +332,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
         if (sourceFailure !== undefined) return sourceFailure;
       }
 
-      let checkpoint: TurnCheckpointV4Event;
+      let checkpoint: TurnCheckpointV5Event;
       if (readable.version === 1) {
         let prefixHash: string;
         try {
@@ -326,6 +351,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
         checkpoint = {
           ...readable.checkpoint,
           checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
+          executionEnvironment,
           toolResultIntegrityVersion: 1,
           prefixHashVersion: 3,
           prefixHash,
@@ -357,6 +383,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
         checkpoint = {
           ...readable.checkpoint,
           checkpointVersion: DURABLE_CHECKPOINT_READ_VERSION,
+          executionEnvironment,
           toolResultIntegrityVersion: 1,
           prefixHashVersion: 3,
           prefixHash,
@@ -411,6 +438,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
     plan: {
       sourceSchemaVersion: sourceSchema,
       targetSchemaVersion: DURABLE_ROLLOUT_SCHEMA_VERSION,
+      executionEnvironment,
       sessionMetaPromotionRequired: !sawSessionMeta,
       changed,
       toolResultsSealed,
@@ -724,6 +752,8 @@ function findSourceSchemaVersion(items: ReadonlyArray<RolloutItem>): {
     const payload = item.payload.msg.payload as { checkpointVersion?: unknown };
     if (payload.checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION) {
       checkpointVersions.add(DURABLE_CHECKPOINT_READ_VERSION);
+    } else if (payload.checkpointVersion === DURABLE_CHECKPOINT_V4) {
+      checkpointVersions.add(DURABLE_CHECKPOINT_V4);
     } else if (payload.checkpointVersion === DURABLE_CHECKPOINT_V3) {
       checkpointVersions.add(DURABLE_CHECKPOINT_V3);
     } else if (payload.checkpointVersion === DURABLE_CHECKPOINT_V2) {
@@ -739,6 +769,9 @@ function findSourceSchemaVersion(items: ReadonlyArray<RolloutItem>): {
     checkpointVersions;
   if (checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION) {
     return { version: DURABLE_ROLLOUT_SCHEMA_VERSION, mixed: false };
+  }
+  if (checkpointVersion === DURABLE_CHECKPOINT_V4) {
+    return { version: DURABLE_ROLLOUT_SCHEMA_V5, mixed: false };
   }
   if (checkpointVersion === DURABLE_CHECKPOINT_V3) {
     return { version: DURABLE_ROLLOUT_SCHEMA_V4, mixed: false };
@@ -764,6 +797,9 @@ function checkpointMatchesRolloutSchema(
   }
   if (rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_V4) {
     return checkpointVersion === DURABLE_CHECKPOINT_V3;
+  }
+  if (rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_V5) {
+    return checkpointVersion === DURABLE_CHECKPOINT_V4;
   }
   return (
     rolloutSchemaVersion === DURABLE_ROLLOUT_SCHEMA_VERSION &&

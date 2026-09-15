@@ -11,6 +11,7 @@ import type {
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
+import { prepareAdmittedExecutionOperation } from "../../src/execution/call-context.js";
 import {
   effectSettlementMetrics,
   resolveLiveEffectPoison,
@@ -110,6 +111,24 @@ function toolHarness() {
 }
 
 describe("runAdmittedToolCall", () => {
+  it("exposes execution coordinates only after canonical intent and revokes them on settlement", async () => {
+    const state = toolHarness();
+    const tool = { name: "exec_command", recoveryCategory: "side-effecting", admissionEstimate: zeroAdmissionEstimate } as unknown as Tool;
+    let retained!: ReturnType<typeof prepareAdmittedExecutionOperation>;
+    await runAdmittedToolCall({ session: state.session, turnId: "turn", callId: "multiple-helpers", tool, args: {},
+      invoke: async () => {
+        expect(state.effectEvents.some((event) => event.msg.type === "effect_intent")).toBe(true);
+        retained = prepareAdmittedExecutionOperation();
+        expect(retained.identity).toEqual({ runId: "run-1", callId: "multiple-helpers", attempt: 1, operationIndex: 0 });
+        expect(prepareAdmittedExecutionOperation().identity.operationIndex).toBe(1);
+        retained.crossEffectBoundary();
+        return { content: "completed", isError: false };
+      },
+    });
+    expect(() => retained.crossEffectBoundary()).toThrow(/no active admitted call/);
+    expect(state.effectEvents.filter((event) => event.msg.type === "effect_intent")).toHaveLength(1);
+    expect(state.effectEvents.filter((event) => event.msg.type === "effect_result")).toHaveLength(1);
+  });
   it.each(["timeout", "nonzero", "signal"] as const)(
     "a real background process %s stays an error without locking subsequent commands",
     async (termination) => {
@@ -138,7 +157,7 @@ describe("runAdmittedToolCall", () => {
         });
         const sessionId = started.metadata?.sessionId as number;
         expect(sessionId, started.content).toEqual(expect.any(Number));
-        if (termination === "signal") manager.terminateProcess(sessionId);
+        if (termination === "signal") await manager.terminateProcess(sessionId);
         const result = await invoke(poll, "poll-background", { session_id: sessionId, chars: "" });
         expect(result.isError).toBe(true);
         expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_committed", evidenceKind: "provider_receipt" });

@@ -25,6 +25,8 @@
   ],
   "agencExecutableFiles": [
     "dist/agenc-process-broker",
+    "dist/agenc-filesystem-worker",
+    "dist/agenc-task-launcher",
     "dist/agenc-process-job-broker.exe",
     "dist/agenc-landlock-run",
     "dist/agenc-secret-service-helper",

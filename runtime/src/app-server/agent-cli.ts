@@ -59,6 +59,8 @@ import {
 import { collectDaemonClientEnvOverrides } from "./client-env-snapshot.js";
 import {
   AgentRoleWorkspaceError,
+  agentRoleWorkspaceFromMetadata,
+  assertAgentRoleWorkspaceMatches,
   createAgentRoleWorkspace,
   normalizeAgentRoleWorkspace,
   type AgentRoleWorkspace,
@@ -933,42 +935,21 @@ export function resolveAgenCAgentAttachRoleWorkspace(
   fallbackCwd: string,
 ): AgentRoleWorkspace {
   const session = resolveAgenCAgentAttachSession(result);
-  if (session?.roleWorkspace !== undefined) {
-    return normalizeAgentRoleWorkspace(session.roleWorkspace);
-  }
-
-  const metadata = session?.metadata;
-  const hasMetadataId =
-    metadata !== undefined &&
-    Object.prototype.hasOwnProperty.call(metadata, "agentRoleWorkspaceId");
-  const hasMetadataCwd =
-    metadata !== undefined &&
-    Object.prototype.hasOwnProperty.call(metadata, "agentRoleWorkspaceCwd");
-  if (hasMetadataId || hasMetadataCwd) {
-    const metadataId = metadata?.agentRoleWorkspaceId;
-    if (typeof metadataId !== "string" || metadataId.length === 0) {
-      throw invalidAgenCAgentAttachRoleWorkspace(
-        "agentRoleWorkspaceId must be a non-empty absolute path",
-      );
-    }
-
-    let roleWorkspaceCwd = metadataId;
-    if (hasMetadataCwd) {
-      const metadataCwd = metadata?.agentRoleWorkspaceCwd;
-      if (typeof metadataCwd !== "string" || metadataCwd.length === 0) {
-        throw invalidAgenCAgentAttachRoleWorkspace(
-          "agentRoleWorkspaceCwd must be a non-empty absolute path when present",
-        );
+  try {
+    const metadataWorkspace = agentRoleWorkspaceFromMetadata(session?.metadata);
+    if (session?.roleWorkspace !== undefined) {
+      const workspace = normalizeAgentRoleWorkspace(session.roleWorkspace);
+      if (metadataWorkspace !== undefined) {
+        assertAgentRoleWorkspaceMatches(workspace, metadataWorkspace.id);
       }
-      roleWorkspaceCwd = metadataCwd;
+      return workspace;
     }
-
-    return normalizeAgentRoleWorkspace({
-      id: metadataId,
-      cwd: roleWorkspaceCwd,
-    });
+    return metadataWorkspace ?? createAgentRoleWorkspace(session?.cwd?.trim() || fallbackCwd);
+  } catch (error) {
+    throw invalidAgenCAgentAttachRoleWorkspace(
+      error instanceof Error ? error.message : String(error),
+    );
   }
-  return createAgentRoleWorkspace(session?.cwd?.trim() || fallbackCwd);
 }
 
 function invalidAgenCAgentAttachRoleWorkspace(

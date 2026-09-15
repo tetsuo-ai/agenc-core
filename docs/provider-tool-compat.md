@@ -111,7 +111,7 @@ for these providers.
 `usesLocalToolProfile` / `filterToolsForLocalProfile` advertise this reduced
 catalog to the two grammar-constrained provider slugs:
 
-`exec_command`, `write_stdin`, `kill_process`, `FileRead`, `Edit`,
+`exec_command`, `write_stdin`, `list_processes`, `kill_process`, `FileRead`, `Edit`,
 `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`, `AskUserQuestion`,
 `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`, `system.searchTools`,
 `SendUserMessage` (`BRIEF_TOOL_NAME`), `StructuredOutput`.

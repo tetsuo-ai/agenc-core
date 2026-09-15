@@ -6,6 +6,7 @@
  * filesystem-browser, and desktop endpoints are not part of this protocol.
  */
 
+import type { ExecutionEnvironmentBinding } from "../../execution/types.js";
 import type { RunRuntimeSettingsSnapshot } from "../../contracts/run-contracts.js";
 import type { FileWriteApprovalPreview } from "../../session/event-log.js";
 import type { WhisperStatus, WhisperTranscription } from "../../audio/whisper.js";
@@ -2825,6 +2826,8 @@ export interface SessionSummary extends JsonObject {
   readonly roleWorkspace?: {
     readonly id: string;
     readonly cwd: string;
+    /** Immutable provenance; carries no backend connection or launch authority. */
+    readonly executionBinding?: ExecutionEnvironmentBinding;
   };
   readonly metadata?: JsonObject;
   readonly activeAttachmentIds?: readonly string[];

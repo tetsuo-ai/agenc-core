@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { canonicalAuthorityPath, isWithinAuthorityPath } from "../desktop-authority-protection.js";
 
-export const AGENC_LINUX_SANDBOX_ARG0 = "agenc-linux-sandbox";
+export { AGENC_LINUX_SANDBOX_ARG0 } from "../launcher-identity.js";
 export const PROTECTED_METADATA_PATH_NAMES = [".git", ".agenc", ".agents"] as const;
 
 export type SandboxType =

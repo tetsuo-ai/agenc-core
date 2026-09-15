@@ -45,6 +45,8 @@ const processBrokerDist = resolve(
   runtimeRoot,
   'dist/agenc-process-broker',
 );
+const filesystemWorkerSource = resolve(runtimeRoot, 'native/agenc-filesystem-worker.c');
+const filesystemWorkerDist = resolve(runtimeRoot, 'dist/agenc-filesystem-worker');
 const landlockRunSource = resolve(
   runtimeRoot,
   'native/agenc-landlock-run.c',
@@ -225,6 +227,30 @@ function compileLinuxLandlockRun(): void {
     );
   }
   chmodSync(landlockRunDist, 0o755);
+}
+
+function compileLinuxFilesystemWorker(): void {
+  if (process.platform !== 'linux') return;
+  for (const [source, destination, label] of [
+    [filesystemWorkerSource, filesystemWorkerDist, 'Protected filesystem worker'],
+    [resolve(runtimeRoot, 'native/agenc-task-launcher.c'), resolve(runtimeRoot, 'dist/agenc-task-launcher'), 'Task launcher'],
+  ] as const) {
+    const result = spawnSync(process.env.CC?.trim() || 'cc', [
+      '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-static-pie',
+      '-D_FORTIFY_SOURCE=2', '-fstack-protector-strong', '-Wl,-z,relro,-z,now',
+      '-o', destination, source,
+    ], { cwd: runtimeRoot, env: { ...process.env, LANG: 'C', LC_ALL: 'C' }, encoding: 'utf8' });
+    if (result.error !== undefined || result.status !== 0) {
+      throw new Error(label + ' build failed' +
+        (result.error === undefined ? '' : `: ${result.error.message}`) +
+        (result.stderr ? `\n${result.stderr.trim()}` : ''));
+    }
+    chmodSync(destination, 0o755);
+  }
+  cpSync(resolve(runtimeRoot, 'native/execution-host'), resolve(runtimeRoot, 'dist/execution-host'), {
+    recursive: true,
+    filter: (source) => statSync(source).isDirectory() || source.endsWith('.py'),
+  });
 }
 
 function compileLinuxSecretServiceHelper(): void {
@@ -604,6 +630,7 @@ const agencRuntimeAssets = {
     build.onEnd(() => {
       copyYoloClassifierPrompts();
       compileLinuxProcessBroker();
+      compileLinuxFilesystemWorker();
       compileLinuxLandlockRun();
       compileLinuxSecretServiceHelper();
       compileMacOsKeychainHelper();

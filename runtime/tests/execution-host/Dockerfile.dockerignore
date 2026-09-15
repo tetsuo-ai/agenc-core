@@ -1,0 +1,9 @@
+**
+!native/
+!native/execution-host/
+!native/execution-host/*.py
+!native/agenc-filesystem-worker.c
+!native/agenc-task-launcher.c
+!tests/
+!tests/execution-host/
+!tests/execution-host/fixture-entry.py

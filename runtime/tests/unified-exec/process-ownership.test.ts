@@ -75,14 +75,14 @@ describe("process ownership (TOOL-01)", () => {
         code: "owner_denied",
       });
 
-      expect(() =>
+      await expect(
         manager.terminateProcess({
           processId: sessionId,
           ownerId: "session-child",
         }),
-      ).toThrow(UnifiedExecError);
+      ).rejects.toThrow(UnifiedExecError);
 
-      const killed = manager.terminateProcess({
+      const killed = await manager.terminateProcess({
         processId: sessionId,
         ownerId: "session-parent",
       });

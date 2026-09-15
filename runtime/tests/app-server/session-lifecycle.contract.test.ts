@@ -1,3 +1,5 @@
+import { createAgentRoleWorkspace, agentRoleWorkspaceMetadata } from "../../src/agents/role-workspace.js";
+import { type ExecutionEnvironmentBinding } from "../../src/execution/types.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -309,6 +311,8 @@ describe("AgenC daemon session lifecycle", () => {
       now: sequence(["2026-05-01T10:00:00.000Z"]),
     });
     const malformedMetadata = [
+      { agentRoleWorkspaceExecutionBinding: { kind: "local" } },
+      { agentRoleWorkspaceId: cwd, agentRoleWorkspaceExecutionBinding: { kind: "docker" } },
       { agentRoleWorkspaceId: "" },
       { agentRoleWorkspaceId: 42 },
       { agentRoleWorkspaceCwd: cwd },
@@ -552,9 +556,12 @@ describe("AgenC daemon session lifecycle", () => {
     }
   });
 
-  it("recovers worktree execution cwd without rebinding role authority", async () => {
+  it.each([undefined, {
+    kind: "docker", containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32),
+  } satisfies ExecutionEnvironmentBinding])("recovers worktree execution cwd without rebinding role authority (%j)", async (binding) => {
     const { cwd: worktreeCwd, home, restoreEnv } = createThreadStoreTestDirs();
     const authorityCwd = mkdtempSync(join(tmpdir(), "agenc-role-authority-"));
+    const workspace = createAgentRoleWorkspace(binding ? "/app" : authorityCwd, binding);
     const rollout = openRollout(worktreeCwd, "stored-worktree-child");
     const threadStore = new FileThreadStore({
       cwd: worktreeCwd,
@@ -572,7 +579,7 @@ describe("AgenC daemon session lifecycle", () => {
             depth: 1,
             agentPath: "/root/child",
             agentRole: "scanner",
-            agentRoleWorkspaceId: authorityCwd,
+            ...(binding ? agentRoleWorkspaceMetadata(workspace) : { agentRoleWorkspaceId: authorityCwd }),
           },
         },
         cwd: worktreeCwd,
@@ -584,6 +591,7 @@ describe("AgenC daemon session lifecycle", () => {
         createAttachmentId: sequence(["attachment-worktree-child"]),
         now: sequence(["2026-05-01T10:31:30.000Z"]),
       });
+      expect((await recreated.listSessions()).sessions[0]?.roleWorkspace).toEqual({ ...workspace });
       await expect(
         recreated.attachSession({
           sessionId: "stored-worktree-child",
@@ -597,10 +605,9 @@ describe("AgenC daemon session lifecycle", () => {
       ).resolves.toMatchObject({
         sessionId: "stored-worktree-child",
         cwd: worktreeCwd,
-        roleWorkspace: { id: authorityCwd, cwd: authorityCwd },
+        roleWorkspace: { ...workspace },
         metadata: {
-          agentRoleWorkspaceId: authorityCwd,
-          agentRoleWorkspaceCwd: authorityCwd,
+          ...agentRoleWorkspaceMetadata(workspace),
           recovered: true,
         },
       });

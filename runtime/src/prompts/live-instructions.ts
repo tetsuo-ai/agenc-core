@@ -1,6 +1,9 @@
 /** Canonical live-request project instruction resolver. */
 import { lstat, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+import { assertSameExecutionEnvironment, LOCAL_EXECUTION_ENVIRONMENT } from "../execution/binding.js";
+import { executionEnvironmentCacheKey } from "../execution/types.js";
+import { getCanonicalSettingsAuthority, runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 import type { Session } from "../session/session.js";
 import { getAttachmentTrackingState } from "../session/attachment-state.js";
@@ -10,9 +13,9 @@ import {
   getGlobalMemoryEntrypoint,
   getProjectMemoryEntrypoint,
   isAutoMemoryEnabled,
-  redactSecrets,
-} from "../memory/index.js";
-import { truncateEntrypointContent } from "../memory/memdir.js";
+} from "../memory/paths.js";
+import { redactSecrets } from "../secrets/sanitizer.js";
+import { truncateEntrypointContent } from "../memory/entrypoint-text.js";
 import {
   formatPersonaGuidance,
   getPersonaMemoryFiles,
@@ -81,6 +84,7 @@ function sourcesFromTiers(input: {
       if (seen.has(canonicalPath)) continue;
       seen.add(canonicalPath);
       sources.push({
+        ...(entry.executionBinding === undefined ? {} : { executionBinding: entry.executionBinding }),
         tier,
         path: canonicalPath,
         scope,
@@ -318,7 +322,14 @@ export async function resolveLiveInstructionEnvelope(input: {
       "Live instruction discovery requires a session ConfigStore authority",
     );
   }
+  if (getCanonicalSettingsAuthority() !== configStore) {
+    return runWithCanonicalSettingsAuthority(configStore, () => resolveLiveInstructionEnvelope(input));
+  }
   const config = configStore.current();
+  const workspace = configStore.executionWorkspace;
+  const executionEnvironment = workspace?.environment;
+  assertSameExecutionEnvironment(executionEnvironment?.binding ?? LOCAL_EXECUTION_ENVIRONMENT,
+    input.session.services.unifiedExecManager?.executionEnvironmentBinding ?? LOCAL_EXECUTION_ENVIRONMENT);
   const discoveryDisabledByEnvironment = isEnvTruthy(
     process.env.AGENC_DISABLE_AGENC_MDS,
   );
@@ -332,6 +343,8 @@ export async function resolveLiveInstructionEnvelope(input: {
         ...(isSettingSourceEnabled("localSettings") ? ["local" as const] : []),
       ];
   let tiers = await loadTieredInstructions({
+    executionEnvironment,
+    taskHomePath: workspace?.homePath,
     cwd: input.ctx.cwd,
     configHomeDir: configStore.homeContext.path,
     managedPath: configStore.managedPaths.instructions,
@@ -350,13 +363,13 @@ export async function resolveLiveInstructionEnvelope(input: {
       : {}),
   });
   if (enabledTiers.includes("project")) {
-    const projectRoot = config?.project_root_markers !== undefined
-      ? await findProjectRoot(input.ctx.cwd, config.project_root_markers)
-      : await findProjectRoot(input.ctx.cwd);
+    const projectRoot = await findProjectRoot(input.ctx.cwd, config?.project_root_markers,
+      { executionEnvironment, stopBefore: workspace?.homePath });
     const personaRoot = resolve(projectRoot?.rootDir ?? input.ctx.cwd);
     const initialSources = sourcesFromTiers({ tiers });
     const processedPaths = new Set(
-      initialSources.map((source) =>
+      initialSources.filter((source) => executionEnvironmentCacheKey(source.executionBinding ?? LOCAL_EXECUTION_ENVIRONMENT, "") ===
+        executionEnvironmentCacheKey(executionEnvironment?.binding ?? LOCAL_EXECUTION_ENVIRONMENT, "")).map((source) =>
         process.platform === "win32"
           ? source.path.toLowerCase()
           : source.path,
@@ -365,6 +378,7 @@ export async function resolveLiveInstructionEnvelope(input: {
     const personaFiles = await getPersonaMemoryFiles(
       personaRoot,
       processedPaths,
+      executionEnvironment,
     );
     if (personaFiles.length > 0) {
       const personaText = formatPersonaGuidance(personaRoot, personaFiles);
@@ -374,6 +388,7 @@ export async function resolveLiveInstructionEnvelope(input: {
         ...tiers,
         project: existingProject === null
           ? {
+              ...(executionEnvironment === undefined ? {} : { executionBinding: executionEnvironment.binding }),
               tier: "project",
               path: personaPaths[0]!,
               scopePath: personaRoot,
@@ -413,6 +428,7 @@ export async function resolveLiveInstructionEnvelope(input: {
       .current()
       .additionalWorkingDirectories.values()) {
       if (directory.source !== "cliArg") continue;
+      if (executionEnvironment !== undefined && !isAbsolute(directory.path)) throw new TypeError("Task instruction directories must be absolute");
       const canonicalDirectory = resolve(directory.path);
       const comparisonKey =
         process.platform === "win32"
@@ -425,6 +441,8 @@ export async function resolveLiveInstructionEnvelope(input: {
         break;
       }
       const tierSet = await loadTieredInstructions({
+        executionEnvironment,
+        taskHomePath: workspace?.homePath,
         cwd: canonicalDirectory,
         configHomeDir: configStore.homeContext.path,
         managedPath: configStore.managedPaths.instructions,
@@ -512,7 +530,7 @@ export async function resolveLiveInstructionEnvelope(input: {
   const head = stabilizeInstructionHead(
     getAttachmentTrackingState(input.session),
     { workspaceText, memoryText: freshMemoryText },
-    resolve(input.ctx.cwd),
+    executionEnvironmentCacheKey(executionEnvironment?.binding ?? LOCAL_EXECUTION_ENVIRONMENT, resolve(input.ctx.cwd)),
   );
 
   // The trusted role/base prompt is last and therefore cannot be textually

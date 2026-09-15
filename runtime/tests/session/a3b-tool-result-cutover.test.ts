@@ -617,7 +617,7 @@ describe("A3b atomic legacy publication", () => {
     expect(
       upgradedItems
         .filter((item) => item.type === "session_meta")
-        .every((item) => item.payload.rolloutSchemaVersion === 5),
+        .every((item) => item.payload.rolloutSchemaVersion === 6),
     ).toBe(true);
     expect(
       upgradedItems.find(
@@ -629,7 +629,8 @@ describe("A3b atomic legacy publication", () => {
       payload: {
         msg: {
           payload: {
-            checkpointVersion: 4,
+            checkpointVersion: 5,
+            executionEnvironment: { kind: "local" },
             toolResultIntegrityVersion: 1,
             prefixHashVersion: 3,
           },
@@ -657,7 +658,7 @@ describe("A3b atomic legacy publication", () => {
     { schemaVersion: 3, checkpointVersion: 2, orphanRollout: v2OrphanRollout },
     { schemaVersion: 4, checkpointVersion: 3, orphanRollout: v3OrphanRollout },
   ])(
-    "leaves schema v$schemaVersion byte-identical on a pre-publish crash and publishes schema v5 once",
+    "leaves schema v$schemaVersion byte-identical on a pre-publish crash and publishes schema v6 once",
     ({ schemaVersion, checkpointVersion, orphanRollout }) => {
       const sessionId = `atomic-schema${schemaVersion}-upgrade-session`;
       const meta = {
@@ -700,7 +701,7 @@ describe("A3b atomic legacy publication", () => {
         expect.arrayContaining([
           expect.objectContaining({
             type: "session_meta",
-            payload: expect.objectContaining({ rolloutSchemaVersion: 5 }),
+            payload: expect.objectContaining({ rolloutSchemaVersion: 6, executionEnvironment: { kind: "local" } }),
           }),
           expect.objectContaining({
             type: "event_msg",
@@ -708,7 +709,8 @@ describe("A3b atomic legacy publication", () => {
               msg: expect.objectContaining({
                 type: "turn_checkpoint",
                 payload: expect.objectContaining({
-                  checkpointVersion: 4,
+                  checkpointVersion: 5,
+                  executionEnvironment: { kind: "local" },
                   prefixHashVersion: 3,
                 }),
               }),

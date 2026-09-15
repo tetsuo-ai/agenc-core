@@ -29,6 +29,8 @@ import {
 } from '../session/runtime-options.js'
 import { findCanonicalGitRoot } from '../utils/git.js'
 import { projectStorageKey } from '../utils/project-storage-key.js'
+import { executionWorkspaceStorageKey } from '../execution/workspace.js'
+import { executionEnvironmentCacheKey, type ExecutionEnvironmentBinding } from '../execution/types.js'
 import {
   CanonicalAuthorityCache,
   getCanonicalSettingsAuthority,
@@ -204,6 +206,8 @@ export function hasAutoMemPathOverride(): boolean {
  * same repo share one auto-memory directory.
  */
 function getAutoMemBase(): string {
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace
+  if (workspace !== undefined) return workspace.memoryProjectRoot
   return findCanonicalGitRoot(getProjectRoot()) ?? getProjectRoot()
 }
 
@@ -227,9 +231,13 @@ export function getMemoryProjectRoot(): string {
 export function buildProjectMemoryDirectory(
   baseDir: string,
   projectRoot: string,
+  binding: ExecutionEnvironmentBinding | undefined = getCanonicalSettingsAuthority()?.executionWorkspace?.environment.binding,
 ): string {
+  const key = binding === undefined || binding.kind === 'local'
+    ? projectStorageKey(projectRoot)
+    : executionWorkspaceStorageKey(binding, projectRoot)
   return (
-    join(baseDir, 'projects', projectStorageKey(projectRoot), MEMORY_DIRNAME) + sep
+    join(baseDir, 'projects', key, MEMORY_DIRNAME) + sep
   ).normalize('NFC')
 }
 
@@ -260,7 +268,9 @@ function resolveProjectMemoryPath(): string {
 }
 
 function projectMemoryPathCacheKey(): string {
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace
   return [
+    workspace === undefined ? '' : executionEnvironmentCacheKey(workspace.environment.binding, workspace.memoryProjectRoot),
     getAgenCHomeDir(),
     getSessionRemoteMemoryRoot() ?? '',
     getAutoMemPathOverride() ?? '',

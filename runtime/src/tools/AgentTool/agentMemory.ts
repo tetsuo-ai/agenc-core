@@ -1,3 +1,8 @@
+import { getCanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
+import { contentPathMissing, rethrowContentAuthorityError, type ContentExecutionEnvironment } from '../../execution/content-filesystem.js'
+import { readScopedExecutionText } from '../../execution/scoped-content.js'
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey } from '../../execution/types.js'
+import { assertSameExecutionEnvironment } from '../../execution/binding.js'
 import { createHash } from 'node:crypto'
 import {
   closeSync,
@@ -51,7 +56,7 @@ export function agentMemoryPathComponent(agentType: string): string {
 }
 
 function getRoleWorkspaceCwd(): string {
-  return peekAmbientRuntimeSession()?.roleWorkspace.cwd ?? process.cwd()
+  return peekAmbientRuntimeSession()?.roleWorkspace.cwd ?? getCanonicalSettingsAuthority()?.executionWorkspace?.projectRoot ?? process.cwd()
 }
 
 function findCanonicalGitRoot(start: string): string | undefined {
@@ -69,7 +74,10 @@ function sanitizeProjectPath(path: string): string {
 }
 
 function projectMemoryNamespace(cwd: string): string {
-  const canonicalProject = normalize(findCanonicalGitRoot(cwd) ?? cwd)
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace
+  const canonicalProject = workspace
+    ? executionEnvironmentCacheKey(workspace.environment.binding, workspace.memoryProjectRoot)
+    : normalize(findCanonicalGitRoot(cwd) ?? cwd)
   const readable = sanitizeProjectPath(canonicalProject).slice(-80) || 'project'
   const digest = createHash('sha256')
     .update(canonicalProject)
@@ -184,6 +192,7 @@ export function ensureAgentMemoryDir(
   scope: AgentMemoryScope,
   cwd: string = getRoleWorkspaceCwd(),
 ): string {
+  assertSynchronousMemorySource(scope)
   const directory = migrateLegacyAgentScopedDirectory(
     getAgentMemoryScopeRoot(scope, cwd),
     getAgentMemoryTrustAnchor(scope, cwd),
@@ -394,6 +403,7 @@ export function isAuthorizedAgentMemoryPath(
   },
 ): boolean {
   if (authorization === undefined) return false
+  assertSynchronousMemorySource(authorization.scope)
   const scopedCwd = roleWorkspaceCwd === undefined
     ? getRoleWorkspaceCwd()
     : roleWorkspaceCwd
@@ -457,6 +467,32 @@ export function loadAgentMemoryPrompt(
   scope: AgentMemoryScope,
   cwd: string = getRoleWorkspaceCwd(),
 ): string {
+  assertSynchronousMemorySource(scope)
+  let memoryDir: string
+  try {
+    memoryDir = ensureAgentMemoryDir(agentType, scope, cwd)
+  } catch {
+    return [
+      '# Persistent Agent Memory',
+      '',
+      'Memory unavailable: the configured directory failed workspace safety checks.',
+    ].join('\n')
+  }
+
+  void mkdir(memoryDir, { recursive: true }).catch(() => {})
+
+  const entrypoint = join(memoryDir, MEMORY_ENTRYPOINT)
+  const entrypointContent = readRegularMemoryEntrypoint(
+    entrypoint,
+    memoryDir,
+    scope,
+    cwd,
+  )
+
+  return renderAgentMemoryPrompt(scope, memoryDir, entrypointContent)
+}
+
+function renderAgentMemoryPrompt(scope: AgentMemoryScope, memoryDir: string, entrypointContent: string): string {
   let scopeNote: string
   switch (scope) {
     case 'user':
@@ -473,32 +509,11 @@ export function loadAgentMemoryPrompt(
       break
   }
 
-  let memoryDir: string
-  try {
-    memoryDir = ensureAgentMemoryDir(agentType, scope, cwd)
-  } catch {
-    return [
-      '# Persistent Agent Memory',
-      '',
-      'Memory unavailable: the configured directory failed workspace safety checks.',
-    ].join('\n')
-  }
-
-  void mkdir(memoryDir, { recursive: true }).catch(() => {})
-
   const coworkExtraGuidelines = getSessionCoworkMemoryExtraGuidelines()
   const extraGuidelines =
     coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
       ? [scopeNote, coworkExtraGuidelines]
       : [scopeNote]
-  const entrypoint = join(memoryDir, MEMORY_ENTRYPOINT)
-  const entrypointContent = readRegularMemoryEntrypoint(
-    entrypoint,
-    memoryDir,
-    scope,
-    cwd,
-  )
-
   return [
     '# Persistent Agent Memory',
     '',
@@ -511,4 +526,67 @@ export function loadAgentMemoryPrompt(
     entrypointContent ||
       `Your ${MEMORY_ENTRYPOINT} is currently empty. When you save new memories, they will appear here.`,
   ].join('\n')
+}
+
+/** Task scope and controller-owned user/explicit remote memory are distinct sources. */
+export function taskAgentMemoryEnvironment(
+  scope: AgentMemoryScope,
+  environment = getCanonicalSettingsAuthority()?.executionWorkspace?.environment,
+): ContentExecutionEnvironment | undefined {
+  return scope === 'user' || (scope === 'local' && getSessionRemoteMemoryRoot() !== undefined)
+    ? undefined : environment
+}
+
+function assertSynchronousMemorySource(scope: AgentMemoryScope): void {
+  if (taskAgentMemoryEnvironment(scope)) {
+    throw new ExecutionEnvironmentError('environment_not_ready', 'Task agent memory requires protected asynchronous loading', false)
+  }
+}
+
+/** Capture task bytes before publishing a synchronous, immutable catalog prompt. */
+export async function readAgentMemoryPrompt(
+  agentType: string,
+  scope: AgentMemoryScope,
+  cwd: string = getRoleWorkspaceCwd(),
+  environment = getCanonicalSettingsAuthority()?.executionWorkspace?.environment,
+): Promise<string> {
+  if (environment && scope === 'local' && getSessionRemoteMemoryRoot() !== undefined) {
+    const workspace = getCanonicalSettingsAuthority()?.executionWorkspace
+    if (!workspace) throw new ExecutionEnvironmentError('environment_not_ready', 'Remote project memory requires a captured execution workspace', false)
+    assertSameExecutionEnvironment(environment.binding, workspace.environment.binding)
+  }
+  const taskEnvironment = taskAgentMemoryEnvironment(scope, environment)
+  if (!taskEnvironment) return loadAgentMemoryPrompt(agentType, scope, cwd)
+  const memoryDir = getAgentMemoryDir(agentType, scope, cwd)
+  try {
+    let entrypoint = join(memoryDir, MEMORY_ENTRYPOINT)
+    // Discovery reads safe legacy memory without performing an unadmitted rename.
+    // Migration and directory creation belong to admitted memory mutations.
+    const legacy = legacyAgentMemoryPathComponent(agentType)
+    try { await taskEnvironment.filesystem.describePath(dirname(entrypoint), { followSymlinks: false }) }
+    catch (error) {
+      if (!contentPathMissing(error)) throw error
+      if (legacy !== null) entrypoint = join(dirname(memoryDir), legacy, MEMORY_ENTRYPOINT)
+    }
+    const content = await readScopedExecutionText(taskEnvironment, cwd, entrypoint)
+    return renderAgentMemoryPrompt(scope, memoryDir, content?.trim() ?? '')
+  } catch (error) {
+    rethrowContentAuthorityError(error)
+    return ['# Persistent Agent Memory', '', 'Memory unavailable: the configured directory failed workspace safety checks.'].join('\n')
+  }
+}
+
+export async function captureAgentMemoryPrompt<T extends {
+  readonly agentType: string
+  readonly memory?: AgentMemoryScope
+  readonly roleDefinitionPrompt?: string
+  readonly getSystemPrompt: () => string
+}>(definition: T, cwd: string, environment: ContentExecutionEnvironment): Promise<T> {
+  if (!definition.memory) return definition
+  if (typeof definition.roleDefinitionPrompt !== 'string') {
+    throw new ExecutionEnvironmentError('invalid_request', 'Agent memory capture requires the original role prompt', false)
+  }
+  const memory = await readAgentMemoryPrompt(definition.agentType, definition.memory, cwd, environment)
+  const prompt = `${definition.roleDefinitionPrompt}\n\n${memory}`
+  return { ...definition, getSystemPrompt: () => prompt }
 }

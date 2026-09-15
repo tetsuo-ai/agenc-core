@@ -53,17 +53,26 @@ import {
   getSessionReadSnapshot,
   hasSessionRead,
   recordSessionRead,
+  resolveSessionId,
   safePathAllowingSessionPlanFile,
   SESSION_ID_ARG,
   type SessionReadViewKind,
 } from "./filesystem.js";
-import { checkMemorySecrets } from "../../memory/privacy.js";
+import { checkMemorySecrets, scanForSecrets } from "../../memory/privacy.js";
+import { SESSION_ALLOWED_ROOTS_ARG, SESSION_ALLOWED_ROOTS_SIG_ARG, verifyAllowedRoots } from "../../agents/_deps/filesystem-args.js";
+import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { captureExecutionPermissionAuthority } from "../../execution/permission-authority.js";
+import { bindExecutionToolFileRead, resolveExecutionToolReadPath } from "../../execution/tool-file-read.js";
+import { sameExecutionPathDescription } from "../../execution/path-description.js";
+import { rethrowContentAuthorityError } from "../../execution/content-filesystem.js";
+import type { ExecutionWorkspace } from "../../execution/workspace.js";
+import { ExecutionEnvironmentError, type ExecutionPathDescription } from "../../execution/types.js";
 import {
   agentNamespacePathHint,
   denyAgentNamespacePath,
   isAgentNamespacePath,
 } from "./agent-path-hints.js";
-import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { checkToolPathPermissionAsync } from "../../permissions/path-validation.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import {
@@ -71,9 +80,11 @@ import {
   WorkspaceMutationCoordinatorError,
   workspaceAuthoritativeRead,
   workspaceMutationAdmissionToolResult,
+  workspaceMutationCoordinators,
 } from "../../workspace/mutation-coordinator.js";
 import {
   executeWorkspaceFileMutation,
+  captureWorkspaceFilePathTransactionGuard,
   type WorkspaceFileMutationTestHooks,
 } from "../../workspace/file-mutation-transaction.js";
 import { logForDebugging } from "../../utils/debug.js";
@@ -299,6 +310,124 @@ function buildSnapshot(
   };
 }
 
+async function executeTaskFileWrite(workspace: ExecutionWorkspace, config: FileWriteToolConfig,
+  rawArgs: Record<string, unknown>, filePath: string, content: string, maxWriteBytes: number): Promise<ToolResult> {
+  if (filePath.toLowerCase().endsWith(".ipynb")) return preMutationErrorResult(NOTEBOOK_REDIRECT_MESSAGE);
+  const data = Buffer.from(content, "utf8");
+  if (data.length > maxWriteBytes) {
+    return preMutationErrorResult(`Content size ${data.length} bytes exceeds limit of ${maxWriteBytes} bytes`);
+  }
+  const allowedPaths = [...(config.allowedPaths ?? [workspace.projectRoot]),
+    ...verifyAllowedRoots(rawArgs[SESSION_ALLOWED_ROOTS_ARG], rawArgs[SESSION_ALLOWED_ROOTS_SIG_ARG])];
+  const options = { allowedPaths, cwd: asNonEmptyString(rawArgs.cwd) };
+  const sessionId = resolveSessionId(rawArgs);
+  const toolCallId = asNonEmptyString(rawArgs.__callId);
+  const metadata = { ...(sessionId ? { sessionId } : {}), ...(toolCallId ? { toolCallId } : {}) };
+  let transactionEntered = false;
+  try {
+    const source = await resolveExecutionToolReadPath(workspace, filePath, options);
+    if (source.description && (BigInt(source.description.identity.mode) & 0o170000n) !== 0o100000n) {
+      return preMutationErrorResult(`file_path does not resolve to a regular file: ${filePath}`);
+    }
+    if (source.isMemoryPath) {
+      const secrets = scanForSecrets(content);
+      if (secrets.length) return preMutationErrorResult(
+        `Content contains potential secrets (${secrets.map(secret => secret.label).join(", ")}) and cannot be written to memory. ` +
+        "Memory files are stored in plain text and re-injected into later prompts. Remove the sensitive content and try again.");
+    }
+    return await workspaceMutationCoordinators.preparePaths([source.canonical], async () => {
+      const guard = await captureWorkspaceFilePathTransactionGuard(source.canonical);
+      const existed = guard.targetExisted;
+      let beforeText = "";
+      let postDescription: ExecutionPathDescription;
+      let failure: unknown;
+      try {
+        // Correlate the held original bytes with the permission/read evidence.
+        // This same guard survives admission and is consumed by the transaction.
+        await source.validate();
+        await guard.assertOriginalState();
+        if (existed !== Boolean(source.description)) {
+          return preMutationErrorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
+        }
+        beforeText = normalizeNewlines(guard.backupContent?.toString("utf8") ?? "");
+        if (existed && sessionId) {
+          if (!hasSessionRead(sessionId, source.canonical)) return preMutationErrorResult(READ_REQUIRED_MESSAGE);
+          const snapshot = getSessionReadSnapshot(sessionId, source.canonical);
+          if (!snapshot?.executionFile || !source.description ||
+              !sameExecutionPathDescription(snapshot.executionFile, source.description)) {
+            return preMutationErrorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
+          }
+          const previous = snapshot.rawContent ?? snapshot.content;
+          if (snapshot.viewKind === "full" && snapshot.isPartialView !== true &&
+              typeof previous === "string" && normalizeNewlines(previous) !== beforeText) {
+            return preMutationErrorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
+          }
+        } else if (existed && !shouldBypassSessionGuard(rawArgs)) {
+          return preMutationErrorResult(SESSION_ID_MISSING_ERROR);
+        }
+        const admission = await prepareWorkspaceMutation({ path: source.canonical, source: "file_write",
+          beforeText, afterText: content, ...metadata });
+        const rejection = workspaceMutationAdmissionToolResult(admission);
+        if (rejection) return asPreMutationRefusal(rejection);
+        transactionEntered = true;
+        await executeWorkspaceFileMutation({ admission, path: source.canonical, afterText: content,
+          preflightGuard: guard, writeUsesBoundMutation: true, metadata, testHooks: config,
+          write: async (assertCurrentPathState, targetExisted, boundMutation) => {
+            await source.validate();
+            await assertCurrentPathState();
+            await config.__testAfterPreWriteCheck?.({ path: source.canonical, targetExisted });
+            await boundMutation.writeContent(data);
+          },
+        });
+        // Publish a snapshot only after observing the acknowledged bytes through
+        // a fresh protected read, then successfully releasing both capabilities.
+        const post = await bindExecutionToolFileRead(workspace, filePath, options);
+        let readFailure: unknown;
+        try {
+          const observed = await post.capability.readFile(data.length);
+          if (!observed.content.equals(data)) {
+            throw new ExecutionEnvironmentError("path_conflict", "Task file changed after write", true, false);
+          }
+          await post.validate();
+          await guard.assertState({ kind: "content", content: data });
+          postDescription = post.description;
+        } catch (error) { readFailure = error; throw error; }
+        finally {
+          try { await post.capability.dispose(); }
+          catch (cleanup) {
+            if (readFailure !== undefined) throw new AggregateError([readFailure, cleanup], "Post-write read and release failed", { cause: readFailure });
+            throw cleanup;
+          }
+        }
+      } catch (error) { failure = error; throw error; }
+      finally {
+        try { await guard.dispose(); }
+        catch (cleanup) {
+          if (failure !== undefined) throw new AggregateError([failure, cleanup], "Task write and guard release failed", { cause: failure });
+          throw cleanup;
+        }
+      }
+      source.assertCurrent();
+      if (sessionId) recordSessionRead(sessionId, source.canonical, {
+        ...buildSnapshot(content, Number(BigInt(postDescription.identity.mtimeNs)) / 1_000_000),
+        executionBinding: source.executionBinding, executionFile: postDescription,
+      });
+      try {
+        await (readFileWriteTouchedPathCallback(rawArgs) ?? config.onTouchedPath)?.(source.canonical);
+      } catch (error) {
+        rethrowContentAuthorityError(error);
+        logForDebugging(`Post-write skill discovery failed for ${source.canonical}: ${error instanceof Error ? error.message : String(error)}`, { level: "warn" });
+      }
+      return { ...successResult(existed ? `The file ${filePath} has been updated successfully.` : `File created successfully at: ${filePath}`),
+        metadata: buildFileMutationMetadata({ filePath, operation: existed ? "write" : "create", beforeText, afterText: content }) };
+    });
+  } catch (error) {
+    rethrowContentAuthorityError(error);
+    const message = error instanceof Error ? error.message : `failed to write ${filePath}`;
+    return transactionEntered ? errorResult(message) : preMutationErrorResult(message);
+  }
+}
+
 export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
   const allowedPaths = config.allowedPaths ?? [process.cwd()];
   const maxWriteBytes = config.maxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES;
@@ -333,7 +462,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       required: ["file_path", "content"],
       additionalProperties: false,
     },
-    checkPermissions(input, context) {
+    async checkPermissions(input, context) {
       const args = input as FileWriteToolInput;
       const filePath = asNonEmptyString(args.file_path);
       if (!filePath) {
@@ -342,19 +471,21 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
           message: "file_path must be a non-empty string",
         };
       }
-      const cwd =
-        asNonEmptyString(args.cwd) ?? allowedPaths[0] ?? process.cwd();
-      if (isAgentNamespacePath(filePath)) {
+      const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+      const permissionRoots = workspace ? config.allowedPaths ?? [workspace.projectRoot] : allowedPaths;
+      const cwd = asNonEmptyString(args.cwd) ?? (workspace
+        ? captureExecutionPermissionAuthority(workspace).roleCwd : allowedPaths[0] ?? process.cwd());
+      if (!workspace && isAgentNamespacePath(filePath)) {
         return denyAgentNamespacePath(filePath, cwd);
       }
-      return checkToolPathPermission({
+      return checkToolPathPermissionAsync({
         toolName: FILE_WRITE_TOOL_NAME,
         input: input as Record<string, unknown>,
         path: filePath,
         cwd,
         context: context.getAppState().toolPermissionContext,
         operationType: "write",
-        extraWorkingDirectories: allowedPaths,
+        extraWorkingDirectories: permissionRoots,
         planFileAuthority: sessionPlanFileAuthority(context.session),
       });
     },
@@ -369,6 +500,9 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       if (content === undefined) {
         return preMutationErrorResult("content must be a string");
       }
+
+      const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+      if (workspace) return executeTaskFileWrite(workspace, config, rawArgs, filePath, content, maxWriteBytes);
 
       const cwdArg = asNonEmptyString(args.cwd);
       const cwd = cwdArg ?? allowedPaths[0] ?? process.cwd();

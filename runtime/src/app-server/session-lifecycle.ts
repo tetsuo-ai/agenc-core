@@ -28,7 +28,7 @@ import type {
   ThreadStore,
 } from "../thread-store/store.js";
 import { agentIdFromThreadSource } from "../thread-store/thread-source.js";
-import { normalizeAgentRoleWorkspace } from "../agents/role-workspace.js";
+import { agentRoleWorkspaceFromMetadata, agentRoleWorkspaceMetadata, type AgentRoleWorkspace } from "../agents/role-workspace.js";
 import type {
   JsonObject,
   JsonValue,
@@ -705,7 +705,11 @@ function toSessionSummary(session: MutableSession): SessionSummary {
     status: session.status,
     createdAt: session.createdAt,
     ...(session.cwd !== undefined ? { cwd: session.cwd } : {}),
-    ...(roleWorkspace !== undefined ? { roleWorkspace } : {}),
+    ...(roleWorkspace !== undefined ? { roleWorkspace: {
+      id: roleWorkspace.id,
+      cwd: roleWorkspace.cwd,
+      ...(roleWorkspace.executionBinding !== undefined ? { executionBinding: roleWorkspace.executionBinding } : {}),
+    } } : {}),
     ...(session.metadata !== undefined ? { metadata: session.metadata } : {}),
     ...(session.attachments.size > 0
       ? { activeAttachmentIds: activeAttachmentIds(session) }
@@ -716,41 +720,9 @@ function toSessionSummary(session: MutableSession): SessionSummary {
 
 function sessionRoleWorkspaceFromMetadata(
   metadata: JsonObject | undefined,
-): { readonly id: string; readonly cwd: string } | undefined {
-  if (metadata === undefined) return undefined;
-  const hasId = Object.prototype.hasOwnProperty.call(
-    metadata,
-    "agentRoleWorkspaceId",
-  );
-  const hasCwd = Object.prototype.hasOwnProperty.call(
-    metadata,
-    "agentRoleWorkspaceCwd",
-  );
-  if (!hasId && !hasCwd) return undefined;
-
-  const rawId = metadata.agentRoleWorkspaceId;
-  const id = typeof rawId === "string" ? nonEmptyString(rawId) : undefined;
-  if (id === undefined) {
-    throw invalidRoleWorkspaceProvenance(
-      "agentRoleWorkspaceId must be a non-empty absolute path",
-    );
-  }
-
-  const rawCwd = metadata.agentRoleWorkspaceCwd;
-  const cwd = hasCwd
-    ? typeof rawCwd === "string"
-      ? nonEmptyString(rawCwd)
-      : undefined
-    : id;
-  if (cwd === undefined) {
-    throw invalidRoleWorkspaceProvenance(
-      "agentRoleWorkspaceCwd must be a non-empty absolute path when present",
-    );
-  }
-
+): AgentRoleWorkspace | undefined {
   try {
-    const normalized = normalizeAgentRoleWorkspace({ id, cwd });
-    return { id: normalized.id, cwd: normalized.cwd };
+    return agentRoleWorkspaceFromMetadata(metadata);
   } catch (error) {
     throw invalidRoleWorkspaceProvenance(
       error instanceof Error ? error.message : String(error),
@@ -860,8 +832,7 @@ function storedThreadToSessionSummary(
     recovered: true,
     ...(roleWorkspace !== undefined
       ? {
-          agentRoleWorkspaceId: roleWorkspace.id,
-          agentRoleWorkspaceCwd: roleWorkspace.cwd,
+          ...agentRoleWorkspaceMetadata(roleWorkspace),
         }
       : {}),
   };
@@ -871,13 +842,18 @@ function storedThreadToSessionSummary(
     status: "waiting",
     createdAt: thread.createdAt,
     ...(thread.cwd !== undefined ? { cwd: thread.cwd } : {}),
+    ...(roleWorkspace !== undefined ? { roleWorkspace: {
+      id: roleWorkspace.id,
+      cwd: roleWorkspace.cwd,
+      ...(roleWorkspace.executionBinding !== undefined ? { executionBinding: roleWorkspace.executionBinding } : {}),
+    } } : {}),
     metadata,
   };
 }
 
 function roleWorkspaceFromThreadSource(
   source: ThreadSource | undefined,
-): { readonly id: string; readonly cwd: string } | undefined {
+): AgentRoleWorkspace | undefined {
   if (typeof source !== "object" || source === null || Array.isArray(source)) {
     return undefined;
   }
@@ -893,20 +869,11 @@ function roleWorkspaceFromThreadSource(
         ? (nested as Record<string, unknown>)
         : undefined;
   if (spawnSource === undefined) return undefined;
-  const rawId = spawnSource.agentRoleWorkspaceId;
-  if (rawId === undefined) return undefined;
-  if (typeof rawId !== "string" || nonEmptyString(rawId) === undefined) {
-    throw new AgenCSessionLifecycleError(
-      "INVALID_ARGUMENT",
-      "Recovered agent role workspace provenance is malformed",
-    );
-  }
   try {
-    return normalizeAgentRoleWorkspace({ id: rawId, cwd: rawId });
+    return agentRoleWorkspaceFromMetadata(spawnSource);
   } catch (error) {
-    throw new AgenCSessionLifecycleError(
-      "INVALID_ARGUMENT",
-      `Recovered agent role workspace provenance is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    throw invalidRoleWorkspaceProvenance(
+      `Recovered provenance is invalid: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }

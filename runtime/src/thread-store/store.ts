@@ -1532,6 +1532,7 @@ function buildFallbackSessionMeta(entry: RegistryEntry): SessionMetaLine {
     originator: serializedSource ?? "thread-store",
     agencVersion: "unknown",
     rolloutSchemaVersion: ROLLOUT_SCHEMA_VERSION,
+    executionEnvironment: { kind: "local" },
     ...(entry.model !== undefined ? { model: entry.model } : {}),
     ...(entry.modelProvider !== undefined
       ? { modelProvider: entry.modelProvider }

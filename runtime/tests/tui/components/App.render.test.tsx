@@ -1,3 +1,4 @@
+import { createAgentRoleWorkspace } from "../../../src/agents/role-workspace.js";
 import { PassThrough } from "node:stream";
 import { createHash } from "node:crypto";
 import {
@@ -1003,6 +1004,7 @@ function createSession(
     readonly nextInternalSubId?: AgenCBridgeSession["nextInternalSubId"];
     readonly executionCwd?: string;
     readonly roleWorkspaceCwd?: string;
+    readonly roleWorkspace?: AgenCBridgeSession["roleWorkspace"];
     readonly agentDefinitions?: AgenCBridgeSession["agentDefinitions"];
     readonly enqueueIdleInputBatch?: AgenCBridgeSession["enqueueIdleInputBatch"];
     readonly authBackend?: AgenCBridgeSession["services"]["authBackend"];
@@ -1023,7 +1025,7 @@ function createSession(
   const roleWorkspaceCwd = opts.roleWorkspaceCwd ?? executionCwd;
   return {
     conversationId: "conversation-app-smoke",
-    roleWorkspace: { id: roleWorkspaceCwd, cwd: roleWorkspaceCwd },
+    roleWorkspace: opts.roleWorkspace ?? { id: roleWorkspaceCwd, cwd: roleWorkspaceCwd },
     ...(opts.agentDefinitions !== undefined
       ? { agentDefinitions: opts.agentDefinitions }
       : {}),
@@ -3874,14 +3876,17 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     expect(all).toEqual(
       expect.arrayContaining(["default", "scanner", "runner"]),
     );
-    expect(roleDefinitionProbe.mock.calls).toEqual([[roleWorkspaceCwd]]);
+    expect(roleDefinitionProbe.mock.calls).toEqual([[{ id: roleWorkspaceCwd, cwd: roleWorkspaceCwd }]]);
   });
 
-  test("uses the session's canonical custom-agent catalog on the first render", async () => {
+  test.each([undefined, {
+    kind: "docker" as const, containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32),
+  }])("uses the session's canonical custom-agent catalog on the first render (%j)", async (binding) => {
     const { AgenCTuiApp } = await import("./App.js");
     providerProbe.appStateProps.length = 0;
     roleDefinitionProbe.mockClear();
     const roleWorkspaceCwd = join(tmpdir(), "agenc-tui-canonical-catalog");
+    const roleWorkspace = createAgentRoleWorkspace(roleWorkspaceCwd, binding);
     const canonicalCustomAgent = {
       agentType: "scanner",
       whenToUse: "Exact restrictive scanner",
@@ -3890,13 +3895,15 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       permissionMode: "plan" as const,
       disallowedTools: ["Write"],
       agentRoleFingerprint: "canonical-fingerprint",
+      ...(binding ? { executionBinding: binding } : {}),
       getSystemPrompt: () => "Exact restrictive scanner prompt",
     };
     const session = createSession({
       roleWorkspaceCwd,
+      roleWorkspace,
       executionCwd: join(tmpdir(), "agenc-tui-execution-worktree"),
       agentDefinitions: {
-        agentRoleWorkspaceId: roleWorkspaceCwd,
+        agentRoleWorkspaceId: roleWorkspace.id,
         activeAgents: [canonicalCustomAgent],
         allAgents: [canonicalCustomAgent],
       },
@@ -3923,6 +3930,30 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       }),
     ]);
     expect(roleDefinitionProbe).not.toHaveBeenCalled();
+  });
+
+  test("refreshes role state when a different container generation uses the same cwd", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    providerProbe.appStateProps.length = 0;
+    const sessions = ["b", "d"].map(generation => {
+      const roleWorkspace = createAgentRoleWorkspace("/app", {
+        kind: "docker", containerId: "a".repeat(64), generation: generation.repeat(64), processHandleNamespace: "c".repeat(32),
+      });
+      const agent = { agentType: `agent-${generation}`, whenToUse: "test", source: "projectSettings",
+        executionBinding: roleWorkspace.executionBinding, getSystemPrompt: () => generation };
+      return createSession({ roleWorkspace, executionCwd: "/app", agentDefinitions: {
+        agentRoleWorkspaceId: roleWorkspace.id, activeAgents: [agent], allAgents: [agent],
+      } });
+    });
+    const catalog = () => (providerProbe.appStateProps.at(-1)?.initialState as {
+      agentDefinitions: { agentRoleWorkspaceId: string; activeAgents: { agentType: string }[] };
+    }).agentDefinitions;
+    await withRenderedApp(<AgenCTuiApp session={sessions[0]} isInteractive={false} />, async ({ render }) => {
+      expect(catalog().agentRoleWorkspaceId).toBe(sessions[0].roleWorkspace?.id);
+      await render(<AgenCTuiApp session={sessions[1]} isInteractive={false} />);
+      expect(catalog().agentRoleWorkspaceId).toBe(sessions[1].roleWorkspace?.id);
+      expect(catalog().activeAgents.map(agent => agent.agentType)).toEqual(["agent-d"]);
+    });
   });
 
   test("prioritizes a pending permission overlay over an elicitation overlay", async () => {

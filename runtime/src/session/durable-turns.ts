@@ -345,6 +345,9 @@ export interface ResumableTurn {
   readonly checkpointIntegrityStatus: "valid" | "invalid" | "deferred";
   readonly checkpointIntegrityReason?: string;
   readonly lastCheckpoint: {
+    /** Omitted by legacy callers; absence always means local execution. */
+    readonly executionEnvironment?: import("../execution/types.js").ExecutionEnvironmentBinding;
+    readonly executionProcesses?: import("../unified-exec/process-recovery.js").ExecutionProcessRecoveryState;
     readonly iterationIndex: number;
     readonly checkpointSeq: number;
     readonly persistedMessageCount: number;

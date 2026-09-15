@@ -15,8 +15,6 @@
  * @module
  */
 
-import type { BigIntStats } from "node:fs";
-import { lstat, opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
   basename,
@@ -30,6 +28,9 @@ import {
 import { resolveHomeContext } from "../../config/home.js";
 
 import { normalizeExternalText } from "../_deps/file-read.js";
+import { instructionFilesystem, instructionFilesystemErrorCode, type InstructionExecutionEnvironment,
+  type InstructionFileStat, type InstructionFilesystem } from "../instruction-filesystem.js";
+import type { ExecutionEnvironmentBinding } from "../../execution/types.js";
 import {
   type InstructionFileIdentity,
   instructionFileIdentityKey,
@@ -63,6 +64,7 @@ export interface InstructionRuleFrontmatter {
 }
 
 export interface InstructionRule {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly path: string;
   readonly type: InstructionRuleType;
   readonly content: string;
@@ -75,6 +77,7 @@ export interface InstructionRule {
 }
 
 export interface RuleDirectorySnapshot {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly path: string;
   readonly identity: InstructionFileIdentity;
 }
@@ -83,6 +86,7 @@ export interface InstructionRuleDiscovery {
   readonly rules: readonly InstructionRule[];
   /** Every securely opened Markdown candidate, including filtered rules. */
   readonly files: readonly {
+    readonly executionBinding?: ExecutionEnvironmentBinding;
     readonly path: string;
     readonly identity: InstructionFileIdentity;
   }[];
@@ -92,6 +96,7 @@ export interface InstructionRuleDiscovery {
 }
 
 export interface DiscoverRulesOptions {
+  readonly executionEnvironment?: InstructionExecutionEnvironment;
   readonly rulesDir: string;
   readonly type: InstructionRuleType;
   /**
@@ -237,6 +242,7 @@ function isPathInside(child: string, parent: string): boolean {
 async function hasSymlinkComponentBelowBoundary(
   boundary: string,
   candidate: string,
+  filesystem: InstructionFilesystem,
 ): Promise<boolean> {
   const rel = relative(resolve(boundary), resolve(candidate));
   if (rel === "") return false;
@@ -244,7 +250,7 @@ async function hasSymlinkComponentBelowBoundary(
   let current = resolve(boundary);
   for (const component of rel.split(sep).filter(Boolean)) {
     current = join(current, component);
-    const stats = await lstat(current, { bigint: true });
+    const stats = await filesystem.lstat(current);
     if (stats.isSymbolicLink()) return true;
   }
   return false;
@@ -351,7 +357,7 @@ function isRuleConditional(frontmatter: InstructionRuleFrontmatter): boolean {
   return frontmatter.paths.length > 0 || frontmatter.globs.length > 0;
 }
 
-function directoryIdentity(stats: BigIntStats): InstructionFileIdentity {
+function directoryIdentity(stats: InstructionFileStat): InstructionFileIdentity {
   return {
     dev: stats.dev,
     ino: stats.ino,
@@ -374,6 +380,7 @@ function directoryIdentity(stats: BigIntStats): InstructionFileIdentity {
  * dependent prefix.
  */
 export async function scanInstructionRulePaths(opts: {
+  readonly executionEnvironment?: InstructionExecutionEnvironment;
   readonly rulesDir: string;
   readonly boundaryDir?: string;
   readonly resourceLedger?: RuleDiscoveryLedger;
@@ -383,6 +390,10 @@ export async function scanInstructionRulePaths(opts: {
   readonly directories: readonly RuleDirectorySnapshot[];
   readonly overflowed: boolean;
 }> {
+  const filesystem = instructionFilesystem(opts.executionEnvironment);
+  const executionBinding = opts.executionEnvironment?.binding;
+  if (executionBinding !== undefined && (!isAbsolute(opts.rulesDir) ||
+      (opts.boundaryDir !== undefined && !isAbsolute(opts.boundaryDir)))) throw new TypeError("Task rule paths must be absolute");
   const rulesRoot = resolve(opts.rulesDir);
   const boundary = resolve(opts.boundaryDir ?? opts.rulesDir);
   const ledger = opts.resourceLedger ?? {
@@ -397,24 +408,25 @@ export async function scanInstructionRulePaths(opts: {
   }
   let canonicalBoundary: string;
   try {
-    canonicalBoundary = await realpath(boundary);
+    canonicalBoundary = await filesystem.realpath(boundary);
     if (
       !isPathInside(rulesRoot, boundary) ||
-      await hasSymlinkComponentBelowBoundary(boundary, rulesRoot)
+      await hasSymlinkComponentBelowBoundary(boundary, rulesRoot, filesystem)
     ) {
       return { paths: [], files: [], directories: [], overflowed: false };
     }
-  } catch {
+  } catch (error) {
+    instructionFilesystemErrorCode(error);
     return { paths: [], files: [], directories: [], overflowed: false };
   }
 
   try {
-    const rootStats = await lstat(rulesRoot, { bigint: true });
+    const rootStats = await filesystem.lstat(rulesRoot);
     if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
       return { paths: [], files: [], directories: [], overflowed: false };
     }
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
+    const code = instructionFilesystemErrorCode(error);
     if (code === "ENOENT" || code === "ENOTDIR") {
       return { paths: [], files: [], directories: [], overflowed: false };
     }
@@ -436,14 +448,14 @@ export async function scanInstructionRulePaths(opts: {
         ledger.overflowed = true;
         return { paths: [], files: [], directories: [], overflowed: true };
       }
-      const before = await lstat(current.path, { bigint: true });
+      const before = await filesystem.lstat(current.path);
       if (before.isSymbolicLink() || !before.isDirectory()) {
         if (current.depth === 0) {
           return { paths: [], files: [], directories: [], overflowed: false };
         }
         continue;
       }
-      const canonicalDirectory = await realpath(current.path);
+      const canonicalDirectory = await filesystem.realpath(current.path);
       if (!isPathInside(canonicalDirectory, canonicalBoundary)) {
         if (current.depth === 0) {
           return { paths: [], files: [], directories: [], overflowed: false };
@@ -452,7 +464,7 @@ export async function scanInstructionRulePaths(opts: {
       }
 
       const entries: Array<{ name: string; path: string }> = [];
-      const handle = await opendir(current.path, { bufferSize: 32 });
+      const handle = await filesystem.opendir(current.path, before);
       for await (const entry of handle) {
         scannedEntries += 1;
         ledger.scannedEntries += 1;
@@ -466,10 +478,11 @@ export async function scanInstructionRulePaths(opts: {
         entries.push({ name: entry.name, path: join(current.path, entry.name) });
       }
       entries.sort((left, right) => left.name.localeCompare(right.name));
-      directories.push({ path: current.path, identity: directoryIdentity(before) });
+      directories.push({ path: current.path, identity: directoryIdentity(before),
+        ...(executionBinding === undefined ? {} : { executionBinding }) });
 
       for (const entry of entries) {
-        const stats = await lstat(entry.path, { bigint: true });
+        const stats = await filesystem.lstat(entry.path);
         if (stats.isSymbolicLink()) continue;
         if (stats.isDirectory()) {
           if (current.depth + 1 < MAX_RULE_DEPTH) {
@@ -479,14 +492,15 @@ export async function scanInstructionRulePaths(opts: {
         }
         if (stats.isFile() && entry.name.endsWith(".md")) {
           paths.push(entry.path);
-          files.push({ path: entry.path, identity: directoryIdentity(stats) });
+          files.push({ path: entry.path, identity: directoryIdentity(stats),
+            ...(executionBinding === undefined ? {} : { executionBinding }) });
         }
       }
     }
 
     // Detect directory replacement or mutation at any point during traversal.
     for (const directory of directories) {
-      const after = await lstat(directory.path, { bigint: true });
+      const after = await filesystem.lstat(directory.path);
       if (
         after.isSymbolicLink() ||
         !after.isDirectory() ||
@@ -497,7 +511,8 @@ export async function scanInstructionRulePaths(opts: {
         return { paths: [], files: [], directories: [], overflowed: true };
       }
     }
-  } catch {
+  } catch (error) {
+    instructionFilesystemErrorCode(error);
     ledger.overflowed = true;
     return { paths: [], files: [], directories: [], overflowed: true };
   }
@@ -528,6 +543,7 @@ export async function discoverInstructionRulesDetailed(
   const includeConditional = opts.includeConditional ?? true;
   const boundary = opts.boundaryDir ?? opts.rulesDir;
   const scan = await scanInstructionRulePaths({
+    executionEnvironment: opts.executionEnvironment,
     rulesDir: opts.rulesDir,
     ...(opts.boundaryDir !== undefined ? { boundaryDir: opts.boundaryDir } : {}),
     ...(opts.resourceLedger !== undefined
@@ -556,6 +572,7 @@ export async function discoverInstructionRulesDetailed(
     }
     ledger.openedFiles += 1;
     const read = await readInstructionFileSnapshot({
+      executionEnvironment: opts.executionEnvironment,
       requestedPath: filePath,
       boundaryRoot: boundary,
       workspaceRoot: boundary,
@@ -565,6 +582,7 @@ export async function discoverInstructionRulesDetailed(
     if (!read.ok) continue;
     fileEvidence.delete(filePath);
     fileEvidence.set(read.snapshot.canonicalPath, {
+      ...(read.snapshot.executionBinding === undefined ? {} : { executionBinding: read.snapshot.executionBinding }),
       path: read.snapshot.canonicalPath,
       identity: read.snapshot.identity,
     });
@@ -591,6 +609,7 @@ export async function discoverInstructionRulesDetailed(
     }
 
     out.push({
+      ...(read.snapshot.executionBinding === undefined ? {} : { executionBinding: read.snapshot.executionBinding }),
       path: filePath,
       type: opts.type,
       content: parsed.body,

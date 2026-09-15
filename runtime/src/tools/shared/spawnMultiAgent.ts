@@ -1238,6 +1238,7 @@ export function assertTeammateSpawnRoleWorkspace(opts: {
   const suppliedWorkspace = normalizeAgentRoleWorkspace({
     id: opts.suppliedWorkspaceId,
     cwd: opts.suppliedWorkspaceCwd,
+    executionBinding: opts.parentWorkspace.executionBinding,
   })
   assertAgentRoleWorkspaceMatches(opts.parentWorkspace, suppliedWorkspace.id)
   assertAgentRoleWorkspaceMatches(

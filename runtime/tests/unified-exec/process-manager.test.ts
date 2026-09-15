@@ -1228,14 +1228,14 @@ describe("background-shell trio (task 8)", () => {
       yield_time_ms: 100,
     });
     const killId = longRunner.process_id!;
-    expect(manager.terminateProcess(killId)).toEqual({ terminated: true });
-    // Wait for the SIGTERM to land (exit is asynchronous), then a
-    // second kill (or an unknown id) is a benign no-op.
+    expect(await manager.terminateProcess(killId)).toEqual({ terminated: true });
+    // Successful termination has already established cleanup; final output
+    // remains available and a second kill is a benign no-op.
     await manager
       .writeStdin({ session_id: killId, chars: "", yield_time_ms: 100 })
       .catch(() => undefined);
-    expect(manager.terminateProcess(killId)).toEqual({ terminated: false });
-    expect(manager.terminateProcess(999_999)).toEqual({ terminated: false });
+    expect(await manager.terminateProcess(killId)).toEqual({ terminated: false });
+    expect(await manager.terminateProcess(999_999)).toEqual({ terminated: false });
 
     await manager.closeAll();
   }, 40_000);

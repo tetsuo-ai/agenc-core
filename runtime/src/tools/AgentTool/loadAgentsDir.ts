@@ -21,6 +21,10 @@ import {
 } from 'node:path'
 
 import yaml from 'js-yaml'
+import { ContentFilesystem, rethrowContentAuthorityError, type ContentExecutionEnvironment } from '../../execution/content-filesystem.js'
+import { readExecutionMarkdownTier } from '../../execution/markdown-content.js'
+import { assertSameExecutionEnvironment, LOCAL_EXECUTION_ENVIRONMENT } from '../../execution/binding.js'
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey, type ExecutionEnvironmentBinding } from '../../execution/types.js'
 import { z } from 'zod/v4'
 
 import type { AgenCConfig } from '../../config/schema.js'
@@ -28,10 +32,12 @@ import {
   createAgentRoleWorkspace,
   listBuiltInAgentRoles,
   listRegisteredAgentRoles,
+  captureAgentRole,
 } from '../../agents/role.js'
 import { canonicalAgentRoleName } from '../../agents/role-presentation.js'
 import { agentDefinitionFingerprint } from '../../agents/agent-definition-fingerprint.js'
 import type { AgentRoleWorkspace } from '../../agents/role.js'
+import type { AgentRole } from '../../agents/role.js'
 import {
   USER_ADDRESSABLE_PERMISSION_MODES,
   type PermissionMode,
@@ -52,7 +58,7 @@ import {
   getCanonicalSettingsAuthority,
 } from '../../utils/settings/canonicalAuthority.js'
 import { AGENT_COLORS, setAgentColor, type AgentColorName } from './agentColorManager.js'
-import { loadAgentMemoryPrompt } from './agentMemory.js'
+import { loadAgentMemoryPrompt, captureAgentMemoryPrompt } from './agentMemory.js'
 
 export type HooksSettings = Partial<Record<string, unknown[]>>
 
@@ -128,6 +134,7 @@ const AgentMcpServerSpecSchema = () =>
   ])
 
 export type BaseAgentDefinition = {
+  readonly executionBinding?: ExecutionEnvironmentBinding
   agentType: string
   whenToUse: string
   tools?: string[]
@@ -173,6 +180,7 @@ export type CustomAgentDefinition = BaseAgentDefinition & {
 }
 
 export type PluginAgentDefinition = BaseAgentDefinition & {
+  readonly executionBinding?: import('../../execution/types.js').ExecutionEnvironmentBinding
   getSystemPrompt: () => string
   source: 'plugin'
   filename?: string
@@ -232,6 +240,7 @@ export function findAgentDefinitionByType(
 type FailedAgentFile = { path: string; error: string }
 
 type MarkdownAgentFile = {
+  readonly executionBinding?: ExecutionEnvironmentBinding
   filePath: string
   baseDir: string
   frontmatter: Record<string, unknown>
@@ -508,6 +517,7 @@ export function roleToAgentDefinition(
     ? Array.from(role.config.allowlist)
     : undefined
   const definition = {
+    ...(role.executionBinding ? { executionBinding: role.executionBinding } : {}),
     agentType: role.name,
     whenToUse: description,
     source: 'built-in' as const,
@@ -543,8 +553,9 @@ export function requireAgentDefinitionRoleFingerprint(
 
 export function bindAgentDefinitionToWorkspace(
   definition: AgentDefinition,
-  _workspace: AgentRoleWorkspace,
+  workspace: AgentRoleWorkspace,
 ): AgentDefinition {
+  assertAgentDefinitionExecutionBinding(definition, workspace)
   const renderedSystemPrompt = definition.getSystemPrompt()
   const boundDefinition = {
     ...definition,
@@ -556,14 +567,33 @@ export function bindAgentDefinitionToWorkspace(
   }
 }
 
+export function assertAgentDefinitionExecutionBinding(definition: AgentDefinition, workspace: AgentRoleWorkspace): void {
+  if (definition.executionBinding) {
+    assertSameExecutionEnvironment(definition.executionBinding, workspace.executionBinding ?? LOCAL_EXECUTION_ENVIRONMENT)
+  } else if (workspace.executionBinding && isRepositoryControlledAgentDefinition(definition)) {
+    throw new ExecutionEnvironmentError('invalid_execution_binding', 'Task agent definition is missing execution provenance', false)
+  }
+}
+
 function getBuiltInAgents(): BuiltInAgentDefinition[] {
   return listBuiltInAgentRoles().map(roleToAgentDefinition)
 }
 
-function getRegisteredAgents(
+const capturedProgrammaticRoles = new WeakMap<AgentDefinition, { workspaceId: string; role: AgentRole }>()
+
+export function capturedProgrammaticAgentRole(definition: AgentDefinition, workspace: AgentRoleWorkspace): AgentRole | undefined {
+  const captured = capturedProgrammaticRoles.get(definition)
+  if (!captured) return undefined
+  if (captured.workspaceId !== workspace.id) throw new ExecutionEnvironmentError('execution_binding_mismatch', 'Captured role belongs to another workspace', false)
+  return captured.role
+}
+
+async function getRegisteredAgents(
   workspace: AgentRoleWorkspace,
-): CustomAgentDefinition[] {
-  return listRegisteredAgentRoles(workspace).map(role => {
+  environment?: ContentExecutionEnvironment,
+): Promise<CustomAgentDefinition[]> {
+  const roles = await Promise.all(listRegisteredAgentRoles(workspace).map(role => captureAgentRole(role, environment)))
+  return roles.map(role => {
     const projected = roleToAgentDefinition(role)
     const definition: CustomAgentDefinition = {
       ...projected,
@@ -575,10 +605,12 @@ function getRegisteredAgents(
         : {}),
       getSystemPrompt: () => role.config.systemPrompt ?? '',
     }
-    return {
+    const captured = {
       ...definition,
       agentRoleFingerprint: agentDefinitionFingerprint(definition),
     }
+    capturedProgrammaticRoles.set(captured, { workspaceId: workspace.id, role })
+    return captured
   })
 }
 
@@ -659,6 +691,7 @@ function collectMarkdownFiles(dir: string, visitedDirs = new Set<string>()): str
 async function loadSharedMarkdownAgentFiles(
   cwd: string,
   fresh = false,
+  environment?: ContentExecutionEnvironment,
 ): Promise<MarkdownAgentFile[]> {
   // Literal specifier so esbuild discovers the module at bundle time.
   const module = (await import('../../utils/markdownConfigLoader.js')) as {
@@ -678,22 +711,32 @@ async function loadSharedMarkdownAgentFiles(
     ? await module.loadMarkdownFilesForSubdirFresh('agents', cwd)
     : await module.loadMarkdownFilesForSubdir('agents', cwd)
   return files
-    .filter(file => isSafeAgentDefinitionPath(file.baseDir, file.filePath))
+    .filter(file => {
+      if (file.executionBinding) {
+        assertSameExecutionEnvironment(file.executionBinding, environment?.binding ?? LOCAL_EXECUTION_ENVIRONMENT)
+        if (file.source !== 'projectSettings') throw new ExecutionEnvironmentError('invalid_execution_binding', 'Task markdown cannot claim controller settings authority', false)
+        return true // Already read through protected tier and file capabilities.
+      }
+      if (environment && file.source === 'projectSettings') throw new ExecutionEnvironmentError('invalid_execution_binding', 'Task markdown is missing execution provenance', false)
+      return isSafeAgentDefinitionPath(file.baseDir, file.filePath)
+    })
     .map(file => ({
       filePath: file.filePath,
       baseDir: file.baseDir,
       frontmatter: file.frontmatter,
       content: file.content,
       source: file.source as SettingSource,
+      ...(file.executionBinding ? { executionBinding: file.executionBinding } : {}),
     }))
 }
 
 async function loadMarkdownAgentFiles(
   cwd: string,
   fresh = false,
+  environment?: ContentExecutionEnvironment,
 ): Promise<{ files: MarkdownAgentFile[]; failedFiles: FailedAgentFile[] }> {
   if (markdownDirsForTesting === undefined) {
-    const sharedFiles = await loadSharedMarkdownAgentFiles(cwd, fresh)
+    const sharedFiles = await loadSharedMarkdownAgentFiles(cwd, fresh, environment)
     return { files: sharedFiles, failedFiles: [] }
   }
 
@@ -701,6 +744,18 @@ async function loadMarkdownAgentFiles(
   const failedFiles: FailedAgentFile[] = []
   const seenFileIds = new Set<string>()
   for (const { dir, source } of markdownDirsForTesting) {
+    if (environment && source === 'projectSettings') {
+      for (const file of await readExecutionMarkdownTier(dir, environment)) {
+        const identity = executionEnvironmentCacheKey(environment.binding, file.identity)
+        if (seenFileIds.has(identity)) continue
+        seenFileIds.add(identity)
+        try {
+          const parsed = parseMarkdown(file.content)
+          files.push({ filePath: file.filePath, baseDir: dir, ...parsed, source, executionBinding: environment.binding })
+        } catch (error) { rethrowContentAuthorityError(error); failedFiles.push({ path: file.filePath, error: errorToMessage(error) }) }
+      }
+      continue
+    }
     let filePaths: string[]
     try {
       filePaths = collectMarkdownFiles(dir)
@@ -954,8 +1009,9 @@ async function initializeAgentMemorySnapshots(
         }
       }),
     )
-  } catch {
-    // Snapshot initialization is opportunistic; agent discovery still succeeds.
+  } catch (error) {
+    rethrowContentAuthorityError(error)
+    // Optional local snapshot initialization may fail; lost task authority may not.
   }
 }
 
@@ -964,6 +1020,7 @@ async function loadPluginAgentsSafe(
   pluginStorageRoot: string,
   config: Pick<AgenCConfig, 'plugins'>,
   fresh = false,
+  executionEnvironment?: ContentExecutionEnvironment,
 ): Promise<{
   readonly agents: PluginAgentDefinition[]
   readonly failedFiles: FailedAgentFile[]
@@ -988,6 +1045,7 @@ async function loadPluginAgentsSafe(
       fresh,
       config,
       errors: issues,
+      executionEnvironment,
     })
     const agents = Array.isArray(loaded)
       ? loaded.filter((agent): agent is PluginAgentDefinition =>
@@ -1003,6 +1061,7 @@ async function loadPluginAgentsSafe(
       failedFiles: issues.map(pluginLoadIssueToFailedFile),
     }
   } catch (error) {
+    rethrowContentAuthorityError(error)
     return {
       agents: [],
       failedFiles: [{ path: 'plugins', error: errorToMessage(error) }],
@@ -1023,11 +1082,16 @@ async function loadAgentDefinitions(
     readonly pluginStorageRoot: string
     readonly config: Pick<AgenCConfig, 'plugins'>
     readonly fresh?: boolean
+    readonly executionEnvironment?: ContentExecutionEnvironment
   },
 ): Promise<WorkspaceAgentDefinitionsResult> {
-  const workspace = createAgentRoleWorkspace(cwd)
+  const environment = new ContentFilesystem(options.executionEnvironment).environment
+  if (environment && !(await new ContentFilesystem(environment).stat(cwd)).isDirectory()) {
+    throw new ExecutionEnvironmentError('invalid_request', 'Task agent workspace must be a directory', false)
+  }
+  const workspace = createAgentRoleWorkspace(cwd, environment?.binding)
   const builtInAgents = getBuiltInAgents()
-  const registeredAgents = getRegisteredAgents(workspace)
+  const registeredAgents = await getRegisteredAgents(workspace, environment)
   if (isBareMode()) {
     // Simple mode skips disk/plugin discovery, but programmatic roles are
     // already explicit in-process configuration. Keep the same workspace
@@ -1046,6 +1110,7 @@ async function loadAgentDefinitions(
     const markdownResult = await loadMarkdownAgentFiles(
       cwd,
       options.fresh === true,
+      environment,
     )
     failedFiles.push(...markdownResult.failedFiles)
     const parsedCustomAgents = markdownResult.files
@@ -1064,7 +1129,7 @@ async function loadAgentDefinitions(
             error: getParseError(file.frontmatter),
           })
         }
-        return agent
+        return agent && file.executionBinding ? { ...agent, executionBinding: file.executionBinding } : agent
       })
       .filter((agent): agent is CustomAgentDefinition => agent !== null)
 
@@ -1074,18 +1139,18 @@ async function loadAgentDefinitions(
         options.pluginStorageRoot,
         options.config,
         options.fresh === true,
+        environment,
       ),
       initializeAgentMemorySnapshots(parsedCustomAgents, cwd),
     ])
     failedFiles.push(...pluginResult.failedFiles)
 
-    const customAgents = parsedCustomAgents.map(
-      agent =>
-        bindAgentDefinitionToWorkspace(
-          agent,
-          workspace,
-        ) as CustomAgentDefinition,
-    )
+    const customAgents = await Promise.all(parsedCustomAgents.map(async agent =>
+      bindAgentDefinitionToWorkspace(
+        environment && isAutoMemoryEnabled() ? await captureAgentMemoryPrompt(agent, cwd, environment) : agent,
+        workspace,
+      ) as CustomAgentDefinition,
+    ))
 
     const scopedPluginAgents = pluginResult.agents.map(
       agent => bindAgentDefinitionToWorkspace(agent, workspace) as PluginAgentDefinition,
@@ -1114,6 +1179,7 @@ async function loadAgentDefinitions(
       ...(failedFiles.length > 0 ? { failedFiles } : {}),
     }
   } catch (error) {
+    rethrowContentAuthorityError(error)
     const safeAgents = [...builtInAgents, ...registeredAgents]
     return {
       agentRoleWorkspaceId: workspace.id,
@@ -1145,8 +1211,9 @@ const agentDefinitionsByAuthority = new CanonicalAuthorityCache<
 function agentDefinitionsCacheKey(
   cwd: string,
   pluginStorageRoot: string,
+  binding?: ExecutionEnvironmentBinding,
 ): string {
-  return `${pluginStorageRoot}\u0000${resolve(cwd)}`
+  return binding ? executionEnvironmentCacheKey(binding, JSON.stringify([cwd, pluginStorageRoot])) : `${pluginStorageRoot}\u0000${resolve(cwd)}`
 }
 
 /**
@@ -1162,12 +1229,13 @@ export function getAgentDefinitionsWithOverrides(
       'Agent definition loading requires a session ConfigStore authority',
     )
   }
-  const key = agentDefinitionsCacheKey(cwd, pluginStorageRoot)
-  const cached = agentDefinitionsByAuthority.get(key, authority)
+  const key = agentDefinitionsCacheKey(cwd, pluginStorageRoot, authority.executionWorkspace?.environment.binding)
+  const cached = authority.executionWorkspace ? undefined : agentDefinitionsByAuthority.get(key, authority)
   if (cached !== undefined) return cached
   const loaded = loadAgentDefinitions(cwd, {
     pluginStorageRoot,
     config: authority.authoritySnapshot().config,
+    executionEnvironment: authority.executionWorkspace?.environment,
   }).catch(
     (error: unknown) => {
       agentDefinitionsByAuthority.delete(key, authority)
@@ -1193,6 +1261,7 @@ export async function loadFreshAgentDefinitions(
     pluginStorageRoot,
     config: authority.authoritySnapshot().config,
     fresh: true,
+    executionEnvironment: authority.executionWorkspace?.environment,
   })
 }
 

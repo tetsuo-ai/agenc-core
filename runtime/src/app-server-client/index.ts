@@ -34,6 +34,7 @@ import {
 } from "../session/runtime-options.js";
 import { resolveAgencHome } from "../config/env.js";
 import { ConfigStore } from "../config/store.js";
+import { ExecutionEnvironmentError } from "../execution/types.js";
 import {
   resolveCanonicalStartupSelection,
   resolvedStartupProfileName,
@@ -350,7 +351,7 @@ export interface AgenCDaemonOnlyTuiContextOptions {
   readonly cwd: string;
   readonly conversationId: string;
   /** Immutable daemon-owned role authority, separate from execution cwd. */
-  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;
+  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd" | "executionBinding">;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
@@ -754,6 +755,12 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   const roleWorkspace = options.roleWorkspace
     ? normalizeAgentRoleWorkspace(options.roleWorkspace)
     : createAgentRoleWorkspace(options.cwd);
+  // Wire identity alone cannot authorize local reads of a task's cwd. The
+  // daemon execution-capability bootstrap must supply protected content first.
+  if (roleWorkspace.executionBinding?.kind === "docker") {
+    throw new ExecutionEnvironmentError("environment_not_ready",
+      "Container TUI attachment requires the daemon's protected execution content capability", false);
+  }
   const agencHome = resolveAgencHome(env);
   const configEnv = { ...env };
   if (runtimeSettings !== undefined) delete configEnv.AGENC_PROFILE;
@@ -796,6 +803,8 @@ async function createBoundAgenCDaemonOnlyTuiContext(
     pluginStorageRoot: runtimeOptions.pluginStorageRoot,
     workspaceRoot: roleWorkspace.cwd,
     config: effectiveConfig,
+    executionEnvironment: configStore.executionWorkspace?.environment,
+    executionHomePath: configStore.executionWorkspace?.homePath,
     env: {
       HOME: env.HOME,
       AGENC_MANAGED_HOME: env.AGENC_MANAGED_HOME,

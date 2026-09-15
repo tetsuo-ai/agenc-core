@@ -24,6 +24,7 @@ import {
   type TurnCheckpointV2Event,
   type TurnCheckpointV3Event,
   type TurnCheckpointV4Event,
+  type TurnCheckpointV5Event,
 } from "../../src/session/event-log.js";
 import { MAX_CHECKPOINT_FALLBACK_TEXT_BYTES } from "../../src/session/turn-checkpoint-slice.js";
 import {
@@ -112,7 +113,7 @@ describe("durable checkpoint reader", () => {
     );
   });
 
-  it("strictly dispatches v1 through v4 checkpoints and rejects unknown versions", () => {
+  it("strictly dispatches v1 through v5 checkpoints and rejects unknown versions", () => {
     const legacy = legacyCheckpoint("a".repeat(64));
     expect(readTurnCheckpoint(legacy)).toMatchObject({ version: 1 });
     expect(
@@ -142,8 +143,10 @@ describe("durable checkpoint reader", () => {
         prefixHashVersion: 3,
       }),
     ).toMatchObject({ version: 4, sourceVersion: 4 });
+    expect(readTurnCheckpoint({ ...legacy, checkpointVersion: 5, toolResultIntegrityVersion: 1,
+      prefixHashVersion: 3, executionEnvironment: { kind: "local" } })).toMatchObject({ version: 5, sourceVersion: 5 });
     expect(() =>
-      readTurnCheckpoint({ ...legacy, checkpointVersion: 5 }),
+      readTurnCheckpoint({ ...legacy, checkpointVersion: 6 }),
     ).toThrowError(
       expect.objectContaining<DurableCheckpointReadError>({
         code: "checkpoint_version_unsupported",
@@ -553,7 +556,7 @@ describe("durable checkpoint reader", () => {
       "upgrade-alpha",
     );
     const history = responseHistory(upgraded);
-    const checkpoint = v4Checkpoint(upgraded);
+    const checkpoint = v5Checkpoint(upgraded);
     expect(
       validateCheckpointPrefixV3({
         checkpoint,
@@ -593,7 +596,7 @@ describe("durable checkpoint reader", () => {
     );
     expect(
       validateCheckpointPrefixV3({
-        checkpoint: v4Checkpoint(upgraded),
+        checkpoint: v5Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: responseHistory(upgraded),
         projection,
@@ -619,7 +622,7 @@ describe("durable checkpoint reader", () => {
 
     expect(
       validateCheckpointPrefixV3({
-        checkpoint: v4Checkpoint(upgraded),
+        checkpoint: v5Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: malformed as unknown as ResponseItem[],
         projection,
@@ -762,7 +765,7 @@ describe("durable checkpoint reader", () => {
     );
     expect(
       validateCheckpointPrefixV3({
-        checkpoint: v4Checkpoint(upgraded),
+        checkpoint: v5Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: withResponseExtension as ResponseItem[],
         projection,
@@ -787,7 +790,7 @@ describe("durable checkpoint reader", () => {
     );
     expect(
       validateCheckpointPrefixV3({
-        checkpoint: v4Checkpoint(upgraded),
+        checkpoint: v5Checkpoint(upgraded),
         expectedRunId: "checkpoint-pair-v1",
         messages: withCallExtension as ResponseItem[],
         projection,
@@ -1036,11 +1039,41 @@ describe("durable checkpoint reader", () => {
 });
 
 describe("legacy durable checkpoint upgrade planner", () => {
-  it("cuts the live rollout writer over to schema v5", () => {
-    expect(ROLLOUT_SCHEMA_VERSION).toBe(5);
+  it("promotes v4 to v5 with an explicit local binding and preserves the original prefix hash", () => {
+    const original = v4CheckpointForHistory([{ role: "user", content: "keep this prefix" }]);
+    const items: RolloutItem[] = [{ type: "response_item", payload: { role: "user", content: "keep this prefix" } }, checkpointItem(original)];
+    const before = JSON.stringify(items);
+    const options = { items, runId: "binding-upgrade", projection, projectionId: "binding-upgrade", sourceKey: "binding-upgrade" };
+    const result = planLegacyDurableCheckpointUpgrade(options);
+    expect(result).toMatchObject({ status: "planned", plan: { sourceSchemaVersion: 5, targetSchemaVersion: 6, checkpointsUpgraded: 1, changed: true } });
+    if (result.status !== "planned") throw new Error("Upgrade failed");
+    expect(v5Checkpoint(result.plan.upgradedItems)).toMatchObject({ prefixHash: original.prefixHash, executionEnvironment: { kind: "local" } });
+    expect(planLegacyDurableCheckpointUpgrade({ ...options, items: result.plan.upgradedItems })).toMatchObject({ status: "planned", plan: { changed: false } });
+    expect(JSON.stringify(items)).toBe(before);
   });
 
-  it("promotes the known version-2 writer extension to checkpoint v4 in rollout schema v5", () => {
+  it("preserves a container binding and rejects mismatched metadata without rewriting source", () => {
+    const executionEnvironment = { kind: "docker" as const, containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32) };
+    const checkpoint: TurnCheckpointV5Event = { ...v4CheckpointForHistory([]), checkpointVersion: 5, executionEnvironment,
+      executionProcesses: { version: 1, binding: executionEnvironment, ownerId: "bound", authorityRevision: 0, admission: "open", entries: [] } };
+    const metadata: RolloutItem = { type: "session_meta", payload: { sessionId: "bound", timestamp: new Date().toISOString(), cwd: "/app",
+      originator: "test", agencVersion: "0.17.0", rolloutSchemaVersion: 6, executionEnvironment } };
+    const options = { runId: "bound", projection, projectionId: "bound-plan", sourceKey: "bound-plan" };
+    const items = [metadata, checkpointItem(checkpoint)];
+    expect(planLegacyDurableCheckpointUpgrade({ ...options, items })).toMatchObject({ status: "planned", plan: { changed: false, executionEnvironment } });
+    const conflicting = [metadata, checkpointItem({ ...checkpoint, executionEnvironment: { ...executionEnvironment, processHandleNamespace: "e".repeat(32) } })];
+    const before = JSON.stringify(conflicting);
+    expect(planLegacyDurableCheckpointUpgrade({ ...options, items: conflicting })).toMatchObject({ status: "invalid", failure: { code: "execution_environment_invalid", itemIndex: 1 } });
+    expect(JSON.stringify(conflicting)).toBe(before);
+    expect(planLegacyDurableCheckpointUpgrade({ ...options, items: [{ ...metadata, payload: { ...metadata.payload, executionEnvironment: undefined } }, checkpointItem(checkpoint)] }))
+      .toMatchObject({ status: "invalid", failure: { code: "execution_environment_invalid", itemIndex: 0 } });
+  });
+
+  it("cuts the live rollout writer over to schema v6", () => {
+    expect(ROLLOUT_SCHEMA_VERSION).toBe(6);
+  });
+
+  it("promotes the known version-2 writer extension to checkpoint v5 in rollout schema v6", () => {
     const source: RolloutItem[] = [
       {
         type: "session_meta",
@@ -1086,15 +1119,16 @@ describe("legacy durable checkpoint upgrade planner", () => {
       status: "planned",
       plan: {
         sourceSchemaVersion: 2,
-        targetSchemaVersion: 5,
+        targetSchemaVersion: 6,
         checkpointsUpgraded: 1,
         checkpointsValidated: 1,
         changed: true,
       },
     });
     if (outcome.status !== "planned") throw new Error("upgrade failed");
-    expect(v4Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
-      checkpointVersion: 4,
+    expect(v5Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
+      checkpointVersion: 5,
+      executionEnvironment: { kind: "local" },
       prefixHashVersion: 3,
       resumableState: {
         editorToolCallsAdmitted: 2,
@@ -1107,7 +1141,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
     expect(JSON.stringify(source)).toBe(before);
   });
 
-  it("atomically plans schema-v3 compaction history and extended-v2 checkpoints for schema v5", () => {
+  it("atomically plans schema-v3 compaction history and extended-v2 checkpoints for schema v6", () => {
     const history: ToolResultIntegrityResponseItem[] = [
       { role: "user", content: "preserve this prefix" },
     ];
@@ -1169,7 +1203,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
       status: "planned",
       plan: {
         sourceSchemaVersion: 3,
-        targetSchemaVersion: 5,
+        targetSchemaVersion: 6,
         changed: true,
         checkpointsUpgraded: 1,
         checkpointsValidated: 1,
@@ -1178,10 +1212,11 @@ describe("legacy durable checkpoint upgrade planner", () => {
     if (outcome.status !== "planned") throw new Error("upgrade failed");
     expect(outcome.plan.upgradedItems[0]).toMatchObject({
       type: "session_meta",
-      payload: { rolloutSchemaVersion: 5 },
+      payload: { rolloutSchemaVersion: 6, executionEnvironment: { kind: "local" } },
     });
-    expect(v4Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
-      checkpointVersion: 4,
+    expect(v5Checkpoint(outcome.plan.upgradedItems)).toMatchObject({
+      checkpointVersion: 5,
+      executionEnvironment: { kind: "local" },
       prefixHashVersion: 3,
       resumableState: {
         editorToolCallsAdmitted: 2,
@@ -1203,6 +1238,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
     const v2Checkpoint = checkpointForHistory([]);
     const v3Checkpoint = currentCheckpointForHistory([]);
     const v4Checkpoint = v4CheckpointForHistory([]);
+    const v5Checkpoint: TurnCheckpointV5Event = { ...v4Checkpoint, checkpointVersion: 5, executionEnvironment: { kind: "local" } };
     const metadata = (rolloutSchemaVersion: number): RolloutItem => ({
       type: "session_meta",
       payload: {
@@ -1212,6 +1248,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
         originator: "test",
         agencVersion: "0.17.0",
         rolloutSchemaVersion,
+        ...(rolloutSchemaVersion >= 6 ? { executionEnvironment: { kind: "local" as const } } : {}),
       },
     });
     const plan = (items: RolloutItem[], projectionId: string) =>
@@ -1229,6 +1266,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
       [3, v2Checkpoint, "schema3-checkpoint2"],
       [4, v3Checkpoint, "schema4-checkpoint3"],
       [5, v4Checkpoint, "schema5-checkpoint4"],
+      [6, v5Checkpoint, "schema6-checkpoint5"],
     ] as const) {
       expect(
         plan([metadata(schema), checkpointItem(checkpoint)], projectionId),
@@ -1236,7 +1274,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
         status: "planned",
         plan: {
           sourceSchemaVersion: schema,
-          targetSchemaVersion: 5,
+          targetSchemaVersion: 6,
           checkpointsValidated: 1,
         },
       });
@@ -1248,6 +1286,8 @@ describe("legacy durable checkpoint upgrade planner", () => {
       [4, v2Checkpoint, "schema4-checkpoint2"],
       [4, v4Checkpoint, "schema4-checkpoint4"],
       [5, v3Checkpoint, "schema5-checkpoint3"],
+      [5, v5Checkpoint, "schema5-checkpoint5"],
+      [6, v4Checkpoint, "schema6-checkpoint4"],
     ] as const) {
       expect(
         plan([metadata(schema), checkpointItem(checkpoint)], projectionId),
@@ -1359,8 +1399,8 @@ describe("legacy durable checkpoint upgrade planner", () => {
     expect(alphaTool?.toolResultIntegrity?.original.digest).not.toBe(
       omegaTool?.toolResultIntegrity?.original.digest,
     );
-    expect(v4Checkpoint(alpha.plan.upgradedItems).prefixHash).not.toBe(
-      v4Checkpoint(omega.plan.upgradedItems).prefixHash,
+    expect(v5Checkpoint(alpha.plan.upgradedItems).prefixHash).not.toBe(
+      v5Checkpoint(omega.plan.upgradedItems).prefixHash,
     );
     expect(alpha.plan).toMatchObject({
       changed: true,
@@ -1426,7 +1466,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
     expect(planned.plan.sessionMetaPromotionRequired).toBe(false);
     expect(planned.plan.upgradedItems[0]).toMatchObject({
       type: "session_meta",
-      payload: { rolloutSchemaVersion: 5 },
+      payload: { rolloutSchemaVersion: 6, executionEnvironment: { kind: "local" } },
     });
     expect(source[0]).toMatchObject({
       type: "session_meta",
@@ -1676,8 +1716,8 @@ describe("legacy durable checkpoint upgrade planner", () => {
         { role: "user", content: "new request" },
         { role: "assistant", content: "new answer" },
       ];
-      const oldCheckpoint = v4CheckpointForHistory(before);
-      const newCheckpoint = v4CheckpointForHistory(after);
+      const oldCheckpoint: TurnCheckpointV5Event = { ...v4CheckpointForHistory(before), checkpointVersion: 5, executionEnvironment: { kind: "local" } };
+      const newCheckpoint: TurnCheckpointV5Event = { ...v4CheckpointForHistory(after), checkpointVersion: 5, executionEnvironment: { kind: "local" } };
       if (tampered === "before") before[0] = { role: "user", content: "altered old request" };
       if (tampered === "after") after[0] = { role: "user", content: "altered new request" };
       const items: RolloutItem[] = [
@@ -2013,16 +2053,16 @@ function responseHistory(
   );
 }
 
-function v4Checkpoint(
+function v5Checkpoint(
   items: ReadonlyArray<RolloutItem>,
-): TurnCheckpointV4Event {
+): TurnCheckpointV5Event {
   for (const item of items) {
     if (
       item.type === "event_msg" &&
       item.payload.msg.type === "turn_checkpoint"
     ) {
       const readable = readTurnCheckpoint(item.payload.msg.payload);
-      if (readable.version !== 4) throw new Error("checkpoint is not v4");
+      if (readable.version !== 5) throw new Error("checkpoint is not v5");
       return readable.checkpoint;
     }
   }

@@ -23,6 +23,11 @@
 import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
 import { structuredPatch } from "diff";
+import { dirname } from "node:path";
+import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { bindExecutionToolFileRead } from "../../execution/tool-file-read.js";
+import { captureExecutionPermissionAuthority } from "../../execution/permission-authority.js";
+import { contentPathMissing, rethrowContentAuthorityError } from "../../execution/content-filesystem.js";
 
 import {
   dropSessionReadSnapshot,
@@ -173,6 +178,51 @@ export const changedFilesProducer: AttachmentProducer = async (opts) => {
   if (pending.length === 0) return [];
 
   const out: Array<EditedTextFileAttachment | EditedImageFileAttachment> = [];
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+  if (workspace) {
+    const authority = captureExecutionPermissionAuthority(workspace);
+    for (const entry of pending) {
+      if (opts.signal.aborted) break;
+      try {
+        // Prior reads authorize this exact canonical path; re-resolve aliases
+        // and memory ownership before exposing any new task content.
+        const source = await bindExecutionToolFileRead(workspace, entry.path, {
+          allowedPaths: [dirname(entry.path)],
+        });
+        let bytes: Buffer;
+        let timestamp: number;
+        try {
+          const file = await source.capability.readFile(16 * 1024 * 1024);
+          bytes = file.content;
+          timestamp = file.stats.mtimeMs;
+          await source.validate();
+        } catch (error) {
+          try { await source.capability.dispose(); }
+          catch (cleanup) { throw new AggregateError([error, cleanup], "Changed-file read and release failed", { cause: error }); }
+          throw error;
+        }
+        await source.capability.dispose();
+        authority.assertCurrent();
+        if (opts.signal.aborted) break;
+        const mediaType = IMAGE_MIME_BY_EXT[extname(entry.path).toLowerCase()];
+        if (mediaType === undefined && bytes.includes(0)) continue;
+        const nextRaw = bytes.toString(mediaType === undefined ? "utf8" : "base64");
+        if (nextRaw !== entry.previousRaw) {
+          if (mediaType) out.push({ kind: "edited_image_file", filename: entry.path, content: nextRaw, mediaType });
+          else {
+            const snippet = computeSnippet(entry.previousRaw, nextRaw);
+            if (snippet) out.push({ kind: "edited_text_file", filename: entry.path, snippet });
+          }
+        }
+        recordSessionRead(sessionId, entry.path, { rawContent: nextRaw, timestamp, viewKind: "full",
+          executionBinding: source.executionBinding, executionFile: source.description });
+      } catch (error) {
+        rethrowContentAuthorityError(error);
+        if (contentPathMissing(error)) dropSessionReadSnapshot(sessionId, entry.path);
+      }
+    }
+    return out;
+  }
 
   await Promise.all(
     pending.map(async (entry) => {

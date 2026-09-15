@@ -79,7 +79,9 @@ describe("memory extraction tool history", () => {
       env: {}, minEligibleTurns: 1, runChild,
       resolveMemoryDirectory: async () => ({ enabled: true as const, path: memoryDir }),
     };
-    const context = { session, messages, completedToolResults: [], ctx: mkCtx({ cwd: root }) };
+    const context = { session, messages, completedToolResults: [], ctx: mkCtx({ cwd: root,
+      sandboxPolicy: { value: "workspace_write" },
+      fileSystemSandboxPolicy: { allowRead: [root], allowWrite: [memoryDir], denyRead: [], denyWrite: [] } }) };
     for (const cursor of [12, 24, 26]) {
       initExtractMemories(dependencies);
       await executeExtractMemories(context);
@@ -102,7 +104,9 @@ describe("memory extraction tool history", () => {
       env: {}, minEligibleTurns: 1, runChild,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
     });
-    const context = { session, messages, completedToolResults: [], ctx: mkCtx({ cwd: root }) };
+    const context = { session, messages, completedToolResults: [], ctx: mkCtx({ cwd: root,
+      sandboxPolicy: { value: "workspace_write" },
+      fileSystemSandboxPolicy: { allowRead: [root], allowWrite: [memoryDir], denyRead: [], denyWrite: [] } }) };
     await executeExtractMemories(context);
     expect((await readMemoryExtractionState(session, memoryDir))?.processedVisibleCount).toBe(0);
     await executeExtractMemories(context);

@@ -57,6 +57,10 @@ const explicitLegacyTestBoundary = new Set([
   "config/permission-control-migration.test.ts",
   "config/plaintext-credential-migration.test.ts",
   "config/retired-config-surface-authority.test.ts",
+  // Negative task-environment fixtures verify retired input rejection and
+  // prove that a retired host shadow cannot affect container configuration.
+  "config/workspace-filesystem.test.ts",
+  "execution-host/config-probe.ts",
   // Retired paths remain protected security targets.
   "permissions/path-validation.test.ts",
   "utils/agencUiSurfaces.test.ts",

@@ -10,6 +10,8 @@ import "../helpers/cron-os-home.js";
  */
 
 import { INSTRUCTION_UPDATE_WORKSPACE_HEADER } from "../../src/prompts/attachments/messages.js";
+import { ExecutionConfigFilesystem } from "../../src/config/workspace-filesystem.js";
+import { TaskFiles } from "../execution-host/task-files-fixture.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   chmodSync,
@@ -477,6 +479,7 @@ function mkSession(opts: {
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
   readonly codeModeService?: SessionServices["codeModeService"];
+  readonly unifiedExecManager?: SessionServices["unifiedExecManager"];
   readonly pendingProviderSwitch?: {
     readonly provider: string;
     readonly model: string;
@@ -561,6 +564,7 @@ function mkSession(opts: {
   const configStore =
     opts.configStore ?? createTestConfigStore(opts.configStoreBase);
   const services: SessionServices = {
+    ...(opts.unifiedExecManager === undefined ? {} : { unifiedExecManager: opts.unifiedExecManager }),
     runtimeOptions: opts.runtimeOptions ?? resolveAgentRuntimeOptions({}),
     admissionRequired: false,
     sandboxExecutionBroker: explicitDangerBroker,
@@ -839,7 +843,13 @@ describe("daemon-owned scheduled turns", () => {
       registry.tools[0]!.execute = tool;
       const { session, events } = create("cron-owner", provider, registry);
       __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
-      const submit = vi.spyOn(session, "submit");
+      const dispatched = Promise.withResolvers<void>();
+      const originalSubmit = session.submit.bind(session);
+      const submit = vi.spyOn(session, "submit").mockImplementation((...args) => {
+        const completion = originalSubmit(...args);
+        dispatched.resolve();
+        return completion;
+      });
       const cronCreate = createModelFacingTools({ workspaceRoot, getSession: () => session })
         .find((candidate) => candidate.name === "CronCreate")!;
       const created = await cronCreate.execute({
@@ -850,6 +860,8 @@ describe("daemon-owned scheduled turns", () => {
       expect(await readCronTasks(workspaceRoot)).toEqual([]);
       expect(calls()).toBe(0);
       await advance();
+      // Virtual time does not settle the scheduler's filesystem-backed load.
+      await dispatched.promise;
       expect(submit).toHaveBeenCalledTimes(1);
       await submit.mock.results[0]!.value;
       const scheduler = await start(session);
@@ -1103,12 +1115,14 @@ describe("daemon-owned scheduled turns", () => {
     await withCronSessions(async ({ create, add, start, advance }) => {
       const { session } = create();
       const pending = Promise.withResolvers<void>();
-      const attempt = vi.fn(async () => pending.promise);
+      const dispatched = Promise.withResolvers<void>();
+      const attempt = vi.fn(async () => { dispatched.resolve(); return pending.promise; });
       session.installTurnDriverHooks({ submit: attempt });
       try {
         await add(session, { recurring: true });
         const scheduler = await start(session);
         await advance();
+        await dispatched.promise;
         await advance();
         await advance();
         expect(attempt).toHaveBeenCalledTimes(1);
@@ -8664,12 +8678,20 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     expect(persistedSettleResults).toHaveLength(1);
   });
 
-  test("crash mid-drain → resume CONTINUES (restored counters hold pre-crash values, not reset)", async () => {
+  test.each(["local", "docker"] as const)("crash mid-drain → %s resume preserves counters and execution state", async (kind) => {
+    const binding = { kind: "docker" as const, containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32) };
+    const processState = { version: 1 as const, binding, ownerId: "turn-test", authorityRevision: 0, admission: "open" as const, entries: [] };
+    const restoreExecutionProcesses = vi.fn(async () => {});
+    const captureExecutionProcesses = vi.fn(() => processState);
+    const manager = kind === "docker" ? { executionEnvironmentBinding: binding, maxTimeoutMs: Infinity,
+      execCommand: vi.fn(), writeStdin: vi.fn(), closeAll: vi.fn(), restoreExecutionProcesses, captureExecutionProcesses } : undefined;
     const observedCheckpoints: Array<{
       turnCount?: number;
       recoveryReentryCount?: number;
       taskBudgetRemaining?: number;
       checkpointVersion?: number;
+      executionEnvironment?: unknown;
+      executionProcesses?: unknown;
       toolResultIntegrityVersion?: number;
       prefixHashVersion?: number;
     }> = [];
@@ -8689,6 +8711,8 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
             checkpointVersion: (
               ev.msg.payload as { checkpointVersion?: number }
             ).checkpointVersion,
+            executionEnvironment: (ev.msg.payload as { executionEnvironment?: unknown }).executionEnvironment,
+            executionProcesses: (ev.msg.payload as { executionProcesses?: unknown }).executionProcesses,
             toolResultIntegrityVersion: (
               ev.msg.payload as { toolResultIntegrityVersion?: number }
             ).toolResultIntegrityVersion,
@@ -8705,6 +8729,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     const provider: LLMProvider = {
       ...mkProvider({}),
       chatStream: async () => {
+        if (kind === "docker") expect(restoreExecutionProcesses).toHaveBeenCalledExactlyOnceWith(processState);
         requestCount += 1;
         if (requestCount === 1) {
           return {
@@ -8738,7 +8763,15 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       toLLMTools: () => [],
       dispatch: async () => ({ content: "ok", isError: false }),
     } as unknown as ToolRegistry;
-    const { session, events } = mkSession({ provider, registry });
+    let configStore = createTestConfigStore();
+    if (kind === "docker") {
+      const files = new TaskFiles(); files.put("/tmp", "", true);
+      configStore = new ConfigStore({ home: configStore.homeContext.path,
+        env: { AGENC_HOME: configStore.homeContext.path }, cwd: "/tmp", projectRoot: "/tmp",
+        workspaceFilesystem: new ExecutionConfigFilesystem(files.environment()) });
+      await configStore.reload();
+    }
+    const { session, events } = mkSession({ provider, registry, unifiedExecManager: manager, configStore });
     const appendRollout = vi.fn();
     session.rolloutStore = {
       assertCompactionProjectionReady: () => {},
@@ -8759,6 +8792,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
         displayUserMessage: null,
         resume: {
           turnId: "turn-resumed-2",
+          ...(kind === "docker" ? { executionEnvironment: binding, executionProcesses: processState } : {}),
           fromIteration: 1,
           fromCheckpointSeq: 1,
           persistedMessageCount: history.length,
@@ -8790,7 +8824,10 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     // Non-per-iteration counters hold their EXACT restored pre-crash values.
     expect(cp.recoveryReentryCount).toBe(3);
     expect(cp.taskBudgetRemaining).toBe(9999);
-    expect(cp.checkpointVersion).toBe(4);
+    expect(cp.checkpointVersion).toBe(5);
+    expect(cp.executionEnvironment).toEqual(kind === "docker" ? binding : { kind: "local" });
+    expect(cp.executionProcesses).toEqual(kind === "docker" ? processState : undefined);
+    if (kind === "docker") expect(captureExecutionProcesses).toHaveBeenCalled();
     expect(cp.toolResultIntegrityVersion).toBe(1);
     expect(cp.prefixHashVersion).toBe(3);
     expect(

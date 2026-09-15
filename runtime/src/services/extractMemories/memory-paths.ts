@@ -28,6 +28,8 @@ import {
 } from "node:path";
 import { findGitRoot as findCanonicalGitRoot } from "../../agents/worktree.js";
 import { buildProjectMemoryDirectory } from "../../memory/paths.js";
+import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { LOCAL_EXECUTION_ENVIRONMENT } from "../../execution/binding.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import type { ConfigStore } from "../../config/store.js";
 import {
@@ -282,10 +284,12 @@ export async function resolveAutoMemoryDirectory(
     return { enabled: false, reason: "invalid_remote_memory_dir" };
   }
 
-  const projectRoot = resolveProjectRoot(effectiveCwd(opts));
+  const workspace = opts.configStore === undefined
+    ? getCanonicalSettingsAuthority()?.executionWorkspace : opts.configStore.executionWorkspace;
+  const projectRoot = workspace?.memoryProjectRoot ?? resolveProjectRoot(effectiveCwd(opts));
   return {
     enabled: true,
-    path: buildProjectMemoryDirectory(baseRoot, projectRoot),
+    path: buildProjectMemoryDirectory(baseRoot, projectRoot, workspace?.environment.binding ?? LOCAL_EXECUTION_ENVIRONMENT),
   };
 }
 

@@ -1,5 +1,6 @@
 import { lstat, readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import type { ConfigWorkspaceFilesystem } from "./workspace-filesystem.js";
 
 export type RetiredConfigInputKind =
   | "user-config-json"
@@ -19,6 +20,7 @@ export interface RetiredConfigInputMetadata {
 }
 
 export interface RetiredConfigInputPreflightOptions {
+  readonly workspaceFilesystem?: ConfigWorkspaceFilesystem;
   readonly homePath: string;
   readonly cwd: string;
   readonly projectRoot: string;
@@ -126,7 +128,10 @@ export async function detectRetiredConfigInputs(
 
   const found: RetiredConfigInputMetadata[] = [];
   for (const candidate of exactCandidates) {
-    if (await pathExistsAsMetadata(candidate.path)) {
+    const exists = options.workspaceFilesystem !== undefined && candidate.kind.startsWith("project-")
+      ? await options.workspaceFilesystem.exists(candidate.path, { followSymlinks: false })
+      : await pathExistsAsMetadata(candidate.path);
+    if (exists) {
       found.push(Object.freeze({
         ...candidate,
         path: resolve(candidate.path).normalize("NFC"),

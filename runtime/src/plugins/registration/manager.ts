@@ -12,6 +12,7 @@ import {
 import { isRecord } from "../../utils/record.js";
 import { loadPlugins, type LoadedPlugin, type PluginLoadIssue, type PluginLoadResult } from "../loader.js";
 import {
+  capturePluginRuntimeOptions,
   clearRuntimePluginLoadCache,
   toPluginLoaderOptions,
   type PluginRuntimeLoadOptions,
@@ -70,6 +71,7 @@ function countHooks(hooks: HooksMap | undefined): number {
 export async function refreshPluginRegistrations(
   options: PluginRuntimeLoadOptions,
 ): Promise<PluginRegistrationSnapshot> {
+  options = capturePluginRuntimeOptions(options);
   const loadResult = await loadPlugins(toPluginLoaderOptions(options));
   const registrationErrors: PluginLoadIssue[] = [];
   const plugins = loadResult.enabled;
@@ -364,10 +366,12 @@ function pluginRuntimeOptionsFromContext(
 ): PluginRuntimeLoadOptions & { readonly pluginStorageRoot: string } {
   const config = currentConfig(ctx);
   const workspace = ctx.session.roleWorkspace;
+  const executionEnvironment = ctx.session.services.configStore?.executionWorkspace?.environment;
   return {
     cwd: workspace.cwd,
     workspaceRoot: workspace.cwd,
     pluginStorageRoot: ctx.session.services.runtimeOptions.pluginStorageRoot,
+    ...(executionEnvironment ? { executionEnvironment } : {}),
     ...(config !== undefined ? { config } : {}),
   };
 }
@@ -391,6 +395,7 @@ export async function refreshActivePlugins(
   const options = pluginRuntimeOptionsFromContext(ctx);
   const snapshot = await refreshPluginRegistrations(options);
   const activeIdentity = {
+    ...options,
     cwd: workspace.cwd,
     pluginStorageRoot: options.pluginStorageRoot,
   };

@@ -1,3 +1,4 @@
+import { createAgentRoleWorkspace } from "../../src/agents/role-workspace.js";
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -50,6 +51,20 @@ function createListClient(
 
 describe("app-server-client daemon helpers", () => {
   const additionalDirectories = ["../shared workspace", "/tmp/shared"];
+
+  it("rejects container attachment before loading task paths through a local ConfigStore", async () => {
+    const { ConfigStore } = await import("../config/store.js");
+    const reload = vi.spyOn(ConfigStore.prototype, "reload");
+    const roleWorkspace = createAgentRoleWorkspace("/app", {
+      kind: "docker", containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32),
+    });
+    try {
+      await expect(createAgenCDaemonOnlyTuiContext({
+        cwd: "/app", roleWorkspace, conversationId: "container-attach",
+      })).rejects.toMatchObject({ code: "environment_not_ready" });
+      expect(reload).not.toHaveBeenCalled();
+    } finally { reload.mockRestore(); }
+  });
 
   it("collects daemon agent pages until the cursor ends", async () => {
     const client = createListClient([

@@ -12,7 +12,7 @@
  *     AgenC's current LLMTool type.
  */
 
-import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { checkToolPathPermissionAsync } from "../../permissions/path-validation.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
@@ -103,13 +103,13 @@ function pathsForHunk(hunk: ApplyPatchHunk): readonly {
   }
 }
 
-function permissionForPatch(
+async function permissionForPatch(
   input: Record<string, unknown>,
   patch: string,
   cwd: string,
   allowedPaths: readonly string[],
   context: Parameters<NonNullable<Tool["checkPermissions"]>>[1],
-): PermissionResult {
+): Promise<PermissionResult> {
   let hunks: readonly ApplyPatchHunk[];
   try {
     hunks = parsePatch(patch).hunks;
@@ -135,7 +135,7 @@ function permissionForPatch(
 
   for (const hunk of hunks) {
     for (const target of pathsForHunk(hunk)) {
-      const result = checkToolPathPermission({
+      const result = await checkToolPathPermissionAsync({
         toolName: APPLY_PATCH_TOOL_NAME,
         input,
         path: target.path,
@@ -179,7 +179,7 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
       required: ["input"],
       additionalProperties: false,
     },
-    checkPermissions(input, context) {
+    async checkPermissions(input, context) {
       const args = input as ApplyPatchToolInput;
       const patch = asNonEmptyString(args.input);
       if (!patch) {

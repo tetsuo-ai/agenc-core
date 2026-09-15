@@ -7,9 +7,12 @@
  * records and never imports from the compatibility scaffolding tree.
  */
 
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { load as loadYaml } from "js-yaml";
+import { ContentFilesystem, localContentFilesystem, rethrowContentAuthorityError,
+  type ContentExecutionEnvironment } from "../../execution/content-filesystem.js";
+import { assertSameExecutionEnvironment, LOCAL_EXECUTION_ENVIRONMENT } from "../../execution/binding.js";
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey } from "../../execution/types.js";
 
 import { parseArguments } from "../../tui/slash/argument-substitution.js";
 import {
@@ -50,6 +53,7 @@ export interface PluginRuntimeLoadOptions {
   readonly readOnly?: boolean;
   readonly cwd?: string;
   readonly workspaceRoot?: string;
+  readonly executionEnvironment?: ContentExecutionEnvironment;
   readonly pluginStorageRoot: string;
   readonly config?: PluginLoaderOptions["config"];
   readonly extraPluginDirs?: readonly string[];
@@ -62,6 +66,45 @@ export interface PluginRuntimeLoadOptions {
 export interface PluginRuntimeIdentityOptions {
   readonly cwd?: string;
   readonly pluginStorageRoot: string;
+  readonly executionEnvironment?: ContentExecutionEnvironment;
+}
+
+export function capturePluginRuntimeOptions<T extends PluginRuntimeLoadOptions>(options: T): T {
+  const environment = new ContentFilesystem(options.executionEnvironment ??
+    getCanonicalSettingsAuthority()?.executionWorkspace?.environment).environment;
+  return { ...options, ...(environment ? { executionEnvironment: environment } : {}) };
+}
+
+/** Resolve bytes from their recorded authority, never from a pathname guess. */
+export function pluginContentFilesystem(plugin: LoadedPlugin, options: PluginRuntimeLoadOptions): ContentFilesystem {
+  const selected = capturePluginRuntimeOptions(options).executionEnvironment;
+  if (plugin.executionBinding === undefined) {
+    if (selected?.binding.kind === "docker" && isRepositoryControlledPlugin(plugin)) {
+      throw new ExecutionEnvironmentError("invalid_execution_binding", "Workspace plugin content lacks its execution identity", false);
+    }
+    return localContentFilesystem;
+  }
+  assertSameExecutionEnvironment(plugin.executionBinding, selected?.binding ?? LOCAL_EXECUTION_ENVIRONMENT);
+  if (plugin.executionBinding.kind === "docker" && !isRepositoryControlledPlugin(plugin)) {
+    throw new ExecutionEnvironmentError("invalid_execution_binding", "Task plugin content cannot hold controller authority", false);
+  }
+  return new ContentFilesystem(selected);
+}
+
+export async function resolveRuntimePlugins(options: PluginRuntimeLoadOptions & {
+  readonly plugins?: readonly LoadedPlugin[];
+}): Promise<readonly LoadedPlugin[]> {
+  const captured = capturePluginRuntimeOptions(options);
+  const plugins = captured.plugins ?? await loadRuntimePlugins(captured);
+  if (captured.executionEnvironment) {
+    const root = captured.workspaceRoot ?? captured.cwd ?? getCanonicalSettingsAuthority()?.projectRoot ?? "/";
+    await new ContentFilesystem(captured.executionEnvironment).stat(root);
+  }
+  for (const plugin of plugins) {
+    const filesystem = pluginContentFilesystem(plugin, captured);
+    if (filesystem.environment) await filesystem.stat(plugin.root);
+  }
+  return plugins;
 }
 
 export interface ParsedMarkdownFile {
@@ -74,6 +117,7 @@ export interface ParsedMarkdownFile {
 export function toPluginLoaderOptions(
   options: PluginRuntimeLoadOptions,
 ): PluginLoaderOptions {
+  options = capturePluginRuntimeOptions(options);
   const authority = getCanonicalSettingsAuthority();
   const workspaceValue =
     options.workspaceRoot ?? options.cwd ?? authority?.projectRoot;
@@ -82,6 +126,9 @@ export function toPluginLoaderOptions(
       "Plugin loading requires an explicit workspace root or session ConfigStore authority",
     );
   }
+  if (options.executionEnvironment && !isAbsolute(workspaceValue)) {
+    throw new ExecutionEnvironmentError("invalid_request", "Task plugin workspace must be absolute", false);
+  }
   const workspaceRoot = resolve(workspaceValue);
   const pluginStorageRoot = resolvePluginStorageAuthority(
     options.pluginStorageRoot,
@@ -89,6 +136,7 @@ export function toPluginLoaderOptions(
   return {
     pluginStorageRoot,
     workspaceRoot,
+    ...(options.executionEnvironment ? { executionEnvironment: options.executionEnvironment } : {}),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
     ...(options.config !== undefined ? { config: options.config } : {}),
     ...(options.extraPluginDirs !== undefined ? { extraPluginDirs: options.extraPluginDirs } : {}),
@@ -103,7 +151,7 @@ export async function loadRuntimePlugins(
     options.errors?.push(...result.errors);
     return result.enabled;
   };
-  if (options.readOnly === true || options.fresh === true || hasExplicitPluginDiscoveryInput(options)) {
+  if (loaderOptions.executionEnvironment || options.readOnly === true || options.fresh === true || hasExplicitPluginDiscoveryInput(options)) {
     const result = await loadPlugins(loaderOptions);
     return projectResult(result);
   }
@@ -112,7 +160,7 @@ export async function loadRuntimePlugins(
     const result = await loadPlugins(loaderOptions);
     return projectResult(result);
   }
-  const key = `${loaderOptions.workspaceRoot}\0${loaderOptions.pluginStorageRoot}`;
+  const key = runtimeIdentityKey({ ...loaderOptions, cwd: loaderOptions.workspaceRoot });
   const cached = runtimePluginLoadCache.get(key, authority);
   if (cached !== undefined) return projectResult(await cached);
   const loaded = loadPlugins(loaderOptions).catch((error: unknown) => {
@@ -154,9 +202,10 @@ export function splitFrontmatter(raw: string): {
 export async function readMarkdownFile(
   filePath: string,
   baseDir: string,
+  filesystem: ContentFilesystem = localContentFilesystem,
 ): Promise<ParsedMarkdownFile | null> {
   try {
-    const raw = await readFile(filePath, "utf8");
+    const raw = await filesystem.readText(filePath);
     const parsed = splitFrontmatter(raw);
     return {
       filePath,
@@ -164,12 +213,13 @@ export async function readMarkdownFile(
       frontmatter: parsed.frontmatter,
       markdown: parsed.markdown,
     };
-  } catch {
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return null;
   }
 }
 
-export async function collectMarkdownFiles(root: string): Promise<readonly string[]> {
+export async function collectMarkdownFiles(root: string, filesystem: ContentFilesystem = localContentFilesystem): Promise<readonly string[]> {
   const out: string[] = [];
   const queue: Array<{ readonly path: string; readonly depth: number }> = [
     { path: root, depth: 0 },
@@ -179,13 +229,14 @@ export async function collectMarkdownFiles(root: string): Promise<readonly strin
     if (out.length >= MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES) break;
     const current = queue.shift()!;
     if (current.depth > MAX_PLUGIN_REGISTRATION_SCAN_DEPTH) continue;
-    const identity = await maybeRealpath(current.path);
+    const identity = await maybeRealpath(current.path, filesystem);
     if (visited.has(identity)) continue;
     visited.add(identity);
     let entries;
     try {
-      entries = await readdir(current.path, { withFileTypes: true });
-    } catch {
+      entries = await filesystem.readDirectory(current.path);
+    } catch (error) {
+      rethrowContentAuthorityError(error);
       continue;
     }
     for (const entry of entries) {
@@ -201,18 +252,20 @@ export async function collectMarkdownFiles(root: string): Promise<readonly strin
   return out.sort((a, b) => a.localeCompare(b));
 }
 
-async function maybeRealpath(path: string): Promise<string> {
+async function maybeRealpath(path: string, filesystem: ContentFilesystem): Promise<string> {
   try {
-    return await realpath(path);
-  } catch {
+    return await filesystem.realpath(path);
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return path;
   }
 }
 
-export async function pathIsDirectory(path: string): Promise<boolean> {
+export async function pathIsDirectory(path: string, filesystem: ContentFilesystem = localContentFilesystem): Promise<boolean> {
   try {
-    return (await stat(path)).isDirectory();
-  } catch {
+    return (await filesystem.stat(path)).isDirectory();
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return false;
   }
 }
@@ -385,6 +438,9 @@ function resolvePluginTemplate(
   const missingUserConfig: string[] = [];
   let pluginDataDir: string | undefined;
   const dataDir = (): string => {
+    if (plugin.executionBinding?.kind === "docker") {
+      throw new ExecutionEnvironmentError("unsupported_resource", "Task plugin data requires an environment-owned data directory", false);
+    }
     pluginDataDir ??= formatTemplatePath(
       getPluginDataDir(plugin.id, options.pluginStorageRoot),
     );
@@ -483,10 +539,14 @@ export function runtimeIdentityKey(
     );
   }
   const cwd = resolve(cwdValue);
+  const environment = capturePluginRuntimeOptions(options).executionEnvironment;
+  if (environment && !isAbsolute(cwdValue)) {
+    throw new ExecutionEnvironmentError("invalid_request", "Task plugin runtime cwd must be absolute", false);
+  }
   const pluginStorageRoot = resolvePluginStorageAuthority(
     options.pluginStorageRoot,
   ).pluginStorageRoot;
-  return `${cwd}\0${pluginStorageRoot}`;
+  return environment ? `${executionEnvironmentCacheKey(environment.binding, cwd)}\0${pluginStorageRoot}` : `${cwd}\0${pluginStorageRoot}`;
 }
 
 export function isPluginRuntimeSimpleMode(): boolean {

@@ -1,3 +1,4 @@
+import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import { logForDebugging } from "src/utils/debug.js";
 import { isRecord } from "../../utils/record.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -1821,7 +1822,7 @@ async function persistOnboardingSelection(
   await getTuiConfigStore(props.session).reload();
 }
 function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
-  const roleWorkspace = createAgentRoleWorkspace(roleWorkspaceCwd);
+  const roleWorkspace = requireTuiRoleWorkspace(props);
   const sessionCatalog = props.session.agentDefinitions;
   if (
     sessionCatalog !== undefined &&
@@ -1834,7 +1835,7 @@ function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
   const agentDefinitions =
     sessionCatalog ??
     (() => {
-      const fallbackDefinitions = listAgentRoleDefinitions(roleWorkspaceCwd);
+      const fallbackDefinitions = listAgentRoleDefinitions(roleWorkspace);
       return {
         agentRoleWorkspaceId: roleWorkspace.id,
         activeAgents: fallbackDefinitions,
@@ -1865,9 +1866,9 @@ function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
   };
 }
 
-function requireTuiRoleWorkspaceCwd(props: AgenCTuiProps): string {
+function requireTuiRoleWorkspace(props: AgenCTuiProps) {
   if (props.session.roleWorkspace !== undefined) {
-    return normalizeAgentRoleWorkspace(props.session.roleWorkspace).cwd;
+    return normalizeAgentRoleWorkspace(props.session.roleWorkspace);
   }
   const cwd = props.session.cwd ?? props.session.sessionConfiguration?.cwd;
   if (typeof cwd !== "string" || cwd.length === 0) {
@@ -1875,7 +1876,7 @@ function requireTuiRoleWorkspaceCwd(props: AgenCTuiProps): string {
       "TUI agent roles require an explicit session workspace cwd",
     );
   }
-  return createAgentRoleWorkspace(cwd).cwd;
+  return createAgentRoleWorkspace(cwd, getTuiConfigStore(props.session).executionWorkspace?.environment.binding);
 }
 
 type SetToolPermissionContext = (next: ToolPermissionContext) => void;
@@ -2986,13 +2987,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       return;
     }
     let cancelled = false;
-    void getAgentDefinitionsWithOverrides(
-      props.roleWorkspaceCwd,
-      pluginStorageRoot,
+    void runWithCanonicalSettingsAuthority(getTuiConfigStore(props.session), () =>
+      getAgentDefinitionsWithOverrides(props.roleWorkspaceCwd, pluginStorageRoot),
     )
       .then((agentDefinitions) => {
         if (cancelled) return;
-        const roleWorkspace = createAgentRoleWorkspace(props.roleWorkspaceCwd);
+        const roleWorkspace = requireTuiRoleWorkspace(props);
         if (agentDefinitions.agentRoleWorkspaceId !== roleWorkspace.id) {
           throw new Error(
             `agent catalog workspace mismatch: expected ${roleWorkspace.id}, received ${agentDefinitions.agentRoleWorkspaceId ?? "missing"}`,
@@ -3019,6 +3019,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   }, [
     addNotification,
     props.roleWorkspaceCwd,
+    props.session,
     props.session.agentDefinitions,
     props.session.services.runtimeOptions?.pluginStorageRoot,
     setAppState,
@@ -7575,14 +7576,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
 }
 export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {
-  const roleWorkspaceCwd = useMemo(() => requireTuiRoleWorkspaceCwd(props), []);
+  const roleWorkspace = useMemo(() => requireTuiRoleWorkspace(props), [props.session]);
+  const roleWorkspaceCwd = roleWorkspace.cwd;
   const configStore = getTuiConfigStore(props.session);
   const initial = useMemo(
     () => initialState(props, roleWorkspaceCwd),
-    [roleWorkspaceCwd],
+    [props.session, roleWorkspace.id],
   );
   return (
     <App
+      key={JSON.stringify([props.session.conversationId, roleWorkspace.id])}
       configStore={configStore}
       initialState={initial}
       getFpsMetrics={props.getFpsMetrics ?? DEFAULT_FPS_METRICS_GETTER}

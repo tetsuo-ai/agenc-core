@@ -1,4 +1,6 @@
 import type { EventMsg } from "../session/event-log.js";
+import { executionEnvironmentFromSessionMeta, readExecutionEnvironmentBinding } from "../execution/binding.js";
+import type { ExecutionEnvironmentBinding } from "../execution/types.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../contracts/run-contracts.js";
 import {
   MAX_TURN_FAILURE_MESSAGE_LENGTH,
@@ -284,6 +286,8 @@ const isInstructionSourceEvidence = objectShape({
   sourceOrder: isNonNegativeInteger,
   repositoryControlled: isBoolean,
   authority: literal("guidance_only"),
+}, {
+  executionBinding: isExecutionEnvironmentBinding,
 });
 
 type InstructionEvidencePayload = NonNullable<
@@ -666,6 +670,9 @@ const isTurnCheckpointShape = objectShape(turnCheckpointRequiredFields, {
   // checkpoint reader performs strict version dispatch and shape validation.
   checkpointVersion: isUnknown,
   toolResultIntegrityVersion: isUnknown,
+  prefixHashVersion: isUnknown,
+  executionEnvironment: isUnknown,
+  executionProcesses: isUnknown,
 });
 
 type TurnCheckpointPayload = EventPayload<"turn_checkpoint">;
@@ -682,28 +689,43 @@ const isSessionUsage: Validator<
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
 
+function isExecutionEnvironmentBinding(value: unknown): value is ExecutionEnvironmentBinding {
+  try { readExecutionEnvironmentBinding(value); return true; }
+  catch { return false; }
+}
+
+const isSessionMetaShape = objectShape(
+  {
+    sessionId: isString,
+    timestamp: isString,
+    cwd: isString,
+    originator: isString,
+    agencVersion: isString,
+    rolloutSchemaVersion: isPositiveInteger,
+  },
+  {
+    cliVersion: isString,
+    executionEnvironment: isExecutionEnvironmentBinding,
+    source: isString,
+    model: isString,
+    modelProvider: isString,
+    memoryMode: isString,
+    admissionOwner: objectShape(
+      { workspaceId: isNonEmptyString, runId: isNonEmptyString },
+      { parentRunId: isNonEmptyString },
+    ),
+  },
+);
+const isSessionMeta: typeof isSessionMetaShape = (value): value is ValidatedValue<typeof isSessionMetaShape> => {
+  if (!isSessionMetaShape(value)) return false;
+  // Preserve the outer version gate for future schemas.
+  if (value.rolloutSchemaVersion > 6) return true;
+  try { executionEnvironmentFromSessionMeta(value); return true; }
+  catch { return false; }
+};
+
 const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
-  session_meta: objectShape(
-    {
-      sessionId: isString,
-      timestamp: isString,
-      cwd: isString,
-      originator: isString,
-      agencVersion: isString,
-      rolloutSchemaVersion: isPositiveInteger,
-    },
-    {
-      cliVersion: isString,
-      source: isString,
-      model: isString,
-      modelProvider: isString,
-      memoryMode: isString,
-      admissionOwner: objectShape(
-        { workspaceId: isNonEmptyString, runId: isNonEmptyString },
-        { parentRunId: isNonEmptyString },
-      ),
-    },
-  ),
+  session_meta: isSessionMeta,
   session_configured: objectShape(
     {
       sessionId: isString,

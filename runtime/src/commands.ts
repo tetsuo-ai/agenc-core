@@ -1,5 +1,8 @@
 import type * as React from "react";
 import { resolve } from "node:path";
+import { LOCAL_EXECUTION_ENVIRONMENT } from "./execution/binding.js";
+import { executionEnvironmentCacheKey, type ExecutionEnvironmentBinding } from "./execution/types.js";
+import { rethrowContentAuthorityError } from "./execution/content-filesystem.js";
 
 import { buildDefaultRegistry } from "./commands/registry.js";
 import { BRIDGE_SAFE_COMMAND_NAMES } from "./commands/bridge-policy.js";
@@ -127,6 +130,7 @@ export type LocalJSXCommand = {
 };
 
 export type CommandBase = {
+  readonly executionBinding?: import("./execution/types.js").ExecutionEnvironmentBinding;
   description: string;
   hasUserSpecifiedDescription?: boolean;
   isEnabled?: () => boolean;
@@ -255,6 +259,7 @@ function projectSlashCommand(
     kind: cmd.kind,
     source: cmd.source,
     loadedFrom: cmd.loadedFrom,
+    executionBinding: cmd.executionBinding,
     pluginInfo: cmd.pluginInfo,
     get immediate() {
       return cmd.immediate;
@@ -323,8 +328,8 @@ export function registerCommandProvider(
   };
 }
 
-function localSkillsKey(cwd: string, pluginStorageRoot: string): string {
-  return `${resolve(cwd)}\u0000${pluginStorageRoot}`;
+function localSkillsKey(cwd: string, pluginStorageRoot: string, binding?: ExecutionEnvironmentBinding): string {
+  return executionEnvironmentCacheKey(binding ?? LOCAL_EXECUTION_ENVIRONMENT, JSON.stringify([cwd, pluginStorageRoot]));
 }
 
 function localSkillServices(
@@ -337,17 +342,17 @@ function localSkillServices(
       "Local skill command discovery requires a ConfigStore authority",
     );
   }
-  const key = localSkillsKey(cwd, pluginStorageRoot);
+  const workspace = authority.executionWorkspace;
+  const workspaceRoot = workspace ? cwd : resolve(cwd);
+  const key = localSkillsKey(workspaceRoot, pluginStorageRoot, workspace?.environment.binding);
   let services = localSkillServicesByRoot.get(key, authority);
   if (!services) {
-    const [workspaceRoot, capturedPluginStorageRoot] = key.split("\u0000") as [
-      string,
-      string,
-    ];
     services = createLocalSkillsServices({
       workspaceRoot,
       agencHome: authority.homeContext.path,
-      pluginStorageRoot: capturedPluginStorageRoot,
+      pluginStorageRoot,
+      executionEnvironment: workspace?.environment,
+      executionHomePath: workspace?.homePath,
     });
     localSkillServicesByRoot.set(key, services, authority);
   }
@@ -371,6 +376,7 @@ function projectLocalSkill(
     model: repositoryControlled ? undefined : skill.model,
     source: skill.source,
     loadedFrom: skill.loadedFrom,
+    executionBinding: skill.executionBinding,
     hasUserSpecifiedDescription: skill.hasUserSpecifiedDescription,
     disableModelInvocation: skill.disableModelInvocation,
     userInvocable: skill.userInvocable,
@@ -413,7 +419,8 @@ async function loadLocalSkillCommands(
       // identity is available and the command receives its required namespace.
       .filter(skill => skill.loadedFrom !== "plugin")
       .map(skill => projectLocalSkill(skill, manager));
-  } catch {
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return [];
   }
 }

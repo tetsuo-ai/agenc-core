@@ -34,6 +34,9 @@ import {
   getProjectInstructionFilePaths,
   PRIMARY_PROJECT_INSTRUCTION_FILE,
 } from "../utils/projectInstructions.js";
+import { instructionFilesystemErrorCode, type InstructionExecutionEnvironment } from "./instruction-filesystem.js";
+import { readExecutionEnvironmentBinding } from "../execution/binding.js";
+import type { ExecutionEnvironmentBinding } from "../execution/types.js";
 
 export {
   AGENTS_PROJECT_INSTRUCTION_FILE,
@@ -106,11 +109,15 @@ export interface ProjectInstructionsConfig {
 }
 
 export interface LoadProjectInstructionsOptions extends ProjectInstructionsConfig {
+  readonly executionEnvironment?: InstructionExecutionEnvironment;
+  /** Explicit task home boundary; controller home is never used for a task. */
+  readonly taskHomePath?: string;
   /** Starting directory for the ancestor walk. */
   readonly cwd: string;
 }
 
 export interface ProjectRootSearchOptions {
+  readonly executionEnvironment?: InstructionExecutionEnvironment;
   /**
    * Exclusive ancestor boundary for marker discovery. Markers at this path
    * and above it cannot become the root of a strict descendant workspace.
@@ -119,6 +126,7 @@ export interface ProjectRootSearchOptions {
 }
 
 export interface ProjectInstructions {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   /** Absolute path to the file that was loaded. */
   readonly path: string;
   /** Canonical path bound to the opened descriptor (approval/cache provenance). */
@@ -153,7 +161,11 @@ export type ProjectInstructionChainEntry = ProjectInstructions;
 const TRUNCATION_MARKER =
   "\n\n<!-- [truncated by project_doc_max_bytes] -->\n";
 
-async function pathExists(p: string): Promise<boolean> {
+async function pathExists(p: string, environment?: InstructionExecutionEnvironment): Promise<boolean> {
+  if (environment !== undefined) {
+    try { await environment.filesystem.inspectPath(p, { followSymlinks: false }); return true; }
+    catch (error) { if (instructionFilesystemErrorCode(error) === "ENOENT") return false; throw error; }
+  }
   try {
     await lstat(p);
     return true;
@@ -190,21 +202,20 @@ export async function findProjectRoot(
   markers: readonly string[] = DEFAULT_PROJECT_ROOT_MARKERS,
   options: ProjectRootSearchOptions = {},
 ): Promise<{ rootDir: string; marker: string } | null> {
+  if (options.executionEnvironment !== undefined && !isAbsolute(cwd)) throw new TypeError("Task project discovery requires an absolute cwd");
   if (markers.length === 0) {
     return null;
   }
 
-  const stopBefore = projectRootStopBefore(
-    cwd,
-    options.stopBefore ?? homedir(),
-  );
+  const boundary = options.stopBefore ?? (options.executionEnvironment === undefined ? homedir() : undefined);
+  const stopBefore = boundary === undefined ? undefined : projectRootStopBefore(cwd, boundary);
   let currentDir = cwd;
   while (true) {
     if (stopBefore !== undefined && resolve(currentDir) === stopBefore) {
       return null;
     }
     for (const marker of markers) {
-      if (await pathExists(join(currentDir, marker))) {
+      if (await pathExists(join(currentDir, marker), options.executionEnvironment)) {
         return { rootDir: currentDir, marker };
       }
     }
@@ -223,14 +234,15 @@ export async function findProjectRoot(
  *   3. `AGENTS.md`
  * Returns `null` if no usable regular text file exists.
  */
-export async function resolveInstructionFile(dir: string): Promise<string | null> {
-  return (await readInstructionCandidate(dir))?.path ?? null;
+export async function resolveInstructionFile(dir: string, executionEnvironment?: InstructionExecutionEnvironment): Promise<string | null> {
+  return (await readInstructionCandidate(dir, dir, dir, executionEnvironment))?.path ?? null;
 }
 
 async function readInstructionCandidate(
   dir: string,
   boundaryRoot: string = dir,
   workspaceRoot: string = boundaryRoot,
+  executionEnvironment?: InstructionExecutionEnvironment,
 ): Promise<{
   path: string;
   content: string;
@@ -243,6 +255,7 @@ async function readInstructionCandidate(
     ...getProjectInstructionFilePaths(dir),
   ]) {
     const read = await readInstructionFileSnapshot({
+      executionEnvironment,
       requestedPath: full,
       boundaryRoot,
       workspaceRoot,
@@ -266,6 +279,7 @@ async function readInstructionCandidates(
   dir: string,
   boundaryRoot: string,
   workspaceRoot: string,
+  executionEnvironment?: InstructionExecutionEnvironment,
 ): Promise<readonly {
   path: string;
   content: string;
@@ -273,9 +287,10 @@ async function readInstructionCandidates(
   identity: InstructionFileIdentity;
   canonicalPath: string;
 }[]> {
-  const primary = await readInstructionCandidate(dir, boundaryRoot, workspaceRoot);
+  const primary = await readInstructionCandidate(dir, boundaryRoot, workspaceRoot, executionEnvironment);
   const dotAgenCPath = join(dir, DOT_AGENC_PROJECT_INSTRUCTION_FILE);
   const dotAgenC = await readInstructionFileSnapshot({
+    executionEnvironment,
     requestedPath: dotAgenCPath,
     boundaryRoot,
     workspaceRoot,
@@ -299,6 +314,7 @@ async function readInstructionCandidates(
 async function findClosestProjectInstruction(
   cwd: string,
   rootDir: string,
+  executionEnvironment?: InstructionExecutionEnvironment,
 ): Promise<{
   path: string;
   content: string;
@@ -314,6 +330,7 @@ async function findClosestProjectInstruction(
       currentDir,
       boundaryDir,
       boundaryDir,
+      executionEnvironment,
     );
     if (candidate) {
       return candidate;
@@ -349,7 +366,7 @@ export async function loadProjectInstructions(
     return null;
   }
 
-  const root = await findProjectRoot(opts.cwd, markers);
+  const root = await findProjectRoot(opts.cwd, markers, { executionEnvironment: opts.executionEnvironment, stopBefore: opts.taskHomePath });
   const effectiveRoot = root ?? {
     rootDir: resolve(opts.cwd),
     marker: "<cwd>",
@@ -357,12 +374,14 @@ export async function loadProjectInstructions(
   const candidate = await findClosestProjectInstruction(
     opts.cwd,
     effectiveRoot.rootDir,
+    opts.executionEnvironment,
   );
   if (!candidate) {
     return null;
   }
   const truncated = truncateContentToBytes(candidate.content, maxBytes);
   return {
+    ...(opts.executionEnvironment === undefined ? {} : { executionBinding: readExecutionEnvironmentBinding(opts.executionEnvironment.binding) }),
     path: candidate.path,
     canonicalPath: candidate.canonicalPath,
     content: truncated.content,
@@ -459,7 +478,7 @@ export async function loadProjectInstructionChain(
     return [];
   }
 
-  const root = await findProjectRoot(opts.cwd, markers);
+  const root = await findProjectRoot(opts.cwd, markers, { executionEnvironment: opts.executionEnvironment, stopBefore: opts.taskHomePath });
   const effectiveRoot = root ?? {
     rootDir: resolve(opts.cwd),
     marker: "<cwd>",
@@ -472,10 +491,12 @@ export async function loadProjectInstructionChain(
       dir,
       effectiveRoot.rootDir,
       effectiveRoot.rootDir,
+      opts.executionEnvironment,
     );
     for (const loaded of loadedEntries) {
       const truncated = truncateContentToBytes(loaded.content, remainingBytes);
       chain.push({
+        ...(opts.executionEnvironment === undefined ? {} : { executionBinding: readExecutionEnvironmentBinding(opts.executionEnvironment.binding) }),
         path: loaded.path,
         canonicalPath: loaded.canonicalPath,
         content: truncated.content,

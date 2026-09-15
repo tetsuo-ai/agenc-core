@@ -40,6 +40,11 @@
  */
 
 import { createReadStream } from "node:fs";
+import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { bindExecutionToolFileRead } from "../../execution/tool-file-read.js";
+import { captureExecutionPermissionAuthority } from "../../execution/permission-authority.js";
+import { rethrowContentAuthorityError } from "../../execution/content-filesystem.js";
+import { SESSION_ALLOWED_ROOTS_ARG, SESSION_ALLOWED_ROOTS_SIG_ARG, verifyAllowedRoots } from "../../agents/_deps/filesystem-args.js";
 import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -58,13 +63,14 @@ import {
   resolveSessionId,
   safePathAllowingSessionPlanFile,
   withSignedAllowedRoots,
+  type SessionReadSnapshot,
 } from "./filesystem.js";
 import {
   agentNamespacePathHint,
   denyAgentNamespacePath,
   isAgentNamespacePath,
 } from "./agent-path-hints.js";
-import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { checkToolPathPermissionAsync } from "../../permissions/path-validation.js";
 import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
 import {
   parsePDFPageRange as parseSharedPDFPageRange,
@@ -588,6 +594,22 @@ async function getPDFPageCount(
 interface ResolvedPath {
   readonly absolute: string;
   readonly canonical: string;
+  readonly execution?: Awaited<ReturnType<typeof bindExecutionToolFileRead>>;
+  pendingRead?: SessionReadSnapshot;
+}
+
+function recordResolvedRead(path: ResolvedPath, sessionId: string | undefined, snapshot: SessionReadSnapshot): void {
+  if (path.execution) path.pendingRead = snapshot;
+  else recordSessionRead(sessionId, path.canonical, snapshot);
+}
+
+function fileReadError(error: unknown, filePath: string): ToolResult {
+  rethrowContentAuthorityError(error);
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT" || code === "not_found") return errorResult(`File does not exist: ${filePath}`);
+  if (code === "EACCES" || code === "permission_denied") return errorResult(`Permission denied: ${filePath}`);
+  if (code === "EISDIR") return errorResult(`Path is a directory, not a file: ${filePath}. Use a shell listing tool instead.`);
+  return errorResult(`Read failed: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 async function resolveAndCheck(
@@ -597,6 +619,14 @@ async function resolveAndCheck(
 ): Promise<{ ok: ResolvedPath } | { err: ToolResult }> {
   if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
     return { err: errorResult("file_path must be a non-empty string") };
+  }
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+  if (workspace) {
+    const execution = await bindExecutionToolFileRead(workspace, rawPath, {
+      ...(typeof args.cwd === "string" && args.cwd.length > 0 ? { cwd: args.cwd } : {}),
+      allowedPaths: [...config.allowedPaths, ...verifyAllowedRoots(args[SESSION_ALLOWED_ROOTS_ARG], args[SESSION_ALLOWED_ROOTS_SIG_ARG])],
+    });
+    return { ok: { absolute: execution.absolute, canonical: execution.canonical, execution } };
   }
   // Resolve relative paths against either an explicit `cwd` arg, the
   // first allowed path, or process.cwd() as a last resort.
@@ -762,7 +792,9 @@ async function readTextFile(
   // auto-injected processed partial views; AgenC does not populate that
   // path here.
   opts.readGuard?.();
-  recordSessionRead(sessionId, resolvedPath.canonical, {
+  await resolvedPath.execution?.validate();
+  recordResolvedRead(resolvedPath, sessionId, {
+    ...(resolvedPath.execution ? { executionBinding: resolvedPath.execution.executionBinding, executionFile: resolvedPath.execution.description } : {}),
     content: sliced.content,
     timestamp:
       fileStats !== null &&
@@ -1096,7 +1128,9 @@ async function readNotebookFile(
   }
 
   opts.readGuard?.();
-  recordSessionRead(sessionId, resolvedPath.canonical, {
+  await resolvedPath.execution?.validate();
+  recordResolvedRead(resolvedPath, sessionId, {
+    ...(resolvedPath.execution ? { executionBinding: resolvedPath.execution.executionBinding, executionFile: resolvedPath.execution.description } : {}),
     content: sliced.content,
     timestamp:
       fileStats !== null &&
@@ -1492,7 +1526,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         file_path: {
           type: "string",
           description:
-            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
+            "Workspace-relative path, or an absolute path in the selected execution environment.",
         },
         offset: {
           anyOf: [
@@ -1518,7 +1552,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       required: ["file_path"],
       additionalProperties: false,
     },
-    checkPermissions(input, context) {
+    async checkPermissions(input, context) {
       const args = input as FileReadInput;
       const filePath = typeof args.file_path === "string" ? args.file_path : "";
       if (filePath.trim().length === 0) {
@@ -1527,14 +1561,16 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           message: "file_path must be a non-empty string",
         };
       }
+      const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+      const authority = workspace ? captureExecutionPermissionAuthority(workspace) : undefined;
       const cwd =
         typeof args.cwd === "string" && args.cwd.length > 0
           ? args.cwd
-          : (config.allowedPaths[0] ?? process.cwd());
-      if (isAgentNamespacePath(filePath)) {
+          : (authority?.roleCwd ?? config.allowedPaths[0] ?? process.cwd());
+      if (!workspace && isAgentNamespacePath(filePath)) {
         return denyAgentNamespacePath(filePath, cwd);
       }
-      const decision = checkToolPathPermission({
+      const decision = await checkToolPathPermissionAsync({
         toolName: FILE_READ_TOOL_NAME,
         input: input as Record<string, unknown>,
         path: filePath,
@@ -1544,6 +1580,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         extraWorkingDirectories: config.allowedPaths,
       });
       if (decision.behavior !== "allow") return decision;
+      if (workspace) return decision;
 
       const currentInput =
         decision.updatedInput &&
@@ -1588,7 +1625,13 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         );
       }
 
-      const resolveResult = await resolveAndCheck(filePath, config, rawArgs);
+      if (getCanonicalSettingsAuthority()?.executionWorkspace && (isImage || isPdf)) {
+        return errorResult("Image and PDF reads require execution-environment conversion helpers, which are not available yet.");
+      }
+
+      let resolveResult: Awaited<ReturnType<typeof resolveAndCheck>>;
+      try { resolveResult = await resolveAndCheck(filePath, config, rawArgs); }
+      catch (error) { return fileReadError(error, filePath); }
       if ("err" in resolveResult) return resolveResult.err;
       const resolved = resolveResult.ok;
       const guardedRead = hasReadOnlyDelegationReadGuard(rawArgs);
@@ -1605,11 +1648,20 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       ): Promise<ToolResult> => {
         const result = await pending;
         readGuard();
+        await resolved.execution?.validate();
+        if (resolved.execution) {
+          const release = boundRead;
+          boundRead = undefined;
+          await release?.dispose();
+          resolved.execution.assertCurrent();
+          if (!result.isError && resolved.pendingRead) recordSessionRead(sessionId, resolved.canonical, resolved.pendingRead);
+        }
         return result;
       };
 
       const sessionId = resolveSessionId(rawArgs);
-      let boundRead: WorkspaceBoundFileReadCapability | undefined;
+      let boundRead: WorkspaceBoundFileReadCapability | undefined = resolved.execution?.capability;
+      let readFailure: unknown;
 
       try {
         readGuard();
@@ -1621,11 +1673,12 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         const trustedEditorInteraction =
           readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
           undefined;
-        const editorRead = workspaceAuthoritativeRead(resolved.canonical);
+        const editorRead = resolved.execution ? null : workspaceAuthoritativeRead(resolved.canonical);
         const protectedByEditor =
+          !resolved.execution && (
           guardedRead ||
           trustedEditorInteraction ||
-          workspaceHasProtectedEditorPaths(resolved.canonical);
+          workspaceHasProtectedEditorPaths(resolved.canonical));
         const needsDiskCapability = isImage || isPdf || editorRead === null;
         if (protectedByEditor && needsDiskCapability) {
           boundRead = await bindWorkspaceFileReadCapability(resolved.canonical);
@@ -1697,26 +1750,18 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             sessionId,
             editorRead,
             boundRead,
-            !trustedEditorInteraction,
+            !trustedEditorInteraction && !resolved.execution,
           ),
         );
       } catch (err) {
-        const code = (err as NodeJS.ErrnoException)?.code;
-        if (code === "ENOENT") {
-          return errorResult(`File does not exist: ${filePath}`);
-        }
-        if (code === "EACCES") {
-          return errorResult(`Permission denied: ${filePath}`);
-        }
-        if (code === "EISDIR") {
-          return errorResult(
-            `Path is a directory, not a file: ${filePath}. Use a shell listing tool instead.`,
-          );
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        return errorResult(`Read failed: ${message}`);
+        readFailure = err;
+        return fileReadError(err, filePath);
       } finally {
-        await boundRead?.dispose();
+        try { await boundRead?.dispose(); }
+        catch (cleanup) {
+          if (readFailure !== undefined) throw new AggregateError([readFailure, cleanup], "File read and capability release failed", { cause: readFailure });
+          throw cleanup;
+        }
       }
     },
   };

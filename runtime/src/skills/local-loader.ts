@@ -1,9 +1,7 @@
-import {
-  readdir,
-  readFile,
-  realpath,
-  stat,
-} from "node:fs/promises";
+import { ContentFilesystem, localContentFilesystem, rethrowContentAuthorityError,
+  type ContentExecutionEnvironment } from "../execution/content-filesystem.js";
+import { assertSameExecutionEnvironment, LOCAL_EXECUTION_ENVIRONMENT } from "../execution/binding.js";
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey, type ExecutionEnvironmentBinding } from "../execution/types.js";
 import { homedir } from "node:os";
 import {
   basename,
@@ -34,7 +32,9 @@ import {
   createSkillChangeDetector,
   skillChangeDetector,
   type SkillChangeDetector,
+  type SkillChangeDetectorOptions,
 } from "./change-detector.js";
+import { watchExecutionSkillRoots } from "./execution-watcher.js";
 import {
   parseSkillFrontmatterFields as parseCanonicalSkillFrontmatterFields,
 } from "./loadSkillsDir.js";
@@ -67,6 +67,7 @@ export type SkillSource =
 export type SkillExecutionContext = "inline" | "fork";
 
 export interface LocalSkillMetadata {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly name: string;
   readonly displayName?: string;
   readonly description: string;
@@ -143,6 +144,9 @@ export interface LocalSkillsServiceOptions {
   readonly agencHome: string;
   readonly pluginStorageRoot: string;
   readonly workspaceRoot: string;
+  readonly executionEnvironment?: ContentExecutionEnvironment;
+  /** Task HOME, independent of controller user/managed skill roots. */
+  readonly executionHomePath?: string;
   /** Session/conversation id owning this skills-service instance. Used to
    *  scope invoked-skill tracking per session in the daemon; when absent,
    *  the instance uses a stable single-session default key. */
@@ -154,12 +158,17 @@ export interface LocalSkillsServiceOptions {
   readonly watcherDebounceMs?: number;
   readonly watcherClearRuntimeCaches?: boolean;
   readonly watcherRunConfigChangeHooks?: boolean;
+  readonly watcherPollIntervalMs?: number;
+  /** Supplied by the selected environment's hook runner; never a host fallback. */
+  readonly watcherExecuteConfigChangeHooks?: SkillChangeDetectorOptions["executeConfigChangeHooks"];
+  readonly watcherHasBlockingResult?: SkillChangeDetectorOptions["hasBlockingResult"];
   readonly env?: Partial<
     Pick<NodeJS.ProcessEnv, "HOME" | "AGENC_MANAGED_HOME">
   >;
 }
 
 interface SkillRoot {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly path: string;
   readonly scope: Exclude<LocalSkillScope, "bundled" | "mcp">;
   readonly source: Exclude<SkillSource, "bundled" | "mcp">;
@@ -173,6 +182,26 @@ interface SkillWithContent {
   readonly skill: LocalSkillMetadata;
   readonly content: string;
   readonly filePath: string;
+  readonly filesystem: ContentFilesystem;
+}
+
+function captureSkillOptions(options: LocalSkillsServiceOptions): LocalSkillsServiceOptions {
+  const environment = new ContentFilesystem(options.executionEnvironment).environment;
+  if (environment && (!isAbsolute(options.workspaceRoot) ||
+      (options.executionHomePath !== undefined && !isAbsolute(options.executionHomePath)))) {
+    throw new ExecutionEnvironmentError("invalid_request", "Task skill roots and home must be absolute", false);
+  }
+  return { ...options, ...(environment ? { executionEnvironment: environment } : {}) };
+}
+
+function sourceFilesystem(options: LocalSkillsServiceOptions, binding?: ExecutionEnvironmentBinding): ContentFilesystem {
+  if (!binding) return localContentFilesystem;
+  assertSameExecutionEnvironment(binding, options.executionEnvironment?.binding ?? LOCAL_EXECUTION_ENVIRONMENT);
+  return new ContentFilesystem(options.executionEnvironment);
+}
+
+function sourcePathKey(path: string, binding?: ExecutionEnvironmentBinding): string {
+  return executionEnvironmentCacheKey(binding ?? LOCAL_EXECUTION_ENVIRONMENT, path);
 }
 
 interface SplitFrontmatter {
@@ -273,29 +302,32 @@ function normalizeExistingCandidate(path: string): string {
 }
 
 function rootKey(root: SkillRoot): string {
-  return `${root.scope}:${root.loadedFrom}:${root.path}`;
+  return `${root.scope}:${root.loadedFrom}:${sourcePathKey(root.path, root.executionBinding)}`;
 }
 
-async function pathIsDirectory(path: string): Promise<boolean> {
+async function pathIsDirectory(path: string, filesystem: ContentFilesystem): Promise<boolean> {
   try {
-    return (await stat(path)).isDirectory();
-  } catch {
+    return (await filesystem.stat(path)).isDirectory();
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return false;
   }
 }
 
-async function pathIsFile(path: string): Promise<boolean> {
+async function pathIsFile(path: string, filesystem: ContentFilesystem): Promise<boolean> {
   try {
-    return (await stat(path)).isFile();
-  } catch {
+    return (await filesystem.stat(path)).isFile();
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return false;
   }
 }
 
-async function getFileIdentity(filePath: string): Promise<string | null> {
+async function getFileIdentity(filePath: string, filesystem: ContentFilesystem): Promise<string | null> {
   try {
-    return await realpath(filePath);
-  } catch {
+    return await filesystem.realpath(filePath);
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return null;
   }
 }
@@ -331,12 +363,13 @@ function localSkillRootCandidates(
 
   const roots: SkillRoot[] = [];
 
-  for (const path of projectDirsUpToHome(workspaceRoot, home)) {
+  for (const path of projectDirsUpToHome(workspaceRoot, options.executionEnvironment ? options.executionHomePath : home)) {
     roots.push({
       path,
       scope: "project",
       source: "projectSettings",
       loadedFrom: "skills",
+      ...(options.executionEnvironment ? { executionBinding: options.executionEnvironment.binding } : {}),
     });
   }
 
@@ -372,6 +405,10 @@ export async function discoverSkillRoots(
   options: LocalSkillsServiceOptions,
   discoveredSkillRoots: readonly string[] = [],
 ): Promise<readonly SkillRoot[]> {
+  options = captureSkillOptions(options);
+  if (options.executionEnvironment && !(await new ContentFilesystem(options.executionEnvironment).stat(options.workspaceRoot)).isDirectory()) {
+    throw new ExecutionEnvironmentError("invalid_request", "Task skill workspace must be a directory", false);
+  }
   const pluginStorageRoot = normalizeExistingCandidate(
     options.pluginStorageRoot,
   );
@@ -393,6 +430,7 @@ export async function discoverSkillRoots(
       scope: "project",
       source: "projectSettings",
       loadedFrom: "skills",
+      ...(options.executionEnvironment ? { executionBinding: options.executionEnvironment.binding } : {}),
     });
   }
 
@@ -400,6 +438,7 @@ export async function discoverSkillRoots(
     pluginStorageRoot,
     workspaceRoot,
     config: options.config,
+    executionEnvironment: options.executionEnvironment,
   });
   roots.push(
     ...pluginRoots.map((root) => ({
@@ -411,6 +450,7 @@ export async function discoverSkillRoots(
       loadedFrom: "plugin" as const,
       pluginRoot: root.pluginRoot,
       pluginId: root.pluginId,
+      ...(root.executionBinding ? { executionBinding: root.executionBinding } : {}),
     })),
   );
 
@@ -420,7 +460,7 @@ export async function discoverSkillRoots(
       ...root,
       path: normalizeExistingCandidate(root.path),
     };
-    if (!(await pathIsDirectory(normalized.path))) continue;
+    if (!(await pathIsDirectory(normalized.path, sourceFilesystem(options, normalized.executionBinding)))) continue;
     deduped.set(rootKey(normalized), normalized);
   }
   return [...deduped.values()];
@@ -429,6 +469,7 @@ export async function discoverSkillRoots(
 export async function discoverSkillWatchRoots(
   options: LocalSkillsServiceOptions,
 ): Promise<readonly string[]> {
+  if (options.executionEnvironment) throw new ExecutionEnvironmentError("unsupported_resource", "Selected skill watches require source-bound roots", false);
   const pluginStorageRoot = normalizeExistingCandidate(
     options.pluginStorageRoot,
   );
@@ -446,19 +487,38 @@ export async function discoverSkillWatchRoots(
   );
 }
 
-async function readDirEntries(path: string) {
+export interface SkillWatchSource {
+  readonly path: string;
+  readonly executionBinding?: ExecutionEnvironmentBinding;
+}
+
+export async function discoverSkillWatchSources(options: LocalSkillsServiceOptions,
+  discoveredSkillRoots: readonly string[] = []): Promise<readonly SkillWatchSource[]> {
+  options = captureSkillOptions(options);
+  const sources = [...localSkillRootCandidates(options), ...await discoverSkillRoots(options, discoveredSkillRoots)];
+  const uniqueSources = new Map<string, SkillWatchSource>();
+  for (const source of sources) {
+    uniqueSources.set(sourcePathKey(source.path, source.executionBinding), { path: source.path,
+      ...(source.executionBinding ? { executionBinding: source.executionBinding } : {}) });
+  }
+  return [...uniqueSources.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function readDirEntries(path: string, filesystem: ContentFilesystem) {
   try {
-    return await readdir(path, { withFileTypes: true });
-  } catch {
+    return await filesystem.readDirectory(path);
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return [];
   }
 }
 
-async function isDirectoryEntry(path: string, isSymlink: boolean): Promise<boolean> {
+async function isDirectoryEntry(path: string, isSymlink: boolean, filesystem: ContentFilesystem): Promise<boolean> {
   if (!isSymlink) return true;
   try {
-    return (await stat(path)).isDirectory();
-  } catch {
+    return (await filesystem.stat(path)).isDirectory();
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return false;
   }
 }
@@ -481,24 +541,24 @@ interface ScanFrame {
 
 type DirEntry = Awaited<ReturnType<typeof readDirEntries>>[number];
 
-async function isScannableDir(entry: DirEntry, path: string): Promise<boolean> {
+async function isScannableDir(entry: DirEntry, path: string, filesystem: ContentFilesystem): Promise<boolean> {
   if (!entry.isDirectory() && !entry.isSymbolicLink()) return false;
   if (SKIP_DIRS.has(entry.name)) return false;
-  return isDirectoryEntry(path, entry.isSymbolicLink());
+  return isDirectoryEntry(path, entry.isSymbolicLink(), filesystem);
 }
 
-async function topLevelScanFrames(root: string): Promise<ScanFrame[]> {
+async function topLevelScanFrames(root: string, filesystem: ContentFilesystem): Promise<ScanFrame[]> {
   const frames: ScanFrame[] = [];
-  for (const entry of await readDirEntries(root)) {
+  for (const entry of await readDirEntries(root, filesystem)) {
     const next = join(root, entry.name);
-    if (await isScannableDir(entry, next)) frames.push({ path: next, depth: 1 });
+    if (await isScannableDir(entry, next, filesystem)) frames.push({ path: next, depth: 1 });
   }
   return frames;
 }
 
 /** Returns false when the directory (by real path) was already scanned. */
-async function markVisited(path: string, visited: Set<string>): Promise<boolean> {
-  const dirId = await getFileIdentity(path);
+async function markVisited(path: string, visited: Set<string>, filesystem: ContentFilesystem): Promise<boolean> {
+  const dirId = await getFileIdentity(path, filesystem);
   if (dirId === null) return true;
   if (visited.has(dirId)) return false;
   visited.add(dirId);
@@ -516,31 +576,32 @@ async function scanSkillDir(
   frame: ScanFrame,
   scan: MutableSkillFileScan,
   queue: ScanFrame[],
+  filesystem: ContentFilesystem,
 ): Promise<void> {
-  for (const entry of await readDirEntries(frame.path)) {
+  for (const entry of await readDirEntries(frame.path, filesystem)) {
     const next = join(frame.path, entry.name);
     if (entry.isFile()) {
       if (isSkillFile(next)) recordSkillFile(scan, next);
       continue;
     }
-    if (frame.depth < MAX_SCAN_DEPTH && (await isScannableDir(entry, next))) {
+    if (frame.depth < MAX_SCAN_DEPTH && (await isScannableDir(entry, next, filesystem))) {
       queue.push({ path: next, depth: frame.depth + 1 });
     }
   }
 }
 
-async function findSkillFiles(root: string): Promise<SkillFileScan> {
+async function findSkillFiles(root: string, filesystem: ContentFilesystem): Promise<SkillFileScan> {
   const scan: MutableSkillFileScan = {
     files: [],
     droppedCount: 0,
     maxFiles: maxSkillFilesPerRoot(),
   };
-  const queue = await topLevelScanFrames(root);
+  const queue = await topLevelScanFrames(root, filesystem);
   const visitedDirs = new Set<string>();
   while (queue.length > 0) {
     const frame = queue.shift()!;
-    if (await markVisited(frame.path, visitedDirs)) {
-      await scanSkillDir(frame, scan, queue);
+    if (await markVisited(frame.path, visitedDirs, filesystem)) {
+      await scanSkillDir(frame, scan, queue, filesystem);
     }
   }
   return {
@@ -653,12 +714,14 @@ async function loadSkillFile(
   filePath: string,
   root: SkillRoot,
   warnings: SkillLoadWarning[],
+  filesystem: ContentFilesystem,
 ): Promise<SkillWithContent | null> {
-  if (!(await pathIsFile(filePath))) return null;
+  if (!(await pathIsFile(filePath, filesystem))) return null;
   let raw: string;
   try {
-    raw = await readFile(filePath, "utf8");
+    raw = await filesystem.readText(filePath);
   } catch (error) {
+    rethrowContentAuthorityError(error);
     warnings.push({
       path: filePath,
       reason: `unreadable: ${error instanceof Error ? error.message : String(error)}`,
@@ -716,6 +779,7 @@ async function loadSkillFile(
     scope: root.scope,
     source: root.source,
     loadedFrom: root.loadedFrom,
+    ...(root.executionBinding ? { executionBinding: root.executionBinding } : {}),
     ...(root.pluginRoot !== undefined
       ? { pluginRoot: root.pluginRoot }
       : {}),
@@ -727,7 +791,7 @@ async function loadSkillFile(
     })(),
   };
 
-  return { skill, content: markdown, filePath };
+  return { skill, content: markdown, filePath, filesystem };
 }
 
 interface LoadedSkillRoot {
@@ -736,8 +800,8 @@ interface LoadedSkillRoot {
   readonly warnings: readonly SkillLoadWarning[];
 }
 
-async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
-  const scan = await findSkillFiles(root.path);
+async function loadSkillsFromRoot(root: SkillRoot, filesystem: ContentFilesystem): Promise<LoadedSkillRoot> {
+  const scan = await findSkillFiles(root.path, filesystem);
   const files = [...scan.files];
   // A root can BE one skill: plugin manifests may declare each skill
   // dir individually (skills: ["./skills/flash-board"]), so the root
@@ -745,15 +809,16 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
   if (files.length === 0) {
     const leaf = join(root.path, SKILL_FILE_NAME);
     try {
-      const stats = await stat(leaf);
+      const stats = await filesystem.stat(leaf);
       if (stats.isFile()) files.push(leaf);
-    } catch {
+    } catch (error) {
+      rethrowContentAuthorityError(error);
       // Genuinely empty root.
     }
   }
   const warnings: SkillLoadWarning[] = [];
   const loaded = await Promise.all(
-    files.map((file) => loadSkillFile(file, root, warnings)),
+    files.map((file) => loadSkillFile(file, root, warnings, filesystem)),
   );
   return {
     skills: loaded.filter((entry): entry is SkillWithContent => entry !== null),
@@ -766,7 +831,7 @@ async function dedupeSkillsByRealPath(
   entries: readonly SkillWithContent[],
 ): Promise<readonly SkillWithContent[]> {
   const identities = await Promise.all(
-    entries.map((entry) => getFileIdentity(entry.filePath)),
+    entries.map((entry) => getFileIdentity(entry.filePath, entry.filesystem)),
   );
   const seen = new Set<string>();
   const out: SkillWithContent[] = [];
@@ -777,8 +842,9 @@ async function dedupeSkillsByRealPath(
       out.push(entry);
       continue;
     }
-    if (seen.has(identity)) continue;
-    seen.add(identity);
+    const key = sourcePathKey(identity, entry.skill.executionBinding);
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(entry);
   }
   return out;
@@ -851,8 +917,9 @@ export async function loadLocalSkillsSnapshot(
   activePaths: readonly string[] = [],
   discoveredSkillRoots: readonly string[] = [],
 ): Promise<LocalSkillsSnapshot> {
+  options = captureSkillOptions(options);
   const roots = await discoverSkillRoots(options, discoveredSkillRoots);
-  const loadedNested = await Promise.all(roots.map(loadSkillsFromRoot));
+  const loadedNested = await Promise.all(roots.map((root) => loadSkillsFromRoot(root, sourceFilesystem(options, root.executionBinding))));
   const deduped = await dedupeSkillsByRealPath(
     loadedNested.flatMap((loaded) => loaded.skills),
   );
@@ -956,8 +1023,9 @@ async function loadSkillContent(
   }
   let raw: string;
   try {
-    raw = await readFile(skill.path, "utf8");
-  } catch {
+    raw = await sourceFilesystem(options, skill.executionBinding).readText(skill.path);
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return null;
   }
   const { markdown } = splitFrontmatter(raw);
@@ -977,7 +1045,6 @@ async function loadSkillContent(
       normalizeDisplayPath(skill.pluginRoot),
     );
   }
-  void options;
   return { skill, content };
 }
 
@@ -1415,6 +1482,7 @@ export function createLocalSkillsServices(
   SessionServices,
   "skillsManager" | "pluginsManager" | "skillsWatcher"
 > {
+  options = captureSkillOptions(options);
   let cache: {
     readonly key: string;
     readonly value: Promise<LocalSkillsSnapshot>;
@@ -1425,6 +1493,8 @@ export function createLocalSkillsServices(
   const activePaths = new Set<string>();
   const discoveredSkillRoots = new Set<string>();
   let watcherStarted = false;
+  let watcherStarting: Promise<void> | undefined;
+  let watcherFailure: unknown;
   // Touched paths only feed `paths:`-gated skills and are part of the
   // snapshot cache key, so the set is bounded: once full, the oldest path
   // makes room for the newest.
@@ -1445,14 +1515,15 @@ export function createLocalSkillsServices(
   // without an explicit sessionId cover every scope this instance has
   // recorded into — instances are created per session in the daemon, so
   // another session's records never appear here.
-  const defaultInvokedSkillsSessionKey =
-    options.sessionId?.trim() || INVOKED_MAIN_AGENT_ID;
+  const scopedSessionKey = (sessionId: string) => options.executionEnvironment
+    ? sourcePathKey(sessionId, options.executionEnvironment.binding) : sessionId;
+  const defaultSessionId = options.sessionId?.trim() || INVOKED_MAIN_AGENT_ID;
+  const defaultInvokedSkillsSessionKey = scopedSessionKey(defaultSessionId);
   const invokedSkillsSessionKeys = new Set<string>([
     defaultInvokedSkillsSessionKey,
   ]);
   const recordInvokedSkill = (record: InvokedSkillRecord): void => {
-    const sessionKey =
-      record.sessionId?.trim() || defaultInvokedSkillsSessionKey;
+    const sessionKey = scopedSessionKey(record.sessionId?.trim() || defaultSessionId);
     invokedSkillsSessionKeys.add(sessionKey);
     recordInvokedSkillInScope(sessionKey, record);
   };
@@ -1461,7 +1532,7 @@ export function createLocalSkillsServices(
     sessionId?: string,
   ): ReadonlyMap<string, InvokedSkillRecord> => {
     const sessionKeys = sessionId?.trim()
-      ? [sessionId.trim()]
+      ? [scopedSessionKey(sessionId.trim())]
       : [...invokedSkillsSessionKeys];
     return getInvokedSkillsForScopes(sessionKeys, agentId);
   };
@@ -1470,22 +1541,26 @@ export function createLocalSkillsServices(
     sessionId?: string,
   ): void => {
     const sessionKeys = sessionId?.trim()
-      ? [sessionId.trim()]
+      ? [scopedSessionKey(sessionId.trim())]
       : [...invokedSkillsSessionKeys];
     clearInvokedSkillsForScopes(sessionKeys, agentId);
   };
   const detector = options.skillChangeDetector ?? createSkillChangeDetector();
-  const eventSink = options.skillChangeEventSink ?? skillChangeDetector;
+  const eventSink = options.skillChangeEventSink ?? (options.executionEnvironment ? detector : skillChangeDetector);
   const load = (
     config?: Pick<AgenCConfig, "plugins">,
   ): Promise<LocalSkillsSnapshot> => {
+    if (watcherFailure !== undefined) return Promise.reject(watcherFailure);
+    const detectorFailure = detector.getFailure?.();
+    if (detectorFailure !== undefined) return Promise.reject(detectorFailure);
     const effectiveOptions = config === undefined ? options : { ...options, config };
     const key = skillSnapshotCacheKey(
       effectiveOptions.config,
       activePaths,
       discoveredSkillRoots,
+      options.executionEnvironment?.binding,
     );
-    if (cache?.key !== key) {
+    if (options.executionEnvironment || cache?.key !== key) {
       cache = {
         key,
         value: loadLocalSkillsSnapshot(
@@ -1508,19 +1583,38 @@ export function createLocalSkillsServices(
       return true;
     }
   };
-  const startWatcher = () => {
-    if (watcherStarted) return Promise.resolve();
+  const startWatcherOnce = async () => {
+    if (watcherStarted) return;
+    if (options.executionEnvironment && options.watcherRunConfigChangeHooks !== false &&
+        (!options.watcherExecuteConfigChangeHooks || !options.watcherHasBlockingResult)) {
+      throw new ExecutionEnvironmentError("unsupported_resource", "Selected skill reload requires an environment hook runner", false);
+    }
     watcherStarted = true;
+    watcherFailure = undefined;
     watchedPluginConfigKey = JSON.stringify(lastPluginConfig ?? null);
-    return detector.initialize({
+    let watchSources: readonly SkillWatchSource[] = [];
+    try { await detector.initialize({
       fileWatcher: options.fileWatcher,
       getWatchRoots: async () => {
+        if (options.executionEnvironment) {
+          watchSources = await discoverSkillWatchSources({ ...options, config: lastPluginConfig }, [...discoveredSkillRoots]);
+          return watchSources.filter((source) => !source.executionBinding).map((source) => source.path);
+        }
         return discoverSkillWatchRoots({
           ...options,
           config: lastPluginConfig,
         });
       },
       onReload: clear,
+      onError: (error) => { watcherFailure = error; clear(); },
+      ...(options.executionEnvironment ? { subscribeChanges: async (changed: (paths: readonly string[]) => void, failed: (error: unknown) => void) => {
+        const environment = options.executionEnvironment!;
+        return watchExecutionSkillRoots({ environment, changed, failed,
+          getRoots: () => [...watchSources.filter((source) => source.executionBinding).map((source) => source.path), ...discoveredSkillRoots],
+          intervalMs: options.watcherPollIntervalMs });
+      } } : {}),
+      ...(options.watcherExecuteConfigChangeHooks ? { executeConfigChangeHooks: options.watcherExecuteConfigChangeHooks } : {}),
+      ...(options.watcherHasBlockingResult ? { hasBlockingResult: options.watcherHasBlockingResult } : {}),
       ...(detector !== eventSink ? { forwardTo: eventSink } : {}),
       ...(options.watcherDebounceMs !== undefined
         ? { debounceMs: options.watcherDebounceMs }
@@ -1531,9 +1625,20 @@ export function createLocalSkillsServices(
       ...(options.watcherRunConfigChangeHooks !== undefined
         ? { runConfigChangeHooks: options.watcherRunConfigChangeHooks }
         : {}),
-    }).catch(() => {
+    }); } catch (error) {
       watcherStarted = false;
-    });
+      await detector.dispose();
+      if (options.executionEnvironment) throw error;
+      rethrowContentAuthorityError(error);
+    }
+  };
+  const startWatcher = (): Promise<void> => {
+    if (watcherStarting) return watcherStarting;
+    const starting = startWatcherOnce();
+    watcherStarting = starting;
+    const settled = () => { if (watcherStarting === starting) watcherStarting = undefined; };
+    void starting.then(settled, settled);
+    return starting;
   };
   const restartWatcherIfPluginConfigChanged = async () => {
     if (!watcherStarted) return;
@@ -1601,6 +1706,7 @@ export function createLocalSkillsServices(
       const dirs = await discoverDynamicSkillDirsForPaths(
         touchedPaths,
         options.workspaceRoot,
+        options.executionEnvironment,
       );
       let changed = false;
       for (const dir of dirs) {
@@ -1630,6 +1736,7 @@ export function createLocalSkillsServices(
           pluginStorageRoot: options.pluginStorageRoot,
           workspaceRoot: options.workspaceRoot,
           config: pluginConfigView(config),
+          executionEnvironment: options.executionEnvironment,
         });
         return {
           effectiveSkillRoots: () => pluginSkillRoots.map((root) => root.path),
@@ -1652,9 +1759,11 @@ function skillSnapshotCacheKey(
   config: Pick<AgenCConfig, "plugins"> | undefined,
   activePaths: ReadonlySet<string>,
   discoveredSkillRoots: ReadonlySet<string>,
+  executionBinding?: ExecutionEnvironmentBinding,
 ): string {
   return JSON.stringify({
     plugins: config?.plugins ?? null,
+    ...(executionBinding ? { executionBinding } : {}),
     activePaths: [...activePaths].sort(),
     discoveredSkillRoots: [...discoveredSkillRoots].sort(),
   });
@@ -1671,7 +1780,10 @@ function pluginConfigView(
 export async function discoverDynamicSkillDirsForPaths(
   filePaths: readonly string[],
   cwd: string,
+  executionEnvironment?: ContentExecutionEnvironment,
 ): Promise<readonly string[]> {
+  if (executionEnvironment && !isAbsolute(cwd)) throw new ExecutionEnvironmentError("invalid_request", "Task skill cwd must be absolute", false);
+  const filesystem = new ContentFilesystem(executionEnvironment);
   const resolvedCwd = resolve(cwd);
   const seen = new Set<string>();
   const dirs: string[] = [];
@@ -1682,7 +1794,7 @@ export async function discoverDynamicSkillDirsForPaths(
         const skillDir = join(current, rootName, "skills");
         if (seen.has(skillDir)) continue;
         seen.add(skillDir);
-        if (await pathIsDirectory(skillDir)) dirs.push(skillDir);
+        if (await pathIsDirectory(skillDir, filesystem)) dirs.push(skillDir);
       }
       const parent = dirname(current);
       if (parent === current) break;

@@ -22,6 +22,10 @@ async function fixture(external = false, aliased = false) {
   mkdirSync(project);
   const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: project, encoding: "utf8" });
   git(["init", "-q"]);
+  // Production Git launches deliberately discard ambient GIT_* identity.
+  // Persist fixture identity so reflog updates do not guess an email via DNS.
+  git(["config", "user.name", "AgenC Test"]);
+  git(["config", "user.email", "test@example.invalid"]);
   writeFileSync(join(project, "tracked.txt"), "preserve me\n");
   git(["add", "tracked.txt"]);
   git(["-c", "user.name=AgenC Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "seed"]);

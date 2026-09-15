@@ -1285,7 +1285,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   const coordinatorModeEnabled = isCoordinatorModeEnabled(
     startup.config.coordinator_mode,
   );
-  const roleWorkspace = createAgentRoleWorkspace(workspaceRoot);
+  const roleWorkspace = createAgentRoleWorkspace(workspaceRoot, configStore.executionWorkspace?.environment.binding);
   const agentDefinitions = await loadFreshAgentDefinitions(
     roleWorkspace.cwd,
     runtimeOptions.pluginStorageRoot,

@@ -1142,6 +1142,8 @@ async function driveResumedTurn(
       turnId: turn.turnId,
       fromIteration: turn.lastCheckpoint.iterationIndex,
       fromCheckpointSeq: turn.lastCheckpoint.checkpointSeq,
+      executionEnvironment: turn.lastCheckpoint.executionEnvironment,
+      ...(turn.lastCheckpoint.executionProcesses === undefined ? {} : { executionProcesses: turn.lastCheckpoint.executionProcesses }),
       persistedMessageCount: turn.lastCheckpoint.persistedMessageCount,
       restoreSlice: turn.lastCheckpoint
         .resumableState as unknown as import("../session/turn-state.js").TurnCheckpointSlice,

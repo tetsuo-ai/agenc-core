@@ -1,6 +1,7 @@
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 
-import { findProjectRootSync } from "../session/session-store.js";
+import { DEFAULT_SESSION_ROOT_MARKERS, findProjectRootSync } from "../workspace/project-root.js";
+import { configWorkspaceCwd, findConfigWorkspaceRoot, type ConfigWorkspaceFilesystem } from "./workspace-filesystem.js";
 import { resolveManagedConfigPath } from "../utils/settings/managedPath.js";
 import {
   applyEnvOverrides,
@@ -91,6 +92,7 @@ export interface ResolvedMcpLayerCandidates {
 export type McpLayerCandidateDecision = "accept" | "defer" | "reject";
 
 interface StableLayerIdentity {
+  readonly namespaceKey: string;
   readonly path: string;
   readonly resolvedPath: string;
   readonly dev: number;
@@ -134,6 +136,8 @@ export interface LoadCanonicalDaemonConfigOptions {
 }
 
 export interface LayeredConfigRepositoryOptions {
+  /** Selected task filesystem for project, local and explicit --config inputs. */
+  readonly workspaceFilesystem?: ConfigWorkspaceFilesystem;
   readonly env?: EnvSnapshot;
   readonly home?: HomeContext;
   readonly cwd?: string;
@@ -229,10 +233,14 @@ function source(
 async function readConfigSource(
   path: string,
   scope: ConfigScope,
+  workspaceFilesystem?: ConfigWorkspaceFilesystem,
 ): Promise<Awaited<ReturnType<typeof readStableFile>>> {
   let snapshot: Awaited<ReturnType<typeof readStableFile>>;
   try {
-    snapshot = await readStableFile(path, {
+    if (workspaceFilesystem !== undefined && !["project", "local", "flag"].includes(scope)) {
+      throw new Error("Task filesystem cannot supply controller configuration authority");
+    }
+    snapshot = await (workspaceFilesystem === undefined ? readStableFile : workspaceFilesystem.readStableFile.bind(workspaceFilesystem))(path, {
       allowLeafSymlink: scope !== "managed",
     });
   } catch (error) {
@@ -319,8 +327,9 @@ export async function readStrictConfigLayer(
   path: string,
   scope: ConfigScope,
   label: string = scope,
+  workspaceFilesystem?: ConfigWorkspaceFilesystem,
 ): Promise<ConfigLayerSnapshot | null> {
-  const snapshot = await readConfigSource(path, scope);
+  const snapshot = await readConfigSource(path, scope, workspaceFilesystem);
   if (snapshot === null) return null;
   let duplicate = false;
   let parsed: JsonRecord;
@@ -349,6 +358,7 @@ export async function readStrictConfigLayer(
     config: validateStrictConfigDocument(parsed, path),
   });
   STABLE_LAYER_IDENTITIES.set(layer, Object.freeze({
+    namespaceKey: workspaceFilesystem?.namespaceKey ?? "local",
     path: resolve(path),
     resolvedPath: snapshot.resolvedPath,
     dev: snapshot.dev,
@@ -1192,6 +1202,7 @@ function syntheticLayer(
 }
 
 async function assertNoRetiredConfigInputs(options: {
+  readonly workspaceFilesystem?: ConfigWorkspaceFilesystem;
   readonly home: HomeContext;
   readonly cwd: string;
   readonly projectRoot: string;
@@ -1206,6 +1217,7 @@ async function assertNoRetiredConfigInputs(options: {
       projectRoot: options.projectRoot,
       managedConfigPath: options.managedConfigPath,
       includeProjectInputs: options.includeProjectInputs,
+      workspaceFilesystem: options.workspaceFilesystem,
     });
   } catch (error) {
     throw new ConfigRepositoryError(
@@ -1239,11 +1251,12 @@ export async function assertNoRetiredConfigInputsForMutation(
   const home = options.home ?? resolveHomeContext(env, {
     ...(env.HOME ? { platformHome: env.HOME } : {}),
   });
-  const cwd = resolve(options.cwd ?? process.cwd());
+  const cwd = configWorkspaceCwd(options.workspaceFilesystem, options.cwd);
   const projectRoot = resolve(
-    options.projectRoot ??
-      findConfigProjectRoot(cwd, defaultConfig().project_root_markers, env)
-        ?.rootDir ??
+    (options.projectRoot === undefined ? undefined : options.workspaceFilesystem === undefined ? options.projectRoot : posix.resolve(cwd, options.projectRoot)) ??
+      (options.workspaceFilesystem === undefined
+        ? findConfigProjectRoot(cwd, defaultConfig().project_root_markers, env)?.rootDir
+        : await findConfigWorkspaceRoot(options.workspaceFilesystem, cwd, defaultConfig().project_root_markers ?? DEFAULT_SESSION_ROOT_MARKERS)) ??
       cwd,
   );
   await assertNoRetiredConfigInputs({
@@ -1252,6 +1265,7 @@ export async function assertNoRetiredConfigInputsForMutation(
     projectRoot,
     managedConfigPath:
       options.managedConfigPath ?? resolveManagedConfigPath(env),
+    workspaceFilesystem: options.workspaceFilesystem,
   });
 }
 
@@ -1285,7 +1299,7 @@ async function loadLayeredConfigInternal(
     ...(env.HOME ? { platformHome: env.HOME } : {}),
   });
   const cwd = includeWorkspaceLayers
-    ? resolve(options.cwd ?? process.cwd())
+    ? configWorkspaceCwd(options.workspaceFilesystem, options.cwd)
     : home.path;
   const managedPath =
     options.managedConfigPath ?? resolveManagedConfigPath(env);
@@ -1305,6 +1319,7 @@ async function loadLayeredConfigInternal(
     for (const existing of physicalSources) {
       const earlier = STABLE_LAYER_IDENTITIES.get(existing);
       if (earlier === undefined) continue;
+      if (earlier.namespaceKey !== identity.namespaceKey) continue;
       const reason = earlier.path === identity.path
         ? "path"
         : earlier.resolvedPath === identity.resolvedPath
@@ -1354,9 +1369,10 @@ async function loadLayeredConfigInternal(
   let flag: ConfigLayerSnapshot | null = null;
   if (includeWorkspaceLayers && options.flagConfigPath) {
     flag = await readStrictConfigLayer(
-      options.flagConfigPath,
+      options.workspaceFilesystem === undefined ? options.flagConfigPath : posix.resolve(cwd, options.flagConfigPath),
       "flag",
       "explicit config file",
+      options.workspaceFilesystem,
     );
     if (!flag) {
       throw new ConfigRepositoryError(
@@ -1377,8 +1393,10 @@ async function loadLayeredConfigInternal(
     : undefined;
   const projectRoot = includeWorkspaceLayers
     ? resolve(
-        options.projectRoot ??
-          findConfigProjectRoot(cwd, rootMarkers, env)?.rootDir ??
+        (options.projectRoot === undefined ? undefined : options.workspaceFilesystem === undefined ? options.projectRoot : posix.resolve(cwd, options.projectRoot)) ??
+          (options.workspaceFilesystem === undefined
+            ? findConfigProjectRoot(cwd, rootMarkers, env)?.rootDir
+            : await findConfigWorkspaceRoot(options.workspaceFilesystem, cwd, rootMarkers ?? DEFAULT_SESSION_ROOT_MARKERS)) ??
           cwd,
       )
     : home.path;
@@ -1388,12 +1406,14 @@ async function loadLayeredConfigInternal(
     projectRoot,
     managedConfigPath: managedPath,
     includeProjectInputs: includeWorkspaceLayers,
+    workspaceFilesystem: options.workspaceFilesystem,
   });
   const project = includeWorkspaceLayers
     ? await readStrictConfigLayer(
         join(projectRoot, ".agenc", "config.toml"),
         "project",
         "project config",
+        options.workspaceFilesystem,
       )
     : null;
   registerPhysicalSource(project);
@@ -1414,6 +1434,7 @@ async function loadLayeredConfigInternal(
         join(projectRoot, ".agenc", "config.local.toml"),
         "local",
         "local config",
+        options.workspaceFilesystem,
       )
     : null;
   registerPhysicalSource(local);

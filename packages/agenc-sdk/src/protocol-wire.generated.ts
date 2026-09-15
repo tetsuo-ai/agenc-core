@@ -1212,6 +1212,17 @@ export interface RunRuntimeSettingsSnapshot {
 
 export type SessionStatus = "idle" | "running" | "waiting" | "closed" | "error";
 
+/** Persisted identity contains no host PID, control socket or credential. */
+export type ExecutionEnvironmentBinding = {
+    readonly kind: "local";
+} | {
+    readonly kind: "docker";
+    readonly containerId: string;
+    readonly generation: string;
+    /** Prevent restored handles from binding to a replacement receipt store. */
+    readonly processHandleNamespace: string;
+};
+
 export interface SessionSummary extends JsonObject {
     readonly sessionId: string;
     readonly agentId: string;
@@ -1222,6 +1233,8 @@ export interface SessionSummary extends JsonObject {
     readonly roleWorkspace?: {
         readonly id: string;
         readonly cwd: string;
+        /** Immutable provenance; carries no backend connection or launch authority. */
+        readonly executionBinding?: ExecutionEnvironmentBinding;
     };
     readonly metadata?: JsonObject;
     readonly activeAttachmentIds?: readonly string[];

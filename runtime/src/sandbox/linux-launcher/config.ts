@@ -1,4 +1,4 @@
-import { AGENC_LINUX_SANDBOX_ARG0 } from "../engine/index.js";
+import { AGENC_LINUX_SANDBOX_ARG0 } from "../launcher-identity.js";
 
 export const LINUX_SANDBOX_ARG0 = AGENC_LINUX_SANDBOX_ARG0;
 export const DEFAULT_BWRAP_PROGRAM = "bwrap";

@@ -240,7 +240,8 @@ describe("RolloutStore transactional compaction", () => {
               checkpointSeq: 1,
               persistedMessageCount: replacementHistory.length,
               prefixHash,
-              checkpointVersion: 4,
+              checkpointVersion: 5,
+              executionEnvironment: { kind: "local" },
               toolResultIntegrityVersion: 1,
               prefixHashVersion: 3,
               resumableState: {
@@ -518,7 +519,8 @@ describe("RolloutStore transactional compaction", () => {
               checkpointSeq: 1,
               persistedMessageCount: rollback.source_history.length,
               prefixHash,
-              checkpointVersion: 4,
+              checkpointVersion: 5,
+              executionEnvironment: { kind: "local" },
               toolResultIntegrityVersion: 1,
               prefixHashVersion: 3,
               resumableState: {

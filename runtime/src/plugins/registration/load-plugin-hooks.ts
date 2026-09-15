@@ -6,7 +6,7 @@ import {
   type PluginHookSource,
 } from "../loader.js";
 import {
-  loadRuntimePlugins,
+  resolveRuntimePlugins,
   substitutePluginTemplate,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
@@ -82,7 +82,7 @@ function mergeHooks(a: HooksMap | undefined, b: HooksMap): HooksMap {
 async function resolvePlugins(
   options: PluginHookRegistrationOptions,
 ): Promise<readonly LoadedPlugin[]> {
-  return options.plugins ?? await loadRuntimePlugins(options);
+  return resolveRuntimePlugins(options);
 }
 
 export async function loadPluginHooks(

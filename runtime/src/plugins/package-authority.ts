@@ -1,5 +1,5 @@
-import { lstat } from "node:fs/promises";
 import { join } from "node:path";
+import { contentPathMissing, localContentFilesystem, type ContentFilesystem } from "../execution/content-filesystem.js";
 import { PLUGIN_MANIFEST_RELATIVE_PATH } from "./manifest.js";
 
 export const RETIRED_PLUGIN_MCP_FILE = ".mcp.json";
@@ -21,12 +21,12 @@ export interface PluginPackageAuthorityIssue {
   readonly message: string;
 }
 
-async function pathEntryExists(path: string): Promise<boolean> {
+async function pathEntryExists(path: string, filesystem: ContentFilesystem): Promise<boolean> {
   try {
-    await lstat(path);
+    await filesystem.stat(path, false);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (contentPathMissing(error)) return false;
     throw error;
   }
 }
@@ -46,10 +46,11 @@ function declarationReferencesFile(
 export async function inspectPluginPackageAuthority(
   pluginRoot: string,
   declarations: PluginPackageDeclarations,
+  filesystem: ContentFilesystem = localContentFilesystem,
 ): Promise<readonly PluginPackageAuthorityIssue[]> {
   const issues: PluginPackageAuthorityIssue[] = [];
   const retiredMcpPath = join(pluginRoot, RETIRED_PLUGIN_MCP_FILE);
-  if (await pathEntryExists(retiredMcpPath)) {
+  if (await pathEntryExists(retiredMcpPath, filesystem)) {
     issues.push({
       path: retiredMcpPath,
       field: "mcpServers",
@@ -59,7 +60,7 @@ export async function inspectPluginPackageAuthority(
   }
 
   const retiredSettingsPath = join(pluginRoot, RETIRED_PLUGIN_SETTINGS_FILE);
-  if (await pathEntryExists(retiredSettingsPath)) {
+  if (await pathEntryExists(retiredSettingsPath, filesystem)) {
     issues.push({
       path: retiredSettingsPath,
       field: "settings",
@@ -74,7 +75,7 @@ export async function inspectPluginPackageAuthority(
     [CONVENTIONAL_APP_FILE, declarations.apps, "apps"],
   ] as const) {
     const conventionalPath = join(pluginRoot, relativePath);
-    if (!(await pathEntryExists(conventionalPath))) continue;
+    if (!(await pathEntryExists(conventionalPath, filesystem))) continue;
     if (declarationReferencesFile(declaration, relativePath)) continue;
     issues.push({
       path: conventionalPath,

@@ -15,6 +15,7 @@ import {
   ExternalInstructionApprovalStore,
   readInstructionFileSnapshot,
 } from "./secure-instruction-file.js";
+import { ExecutionEnvironmentError } from "../../src/execution/types.js";
 
 const roots: string[] = [];
 
@@ -31,6 +32,33 @@ afterEach(() => {
 });
 
 describe("descriptor-bound instruction snapshots", () => {
+  test("propagates environment loss before any controller file read", async () => {
+    const root = tempRoot();
+    const file = join(root, "AGENC.md");
+    writeFileSync(file, "host shadow");
+    const failure = new ExecutionEnvironmentError("environment_dead", "Original task generation died", true);
+    const environment = {
+      binding: { kind: "docker" as const, containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32) },
+      filesystem: { describePath: async () => { throw failure; } },
+    };
+    await expect(readInstructionFileSnapshot({ requestedPath: file, boundaryRoot: root, workspaceRoot: root,
+      sourceClass: "project", maximumBytes: 100, executionEnvironment: environment as unknown as Parameters<typeof readInstructionFileSnapshot>[0]["executionEnvironment"] }))
+      .rejects.toBe(failure);
+  });
+
+  test("external instruction approval cannot cross a container generation or controller namespace", () => {
+    const store = new ExternalInstructionApprovalStore();
+    const executionBinding = { kind: "docker" as const, containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32) };
+    const request = { workspaceRoot: "/app", includingSource: "/app/AGENC.md", includingSourceSha256: "hash", targetCanonicalPath: "/outside.md",
+      targetIdentity: { dev: 1n, ino: 2n, mode: 0o100600n, nlink: 1n, size: 4n, mtimeNs: 1n, ctimeNs: 1n }, principal: "operator" };
+    const approval = store.grant({ ...request, executionBinding });
+    expect(store.findExact(request).approval).toBeUndefined();
+    expect(store.findExact({ ...request, executionBinding: { ...executionBinding, generation: "d".repeat(64) } }).approval).toBeUndefined();
+    expect(store.findExact({ ...request, executionBinding }).approval).toBe(approval);
+    expect(store.auditLog()[0].executionBinding).toEqual(executionBinding);
+    expect(Object.isFrozen(approval.executionBinding)).toBe(true);
+  });
+
   test("returns a digest and bytes from the same stable regular file", async () => {
     const root = tempRoot();
     const file = join(root, "AGENC.md");

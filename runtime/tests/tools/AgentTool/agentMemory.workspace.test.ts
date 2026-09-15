@@ -110,7 +110,7 @@ afterEach(() => {
 })
 
 describe('agent memory workspace authority', () => {
-  it('uses role workspace A under ambient cwd B and rejects B/symlink carve-outs', () => {
+  it('uses role workspace A under ambient cwd B and rejects B/symlink carve-outs', async () => {
     const workspaceA = tempRoot('memory-workspace-a')
     const workspaceB = tempRoot('memory-workspace-b')
     const outside = tempRoot('memory-outside')
@@ -156,7 +156,7 @@ describe('agent memory workspace authority', () => {
         runtimeOptions: resolveAgentRuntimeOptions({}),
       },
     } as unknown as Session
-    runWithSessionAuthorities(session, configStore, () => {
+    await runWithSessionAuthorities(session, configStore, async () => {
       const prompt = loadAgentMemoryPrompt('runner', 'project')
       expect(prompt).toContain('workspace-a-memory')
       expect(prompt).not.toContain('workspace-b-memory')
@@ -170,14 +170,14 @@ describe('agent memory workspace authority', () => {
         workspaceB,
       ])
       expect(
-        checkReadPermissionForTool(
+        (await checkReadPermissionForTool(
           fileTool('FileRead'),
           { file_path: entryA },
           allowedWorkspaceContext,
-        ).behavior,
+        )).behavior,
       ).not.toBe('allow')
 
-      runWithAgentContext(
+      await runWithAgentContext(
         {
           agentId: 'memory-worker-test',
           agentType: 'subagent',
@@ -187,7 +187,7 @@ describe('agent memory workspace authority', () => {
             scope: 'project',
           },
         },
-        () => {
+        async () => {
           expect(checkEditableInternalPath(entryA, {}).behavior).toBe('allow')
           expect(checkReadableInternalPath(entryA, {}).behavior).toBe('allow')
           expect(checkEditableInternalPath(entryB, {}).behavior).toBe(
@@ -219,47 +219,50 @@ describe('agent memory workspace authority', () => {
           )
 
           const context = allowedWorkspaceContext
+          expect((await checkReadPermissionForTool(fileTool('FileRead'), { file_path: siblingEntryA }, {
+            ...context, mode: 'bypassPermissions', alwaysAskRules: { session: ['FileRead(**/MEMORY.md)'] },
+          })).decisionReason?.type).toBe('safetyCheck')
           expect(
-            checkReadPermissionForTool(
+            (await checkReadPermissionForTool(
               fileTool('FileRead'),
               { file_path: entryA },
               context,
-            ).behavior,
+            )).behavior,
           ).toBe('allow')
           expect(
-            checkWritePermissionForTool(
+            (await checkWritePermissionForTool(
               fileTool('Write'),
               { file_path: entryA },
               context,
-            ).behavior,
+            )).behavior,
           ).toBe('allow')
           expect(
-            checkReadPermissionForTool(
+            (await checkReadPermissionForTool(
               fileTool('FileRead'),
               { file_path: inMemoryHardlink },
               context,
-            ).behavior,
+            )).behavior,
           ).not.toBe('allow')
           expect(
-            checkWritePermissionForTool(
+            (await checkWritePermissionForTool(
               fileTool('Write'),
               { file_path: inMemoryHardlink },
               context,
-            ).behavior,
+            )).behavior,
           ).not.toBe('allow')
           expect(
-            checkReadPermissionForTool(
+            (await checkReadPermissionForTool(
               fileTool('FileRead'),
               { file_path: entryB },
               context,
-            ).behavior,
+            )).behavior,
           ).not.toBe('allow')
           expect(
-            checkReadPermissionForTool(
+            (await checkReadPermissionForTool(
               fileTool('FileRead'),
               { file_path: siblingEntryA },
               context,
-            ).behavior,
+            )).behavior,
           ).not.toBe('allow')
         },
       )

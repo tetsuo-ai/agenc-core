@@ -921,6 +921,7 @@ async function compileObserver(supervisorRoot) {
 }
 
 const canaries = [
+  ["--protected-egress-canary", ["syscall=sendmsg target=192.0.2.53"]],
   [
     "--native-canary",
     ["syscall=connect target=192.0.2.1", "syscall=sendto target=192.0.2.53"],
@@ -933,7 +934,7 @@ const canaries = [
   ["--unix-symlink-canary", ["target=unix-path-symlink"]],
   ["--unix-noncanonical-canary", ["target=unix-path-noncanonical"]],
 ];
-const allowedCanaries = ["--unix-private-canary", "--ptrace-state-canary"];
+const allowedCanaries = ["--unix-private-canary", "--ptrace-state-canary", "--protected-ipc-canary", "--protected-ipc-exec-canary"];
 const exitStatusCanaries = [["--sigtrap-canary", 133]];
 
 async function verifyObserver(supervisorRoot) {

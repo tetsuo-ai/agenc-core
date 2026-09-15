@@ -7528,6 +7528,7 @@ function seedCanonicalDaemonRollout(
             source: "interactive-root",
             agencVersion: "0.16.1",
             rolloutSchemaVersion: ROLLOUT_SCHEMA_VERSION,
+            executionEnvironment: { kind: "local" },
             model: "grok-4",
             modelProvider: "xai",
           },

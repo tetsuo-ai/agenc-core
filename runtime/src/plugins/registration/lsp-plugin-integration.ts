@@ -7,7 +7,7 @@ import {
   type PluginLoadIssue,
 } from "../loader.js";
 import {
-  loadRuntimePlugins,
+  resolveRuntimePlugins,
   resolvePluginServerTemplate,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
@@ -159,7 +159,7 @@ function addPluginScopeToLspServers(
 async function resolvePlugins(
   options: PluginLspRegistrationOptions,
 ): Promise<readonly LoadedPlugin[]> {
-  return options.plugins ?? await loadRuntimePlugins(options);
+  return resolveRuntimePlugins(options);
 }
 
 async function extractLspServersFromPlugins(

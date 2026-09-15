@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { formatShellWrapperCommand } from "../bash/shellPrefix.js";
+import { quote } from "shell-quote";
 
 type CommandShellKind = "cmd" | "powershell" | "posix";
 
@@ -25,7 +25,7 @@ export function wrapCommandForShell(
 ): string {
   return acceptsPosixCommandWrapper(shellPath) &&
     (commandWrapperArgv?.length ?? 0) > 0
-    ? formatShellWrapperCommand(commandWrapperArgv!, command)
+    ? `${quote([...commandWrapperArgv!])} ${quote([command])}`
     : command;
 }
 

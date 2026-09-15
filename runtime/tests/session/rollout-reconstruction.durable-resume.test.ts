@@ -20,6 +20,7 @@ import {
 import type {
   TurnCheckpointV2Event,
   TurnCheckpointV4Event,
+  TurnCheckpointV5Event,
 } from "./event-log.js";
 import type {
   ToolPairIntegrityFailure,
@@ -87,12 +88,28 @@ function pinBuild(id: string): string {
   return id;
 }
 
+test("v5 recovery retains the task binding and rejects a checkpoint from another generation or receipt store", () => {
+  const buildId = pinBuild("execution-binding-build");
+  const binding = { kind: "docker" as const, containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32) };
+  const meta: RolloutItem = { type: "session_meta", payload: { sessionId: "test-run", timestamp: new Date().toISOString(), cwd: "/app",
+    originator: "test", agencVersion: "0.17.0", rolloutSchemaVersion: 6, executionEnvironment: binding } };
+  const original = [meta, ...orphanWithCheckpoint({ turnId: "bound-turn", prefix: [], checkpointVersion: 5, buildId, executionEnvironment: binding })];
+  expect(reconstruct(original).resumableTurns).toMatchObject([{ historyPrefixValid: true,
+    checkpointIntegrityStatus: "valid", lastCheckpoint: { executionEnvironment: binding } }]);
+  for (const executionEnvironment of [{ kind: "local" } as const, { ...binding, generation: "d".repeat(64) },
+    { ...binding, processHandleNamespace: "d".repeat(32) }]) {
+    const changed = [meta, ...orphanWithCheckpoint({ turnId: "bound-turn", prefix: [], checkpointVersion: 5, buildId, executionEnvironment })];
+    expect(reconstruct(changed).resumableTurns).toMatchObject([{ historyPrefixValid: false, checkpointIntegrityStatus: "invalid" }]);
+  }
+});
+
 interface CheckpointArgs {
   readonly turnId: string;
   readonly buildId?: string;
   readonly prefix: ResponseItem[];
   readonly prefixHash?: string; // override to force a mismatch
-  readonly checkpointVersion?: 2 | 4;
+  readonly checkpointVersion?: 2 | 4 | 5;
+  readonly executionEnvironment?: TurnCheckpointV5Event["executionEnvironment"];
   readonly iterationIndex?: number;
   readonly checkpointSeq?: number;
   readonly boundary?: "iteration" | "postAssistant";
@@ -109,7 +126,7 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
     persistedMessageCount: args.prefix.length,
     prefixHash:
       args.prefixHash ??
-      (checkpointVersion === 4
+      (checkpointVersion >= 4
         ? computeCheckpointPrefixHashV3(args.prefix, args.prefix.length)
         : computeCheckpointPrefixHashV2(args.prefix, args.prefix.length)),
     toolResultIntegrityVersion: 1,
@@ -122,8 +139,11 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
       taskBudgetRemaining: 4242,
     },
   } as const;
-  const checkpoint: TurnCheckpointV2Event | TurnCheckpointV4Event =
-    checkpointVersion === 4
+  const checkpoint: TurnCheckpointV2Event | TurnCheckpointV4Event | TurnCheckpointV5Event =
+    checkpointVersion === 5 ? { ...commonCheckpoint, checkpointVersion: 5, prefixHashVersion: 3,
+      executionEnvironment: args.executionEnvironment ?? { kind: "local" },
+      ...(args.executionEnvironment?.kind === "docker" ? { executionProcesses: { version: 1, binding: args.executionEnvironment,
+        ownerId: "test-run", authorityRevision: 0, admission: "open", entries: [] } } : {}) } : checkpointVersion === 4
       ? {
           ...commonCheckpoint,
           checkpointVersion: 4,

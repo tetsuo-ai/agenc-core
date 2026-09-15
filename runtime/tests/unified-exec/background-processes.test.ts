@@ -39,8 +39,8 @@ describe("operator background process control", () => {
       cmd: "printf ready; sleep 30", yield_time_ms: 250, ownerId: "child-agent",
     });
     const task = processes.listBackgroundProcesses()[0]!;
-    expect(() => processes.terminateProcess({ processId: execution.session_id!, ownerId: "foreign-agent" }))
-      .toThrow(/owner|owned|access/i);
+    await expect(processes.terminateProcess({ processId: execution.session_id!, ownerId: "foreign-agent" }))
+      .rejects.toThrow(/owner|owned|access/i);
     await expect(processes.writeStdin({ session_id: execution.session_id!, ownerId: "foreign-agent" }))
       .rejects.toMatchObject({ code: "owner_denied" });
     const stop = await processes.stopBackgroundProcess(task.taskId);

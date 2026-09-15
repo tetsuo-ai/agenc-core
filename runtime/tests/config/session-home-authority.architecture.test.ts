@@ -2,6 +2,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { describe, expect, test } from "vitest";
+import { parse } from "shell-quote";
+import { wrapCommandForShell } from "../../src/utils/shell/commandExecution.js";
+import { CANONICAL_SESSION_ENV_KEYS } from "../../src/session/environment.js";
 
 const SOURCE_ROOT = join(import.meta.dirname, "..", "..", "src");
 
@@ -135,7 +138,12 @@ describe("session home authority architecture", () => {
     expect(terminalPanel).not.toContain("process.env");
     expect(tmuxSocket).toContain("subprocessEnv(process.env)");
     expect(posixShellPath).toContain("env: childEnvironment");
-    expect(commandExecution).toContain("formatShellWrapperCommand");
+    expect(commandExecution).not.toContain("process.env");
+    const wrapper = ["/task/wrapper with spaces", "--literal=$VALUE", "single'quote"];
+    const command = "printf '%s\\n' '$VALUE'\nprintf preserved";
+    expect(parse(wrapCommandForShell("/bin/bash", wrapper, command))).toEqual([...wrapper, command]);
+    expect(wrapCommandForShell("pwsh", wrapper, command)).toBe(command);
+    expect(wrapCommandForShell("/bin/bash", [], command)).toBe(command);
     expect(configuredHooks).toContain("wrapCommandForShell");
     expect(autoFix).toContain("wrapCommandForShell");
     expect(autoFix).not.toContain("process.env.SHELL");
@@ -173,8 +181,10 @@ describe("session home authority architecture", () => {
     const attribution = source("utils/attribution.ts");
 
     expect(environment).not.toMatch(/["']AGENC_REMOTE["']/u);
-    expect(environment).toContain('"AGENC_REMOTE_SESSION_ID"');
-    expect(environment).toContain('"SESSION_INGRESS_URL"');
+    expect(environment).toContain("AGENC_DAEMON_CLIENT_ENV_KEYS");
+    expect(CANONICAL_SESSION_ENV_KEYS).not.toContain("AGENC_REMOTE");
+    expect(CANONICAL_SESSION_ENV_KEYS).toContain("AGENC_REMOTE_SESSION_ID");
+    expect(CANONICAL_SESSION_ENV_KEYS).toContain("SESSION_INGRESS_URL");
     expect(runtimeOptions).toContain('parseBoolean(env, "AGENC_REMOTE", false)');
     expect(attribution).toContain("isSessionRemoteMode()")
     expect(attribution).toContain("environment.AGENC_REMOTE_SESSION_ID")

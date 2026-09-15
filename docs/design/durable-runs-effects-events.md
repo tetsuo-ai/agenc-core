@@ -300,7 +300,7 @@ Operator detail:
 | Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume) and check the recorded resume-gate failure reason. |
 | Open reports `durable checkpoint upgrade blocked` | Integrity, mixed-version, or work-limit failure. Resume stays disabled. Preserve the rollout; restore intact source bytes from backup or start a new session. See [Upgrade and downgrade](#upgrade-and-downgrade). |
 | Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. A recovery-journal accept does not prove the resume reader will. See [Checkpoint slice versions](#checkpoint-slice-versions) and [Recovery journal vs checkpoint reader](#recovery-journal-vs-checkpoint-reader). |
-| Older binary refuses `rollout schema v5` | Expected. Schema 5 is newer than a schema-4 runtime. Upgrade the runtime; do not rewrite the header by hand. |
+| Older binary refuses `rollout schema v6` | Expected. Schema 6 is newer than a schema-5 runtime. Upgrade the runtime; do not rewrite the header by hand. |
 
 ## In-turn checkpoint resume
 
@@ -311,12 +311,14 @@ its last `turn_checkpoint` instead of opening a fresh turn.
 After a successful nonterminal sample, `run-turn.ts` advances
 `modelSampleOrdinal`. Before the next admission, it force-emits a `turn_checkpoint`
 (`emitTurnCheckpoint("iteration", { force: true })`). Interval throttling
-cannot defer that barrier. The checkpoint-version-4 event, stored in rollout
-schema 5, fsyncs:
+cannot defer that barrier. The checkpoint-version-5 event, stored in rollout
+schema 6, fsyncs:
 
 - the durable response prefix and its version-3 `prefixHash` algorithm,
   including typed compaction-history markers
 - `resumableState` from `toCheckpointSlice(state)`
+- the immutable `executionEnvironment` binding, including container generation
+  and supervisor process-handle namespace for Docker execution
 
 The slice always carries `turnCount`, `recoveryReentryCount`,
 `maxOutputTokensRecoveryCount`, `continuationNudgeCount`,
@@ -368,25 +370,26 @@ resume result distinguishes them. Only terminal failure sets
 
 The writer, event types, and strict reader share the slice contract in
 `runtime/src/session/turn-checkpoint-slice.ts`. The reader accepts legacy
-version 1, canonical version 2, version 3, and version 4. It also has a narrow
+version 1, canonical version 2, version 3, version 4, and version 5. It also has a narrow
 compatibility path for version-2 checkpoints written with
 `editorToolCallsAdmitted` or `pendingAdmissionFallback`; those rows are
 validated against the version-3 slice and normalized in memory. Other
 unknown fields still fail with `resumableState contains unversioned fields`.
-Rollout schemas 1 through 4 are promoted atomically to schema 5 after their
+Rollout schemas 1 through 5 are promoted atomically to schema 6 after their
 declared prefix algorithm and tool-result integrity checks pass. The upgrader
-then creates a checkpoint-version-4 digest; it never tries a second algorithm
+then creates a checkpoint-version-5 record with the version-3 prefix digest; it never tries a second algorithm
 against a failed source checkpoint. Schema 3 remains the transactional-
 compaction format and can contain checkpoint-version-2 rows. Schema 4 requires
-checkpoint-version-3 rows, and schema 5 requires checkpoint-version-4 rows.
+checkpoint-version-3 rows, schema 5 requires checkpoint-version-4 rows, and
+schema 6 requires checkpoint-version-5 rows.
 The rewrite preserves compaction records and publishes the new header with the
 upgraded checkpoints as one operation. A rejected checkpoint is not rewritten,
-and a runtime whose maximum rollout schema is 4 refuses a schema-5 header before
+and a runtime whose maximum rollout schema is 5 refuses a schema-6 header before
 replay or append.
 
 ### Checkpoint slice versions
 
-Current writes use checkpoint version 4 in rollout schema 5. The prefix digest
+Current writes use checkpoint version 5 in rollout schema 6. The prefix digest
 uses `agenc.checkpoint-prefix.v3`; checkpoint versions 2 and 3 keep the frozen
 `agenc.checkpoint-prefix.v2` algorithm for compatibility.
 [CP-0003](critical-path/0003-versioned-durable-checkpoints.md) shipped the
@@ -399,7 +402,42 @@ not a rewrite of that ADR.
 | 2 | 2 | Tool-result integrity checkpoints |
 | 3 | 2 | Transactional compaction. Schema 3 does **not** mean checkpoint v3 |
 | 4 | 3 | Complete writer slice, including editor admission and pending fallback |
-| 5 | 4 | Current writer; prefix hash v3 authenticates compaction-history markers |
+| 5 | 4 | Prefix hash v3 authenticates compaction-history markers |
+| 6 | 5 | Current writer; immutable execution environment and managed process recovery |
+
+Schema 6 requires `executionEnvironment` in session metadata and checkpoint v5.
+Local execution records `{ kind: "local" }`. Docker execution records the
+immutable container ID, generation and supervisor receipt-store namespace;
+selectors, sockets and credentials are excluded. Legacy upgrades record local
+execution explicitly. Readers and append paths refuse conflicting identities;
+turn resume checks the selected manager binding before entering the kernel.
+
+Docker checkpoints also require `executionProcesses`, a versioned snapshot of
+acknowledged handles that remain pollable. It binds owner and authority revision,
+original run/call/attempt/operation coordinates, numeric handles, process-spec
+digests, task metadata, absolute timeout deadlines and admission/failure state.
+Local and legacy checkpoints carry no container process state.
+
+The snapshot stores each handle's last delivered output position and separate
+stdout/stderr UTF-8 carry bytes. The position is the supervisor's retained-file
+cursor: non-terminal Docker framing also occupies bytes. Background observation
+does not advance delivery. Pending output stays in the host evidence store and
+is reread on recovery; checkpoint size does not grow with undelivered output.
+Checkpoint capture refuses active manager calls. The canonical writer captures
+only at its existing tool-settlement boundaries and fsyncs the checkpoint with
+the corresponding response prefix.
+
+Recovery looks up and validates every original receipt before exposing any
+handles. It never launches a command, repeats stdin/EOF or resizes a terminal.
+Explicit timeout cleanup retains the original absolute deadline. Missing or
+mismatched receipts close manager admission and surface an inspectable error;
+uncertain input remains a failure and cannot reopen admission. Fully consumed
+terminal handles are absent and therefore remain benign stale IDs.
+
+These manager APIs and the orphaned-turn resume boundary do not yet complete
+session bootstrap recovery, recovery after later journal effects, or inspection
+through a revoked/dead environment connection. Those still require canonical
+effect review and the remaining environment lifecycle integration.
 
 Adding a serialized `resumableState` field requires a new checkpoint version
 **and** a new rollout schema. Do not extend the version-2 allowlist, and do
@@ -428,12 +466,12 @@ key set (`RESPONSE_ITEM_KEYS` in `durable-checkpoint-reader.ts`):
 Checkpoint versions 2 and 3 remain bound to prefix hash v2. That algorithm did
 not authenticate `compactionHistory`, so their validators reject a marker in
 the authenticated prefix instead of accepting unauthenticated metadata.
-Checkpoint v4 is bound to prefix hash v3 and requires `prefixHashVersion: 3`.
+Checkpoints v4 and v5 are bound to prefix hash v3 and require `prefixHashVersion: 3`.
 The reader does not fall back between algorithms. Unknown item keys, marker
 keys, checkpoint fields, and versions fail closed.
 
 The migration planner first validates the stored checkpoint with its declared
-algorithm. Only then does it compute the v3 digest and build checkpoint v4.
+algorithm. Only then does it compute the v3 digest and build checkpoint v5.
 Transactional compaction commits and same-session rollback commits replace the
 planner's active history exactly as they do during reconstruction, so a
 checkpoint written after either boundary is checked against the same bytes on
@@ -480,9 +518,9 @@ backup or start a new session. The planner does not rewrite a rejected
 checkpoint. Mixed versions in one rollout fail `rollout_schema_mixed`
 without rewriting source bytes.
 
-An older runtime whose maximum rollout schema is 4 refuses a schema-5
-header before replay or append (`SchemaMismatchError`: `rollout schema v5
-is newer than runtime v4 — please use /fork to migrate or upgrade
+An older runtime whose maximum rollout schema is 5 refuses a schema-6
+header before replay or append (`SchemaMismatchError`: `rollout schema v6
+is newer than runtime v5 — please use /fork to migrate or upgrade
 @tetsuo-ai/runtime`). Prefer upgrading the runtime. Do not rewrite the
 header by hand.
 

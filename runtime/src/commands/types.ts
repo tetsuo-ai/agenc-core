@@ -117,6 +117,7 @@ export interface SlashCommand {
   readonly kind?: string;
   readonly source?: string;
   readonly loadedFrom?: string;
+  readonly executionBinding?: import("../execution/types.js").ExecutionEnvironmentBinding;
   readonly pluginInfo?: {
     readonly pluginManifest?: {
       readonly name?: string;

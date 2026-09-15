@@ -212,7 +212,7 @@ describe("path-validation", () => {
     }
   });
 
-  test("Write checkPermissions uses path validation before execution", () => {
+  test("Write checkPermissions uses path validation before execution", async () => {
     const tool = createFileWriteTool({ allowedPaths: [root] });
     const target = join(outside, "denied.txt");
     const evaluatorContext = {
@@ -226,7 +226,7 @@ describe("path-validation", () => {
       session: {},
     } as ToolEvaluatorContext;
 
-    const result = tool.checkPermissions?.(
+    const result = await tool.checkPermissions?.(
       { file_path: target, content: "x", cwd: root },
       evaluatorContext,
     );
@@ -237,7 +237,7 @@ describe("path-validation", () => {
     });
   });
 
-  test("FileRead checkPermissions uses path validation before execution", () => {
+  test("FileRead checkPermissions uses path validation before execution", async () => {
     const tool = createFileReadTool({ allowedPaths: [root] });
     const target = join(outside, "outside.txt");
     const evaluatorContext = {
@@ -251,7 +251,7 @@ describe("path-validation", () => {
       session: {},
     } as ToolEvaluatorContext;
 
-    const result = tool.checkPermissions?.(
+    const result = await tool.checkPermissions?.(
       { file_path: target, cwd: root },
       evaluatorContext,
     );
@@ -262,7 +262,7 @@ describe("path-validation", () => {
     });
   });
 
-  test("Edit checkPermissions uses path validation before execution", () => {
+  test("Edit checkPermissions uses path validation before execution", async () => {
     const tool = createFileEditTool({ allowedPaths: [root] });
     const target = join(outside, "outside.txt");
     const evaluatorContext = {
@@ -276,7 +276,7 @@ describe("path-validation", () => {
       session: {},
     } as ToolEvaluatorContext;
 
-    const result = tool.checkPermissions?.(
+    const result = await tool.checkPermissions?.(
       { file_path: target, old_string: "", new_string: "x", cwd: root },
       evaluatorContext,
     );

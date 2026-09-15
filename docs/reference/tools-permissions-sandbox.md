@@ -168,7 +168,8 @@ Legacy `system.*` utilities (not the primary edit surface):
 | --- | --- |
 | `exec_command` | **Canonical** shell (unified-exec) |
 | `write_stdin` | Write to a running unified-exec process |
-| `kill_process` | Kill a managed process |
+| `list_processes` | List the calling session's live managed process handles without consuming output |
+| `kill_process` | Stop a managed process and await cleanup before acknowledging success |
 | `system.bash` | Direct/shell fallback — **deferred** by default; prefer `exec_command` |
 | `PowerShell` | Registered only when `pwsh`/`powershell` is on `PATH` **and** a unified-exec manager is available; **deferred** |
 
@@ -187,6 +188,22 @@ or `sandbox_mode = "danger-full-access"`): a detached process escapes every
 containment a sandbox lease relies on, so under a sandbox the tool refuses it
 and points at `yield_time_ms`. It cannot be combined with `tty`, and
 `kill_process` does not know detached processes; stop one with `kill <pid>`.
+
+`list_processes({})` accepts no owner selector or host PID. It returns numeric
+`session_id` handles with command and cwd (each limited to 4096 characters),
+`tty`, and `started_at` (Unix milliseconds). It exposes only live yielded work
+owned by the calling session. Poll output with `write_stdin` and stop a handle
+with `kill_process`. Successful termination retains final output for polling;
+unknown or already finished handles return `terminated: false`. An ownership
+mismatch is denied, and unproven cleanup is an explicit failure that closes
+further command admission for that manager.
+
+These are local process-lifetime controls. They do not isolate the controller
+from task processes sharing its PID namespace. The Linux broker's target argv
+and environment travel over a private descriptor, which prevents filename
+matching of the broker's command line from selecting it. Arbitrary task
+signals still require a separate execution environment; argv hygiene does not
+establish that boundary.
 
 ### Search / discovery / code intel
 
@@ -368,7 +385,7 @@ prefix once instead of the tool catalog of every request.
 Exact visibility is request-scoped and config-dependent. As coded in
 `buildToolRegistry` defaults:
 
-- **Typically advertised early:** `exec_command`, `write_stdin`, `kill_process`,
+- **Typically advertised early:** `exec_command`, `write_stdin`, `list_processes`, `kill_process`,
   `FileRead`, `Edit`, `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`,
   `AskUserQuestion`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`,
   `system.searchTools`, plus non-deferred model-facing tools (web, multi-agent

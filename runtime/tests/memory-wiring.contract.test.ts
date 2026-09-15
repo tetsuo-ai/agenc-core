@@ -94,6 +94,10 @@ describe("memory wiring contract", () => {
       "runtime/src/tools/system/file-write.ts",
       "runtime/src/tools/FileWriteTool/FileWriteTool.ts",
       "runtime/src/services/extractMemories/memory-paths.ts",
+      // Bootstrap authority checks and live instruction assembly must not
+      // import the barrel's tool/attachment graph to obtain memory paths.
+      "runtime/src/permissions/path-validation.ts",
+      "runtime/src/prompts/live-instructions.ts",
     ]);
     const directMemoryModuleImport =
       /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection|privacy)\.js["']/g;

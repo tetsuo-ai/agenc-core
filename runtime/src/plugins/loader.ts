@@ -1,5 +1,9 @@
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { ContentFilesystem, localContentFilesystem, rethrowContentAuthorityError,
+  type ContentExecutionEnvironment } from "../execution/content-filesystem.js";
+import { assertSameExecutionEnvironment, LOCAL_EXECUTION_ENVIRONMENT } from "../execution/binding.js";
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey,
+  type ExecutionEnvironmentBinding } from "../execution/types.js";
 import { isValidPermissionDefaultMode, validateHooksConfig, validateMcpServersConfig } from "../config/schema.js";
 import type {
   AgenCConfig,
@@ -133,6 +137,7 @@ export interface LoadedPlugin {
    * only and cannot register execution capabilities.
    */
   readonly contentProvenance: PluginContentProvenance;
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly enabled: boolean;
   readonly manifest: PluginManifest;
   readonly manifestPath?: string;
@@ -168,6 +173,8 @@ export interface PluginLoaderOptions {
   readonly readOnly?: boolean;
   readonly pluginStorageRoot: string;
   readonly workspaceRoot: string;
+  /** Workspace and configured paths use this authority; installed packages stay controller-owned. */
+  readonly executionEnvironment?: ContentExecutionEnvironment;
   readonly config?: Pick<AgenCConfig, "plugins"> | undefined;
   readonly extraPluginDirs?: readonly string[];
 }
@@ -177,6 +184,7 @@ interface DiscoveredPluginRoot {
   readonly source: string;
   readonly enabled: boolean;
   readonly contentProvenance: PluginContentProvenance;
+  readonly executionBinding?: ExecutionEnvironmentBinding;
   readonly key?: string;
   readonly featureGated?: boolean;
 }
@@ -284,34 +292,38 @@ function configEntryPath(value: PluginEntryConfig | undefined): string | undefin
     : undefined;
 }
 
-async function pathIsDirectory(path: string): Promise<boolean> {
+async function pathIsDirectory(path: string, filesystem: ContentFilesystem = localContentFilesystem): Promise<boolean> {
   try {
-    return (await stat(path)).isDirectory();
-  } catch {
+    return (await filesystem.stat(path)).isDirectory();
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return false;
   }
 }
 
-async function pathIsFile(path: string): Promise<boolean> {
+async function pathIsFile(path: string, filesystem: ContentFilesystem = localContentFilesystem): Promise<boolean> {
   try {
-    return (await stat(path)).isFile();
-  } catch {
+    return (await filesystem.stat(path)).isFile();
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return false;
   }
 }
 
-async function maybeRealpath(path: string): Promise<string> {
+async function maybeRealpath(path: string, filesystem: ContentFilesystem = localContentFilesystem): Promise<string> {
   try {
-    return await realpath(path);
-  } catch {
+    return await filesystem.realpath(path);
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return path;
   }
 }
 
-async function hasPluginManifest(path: string): Promise<boolean> {
+async function hasPluginManifest(path: string, filesystem: ContentFilesystem): Promise<boolean> {
   try {
-    return (await findPluginManifestPath(path)) !== null;
-  } catch {
+    return (await findPluginManifestPath(path, filesystem)) !== null;
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     // A retired root manifest is still a plugin-shaped input. Keep the root
     // in discovery so createPluginFromPath can disable it with the actionable
     // manifest diagnostic instead of silently ignoring it.
@@ -319,18 +331,18 @@ async function hasPluginManifest(path: string): Promise<boolean> {
   }
 }
 
-async function hasPluginShape(path: string): Promise<boolean> {
-  if (await hasPluginManifest(path)) return true;
+async function hasPluginShape(path: string, filesystem: ContentFilesystem): Promise<boolean> {
+  if (await hasPluginManifest(path, filesystem)) return true;
   return Promise.all([
-    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.commands)),
-    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.agents)),
-    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.skills)),
-    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.outputStyles)),
-    pathIsFile(join(path, CONVENTIONAL_HOOKS_FILE)),
-    pathIsFile(join(path, RETIRED_PLUGIN_MCP_FILE)),
-    pathIsFile(join(path, RETIRED_PLUGIN_SETTINGS_FILE)),
-    pathIsFile(join(path, CONVENTIONAL_LSP_FILE)),
-    pathIsFile(join(path, CONVENTIONAL_APP_FILE)),
+    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.commands), filesystem),
+    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.agents), filesystem),
+    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.skills), filesystem),
+    pathIsDirectory(join(path, DEFAULT_COMPONENT_DIRS.outputStyles), filesystem),
+    pathIsFile(join(path, CONVENTIONAL_HOOKS_FILE), filesystem),
+    pathIsFile(join(path, RETIRED_PLUGIN_MCP_FILE), filesystem),
+    pathIsFile(join(path, RETIRED_PLUGIN_SETTINGS_FILE), filesystem),
+    pathIsFile(join(path, CONVENTIONAL_LSP_FILE), filesystem),
+    pathIsFile(join(path, CONVENTIONAL_APP_FILE), filesystem),
   ]).then((checks) => checks.some(Boolean));
 }
 
@@ -338,20 +350,24 @@ async function discoverRootsUnder(
   baseDir: string,
   contentProvenance: PluginContentProvenance,
   options: { readonly allowBasePlugin?: boolean } = {},
+  filesystem: ContentFilesystem = localContentFilesystem,
 ): Promise<DiscoveredPluginRoot[]> {
-  if (!(await pathIsDirectory(baseDir))) return [];
-  if (options.allowBasePlugin !== false && await hasPluginManifest(baseDir)) {
+  const binding = filesystem.environment?.binding;
+  if (!(await pathIsDirectory(baseDir, filesystem))) return [];
+  if (options.allowBasePlugin !== false && await hasPluginManifest(baseDir, filesystem)) {
     return [{
-      path: await maybeRealpath(baseDir),
-      source: await installedPluginDependencyIdentity(baseDir) ?? baseDir,
+      path: await maybeRealpath(baseDir, filesystem),
+      source: await installedPluginDependencyIdentity(baseDir, filesystem) ?? baseDir,
       enabled: true,
       contentProvenance,
+      ...(binding ? { executionBinding: binding } : {}),
     }];
   }
   let entries;
   try {
-    entries = await readdir(baseDir, { withFileTypes: true });
-  } catch {
+    entries = await filesystem.readDirectory(baseDir);
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return [];
   }
   const roots: DiscoveredPluginRoot[] = [];
@@ -362,12 +378,13 @@ async function discoverRootsUnder(
       isReservedPluginStorageChildName(entry.name)
     ) continue;
     const candidate = join(baseDir, entry.name);
-    if (await hasPluginShape(candidate)) {
+    if (await hasPluginShape(candidate, filesystem)) {
       roots.push({
-        path: await maybeRealpath(candidate),
-        source: await installedPluginDependencyIdentity(candidate) ?? candidate,
+        path: await maybeRealpath(candidate, filesystem),
+        source: await installedPluginDependencyIdentity(candidate, filesystem) ?? candidate,
         enabled: true,
         contentProvenance,
+        ...(binding ? { executionBinding: binding } : {}),
       });
     }
   }
@@ -397,12 +414,12 @@ function contentProvenanceForPath(
     : "authority-controlled";
 }
 
-async function installedPluginDependencyIdentity(pluginRoot: string): Promise<string | undefined> {
+async function installedPluginDependencyIdentity(pluginRoot: string, filesystem: ContentFilesystem): Promise<string | undefined> {
   let metadata: unknown;
   try {
-    metadata = JSON.parse(await readFile(join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), "utf8"));
+    metadata = JSON.parse(await readJsonText(join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), filesystem));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    rethrowContentAuthorityError(error);
     return undefined;
   }
   if (!isRecord(metadata)) return undefined;
@@ -413,15 +430,16 @@ async function installedPluginDependencyIdentity(pluginRoot: string): Promise<st
   return pluginDependencyIdentityFromSource(metadata.source);
 }
 
-async function findGitRepoRoot(start: string): Promise<string | undefined> {
+async function findGitRepoRoot(start: string, filesystem: ContentFilesystem): Promise<string | undefined> {
   let current = resolve(start);
   for (;;) {
     try {
       // In worktrees `.git` is a file, in regular checkouts it is a directory.
       // Either way, its presence marks the project root for plugin discovery.
-      await stat(join(current, ".git"));
+      await filesystem.stat(join(current, ".git"));
       return current;
-    } catch {
+    } catch (error) {
+      rethrowContentAuthorityError(error);
       // Continue walking.
     }
     const parent = resolve(current, "..");
@@ -433,6 +451,11 @@ async function findGitRepoRoot(start: string): Promise<string | undefined> {
 export async function discoverPluginRoots(
   options: PluginLoaderOptions,
 ): Promise<readonly DiscoveredPluginRoot[]> {
+  const filesystem = new ContentFilesystem(options.executionEnvironment);
+  const binding = filesystem.environment?.binding;
+  if (binding && !(await filesystem.stat(options.workspaceRoot)).isDirectory()) {
+    throw new ExecutionEnvironmentError("invalid_request", "Plugin workspace must be a directory", false);
+  }
   const pluginStorageRoot = createPluginStorageAuthority(
     options.pluginStorageRoot,
   ).pluginStorageRoot;
@@ -440,7 +463,10 @@ export async function discoverPluginRoots(
   const autoDiscoveryEnabled = pluginAutoDiscoveryEnabled(options.config);
   const featureEnabled = pluginFeatureEnabled(options.config);
   const roots: DiscoveredPluginRoot[] = [];
-  const gitRoot = await findGitRepoRoot(options.workspaceRoot);
+  const gitRoot = await findGitRepoRoot(options.workspaceRoot, filesystem);
+  const configuredProvenance = (path: string, canonical: string): PluginContentProvenance =>
+    binding?.kind === "docker" ? "repository-controlled" :
+      contentProvenanceForPath(path, canonical, options.workspaceRoot, pluginStorageRoot);
   const workspacePluginDirs = [join(options.workspaceRoot, "plugins")];
   if (gitRoot !== undefined && gitRoot !== options.workspaceRoot) {
     workspacePluginDirs.push(join(gitRoot, "plugins"));
@@ -459,6 +485,7 @@ export async function discoverPluginRoots(
       join(options.workspaceRoot, ".agents", "plugins"),
       "repository-controlled",
       { allowBasePlugin: false },
+      filesystem,
     )).map((root) => ({
       ...root,
       enabled: root.enabled && autoDiscoveryEnabled,
@@ -470,6 +497,7 @@ export async function discoverPluginRoots(
         workspacePluginDir,
         "repository-controlled",
         { allowBasePlugin: false },
+        filesystem,
       )).map((root) => ({
         ...root,
         enabled: root.enabled && autoDiscoveryEnabled,
@@ -481,33 +509,25 @@ export async function discoverPluginRoots(
     const path = configEntryPath(value);
     if (path === undefined) continue;
     const resolvedPath = resolvePath(options.workspaceRoot, path);
-    const canonicalPath = await maybeRealpath(resolvedPath);
+    const canonicalPath = await maybeRealpath(resolvedPath, filesystem);
     roots.push({
       path: canonicalPath,
       source: key,
       key,
       enabled: featureEnabled && configEntryEnabled(value),
-      contentProvenance: contentProvenanceForPath(
-        resolvedPath,
-        canonicalPath,
-        options.workspaceRoot,
-        pluginStorageRoot,
-      ),
+      contentProvenance: configuredProvenance(resolvedPath, canonicalPath),
+      ...(binding ? { executionBinding: binding } : {}),
     });
   }
   for (const path of configuredPluginDirs(options.config)) {
     const resolvedPath = resolvePath(options.workspaceRoot, path);
-    const canonicalPath = await maybeRealpath(resolvedPath);
+    const canonicalPath = await maybeRealpath(resolvedPath, filesystem);
     roots.push(
       ...(await discoverRootsUnder(
         resolvedPath,
-        contentProvenanceForPath(
-          resolvedPath,
-          canonicalPath,
-          options.workspaceRoot,
-          pluginStorageRoot,
-        ),
+        configuredProvenance(resolvedPath, canonicalPath),
         { allowBasePlugin: false },
+        filesystem,
       )).map((root) => ({
         ...root,
         enabled: root.enabled && featureEnabled,
@@ -516,16 +536,13 @@ export async function discoverPluginRoots(
   }
   for (const path of options.extraPluginDirs ?? []) {
     const resolvedPath = resolvePath(options.workspaceRoot, path);
-    const canonicalPath = await maybeRealpath(resolvedPath);
+    const canonicalPath = await maybeRealpath(resolvedPath, filesystem);
     roots.push(
       ...(await discoverRootsUnder(
         resolvedPath,
-        contentProvenanceForPath(
-          resolvedPath,
-          canonicalPath,
-          options.workspaceRoot,
-          pluginStorageRoot,
-        ),
+        configuredProvenance(resolvedPath, canonicalPath),
+        {},
+        filesystem,
       )).map((root) => ({
         ...root,
         featureGated: false,
@@ -540,7 +557,7 @@ export async function discoverPluginRoots(
     const entryEnabled = configValue === undefined
       ? root.enabled
       : configEntryEnabled(configValue);
-    deduped.set(root.path, {
+    deduped.set(contentPathKey(root.path, root.executionBinding), {
       ...root,
       enabled: gateEnabled && entryEnabled,
     });
@@ -548,20 +565,29 @@ export async function discoverPluginRoots(
   return [...deduped.values()].sort((a, b) => a.path.localeCompare(b.path));
 }
 
+function contentPathKey(path: string, binding?: ExecutionEnvironmentBinding): string {
+  return executionEnvironmentCacheKey(binding ?? LOCAL_EXECUTION_ENVIRONMENT, path);
+}
+
 export async function loadPlugins(
   options: PluginLoaderOptions,
 ): Promise<PluginLoadResult> {
-  const roots = await discoverPluginRoots(options);
+  const filesystem = new ContentFilesystem(options.executionEnvironment);
+  const roots = await discoverPluginRoots({ ...options, executionEnvironment: filesystem.environment });
   const configured = configuredPluginEntries(options.config);
   const allowlist = configuredPluginAllowlist(options.config);
   const loaded = await Promise.all(
     roots.map((root) => {
+      if (root.executionBinding) {
+        assertSameExecutionEnvironment(root.executionBinding, filesystem.environment?.binding ?? LOCAL_EXECUTION_ENVIRONMENT);
+      }
       const configEntry = (manifestName: string) =>
         configuredValueForPlugin(root, configured, manifestName);
       return createPluginFromPath(root.path, {
         source: root.source,
         enabled: root.enabled,
         contentProvenance: root.contentProvenance,
+        executionEnvironment: root.executionBinding ? filesystem.environment : undefined,
         configEntry,
         isEnabled: (manifestName) => configEntryEnabled(configEntry(manifestName)) &&
           pluginAllowedByAllowlist(
@@ -601,14 +627,16 @@ export async function loadPlugins(
         message,
       };
       identityErrors.push(issue);
-      identityErrorsByRoot.set(candidate.root, [
-        ...(identityErrorsByRoot.get(candidate.root) ?? []),
+      const rootKey = contentPathKey(candidate.root, candidate.executionBinding);
+      identityErrorsByRoot.set(rootKey, [
+        ...(identityErrorsByRoot.get(rootKey) ?? []),
         issue,
       ]);
     }
   }
   const dataMigrationIssues = options.readOnly ? [] : await migrateLegacyPluginDataDirectories(
-    plugins.map((plugin) => plugin.id),
+    // Task guidance cannot request migrations of controller-owned installed data.
+    plugins.filter((plugin) => plugin.executionBinding?.kind !== "docker").map((plugin) => plugin.id),
     { pluginStorageRoot: options.pluginStorageRoot },
   );
   const dataMigrationIds = new Set(
@@ -627,8 +655,8 @@ export async function loadPlugins(
           message: issue.message,
         };
         dataMigrationErrors.push(loadIssue);
-        dataMigrationErrorsByRoot.set(candidate.root, [
-          ...(dataMigrationErrorsByRoot.get(candidate.root) ?? []),
+        dataMigrationErrorsByRoot.set(contentPathKey(candidate.root, candidate.executionBinding), [
+          ...(dataMigrationErrorsByRoot.get(contentPathKey(candidate.root, candidate.executionBinding)) ?? []),
           loadIssue,
         ]);
       }
@@ -645,24 +673,24 @@ export async function loadPlugins(
     plugin: issue.plugin,
     message: `Plugin dependency ${issue.dependency} is ${issue.reason}`,
   }));
-  const dependencyErrorsBySource = new Map<string, PluginLoadIssue[]>();
+  const dependencyErrorsById = new Map<string, PluginLoadIssue[]>();
   for (const issue of dependencyErrors) {
-    dependencyErrorsBySource.set(issue.source, [
-      ...(dependencyErrorsBySource.get(issue.source) ?? []),
+    dependencyErrorsById.set(issue.plugin!, [
+      ...(dependencyErrorsById.get(issue.plugin!) ?? []),
       issue,
     ]);
   }
   const finalPlugins = plugins.map((plugin) =>
     collidingIds.has(plugin.id) || dataMigrationIds.has(plugin.id) ||
-        dependencyState.demoted.has(plugin.source)
+        dependencyState.demotedPluginIds.has(plugin.id)
       ? {
           ...plugin,
           enabled: false,
           errors: [
             ...plugin.errors,
-            ...(identityErrorsByRoot.get(plugin.root) ?? []),
-            ...(dataMigrationErrorsByRoot.get(plugin.root) ?? []),
-            ...(dependencyErrorsBySource.get(plugin.source) ?? []),
+            ...(identityErrorsByRoot.get(contentPathKey(plugin.root, plugin.executionBinding)) ?? []),
+            ...(dataMigrationErrorsByRoot.get(contentPathKey(plugin.root, plugin.executionBinding)) ?? []),
+            ...(dependencyErrorsById.get(plugin.id) ?? []),
           ],
         }
       : plugin
@@ -693,6 +721,7 @@ export interface PluginSkillRoot {
   readonly pluginId: string;
   /** Root of the plugin that ships this skill dir; substitution target. */
   readonly pluginRoot: string;
+  readonly executionBinding?: ExecutionEnvironmentBinding;
 }
 
 export async function discoverPluginSkillRootsWithProvenance(
@@ -701,29 +730,26 @@ export async function discoverPluginSkillRootsWithProvenance(
   const result = await loadPlugins(options);
   const roots = new Map<
     string,
-    { provenance: PluginContentProvenance; pluginRoot: string; pluginId: string }
+    PluginSkillRoot
   >();
   for (const plugin of result.enabled) {
     for (const path of plugin.skillsPaths) {
-      const current = roots.get(path);
-      roots.set(path, {
-        provenance:
-          current?.provenance === "repository-controlled" ||
+      const key = contentPathKey(path, plugin.executionBinding);
+      const current = roots.get(key);
+      roots.set(key, {
+        path,
+        contentProvenance:
+          current?.contentProvenance === "repository-controlled" ||
             plugin.contentProvenance === "repository-controlled"
             ? "repository-controlled"
             : "authority-controlled",
         pluginRoot: current?.pluginRoot ?? plugin.root,
         pluginId: current?.pluginId ?? plugin.id,
+        ...(plugin.executionBinding ? { executionBinding: plugin.executionBinding } : {}),
       });
     }
   }
-  return [...roots]
-    .map(([path, entry]) => ({
-      path,
-      contentProvenance: entry.provenance,
-      pluginRoot: entry.pluginRoot,
-      pluginId: entry.pluginId,
-    }))
+  return [...roots.values()]
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 
@@ -761,16 +787,20 @@ export async function createPluginFromPath(
     readonly source: string;
     readonly enabled: boolean;
     readonly contentProvenance?: PluginContentProvenance;
+    readonly executionEnvironment?: ContentExecutionEnvironment;
     readonly configEntry?: (manifestName: string) => PluginEntryConfig | undefined;
     readonly isEnabled?: (manifestName: string) => boolean;
   },
 ): Promise<{ plugin: LoadedPlugin | null; errors: readonly PluginLoadIssue[] }> {
+  const filesystem = new ContentFilesystem(opts.executionEnvironment);
+  const executionBinding = filesystem.environment?.binding;
   const errors: PluginLoadIssue[] = [];
   const diagnosticName = basename(pluginPath);
   // Direct construction is used by the operator-driven install/validation
   // path. Runtime discovery always supplies explicit provenance.
-  const contentProvenance = opts.contentProvenance ?? "authority-controlled";
-  if (!(await pathIsDirectory(pluginPath))) {
+  const contentProvenance = executionBinding?.kind === "docker"
+    ? "repository-controlled" : opts.contentProvenance ?? "authority-controlled";
+  if (!(await pathIsDirectory(pluginPath, filesystem))) {
     errors.push({
       type: "path-not-found",
       source: opts.source,
@@ -781,8 +811,9 @@ export async function createPluginFromPath(
     return { plugin: null, errors };
   }
   try {
-    await assertNoRetiredRootPluginManifest(pluginPath);
+    await assertNoRetiredRootPluginManifest(pluginPath, filesystem);
   } catch (error) {
+    rethrowContentAuthorityError(error);
     errors.push({
       type: "manifest",
       source: opts.source,
@@ -795,12 +826,13 @@ export async function createPluginFromPath(
   let manifest: PluginManifest;
   let manifestPath: string | undefined;
   try {
-    const parsed = await loadRequiredPluginManifest(pluginPath);
+    const parsed = await loadRequiredPluginManifest(pluginPath, filesystem);
     manifest = parsed.manifest;
     manifestPath = parsed.manifestPath;
   } catch (error) {
+    rethrowContentAuthorityError(error);
     const retiredManifestPath = join(pluginPath, PLUGIN_MANIFEST_FILE);
-    const attemptedManifestPath = await pathIsFile(retiredManifestPath)
+    const attemptedManifestPath = await pathIsFile(retiredManifestPath, filesystem)
       ? retiredManifestPath
       : join(pluginPath, PLUGIN_MANIFEST_RELATIVE_PATH);
     errors.push({
@@ -815,6 +847,7 @@ export async function createPluginFromPath(
   const packageAuthorityIssues = await inspectPluginPackageAuthority(
     pluginPath,
     manifest,
+    filesystem,
   );
   if (packageAuthorityIssues.length > 0) {
     errors.push(...packageAuthorityIssues.map((issue): PluginLoadIssue => ({
@@ -831,20 +864,20 @@ export async function createPluginFromPath(
       message: issue.message,
     })));
     return {
-      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance, executionBinding),
       errors,
     };
   }
   if (!opts.enabled || opts.isEnabled?.(manifest.name) === false) {
     return {
-      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance, executionBinding),
       errors,
     };
   }
 
-  const commands = await loadCommands(pluginPath, manifest, opts.source, errors);
-  const agentsPaths = await loadComponentPaths("agents", pluginPath, manifest.agents, errors, opts.source, manifest.name);
-  const skillsPaths = await loadComponentPaths("skills", pluginPath, manifest.skills, errors, opts.source, manifest.name);
+  const commands = await loadCommands(pluginPath, manifest, opts.source, errors, filesystem);
+  const agentsPaths = await loadComponentPaths("agents", pluginPath, manifest.agents, errors, opts.source, manifest.name, filesystem);
+  const skillsPaths = await loadComponentPaths("skills", pluginPath, manifest.skills, errors, opts.source, manifest.name, filesystem);
   const outputStylesPaths = await loadComponentPaths(
     "output-styles",
     pluginPath,
@@ -852,11 +885,12 @@ export async function createPluginFromPath(
     errors,
     opts.source,
     manifest.name,
+    filesystem,
   );
   const repositoryControlled = contentProvenance === "repository-controlled";
   const hookSources = repositoryControlled
     ? []
-    : await loadHooks(pluginPath, manifest, manifestPath, opts.source, errors);
+    : await loadHooks(pluginPath, manifest, manifestPath, opts.source, errors, filesystem);
   const mcpServers = repositoryControlled
     ? nullProtoRecord<McpServerConfig>()
     : await loadServers<McpServerConfig>(
@@ -869,6 +903,7 @@ export async function createPluginFromPath(
         errors,
         opts.source,
         manifest.name,
+        filesystem,
       );
   const configuredMcpServers = applyPluginMcpServerConfig(
     mcpServers,
@@ -886,10 +921,11 @@ export async function createPluginFromPath(
         errors,
         opts.source,
         manifest.name,
+        filesystem,
       );
   const appConnectorIds = repositoryControlled
     ? []
-    : await loadAppConnectorIds(pluginPath, manifest, errors, opts.source, manifest.name);
+    : await loadAppConnectorIds(pluginPath, manifest, errors, opts.source, manifest.name, filesystem);
   const settings = repositoryControlled
     ? undefined
     : loadPluginSettings(
@@ -913,23 +949,24 @@ export async function createPluginFromPath(
     root: pluginPath,
     source: opts.source,
     contentProvenance,
+    ...(executionBinding ? { executionBinding } : {}),
     enabled: opts.enabled,
     manifest: loadedManifest,
     ...(manifestPath !== undefined ? { manifestPath } : {}),
-    ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.commands))
+    ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.commands), filesystem)
       ? { commandsPath: join(pluginPath, DEFAULT_COMPONENT_DIRS.commands) }
       : {}),
     commandsPaths: commands.flatMap((command) => command.path ? [command.path] : []),
     commands,
-    ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.agents))
+    ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.agents), filesystem)
       ? { agentsPath: join(pluginPath, DEFAULT_COMPONENT_DIRS.agents) }
       : {}),
     agentsPaths,
-    ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.skills))
+    ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.skills), filesystem)
       ? { skillsPath: join(pluginPath, DEFAULT_COMPONENT_DIRS.skills) }
       : {}),
     skillsPaths,
-    ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.outputStyles))
+    ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.outputStyles), filesystem)
       ? { outputStylesPath: join(pluginPath, DEFAULT_COMPONENT_DIRS.outputStyles) }
       : {}),
     outputStylesPaths,
@@ -949,6 +986,7 @@ function emptyPlugin(
   enabled: boolean,
   manifest: PluginManifest,
   contentProvenance: PluginContentProvenance,
+  executionBinding?: ExecutionEnvironmentBinding,
 ): LoadedPlugin {
   return {
     id: canonicalLoadedPluginId(source, manifest.name),
@@ -958,6 +996,7 @@ function emptyPlugin(
     root: pluginPath,
     source,
     contentProvenance,
+    ...(executionBinding ? { executionBinding } : {}),
     enabled,
     manifest,
     commandsPaths: [],
@@ -978,12 +1017,13 @@ async function loadCommands(
   manifest: PluginManifest,
   source: string,
   errors: PluginLoadIssue[],
+  filesystem: ContentFilesystem,
 ): Promise<LoadedPluginCommand[]> {
   const commands: LoadedPluginCommand[] = [];
   const defaultCommandsDir = join(pluginRoot, DEFAULT_COMPONENT_DIRS.commands);
-  if (manifest.commands === undefined && await pathIsDirectory(defaultCommandsDir)) {
+  if (manifest.commands === undefined && await pathIsDirectory(defaultCommandsDir, filesystem)) {
     commands.push(
-      ...(await collectMarkdownFiles(defaultCommandsDir)).map((path) => ({
+      ...(await collectMarkdownFiles(defaultCommandsDir, filesystem)).map((path) => ({
         name: basename(path).replace(/\.md$/iu, ""),
         path,
         metadata: { source: path },
@@ -998,6 +1038,7 @@ async function loadCommands(
         source,
         manifest.name,
         errors,
+        filesystem,
       )),
     );
   }
@@ -1010,6 +1051,7 @@ async function commandDeclarationsToCommands(
   source: string,
   pluginName: string,
   errors: PluginLoadIssue[],
+  filesystem: ContentFilesystem,
 ): Promise<LoadedPluginCommand[]> {
   if (typeof declaration === "string" || Array.isArray(declaration)) {
     const paths = await resolveExistingPaths(
@@ -1019,6 +1061,7 @@ async function commandDeclarationsToCommands(
       source,
       pluginName,
       errors,
+      filesystem,
     );
     return paths.map((path) => ({
       name: basename(path).replace(/\.md$/iu, ""),
@@ -1040,6 +1083,7 @@ async function commandDeclarationsToCommands(
       source,
       pluginName,
       errors,
+      filesystem,
     );
     out.push(...paths.map((path) => ({ name, path, metadata, manifestName: name })));
   }
@@ -1065,11 +1109,12 @@ async function loadComponentPaths(
   errors: PluginLoadIssue[],
   source: string,
   pluginName: string,
+  filesystem: ContentFilesystem,
 ): Promise<readonly string[]> {
   const defaultDir = defaultDirForComponent(pluginRoot, component);
-  const paths = declaration === undefined && defaultDir !== null && await pathIsDirectory(defaultDir)
+  const paths = declaration === undefined && defaultDir !== null && await pathIsDirectory(defaultDir, filesystem)
     ? [defaultDir]
-    : await resolveExistingPaths(pluginRoot, component, declaration, source, pluginName, errors);
+    : await resolveExistingPaths(pluginRoot, component, declaration, source, pluginName, errors, filesystem);
   return [...new Set(paths)].sort((a, b) => a.localeCompare(b));
 }
 
@@ -1098,6 +1143,7 @@ async function resolveExistingPaths(
   source: string,
   pluginName: string,
   errors: PluginLoadIssue[],
+  filesystem: ContentFilesystem,
 ): Promise<string[]> {
   if (declaration === undefined) return [];
   const declarations = Array.isArray(declaration) ? declaration : [declaration];
@@ -1105,7 +1151,7 @@ async function resolveExistingPaths(
   for (const entry of declarations) {
     try {
       const resolved = resolveManifestRelativePath(pluginRoot, field, entry);
-      if (await pathIsFile(resolved) || await pathIsDirectory(resolved)) {
+      if (await pathIsFile(resolved, filesystem) || await pathIsDirectory(resolved, filesystem)) {
         out.push(resolved);
       } else {
         errors.push({
@@ -1118,6 +1164,7 @@ async function resolveExistingPaths(
         });
       }
     } catch (error) {
+      rethrowContentAuthorityError(error);
       errors.push({
         type: "manifest",
         source,
@@ -1142,7 +1189,7 @@ function componentFromField(field: string): PluginComponentKind | undefined {
   return undefined;
 }
 
-async function collectMarkdownFiles(root: string): Promise<string[]> {
+async function collectMarkdownFiles(root: string, filesystem: ContentFilesystem): Promise<string[]> {
   const out: string[] = [];
   const queue: Array<{ readonly path: string; readonly depth: number }> = [
     { path: root, depth: 0 },
@@ -1152,13 +1199,14 @@ async function collectMarkdownFiles(root: string): Promise<string[]> {
     if (out.length >= MAX_PLUGIN_MARKDOWN_FILES) break;
     const current = queue.shift()!;
     if (current.depth > MAX_PLUGIN_SCAN_DEPTH) continue;
-    const identity = await maybeRealpath(current.path);
+    const identity = await maybeRealpath(current.path, filesystem);
     if (visitedDirs.has(identity)) continue;
     visitedDirs.add(identity);
     let entries;
     try {
-      entries = await readdir(current.path, { withFileTypes: true });
-    } catch {
+      entries = await filesystem.readDirectory(current.path);
+    } catch (error) {
+      rethrowContentAuthorityError(error);
       continue;
     }
     for (const entry of entries) {
@@ -1180,6 +1228,7 @@ async function loadHooks(
   manifestPath: string | undefined,
   source: string,
   errors: PluginLoadIssue[],
+  filesystem: ContentFilesystem,
 ): Promise<readonly PluginHookSource[]> {
   const sources: PluginHookSource[] = [];
   if (manifest.hooks === undefined) return sources;
@@ -1203,10 +1252,10 @@ async function loadHooks(
         });
         continue;
       }
-      const identity = await maybeRealpath(resolved);
+      const identity = await maybeRealpath(resolved, filesystem);
       if (loadedPaths.has(identity)) continue;
       loadedPaths.add(identity);
-      await appendHookFile(resolved, pluginRoot, manifest.name, source, sources, errors);
+      await appendHookFile(resolved, pluginRoot, manifest.name, source, sources, errors, filesystem);
       continue;
     }
     const hooks = normalizeHooksMap(declaration);
@@ -1242,9 +1291,10 @@ async function appendHookFile(
   source: string,
   sources: PluginHookSource[],
   errors: PluginLoadIssue[],
+  filesystem: ContentFilesystem,
 ): Promise<void> {
   try {
-    const parsed = JSON.parse(await readJsonText(path));
+    const parsed = JSON.parse(await readJsonText(path, filesystem));
     const hooks = normalizeHooksMap(parsed);
     if (hooks === null) {
       errors.push({
@@ -1266,6 +1316,7 @@ async function appendHookFile(
       hooks,
     });
   } catch (error) {
+    rethrowContentAuthorityError(error);
     errors.push({
       type: "hooks",
       source,
@@ -1302,9 +1353,10 @@ async function loadServers<T>(
   errors: PluginLoadIssue[],
   source: string,
   pluginName: string,
+  filesystem: ContentFilesystem,
 ): Promise<Readonly<Record<string, T>>> {
   const declarations = declaration === undefined
-    ? defaultFile !== undefined && await pathIsFile(join(pluginRoot, defaultFile))
+    ? defaultFile !== undefined && await pathIsFile(join(pluginRoot, defaultFile), filesystem)
       ? [defaultFile]
       : []
     : Array.isArray(declaration)
@@ -1332,7 +1384,7 @@ async function loadServers<T>(
       }
       Object.assign(
         out,
-        await readServerFile(component, resolved, wrapperKey, normalizeServer, pluginRoot, errors, source, pluginName),
+        await readServerFile(component, resolved, wrapperKey, normalizeServer, pluginRoot, errors, source, pluginName, filesystem),
       );
       continue;
     }
@@ -1354,14 +1406,16 @@ async function readServerFile<T>(
   errors: PluginLoadIssue[],
   source: string,
   pluginName: string,
+  filesystem: ContentFilesystem,
 ): Promise<Readonly<Record<string, T>>> {
   try {
-    const parsed = JSON.parse(await readJsonText(path));
+    const parsed = JSON.parse(await readJsonText(path, filesystem));
     const map = isRecord(parsed) && isRecord(parsed[wrapperKey])
       ? parsed[wrapperKey]
       : parsed;
     return normalizeServerMap(map, normalizeServer, pluginRoot, component, errors, source, pluginName);
   } catch (error) {
+    rethrowContentAuthorityError(error);
     errors.push({
       type: component,
       source,
@@ -1586,6 +1640,7 @@ async function loadAppConnectorIds(
   errors: PluginLoadIssue[],
   source: string,
   pluginName: string,
+  filesystem: ContentFilesystem,
 ): Promise<readonly string[]> {
   const paths = manifest.apps === undefined
     ? []
@@ -1596,10 +1651,11 @@ async function loadAppConnectorIds(
         source,
         pluginName,
         errors,
+        filesystem,
       );
   const ids = new Set<string>();
   for (const path of paths) {
-    for (const id of await loadAppConnectorIdsFromFile(path, errors, source, pluginName)) {
+    for (const id of await loadAppConnectorIdsFromFile(path, errors, source, pluginName, filesystem)) {
       ids.add(id);
     }
   }
@@ -1611,15 +1667,17 @@ async function loadAppConnectorIdsFromFile(
   errors: PluginLoadIssue[],
   source: string,
   pluginName: string,
+  filesystem: ContentFilesystem,
 ): Promise<readonly string[]> {
   try {
-    const parsed = JSON.parse(await readJsonText(path));
+    const parsed = JSON.parse(await readJsonText(path, filesystem));
     if (!isRecord(parsed) || !isRecord(parsed.apps)) return [];
     return Object.values(parsed.apps)
       .map((entry) => isRecord(entry) && typeof entry.id === "string" ? entry.id : null)
       .filter((entry): entry is string => entry !== null && entry.trim().length > 0)
       .sort((a, b) => a.localeCompare(b));
   } catch (error) {
+    rethrowContentAuthorityError(error);
     errors.push({
       type: "manifest",
       source,

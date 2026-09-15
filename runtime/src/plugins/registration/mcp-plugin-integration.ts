@@ -10,7 +10,7 @@ import {
   type PluginMcpSandboxIssue,
 } from "../sandbox.js";
 import {
-  loadRuntimePlugins,
+  resolveRuntimePlugins,
   pluginSettingValue,
   resolvePluginServerTemplate,
   type PluginRuntimeLoadOptions,
@@ -312,7 +312,7 @@ function addPluginScopeToServers(
 async function resolvePlugins(
   options: PluginMcpRegistrationOptions,
 ): Promise<readonly LoadedPlugin[]> {
-  return options.plugins ?? await loadRuntimePlugins(options);
+  return resolveRuntimePlugins(options);
 }
 
 export interface PluginMcpServerRegistration {

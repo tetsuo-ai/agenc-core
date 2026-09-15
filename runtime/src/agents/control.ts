@@ -397,7 +397,8 @@ export class AgentControl {
     ).roleWorkspace;
     this.roleWorkspace = sessionRoleWorkspace
       ? normalizeAgentRoleWorkspace(sessionRoleWorkspace)
-      : createAgentRoleWorkspace(opts.session.sessionConfiguration.cwd);
+      : createAgentRoleWorkspace(opts.session.sessionConfiguration.cwd,
+          opts.session.services?.configStore?.executionWorkspace?.environment.binding);
     this.roleCatalog = opts.roleCatalog ?? new AgentRoleCatalog(
       this.roleWorkspace,
       opts.session.agentDefinitions,

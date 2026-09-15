@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { rethrowContentAuthorityError, type ContentFilesystem, type ContentExecutionEnvironment } from "../../execution/content-filesystem.js";
 
 import type { Command } from "../../commands.js";
 import {
@@ -21,7 +21,9 @@ import {
   descriptionFromMarkdown,
   hasExplicitPluginDiscoveryInput,
   isPluginRuntimeSimpleMode,
-  loadRuntimePlugins,
+  capturePluginRuntimeOptions,
+  pluginContentFilesystem,
+  resolveRuntimePlugins,
   markdownStem,
   normalizePluginIdentifierName,
   parseBoolean,
@@ -48,29 +50,34 @@ interface PluginMarkdownCommand {
   readonly metadata?: PluginCommandMetadata;
   readonly declaredName?: string;
   readonly isSkillMode: boolean;
+  readonly filesystem: ContentFilesystem;
 }
 
-const activePluginCommandsByCwd = new CanonicalAuthorityCache<readonly Command[]>();
-const activePluginSkillsByCwd = new CanonicalAuthorityCache<readonly Command[]>();
+interface ActiveCommandSnapshot {
+  readonly commands: readonly Command[];
+  readonly discovery: PluginRuntimeLoadOptions;
+}
+const activePluginCommandsByCwd = new CanonicalAuthorityCache<ActiveCommandSnapshot>();
+const activePluginSkillsByCwd = new CanonicalAuthorityCache<ActiveCommandSnapshot>();
 
-interface ActivePluginSnapshotOptions {
+interface ActivePluginSnapshotOptions extends PluginRuntimeLoadOptions {
   readonly cwd: string;
   readonly pluginStorageRoot: string;
 }
 
-function setActiveSnapshot<T>(
-  snapshots: CanonicalAuthorityCache<readonly T[]>,
+function setActiveSnapshot(
+  snapshots: CanonicalAuthorityCache<ActiveCommandSnapshot>,
   options: ActivePluginSnapshotOptions,
-  values: readonly T[],
+  values: readonly Command[],
 ): void {
-  const copy = [...values];
-  snapshots.set(runtimeIdentityKey(options), copy);
+  const discovery = capturePluginRuntimeOptions(options);
+  snapshots.set(runtimeIdentityKey(discovery), { commands: [...values], discovery });
 }
 
-function getActiveSnapshot<T>(
-  snapshots: CanonicalAuthorityCache<readonly T[]>,
+function getActiveSnapshot(
+  snapshots: CanonicalAuthorityCache<ActiveCommandSnapshot>,
   options: PluginCommandRegistrationOptions,
-): readonly T[] | undefined {
+): ActiveCommandSnapshot | undefined {
   return snapshots.get(runtimeIdentityKey(options));
 }
 
@@ -294,6 +301,7 @@ function createPluginCommand(
     contentLength: file.markdown.length,
     source: "plugin",
     loadedFrom: "plugin",
+    ...(plugin.executionBinding ? { executionBinding: plugin.executionBinding } : {}),
     pluginInfo: {
       pluginManifest: plugin.manifest,
     },
@@ -301,6 +309,7 @@ function createPluginCommand(
     shell: repositoryControlled ? undefined : maybeShell(frontmatter.shell),
     userFacingName: () => commandDisplayName(commandName, plugin.id, frontmatter),
     getPromptForCommand: async (args, context) => {
+      if (entry.filesystem.environment) await entry.filesystem.stat(plugin.root);
       let content = isSkillMode || isSkillFile(file.filePath)
         ? `Base directory for this skill: ${skillBaseDir}\n\n${file.markdown}`
         : file.markdown;
@@ -326,6 +335,7 @@ async function readCommandPath(
   plugin: LoadedPlugin,
   command: LoadedPluginCommand,
   loadedPaths: Set<string>,
+  filesystem: ContentFilesystem,
 ): Promise<PluginMarkdownCommand[]> {
   if (command.content !== undefined) {
     const parsed = splitFrontmatter(command.content);
@@ -340,15 +350,16 @@ async function readCommandPath(
       metadata: command.metadata,
       declaredName: pluginCommandName(plugin.id, [command.name]),
       isSkillMode: false,
+      filesystem,
     }];
   }
   if (command.path === undefined) return [];
-  if (await pathIsDirectory(command.path)) {
+  if (await pathIsDirectory(command.path, filesystem)) {
     const commandPath = command.path;
-    const files = await collectCommandMarkdownFiles(command.path);
+    const files = await collectCommandMarkdownFiles(command.path, filesystem);
     return Promise.all(
       files.map(async (filePath) =>
-        readFileAsCommand(plugin, filePath, commandPath, loadedPaths, command.metadata),
+        readFileAsCommand(plugin, filePath, commandPath, loadedPaths, command.metadata, filesystem),
       ),
     ).then((entries) => entries.filter((entry): entry is PluginMarkdownCommand => entry !== null));
   }
@@ -367,13 +378,14 @@ async function readCommandPath(
       baseDir,
       loadedPaths,
       command.metadata,
+      filesystem,
       declaredName,
     ),
   ].filter((entry): entry is PluginMarkdownCommand => entry !== null);
 }
 
-async function collectCommandMarkdownFiles(root: string): Promise<readonly string[]> {
-  const files = await collectMarkdownFiles(root);
+async function collectCommandMarkdownFiles(root: string, filesystem: ContentFilesystem): Promise<readonly string[]> {
+  const files = await collectMarkdownFiles(root, filesystem);
   const skillDirs = new Set(
     files
       .filter((filePath) => isSkillFile(filePath))
@@ -394,11 +406,12 @@ async function readFileAsCommand(
   baseDir: string,
   loadedPaths: Set<string>,
   metadata: PluginCommandMetadata | undefined,
+  filesystem: ContentFilesystem,
   declaredName?: string,
 ): Promise<PluginMarkdownCommand | null> {
   if (loadedPaths.has(filePath)) return null;
   loadedPaths.add(filePath);
-  const file = await readMarkdownFile(filePath, baseDir);
+  const file = await readMarkdownFile(filePath, baseDir, filesystem);
   if (!file) return null;
   return {
     plugin,
@@ -406,16 +419,18 @@ async function readFileAsCommand(
     ...(metadata !== undefined ? { metadata } : {}),
     ...(declaredName !== undefined ? { declaredName } : {}),
     isSkillMode: false,
+    filesystem,
   };
 }
 
 async function loadPluginCommandEntries(
   plugin: LoadedPlugin,
+  filesystem: ContentFilesystem,
 ): Promise<readonly PluginMarkdownCommand[]> {
   const loadedPaths = new Set<string>();
   const commands = filterLoadedCommandsForSkillDirectories(plugin.commands);
   const groups = await Promise.all(
-    commands.map((command) => readCommandPath(plugin, command, loadedPaths)),
+    commands.map((command) => readCommandPath(plugin, command, loadedPaths, filesystem)),
   );
   return groups.flat();
 }
@@ -445,10 +460,11 @@ async function loadSkillEntriesFromPath(
   plugin: LoadedPlugin,
   skillsPath: string,
   loadedPaths: Set<string>,
+  filesystem: ContentFilesystem,
 ): Promise<readonly PluginMarkdownCommand[]> {
   const paths = skillsPath.toLowerCase().endsWith(".md")
     ? [skillsPath]
-    : await collectMarkdownFiles(skillsPath);
+    : await collectMarkdownFiles(skillsPath, filesystem);
   const entries = await Promise.all(
     paths
       .filter((filePath) => isSkillFile(filePath))
@@ -458,12 +474,13 @@ async function loadSkillEntriesFromPath(
         const baseDir = skillsPath.toLowerCase().endsWith(".md")
           ? dirname(skillsPath)
           : skillsPath;
-        const file = await readMarkdownFile(filePath, baseDir);
+        const file = await readMarkdownFile(filePath, baseDir, filesystem);
         return file
           ? {
               plugin,
               file,
               isSkillMode: true,
+              filesystem,
             } satisfies PluginMarkdownCommand
           : null;
       }),
@@ -473,31 +490,30 @@ async function loadSkillEntriesFromPath(
 
 async function loadPluginSkillEntries(
   plugin: LoadedPlugin,
+  filesystem: ContentFilesystem,
 ): Promise<readonly PluginMarkdownCommand[]> {
   const loadedPaths = new Set<string>();
   const paths = [...new Set(plugin.skillsPaths)];
   const groups = await Promise.all(
-    paths.map((skillsPath) => loadSkillEntriesFromPath(plugin, skillsPath, loadedPaths)),
+    paths.map((skillsPath) => loadSkillEntriesFromPath(plugin, skillsPath, loadedPaths, filesystem)),
   );
   return groups.flat();
-}
-
-async function resolvePlugins(
-  options: PluginCommandRegistrationOptions,
-): Promise<readonly LoadedPlugin[]> {
-  return options.plugins ?? await loadRuntimePlugins(options);
 }
 
 export async function loadPluginCommands(
   options: PluginCommandRegistrationOptions,
 ): Promise<readonly Command[]> {
+  options = capturePluginRuntimeOptions(options);
   if (shouldSkipImplicitPluginDiscovery(options)) return [];
   if (!hasExplicitPluginDiscoveryInput(options)) {
     const active = getActiveSnapshot(activePluginCommandsByCwd, options);
-    if (active !== undefined) return active;
+    if (active !== undefined) {
+      if (!options.executionEnvironment && options.fresh !== true) return active.commands;
+      options = { ...active.discovery, ...options };
+    }
   }
-  const plugins = await resolvePlugins(options);
-  const groups = await Promise.all(plugins.map(loadPluginCommandEntries));
+  const plugins = await resolveRuntimePlugins(options);
+  const groups = await Promise.all(plugins.map((plugin) => loadPluginCommandEntries(plugin, pluginContentFilesystem(plugin, options))));
   return groups
     .flat()
     .map((entry) => createPluginCommand(entry, options))
@@ -508,13 +524,17 @@ export async function loadPluginCommands(
 export async function loadPluginSkills(
   options: PluginCommandRegistrationOptions,
 ): Promise<readonly Command[]> {
+  options = capturePluginRuntimeOptions(options);
   if (shouldSkipImplicitPluginDiscovery(options)) return [];
   if (!hasExplicitPluginDiscoveryInput(options)) {
     const active = getActiveSnapshot(activePluginSkillsByCwd, options);
-    if (active !== undefined) return active;
+    if (active !== undefined) {
+      if (!options.executionEnvironment && options.fresh !== true) return active.commands;
+      options = { ...active.discovery, ...options };
+    }
   }
-  const plugins = await resolvePlugins(options);
-  const groups = await Promise.all(plugins.map(loadPluginSkillEntries));
+  const plugins = await resolveRuntimePlugins(options);
+  const groups = await Promise.all(plugins.map((plugin) => loadPluginSkillEntries(plugin, pluginContentFilesystem(plugin, options))));
   return groups
     .flat()
     .map((entry) => createPluginCommand(entry, options))
@@ -543,10 +563,11 @@ export function registerPluginCommandProvider(
   return registerCommandProvider((cwd) => loadPluginCommands({ ...options, cwd }));
 }
 
-async function readTextIfPresent(path: string): Promise<string | null> {
+async function readTextIfPresent(path: string, filesystem: ContentFilesystem): Promise<string | null> {
   try {
-    return await readFile(path, "utf8");
-  } catch {
+    return await filesystem.readText(path);
+  } catch (error) {
+    rethrowContentAuthorityError(error);
     return null;
   }
 }
@@ -555,10 +576,13 @@ export async function loadPluginSkillDirectory(
   plugin: LoadedPlugin,
   directory: string,
   pluginStorageRoot: string,
+  executionEnvironment?: ContentExecutionEnvironment,
 ): Promise<readonly Command[]> {
+  const options = capturePluginRuntimeOptions({ pluginStorageRoot, executionEnvironment });
+  const filesystem = pluginContentFilesystem(plugin, options);
   const directSkill = join(directory, "SKILL.md");
   const loadedPaths = new Set<string>();
-  const raw = await readTextIfPresent(directSkill);
+  const raw = await readTextIfPresent(directSkill, filesystem);
   if (raw !== null) {
     const parsed = splitFrontmatter(raw);
     const command = createPluginCommand(
@@ -571,13 +595,14 @@ export async function loadPluginSkillDirectory(
           markdown: parsed.markdown,
         },
         isSkillMode: true,
+        filesystem,
       },
-      { pluginStorageRoot },
+      options,
     );
     return command ? [command] : [];
   }
-  const entries = await loadSkillEntriesFromPath(plugin, directory, loadedPaths);
+  const entries = await loadSkillEntriesFromPath(plugin, directory, loadedPaths, filesystem);
   return entries
-    .map((entry) => createPluginCommand(entry, { pluginStorageRoot }))
+    .map((entry) => createPluginCommand(entry, options))
     .filter((command): command is Command => command !== null);
 }

@@ -8,12 +8,14 @@ import type {
 import type { AgenCConfig } from "../../config/schema.js";
 import type { RuntimeStateRepository } from "../../config/runtime-state-repository.js";
 import type { ManagedPathContext } from "./managedPath.js";
+import type { ExecutionWorkspace } from "../../execution/workspace.js";
 
 /**
  * Narrow ConfigStore surface bound to one request/session async chain, never
  * a process-global slot.
  */
 export interface CanonicalSettingsAuthority {
+  readonly executionWorkspace?: ExecutionWorkspace;
   readonly authoritySnapshot: () => Readonly<{
     config: AgenCConfig;
     layers: readonly ConfigLayerSnapshot[];

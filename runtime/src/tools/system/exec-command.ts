@@ -678,7 +678,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             : {}),
         };
         const output = detach
-          ? await manager.startDetachedProcess!({ ...commonRequest, ...shellRequest })
+          ? await manager.startDetachedProcess!({ ...commonRequest, ...shellRequest, ...(ownerId !== undefined ? { ownerId } : {}) })
           : await manager.execCommand({
               ...commonRequest,
               ...(inspection !== undefined

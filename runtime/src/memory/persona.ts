@@ -34,6 +34,8 @@ import { join, sep } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
 import { logForDebugging } from '../utils/debug.js'
 import type { MemoryFileInfo } from './agencmd.js'
+import { readInstructionFileSnapshot } from '../prompts/secure-instruction-file.js'
+import { instructionFilesystemErrorCode, type InstructionExecutionEnvironment } from '../prompts/instruction-filesystem.js'
 
 /** Persona files injected whenever present, in priority order (later = higher). */
 export const PERSONA_FILE_NAMES = ['USER.md', 'SOUL.md', 'IDENTITY.md'] as const
@@ -117,8 +119,9 @@ export function capPersonaContent(
  */
 export async function loadPersonaPromptSection(
   workspaceDir: string,
+  executionEnvironment?: InstructionExecutionEnvironment,
 ): Promise<string | null> {
-  const files = await getPersonaMemoryFiles(workspaceDir, new Set())
+  const files = await getPersonaMemoryFiles(workspaceDir, new Set(), executionEnvironment)
   if (files.length === 0) return null
   return formatPersonaGuidance(workspaceDir, files)
 }
@@ -153,7 +156,9 @@ export function formatPersonaGuidance(
 export async function getPersonaMemoryFiles(
   workspaceDir: string,
   processedPaths: Set<string>,
+  executionEnvironment?: InstructionExecutionEnvironment,
 ): Promise<MemoryFileInfo[]> {
+  if (executionEnvironment !== undefined) return getExecutionPersonaMemoryFiles(workspaceDir, processedPaths, executionEnvironment)
   const fs = getFsImplementation()
   const result: MemoryFileInfo[] = []
   let canonicalWorkspace: string
@@ -230,5 +235,36 @@ export async function getPersonaMemoryFiles(
     }
   }
 
+  return result
+}
+
+async function getExecutionPersonaMemoryFiles(
+  workspaceDir: string,
+  processedPaths: Set<string>,
+  executionEnvironment: InstructionExecutionEnvironment,
+): Promise<MemoryFileInfo[]> {
+  const result: MemoryFileInfo[] = []
+  let identityExists = true
+  try { await executionEnvironment.filesystem.describePath(join(workspaceDir, IDENTITY_FILE_NAME)) }
+  catch (error) { identityExists = instructionFilesystemErrorCode(error) !== 'ENOENT' }
+  const names: readonly string[] = [...PERSONA_FILE_NAMES, ...(identityExists ? [] : [BOOTSTRAP_FILE_NAME])]
+  for (const name of names) {
+    const path = join(workspaceDir, name)
+    const normalized = normalizeForComparison(path)
+    if (processedPaths.has(normalized)) continue
+    const read = await readInstructionFileSnapshot({ executionEnvironment, requestedPath: path,
+      boundaryRoot: workspaceDir, workspaceRoot: workspaceDir, sourceClass: 'project',
+      // Preserve complete rawContent for read-state dedup; the independent
+      // persona prompt cap still limits injected content to 16 KiB per file.
+      maximumBytes: 0xffffffff })
+    if (!read.ok) continue
+    const raw = Buffer.from(read.snapshot.bytes).toString('utf8')
+    if (raw.trim().length === 0) continue
+    const capped = capPersonaContent(name, raw)
+    const bootstrap = name === BOOTSTRAP_FILE_NAME
+    processedPaths.add(normalized)
+    result.push({ path, type: 'Project', content: bootstrap ? `${BOOTSTRAP_PREAMBLE}\n\n${capped.content}` : capped.content,
+      ...(bootstrap || capped.truncated ? { contentDiffersFromDisk: true, rawContent: raw } : {}) })
+  }
   return result
 }

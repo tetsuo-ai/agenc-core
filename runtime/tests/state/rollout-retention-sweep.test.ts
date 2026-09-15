@@ -79,6 +79,7 @@ function seedSession(sessionId: string, ageDays: number): string {
         originator: "test",
         agencVersion: "0.2.0",
         rolloutSchemaVersion: ROLLOUT_SCHEMA_VERSION,
+        executionEnvironment: { kind: "local" },
         model: "grok-4",
         modelProvider: "xai",
       },

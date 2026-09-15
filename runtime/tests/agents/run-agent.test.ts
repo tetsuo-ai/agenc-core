@@ -2337,7 +2337,10 @@ describe("runAgent", () => {
     );
   });
 
-  it("preserves the canonical parent catalog in a real worktree child session", async () => {
+  it.each([undefined, {
+    kind: "docker" as const, containerId: "a".repeat(64), generation: "b".repeat(64), processHandleNamespace: "c".repeat(32),
+  }])("preserves the canonical parent catalog in a real worktree child session (%j)", async (binding) => {
+    const workspace = createAgentRoleWorkspace(ROLE_WORKSPACE.cwd, binding);
     const provider = makeProvider([{ content: "nested catalog" }]);
     const exactPluginAgent = {
       agentType: "plugin:strict-reviewer",
@@ -2345,6 +2348,7 @@ describe("runAgent", () => {
       source: "plugin" as const,
       plugin: "plugin",
       getSystemPrompt: () => "strict reviewer prompt",
+      ...(binding ? { executionBinding: binding } : {}),
     };
     const canonicalDefinitions = [
       ...listBuiltInAgentRoles().map(roleToAgentDefinition),
@@ -2352,9 +2356,9 @@ describe("runAgent", () => {
     ];
     const session = makeStubSession({
       services: { provider },
-      roleWorkspace: ROLE_WORKSPACE,
+      roleWorkspace: workspace,
       agentDefinitions: {
-        agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+        agentRoleWorkspaceId: workspace.id,
         activeAgents: canonicalDefinitions,
         allAgents: canonicalDefinitions,
         allowedAgentTypes: ["plugin:strict-reviewer"],
@@ -2398,10 +2402,17 @@ describe("runAgent", () => {
     }
 
     expect(childCatalog).toMatchObject({
-      agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+      agentRoleWorkspaceId: workspace.id,
       activeAgents: canonicalDefinitions,
       allAgents: canonicalDefinitions,
       allowedAgentTypes: ["plugin:strict-reviewer"],
+    });
+    expect(live.configSnapshot?.sessionSource).toMatchObject({
+      kind: "subagent",
+      source: {
+        kind: "thread_spawn", agentRoleWorkspaceId: workspace.id,
+        ...(binding ? { agentRoleWorkspaceCwd: workspace.cwd, agentRoleWorkspaceExecutionBinding: binding } : {}),
+      },
     });
     expect(childCatalog?.activeAgents).not.toBe(
       session.agentDefinitions.activeAgents,

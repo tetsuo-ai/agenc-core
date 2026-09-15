@@ -1,4 +1,5 @@
 import type { ToolExecutionInjectedArgs } from "../tools/types.js";
+import type { ExecutionEnvironment } from "../execution/types.js";
 import type { ReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
 import type {
   AdditionalPermissionProfile,
@@ -64,6 +65,8 @@ export interface UnifiedExecRuntimeSandbox {
 }
 
 export interface UnifiedExecManagerOptions {
+  /** Operator-bound backend; selected task commands must never fall back to local spawning. */
+  readonly executionEnvironment?: ExecutionEnvironment;
   readonly cwd?: string;
   readonly env?: Record<string, string>;
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
@@ -104,6 +107,7 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
  * stops it.
  */
 export interface DetachedProcessRequest extends ToolExecutionInjectedArgs {
+  readonly ownerId?: string;
   readonly callId?: string;
   readonly cmd: string;
   readonly workdir?: string;
@@ -131,6 +135,15 @@ export interface TerminateProcessRequest {
   readonly ownerId?: string;
 }
 
+/** Model-visible handles; never host PIDs or another session's metadata. */
+export interface ManagedProcessInfo {
+  readonly session_id: number;
+  readonly command: string;
+  readonly cwd: string;
+  readonly tty: boolean;
+  readonly started_at: number;
+}
+
 /** Operator-visible state; taskId is unique across manager lifetimes. */
 export interface UnifiedExecBackgroundProcess {
   readonly taskId: string;
@@ -144,6 +157,8 @@ export interface UnifiedExecBackgroundProcess {
   readonly exitCode?: number;
   readonly outputTail: string;
   readonly outputBytes: number;
+  /** Operational failure is distinct from a task's numeric exit status. */
+  readonly failure?: string;
 }
 
 export interface ExecCommandToolOutput {
@@ -174,6 +189,10 @@ export interface ExecCommandToolOutput {
 }
 
 export interface UnifiedExecProcessManagerLike {
+  readonly executionEnvironmentBinding?: import("../execution/types.js").ExecutionEnvironmentBinding;
+  /** Capture only at a canonical boundary after all tool results settle. */
+  captureExecutionProcesses?(): import("./process-recovery.js").ExecutionProcessRecoveryState | undefined;
+  restoreExecutionProcesses?(state: import("./process-recovery.js").ExecutionProcessRecoveryState): Promise<void>;
   /** Explicit-timeout cap; Infinity means no configured cap. */
   readonly maxTimeoutMs: number;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
@@ -189,7 +208,8 @@ export interface UnifiedExecProcessManagerLike {
    */
   terminateProcess?(
     processIdOrRequest: number | TerminateProcessRequest,
-  ): { terminated: boolean };
+  ): Promise<{ terminated: boolean }> | { terminated: boolean };
+  listProcesses?(ownerId?: string): readonly ManagedProcessInfo[];
   listBackgroundProcesses?(): UnifiedExecBackgroundProcess[];
   stopBackgroundProcess?(taskId: string): Promise<{ stopped: boolean }>;
   closeAll(reason?: string): Promise<void>;

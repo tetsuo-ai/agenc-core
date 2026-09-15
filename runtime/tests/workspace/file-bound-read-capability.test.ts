@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type { Writable } from "node:stream";
 
 import { afterEach, describe, expect, test } from "vitest";
+import { createStructuredRipgrepLimiter } from "../../src/workspace/structured-ripgrep-limiter.js";
 
 import {
   __setWorkspaceBoundReadNoFollowForTests,
@@ -630,84 +631,23 @@ describe("descriptor-bound file reads", () => {
   );
 
   test("normalizes Windows aliases and preserves POSIX path bytes when excluding dirty paths", async () => {
-    const transactionSource = await readFile(
-      new URL(
-        "../../src/workspace/file-mutation-transaction.ts",
-        import.meta.url,
-      ),
-      "utf8",
-    );
-    const limiterSourcePrefix =
-      "const STRUCTURED_RIPGREP_LIMITER_SOURCE = String.raw`\n";
-    const limiterSourceSuffix = "\n`;\n\nconst BOUND_READ_WORKER_SOURCE";
-    const limiterSourceStart = transactionSource.indexOf(limiterSourcePrefix);
-    const limiterSourceEnd = transactionSource.indexOf(
-      limiterSourceSuffix,
-      limiterSourceStart + limiterSourcePrefix.length,
-    );
-    if (limiterSourceStart < 0 || limiterSourceEnd < 0) {
-      throw new Error("structured ripgrep limiter source was not found");
-    }
-    const limiterSource = transactionSource.slice(
-      limiterSourceStart + limiterSourcePrefix.length,
-      limiterSourceEnd,
-    );
-    const createLimiter = Function(
-      `${limiterSource}\nreturn createStructuredRipgrepLimiter;`,
-    )() as (value: {
-      readonly outputMode: "files_with_matches";
-      readonly maximumLines: number;
-      readonly maximumRecordBytes: number;
-      readonly excludedPaths: readonly string[];
-    }) => {
-      readonly consume: (chunk: Buffer) => {
-        readonly captureParts: readonly Buffer[];
-        readonly reached: boolean;
-      };
+    const limits = {
+      outputMode: "files_with_matches" as const, maximumLines: 1,
+      maximumRecordBytes: 1_024, excludedPaths: ["café/dirty.ts"],
     };
-    const wire = Buffer.from(".\\CAF\u00c9\\Dirty.ts\0clean.ts\0", "utf8");
-    const platformDescriptor = Object.getOwnPropertyDescriptor(
-      process,
-      "platform",
+    const result = createStructuredRipgrepLimiter(limits, "win32")!.consume(
+      Buffer.from(".\\CAFÉ\\Dirty.ts\0clean.ts\0", "utf8"),
     );
-    if (platformDescriptor?.configurable !== true) {
-      throw new Error("process.platform is not configurable for this test");
-    }
-    try {
-      Object.defineProperty(process, "platform", {
-        ...platformDescriptor,
-        value: "win32",
-      });
-      const result = createLimiter({
-        outputMode: "files_with_matches",
-        maximumLines: 1,
-        maximumRecordBytes: 1_024,
-        excludedPaths: ["caf\u00e9/dirty.ts"],
-      }).consume(wire);
+    expect(result.reached).toBe(true);
+    expect(Buffer.concat(result.captureParts)).toEqual(Buffer.from("clean.ts\0", "utf8"));
 
-      expect(result.reached).toBe(true);
-      expect(Buffer.concat(result.captureParts)).toEqual(
-        Buffer.from("clean.ts\0", "utf8"),
-      );
-
-      Object.defineProperty(process, "platform", {
-        ...platformDescriptor,
-        value: "darwin",
-      });
-      const darwinResult = createLimiter({
-        outputMode: "files_with_matches",
-        maximumLines: 1,
-        maximumRecordBytes: 1_024,
-        excludedPaths: ["caf\u00e9/dirty.ts"],
-      }).consume(Buffer.from("./cafe\u0301/dirty.ts\0clean.ts\0", "utf8"));
-
-      expect(darwinResult.reached).toBe(true);
-      expect(Buffer.concat(darwinResult.captureParts)).toEqual(
-        Buffer.from("./cafe\u0301/dirty.ts\0", "utf8"),
-      );
-    } finally {
-      Object.defineProperty(process, "platform", platformDescriptor);
-    }
+    const darwinResult = createStructuredRipgrepLimiter(limits, "darwin")!.consume(
+      Buffer.from("./cafe\u0301/dirty.ts\0clean.ts\0", "utf8"),
+    );
+    expect(darwinResult.reached).toBe(true);
+    expect(Buffer.concat(darwinResult.captureParts)).toEqual(
+      Buffer.from("./cafe\u0301/dirty.ts\0", "utf8"),
+    );
   });
 
   test("excluded structured records still consume the helper work budget", async () => {

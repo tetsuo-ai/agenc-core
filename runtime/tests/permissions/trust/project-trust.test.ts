@@ -74,8 +74,8 @@ describe("project trust store", () => {
     }
   });
 
-  test.skipIf(!volumeIgnoresCase)(
-    "a project trusted under one spelling is trusted under every spelling of the same directory",
+  test(
+    "project trust follows directory identity across case spellings on the current volume",
     () => {
       // Observed on a default macOS disk: the app trusted /Users/x/agenc,
       // the spelling it had stored, and a shell opening the same folder
@@ -89,6 +89,23 @@ describe("project trust store", () => {
       mkdirSync(join(stored, ".git"));
       const spelledDifferently = join(repo, "mixedcase");
       const upperCased = join(repo, "MIXEDCASE");
+      if (!volumeIgnoresCase) {
+        // These are separate projects on this volume. Trust must not leak by
+        // case-folding their storage keys; each directory needs its own grant.
+        mkdirSync(spelledDifferently);
+        mkdirSync(join(spelledDifferently, ".git"));
+        mkdirSync(upperCased);
+        mkdirSync(join(upperCased, ".git"));
+        expect(statSync(spelledDifferently).ino).not.toBe(statSync(stored).ino);
+        trustProjectSync({ agencHome: home, cwd: stored });
+        expect(isProjectTrustedSync({ agencHome: home, cwd: spelledDifferently })).toBe(false);
+        expect(isProjectTrustedSync({ agencHome: home, projectRoot: upperCased })).toBe(false);
+        trustProjectSync({ agencHome: home, cwd: upperCased });
+        expect(isProjectTrustedSync({ agencHome: home, projectRoot: upperCased })).toBe(true);
+        expect(isProjectTrustedSync({ agencHome: home, cwd: spelledDifferently })).toBe(false);
+        expect(JSON.parse(readFileSyncUtf8(trustedProjectsPath({ agencHome: home }))).trustedProjects).toHaveLength(2);
+        return;
+      }
       expect(statSync(spelledDifferently).ino).toBe(statSync(stored).ino);
 
       trustProjectSync({ agencHome: home, cwd: stored });

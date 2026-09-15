@@ -1,5 +1,8 @@
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
+import { getCanonicalSettingsAuthority } from '../settings/canonicalAuthority.js'
+import { ExecutionEnvironmentError } from '../../execution/types.js'
+import { checkExecutionFilePermission } from './execution-filesystem.js'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
@@ -725,7 +728,17 @@ export function pathInWorkingPath(path: string, workingPath: string): boolean {
   return !posix.isAbsolute(relative)
 }
 
-function rootPathForSource(source: PermissionRuleSource): string {
+export interface PermissionPathRuleContext {
+  readonly cwd: string
+  readonly projectRoot: string
+  readonly homePath?: string
+}
+
+function rootPathForSource(source: PermissionRuleSource, execution?: PermissionPathRuleContext): string {
+  if (execution) {
+    if (source === 'cliArg' || source === 'command' || source === 'session') return execution.cwd
+    if (source === 'projectSettings' || source === 'localSettings') return execution.projectRoot
+  }
   switch (source) {
     case 'cliArg':
     case 'command':
@@ -835,6 +848,7 @@ export function getFileReadIgnorePatterns(
 function patternWithRoot(
   pattern: string,
   source: PermissionRuleSource,
+  execution?: PermissionPathRuleContext,
 ): {
   relativePattern: string
   root: string | null
@@ -873,16 +887,19 @@ function patternWithRoot(
       root: DIR_SEP,
     }
   } else if (pattern.startsWith(`~${DIR_SEP}`)) {
+    if (execution && execution.homePath === undefined) {
+      throw new ExecutionEnvironmentError('environment_not_ready', 'Task home is required for home-relative permission rules', false)
+    }
     // Patterns starting with ~/ resolve relative to homedir
     return {
       relativePattern: pattern.slice(1),
-      root: homedir().normalize('NFC'),
+      root: execution ? execution.homePath! : homedir().normalize('NFC'),
     }
   } else if (pattern.startsWith(DIR_SEP)) {
     // Patterns starting with / resolve relative to the directory where settings are stored (without .agenc/)
     return {
       relativePattern: pattern,
-      root: rootPathForSource(source),
+      root: rootPathForSource(source, execution),
     }
   }
   // No root specified, put it with all the other patterns
@@ -902,6 +919,7 @@ function getPatternsByRoot(
   toolPermissionContext: ToolPermissionContext,
   toolType: 'edit' | 'read',
   behavior: 'allow' | 'deny' | 'ask',
+  execution?: PermissionPathRuleContext,
 ): Map<string | null, Map<string, PermissionRule>> {
   const toolName = (() => {
     switch (toolType) {
@@ -922,7 +940,7 @@ function getPatternsByRoot(
   // Resolve rules relative to path based on source
   const patternsByRoot = new Map<string | null, Map<string, PermissionRule>>()
   for (const [pattern, rule] of rules.entries()) {
-    const { relativePattern, root } = patternWithRoot(pattern, rule.source)
+    const { relativePattern, root } = patternWithRoot(pattern, rule.source, execution)
     let patternsForRoot = patternsByRoot.get(root)
     if (patternsForRoot === undefined) {
       patternsForRoot = new Map<string, PermissionRule>()
@@ -939,8 +957,9 @@ export function matchingRuleForInput(
   toolPermissionContext: ToolPermissionContext,
   toolType: 'edit' | 'read',
   behavior: 'allow' | 'deny' | 'ask',
+  execution?: PermissionPathRuleContext,
 ): PermissionRule | null {
-  let fileAbsolutePath = expandPath(path)
+  let fileAbsolutePath = execution ? posix.resolve(execution.cwd, path) : expandPath(path)
 
   // On Windows, convert to POSIX format to match against permission patterns
   if (getPlatform() === 'windows' && fileAbsolutePath.includes('\\')) {
@@ -951,6 +970,7 @@ export function matchingRuleForInput(
     toolPermissionContext,
     toolType,
     behavior,
+    execution,
   )
 
   // Check each root for a matching pattern
@@ -972,8 +992,8 @@ export function matchingRuleForInput(
 
     // Use cross-platform relative path helper for POSIX-style patterns
     const relativePathStr = relativePath(
-      root ?? getCwd(),
-      fileAbsolutePath ?? getCwd(),
+      root ?? execution?.cwd ?? getCwd(),
+      fileAbsolutePath,
     )
 
     if (relativePathStr.startsWith(`..${DIR_SEP}`)) {
@@ -1009,11 +1029,11 @@ export function matchingRuleForInput(
 /**
  * Permission result for read permission for the specified tool & tool input
  */
-export function checkReadPermissionForTool(
+export async function checkReadPermissionForTool(
   tool: Tool,
   input: { [key: string]: unknown },
   toolPermissionContext: ToolPermissionContext,
-): PermissionDecision {
+): Promise<PermissionDecision> {
   if (typeof tool.getPath !== 'function') {
     return {
       behavior: 'ask',
@@ -1022,7 +1042,10 @@ export function checkReadPermissionForTool(
   }
 
   const path = tool.getPath(input)
-  const decision = computeReadDecision(tool, input, path, toolPermissionContext)
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace
+  const decision = workspace
+    ? await checkExecutionFilePermission(path, input, toolPermissionContext, 'read', workspace)
+    : computeReadDecision(tool, input, path, toolPermissionContext)
 
   // --dangerously-bypass-approvals-and-sandbox / bypassPermissions short-circuit. Same rationale as
   // checkToolPathPermission and permissions/bash.ts:431 ("hadDeny" guard):
@@ -1038,12 +1061,8 @@ export function checkReadPermissionForTool(
   // paths. The defect was that the OLD bypass short-circuit fired before this
   // deny loop, so Deny(Read(...)) was silently skipped.
   //
-  // NOTE (READ flow): computeReadDecision never returns a 'safetyCheck'
-  // decisionReason — that category is only produced by the write path
-  // (checkWritePermissionForTool step 1.7). For reads, the Deny(Read(...))
-  // rule loop is the only live bypass-immune protection here; the
-  // isSafetyViolation guard below is defensive (kept symmetric with the write
-  // flow and future-proof should a read-specific safetyCheck ever be added).
+  // Memory ownership failures are safety checks, including when an explicit
+  // ask rule also matches; bypass must not turn those private reads into allows.
   if (toolPermissionContext.mode === 'bypassPermissions') {
     const isDenyRule =
       decision.behavior === 'deny' ||
@@ -1129,6 +1148,9 @@ function computeReadDecision(
     }
   }
 
+  const agentMemoryDecision = checkAgentMemoryBoundary(pathsToCheck, input)
+  if (agentMemoryDecision?.decisionReason?.type === 'safetyCheck') return agentMemoryDecision
+
   // 4. Check for READ-SPECIFIC ask rules - check both the original path and resolved symlink path
   // SECURITY: This must come before implicit allow checks to ensure explicit ask rules are honored
   for (const pathToCheck of pathsToCheck) {
@@ -1155,12 +1177,11 @@ function computeReadDecision(
   // otherwise a project/local memory hardlink or sibling role file inside the
   // workspace would bypass the identity check. A safetyCheck result remains
   // fail-closed even under bypassPermissions.
-  const agentMemoryDecision = checkAgentMemoryBoundary(pathsToCheck, input)
   if (agentMemoryDecision !== null) return agentMemoryDecision
 
   // 5. Edit access implies read access (but only if no read-specific deny/ask rules exist)
   // We check this after read-specific rules so that explicit read restrictions take precedence
-  const editResult = checkWritePermissionForTool(
+  const editResult = computeLocalWritePermission(
     tool,
     input,
     toolPermissionContext,
@@ -1243,7 +1264,20 @@ function computeReadDecision(
  *   re-derived internally for error messages and internal-path checks, so a
  *   stale value would silently check deny rules for the wrong path.
  */
-export function checkWritePermissionForTool<Input extends AnyObject>(
+export async function checkWritePermissionForTool<Input extends AnyObject>(
+  tool: Tool<Input>,
+  input: z.infer<Input>,
+  toolPermissionContext: ToolPermissionContext,
+  precomputedPathsToCheck?: readonly string[],
+): Promise<PermissionDecision> {
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace
+  if (workspace && typeof tool.getPath === 'function') {
+    return checkExecutionFilePermission(tool.getPath(input), input, toolPermissionContext, 'edit', workspace)
+  }
+  return computeLocalWritePermission(tool, input, toolPermissionContext, precomputedPathsToCheck)
+}
+
+function computeLocalWritePermission<Input extends AnyObject>(
   tool: Tool<Input>,
   input: z.infer<Input>,
   toolPermissionContext: ToolPermissionContext,
@@ -1569,11 +1603,18 @@ export function generateSuggestions(
  * Check if a path is an internal path that can be edited without permission.
  * Returns a PermissionResult - either 'allow' if matched, or 'passthrough' to continue checking.
  */
+function assertLocalInternalPermissionSource(): void {
+  if (getCanonicalSettingsAuthority()?.executionWorkspace) {
+    throw new ExecutionEnvironmentError('environment_not_ready', 'Selected task permissions require asynchronous protected evaluation', false)
+  }
+}
+
 export function checkEditableInternalPath(
   absolutePath: string,
   input: { [key: string]: unknown },
   pathsToCheck?: readonly string[],
 ): PermissionResult {
+  assertLocalInternalPermissionSource()
   // SECURITY: Normalize path to prevent traversal bypasses via .. segments
   // This is defense-in-depth; individual helper functions also normalize
   const normalizedPath = normalize(absolutePath)
@@ -1724,6 +1765,7 @@ export function checkReadableInternalPath(
   input: { [key: string]: unknown },
   pathsToCheck?: readonly string[],
 ): PermissionResult {
+  assertLocalInternalPermissionSource()
   // SECURITY: Normalize path to prevent traversal bypasses via .. segments
   // This is defense-in-depth; individual helper functions also normalize
   const normalizedPath = normalize(absolutePath)

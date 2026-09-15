@@ -26,6 +26,10 @@ export interface SkillChangeDetectorOptions {
     changedPath: string,
   ) => Promise<readonly unknown[]>;
   readonly hasBlockingResult?: (results: readonly unknown[]) => boolean;
+  /** Additional bound source; getWatchRoots always describes controller paths. */
+  readonly subscribeChanges?: (changed: (paths: readonly string[]) => void,
+    failed: (error: unknown) => void) => Promise<{ close(): void | Promise<void> }>;
+  readonly onError?: (error: unknown) => void;
 }
 
 export interface SkillChangeDetector {
@@ -34,6 +38,7 @@ export interface SkillChangeDetector {
   resetForTesting(): Promise<void>;
   subscribe(listener: (event: SkillChangeEvent) => void): () => void;
   notify(event: SkillChangeEvent): void;
+  getFailure?(): unknown;
 }
 
 export function createSkillChangeDetector(): SkillChangeDetector {
@@ -50,40 +55,75 @@ export function createSkillChangeDetector(): SkillChangeDetector {
   let activeOptions: SkillChangeDetectorOptions | null = null;
   const pendingChangedPaths = new Set<string>();
   let firstPendingChangedPath: string | null = null;
+  let externalSubscription: { close(): void | Promise<void> } | null = null;
+  let failure: unknown;
+  let initializing: Promise<void> | null = null;
+  let stopping: Promise<void> | null = null;
 
-  async function initialize(
+  function reportFailure(error: unknown, version: number): void {
+    if (disposed || version !== lifecycleVersion) return;
+    failure = error;
+    if (reloadTimer !== null) clearTimeout(reloadTimer);
+    reloadTimer = null;
+    pendingChangedPaths.clear();
+    firstPendingChangedPath = null;
+    try { activeOptions?.onError?.(error); }
+    catch (reportError) { failure = new AggregateError([error, reportError], "Skill reload and error reporting failed", { cause: error }); }
+  }
+
+  function initialize(
     options: SkillChangeDetectorOptions,
   ): Promise<void> {
-    if (initialized) return;
+    if (stopping) return stopping.then(() => initialize(options));
+    if (initializing) return initializing;
+    if (initialized) return Promise.resolve();
     initialized = true;
     disposed = false;
     lifecycleVersion += 1;
     const version = lifecycleVersion;
     activeOptions = options;
+    failure = undefined;
 
-    let roots: readonly string[];
-    try {
-      roots = await options.getWatchRoots();
-    } catch (error) {
-      if (version === lifecycleVersion) {
-        initialized = false;
-        activeOptions = null;
+    initializing = (async () => {
+      try {
+        const roots = await options.getWatchRoots();
+        if (disposed || version !== lifecycleVersion) return;
+        if (options.subscribeChanges) {
+          const subscribed = await options.subscribeChanges(
+            (paths) => { if (version === lifecycleVersion && !disposed) scheduleReload(paths); },
+            (error) => reportFailure(error, version),
+          );
+          if (disposed || version !== lifecycleVersion) { await subscribed.close(); return; }
+          externalSubscription = subscribed;
+        }
+        if (roots.length > 0) {
+          fileWatcher = options.fileWatcher ?? FileWatcher.create();
+          ownsFileWatcher = options.fileWatcher === undefined;
+          const added = fileWatcher.addSubscriber();
+          subscriber = added.subscriber;
+          registration = added.subscriber.registerPaths(
+            roots.map((root) => ({ path: root, recursive: true })),
+          );
+          receiveLoopActive = true;
+          void receiveChanges(added.receiver, version).catch((error) => reportFailure(error, version));
+        }
+      } catch (error) {
+        if (version === lifecycleVersion) {
+          // A rejected provider may retain callbacks. Revoke them immediately,
+          // including the interval before any subsequent initialize() call.
+          disposed = true;
+          lifecycleVersion += 1;
+          initialized = false;
+          activeOptions = null;
+          try { await releaseWatchers(); }
+          catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], "Skill watch setup and cleanup failed", { cause: error });
+          }
+        }
+        throw error;
       }
-      throw error;
-    }
-    if (disposed || version !== lifecycleVersion) return;
-    if (roots.length === 0) return;
-
-    fileWatcher = options.fileWatcher ?? FileWatcher.create();
-    ownsFileWatcher = options.fileWatcher === undefined;
-    const added = fileWatcher.addSubscriber();
-    subscriber = added.subscriber;
-    registration = added.subscriber.registerPaths(
-      roots.map((root) => ({ path: root, recursive: true })),
-    );
-
-    receiveLoopActive = true;
-    void receiveChanges(added.receiver);
+    })().finally(() => { initializing = null; });
+    return initializing;
   }
 
   function subscribe(listener: (event: SkillChangeEvent) => void): () => void {
@@ -94,11 +134,27 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     skillsChanged.emit(event);
   }
 
-  async function dispose(): Promise<void> {
+  function dispose(): Promise<void> {
+    if (stopping) return stopping;
     disposed = true;
     initialized = false;
     lifecycleVersion += 1;
     activeOptions = null;
+    skillsChanged.clear();
+    const setup = initializing;
+    const release = releaseWatchers();
+    stopping = (async () => {
+      // A pending subscription closes itself after observing the lifecycle fence.
+      // Wait for that closure before advertising that disposal is complete.
+      const results = await Promise.allSettled([release, setup]);
+      const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Skill watch cleanup failed");
+    })().finally(() => { stopping = null; });
+    return stopping;
+  }
+
+  async function releaseWatchers(): Promise<void> {
     if (reloadTimer !== null) {
       clearTimeout(reloadTimer);
       reloadTimer = null;
@@ -113,7 +169,9 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     fileWatcher = null;
     ownsFileWatcher = false;
     receiveLoopActive = false;
-    skillsChanged.clear();
+    const external = externalSubscription;
+    externalSubscription = null;
+    await external?.close();
   }
 
   async function resetForTesting(): Promise<void> {
@@ -125,16 +183,17 @@ export function createSkillChangeDetector(): SkillChangeDetector {
 
   async function receiveChanges(
     receiver: ReturnType<FileWatcher["addSubscriber"]>["receiver"],
+    version: number,
   ): Promise<void> {
-    while (receiveLoopActive) {
+    while (receiveLoopActive && version === lifecycleVersion) {
       const event = await receiver.recv();
-      if (event === null) return;
+      if (event === null || disposed || version !== lifecycleVersion) return;
       scheduleReload(event.paths);
     }
   }
 
   function scheduleReload(changedPaths: readonly string[]): void {
-    if (disposed || changedPaths.length === 0) return;
+    if (disposed || failure !== undefined || changedPaths.length === 0) return;
     for (const changedPath of changedPaths) {
       if (shouldIgnorePath(changedPath)) continue;
       if (firstPendingChangedPath === null) firstPendingChangedPath = changedPath;
@@ -143,14 +202,16 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     if (pendingChangedPaths.size === 0) return;
 
     if (reloadTimer !== null) clearTimeout(reloadTimer);
+    const version = lifecycleVersion;
     reloadTimer = setTimeout(() => {
       reloadTimer = null;
-      void flushReload();
+      void flushReload(version).catch((error) => reportFailure(error, version));
     }, activeOptions?.debounceMs ?? DEFAULT_RELOAD_DEBOUNCE_MS);
   }
 
-  async function flushReload(): Promise<void> {
-    if (disposed || pendingChangedPaths.size === 0) return;
+  async function flushReload(version: number): Promise<void> {
+    if (disposed || failure !== undefined || version !== lifecycleVersion || pendingChangedPaths.size === 0) return;
+    const options = activeOptions;
     const hookRepresentativePath =
       firstPendingChangedPath ?? pendingChangedPaths.values().next().value ?? "";
     const changedPaths = [...pendingChangedPaths].sort();
@@ -158,17 +219,16 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     firstPendingChangedPath = null;
 
     if (await configChangeHookBlocked(hookRepresentativePath)) return;
-    if (disposed) return;
+    if (disposed || failure !== undefined || version !== lifecycleVersion) return;
 
     const event = { changedPaths };
-    await activeOptions?.onReload?.(event);
-    if (disposed) return;
-    const options = activeOptions;
+    await options?.onReload?.(event);
+    if (disposed || failure !== undefined || version !== lifecycleVersion) return;
     if (options?.clearRuntimeCaches !== false) {
       await resetSkillAnnouncementState();
       await clearCommandCaches();
     }
-    if (disposed) return;
+    if (disposed || failure !== undefined || version !== lifecycleVersion) return;
     notify(event);
     options?.forwardTo?.notify(event);
   }
@@ -203,6 +263,7 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     resetForTesting,
     subscribe,
     notify,
+    getFailure: () => failure,
   };
 }
 

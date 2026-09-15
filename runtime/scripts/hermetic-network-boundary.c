@@ -52,6 +52,7 @@
 struct traced_task {
   pid_t pid;
   int newborn;
+  int memory_fd;
 };
 
 static struct traced_task traced_tasks[AGENC_MAX_TRACED_TASKS];
@@ -84,6 +85,7 @@ static int add_traced_task(pid_t pid, int newborn) {
   }
   traced_tasks[traced_task_count].pid = pid;
   traced_tasks[traced_task_count].newborn = newborn;
+  traced_tasks[traced_task_count].memory_fd = -1;
   traced_task_count += 1;
   return 1;
 }
@@ -127,6 +129,9 @@ static void remove_traced_task(pid_t pid) {
   size_t index;
   for (index = 0; index < traced_task_count; index += 1) {
     if (traced_tasks[index].pid == pid) {
+      if (traced_tasks[index].memory_fd >= 0) {
+        (void)close(traced_tasks[index].memory_fd);
+      }
       traced_tasks[index] = traced_tasks[traced_task_count - 1];
       traced_task_count -= 1;
       return;
@@ -212,6 +217,28 @@ static void close_inherited_descriptors(void) {
   }
 }
 
+/*
+ * Bind the new address space at its exec stop, before user instructions run.
+ * Native private-descriptor helpers set PR_SET_DUMPABLE=0 during bootstrap.
+ * A read-only /proc/PID/mem descriptor authorized at exec retains access to
+ * that address space, so their syscall arguments remain inspectable. Replace
+ * it at EVERY exec and close it at task removal; never read a prior image or
+ * relax network inspection because PTRACE_PEEKDATA later becomes unavailable.
+ */
+static void bind_tracee_memory(pid_t pid) {
+  for (size_t index = 0; index < traced_task_count; index++) {
+    if (traced_tasks[index].pid != pid) continue;
+    if (traced_tasks[index].memory_fd >= 0) {
+      (void)close(traced_tasks[index].memory_fd);
+      traced_tasks[index].memory_fd = -1;
+    }
+    char path[64];
+    (void)snprintf(path, sizeof(path), "/proc/%ld/mem", (long)pid);
+    traced_tasks[index].memory_fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    return;
+  }
+}
+
 static int read_tracee_memory(
   pid_t pid,
   uint64_t remote_address,
@@ -220,6 +247,24 @@ static int read_tracee_memory(
 ) {
   size_t offset = 0;
   unsigned char *bytes = destination;
+  for (size_t index = 0; index < traced_task_count; index++) {
+    if (traced_tasks[index].pid != pid || traced_tasks[index].memory_fd < 0) continue;
+    if (remote_address > INT64_MAX || length > (uint64_t)INT64_MAX - remote_address) {
+      errno = EIO;
+      return -1;
+    }
+    while (offset < length) {
+      ssize_t received = pread(traced_tasks[index].memory_fd, bytes + offset,
+        length - offset, (off_t)(remote_address + offset));
+      if (received < 0 && errno == EINTR) continue;
+      if (received <= 0) {
+        if (received == 0) errno = EIO;
+        return -1;
+      }
+      offset += (size_t)received;
+    }
+    return 0;
+  }
   while (offset < length) {
     long word;
     size_t chunk = sizeof(word);
@@ -316,16 +361,42 @@ static void read_process_executable(
   }
 }
 
+/* Diagnostic labels only; never copy arbitrary arguments or use argv to allow a syscall. */
+static const char *observed_git_operation(pid_t pid) {
+  static const char *operations[] = { "fetch", "ls-remote", "push", "pull", "clone", "remote-https", "remote-http", "upload-pack",
+    "commit", "commit-tree", "worktree", "var", "status", "config", "rev-parse", "show", "log",
+    "update-ref", "reset", "read-tree", "symbolic-ref", "reflog", "branch" };
+  char path[64];
+  char arguments[4096];
+  (void)snprintf(path, sizeof(path), "/proc/%ld/cmdline", (long)pid);
+  int descriptor = open(path, O_RDONLY | O_CLOEXEC);
+  if (descriptor < 0) return "unavailable";
+  ssize_t count = read(descriptor, arguments, sizeof(arguments));
+  (void)close(descriptor);
+  if (count <= 0) return "unavailable";
+  size_t offset = 0;
+  while (offset < (size_t)count) {
+    size_t length = strnlen(arguments + offset, (size_t)count - offset);
+    if (length == (size_t)count - offset) break;
+    for (size_t index = 0; index < sizeof(operations) / sizeof(operations[0]); index++) {
+      if (strcmp(arguments + offset, operations[index]) == 0) return operations[index];
+    }
+    offset += length + 1;
+  }
+  return "other";
+}
+
 static int report_violation(pid_t pid, const char *syscall_name, const char *detail) {
   char executable_hex[513];
   read_process_executable(pid, executable_hex, sizeof(executable_hex));
   fprintf(
     stderr,
-    "AGENC_OS_NETWORK_BOUNDARY_VIOLATION pid=%ld syscall=%s target=%s exe_hex=%s\n",
+    "AGENC_OS_NETWORK_BOUNDARY_VIOLATION pid=%ld syscall=%s target=%s exe_hex=%s operation=%s\n",
     (long)pid,
     syscall_name,
     detail,
-    executable_hex
+    executable_hex,
+    observed_git_operation(pid)
   );
   fflush(stderr);
   return AGENC_INSPECTION_VIOLATION;
@@ -1590,6 +1661,7 @@ static int trace_command(char *const command[]) {
         if (former_pid != stopped_pid) {
           remove_traced_task(former_pid);
         }
+        bind_tracee_memory(stopped_pid);
         (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
       } else if (event_read != AGENC_INSPECTION_TRACEE_GONE) {
         boundary_fatal = 1;
@@ -1642,8 +1714,65 @@ static int trace_command(char *const command[]) {
   return primary_status > 255 ? 255 : primary_status;
 }
 
+static int run_protected_ipc_canary(void) {
+  int sockets[2];
+  char payload[] = "private receipt";
+  char received[sizeof(payload)];
+  union { struct cmsghdr alignment; char bytes[CMSG_SPACE(sizeof(int))]; } control = {0};
+  struct iovec vector = { .iov_base = payload, .iov_len = sizeof(payload) };
+  struct msghdr message = { .msg_iov = &vector, .msg_iovlen = 1,
+    .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes) };
+  if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) != 0) return 2;
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  header->cmsg_level = SOL_SOCKET;
+  header->cmsg_type = SCM_RIGHTS;
+  header->cmsg_len = CMSG_LEN(sizeof(int));
+  memcpy(CMSG_DATA(header), &sockets[0], sizeof(int));
+  if (prctl(PR_SET_DUMPABLE, 0) != 0) return 2;
+  if (sendmsg(sockets[0], &message, 0) != sizeof(payload)) return 2;
+  memset(&control, 0, sizeof(control));
+  vector.iov_base = received;
+  if (recvmsg(sockets[1], &message, MSG_CMSG_CLOEXEC) != sizeof(payload) ||
+      message.msg_flags & (MSG_TRUNC | MSG_CTRUNC) || memcmp(payload, received, sizeof(payload)) != 0) return 2;
+  header = CMSG_FIRSTHDR(&message);
+  if (header == NULL || header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
+      header->cmsg_len != CMSG_LEN(sizeof(int))) return 2;
+  int transferred;
+  memcpy(&transferred, CMSG_DATA(header), sizeof(transferred));
+  int valid = fcntl(transferred, F_GETFD) == FD_CLOEXEC;
+  (void)close(transferred);
+  (void)close(sockets[0]);
+  (void)close(sockets[1]);
+  return valid ? 0 : 2;
+}
+
+static int run_protected_egress_canary(void) {
+  struct sockaddr_in destination = { .sin_family = AF_INET, .sin_port = htons(53) };
+  char payload[] = "must be denied";
+  struct iovec vector = { .iov_base = payload, .iov_len = sizeof(payload) };
+  struct msghdr message = { .msg_name = &destination, .msg_namelen = sizeof(destination),
+    .msg_iov = &vector, .msg_iovlen = 1 };
+  int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (descriptor < 0 || inet_pton(AF_INET, "192.0.2.53", &destination.sin_addr) != 1 ||
+      prctl(PR_SET_DUMPABLE, 0) != 0) return 2;
+  (void)sendmsg(descriptor, &message, 0);
+  (void)close(descriptor);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   struct sigaction action;
+  if (argc == 2 && strcmp(argv[1], "--protected-ipc-canary") == 0) {
+    return run_protected_ipc_canary();
+  }
+  if (argc == 2 && strcmp(argv[1], "--protected-ipc-exec-canary") == 0) {
+    if (run_protected_ipc_canary() != 0) return 2;
+    execl(argv[0], argv[0], "--protected-ipc-canary", (char *)NULL);
+    return 2;
+  }
+  if (argc == 2 && strcmp(argv[1], "--protected-egress-canary") == 0) {
+    return run_protected_egress_canary();
+  }
   if (argc == 2 && strcmp(argv[1], "--native-canary") == 0) {
     return run_native_canary();
   }

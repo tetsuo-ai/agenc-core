@@ -667,6 +667,9 @@ export function buildBootstrapSessionServices(
     pluginStorageRoot: opts.runtimeOptions.pluginStorageRoot,
     workspaceRoot: opts.workspaceRoot,
     config: opts.configStore.current(),
+    executionEnvironment: opts.configStore.executionWorkspace?.environment,
+    executionHomePath: opts.configStore.executionWorkspace?.homePath,
+    sessionId: opts.conversationId,
     env: {
       HOME: opts.env.HOME,
       AGENC_MANAGED_HOME: opts.env.AGENC_MANAGED_HOME,

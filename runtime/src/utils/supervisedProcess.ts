@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { serializeProcessBrokerPayload } from "./process-broker-protocol.js";
 
 import {
   resolveTrustedWindowsSystemExecutable,
@@ -376,6 +377,7 @@ let config;
 try {
   const chunk = Buffer.alloc(65536);
   const parts = [];
+  let totalBytes = 0;
   let terminated = false;
   while (!terminated) {
     let bytes;
@@ -389,6 +391,8 @@ try {
       throw error;
     }
     if (bytes === 0) break;
+    totalBytes += bytes;
+    if (totalBytes > 2 * 1024 * 1024) throw new Error('oversized containment handoff');
     const part = Buffer.from(chunk.subarray(0, bytes));
     const newline = part.indexOf(0x0a);
     if (newline === -1) {
@@ -594,12 +598,16 @@ export function serializePosixProcessGatePayload(
   for (const [name, value] of Object.entries(options.env)) {
     if (value !== undefined) environment.push([name, String(value)]);
   }
-  return `${JSON.stringify({
+  const payload = `${JSON.stringify({
     program,
     argv0: options.argv0 ?? program,
     args,
     environment,
   })}\n`;
+  if (Buffer.byteLength(payload) > 2 * 1024 * 1024) {
+    throw new Error("process gate payload exceeds 2 MiB");
+  }
+  return payload;
 }
 
 function trustedPosixBootstrapEnvironment(
@@ -704,13 +712,14 @@ function spawnLinuxSubreaperContainedProcess(
   options: ContainedProcessSpawnOptions,
 ): ChildProcessWithoutNullStreams {
   const brokerPath = resolveLinuxSubreaperBroker();
+  const payload = serializeProcessBrokerPayload(program, args, options);
   const child = spawn(
     brokerPath,
-    [program, options.argv0 ?? program, ...args],
+    [],
     {
       cwd: options.cwd,
-      env: options.env,
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      env: trustedPosixBootstrapEnvironment(),
+      stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
       detached: true,
       windowsHide: true,
     },
@@ -790,6 +799,20 @@ function spawnLinuxSubreaperContainedProcess(
     boundary.processClosed = true;
     boundary.closed = boundary.statusClosed;
   });
+  const bootstrap = child.stdio[4] as Writable | null;
+  if (bootstrap === null || typeof bootstrap?.end !== "function") {
+    nativeKill("SIGKILL");
+    throw new Error("Linux process containment broker bootstrap FD is unavailable");
+  }
+  bootstrap.on("error", (error) => {
+    // A failed preflight can close FD 4 before the owner writes. The status
+    // channel establishes whether launch and cleanup occurred; don't replace
+    // its deterministic failure with a scheduling-dependent pipe error.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EPIPE" || code === "ECONNRESET") return;
+    boundary.protocolError ??= toError(error);
+  });
+  bootstrap.end(payload);
   return child;
 }
 

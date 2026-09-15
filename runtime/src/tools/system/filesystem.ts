@@ -20,6 +20,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { readExecutionEnvironmentBinding, assertSameExecutionEnvironment } from "../../execution/binding.js";
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey, type ExecutionEnvironmentBinding, type ExecutionPathDescription } from "../../execution/types.js";
+import { readExecutionPathDescription } from "../../execution/path-description.js";
 import {
   opendir,
   stat,
@@ -158,6 +162,8 @@ export const SESSION_ID_ARG = "__agencSessionId";
  * happens via the helpers below; tools never see the underlying Set.
  */
 export interface SessionReadSnapshot {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
+  readonly executionFile?: ExecutionPathDescription;
   readonly content?: string | null;
   readonly timestamp?: number;
   readonly viewKind?: SessionReadViewKind;
@@ -195,6 +201,8 @@ export interface SessionReadSnapshot {
 }
 
 export interface SessionReadSeedEntry {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
+  readonly executionFile?: ExecutionPathDescription;
   readonly path: string;
   readonly content?: string | null;
   readonly timestamp?: number;
@@ -206,7 +214,35 @@ export interface SessionReadSeedEntry {
   readonly rawContent?: string;
 }
 
-const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();
+const sessionReadState = new Map<string, Map<string, Map<string, SessionReadSnapshot>>>();
+
+function readEnvironmentNamespace(): string {
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+  return workspace ? executionEnvironmentCacheKey(workspace.environment.binding, "") : "";
+}
+
+function sessionReadMap(sessionId: string, create = false): Map<string, SessionReadSnapshot> | undefined {
+  let scopes = sessionReadState.get(sessionId);
+  if (!scopes && create) { scopes = new Map(); sessionReadState.set(sessionId, scopes); }
+  const namespace = readEnvironmentNamespace();
+  let files = scopes?.get(namespace);
+  if (!files && create) { files = new Map(); scopes!.set(namespace, files); }
+  return files;
+}
+
+function verifiedReadBinding(value: ExecutionEnvironmentBinding | undefined): ExecutionEnvironmentBinding | undefined {
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+  if (workspace) {
+    if (value === undefined) throw new ExecutionEnvironmentError("environment_not_ready", "Task read history requires explicit source provenance", false);
+    const binding = readExecutionEnvironmentBinding(value);
+    assertSameExecutionEnvironment(binding, workspace.environment.binding);
+    return binding;
+  }
+  if (value !== undefined && readExecutionEnvironmentBinding(value).kind !== "local") {
+    throw new ExecutionEnvironmentError("execution_environment_changed", "Task read history cannot enter a local scope", false);
+  }
+  return undefined;
+}
 
 const workspaceReadState = new WeakMap<
   object,
@@ -302,6 +338,8 @@ function boundSessionReadContent(
  * isolated from other sessions hosted by the same daemon.
  */
 function resolveWorkspaceReadScopeRoot(): string {
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+  if (workspace) return executionEnvironmentCacheKey(workspace.environment.binding, workspace.projectRoot);
   try {
     return normalizeFilesystemUnicodeIdentity(
       resolve(resolveSessionWorkspaceRoot()),
@@ -401,7 +439,7 @@ function resolveLocalHistoryFilePath(
 ): string {
   return join(
     resolveLocalHistorySessionDir(sessionId, sessionTempRoot),
-    `${hashString(canonicalPath)}.json`,
+    `${hashString(readEnvironmentNamespace() ? JSON.stringify([readEnvironmentNamespace(), canonicalPath]) : canonicalPath)}.json`,
   );
 }
 
@@ -547,6 +585,11 @@ function persistLocalFileHistorySnapshot(
 
     entries.push({
       content: snapshot.content ?? null,
+      ...(snapshot.executionBinding === undefined ? {} : { executionBinding: snapshot.executionBinding }),
+      ...(snapshot.executionFile === undefined ? {} : { executionFile: snapshot.executionFile }),
+      ...(snapshot.rawContent === undefined ? {} : { rawContent: snapshot.rawContent }),
+      ...(snapshot.readOffset === undefined ? {} : { readOffset: snapshot.readOffset }),
+      ...(snapshot.readLimit === undefined ? {} : { readLimit: snapshot.readLimit }),
       timestamp: snapshot.timestamp,
       viewKind: snapshot.viewKind ?? "legacy_unknown",
       ...(snapshot.isPartialView === true ? { isPartialView: true } : {}),
@@ -586,6 +629,24 @@ function loadPersistedSessionReadSnapshot(
     for (let index = parsed.length - 1; index >= 0; index--) {
       const entry = parsed[index];
       if (typeof entry !== "object" || entry === null) continue;
+      let executionBinding: ExecutionEnvironmentBinding | undefined;
+      let executionFile: ExecutionPathDescription | undefined;
+      try { executionBinding = verifiedReadBinding((entry as SessionReadSnapshot).executionBinding); }
+      catch { continue; }
+      try {
+        const value = (entry as SessionReadSnapshot).executionFile;
+        if (executionBinding && value !== undefined) {
+          executionFile = readExecutionPathDescription(value);
+          if (executionFile.canonicalPath !== canonicalPath) continue;
+        }
+      } catch { continue; }
+      const restored = {
+        ...(executionBinding === undefined ? {} : { executionBinding }),
+        ...(executionFile === undefined ? {} : { executionFile }),
+        ...(typeof (entry as SessionReadSnapshot).rawContent === "string" ? { rawContent: (entry as SessionReadSnapshot).rawContent } : {}),
+        ...(Number.isSafeInteger((entry as SessionReadSnapshot).readOffset) && (entry as SessionReadSnapshot).readOffset! > 0 ? { readOffset: (entry as SessionReadSnapshot).readOffset } : {}),
+        ...(Number.isSafeInteger((entry as SessionReadSnapshot).readLimit) && (entry as SessionReadSnapshot).readLimit! > 0 ? { readLimit: (entry as SessionReadSnapshot).readLimit } : {}),
+      };
       const content = (entry as { content?: unknown }).content;
       const viewKind = (entry as { viewKind?: unknown }).viewKind;
       const isPartialView =
@@ -601,6 +662,7 @@ function loadPersistedSessionReadSnapshot(
             : undefined;
       if (typeof content === "string") {
         return {
+          ...restored,
           ...(timestamp === undefined ? { content } : { content, timestamp }),
           viewKind:
             viewKind === "full" ||
@@ -613,6 +675,7 @@ function loadPersistedSessionReadSnapshot(
       }
       if (content === null) {
         return {
+          ...restored,
           ...(timestamp === undefined
             ? { content: null }
             : { content: null, timestamp }),
@@ -642,7 +705,7 @@ function rehydrateSessionReadSnapshot(
     return getWorkspaceReadSnapshot(canonicalPath);
   }
 
-  const existingSnapshot = sessionReadState.get(sessionId)?.get(canonicalPath);
+  const existingSnapshot = sessionReadMap(sessionId)?.get(canonicalPath);
   if (existingSnapshot) {
     return existingSnapshot;
   }
@@ -655,11 +718,7 @@ function rehydrateSessionReadSnapshot(
     return getWorkspaceReadSnapshot(canonicalPath);
   }
 
-  let fileMap = sessionReadState.get(sessionId);
-  if (!fileMap) {
-    fileMap = new Map();
-    sessionReadState.set(sessionId, fileMap);
-  }
+  const fileMap = sessionReadMap(sessionId, true)!;
   fileMap.set(canonicalPath, persistedSnapshot);
   boundSessionReadContent(fileMap);
   return persistedSnapshot;
@@ -674,16 +733,22 @@ export function recordSessionRead(
   sessionId = resolveSessionReadId(sessionId);
   if (!sessionId || sessionId.trim().length === 0) return;
   if (!canonicalPath || canonicalPath.trim().length === 0) return;
-  let fileMap = sessionReadState.get(sessionId);
-  if (!fileMap) {
-    fileMap = new Map();
-    sessionReadState.set(sessionId, fileMap);
+  const executionBinding = verifiedReadBinding(snapshot?.executionBinding);
+  const executionFile = executionBinding && snapshot?.executionFile
+    ? readExecutionPathDescription(snapshot.executionFile) : undefined;
+  if (executionFile && executionFile.canonicalPath !== canonicalPath) {
+    throw new ExecutionEnvironmentError("invalid_request", "Read snapshot path does not match its observed file", false);
   }
+  const fileMap = sessionReadMap(sessionId, true)!;
   const previous = fileMap.get(canonicalPath);
   const nextSnapshot = snapshot
     ? {
-        ...(previous ?? {}),
+        // A task snapshot describes one observation. Do not combine fresh
+        // partial content/metadata with raw bytes from an older full read.
+        ...(executionBinding ? {} : previous ?? {}),
         ...snapshot,
+        ...(executionBinding === undefined ? {} : { executionBinding }),
+        ...(executionFile === undefined ? {} : { executionFile }),
       }
     : { viewKind: "full" as SessionReadViewKind };
   if (nextSnapshot.viewKind === undefined) {
@@ -708,7 +773,11 @@ export function seedSessionReadState(
     ) {
       continue;
     }
+    // Old transcripts have no task provenance and cannot grant task writes.
+    if (getCanonicalSettingsAuthority()?.executionWorkspace && entry.executionBinding === undefined) continue;
     recordSessionRead(sessionId, entry.path, {
+      ...(entry.executionBinding === undefined ? {} : { executionBinding: entry.executionBinding }),
+      ...(entry.executionFile === undefined ? {} : { executionFile: entry.executionFile }),
       ...(entry.content === undefined ? {} : { content: entry.content }),
       ...(typeof entry.timestamp === "number" &&
       Number.isFinite(entry.timestamp)
@@ -767,7 +836,7 @@ export function forEachSessionRead(
   if (conversationReadScopeClosed()) return;
   sessionId = resolveSessionReadId(sessionId);
   if (!sessionId || sessionId.trim().length === 0) return;
-  const fileMap = sessionReadState.get(sessionId);
+  const fileMap = sessionReadMap(sessionId);
   if (!fileMap) return;
   for (const [path, snapshot] of fileMap) {
     fn(path, snapshot);
@@ -781,7 +850,7 @@ export function dropSessionReadSnapshot(
 ): void {
   sessionId = resolveSessionReadId(sessionId);
   if (!sessionId || sessionId.trim().length === 0) return;
-  sessionReadState.get(sessionId)?.delete(canonicalPath);
+  sessionReadMap(sessionId)?.delete(canonicalPath);
   const scope = getCurrentRuntimeSession()?.fileReadScope;
   if (scope !== undefined) {
     workspaceReadState.get(scope)?.delete(
@@ -825,6 +894,8 @@ export function clearSessionReadCache(sessionId: string): void {
 }
 
 export interface SessionReadSnapshotExport {
+  readonly executionBinding?: ExecutionEnvironmentBinding;
+  readonly executionFile?: ExecutionPathDescription;
   readonly path: string;
   readonly content: string;
   readonly timestamp: number;
@@ -854,7 +925,7 @@ export function snapshotTopRecentReads(params: {
   if (maxFiles <= 0 || perFileBudgetChars <= 0 || totalBudgetChars <= 0) {
     return [];
   }
-  const fileMap = sessionReadState.get(sessionId);
+  const fileMap = sessionReadMap(sessionId);
   if (!fileMap || fileMap.size === 0) {
     return [];
   }
@@ -870,6 +941,8 @@ export function snapshotTopRecentReads(params: {
     }
     entries.push({
       path,
+      ...(snapshot.executionBinding === undefined ? {} : { executionBinding: snapshot.executionBinding }),
+      ...(snapshot.executionFile === undefined ? {} : { executionFile: snapshot.executionFile }),
       content: snapshot.content,
       timestamp: snapshot.timestamp,
       ...(snapshot.viewKind ? { viewKind: snapshot.viewKind } : {}),

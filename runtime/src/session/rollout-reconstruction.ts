@@ -40,6 +40,7 @@ import type {
   TurnContextItem,
 } from "./rollout-item.js";
 import { readPersistedUserStopState } from "./rollout-item.js";
+import { assertSameExecutionEnvironment, executionEnvironmentFromSessionMeta, LOCAL_EXECUTION_ENVIRONMENT } from "../execution/binding.js";
 import { isAgentInvocationTurnBoundary } from "../contracts/agent-invocation-envelope.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import {
@@ -135,6 +136,7 @@ export interface PreviousTurnSettings {
 }
 
 export interface RolloutReconstruction {
+  readonly executionEnvironment: import("../execution/types.js").ExecutionEnvironmentBinding;
   readonly history: ResponseItem[];
   readonly previousTurnSettings?: PreviousTurnSettings;
   readonly referenceContextItem?: TurnContextItem;
@@ -201,6 +203,7 @@ function turnCheckpointPayload(item: RolloutItem): unknown | undefined {
 
 /** Authenticate canonical persisted bodies before replay applies truncation. */
 function validateRawCheckpointBeforeReplay(params: {
+  readonly executionEnvironment: import("../execution/types.js").ExecutionEnvironmentBinding;
   readonly payload: unknown;
   readonly messages: ReadonlyArray<ResponseItem>;
   readonly projection?: RolloutCheckpointProjectionOptions;
@@ -208,6 +211,8 @@ function validateRawCheckpointBeforeReplay(params: {
   let readable;
   try {
     readable = readTurnCheckpoint(params.payload);
+    assertSameExecutionEnvironment(readable.version === 5 ? readable.checkpoint.executionEnvironment : LOCAL_EXECUTION_ENVIRONMENT,
+      params.executionEnvironment);
   } catch (error) {
     return {
       status: "invalid",
@@ -549,6 +554,14 @@ export function reconstructFromRollout(
   rolloutItems: ReadonlyArray<RolloutItem>,
   opts: RolloutReconstructionOptions = {},
 ): RolloutReconstruction {
+  let executionEnvironment: import("../execution/types.js").ExecutionEnvironmentBinding | undefined;
+  for (const item of rolloutItems) {
+    if (item.type !== "session_meta") continue;
+    const binding = executionEnvironmentFromSessionMeta(item.payload);
+    if (executionEnvironment !== undefined) assertSameExecutionEnvironment(binding, executionEnvironment);
+    executionEnvironment = binding;
+  }
+  executionEnvironment ??= LOCAL_EXECUTION_ENVIRONMENT;
   // I-25: consult the optional index.json snapshot. The reconstruction
   // itself still walks the rollout (rollout is truth per I-25), but a
   // snapshot with a matching seq lets us surface metadata instantly
@@ -960,6 +973,7 @@ export function reconstructFromRollout(
       rawCheckpointValidations.set(
         rolloutIndex,
         validateRawCheckpointBeforeReplay({
+          executionEnvironment,
           payload: checkpointPayload,
           messages: rawState.history,
           projection: opts.checkpointProjection,
@@ -1020,6 +1034,9 @@ export function reconstructFromRollout(
           reason: "checkpoint was outside the raw replay validation window",
         };
         const historyPrefixValid = integrity.status === "valid";
+        const validatedCheckpoint = integrity.status === "valid" && checkpoint.checkpointVersion === 5
+          ? readTurnCheckpoint(checkpoint) : undefined;
+        const executionProcesses = validatedCheckpoint?.version === 5 ? validatedCheckpoint.checkpoint.executionProcesses : undefined;
         resumableTurns.push({
           turnId,
           ...(buildId !== undefined ? { buildId } : {}),
@@ -1030,6 +1047,8 @@ export function reconstructFromRollout(
             ? {}
             : { checkpointIntegrityReason: integrity.reason }),
           lastCheckpoint: {
+            executionEnvironment,
+            ...(executionProcesses === undefined ? {} : { executionProcesses }),
             iterationIndex: checkpoint.iterationIndex,
             checkpointSeq: checkpoint.checkpointSeq,
             persistedMessageCount: checkpoint.persistedMessageCount,
@@ -1107,6 +1126,7 @@ export function reconstructFromRollout(
   }
 
   const result: RolloutReconstruction = {
+    executionEnvironment,
     history: state.history,
     orphanedTurnIds,
     resumableTurns,

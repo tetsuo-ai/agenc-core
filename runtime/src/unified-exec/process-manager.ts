@@ -11,16 +11,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import treeKill from "tree-kill";
 
 import { SandboxManager, type SandboxType } from "../sandbox/engine/index.js";
-import {
-  approximateTokenCount,
-  maxCharsForTokens,
-  truncateHeadTail,
-} from "./head-tail-buffer.js";
+import { ProcessOutputBuffer } from "./process-output-buffer.js";
+export { ProcessOutputBuffer } from "./process-output-buffer.js";
+import { createUnifiedExecResult as createResult } from "./format-execution-result.js";
+import { EnvironmentProcessManager } from "./environment-process-manager.js";
+import { LOCAL_EXECUTION_ENVIRONMENT, readExecutionEnvironmentBinding } from "../execution/binding.js";
 import {
   type DetachedProcessRequest,
   type ExecCommandRequest,
   type ExecCommandToolOutput,
   type TerminateProcessRequest,
+  type ManagedProcessInfo,
   type UnifiedExecManagerOptions,
   type UnifiedExecProcessManagerLike,
   type UnifiedExecBackgroundProcess,
@@ -69,8 +70,6 @@ const MIN_EMPTY_YIELD_TIME_MS = 5_000;
 const MAX_YIELD_TIME_MS = 30_000;
 const MAX_EMPTY_WRITE_YIELD_TIME_MS = 300_000;
 const DEFAULT_MAX_PROCESSES = 64;
-const DEFAULT_OUTPUT_BUFFER_CHARS = 1024 * 1024;
-const TASK_OUTPUT_TAIL_CHARS = 8192;
 const MAX_COMPLETED_BACKGROUND_PROCESSES = 64;
 const SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS = 5_000;
 const PTY_ARGV0_EXECVE_SCRIPT =
@@ -91,10 +90,6 @@ type StoredProcess =
   | { readonly kind: "pty"; readonly process: IPty }
   | { readonly kind: "pipe"; readonly process: ChildProcessWithoutNullStreams };
 
-interface OutputChunk {
-  readonly stream: UnifiedExecStream;
-  readonly chunk: string;
-}
 
 interface SpawnCommand {
   readonly program: string;
@@ -104,153 +99,6 @@ interface SpawnCommand {
   readonly argv0?: string;
 }
 
-export class ProcessOutputBuffer {
-  private readonly chunks: OutputChunk[] = [];
-  private consumedIndex = 0;
-  private totalChars = 0;
-  private outputTail = "";
-  private outputBytes = 0;
-  /**
-   * Test-only counter of expensive pending-collapse passes, so a perf test can
-   * assert the O(pending) work is amortized rather than run on every append.
-   */
-  collapseCountForTest = 0;
-
-  constructor(private readonly maxChars = DEFAULT_OUTPUT_BUFFER_CHARS) {}
-
-  append(stream: UnifiedExecStream, chunk: string): void {
-    if (chunk.length === 0) return;
-    this.outputBytes += Buffer.byteLength(chunk);
-    this.outputTail = chunk.length >= TASK_OUTPUT_TAIL_CHARS
-      ? chunk.slice(-TASK_OUTPUT_TAIL_CHARS)
-      : (this.outputTail + chunk).slice(-TASK_OUTPUT_TAIL_CHARS);
-    this.chunks.push({ stream, chunk });
-    this.totalChars += chunk.length;
-    // Evicting already-consumed chunks is cheap and safe on every append. The
-    // expensive pending collapse (slice/filter/join/truncateHeadTail over the
-    // whole ~1MB pending region) is amortized: under deferred drain
-    // (consumedIndex stays 0) it previously re-ran on every 8KB chunk past the
-    // cap, pinning a core for a verbose emitter. Now it runs only once the
-    // pending region overshoots by a full cap's worth, then collapses back to
-    // the cap — bounding memory at ~2*maxChars and making the collapse amortized
-    // O(1) per appended char. drain() still collapses to the cap so a caller
-    // never sees more than maxChars.
-    this.evictConsumed();
-    if (this.totalChars > this.maxChars * 2) {
-      this.collapsePending();
-    }
-  }
-
-  drain(): OutputChunk[] {
-    if (this.totalChars > this.maxChars) {
-      this.evictConsumed();
-      if (this.totalChars > this.maxChars) {
-        this.collapsePending();
-      }
-    }
-    const drained = this.chunks.slice(this.consumedIndex);
-    this.consumedIndex = this.chunks.length;
-    return drained;
-  }
-
-  /** Reading task details must never consume the model's pending output. */
-  snapshot(): { outputTail: string; outputBytes: number } {
-    return { outputTail: this.outputTail, outputBytes: this.outputBytes };
-  }
-
-  private evictConsumed(): void {
-    // Already-consumed chunks were returned to the caller by a prior drain(), so
-    // discarding them costs nothing and never needs an omitted-count marker.
-    while (
-      this.totalChars > this.maxChars &&
-      this.consumedIndex > 0 &&
-      this.chunks.length > 0
-    ) {
-      const removed = this.chunks.shift()!;
-      this.totalChars -= removed.chunk.length;
-      this.consumedIndex -= 1;
-    }
-  }
-
-  private collapsePending(): void {
-    if (this.totalChars <= this.maxChars) return;
-    this.collapseCountForTest += 1;
-
-    // The cap is still exceeded by pending (undrained) output. Rather than
-    // dropping the most-recent unconsumed bytes wholesale (which previously
-    // discarded still-unconsumed HEAD output on a single oversized burst),
-    // collapse the pending region with head/tail truncation so both the head
-    // and the tail/exit-summary survive, and surface the omitted count.
-    const pending = this.chunks.slice(this.consumedIndex);
-    if (pending.length === 0) return;
-
-    // The pending region interleaves stdout AND stderr chunks. Collapsing them
-    // under a single hard-coded "stdout" label would relabel all stderr bytes
-    // as stdout (silently emptying the returned stderr field). Instead, truncate
-    // each stream's pending bytes SEPARATELY so each keeps its own head/tail and
-    // its own stream label.
-    const stdoutText = pending
-      .filter((chunk) => chunk.stream === "stdout")
-      .map((chunk) => chunk.chunk)
-      .join("");
-    const stderrText = pending
-      .filter((chunk) => chunk.stream === "stderr")
-      .map((chunk) => chunk.chunk)
-      .join("");
-
-    // Preserve original stream order (stdout before stderr) for deterministic
-    // output; only non-empty streams participate.
-    const segments: OutputChunk[] = [];
-    if (stdoutText.length > 0) {
-      segments.push({ stream: "stdout", chunk: stdoutText });
-    }
-    if (stderrText.length > 0) {
-      segments.push({ stream: "stderr", chunk: stderrText });
-    }
-    if (segments.length === 0) return;
-    const totalLen = stdoutText.length + stderrText.length;
-
-    // Allocate the cap across streams with max-min fairness: smallest stream
-    // first, each taking an equal share of the remaining budget, with any unused
-    // share rolling forward to the larger stream(s). A proportional split would
-    // starve a tiny stderr exit-summary when stdout floods past the cap; this
-    // keeps the small stream intact (its budget == its length) and gives the
-    // overflow budget to whichever stream actually needs truncating.
-    const budgetByStream = new Map<UnifiedExecStream, number>();
-    const ordered = [...segments].sort(
-      (a, b) => a.chunk.length - b.chunk.length,
-    );
-    let remainingCap = this.maxChars;
-    let remaining = ordered.length;
-    for (const segment of ordered) {
-      const share = Math.floor(remainingCap / remaining);
-      const budget = Math.min(segment.chunk.length, share);
-      budgetByStream.set(segment.stream, budget);
-      remainingCap -= budget;
-      remaining -= 1;
-    }
-
-    // truncateHeadTail embeds its own `[... omitted N chars ...]` marker inline
-    // between the preserved head and tail, so we replace the pending chunks with
-    // the per-stream truncated text directly. Clamp each budget to truncateHeadTail's
-    // own 64-char floor: passing a smaller budget would make it report a negative
-    // omitted count for a sub-64 stream (it never truncates below 64 chars anyway).
-    const replacement: OutputChunk[] = [];
-    for (const segment of segments) {
-      const budget = budgetByStream.get(segment.stream) ?? segment.chunk.length;
-      const truncated = truncateHeadTail(segment.chunk, Math.max(64, budget));
-      replacement.push({ stream: segment.stream, chunk: truncated.text });
-    }
-
-    this.chunks.length = this.consumedIndex;
-    this.chunks.push(...replacement);
-    const replacementChars = replacement.reduce(
-      (sum, chunk) => sum + chunk.chunk.length,
-      0,
-    );
-    this.totalChars = this.totalChars - totalLen + replacementChars;
-  }
-}
 
 function runtimeSandboxesCompatible(
   active: UnifiedExecRuntimeSandbox | undefined,
@@ -439,53 +287,6 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
-function createResult(params: {
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly exitCode: number | null;
-  readonly processId?: number;
-  readonly durationMs: number;
-  readonly timedOut: boolean;
-  readonly maxOutputTokens?: number;
-  readonly residualProcessesTerminated?: boolean;
-  readonly detached?: {
-    readonly pid?: number;
-    readonly logPath: string;
-  };
-}): ExecCommandToolOutput {
-  const maxChars = maxCharsForTokens(params.maxOutputTokens);
-  const stdout = truncateHeadTail(params.stdout, maxChars);
-  const stderr = truncateHeadTail(params.stderr, maxChars);
-  const output = [stdout.text, stderr.text]
-    .filter((part) => part.length > 0)
-    .join("");
-  const originalText = `${params.stdout}${params.stderr}`;
-  return {
-    output,
-    stdout: stdout.text,
-    stderr: stderr.text,
-    exitCode: params.exitCode,
-    exit_code: params.exitCode,
-    ...(params.processId !== undefined
-      ? { process_id: params.processId, session_id: params.processId }
-      : {}),
-    durationMs: params.durationMs,
-    wall_time_seconds: params.durationMs / 1000,
-    timedOut: params.timedOut,
-    truncated: stdout.truncated || stderr.truncated,
-    original_token_count: approximateTokenCount(originalText),
-    ...(params.residualProcessesTerminated === true
-      ? { residual_processes_terminated: true }
-      : {}),
-    ...(params.detached !== undefined
-      ? {
-          detached: true,
-          log_path: params.detached.logPath,
-          ...(params.detached.pid !== undefined ? { pid: params.detached.pid } : {}),
-        }
-      : {}),
-  };
-}
 
 /** The first bytes of a file, bounded; what a detached service wrote so far. */
 function readFileHead(path: string, limitBytes: number): string {
@@ -506,7 +307,9 @@ function readFileHead(path: string, limitBytes: number): string {
 }
 
 export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike {
+  readonly executionEnvironmentBinding: import("../execution/types.js").ExecutionEnvironmentBinding;
   readonly maxTimeoutMs: number;
+  private readonly environmentManager?: EnvironmentProcessManager;
   private readonly cwd: string;
   private readonly env?: Record<string, string>;
   private readonly baseEnv: Readonly<Record<string, string | undefined>>;
@@ -527,11 +330,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     | undefined;
 
   constructor(options: UnifiedExecManagerOptions = {}) {
-    this.cwd = options.cwd ?? process.cwd();
+    this.executionEnvironmentBinding = readExecutionEnvironmentBinding(options.executionEnvironment?.binding ?? LOCAL_EXECUTION_ENVIRONMENT);
+    this.cwd = options.cwd ?? (options.executionEnvironment === undefined ? process.cwd() : "/");
     this.env = options.env === undefined
       ? undefined
       : Object.freeze({ ...options.env });
-    this.baseEnv = Object.freeze({ ...(options.baseEnv ?? process.env) });
+    this.baseEnv = Object.freeze({ ...(options.baseEnv ?? (options.executionEnvironment === undefined ? process.env : {})) });
     this.sessionTempRoot = options.sessionTempRoot ?? resolveSessionTempRoot();
     this.shellPath = options.shellPath ??
       (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
@@ -552,6 +356,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         "unified exec sandbox-authority quiesce timeout must be finite and positive",
       );
     }
+    if (options.executionEnvironment !== undefined) {
+      this.environmentManager = new EnvironmentProcessManager({ ...options, executionEnvironment: options.executionEnvironment },
+        () => { this.assertSandboxAuthorityAdmission(); });
+    }
+  }
+
+  captureExecutionProcesses(): import("./process-recovery.js").ExecutionProcessRecoveryState | undefined {
+    return this.environmentManager?.captureExecutionProcesses();
+  }
+
+  async restoreExecutionProcesses(state: import("./process-recovery.js").ExecutionProcessRecoveryState): Promise<void> {
+    if (this.environmentManager === undefined) {
+      throw new UnifiedExecError("create_process", "Container process recovery requires its bound execution environment");
+    }
+    await this.environmentManager.restoreExecutionProcesses(state);
   }
 
   /** Close command admission synchronously before a lifecycle drain begins. */
@@ -568,6 +387,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
     this.sandboxAuthorityGeneration += 1;
     this.sandboxAuthorityQuiesced = true;
+    this.environmentManager?.quiesce();
     const token = Object.freeze({
       generation: this.sandboxAuthorityGeneration,
     }) as UnifiedExecSandboxAuthorityQuiesceToken;
@@ -580,6 +400,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     token: UnifiedExecSandboxAuthorityQuiesceToken,
   ): Promise<void> {
     this.assertActiveSandboxAuthorityQuiesce(token);
+    if (this.environmentManager !== undefined) {
+      try { await this.environmentManager.drain(); }
+      catch (error) { this.poisonSandboxAuthority(error instanceof Error ? error : new Error(String(error))); throw error; }
+      return;
+    }
     const entries = [...this.processes.values()];
     const results = await Promise.allSettled(
       entries.map((entry) => this.closeProcessStrict(entry)),
@@ -618,6 +443,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       );
     }
     this.activeSandboxAuthorityQuiesce = undefined;
+    this.environmentManager?.resume();
     this.sandboxAuthorityGeneration += 1;
     this.sandboxAuthorityQuiesced = false;
   }
@@ -626,6 +452,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     request: ExecCommandRequest,
   ): Promise<ExecCommandToolOutput> {
     const sandboxAuthorityGeneration = this.assertSandboxAuthorityAdmission();
+    if (this.environmentManager !== undefined) return this.environmentManager.execCommand(request);
     if (request.cmd.trim().length === 0) {
       throw new UnifiedExecError(
         "missing_command",
@@ -767,6 +594,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     request: DetachedProcessRequest,
   ): Promise<ExecCommandToolOutput> {
     this.assertSandboxAuthorityAdmission();
+    if (this.environmentManager !== undefined) return this.environmentManager.startDetachedProcess(request);
     if (request.cmd.trim().length === 0) {
       throw new UnifiedExecError(
         "missing_command",
@@ -879,6 +707,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   async writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput> {
     this.assertSandboxAuthorityAdmission();
+    if (this.environmentManager !== undefined) return this.environmentManager.writeStdin(request);
     const entry = this.processes.get(request.session_id);
     if (!entry) {
       throw new UnifiedExecError(
@@ -956,9 +785,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
    * killing a finished process is a benign race, not an error.
    * Ownership mismatches throw `owner_denied` (TOOL-01).
    */
-  terminateProcess(processIdOrRequest: number | TerminateProcessRequest): {
+  async terminateProcess(processIdOrRequest: number | TerminateProcessRequest): Promise<{
     terminated: boolean;
-  } {
+  }> {
+    if (this.environmentManager !== undefined) return this.environmentManager.terminateProcess(processIdOrRequest);
     const processId =
       typeof processIdOrRequest === "number"
         ? processIdOrRequest
@@ -968,16 +798,32 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? undefined
         : processIdOrRequest.ownerId;
     const entry = this.processes.get(processId);
-    if (!entry || entry.exitState !== null) {
-      return { terminated: false };
-    }
+    if (!entry) return { terminated: false };
     enforceOwnerAccess(entry, ownerId);
-    this.forceTerminate(entry);
+    if (entry.cleanupFailure !== undefined) throw entry.cleanupFailure;
+    if (entry.exitState !== null && entry.stopPromise === undefined) return { terminated: false };
+    await this.stopEntryStrict(entry);
     return { terminated: true };
+  }
+
+  listProcesses(ownerId?: string): ManagedProcessInfo[] {
+    if (this.environmentManager !== undefined) return this.environmentManager.listProcesses(ownerId);
+    return [...this.processes.values()]
+      .filter((entry) => entry.backgrounded && entry.exitState === null &&
+        entry.ownerId === ownerId)
+      .sort((left, right) => left.startedAt - right.startedAt)
+      .map((entry) => ({
+        session_id: entry.processId,
+        command: entry.command.slice(0, 4096),
+        cwd: entry.cwd.slice(0, 4096),
+        tty: entry.tty,
+        started_at: entry.startedAt,
+      }));
   }
 
   /** The owning session's control plane may inspect its root and child work. */
   listBackgroundProcesses(): UnifiedExecBackgroundProcess[] {
+    if (this.environmentManager !== undefined) return this.environmentManager.listBackgroundProcesses();
     const snapshots = [...this.completedBackgroundProcesses.values()].map(
       (snapshot) => ({ ...snapshot }),
     );
@@ -992,18 +838,31 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
    * An old task ID cannot address a process in another session or daemon.
    */
   async stopBackgroundProcess(taskId: string): Promise<{ stopped: boolean }> {
+    if (this.environmentManager !== undefined) return this.environmentManager.stopBackgroundProcess(taskId);
     const entry = [...this.processes.values()].find(
       (candidate) => candidate.backgrounded && candidate.taskId === taskId,
     );
-    if (entry?.exitState !== null) return { stopped: false };
+    if (entry === undefined) return { stopped: false };
+    if (entry.cleanupFailure !== undefined) throw entry.cleanupFailure;
+    if (entry.exitState !== null && entry.stopPromise === undefined) return { stopped: false };
+    await this.stopEntryStrict(entry);
+    return { stopped: true };
+  }
+
+  private async stopEntryStrict(entry: ProcessEntry): Promise<void> {
     entry.stopRequested = true;
-    entry.stopPromise ??= this.closeProcessStrict(entry).finally(() => {
-      entry.stopPromise = undefined;
-    });
+    entry.stopPromise ??= this.closeProcessStrict(entry)
+      .catch((error: unknown) => {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        entry.cleanupFailure = failure;
+        this.poisonSandboxAuthority(failure);
+        throw failure;
+      }).finally(() => {
+        entry.stopPromise = undefined;
+      });
     await entry.stopPromise;
     // Retain the entry until write_stdin retrieves its final output or pruning
     // needs the slot; stopping from the UI must not destroy pending tool output.
-    return { stopped: true };
   }
 
   private backgroundProcessSnapshot(entry: ProcessEntry): UnifiedExecBackgroundProcess {
@@ -1022,6 +881,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
+    if (this.environmentManager !== undefined) return this.environmentManager.closeAll();
     const entries = [...this.processes.values()];
     for (const entry of entries) {
       this.forceTerminate(entry);

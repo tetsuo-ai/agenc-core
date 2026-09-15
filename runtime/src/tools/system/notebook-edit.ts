@@ -1,7 +1,7 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
 
-import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { checkToolPathPermissionAsync } from "../../permissions/path-validation.js";
 import { isRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { Tool, ToolResult } from "../types.js";
@@ -145,7 +145,7 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
       required: ["notebook_path"],
       additionalProperties: false,
     },
-    checkPermissions(input, context) {
+    async checkPermissions(input, context) {
       const args = input as Record<string, unknown>;
       const notebookPath = stringValue(args.notebook_path);
       if (!notebookPath) {
@@ -154,7 +154,7 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
           message: "notebook_path must be a non-empty string",
         };
       }
-      return checkToolPathPermission({
+      return checkToolPathPermissionAsync({
         toolName: NOTEBOOK_EDIT_TOOL_NAME,
         input: { ...args, file_path: notebookPath },
         path: notebookPath,

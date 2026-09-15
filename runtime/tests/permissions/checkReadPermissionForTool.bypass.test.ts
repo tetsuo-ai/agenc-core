@@ -68,10 +68,10 @@ describe('checkReadPermissionForTool under bypassPermissions', () => {
   // A bare-name deny pattern (no leading slash) is matched anywhere via
   // gitignore semantics, keeping the assertion independent of the settings
   // root / cwd that an absolute-path pattern would resolve against.
-  test('explicit Deny(Read) rule still denies under bypassPermissions', () => {
+  test('explicit Deny(Read) rule still denies under bypassPermissions', async () => {
     const tool = readTool()
 
-    const result = checkReadPermissionForTool(
+    const result = await checkReadPermissionForTool(
       tool,
       { file_path: 'agenc-deny-marker.secret' },
       context({
@@ -86,11 +86,11 @@ describe('checkReadPermissionForTool under bypassPermissions', () => {
 
   // Baseline: with no deny rule, bypass still auto-allows a path that would
   // otherwise prompt (outside the working directory).
-  test('reads with no deny rule are auto-allowed under bypassPermissions', () => {
+  test('reads with no deny rule are auto-allowed under bypassPermissions', async () => {
     const target = join(root, 'anywhere.txt')
     const tool = readTool()
 
-    const result = checkReadPermissionForTool(
+    const result = await checkReadPermissionForTool(
       tool,
       { file_path: target },
       context({ mode: 'bypassPermissions' }),
@@ -105,10 +105,10 @@ describe('checkReadPermissionForTool under bypassPermissions', () => {
 
   // Prior valid behavior is preserved: a read deny rule still denies in the
   // default (non-bypass) mode.
-  test('explicit Deny(Read) rule still denies in default mode', () => {
+  test('explicit Deny(Read) rule still denies in default mode', async () => {
     const tool = readTool()
 
-    const result = checkReadPermissionForTool(
+    const result = await checkReadPermissionForTool(
       tool,
       { file_path: 'agenc-deny-marker.secret' },
       context({

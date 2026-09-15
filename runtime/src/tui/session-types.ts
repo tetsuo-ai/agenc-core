@@ -101,7 +101,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   ): Promise<SessionStatusLineExecuteResult>;
   readonly conversationId: string;
   /** Immutable role-discovery identity; execution cwd may move independently. */
-  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;
+  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd" | "executionBinding">;
   readonly agentDefinitions?: {
     readonly agentRoleWorkspaceId: string;
     readonly activeAgents: readonly unknown[];

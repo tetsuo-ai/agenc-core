@@ -16,6 +16,12 @@ import {
   realpathSync,
   readlinkSync,
 } from "node:fs";
+import { posix } from "node:path";
+import { getCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { captureExecutionPermissionAuthority, taskPathWithin } from "../execution/permission-authority.js";
+import { resolveExecutionPermissionPath } from "../execution/permission-path.js";
+import { ExecutionEnvironmentError } from "../execution/types.js";
+import type { ExecutionWorkspace } from "../execution/workspace.js";
 import { homedir } from "node:os";
 import {
   dirname,
@@ -63,6 +69,7 @@ export interface PathCheckResult {
 
 export interface ResolvedPathCheckResult extends PathCheckResult {
   readonly resolvedPath: string;
+  readonly executionPaths?: readonly string[];
   readonly suggestions?: readonly PermissionUpdate[];
 }
 
@@ -268,9 +275,18 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
   return new RegExp(`^${body}$`);
 }
 
-export function matchPathRuleContent(ruleContent: string, filePath: string): boolean {
-  const expandedRule = normalizeSlashes(expandTilde(ruleContent));
-  const expandedPath = normalizeSlashes(filePath);
+function expandPermissionTilde(path: string, task?: { readonly homePath?: string }): string {
+  if (!task) return expandTilde(path);
+  if (path !== "~" && !path.startsWith("~/")) return path;
+  if (task.homePath === undefined) throw new ExecutionEnvironmentError("environment_not_ready", "Task home is required for home-relative permissions", false);
+  if (!posix.isAbsolute(task.homePath)) throw new ExecutionEnvironmentError("invalid_request", "Task home must be absolute", false);
+  return task.homePath + path.slice(1);
+}
+
+export function matchPathRuleContent(ruleContent: string, filePath: string, task?: { readonly homePath?: string }): boolean {
+  const normalizePath = task ? (path: string) => path.replace(/\/+/g, "/") : normalizeSlashes;
+  const expandedRule = normalizePath(expandPermissionTilde(ruleContent, task));
+  const expandedPath = normalizePath(filePath);
   if (expandedRule === expandedPath) return true;
   if (expandedRule.endsWith("/**")) {
     const root = expandedRule.slice(0, -3).replace(/\/$/, "");
@@ -287,14 +303,15 @@ function matchingRuleForPath(
   context: ToolPermissionContext,
   operationType: FileOperationType,
   behavior: "allow" | "ask" | "deny",
+  task?: { readonly paths: readonly string[]; readonly homePath?: string },
 ): PermissionRule | null {
-  const pathsToCheck = getPathsForPermissionCheck(filePath);
+  const pathsToCheck = task?.paths ?? getPathsForPermissionCheck(filePath);
   for (const toolName of toolNamesForOperation(operationType)) {
     const rules = getRuleByContentsForTool(context, toolName, behavior);
     for (const [content, rule] of rules) {
       if (
         pathsToCheck.some((candidate) =>
-          matchPathRuleContent(content, candidate),
+          matchPathRuleContent(content, candidate, task),
         )
       ) {
         return rule;
@@ -390,6 +407,7 @@ export function isPathAllowed(
   precomputedPathsToCheck?: readonly string[],
   options: ValidatePathOptions = {},
 ): PathCheckResult {
+  assertLocalPathValidation();
   const permissionOperation = operationType === "read" ? "read" : "write";
 
   const denyRule = matchingRuleForPath(
@@ -500,6 +518,7 @@ export function validateGlobPattern(
   operationType: FileOperationType,
   options: ValidatePathOptions = {},
 ): ResolvedPathCheckResult {
+  assertLocalPathValidation();
   if (containsPathTraversal(cleanPath)) {
     const absolutePath = isAbsolute(cleanPath)
       ? cleanPath
@@ -547,6 +566,7 @@ export function validatePath(
   operationType: FileOperationType,
   options: ValidatePathOptions = {},
 ): ResolvedPathCheckResult {
+  assertLocalPathValidation();
   const cleanPath = expandTilde(path.replace(/^['"]|['"]$/g, ""));
 
   if (containsVulnerableUncPath(cleanPath)) {
@@ -683,9 +703,16 @@ function withTransientAllowedRoot(
   return withSignedAllowedRoots(input, [dirname(resolvedPath)]);
 }
 
+function assertLocalPathValidation(): void {
+  if (getCanonicalSettingsAuthority()?.executionWorkspace) {
+    throw new ExecutionEnvironmentError("environment_not_ready", "Selected task permissions require asynchronous protected evaluation", false);
+  }
+}
+
 export function checkToolPathPermission(
   opts: ToolPathPermissionOptions,
 ): PermissionResult {
+  assertLocalPathValidation();
   const result = validatePath(
     opts.path,
     opts.cwd,
@@ -698,6 +725,72 @@ export function checkToolPathPermission(
       ) ? opts.planFileAuthority : null,
     },
   );
+  return permissionResultForPath(opts, result);
+}
+
+/** Canonical file tools enter here before any permission-time filesystem lookup. */
+export async function checkToolPathPermissionAsync(opts: ToolPathPermissionOptions): Promise<PermissionResult> {
+  const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+  if (!workspace) return checkToolPathPermission(opts);
+  const authority = captureExecutionPermissionAuthority(workspace);
+  const result = await validateExecutionToolPath(opts, workspace, authority);
+  authority.assertCurrent();
+  return permissionResultForPath(opts, result, true);
+}
+
+async function validateExecutionToolPath(opts: ToolPathPermissionOptions, workspace: ExecutionWorkspace,
+  authority: ReturnType<typeof captureExecutionPermissionAuthority>): Promise<ResolvedPathCheckResult> {
+  if (!posix.isAbsolute(opts.cwd)) throw new ExecutionEnvironmentError("invalid_request", "Task permission cwd must be absolute", false);
+  // File tools pass literal path strings, not shell arguments. Removing quotes
+  // here would check a different pathname and could miss an explicit deny.
+  const path = expandPermissionTilde(opts.path, workspace);
+  if (!path || path.includes("\0") || (posix.isAbsolute(path) ? path : opts.cwd + "/" + path).length > MAX_PATH_LENGTH) {
+    throw new ExecutionEnvironmentError("invalid_request", "Invalid task permission path", false);
+  }
+  const syntaxReason = containsVulnerableUncPath(path) ? "UNC network paths require manual approval" :
+    path.startsWith("~") ? "Tilde expansion variants require manual approval" :
+    path.includes("$") || path.includes("%") || path.startsWith("=") ? "Shell expansion syntax in paths requires manual approval" :
+    opts.operationType !== "read" && GLOB_PATTERN_REGEX.test(path) ? "Glob patterns are not allowed in write operations. Please specify an exact file path." : undefined;
+  // These entrypoints operate on one literal file, including names containing
+  // glob characters. Checking just a glob's parent would miss a file deny.
+  const evidence = await resolveExecutionPermissionPath(workspace.environment, path, { cwd: opts.cwd, homePath: workspace.homePath });
+  const task = { paths: evidence.paths, homePath: workspace.homePath };
+  const match = (behavior: "allow" | "ask" | "deny") => matchingRuleForPath(evidence.canonicalPath, opts.context, opts.operationType, behavior, task);
+  const result = (allowed: boolean, decisionReason?: PermissionDecisionReason): ResolvedPathCheckResult => ({
+    allowed, resolvedPath: evidence.canonicalPath, executionPaths: evidence.paths, decisionReason,
+  });
+  const deny = match("deny");
+  if (deny) return result(false, { type: "rule", rule: deny });
+  const memory = authority.memoryAccess(evidence);
+  if (memory === "deny") return result(false, { type: "safetyCheck", classifierApprovable: false,
+    reason: "Agent memory requires the exact authorized workspace role and a private regular task file." });
+  if (syntaxReason) return result(false, { type: "other", reason: syntaxReason });
+  if (memory === "allow") {
+    const ask = match("ask");
+    return ask ? result(false, { type: "rule", rule: ask }) : result(true, { type: "other", reason: "authorized task agent memory" });
+  }
+  // Controller plan and durable-memory paths do not acquire task authority by
+  // pathname coincidence. Their task-visible bridges are established separately.
+  if (opts.operationType !== "read") {
+    const safety = checkPathSafetyForAutoEdit(evidence.canonicalPath, evidence.paths);
+    if (!safety.safe) return result(false, { type: "safetyCheck", reason: safety.message, classifierApprovable: safety.classifierApprovable });
+  }
+  const roots = new Set([opts.cwd, ...opts.context.additionalWorkingDirectories.values()].map(value => typeof value === "string" ? value : value.path));
+  for (const root of opts.extraWorkingDirectories ?? []) if (root) roots.add(root);
+  const resolvedRoots = await Promise.all([...roots].filter(Boolean).map(root =>
+    resolveExecutionPermissionPath(workspace.environment, root, { cwd: opts.cwd, homePath: workspace.homePath })));
+  const inWorkingDirectory = evidence.paths.every(form => resolvedRoots.some(root => root.paths.some(prefix => taskPathWithin(form, prefix))));
+  if (inWorkingDirectory && (opts.operationType === "read" || opts.context.mode === "acceptEdits")) {
+    return result(true, { type: "mode", mode: opts.context.mode });
+  }
+  const ask = match("ask");
+  if (ask) return result(false, { type: "rule", rule: ask });
+  const allow = match("allow");
+  if (allow) return result(true, { type: "rule", rule: allow });
+  return result(false, { type: "workingDir", reason: `Path is outside allowed working directories for ${permissionVerb(opts.operationType)}` });
+}
+
+function permissionResultForPath(opts: ToolPathPermissionOptions, result: ResolvedPathCheckResult, task = false): PermissionResult {
   // A file tool confines itself to the workspace root plus the signed roots
   // on its input; the permission layer widens that only when the user
   // approves a prompt (see the `ask` result below). An allow the layer
@@ -707,7 +800,9 @@ export function checkToolPathPermission(
   // /etc/nginx/nginx.conf under --dangerously-bypass-approvals-and-sandbox
   // with --add-dir /). Hand the tool the same directory an approval would.
   const inputForAllow = (): Record<string, unknown> =>
-    isPathInside(result.resolvedPath, resolve(opts.cwd))
+    task && result.executionPaths
+      ? withSignedAllowedRoots(opts.input, result.executionPaths.map(path => posix.dirname(path))) :
+    (task ? taskPathWithin(result.resolvedPath, opts.cwd) : isPathInside(result.resolvedPath, resolve(opts.cwd)))
       ? opts.input
       : withTransientAllowedRoot(opts.input, result.resolvedPath);
   if (result.allowed) {

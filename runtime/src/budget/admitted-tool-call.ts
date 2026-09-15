@@ -1,6 +1,7 @@
 /** Shared M3 boundary for approved tool effects. */
 
 import { createHash, randomUUID } from "node:crypto";
+import { withAdmittedExecutionCall } from "../execution/call-context.js";
 
 import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
@@ -920,7 +921,8 @@ export async function runAdmittedToolCall(
     }
 
     hitM4DurabilityFailpoint("before_tool_spawn");
-    const result = await params.invoke(dispatch.context);
+    const result = await withAdmittedExecutionCall({ runId, callId: params.callId, attempt }, dispatch.context,
+      () => params.invoke(dispatch.context));
     const lateCancellation = cancellationAfterDispatch(
       lease?.signal ?? dispatch.context.signal,
     );

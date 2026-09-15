@@ -972,7 +972,7 @@ describe("FileRead tool", () => {
         session: {},
       } as ToolEvaluatorContext;
       const tool = createFileReadTool({ allowedPaths: [root] });
-      const permission = tool.checkPermissions?.(
+      const permission = await tool.checkPermissions?.(
         { file_path: file, cwd: root },
         evaluatorContext,
       );
@@ -1007,7 +1007,7 @@ describe("FileRead tool", () => {
         session: {},
       } as ToolEvaluatorContext;
       const tool = createFileReadTool({ allowedPaths: [root] });
-      const permission = tool.checkPermissions?.(
+      const permission = await tool.checkPermissions?.(
         { file_path: file, cwd: root },
         evaluatorContext,
       );

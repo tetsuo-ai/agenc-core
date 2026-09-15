@@ -51,23 +51,33 @@ import {
   resolveSessionId,
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
-import { checkMemorySecrets } from "../../memory/privacy.js";
+import { checkMemorySecrets, scanForSecrets } from "../../memory/privacy.js";
 import {
   agentNamespacePathHint,
   denyAgentNamespacePath,
   isAgentNamespacePath,
 } from "./agent-path-hints.js";
-import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { checkToolPathPermissionAsync } from "../../permissions/path-validation.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
+import { SESSION_ALLOWED_ROOTS_ARG, SESSION_ALLOWED_ROOTS_SIG_ARG, verifyAllowedRoots } from "../../agents/_deps/filesystem-args.js";
+import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { captureExecutionPermissionAuthority } from "../../execution/permission-authority.js";
+import { bindExecutionToolFileRead, resolveExecutionToolReadPath } from "../../execution/tool-file-read.js";
+import { sameExecutionPathDescription } from "../../execution/path-description.js";
+import { rethrowContentAuthorityError } from "../../execution/content-filesystem.js";
+import type { ExecutionWorkspace } from "../../execution/workspace.js";
+import { ExecutionEnvironmentError, type ExecutionPathDescription } from "../../execution/types.js";
 import {
   prepareWorkspaceMutation,
   WorkspaceMutationCoordinatorError,
   workspaceAuthoritativeRead,
   workspaceMutationAdmissionToolResult,
+  workspaceMutationCoordinators,
   type WorkspaceMutationSource,
 } from "../../workspace/mutation-coordinator.js";
 import {
+  captureWorkspaceFilePathTransactionGuard,
   executeWorkspaceFileMutation,
   type WorkspaceFileMutationTestHooks,
 } from "../../workspace/file-mutation-transaction.js";
@@ -84,9 +94,14 @@ const READ_BEFORE_WRITE_ERROR =
 const SESSION_ID_MISSING_ERROR =
   "file_edit was invoked without a session id. The runtime injects this automatically; if you are calling the tool from a unit test, pass __testBypassSessionGuard:true to opt out of read-before-write enforcement.";
 
+const NOTEBOOK_EDIT_HINT =
+  "File is a Jupyter Notebook. Use a notebook-specific tool to edit Jupyter notebooks.";
+
+type EditToolName = typeof FILE_EDIT_TOOL_NAME | typeof FILE_MULTI_EDIT_TOOL_NAME;
+
 function preMutationErrorResult(
   message: string,
-  toolName: typeof FILE_EDIT_TOOL_NAME | typeof FILE_MULTI_EDIT_TOOL_NAME,
+  toolName: EditToolName,
 ): ToolResult {
   return {
     ...errorResult(message),
@@ -270,8 +285,12 @@ function preserveQuoteStyle(
 // ── tool config / errors ──────────────────────────────────────────────
 
 export interface FileEditToolConfig extends WorkspaceFileMutationTestHooks {
-  /** Allowed path prefixes (required). */
-  readonly allowedPaths: readonly string[];
+  /**
+   * Allowed path prefixes. When omitted, the local tool falls back to
+   * `process.cwd()`; a selected task environment falls back to its bound
+   * workspace root.
+   */
+  readonly allowedPaths?: readonly string[];
 }
 
 function asString(value: unknown): string | undefined {
@@ -815,7 +834,271 @@ function multiEditSuccessText(
   return `The file ${filePath} has been updated successfully. ${edits} ${editLabel} applied with ${replacements} ${replacementLabel}.`;
 }
 
+/**
+ * MultiEdit is all-or-nothing — when one edit fails the file is left
+ * untouched. Tell the model exactly which edits would have applied AND that
+ * nothing was written. The previous message ("Edit N failed: <reason>")
+ * didn't surface the all-or-nothing semantic, so weak local models (qwen,
+ * llama) loop: they re-emit the same broken edit while assuming earlier
+ * edits already landed.
+ */
+function multiEditFailureText(
+  index: number,
+  total: number,
+  error: string,
+): string {
+  const failedIndex = index + 1;
+  const parts: string[] = [`Edit ${failedIndex} of ${total} failed: ${error}.`];
+  if (index > 0) {
+    // edits 1..index were applied to the in-memory buffer
+    parts.push(
+      `Edits 1..${index} validated before edit ${failedIndex} failed.`,
+    );
+  }
+  parts.push(
+    "MultiEdit is all-or-nothing: the file was NOT written. Re-emit the full edit list with edit",
+    String(failedIndex),
+    "corrected.",
+  );
+  return parts.join(" ");
+}
+
+/**
+ * Selected-environment `Edit`/`MultiEdit`. Mirrors `executeTaskFileWrite` in
+ * file-write.ts: path evidence, the original bytes, admission, the mutation
+ * and the post-edit observation all use the bound task filesystem. No
+ * controller path resolution, host stat/read, editor overlay or LSP helper
+ * participates, and every refusal before admission provably touched nothing.
+ */
+async function executeTaskFileEdit(
+  workspace: ExecutionWorkspace,
+  config: FileEditToolConfig,
+  rawArgs: Record<string, unknown>,
+  toolName: EditToolName,
+  filePath: string,
+  edits: readonly ResolvedMultiEdit[],
+): Promise<ToolResult> {
+  const refuse = (message: string): ToolResult =>
+    preMutationErrorResult(message, toolName);
+  const single = toolName === FILE_EDIT_TOOL_NAME;
+  const first = edits[0];
+  if (first === undefined) return refuse("edits must be a non-empty array");
+  if (filePath.toLowerCase().endsWith(".ipynb")) return refuse(NOTEBOOK_EDIT_HINT);
+  const allowedPaths = [
+    ...(config.allowedPaths ?? [workspace.projectRoot]),
+    ...verifyAllowedRoots(rawArgs[SESSION_ALLOWED_ROOTS_ARG], rawArgs[SESSION_ALLOWED_ROOTS_SIG_ARG]),
+  ];
+  const options = { allowedPaths, cwd: asNonEmptyString(rawArgs.cwd) };
+  const sessionId = resolveSessionId(rawArgs);
+  const toolCallId = asNonEmptyString(rawArgs.__callId);
+  const metadata = {
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(toolCallId !== undefined ? { toolCallId } : {}),
+  };
+  let transactionEntered = false;
+  try {
+    const target = await resolveExecutionToolReadPath(workspace, filePath, options);
+    if (target.description && (BigInt(target.description.identity.mode) & 0o170000n) !== 0o100000n) {
+      return refuse(`Path is not a regular file: ${filePath}`);
+    }
+    if (target.isMemoryPath) {
+      // Durable memory re-enters later prompts: screen the replacement text
+      // with the deterministic scanner, never a controller path classifier.
+      const secrets = scanForSecrets(edits.map((edit) => edit.new_string).join("\n"));
+      if (secrets.length > 0) {
+        return refuse(
+          `Content contains potential secrets (${secrets.map((secret) => secret.label).join(", ")}) and cannot be written to memory. ` +
+          "Memory files are stored in plain text and re-injected into later prompts. Remove the sensitive content and try again.",
+        );
+      }
+    }
+    return await workspaceMutationCoordinators.preparePaths([target.canonical], async () => {
+      const guard = await captureWorkspaceFilePathTransactionGuard(target.canonical);
+      const existed = guard.targetExisted;
+      let failure: unknown;
+      let beforeText = "";
+      let afterText = "";
+      let operation: "create" | "edit" = "edit";
+      let replacements = 0;
+      let postDescription: ExecutionPathDescription;
+      try {
+        // Correlate the held original bytes with the permission/read evidence.
+        // This same guard survives admission and is consumed by the transaction.
+        await target.validate();
+        await guard.assertOriginalState();
+        if (existed !== Boolean(target.description)) {
+          return refuse(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
+        }
+        const original = guard.backupContent ?? Buffer.alloc(0);
+        if (existed && original.length > MAX_EDIT_FILE_SIZE) {
+          return refuse(
+            `File is too large to edit (${original.length} bytes). Maximum editable file size is ${MAX_EDIT_FILE_SIZE} bytes.`,
+          );
+        }
+        const encoding = detectEncoding(original);
+        const rawText = original.toString(encoding);
+        const lineEndings = detectLineEndings(rawText);
+        // Normalize CRLF→LF for matching because Read output is LF-normalized,
+        // but retain the original format for the final write.
+        beforeText = rawText.replaceAll("\r\n", "\n");
+        const emptyIndex = edits.findIndex((edit) => edit.old_string === "");
+        if (!existed && !(edits.length === 1 && emptyIndex === 0)) {
+          return refuse(
+            `File does not exist: ${filePath}. To create a new file, pass ${single ? "an empty old_string" : "a single edit with an empty old_string"}.`,
+          );
+        }
+        if (existed && emptyIndex >= 0 && edits.length > 1) {
+          return refuse(
+            `edits[${emptyIndex}].old_string cannot be empty in a multi-edit batch.`,
+          );
+        }
+        if (existed) {
+          // Read-before-write requires an environment-scoped observation of
+          // this exact file; drift in its protected metadata forces a re-read,
+          // even after a partial read.
+          if (sessionId !== undefined) {
+            const recorded = getSessionReadSnapshot(sessionId, target.canonical);
+            if (!isAuthorizingSessionRead(recorded)) {
+              return refuse(READ_BEFORE_WRITE_ERROR);
+            }
+            if (!recorded?.executionFile || !target.description ||
+                !sameExecutionPathDescription(recorded.executionFile, target.description)) {
+              return refuse(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
+            }
+            const recordedContent = comparableSessionContent(recorded);
+            if (recorded.viewKind === "full" && recordedContent !== undefined && recordedContent !== beforeText) {
+              return refuse(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
+            }
+          } else if (!shouldBypassSessionGuard(rawArgs)) {
+            return refuse(SESSION_ID_MISSING_ERROR);
+          }
+        }
+        if (emptyIndex >= 0) {
+          if (existed && beforeText.trim() !== "") {
+            return refuse("Cannot create new file - file already exists.");
+          }
+          afterText = first.new_string;
+          operation = existed ? "edit" : "create";
+          replacements = 1;
+        } else {
+          let updated = beforeText;
+          for (const [index, edit] of edits.entries()) {
+            const applied = applyValidatedEdit(updated, edit.old_string, edit.new_string, edit.replace_all);
+            if ("error" in applied) {
+              // Nothing has been written: the file is untouched until admission.
+              return refuse(single ? applied.error : multiEditFailureText(index, edits.length, applied.error));
+            }
+            updated = applied.updated;
+            replacements += applied.replacements;
+          }
+          afterText = updated;
+        }
+        const data = Buffer.from(encodeForOriginalFormat(afterText, lineEndings), encoding);
+        const admission = await prepareWorkspaceMutation({
+          path: target.canonical,
+          source: single ? "file_edit" : "file_multi_edit",
+          beforeText,
+          afterText,
+          ...metadata,
+        });
+        const rejection = workspaceMutationAdmissionToolResult(admission);
+        if (rejection !== null) {
+          return {
+            ...rejection,
+            effectDisposition: createToolEffectDispositionEvidence({
+              disposition: "confirmed_no_effect",
+              evidenceKind: "boundary_not_crossed",
+              evidenceRef: `tool:${toolName}:admission-rejected`,
+              evidenceMaterial: rejection.content,
+            }),
+          };
+        }
+        transactionEntered = true;
+        await executeWorkspaceFileMutation({
+          admission,
+          path: target.canonical,
+          afterText,
+          preflightGuard: guard,
+          writeUsesBoundMutation: true,
+          metadata,
+          testHooks: config,
+          decodeObserved: (content) => content.toString(encoding).replaceAll("\r\n", "\n"),
+          write: async (assertCurrentPathState, _targetExisted, boundMutation) => {
+            await target.validate();
+            await assertCurrentPathState();
+            await boundMutation.writeContent(data);
+          },
+        });
+        // Publish a snapshot only after observing the acknowledged bytes through
+        // a fresh protected read, then successfully releasing both capabilities.
+        const post = await bindExecutionToolFileRead(workspace, filePath, options);
+        let readFailure: unknown;
+        try {
+          const observed = await post.capability.readFile(data.length);
+          if (!observed.content.equals(data)) {
+            throw new ExecutionEnvironmentError("path_conflict", "Task file changed after edit", true, false);
+          }
+          await post.validate();
+          await guard.assertState({ kind: "content", content: data });
+          postDescription = post.description;
+        } catch (error) { readFailure = error; throw error; }
+        finally {
+          try { await post.capability.dispose(); }
+          catch (cleanup) {
+            if (readFailure !== undefined) {
+              throw new AggregateError([readFailure, cleanup], "Post-edit read and release failed", { cause: readFailure });
+            }
+            throw cleanup;
+          }
+        }
+      } catch (error) { failure = error; throw error; }
+      finally {
+        try { await guard.dispose(); }
+        catch (cleanup) {
+          if (failure !== undefined) {
+            throw new AggregateError([failure, cleanup], "Task edit and guard release failed", { cause: failure });
+          }
+          throw cleanup;
+        }
+      }
+      target.assertCurrent();
+      if (sessionId !== undefined) {
+        recordSessionRead(sessionId, target.canonical, {
+          content: afterText,
+          rawContent: afterText,
+          timestamp: Number(BigInt(postDescription.identity.mtimeNs)) / 1_000_000,
+          viewKind: "full",
+          executionBinding: target.executionBinding,
+          executionFile: postDescription,
+        });
+      }
+      // The selected path does not invoke the unmigrated LSP feedback helper.
+      const content = operation === "create"
+        ? `Created file ${filePath}.`
+        : single
+          ? successText(filePath, first.replace_all)
+          : multiEditSuccessText(filePath, edits.length, replacements);
+      return {
+        content,
+        metadata: buildFileMutationMetadata({
+          filePath,
+          operation,
+          beforeText,
+          afterText,
+          ...(operation === "edit" ? { replacements } : {}),
+        }),
+      };
+    });
+  } catch (error) {
+    rethrowContentAuthorityError(error);
+    return transactionEntered
+      ? errorResult(formatWriteFileError(error))
+      : refuse(error instanceof Error ? error.message : String(error));
+  }
+}
+
 export function createFileEditTool(config: FileEditToolConfig): Tool {
+  const allowedPaths = config.allowedPaths ?? [process.cwd()];
   return {
     name: FILE_EDIT_TOOL_NAME,
     description: FILE_EDIT_DESCRIPTION,
@@ -856,7 +1139,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       required: ["file_path", "old_string", "new_string"],
       additionalProperties: false,
     },
-    checkPermissions(input, context) {
+    async checkPermissions(input, context) {
       const args = input as EditArgs;
       const filePath = asNonEmptyString(args.file_path);
       if (!filePath) {
@@ -865,19 +1148,21 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           message: "file_path must be a non-empty string",
         };
       }
-      const cwd =
-        asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
-      if (isAgentNamespacePath(filePath)) {
+      const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+      const permissionRoots = workspace ? config.allowedPaths ?? [workspace.projectRoot] : allowedPaths;
+      const cwd = asNonEmptyString(args.cwd) ?? (workspace
+        ? captureExecutionPermissionAuthority(workspace).roleCwd : allowedPaths[0] ?? process.cwd());
+      if (!workspace && isAgentNamespacePath(filePath)) {
         return denyAgentNamespacePath(filePath, cwd);
       }
-      return checkToolPathPermission({
+      return checkToolPathPermissionAsync({
         toolName: FILE_EDIT_TOOL_NAME,
         input: input as Record<string, unknown>,
         path: filePath,
         cwd,
         context: context.getAppState().toolPermissionContext,
         operationType: asString(args.old_string) === "" ? "create" : "write",
-        extraWorkingDirectories: config.allowedPaths,
+        extraWorkingDirectories: permissionRoots,
         planFileAuthority: sessionPlanFileAuthority(context.session),
       });
     },
@@ -897,12 +1182,18 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
       }
 
+      const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+      if (workspace) {
+        return executeTaskFileEdit(workspace, config, rawArgs, FILE_EDIT_TOOL_NAME, file_path,
+          [{ old_string, new_string, replace_all }]);
+      }
+
       // Resolve relative paths against the first allowed root before
       // safePath so a workspace-relative `src/foo.ts` is accepted by
       // the same allowlist that absolute paths run through.
       const cwd =
         asNonEmptyString(rawArgs.cwd) ??
-        config.allowedPaths[0] ??
+        allowedPaths[0] ??
         process.cwd();
       if (isAgentNamespacePath(file_path)) {
         return preMutationErrorResult(
@@ -920,7 +1211,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // writeFile creates.
       const safe = await safePathAllowingSessionPlanFile(
         candidatePath,
-        config.allowedPaths,
+        allowedPaths,
         rawArgs,
       );
       if (!safe.safe) {
@@ -941,10 +1232,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // the model at a "notebook-specific tool" still saves it from
       // corrupting the JSON envelope of an ipynb with raw text edits.
       if (absoluteFilePath.endsWith(".ipynb")) {
-        return preMutationErrorResult(
-          "File is a Jupyter Notebook. Use a notebook-specific tool to edit Jupyter notebooks.",
-          FILE_EDIT_TOOL_NAME,
-        );
+        return preMutationErrorResult(NOTEBOOK_EDIT_HINT, FILE_EDIT_TOOL_NAME);
       }
 
       // Snapshot the file (or note it's missing). All later branching
@@ -1172,6 +1460,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
 }
 
 export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
+  const allowedPaths = config.allowedPaths ?? [process.cwd()];
   return {
     name: FILE_MULTI_EDIT_TOOL_NAME,
     description: FILE_MULTI_EDIT_DESCRIPTION,
@@ -1225,7 +1514,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       required: ["file_path", "edits"],
       additionalProperties: false,
     },
-    checkPermissions(input, context) {
+    async checkPermissions(input, context) {
       const args = input as MultiEditArgs;
       const filePath = asNonEmptyString(args.file_path);
       if (!filePath) {
@@ -1234,10 +1523,12 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           message: "file_path must be a non-empty string",
         };
       }
-      const cwd =
-        asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
+      const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+      const permissionRoots = workspace ? config.allowedPaths ?? [workspace.projectRoot] : allowedPaths;
+      const cwd = asNonEmptyString(args.cwd) ?? (workspace
+        ? captureExecutionPermissionAuthority(workspace).roleCwd : allowedPaths[0] ?? process.cwd());
       const firstEdit = Array.isArray(args.edits) ? args.edits[0] : undefined;
-      if (isAgentNamespacePath(filePath)) {
+      if (!workspace && isAgentNamespacePath(filePath)) {
         return denyAgentNamespacePath(filePath, cwd);
       }
       const firstOldString =
@@ -1246,14 +1537,14 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         !Array.isArray(firstEdit)
           ? asString((firstEdit as Record<string, unknown>).old_string)
           : undefined;
-      return checkToolPathPermission({
+      return checkToolPathPermissionAsync({
         toolName: FILE_MULTI_EDIT_TOOL_NAME,
         input: input as Record<string, unknown>,
         path: filePath,
         cwd,
         context: context.getAppState().toolPermissionContext,
         operationType: firstOldString === "" ? "create" : "write",
-        extraWorkingDirectories: config.allowedPaths,
+        extraWorkingDirectories: permissionRoots,
         planFileAuthority: sessionPlanFileAuthority(context.session),
       });
     },
@@ -1285,9 +1576,14 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         }
       }
 
+      const workspace = getCanonicalSettingsAuthority()?.executionWorkspace;
+      if (workspace) {
+        return executeTaskFileEdit(workspace, config, rawArgs, FILE_MULTI_EDIT_TOOL_NAME, file_path, edits);
+      }
+
       const cwd =
         asNonEmptyString(rawArgs.cwd) ??
-        config.allowedPaths[0] ??
+        allowedPaths[0] ??
         process.cwd();
       if (isAgentNamespacePath(file_path)) {
         return preMutationErrorResult(
@@ -1300,7 +1596,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         : resolve(cwd, file_path);
       const safe = await safePathAllowingSessionPlanFile(
         candidatePath,
-        config.allowedPaths,
+        allowedPaths,
         rawArgs,
       );
       if (!safe.safe) {
@@ -1319,10 +1615,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       }
 
       if (absoluteFilePath.endsWith(".ipynb")) {
-        return preMutationErrorResult(
-          "File is a Jupyter Notebook. Use a notebook-specific tool to edit Jupyter notebooks.",
-          FILE_MULTI_EDIT_TOOL_NAME,
-        );
+        return preMutationErrorResult(NOTEBOOK_EDIT_HINT, FILE_MULTI_EDIT_TOOL_NAME);
       }
 
       let snapshot: FileSnapshot;
@@ -1502,34 +1795,11 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           edit.replace_all,
         );
         if ("error" in applied) {
-          // MultiEdit is all-or-nothing — when one edit fails the
-          // file is left untouched. Tell the model exactly which
-          // edits would have applied AND that nothing was written.
-          // The previous message ("Edit N failed: <reason>") didn't
-          // surface the all-or-nothing semantic, so weak local
-          // models (qwen, llama) loop: they re-emit the same broken
-          // edit while assuming earlier edits already landed.
-          const total = edits.length;
-          const failedIndex = i + 1;
-          const validatedBefore = i; // edits 1..i were applied to the in-memory buffer
-          const parts: string[] = [
-            `Edit ${failedIndex} of ${total} failed: ${applied.error}.`,
-          ];
-          if (validatedBefore > 0) {
-            parts.push(
-              `Edits 1..${validatedBefore} validated before edit ${failedIndex} failed.`,
-            );
-          }
-          parts.push(
-            "MultiEdit is all-or-nothing: the file was NOT written. Re-emit the full edit list with edit",
-            String(failedIndex),
-            "corrected.",
-          );
           // The file is untouched (nothing is written before
           // coordinateFileWrite), so settle as a determinate no-effect
           // failure instead of an unknown outcome that blocks the session.
           return preMutationErrorResult(
-            parts.join(" "),
+            multiEditFailureText(i, edits.length, applied.error),
             FILE_MULTI_EDIT_TOOL_NAME,
           );
         }

@@ -49,6 +49,7 @@ import {
   type ResumeTUIArgs,
 } from "./route.js";
 import { startupShortCircuitFlag } from "./startup-preflight.js";
+import { readPromptStdin } from "./prompt-stdin.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import {
   normalizeUserImageInput,
@@ -584,15 +585,12 @@ export function detectStartupShortCircuit(
 
 async function readStdin(signal: AbortSignal): Promise<string> {
   if (process.stdin.isTTY) return "";
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    if (signal.aborted) break;
-    chunks.push(chunk instanceof Buffer ? chunk : Buffer.from(chunk));
+  try {
+    return await readPromptStdin(process.stdin, signal);
+  } catch (error) {
+    if (signal.aborted) throw new InitAbortedError("stdin read aborted");
+    throw error;
   }
-  if (signal.aborted) {
-    throw new InitAbortedError("stdin read aborted");
-  }
-  return Buffer.concat(chunks).toString("utf8").trim();
 }
 
 type OneShotOutputFormat = "text" | "json" | "stream-json";
@@ -753,7 +751,7 @@ function startupContentFromInputs(
     });
   });
   if (imageParts.length === 0) return undefined;
-  const text = prompt.trim();
+  const text = prompt;
   return [
     ...(text.length > 0 ? [{ type: "text" as const, text }] : []),
     ...imageParts,

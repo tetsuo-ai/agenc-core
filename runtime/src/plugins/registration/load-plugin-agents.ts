@@ -1,10 +1,11 @@
 import { basename, dirname } from "node:path";
+import type { ContentFilesystem } from "../../execution/content-filesystem.js";
 
 import {
   AGENT_COLORS,
   type AgentColorName,
 } from "../../tools/AgentTool/agentColorManager.js";
-import { loadAgentMemoryPrompt } from "../../tools/AgentTool/agentMemory.js";
+import { loadAgentMemoryPrompt, captureAgentMemoryPrompt } from "../../tools/AgentTool/agentMemory.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
 import { FILE_READ_TOOL_NAME } from "../../tools/system/file-read.js";
 import { FILE_WRITE_TOOL_NAME } from "../../tools/system/file-write.js";
@@ -24,7 +25,9 @@ import {
   collectMarkdownFiles,
   coerceString,
   hasExplicitPluginDiscoveryInput,
-  loadRuntimePlugins,
+  capturePluginRuntimeOptions,
+  pluginContentFilesystem,
+  resolveRuntimePlugins,
   markdownStem,
   namespaceFromPath,
   parseBoolean,
@@ -75,7 +78,7 @@ function setActiveSnapshot(
   agents: readonly PluginAgentDefinition[],
 ): void {
   const copy = [...agents];
-  const snapshot = { agents: copy, discovery: { ...options } };
+  const snapshot = { agents: copy, discovery: capturePluginRuntimeOptions(options) };
   activePluginAgentsByCwd.set(runtimeIdentityKey(options), snapshot);
 }
 
@@ -201,6 +204,7 @@ function createPluginAgent(
     filename: basename(file.filePath, ".md"),
     baseDir: file.baseDir,
     plugin: plugin.id,
+    ...(plugin.executionBinding ? { executionBinding: plugin.executionBinding } : {}),
     ...(repositoryControlled ? { repositoryControlled: true } : {}),
     getSystemPrompt: () => {
       if (!memory || !isAutoMemoryEnabled()) return systemPrompt;
@@ -229,10 +233,11 @@ async function loadAgentFile(
   loadedPaths: Set<string>,
   roleCwd: string,
   pluginStorageRoot: string | undefined,
+  filesystem: ContentFilesystem,
 ): Promise<PluginAgentDefinition | null> {
   if (loadedPaths.has(path)) return null;
   loadedPaths.add(path);
-  const file = await readMarkdownFile(path, baseDir);
+  const file = await readMarkdownFile(path, baseDir, filesystem);
   return file
     ? createPluginAgent(plugin, file, roleCwd, pluginStorageRoot)
     : null;
@@ -244,9 +249,10 @@ async function loadAgentsFromPath(
   loadedPaths: Set<string>,
   roleCwd: string,
   pluginStorageRoot: string | undefined,
+  filesystem: ContentFilesystem,
 ): Promise<readonly PluginAgentDefinition[]> {
-  if (await pathIsDirectory(path)) {
-    const files = await collectMarkdownFiles(path);
+  if (await pathIsDirectory(path, filesystem)) {
+    const files = await collectMarkdownFiles(path, filesystem);
     const agents = await Promise.all(
       files.map((filePath) =>
         loadAgentFile(
@@ -256,6 +262,7 @@ async function loadAgentsFromPath(
           loadedPaths,
           roleCwd,
           pluginStorageRoot,
+          filesystem,
         )
       ),
     );
@@ -269,6 +276,7 @@ async function loadAgentsFromPath(
     loadedPaths,
     roleCwd,
     pluginStorageRoot,
+    filesystem,
   );
   return agent ? [agent] : [];
 }
@@ -277,6 +285,7 @@ async function loadAgentsForPlugin(
   plugin: LoadedPlugin,
   roleCwd: string,
   pluginStorageRoot: string | undefined,
+  filesystem: ContentFilesystem,
 ): Promise<readonly PluginAgentDefinition[]> {
   const loadedPaths = new Set<string>();
   const paths = [...new Set(plugin.agentsPaths)];
@@ -288,6 +297,7 @@ async function loadAgentsForPlugin(
         loadedPaths,
         roleCwd,
         pluginStorageRoot,
+        filesystem,
       )
     ),
   );
@@ -297,20 +307,21 @@ async function loadAgentsForPlugin(
 async function resolvePlugins(
   options: PluginAgentRegistrationOptions,
 ): Promise<readonly LoadedPlugin[]> {
-  return options.plugins ?? await loadRuntimePlugins(options);
+  return resolveRuntimePlugins(options);
 }
 
 export async function loadPluginAgents(
   options: PluginAgentRegistrationOptions,
 ): Promise<readonly PluginAgentDefinition[]> {
+  options = capturePluginRuntimeOptions(options);
   const hasExplicitInput = hasExplicitPluginDiscoveryInput(options);
   const active = !hasExplicitInput ? getActiveSnapshot(options) : undefined;
-  if (options.fresh !== true && active !== undefined) {
+  if (!options.executionEnvironment && options.fresh !== true && active !== undefined) {
     return active.agents;
   }
   const discoveryOptions =
-    options.fresh === true && active !== undefined
-      ? { ...active.discovery, fresh: true }
+    (options.executionEnvironment || options.fresh === true) && active !== undefined
+      ? { ...active.discovery, ...options, fresh: true }
       : options;
   const plugins = await resolvePlugins(discoveryOptions);
   const roleCwd = options.cwd ??
@@ -323,10 +334,13 @@ export async function loadPluginAgents(
   }
   const groups = await Promise.all(
     plugins.map(plugin =>
-      loadAgentsForPlugin(plugin, roleCwd, discoveryOptions.pluginStorageRoot)
+      loadAgentsForPlugin(plugin, roleCwd, discoveryOptions.pluginStorageRoot, pluginContentFilesystem(plugin, discoveryOptions))
     ),
   );
-  return groups.flat().sort((a, b) => a.agentType.localeCompare(b.agentType));
+  const agents = groups.flat().sort((a, b) => a.agentType.localeCompare(b.agentType));
+  return discoveryOptions.executionEnvironment && agents.some(agent => agent.memory !== undefined) && isAutoMemoryEnabled()
+    ? Promise.all(agents.map(agent => captureAgentMemoryPrompt(agent, roleCwd, discoveryOptions.executionEnvironment!)))
+    : agents;
 }
 
 export function clearPluginAgentCache(): void {

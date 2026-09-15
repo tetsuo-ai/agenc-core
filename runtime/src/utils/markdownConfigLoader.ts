@@ -1,4 +1,7 @@
 import { feature } from 'bun:bundle'
+import { executionMarkdownDirectories, readExecutionMarkdownTier } from '../execution/markdown-content.js'
+import { ExecutionEnvironmentError, executionEnvironmentCacheKey, type ExecutionEnvironmentBinding } from '../execution/types.js'
+import { LOCAL_EXECUTION_ENVIRONMENT } from '../execution/binding.js'
 import { constants, statSync } from 'fs'
 import { lstat, open, readdir, realpath, stat } from 'fs/promises'
 import { homedir } from 'os'
@@ -37,6 +40,8 @@ export const AGENC_CONFIG_DIRECTORIES = [
 export type AgenCConfigDirectory = (typeof AGENC_CONFIG_DIRECTORIES)[number]
 
 export type MarkdownFile = {
+  readonly executionBinding?: ExecutionEnvironmentBinding
+  readonly executionFileIdentity?: string
   filePath: string
   baseDir: string
   frontmatter: FrontmatterData
@@ -234,6 +239,9 @@ export function getProjectDirsUpToHome(
   subdir: AgenCConfigDirectory,
   cwd: string,
 ): string[] {
+  if (getCanonicalSettingsAuthority()?.executionWorkspace) {
+    throw new ExecutionEnvironmentError('unsupported_resource', 'Task markdown traversal requires asynchronous protected discovery', false)
+  }
   const home = resolve(homedir()).normalize('NFC')
   const gitRoot = resolveStopBoundary(cwd)
   let current = resolve(cwd)
@@ -300,7 +308,10 @@ async function loadMarkdownFilesForSubdirUncached(
 ): Promise<MarkdownFile[]> {
     const userDir = join(authority.homeContext.path, subdir)
     const managedDir = join(getManagedFilePath(authority), '.agenc', subdir)
-    const projectDirs = getProjectDirsUpToHome(subdir, cwd)
+    const workspace = authority.executionWorkspace
+    const projectDirs = workspace
+      ? await executionMarkdownDirectories(subdir, cwd, workspace)
+      : getProjectDirsUpToHome(subdir, cwd)
 
     // For git worktrees where the worktree does NOT have .agenc/<subdir> checked
     // out (e.g. sparse-checkout), fall back to the main repository's copy.
@@ -315,8 +326,8 @@ async function loadMarkdownFilesForSubdirUncached(
     //
     // projectDirs already reflects existence (getProjectDirsUpToHome checked
     // each dir), so we compare against that instead of stat'ing again.
-    const gitRoot = findGitRoot(cwd)
-    const canonicalRoot = findCanonicalGitRoot(cwd)
+    const gitRoot = workspace ? null : findGitRoot(cwd)
+    const canonicalRoot = workspace ? null : findCanonicalGitRoot(cwd)
     if (gitRoot && canonicalRoot && canonicalRoot !== gitRoot) {
       const worktreeSubdir = normalizePathForComparison(
         join(gitRoot, '.agenc', subdir),
@@ -357,7 +368,7 @@ async function loadMarkdownFilesForSubdirUncached(
       !(subdir === 'agents' && isRestrictedToPluginOnly('agents'))
         ? Promise.all(
             projectDirs.map(projectDir =>
-              loadMarkdownFiles(projectDir).then(_ =>
+              (workspace ? loadExecutionMarkdownFiles(projectDir, workspace.environment) : loadMarkdownFiles(projectDir)).then(_ =>
                 _.map(file => ({
                   ...file,
                   baseDir: projectDir,
@@ -380,7 +391,10 @@ async function loadMarkdownFilesForSubdirUncached(
     // symlinked to a directory within the project hierarchy, causing the same
     // physical file to be discovered through different paths.
     const fileIdentities = await Promise.all(
-      allFiles.map(file => getFileIdentity(file.filePath)),
+      allFiles.map(async (file: MarkdownFile) => {
+        const identity = file.executionBinding ? file.executionFileIdentity : await getFileIdentity(file.filePath)
+        return identity ? executionEnvironmentCacheKey(file.executionBinding ?? LOCAL_EXECUTION_ENVIRONMENT, identity) : null
+      }),
     )
 
     const seenFileIds = new Map<string, SettingSource>()
@@ -454,6 +468,7 @@ const loadMarkdownFilesForSubdirCached = (
   cwd: string,
 ): Promise<MarkdownFile[]> => {
   const authority = requireMarkdownSettingsAuthority()
+  if (authority.executionWorkspace) return loadMarkdownFilesForSubdirUncached(subdir, cwd, authority)
   const key = markdownFilesCacheKey(subdir, cwd)
   const cached = markdownFilesByAuthority.get(key, authority)
   if (cached !== undefined) return cached
@@ -504,6 +519,15 @@ export function loadMarkdownFilesForSubdirFresh(
  * @param signal AbortSignal for timeout
  * @returns Array of file paths
  */
+async function loadExecutionMarkdownFiles(dir: string, environment: import('../execution/content-filesystem.js').ContentExecutionEnvironment) {
+  return (await readExecutionMarkdownTier(dir, environment)).map(file => ({
+    filePath: file.filePath,
+    ...parseFrontmatter(file.content, file.filePath),
+    executionBinding: environment.binding,
+    executionFileIdentity: file.identity,
+  }))
+}
+
 async function findMarkdownFilesNative(
   dir: string,
   signal: AbortSignal,

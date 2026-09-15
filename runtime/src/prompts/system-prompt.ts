@@ -329,6 +329,12 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
       `For interactive or long-running terminal sessions, call ${shellName} with tty=true. If it returns a session_id, use write_stdin with that session_id to send input or chars="" to poll for more output.`,
     );
   }
+  if (enabledTools.has("list_processes")) {
+    items.push("Use list_processes({}) to discover your live managed terminal session IDs without consuming their output.");
+  }
+  if (enabledTools.has("kill_process")) {
+    items.push("Use kill_process with a managed session_id to stop a command and wait for its cleanup.");
+  }
 
   // Stated once here instead of inside every tool result. Per-result frames
   // now carry only a provenance line and the boundary marker (external

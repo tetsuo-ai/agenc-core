@@ -5,7 +5,10 @@ import {
   type TurnCheckpointV2Event,
   type TurnCheckpointV3Event,
   type TurnCheckpointV4Event,
+  type TurnCheckpointV5Event,
 } from "./event-log.js";
+import { assertSameExecutionEnvironment, readExecutionEnvironmentBinding } from "../execution/binding.js";
+import { readExecutionProcessRecoveryState } from "../unified-exec/process-recovery.js";
 import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
   assertAgentInvocationChannelMessage,
@@ -40,11 +43,13 @@ import { readTextToolCallCorrection, type TextToolCallCorrection } from "../reco
 export const LEGACY_DURABLE_CHECKPOINT_VERSION = 1 as const;
 export const DURABLE_CHECKPOINT_V2 = 2 as const;
 export const DURABLE_CHECKPOINT_V3 = 3 as const;
-export const DURABLE_CHECKPOINT_READ_VERSION = 4 as const;
+export const DURABLE_CHECKPOINT_V4 = 4 as const;
+export const DURABLE_CHECKPOINT_READ_VERSION = 5 as const;
 export const DURABLE_CHECKPOINT_WRITE_VERSION = DURABLE_CHECKPOINT_READ_VERSION;
 export const DURABLE_ROLLOUT_SCHEMA_V2 = 2 as const;
 export const DURABLE_ROLLOUT_SCHEMA_V3 = 3 as const;
 export const DURABLE_ROLLOUT_SCHEMA_V4 = 4 as const;
+export const DURABLE_ROLLOUT_SCHEMA_V5 = 5 as const;
 export { ROLLOUT_SCHEMA_VERSION as DURABLE_ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
 export const MAX_CHECKPOINT_PREFIX_MESSAGES = 2_000_000;
 
@@ -102,15 +107,21 @@ export type ReadableTurnCheckpoint =
       readonly checkpoint: TurnCheckpointV3Event;
     }
   | {
+      readonly version: typeof DURABLE_CHECKPOINT_V4;
+      readonly sourceVersion: typeof DURABLE_CHECKPOINT_V4;
+      readonly checkpoint: TurnCheckpointV4Event;
+    }
+  | {
       readonly version: typeof DURABLE_CHECKPOINT_READ_VERSION;
       readonly sourceVersion: typeof DURABLE_CHECKPOINT_READ_VERSION;
-      readonly checkpoint: TurnCheckpointV4Event;
+      readonly checkpoint: TurnCheckpointV5Event;
     };
 
 type ReadableCheckpointVersion =
   | typeof LEGACY_DURABLE_CHECKPOINT_VERSION
   | typeof DURABLE_CHECKPOINT_V2
   | typeof DURABLE_CHECKPOINT_V3
+  | typeof DURABLE_CHECKPOINT_V4
   | typeof DURABLE_CHECKPOINT_READ_VERSION;
 
 export type DurableCheckpointReadFailureCode =
@@ -176,7 +187,8 @@ export function readTurnCheckpoint(payload: unknown): ReadableTurnCheckpoint {
     throw malformed("checkpoint payload must be an object");
   }
   const { rawVersion, version } = readCheckpointVersion(payload);
-  const expectedKeys = checkpointEnvelopeKeys(version, rawVersion);
+  const expectedKeys = [...checkpointEnvelopeKeys(version, rawVersion),
+    ...(version === 5 && Object.hasOwn(payload, "executionProcesses") ? ["executionProcesses"] : [])];
   if (!hasExactKeys(payload, expectedKeys)) {
     throw malformed("checkpoint payload contains unversioned fields");
   }
@@ -198,6 +210,7 @@ function readCheckpointVersion(payload: Record<string, unknown>): {
     version !== LEGACY_DURABLE_CHECKPOINT_VERSION &&
     version !== DURABLE_CHECKPOINT_V2 &&
     version !== DURABLE_CHECKPOINT_V3 &&
+    version !== DURABLE_CHECKPOINT_V4 &&
     version !== DURABLE_CHECKPOINT_READ_VERSION
   ) {
     throw new DurableCheckpointReadError(
@@ -218,9 +231,8 @@ function checkpointEnvelopeKeys(
       "checkpointVersion",
       "toolResultIntegrityVersion",
     ];
-    return version === DURABLE_CHECKPOINT_READ_VERSION
-      ? [...keys, "prefixHashVersion"]
-      : keys;
+    if (version === DURABLE_CHECKPOINT_READ_VERSION) return [...keys, "prefixHashVersion", "executionEnvironment"];
+    return version === DURABLE_CHECKPOINT_V4 ? [...keys, "prefixHashVersion"] : keys;
   }
   if (rawVersion === undefined) return CHECKPOINT_BASE_KEYS;
   return [...CHECKPOINT_BASE_KEYS, "checkpointVersion"];
@@ -254,6 +266,7 @@ function readIntegrityTurnCheckpoint(
   version:
     | typeof DURABLE_CHECKPOINT_V2
     | typeof DURABLE_CHECKPOINT_V3
+    | typeof DURABLE_CHECKPOINT_V4
     | typeof DURABLE_CHECKPOINT_READ_VERSION,
 ): Exclude<
   ReadableTurnCheckpoint,
@@ -264,17 +277,38 @@ function readIntegrityTurnCheckpoint(
       `checkpoint v${version} requires toolResultIntegrityVersion 1`,
     );
   }
-  if (version === DURABLE_CHECKPOINT_READ_VERSION) {
+  if (version === DURABLE_CHECKPOINT_V4 || version === DURABLE_CHECKPOINT_READ_VERSION) {
     if (payload.prefixHashVersion !== 3) {
       throw malformed(
         `checkpoint v${version} requires prefixHashVersion 3`,
       );
     }
+    const common = {
+      ...parseCheckpointBase(payload, "current"),
+      toolResultIntegrityVersion: 1 as const,
+      prefixHashVersion: 3 as const,
+    };
+    if (version === DURABLE_CHECKPOINT_READ_VERSION) {
+      let executionEnvironment;
+      try { executionEnvironment = readExecutionEnvironmentBinding(payload.executionEnvironment); }
+      catch { throw malformed("checkpoint v5 requires an immutable execution environment binding"); }
+      let executionProcesses;
+      try {
+        if (executionEnvironment.kind === "docker") {
+          executionProcesses = readExecutionProcessRecoveryState(payload.executionProcesses);
+          assertSameExecutionEnvironment(executionProcesses.binding, executionEnvironment);
+        } else if (Object.hasOwn(payload, "executionProcesses")) {
+          throw new Error("Local checkpoint cannot carry container handles");
+        }
+      } catch { throw malformed("checkpoint v5 requires process recovery state matching its execution environment"); }
+      return { version, sourceVersion: version, checkpoint: { ...common, checkpointVersion: version, executionEnvironment,
+        ...(executionProcesses === undefined ? {} : { executionProcesses }) } };
+    }
     return {
       version,
       sourceVersion: version,
       checkpoint: {
-        ...parseCheckpointBase(payload, "current"),
+        ...common,
         checkpointVersion: version,
         toolResultIntegrityVersion: 1,
         prefixHashVersion: 3,
@@ -520,7 +554,8 @@ interface CheckpointPrefixValidationParams<Checkpoint> {
 type IntegrityTurnCheckpoint =
   | TurnCheckpointV2Event
   | TurnCheckpointV3Event
-  | TurnCheckpointV4Event;
+  | TurnCheckpointV4Event
+  | TurnCheckpointV5Event;
 
 export function validateCheckpointPrefixV2(
   params: CheckpointPrefixValidationParams<
@@ -535,7 +570,7 @@ export function validateCheckpointPrefixV2(
 }
 
 export function validateCheckpointPrefixV3(
-  params: CheckpointPrefixValidationParams<TurnCheckpointV4Event>,
+  params: CheckpointPrefixValidationParams<TurnCheckpointV4Event | TurnCheckpointV5Event>,
 ): DurableCheckpointPrefixValidation {
   return validateCheckpointPrefixWithHasher(
     params,
@@ -548,7 +583,8 @@ export function validateCheckpointPrefixV3(
 export function validateCheckpointPrefix(
   params: CheckpointPrefixValidationParams<IntegrityTurnCheckpoint>,
 ): DurableCheckpointPrefixValidation {
-  if (params.checkpoint.checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION) {
+  if (params.checkpoint.checkpointVersion === DURABLE_CHECKPOINT_V4 ||
+      params.checkpoint.checkpointVersion === DURABLE_CHECKPOINT_READ_VERSION) {
     return validateCheckpointPrefixV3({
       ...params,
       checkpoint: params.checkpoint,
