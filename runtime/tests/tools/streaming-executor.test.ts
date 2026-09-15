@@ -888,6 +888,60 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
     expect(results).toEqual(["x1", "r1"]);
   });
 
+  test.each(["getRemainingResults", "getRemainingUpdates"] as const)(
+    "%s waits for an executing exclusive tool while an unknown tool's result sits behind it",
+    async (iterator) => {
+      // An unknown tool is completed the moment addTool sees it. Behind a
+      // still-executing exclusive tool that result cannot be yielded yet, so
+      // the drain loop has to wait for the head. Counting the blocked result
+      // as work skipped the wait and spun the loop on microtasks, which
+      // starved the head's own timer: the daemon pinned a core and the turn
+      // never advanced (a DeepSeek trial, 2026-09-15).
+      let headFinished = false;
+      const exec = new StreamingToolExecutor({
+        ...mockGuardedDispatch(async () => {
+          await delay(20);
+          headFinished = true;
+          return { content: "head done" };
+        }),
+      });
+      exec.setConcurrencyClassFor("exec_command", EXCLUSIVE);
+      exec.addTool(makeBlock("head", "exec_command"), makeCall("head", "exec_command"));
+      exec.addTool(makeBlock("unknown", "Read"), makeCall("unknown", "Read"));
+      exec.close();
+
+      // A spinning drain loop also starves the timer behind the test timeout,
+      // so bound the loop's passes and fail fast instead of hanging.
+      const internals = exec as unknown as {
+        processQueue: (...args: unknown[]) => Promise<void>;
+      };
+      const processQueue = internals.processQueue.bind(exec);
+      let passes = 0;
+      internals.processQueue = async (...args) => {
+        passes += 1;
+        if (passes > 100) {
+          throw new Error("drain loop spun without waiting for the executing tool");
+        }
+        return processQueue(...args);
+      };
+
+      const ids: string[] = [];
+      if (iterator === "getRemainingResults") {
+        for await (const result of exec.getRemainingResults()) {
+          ids.push(result.toolCall.id);
+        }
+      } else {
+        for await (const update of exec.getRemainingUpdates()) {
+          if (update.kind === "result") ids.push(update.result.toolCall.id);
+        }
+      }
+
+      expect(headFinished).toBe(true);
+      expect(ids).toEqual(["head", "unknown"]);
+      expect(exec.getToolStates().map((tool) => tool.status)).toEqual(["yielded", "yielded"]);
+    },
+  );
+
   test("progress events yield through getRemainingUpdates", async () => {
     // AgenC :366-378, :419-422, :453-490 — progress messages
     // ride the same iterator as terminal results and wake the

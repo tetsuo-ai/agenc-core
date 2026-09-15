@@ -785,11 +785,12 @@ export class StreamingToolExecutor {
         }
         if (this.discarded) return;
 
-        if (
-          this.hasExecutingTools() &&
-          !this.hasCompletedResults() &&
-          !this.hasPendingProgress()
-        ) {
+        // Wait unless a drain pass would yield something now. A completed
+        // result behind a still-executing exclusive tool cannot be yielded
+        // yet (the pass stops at that head to keep submission order), so
+        // counting it skipped this wait and spun the loop on microtasks,
+        // starving the head tool's own I/O and timers.
+        if (this.hasExecutingTools() && !this.hasDrainableWork()) {
           await this.waitForExecutingToolOrProgress();
         }
       }
@@ -824,11 +825,12 @@ export class StreamingToolExecutor {
         }
         if (this.discarded) return;
 
-        if (
-          this.hasExecutingTools() &&
-          !this.hasCompletedResults() &&
-          !this.hasPendingProgress()
-        ) {
+        // Wait unless a drain pass would yield something now. A completed
+        // result behind a still-executing exclusive tool cannot be yielded
+        // yet (the pass stops at that head to keep submission order), so
+        // counting it skipped this wait and spun the loop on microtasks,
+        // starving the head tool's own I/O and timers.
+        if (this.hasExecutingTools() && !this.hasDrainableWork()) {
           await this.waitForExecutingToolOrProgress();
         }
       }
@@ -972,12 +974,21 @@ export class StreamingToolExecutor {
     return this.tools.some((t) => t.status === "executing");
   }
 
-  private hasCompletedResults(): boolean {
-    return this.tools.some((t) => t.status === "completed");
-  }
-
-  private hasPendingProgress(): boolean {
-    return this.tools.some((t) => t.pendingProgress.length > 0);
+  /**
+   * True when a drain pass (`getCompletedResults` / `getCompletedUpdates`)
+   * would flush or yield something now: pending progress on a tool the pass
+   * reaches, or a completed result ahead of the first executing exclusive
+   * tool. It walks the tools with the pass's own head-of-line rule, so a
+   * result the pass cannot yield yet never counts as work.
+   */
+  private hasDrainableWork(): boolean {
+    for (const tool of this.tools) {
+      if (tool.pendingProgress.length > 0) return true;
+      if (tool.status === "yielded") continue;
+      if (tool.status === "completed" && tool.result) return true;
+      if (tool.status === "executing" && !tool.isConcurrencySafe) return false;
+    }
+    return false;
   }
 
   /**
