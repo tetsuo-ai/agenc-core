@@ -2476,6 +2476,50 @@ describe("main() smoke", () => {
       });
     });
 
+    it.each(["resolve", "reject"] as const)("ignores a stale compact-failed RPC %s after the retry starts", async (staleOutcome) => {
+      await withOneShotTestEnvironment("agenc-continue-stale-rpc-", async ({ cwd, run, stdout }) => {
+        const sessionId = "conv-stale-rpc01";
+        await writeContinuableRollout(process.env.AGENC_HOME!, cwd, sessionId);
+        const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId: string) => ({
+          method: "event.session_event",
+          params: { sessionId, agentId: "agent_stale_rpc", turnId, eventId: id, event: { id, type, payload } },
+        });
+        let announceRetry!: () => void;
+        const retryStarted = new Promise<void>((resolve) => { announceRetry = resolve; });
+        const daemon = installDaemonCliDepsForTest({
+          agentId: "agent_stale_rpc", sessionId, cwd, liveAgent: false, oneShotEvents: [],
+          onMessageStream: ({ params, emit }) => {
+            const streamId = params.streamId!;
+            if (params.content === "second step") {
+              emit(transcript("first-started", "turn_started", { turnId: streamId }, streamId));
+              emit(transcript("first-failed", "turn_failed", { turnId: streamId, code: "compact_failed", message: "old turn failed" }, streamId));
+              return;
+            }
+            announceRetry();
+            emit(transcript("retry-started", "turn_started", { turnId: streamId }, streamId));
+            const timer = setTimeout(() => {
+              emit(transcript("retry-complete", "turn_complete", { turnId: streamId, lastAgentMessage: "recovered answer" }, streamId));
+            }, 60);
+            onTestFinished(() => clearTimeout(timer));
+          },
+        });
+        const originalRequest = daemon.client.request.getMockImplementation()!;
+        daemon.client.request.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+          const result = await originalRequest(method, params);
+          if (method === "message.stream" && params?.content === "second step") {
+            await retryStarted;
+            if (staleOutcome === "reject") throw new Error("late old-turn RPC failure");
+            return { ...result, terminal: { code: 1, message: "old turn failed" } };
+          }
+          return result;
+        });
+        const code = await run(() => oneShotCLI("second step", [], undefined, { kind: "latest" }), 4000);
+        expect(code).toBe(0);
+        expect(stdout()).toContain("recovered answer");
+        expect(daemon.requests.filter((request) => request.method === "message.stream")).toHaveLength(2);
+      });
+    });
+
     it("reuses a live agent for that session and leaves it running", async () => {
       await withOneShotTestEnvironment("agenc-continue-live-", async ({ cwd }) => {
         const home = process.env.AGENC_HOME!;

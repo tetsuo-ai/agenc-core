@@ -2106,19 +2106,34 @@ async function awaitDaemonOneShotRun(params: {
         start: (streamId: string) => Promise<MessageStreamResult>,
         streamId: string,
       ): void {
+        // A compact_failed retry replaces activeTurnId. From then on this
+        // stream's RPC outcome, resolved or rejected, belongs to the superseded
+        // turn and must not settle the run while the retry is still working.
         void start(streamId)
-          .then((result) => {
-            if (settled || result.terminal === undefined) return;
-            return finalize({
-              code: result.terminal.code,
-              ...(result.terminal.message !== undefined
-                ? { message: result.terminal.message }
-                : {}),
-              ...(lastFailureCode !== undefined
-                ? { failureCode: lastFailureCode }
-                : {}),
-            });
-          })
+          .then(
+            (result) => {
+              if (
+                settled ||
+                streamId !== activeTurnId ||
+                result.terminal === undefined
+              ) {
+                return;
+              }
+              return finalize({
+                code: result.terminal.code,
+                ...(result.terminal.message !== undefined
+                  ? { message: result.terminal.message }
+                  : {}),
+                ...(lastFailureCode !== undefined
+                  ? { failureCode: lastFailureCode }
+                  : {}),
+              });
+            },
+            (error: unknown) => {
+              if (streamId !== activeTurnId) return;
+              throw error;
+            },
+          )
           .catch((error: unknown) => {
             settle({
               error: error instanceof Error ? error : new Error(String(error)),
