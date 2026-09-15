@@ -390,6 +390,45 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     );
   });
 
+  describe("DeepSeek stream finalization", () => {
+    const FINALIZATION = {
+      requiresToolCallsFinishReason: true,
+      rejectsPartialToolCalls: true,
+      requiresExplicitFinishReason: true,
+    } as const;
+
+    test("the native DeepSeek slug requires a finish_reason and finalized tool calls", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider("deepseek", "deepseek-flash"),
+      ).toMatchObject(FINALIZATION);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("deepseek", "deepseek-v4-pro"),
+      ).toMatchObject(FINALIZATION);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("deepseek", "any-model"),
+      ).toMatchObject(FINALIZATION);
+    });
+
+    test("managed and third-party DeepSeek routes keep their own stream contracts", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          "openrouter",
+          "deepseek/deepseek-v4-flash-0731",
+          { managedGateway: true },
+        ),
+      ).not.toMatchObject(FINALIZATION);
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          "openrouter",
+          "deepseek/deepseek-v4-flash-0731",
+        ),
+      ).not.toMatchObject(FINALIZATION);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("openai", "gpt-4o"),
+      ).not.toMatchObject(FINALIZATION);
+    });
+  });
+
   test("undefined provider name resolves to safe defaults", () => {
     const hints = chatCompletionsCapabilityHintsForProvider(undefined, "x");
     expect(hints.acceptsReasoningEffort).toBe(false);
