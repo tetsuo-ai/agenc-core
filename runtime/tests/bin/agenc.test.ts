@@ -1970,123 +1970,41 @@ describe("main() smoke", () => {
     }
   });
 
-  it("oneShotCLI sends a text-only prompt byte for byte as initialContent", async () => {
+  it.each([
+    {
+      name: "sends a text-only prompt byte for byte as initialContent",
+      prompt: "  keep this indentation\n\tand the final newline\n",
+      sendsInitialContent: true,
+    },
+    {
+      name: "sends no initialContent for a whitespace-only prompt",
+      prompt: " \n\t\n",
+      sendsInitialContent: false,
+    },
+  ])("oneShotCLI $name", async ({ prompt, sendsInitialContent }) => {
     // The daemon trims agent.create's objective and, without initialContent,
-    // sends that trimmed objective as the first user message. A prompt read
-    // from stdin must reach the model unchanged, including leading
-    // indentation and the final newline.
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-exact-prompt-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-exact-prompt-cwd-"));
-    const prevEnv = { ...process.env };
-    const prompt = "  keep this indentation\n\tand the final newline\n";
-
-    process.env.AGENC_HOME = tmpHome;
-    process.env.AGENC_WORKSPACE = tmpCwd;
-    process.env.AGENC_PROVIDER = "openai";
-    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
-    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const daemon = installDaemonCliDepsForTest({
-      agentId: "agent_exact",
-      sessionId: "session_exact",
-      cwd: tmpCwd,
-      oneShotEvents: [
-        {
-          method: "event.message_chunk",
-          params: {
-            sessionId: "session_exact",
-            eventId: "delta_exact",
-            agentId: "agent_exact",
-            delta: "daemon answer",
-          },
-        },
-        {
-          method: "event.agent_status",
-          params: {
-            sessionId: "session_exact",
-            eventId: "complete_exact",
-            agentId: "agent_exact",
-            status: "idle",
-            runStatus: "completed",
-          },
-        },
-      ],
-    });
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(() => true);
-
-    try {
-      trustWorkspaceForTest(tmpHome, tmpCwd);
-      const code = await oneShotCLI(prompt);
-      expect(code).toBe(0);
-      expect(daemon.requests[0]).toEqual({
-        method: "agent.create",
-        params: expect.objectContaining({
-          objective: prompt,
-          instructions: prompt,
-          initialContent: prompt,
-        }),
+    // sends that trimmed objective as the first user message. A prompt with
+    // visible text therefore also travels as initialContent, unchanged, while
+    // a whitespace-only prompt still meets the daemon's non-empty check.
+    await withOneShotTestEnvironment("agenc-exact-prompt-", async ({ cwd, run }) => {
+      const scope = { agentId: "agent_exact", sessionId: "session_exact" };
+      const daemon = installDaemonCliDepsForTest({
+        ...scope,
+        cwd,
+        oneShotEvents: [
+          { method: "event.message_chunk", params: { ...scope, eventId: "delta_exact", delta: "done" } },
+          { method: "event.agent_status", params: { ...scope, eventId: "complete_exact", status: "idle", runStatus: "completed" } },
+        ],
       });
-      expect(
-        stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toBe("daemon answer\n");
-    } finally {
-      stdoutSpy.mockRestore();
-      for (const key of Object.keys(process.env)) {
-        if (!(key in prevEnv)) delete process.env[key];
+      expect(await run(() => oneShotCLI(prompt), 4000)).toBe(0);
+      const create = daemon.requests.find((request) => request.method === "agent.create");
+      expect(create?.params).toMatchObject({ objective: prompt, instructions: prompt });
+      if (sendsInitialContent) {
+        expect(create?.params).toMatchObject({ initialContent: prompt });
+      } else {
+        expect(create?.params).not.toHaveProperty("initialContent");
       }
-      Object.assign(process.env, prevEnv);
-      await rm(tmpHome, { recursive: true, force: true });
-      await rm(tmpCwd, { recursive: true, force: true });
-    }
-  });
-
-  it("oneShotCLI sends no initialContent for a whitespace-only prompt", async () => {
-    // Only a prompt with visible text travels as initialContent, so a blank
-    // prompt still reaches the daemon's non-empty objective check unchanged.
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-blank-prompt-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-blank-prompt-cwd-"));
-    const prevEnv = { ...process.env };
-    const prompt = " \n\t\n";
-
-    process.env.AGENC_HOME = tmpHome;
-    process.env.AGENC_WORKSPACE = tmpCwd;
-    process.env.AGENC_PROVIDER = "openai";
-    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
-    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const daemon = installDaemonCliDepsForTest({
-      agentId: "agent_blank",
-      sessionId: "session_blank",
-      cwd: tmpCwd,
     });
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(() => true);
-
-    try {
-      trustWorkspaceForTest(tmpHome, tmpCwd);
-      const timeout = new Promise<"timeout">((resolve) =>
-        setTimeout(() => resolve("timeout"), 4000),
-      );
-      await Promise.race([oneShotCLI(prompt), timeout]);
-      const createCall = daemon.requests.find(
-        (r) => r.method === "agent.create",
-      );
-      expect(createCall).toBeDefined();
-      expect(createCall?.params).toMatchObject({
-        objective: prompt,
-        instructions: prompt,
-      });
-      expect(createCall?.params).not.toHaveProperty("initialContent");
-    } finally {
-      stdoutSpy.mockRestore();
-      for (const key of Object.keys(process.env)) {
-        if (!(key in prevEnv)) delete process.env[key];
-      }
-      Object.assign(process.env, prevEnv);
-      await rm(tmpHome, { recursive: true, force: true });
-      await rm(tmpCwd, { recursive: true, force: true });
-    }
   });
 
   it("oneShotCLI writes the answer once when the daemon streams deltas and then the complete message", async () => {
