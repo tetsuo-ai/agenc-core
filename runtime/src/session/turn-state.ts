@@ -98,7 +98,8 @@ export type TerminalReason =
   | "max_turns"
   | "max_budget_usd"
   | "cancelled"
-  | "no_progress"; // behavioral backstop (semantic non-termination, goal #3)
+  | "no_progress" // behavioral backstop (semantic non-termination, goal #3)
+  | "effect_review_required"; // live-effect gate refused a call nobody can unblock now (#2501)
 
 export interface Terminal {
   readonly reason: TerminalReason;
@@ -442,6 +443,13 @@ export interface TurnState {
    * `completed`, so hooks and subagents see a bounded stop.
    */
   noProgressStop?: { readonly explanation: string };
+
+  /**
+   * Set alongside `preventContinuation` when the live-effect gate refused a
+   * side-effecting call and the run cannot wait for review (#2501). The turn
+   * ends with the bounded `effect_review_required` terminal.
+   */
+  effectReviewStop?: { readonly explanation: string };
 
   /** Cached token-budget decision captured mid-stream (I-22). Acted on
    *  in commit phase to decide continuation vs terminate. */
@@ -872,6 +880,7 @@ export function resetIterationFields(state: TurnState): void {
   state.needsFollowUp = false;
   state.preventContinuation = false;
   state.noProgressStop = undefined;
+  state.effectReviewStop = undefined;
   state.snipTokensFreed = 0;
   state.pendingBudgetDecision = undefined;
   state.lastResponseUsage = undefined;

@@ -709,8 +709,8 @@ current Ledger action is documented in
 ## Interactive session survival
 
 A keep-alive (interactive / desktop) session must stay promptable after
-a capped turn. Bounded stops (`no_progress`, `max_turns`,
-`max_budget_usd`, `compact_failed`, `empty_response`, and
+a capped turn. Bounded stops (`no_progress`, `effect_review_required`,
+`max_turns`, `max_budget_usd`, `compact_failed`, `empty_response`, and
 `editor_request_failed`) emit canonical `turn_failed` with the stop reason
 as the code and leave the run available. The daemon mapper used to promote those stops
 to `run_error`, after which every later prompt answered

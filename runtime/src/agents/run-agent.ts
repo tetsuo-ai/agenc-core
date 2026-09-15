@@ -3937,6 +3937,7 @@ export async function* runAgent(
         | "error"
         | "empty_response"
         | "no_progress"
+        | "effect_review_required"
         | "compact_failed" = "completed";
       let terminalError: unknown;
 
@@ -4119,6 +4120,7 @@ export async function* runAgent(
         stopReason === "max_turns" ||
         stopReason === "max_budget_usd" ||
         stopReason === "no_progress" ||
+        stopReason === "effect_review_required" ||
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
       // A bounded stop in a keep-alive (interactive) run is a per-turn
@@ -4137,6 +4139,10 @@ export async function* runAgent(
           message =
             assistantText ||
             "subagent stopped by the no-progress backstop (semantic non-termination)";
+        } else if (stopReason === "effect_review_required") {
+          message =
+            assistantText ||
+            "subagent stopped because a tool effect has an unknown outcome and needs operator review";
         } else if (stopReason === "compact_failed") {
           message =
             (terminalError instanceof Error ? terminalError.message : undefined) ||

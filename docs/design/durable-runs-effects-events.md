@@ -258,6 +258,20 @@ required, and no automatic replay occurs.
 | Active suspension with mismatched state or unresolved effects | Refused | Repair or reconcile the durable evidence before another resume attempt. |
 | Non-terminal open epoch | Continued in the same epoch | Crash recovery applies its evidence gates; this is not a lifecycle retry. |
 
+The gate refusal is bounded. `assertNoLiveUnknownEffect` counts
+side-effecting refusals since the last review; the router turns the third
+consecutive refusal (`EFFECT_REVIEW_BLOCK_STOP`) into a turn-ending result,
+and a run with `runtimeOptions.nonInteractive` (print mode) ends on the first
+one, since nobody attached will run `/resolve`. Either way the turn stops with
+the bounded `effect_review_required` reason: a `turn_failed` with that code,
+an `effect_review_required` warning carrying the refusal text, no
+`turn_complete`. The daemon keeps the session promptable so the operator can
+review and continue; the print-mode CLI exits 3 with a stderr marker naming
+the offline review command. The counter resets when the poison is resolved
+or cleared. Arguments may differ between refused calls; the exact-repeat
+backstop never saw the livelock this replaces (Terminal-Bench trial
+`risk-scorer-replay__ViaB4mm`: one refused `Write`, then 3.5 hours of retries).
+
 A cancelled epoch is a settled terminal outcome. An explicit resume reopens
 it under a new epoch exactly like a completed run. An `unknown_outcome`
 terminal stays refused by the public resume path after review resolution; the
@@ -275,6 +289,22 @@ ExitPlanMode "You are not in plan mode" check and other argument or mode
 checks. A bare `isError` from a non-idempotent tool still poisons the mutation
 gate. ExitPlanMode deliberately keeps a bare error after a possible plan-file
 write so a genuine mid-flight failure remains `unknown_outcome`.
+
+The workspace file tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) run
+through the identity-bound mutation transaction, which already re-verifies
+the target after a failure. Its verdict now travels with the rethrown error
+(`markWorkspaceMutationNoEffect` in `file-mutation-transaction.ts`) so the
+tool result attests `confirmed_no_effect` / `boundary_not_crossed` with an
+evidence reference of `tool:<Tool>:pre_effect` (refused before the boundary,
+such as `EEXIST` or a changed path identity), `tool:<Tool>:original_state_verified`
+(the helper failed with `EACCES`, `EROFS`, `ENOSPC` or similar before any
+byte landed and the original state re-verified), or
+`tool:<Tool>:rollback_verified` (bytes landed, the backup was restored and
+re-verified). The helper's failure message carries the errno with the
+caller's uid/gid and the target's and parent's mode and owner so a
+permission refusal is diagnosable from the journal. A failure whose
+post-state could not be verified stays a bare error and still poisons the
+gate.
 
 The live dispatcher marks the effect boundary before `tool.execute()`, so
 `close_agent`, `assign_task`, and `send_message` attest the same
@@ -295,6 +325,8 @@ Operator detail:
 | `/resolve` says there is no live session | Resume first only for a settled `completed`, `failed`, or `cancelled` terminal. For an `unknown_outcome` terminal, use the offline command to record review evidence; that does not make the same session resumable. |
 | Offline `resolve-tool-call` reports `not_found` for a dangling intent | Expected. A raw intent has no `unknown_outcome` settlement to review and needs recovery classification or evidence repair rather than a review disposition. |
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
+| A `Write` / `Edit` that failed with `EACCES`, `EROFS` or `ENOSPC` blocked later mutations | Fixed: the transaction's verified no-effect verdict now reaches the tool result (`tool:<Tool>:original_state_verified`). A leftover poison is an older journal, or a failure whose post-state could not be verified (the message says "outcome is unknown"). |
+| Print-mode run exits 3 with "needs operator review" | The turn stopped with `effect_review_required` after a genuine unknown outcome. Run the offline `resolve-tool-call` named in the marker, then re-run; the run did not livelock retrying blocked tools. |
 | `close_agent` / `assign_task` / `send_message` argument or identity refusal blocked later FileWrite / Bash / spawn | Current pre-dispatch refusals and the four typed `assign_task` admission guards attest `tool:agents.v2:validation`. A leftover poison is an older journal or an unclassified shutdown, assignment, or mailbox-delivery path. |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 | Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume) and check the recorded resume-gate failure reason. |

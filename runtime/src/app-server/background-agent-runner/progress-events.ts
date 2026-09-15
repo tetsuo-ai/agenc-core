@@ -79,6 +79,8 @@ export function phaseEventToProgressEvent(
         max_turns: "Turn capped: iteration limit hit; send a new prompt to continue.",
         max_budget_usd: "Turn capped: cost ceiling hit; send a new prompt to continue.",
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
+        effect_review_required:
+          "Turn stopped: a tool effect has an unknown outcome and needs operator review; run /resolve <call-id> …, then send a new prompt to continue.",
         compact_failed:
           "Turn stopped: compaction could not shrink the context; send a new prompt to continue.",
         editor_request_failed:

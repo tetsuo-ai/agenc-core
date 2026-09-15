@@ -1706,6 +1706,19 @@ function daemonOneShotPermissionRequestId(event: unknown): string | null {
 const ONE_SHOT_TOOL_DENIED_EXIT_CODE = 2;
 
 /**
+ * Exit code for a print-mode run whose turn stopped because a tool effect has
+ * an unknown outcome and nobody attached can review it (#2501). Distinct from
+ * a task failure (1) and a denied tool (2) so harnesses can classify it and
+ * an operator knows to review the journal before re-running.
+ */
+const ONE_SHOT_EFFECT_REVIEW_EXIT_CODE = 3;
+const ONE_SHOT_EFFECT_REVIEW_MARKER =
+  "agenc: a tool effect has an unknown outcome and needs operator review; " +
+  "run `agenc state resolve-tool-call <session-id> <call-id> " +
+  "<confirmed_committed|confirmed_no_effect|remains_unknown> <evidence-ref> " +
+  "<evidence-sha256>` (or /resolve in a live session), then re-run.";
+
+/**
  * Stderr marker emitted alongside {@link ONE_SHOT_TOOL_DENIED_EXIT_CODE} so a
  * human reading the run can see why it failed and how to grant the tool.
  */
@@ -1806,7 +1819,10 @@ function daemonOneShotFinalStatus(
     expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
   return terminal === undefined ? null : {
-    code: terminal.code,
+    code:
+      terminal.outcome === "errored" && terminal.failureCode === "effect_review_required"
+        ? ONE_SHOT_EFFECT_REVIEW_EXIT_CODE
+        : terminal.code,
     ...(terminal.message !== undefined ? { message: terminal.message } : {}),
     ...(terminal.outcome === "errored" ? { failureCode: terminal.failureCode } : {}),
   };
@@ -1986,6 +2002,9 @@ async function awaitDaemonOneShotRun(params: {
           finalStatus.message.length > 0
         ) {
           process.stderr.write(`${finalStatus.message}\n`);
+        }
+        if (finalStatus.failureCode === "effect_review_required") {
+          process.stderr.write(`${ONE_SHOT_EFFECT_REVIEW_MARKER}\n`);
         }
         // A tool-blocked giveup must NOT masquerade as a successful answer.
         // When the run auto-denied a permission request (no human to approve;

@@ -2220,6 +2220,64 @@ describe("main() smoke", () => {
     });
   });
 
+  describe("effect_review_required stop (#2501)", () => {
+    const reviewMessage =
+      "live effect settlement is unresolved for call-write-1 (Write); side-effecting and interactive dispatch remain blocked. This run has nobody attached to review it, so this turn stops now.";
+
+    function effectReviewFixture() {
+      const agentId = "agent_review";
+      const sessionId = "session_review";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId, eventId: id, event: { id, type, payload } },
+      });
+      const events = [
+        transcript("started", "turn_started", { turnId: "turn-1" }),
+        { method: "event.message_chunk", params: { sessionId, eventId: "partial", agentId, delta: "partial" } },
+        transcript("review-warning", "warning", { cause: "effect_review_required", message: reviewMessage }),
+        transcript("failed", "turn_failed", { turnId: "turn-1", code: "effect_review_required", message: reviewMessage }),
+      ];
+      return { agentId, sessionId, events };
+    }
+
+    it("exits 3 with the review marker and never re-enters the session", async () => {
+      const fixture = effectReviewFixture();
+      await withOneShotTestEnvironment("agenc-effect-review-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(3);
+        expect(stdout()).toContain("partial");
+        expect(stderr()).toContain("call-write-1 (Write)");
+        expect(stderr()).toContain("needs operator review");
+        expect(stderr()).toContain("agenc state resolve-tool-call");
+        expect(stderr()).not.toContain("retry 1/");
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+      });
+    });
+
+    it("reports exitCode 3 in the json result", async () => {
+      const fixture = effectReviewFixture();
+      const previousArgv = process.argv;
+      process.argv = ["node", "agenc", "--print", "--output-format=json", "work"];
+      try {
+        await withOneShotTestEnvironment("agenc-effect-review-json-", async ({ cwd, run, stdout }) => {
+          installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          });
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(3);
+          const lines = stdout().trim().split("\n");
+          expect(lines).toHaveLength(1);
+          expect(JSON.parse(lines[0]!)).toMatchObject({ type: "result", exitCode: 3 });
+        });
+      } finally {
+        process.argv = previousArgv;
+      }
+    });
+  });
+
   it("oneShotFinalMessageRemainder adds only what the deltas did not carry", () => {
     expect(oneShotFinalMessageRemainder("", "pong")).toBe("pong\n");
     expect(oneShotFinalMessageRemainder("pong", "pong")).toBe("\n");

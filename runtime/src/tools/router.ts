@@ -70,6 +70,7 @@ import {
   ApprovalRejectedError,
   approvalDenialEndsTurn,
 } from "./orchestrator.js";
+import { LiveEffectMutationBlockedError } from "../budget/effect-settlement-supervisor.js";
 import {
   executeToolDispatch,
   type ApprovalRequestFn,
@@ -1966,6 +1967,24 @@ function workflowPolicyDenial(session: Session, source: string): Partial<ToolDis
 }
 
 function toolDispatchErrorResult(err: unknown, session?: Session): ToolDispatchResult {
+  if (err instanceof LiveEffectMutationBlockedError) {
+    // The gate refused a side-effecting call because an earlier effect has an
+    // unknown outcome. Unattended runs stop on the first refusal and every
+    // run stops at the streak limit (#2501); the turn ends as a bounded
+    // `effect_review_required` stop, never a completed answer.
+    return {
+      content: JSON.stringify({ error: err.message }),
+      isError: true,
+      ...(err.endsTurn ? { preventContinuation: true } : {}),
+      metadata: {
+        effectReviewBlocked: {
+          callIds: err.blocking.map((effect) => effect.callId),
+          refusals: err.refusals,
+        },
+        ...(err.endsTurn ? { effectReviewStop: { explanation: err.message } } : {}),
+      },
+    };
+  }
   if (err instanceof ApprovalRejectedError) {
     return {
       content: JSON.stringify({ error: err.message }),

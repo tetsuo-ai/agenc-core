@@ -486,6 +486,7 @@ function terminalToStopReason(
     case "max_budget_usd":
     case "cancelled":
     case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
+    case "effect_review_required":
       return reason;
     default:
       return "error";
@@ -1651,6 +1652,9 @@ export async function* runTurnKernel(
           "Turn stopped at the cost limit before completing the task. Send a new prompt to continue.",
         no_progress:
           content || "Turn stopped because no further progress was being made.",
+        effect_review_required:
+          content ||
+          "Turn stopped: a tool effect has an unknown outcome and needs operator review (/resolve). Side-effecting tools stay blocked until it is resolved.",
         compact_failed:
           "Turn stopped because compaction could not shrink the context.",
         empty_response: "The model returned no assistant output after a retry.",
@@ -3261,21 +3265,38 @@ async function* runTurnKernelInner(
       // backstop would: the explanation goes into the transcript and the
       // terminal is the bounded `no_progress`, so hooks and subagents do
       // not mistake the halt for a completed turn.
-      const noProgressStop =
-        state.transition === undefined ? state.noProgressStop : undefined;
-      if (noProgressStop !== undefined) {
+      // The live-effect gate refusing a call nobody can review now is the
+      // other bounded tool-phase stop (`effect_review_required`, #2501); it
+      // is reported the same way and never as a completed answer.
+      const boundedStop =
+        state.transition !== undefined
+          ? undefined
+          : state.effectReviewStop !== undefined
+            ? {
+                stopReason: "effect_review_required" as const,
+                cause: "effect_review_required",
+                explanation: state.effectReviewStop.explanation,
+              }
+            : state.noProgressStop !== undefined
+              ? {
+                  stopReason: "no_progress" as const,
+                  cause: "no_progress_detected",
+                  explanation: state.noProgressStop.explanation,
+                }
+              : undefined;
+      if (boundedStop !== undefined) {
         state.messages.push({
           role: "assistant",
-          content: noProgressStop.explanation,
+          content: boundedStop.explanation,
         });
-        lastContent = noProgressStop.explanation;
+        lastContent = boundedStop.explanation;
         session.emit({
           id: session.nextInternalSubId(),
           msg: {
             type: "warning",
             payload: {
-              cause: "no_progress_detected",
-              message: noProgressStop.explanation,
+              cause: boundedStop.cause,
+              message: boundedStop.explanation,
             },
           },
         });
@@ -3286,7 +3307,7 @@ async function* runTurnKernelInner(
         continue;
       }
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
-      const stopReason = noProgressStop !== undefined ? "no_progress" : "completed";
+      const stopReason = boundedStop?.stopReason ?? "completed";
       emitTurnComplete(lastContent, stopReason);
       const terminal: Terminal = { reason: stopReason };
       yield {

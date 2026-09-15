@@ -12,6 +12,10 @@ import {
 import type { RouterResponseItem } from "./router.js";
 import type { ToolInvocation, ToolName } from "./context.js";
 import type { Tool } from "./types.js";
+import {
+  EFFECT_REVIEW_BLOCK_STOP,
+  poisonLiveEffect,
+} from "../budget/effect-settlement-supervisor.js";
 import { EventLog } from "../session/event-log.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
@@ -1750,5 +1754,101 @@ describe("createDiffConsumer", () => {
     expect(typeof consumer.record).toBe("function");
     expect(typeof consumer.compare).toBe("function");
     expect(consumer.toolName).toBe("Edit");
+  });
+});
+
+describe("live-effect gate refusals through the router (#2501)", () => {
+  const poison = {
+    callId: "call-poisoned",
+    toolName: "Write",
+    runId: "conv-test",
+    stepId: "tool:conv-test:call-poisoned",
+  };
+
+  function sideEffectingRouter(execute: () => Promise<{ content: string }>) {
+    return new ToolRouter([
+      {
+        tool: {
+          name: "mutate_probe",
+          description: "",
+          inputSchema: { type: "object" },
+          recoveryCategory: "side-effecting",
+          execute,
+        } as never,
+        supportsParallelToolCalls: false,
+      },
+    ]);
+  }
+
+  function dispatchOptions(session: object) {
+    return {
+      session: session as never,
+      turn: { subId: "turn-gate" } as never,
+      tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
+      approvalPolicy: "never" as const,
+      sandboxMode: "danger_full_access" as const,
+    };
+  }
+
+  test("an unattended session gets a turn-ending refusal on the first blocked call", async () => {
+    const execute = vi.fn(async () => ({ content: "mutated" }));
+    const router = sideEffectingRouter(execute);
+    const session = {
+      eventLog: new EventLog(),
+      services: {
+        admissionRequired: false,
+        runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }),
+      },
+    };
+    poisonLiveEffect(session, poison);
+
+    const result = await router.dispatchModelToolCall(
+      { id: "call-1", name: "mutate_probe", arguments: "{}" },
+      dispatchOptions(session),
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      isError: true,
+      preventContinuation: true,
+      metadata: {
+        effectReviewBlocked: { callIds: ["call-poisoned"], refusals: 1 },
+        effectReviewStop: { explanation: expect.stringContaining("this turn stops now") },
+      },
+    });
+    expect(result.content).toContain("nobody attached");
+  });
+
+  test("an interactive session is refused plainly until the streak limit, whatever the arguments", async () => {
+    const execute = vi.fn(async () => ({ content: "mutated" }));
+    const router = sideEffectingRouter(execute);
+    const session = {
+      eventLog: new EventLog(),
+      services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
+    };
+    poisonLiveEffect(session, poison);
+
+    const results = [];
+    for (let attempt = 1; attempt <= EFFECT_REVIEW_BLOCK_STOP; attempt += 1) {
+      results.push(
+        await router.dispatchModelToolCall(
+          { id: `call-${attempt}`, name: "mutate_probe", arguments: JSON.stringify({ attempt }) },
+          dispatchOptions(session),
+        ),
+      );
+    }
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(results.map((result) => result.preventContinuation ?? false)).toEqual([false, false, true]);
+    expect(results.map((result) => result.metadata?.effectReviewBlocked)).toEqual([
+      { callIds: ["call-poisoned"], refusals: 1 },
+      { callIds: ["call-poisoned"], refusals: 2 },
+      { callIds: ["call-poisoned"], refusals: 3 },
+    ]);
+    expect(results[0]?.metadata).not.toHaveProperty("effectReviewStop");
+    expect(results[0]?.content).toContain("ask the user to run");
+    expect(results[2]?.metadata).toMatchObject({
+      effectReviewStop: { explanation: expect.stringContaining("refused 3 times in a row") },
+    });
   });
 });

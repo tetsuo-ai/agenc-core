@@ -17,6 +17,7 @@ describe("stop-reason mapping decides turn versus run scope", () => {
   test("bounded stops end the turn, never the run", () => {
     for (const reason of [
       "no_progress",
+      "effect_review_required",
       "max_turns",
       "max_budget_usd",
       "compact_failed",
@@ -70,6 +71,12 @@ describe("stop-reason mapping decides turn versus run scope", () => {
     expect((mapped as { finalMessage?: string }).finalMessage).toBe(
       "Turn stopped by the no-progress backstop.",
     );
+  });
+
+  test("effect_review_required names the review the operator must run (#2501)", () => {
+    const mapped = phaseEventToProgressEvent(turnComplete("effect_review_required"));
+    expect(mapped?.kind).toBe("turn_complete");
+    expect((mapped as { finalMessage?: string }).finalMessage).toContain("/resolve");
   });
 
   test("a turn error ends the turn with the failure spelled out, never the run", () => {

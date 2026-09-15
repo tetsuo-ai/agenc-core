@@ -825,6 +825,17 @@ function startToolUseSummaryGeneration(
     .catch(() => null);
 }
 
+function effectReviewStopExplanation(
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const stop = metadata?.effectReviewStop;
+  if (typeof stop !== "object" || stop === null) return undefined;
+  const explanation = (stop as { readonly explanation?: unknown }).explanation;
+  return typeof explanation === "string" && explanation.length > 0
+    ? explanation
+    : undefined;
+}
+
 export async function executeTools(
   state: TurnState,
   ctx: TurnContext,
@@ -1049,6 +1060,13 @@ export async function executeTools(
     additionalContexts.push(...(contexts ?? []));
     if (checkedResult.preventContinuation === true) {
       preventContinuation = true;
+    }
+    const reviewStop = effectReviewStopExplanation(completed.metadata);
+    if (reviewStop !== undefined) {
+      // A refused side-effecting call whose earlier effect awaits review ends
+      // the turn as a bounded stop (#2501), reported like the backstop's.
+      preventContinuation = true;
+      state.effectReviewStop ??= { explanation: reviewStop };
     }
   }
   appendHookAdditionalContexts(state, session, additionalContexts);

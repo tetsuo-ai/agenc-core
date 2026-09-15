@@ -61,37 +61,108 @@ interface SupervisorState {
   readonly poisoned: Map<string, LiveEffectIdentity>;
   readonly externallyResolved: Set<string>;
   readonly metrics: MutableEffectSettlementMetrics;
+  /** Side-effecting calls refused by the gate since the last review (#2501). */
+  blockedSinceReview: number;
 }
 
 const SUPERVISORS = new WeakMap<object, SupervisorState>();
 
+/**
+ * Gate refusals a session tolerates before the turn is ended (#2501). The
+ * model gets enough attempts to read the remedy; it does not get a loop.
+ * Arguments may differ between attempts; the gate refused all of them.
+ */
+export const EFFECT_REVIEW_BLOCK_STOP = 3;
+
+export interface LiveEffectBlockContext {
+  /** Refusals since the last review, this one included. */
+  readonly refusals: number;
+  /** No human is attached (`agenc -p`); nobody will run `/resolve`. */
+  readonly unattended: boolean;
+}
+
+function liveEffectBlockedMessage(
+  blocking: readonly LiveEffectIdentity[],
+  context: LiveEffectBlockContext,
+): string {
+  const named = blocking
+    .map((effect) => `${effect.callId} (${effect.toolName})`)
+    .join(", ");
+  const resolveCommand =
+    `\`/resolve ${blocking[0]?.callId ?? "<call-id>"} ` +
+    `<confirmed_committed|confirmed_no_effect|remains_unknown> ` +
+    `<evidence-ref> <evidence-sha256>\``;
+  const base = `live effect settlement is unresolved for ${named}; side-effecting and interactive dispatch remain blocked. `;
+  if (context.unattended) {
+    // Nobody is attached to this run, so asking is pointless: the turn ends
+    // here and an operator reviews the journal afterwards (observed: an
+    // unattended benchmark run retried blocked tools for three and a half
+    // hours after one refused write).
+    return (
+      base +
+      "This run has nobody attached to review it, so this turn stops now. " +
+      "Do not retry the blocked tools; write a final status describing what " +
+      "was completed and what remains. An operator can review the outcome " +
+      `later with ${resolveCommand} in a live session or ` +
+      "`agenc state resolve-tool-call` from the project directory."
+    );
+  }
+  // Name the way out, and who can take it. This message is what the model
+  // sees. Without the remediation it concludes the session is unrecoverable
+  // and tells the user to restart the chat (observed on a live hardware
+  // session that then lost its whole working context). Without the "user
+  // must run it" part it tries to run `/resolve` itself and retries the
+  // blocked tools for the rest of the turn (observed in a 12-minute turn
+  // that ended in the no-progress backstop). `/resolve` is a UI slash
+  // command that clears the gate through the running daemon; only the
+  // operator can issue it.
+  const interactive =
+    base +
+    `This is recoverable without restarting, but only the user can clear it: ` +
+    `ask the user to run ` +
+    `${resolveCommand} in the AgenC UI to review the ` +
+    `unknown outcome and unblock the session. You cannot run /resolve ` +
+    `yourself. Do not retry the blocked tools until the user has run it.`;
+  if (context.refusals >= EFFECT_REVIEW_BLOCK_STOP) {
+    return (
+      interactive +
+      ` The blocked tools were refused ${context.refusals} times in a row; ` +
+      "this turn stops now so the user can run /resolve."
+    );
+  }
+  return interactive;
+}
+
 export class LiveEffectMutationBlockedError extends Error {
   readonly code = "UNKNOWN_OUTCOME_MUTATION_BLOCKED" as const;
+  readonly refusals: number;
+  readonly unattended: boolean;
 
-  constructor(readonly blocking: readonly LiveEffectIdentity[]) {
-    // Name the way out, and who can take it. This message is what the model
-    // sees. Without the remediation it concludes the session is unrecoverable
-    // and tells the user to restart the chat (observed on a live hardware
-    // session that then lost its whole working context). Without the "user
-    // must run it" part it tries to run `/resolve` itself and retries the
-    // blocked tools for the rest of the turn (observed in a 12-minute turn
-    // that ended in the no-progress backstop). `/resolve` is a UI slash
-    // command that clears the gate through the running daemon; only the
-    // operator can issue it.
-    super(
-      `live effect settlement is unresolved for ${blocking
-        .map((effect) => `${effect.callId} (${effect.toolName})`)
-        .join(", ")}; side-effecting and interactive dispatch remain blocked. ` +
-        `This is recoverable without restarting, but only the user can clear it: ` +
-        `ask the user to run ` +
-        `\`/resolve ${blocking[0]?.callId ?? "<call-id>"} ` +
-        `<confirmed_committed|confirmed_no_effect|remains_unknown> ` +
-        `<evidence-ref> <evidence-sha256>\` in the AgenC UI to review the ` +
-        `unknown outcome and unblock the session. You cannot run /resolve ` +
-        `yourself. Do not retry the blocked tools until the user has run it.`,
-    );
+  constructor(
+    readonly blocking: readonly LiveEffectIdentity[],
+    context: Partial<LiveEffectBlockContext> = {},
+  ) {
+    const resolved = {
+      refusals: context.refusals ?? 1,
+      unattended: context.unattended ?? false,
+    };
+    super(liveEffectBlockedMessage(blocking, resolved));
     this.name = "LiveEffectMutationBlockedError";
+    this.refusals = resolved.refusals;
+    this.unattended = resolved.unattended;
   }
+
+  /** The refusal that ends the turn: unattended, or the streak limit. */
+  get endsTurn(): boolean {
+    return this.unattended || this.refusals >= EFFECT_REVIEW_BLOCK_STOP;
+  }
+}
+
+function sessionIsUnattended(session: object): boolean {
+  const services = (session as {
+    readonly services?: { readonly runtimeOptions?: { readonly nonInteractive?: unknown } };
+  }).services;
+  return services?.runtimeOptions?.nonInteractive === true;
 }
 
 export function assertNoLiveUnknownEffect(
@@ -99,8 +170,20 @@ export function assertNoLiveUnknownEffect(
   recoveryCategory: ToolRecoveryCategory,
 ): void {
   if (recoveryCategory === "idempotent") return;
-  const blocking = [...stateFor(session).poisoned.values()];
-  if (blocking.length > 0) throw new LiveEffectMutationBlockedError(blocking);
+  const state = stateFor(session);
+  const blocking = [...state.poisoned.values()];
+  if (blocking.length > 0) {
+    state.blockedSinceReview += 1;
+    throw new LiveEffectMutationBlockedError(blocking, {
+      refusals: state.blockedSinceReview,
+      unattended: sessionIsUnattended(session),
+    });
+  }
+}
+
+/** Refusals recorded since the last review; exposed for tests and metrics. */
+export function liveEffectRefusalsSinceReview(session: object): number {
+  return stateFor(session).blockedSinceReview;
 }
 
 export function poisonLiveEffect(
@@ -119,7 +202,9 @@ export function clearLiveEffectPoison(
   session: object,
   identity: LiveEffectIdentity,
 ): void {
-  stateFor(session).poisoned.delete(effectKey(identity));
+  const state = stateFor(session);
+  state.poisoned.delete(effectKey(identity));
+  if (state.poisoned.size === 0) state.blockedSinceReview = 0;
 }
 
 export function readIdempotentRendezvous<T>(
@@ -162,6 +247,7 @@ export function resolveLiveEffectPoison(
     if (activeKeys.has(key)) state.externallyResolved.add(key);
     resolved += 1;
   }
+  if (resolved > 0) state.blockedSinceReview = 0;
   return resolved;
 }
 
@@ -348,6 +434,7 @@ function stateFor(session: object): SupervisorState {
     rendezvous: new Map(),
     poisoned: new Map(),
     externallyResolved: new Set(),
+    blockedSinceReview: 0,
     metrics: {
       callerTimeouts: 0,
       callerAborts: 0,
