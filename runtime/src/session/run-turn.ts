@@ -2490,10 +2490,13 @@ async function* runTurnKernelInner(
   // first merge can leave a listener on the long-lived session signal.
   // Hand the disposers to the outer kernel's finally so they run on every
   // exit path (completed, aborted, error, abandoned generator).
-  commons.signalCleanups.push(mergedSession.dispose, mergedTask.dispose);
   // A run with a deadline (#2503) aborts its running turn when it passes;
   // the abort reason turns the cancellation into `deadline_reached`.
-  commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
+  commons.signalCleanups.push(
+    mergedSession.dispose,
+    mergedTask.dispose,
+    armRunDeadline(session, runningTask.abortController),
+  );
   let deadlineTurnReminderInjected = false;
 
   let usage: LLMUsage = {
