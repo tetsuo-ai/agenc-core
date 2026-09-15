@@ -712,7 +712,10 @@ A keep-alive (interactive / desktop) session must stay promptable after
 a capped turn. Bounded stops (`no_progress`, `effect_review_required`,
 `max_turns`, `max_budget_usd`, `compact_failed`, `empty_response`, and
 `editor_request_failed`) emit canonical `turn_failed` with the stop reason
-as the code and leave the run available. The daemon mapper used to promote those stops
+as the code and leave the run available. Before an unattended (`agenc -p`)
+turn stops with `empty_response`, the runtime re-samples an empty model
+response up to three times with backoff (`empty_response_retry` warnings);
+an attended session retries once, immediately. The daemon mapper used to promote those stops
 to `run_error`, after which every later prompt answered
 `no longer running (status: error)` while the durable run might still
 be healthy underneath.

@@ -1553,6 +1553,55 @@ const EMPTY_RESPONSE_RETRY_TEXT =
   "Your previous response contained no visible final answer. " +
   "Return the final answer now in the assistant output channel.";
 
+/**
+ * Backoff before each empty-response retry of an unattended run (`agenc -p`),
+ * one entry per retry (#2502). A reasoning provider that answers with an
+ * empty sample twice in a row is usually a transient hiccup: Terminal-Bench
+ * `vf2-speedup-networkx__Kama2MQ` lost 3.4 hours of work to one. Nobody
+ * attached can press enter again, so the runtime waits and re-samples, and
+ * from the second retry rebinds the provider conversation so a stuck
+ * server-side continuation is not reused (as the reconnect ladder does).
+ */
+export const EMPTY_RESPONSE_RETRY_DELAYS_MS: readonly number[] = [2_000, 8_000, 30_000];
+/** An attended session keeps one immediate retry; the user can prompt again. */
+const EMPTY_RESPONSE_INTERACTIVE_RETRIES = 1;
+export const EMPTY_RESPONSE_RETRY_CAUSE = "empty_response_retry";
+
+type EmptyResponseRetryDelaysGlobal = typeof globalThis & {
+  __agencRunTurnEmptyResponseRetryDelays?: readonly number[] | null;
+};
+
+/** Test seam: override the unattended backoff ladder (null restores it). */
+export function setEmptyResponseRetryDelaysForTests(
+  delays: readonly number[] | null,
+): void {
+  (globalThis as EmptyResponseRetryDelaysGlobal).__agencRunTurnEmptyResponseRetryDelays =
+    delays;
+}
+
+function emptyResponseRetryDelays(): readonly number[] {
+  return (
+    (globalThis as EmptyResponseRetryDelaysGlobal).__agencRunTurnEmptyResponseRetryDelays ??
+    EMPTY_RESPONSE_RETRY_DELAYS_MS
+  );
+}
+
+function sessionIsUnattended(session: Session): boolean {
+  return session.services?.runtimeOptions?.nonInteractive === true;
+}
+
+function emptyResponseRetryLimit(session: Session): number {
+  return sessionIsUnattended(session)
+    ? emptyResponseRetryDelays().length
+    : EMPTY_RESPONSE_INTERACTIVE_RETRIES;
+}
+
+function emptyResponseExhaustedMessage(retries: number): string {
+  return retries === 1
+    ? "The model returned no assistant output after a retry."
+    : `The model returned no assistant output after ${retries} retries.`;
+}
+
 function injectEmptyResponseRetryMessage(state: TurnState): void {
   state.messages.push({
     role: "user",
@@ -1657,7 +1706,8 @@ export async function* runTurnKernel(
           "Turn stopped: a tool effect has an unknown outcome and needs operator review (/resolve). Side-effecting tools stay blocked until it is resolved.",
         compact_failed:
           "Turn stopped because compaction could not shrink the context.",
-        empty_response: "The model returned no assistant output after a retry.",
+        empty_response:
+          content || "The model returned no assistant output after a retry.",
         editor_request_failed: "The editor request did not complete.",
         error: "The turn failed before completing the task.",
       };
@@ -3083,17 +3133,39 @@ async function* runTurnKernelInner(
       // Reasoning providers can occasionally complete a response after
       // emitting only a reasoning-summary block and no assistant output. A
       // successful empty turn is indistinguishable from a hung terminal to a
-      // user. Retry once under normal admission/cost accounting with an
-      // ephemeral nudge; keep the bound at one so a broken provider cannot
-      // create an unbounded sampling loop.
+      // user. Retry under normal admission/cost accounting with an ephemeral
+      // nudge: once, immediately, when a user is attached; through the
+      // bounded backoff ladder when nobody is (#2502). The bound keeps a
+      // broken provider from creating an unbounded sampling loop. The retry
+      // happens before commit(), so it never consumes a maxTurns iteration.
       if (
         ctx.editorInteraction === undefined &&
         assistantText.length === 0 &&
-        emptyResponseRetryCount === 0
+        emptyResponseRetryCount < emptyResponseRetryLimit(session)
       ) {
         emptyResponseRetryCount += 1;
-        injectEmptyResponseRetryMessage(state);
-        state.modelSampleResumePrompt = "empty_response";
+        const unattended = sessionIsUnattended(session);
+        const delayMs = unattended
+          ? (emptyResponseRetryDelays()[emptyResponseRetryCount - 1] ?? 0)
+          : 0;
+        const rebind = emptyResponseRetryCount >= 2;
+        emitWarning(
+          session.eventLog,
+          session.nextInternalSubId(),
+          EMPTY_RESPONSE_RETRY_CAUSE,
+          `The model returned no assistant output; retry ${emptyResponseRetryCount}/` +
+            `${emptyResponseRetryLimit(session)}` +
+            (delayMs > 0 ? ` in ${Math.round(delayMs / 1000)} s` : "") +
+            (rebind ? " with a fresh provider conversation" : ""),
+        );
+        if (rebind) session.bindProviderConversation();
+        // An abort during the wait is picked up at the loop head, which ends
+        // the turn as cancelled rather than sampling again.
+        if (delayMs > 0) await abortableSleep(delayMs, signal);
+        if (!signal.aborted) {
+          injectEmptyResponseRetryMessage(state);
+          state.modelSampleResumePrompt = "empty_response";
+        }
         continue;
       }
       await commit(state, ctx, session, signal, {
@@ -3108,6 +3180,9 @@ async function* runTurnKernelInner(
       const stopReason =
         assistantText.length === 0 ? "empty_response" : "completed";
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
+      if (stopReason === "empty_response") {
+        lastContent = emptyResponseExhaustedMessage(emptyResponseRetryCount);
+      }
       emitTurnComplete(lastContent, stopReason);
       const terminal: Terminal = { reason: "completed" };
       yield {

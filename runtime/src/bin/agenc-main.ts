@@ -1712,6 +1712,18 @@ const ONE_SHOT_TOOL_DENIED_EXIT_CODE = 2;
  * an operator knows to review the journal before re-running.
  */
 const ONE_SHOT_EFFECT_REVIEW_EXIT_CODE = 3;
+
+/**
+ * Exit code for a print-mode run whose turn ended because the model kept
+ * returning empty samples after the unattended retry ladder (#2502). Distinct
+ * from a task failure (1) so a harness can retry the run instead of grading
+ * it; the work was not wrong, the provider produced nothing.
+ */
+const ONE_SHOT_EMPTY_RESPONSE_EXIT_CODE = 4;
+const ONE_SHOT_EMPTY_RESPONSE_MARKER =
+  "agenc: the model returned no assistant output after the retry ladder; " +
+  "the provider produced empty samples, so this run is retryable rather " +
+  "than a task failure.";
 const ONE_SHOT_EFFECT_REVIEW_MARKER =
   "agenc: a tool effect has an unknown outcome and needs operator review; " +
   "run `agenc state resolve-tool-call <session-id> <call-id> " +
@@ -1819,13 +1831,25 @@ function daemonOneShotFinalStatus(
     expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
   return terminal === undefined ? null : {
-    code:
-      terminal.outcome === "errored" && terminal.failureCode === "effect_review_required"
-        ? ONE_SHOT_EFFECT_REVIEW_EXIT_CODE
-        : terminal.code,
+    code: oneShotExitCodeForTerminal(terminal),
     ...(terminal.message !== undefined ? { message: terminal.message } : {}),
     ...(terminal.outcome === "errored" ? { failureCode: terminal.failureCode } : {}),
   };
+}
+
+/** Bounded stops that a harness should classify apart from a task failure. */
+function oneShotExitCodeForTerminal(
+  terminal: { readonly outcome: string; readonly code: number; readonly failureCode?: string },
+): number {
+  if (terminal.outcome !== "errored") return terminal.code;
+  switch (terminal.failureCode) {
+    case "effect_review_required":
+      return ONE_SHOT_EFFECT_REVIEW_EXIT_CODE;
+    case "empty_response":
+      return ONE_SHOT_EMPTY_RESPONSE_EXIT_CODE;
+    default:
+      return terminal.code;
+  }
 }
 
 interface DaemonOneShotRunOutcome {
@@ -2005,6 +2029,9 @@ async function awaitDaemonOneShotRun(params: {
         }
         if (finalStatus.failureCode === "effect_review_required") {
           process.stderr.write(`${ONE_SHOT_EFFECT_REVIEW_MARKER}\n`);
+        }
+        if (finalStatus.failureCode === "empty_response") {
+          process.stderr.write(`${ONE_SHOT_EMPTY_RESPONSE_MARKER}\n`);
         }
         // A tool-blocked giveup must NOT masquerade as a successful answer.
         // When the run auto-denied a permission request (no human to approve;

@@ -2278,6 +2278,61 @@ describe("main() smoke", () => {
     });
   });
 
+  describe("empty_response stop after the retry ladder (#2502)", () => {
+    const emptyMessage = "The model returned no assistant output after 3 retries.";
+
+    function emptyResponseFixture() {
+      const agentId = "agent_empty";
+      const sessionId = "session_empty";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId, eventId: id, event: { id, type, payload } },
+      });
+      const events = [
+        transcript("started", "turn_started", { turnId: "turn-1" }),
+        { method: "event.message_chunk", params: { sessionId, eventId: "partial", agentId, delta: "partial" } },
+        transcript("retry-3", "warning", { cause: "empty_response_retry", message: "The model returned no assistant output; retry 3/3 in 30 s with a fresh provider conversation" }),
+        transcript("failed", "turn_failed", { turnId: "turn-1", code: "empty_response", message: emptyMessage }),
+      ];
+      return { agentId, sessionId, events };
+    }
+
+    it("exits 4 with the retryable marker and never re-enters the session", async () => {
+      const fixture = emptyResponseFixture();
+      await withOneShotTestEnvironment("agenc-empty-response-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(4);
+        expect(stdout()).toContain("partial");
+        expect(stderr()).toContain(emptyMessage);
+        expect(stderr()).toContain("retryable rather than a task failure");
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+      });
+    });
+
+    it("reports exitCode 4 in the json result", async () => {
+      const fixture = emptyResponseFixture();
+      const previousArgv = process.argv;
+      process.argv = ["node", "agenc", "--print", "--output-format=json", "work"];
+      try {
+        await withOneShotTestEnvironment("agenc-empty-response-json-", async ({ cwd, run, stdout }) => {
+          installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          });
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(4);
+          const lines = stdout().trim().split("\n");
+          expect(lines).toHaveLength(1);
+          expect(JSON.parse(lines[0]!)).toMatchObject({ type: "result", exitCode: 4 });
+        });
+      } finally {
+        process.argv = previousArgv;
+      }
+    });
+  });
+
   it("oneShotFinalMessageRemainder adds only what the deltas did not carry", () => {
     expect(oneShotFinalMessageRemainder("", "pong")).toBe("pong\n");
     expect(oneShotFinalMessageRemainder("pong", "pong")).toBe("\n");

@@ -306,6 +306,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "auto_compact_failed",
   "auto_compact_degraded",
   "effect_review_required",
+  "empty_response_retry",
   "editor_interaction_limit",
   "editor_proposal_missing",
   "editor_interaction_recovery_blocked",
