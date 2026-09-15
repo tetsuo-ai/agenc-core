@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { crc32 } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -21,6 +22,11 @@ import {
   verifyCompactionSummaryDigest,
 } from "../../../src/services/compact/summary-v1.js";
 import { compactConversationTransactionally } from "../../../src/services/compact/transaction.js";
+import {
+  MAX_TOKEN_ACCOUNTING_REQUEST_BYTES,
+  tokenAccountingService,
+} from "../../../src/llm/token-accounting.js";
+import { DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES } from "../../../src/session/query-image-budget.js";
 import {
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
   MAX_COMPACTION_OUTPUT_NODES_TOTAL,
@@ -886,6 +892,148 @@ describe("transactional compaction production path", () => {
         .toBe(false);
     });
   }, 30_000);
+
+  /**
+   * Regression from Terminal-Bench `layout-config-recreation__Hrx5oPp` (#2498).
+   * ~30 screenshots put the raw history past the 16 MiB accounting request
+   * cap. The summarizer never sees image bytes, but the shrink measurement
+   * counted the raw history and threw "inline image sources exceed the
+   * …-byte remaining request budget" on every ladder tier.
+   */
+  describe("inline images past the accounting cap (#2498)", () => {
+    const IMAGE_MARKER = "data:image/png;base64,";
+
+    /**
+     * A PNG with a real IHDR (1920x1080) so token accounting meters it by
+     * pixels, as it does a real screenshot, followed by filler bytes.
+     */
+    function screenshotDataUrl(decodedBytes: number): string {
+      const ihdr = Buffer.alloc(13);
+      ihdr.writeUInt32BE(1920, 0);
+      ihdr.writeUInt32BE(1080, 4);
+      ihdr[8] = 8; // bit depth
+      ihdr[9] = 6; // colour type RGBA
+      const chunkBody = Buffer.concat([Buffer.from("IHDR", "ascii"), ihdr]);
+      const header = Buffer.concat([
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        Buffer.from([0, 0, 0, 13]),
+        chunkBody,
+        Buffer.from(new Uint32Array([crc32(chunkBody)]).buffer).reverse(),
+      ]);
+      const filler = Buffer.alloc(Math.max(0, decodedBytes - header.length), 0x42);
+      return `${IMAGE_MARKER}${Buffer.concat([header, filler]).toString("base64")}`;
+    }
+
+    function screenshot(index: number, encodedBytes: number): RuntimeMessage {
+      return {
+        role: "user",
+        content: [
+          { type: "text", text: `screenshot ${index}` },
+          { type: "image_url", image_url: { url: screenshotDataUrl(Math.floor((encodedBytes * 3) / 4)) } },
+        ],
+      };
+    }
+
+    function inlineImageBytes(value: unknown): number {
+      return JSON.stringify(value).split(IMAGE_MARKER).slice(1)
+        .reduce((total, tail) => total + IMAGE_MARKER.length + tail.indexOf('"'), 0);
+    }
+
+    function screenshotHistory(): RuntimeMessage[] {
+      // Six screenshots of 3 MiB (encoded) each: more than the 16 MiB
+      // accounting cap in total, each under the 4 MiB rollout record
+      // ceiling, all well under the 64 MiB canonical source cap.
+      const perImage = 3 * 1024 * 1024;
+      expect(6 * perImage).toBeGreaterThan(MAX_TOKEN_ACCOUNTING_REQUEST_BYTES);
+      const text = Array.from({ length: 7 }, (_, index) => ({
+        role: index % 2 === 0 ? "assistant" as const : "user" as const,
+        content: `${index}:${"x".repeat(4_000)}`,
+      }));
+      const shots = Array.from({ length: 6 }, (_, index) => screenshot(index, perImage));
+      return [
+        shots[0]!, ...text.slice(0, 3), shots[1]!, shots[2]!, shots[3]!,
+        ...text.slice(3), shots[4]!, shots[5]!,
+      ];
+    }
+
+    function appendHistory(store: RolloutStore, source: readonly RuntimeMessage[]): void {
+      for (const message of source) {
+        store.appendRollout({
+          type: "response_item",
+          payload: {
+            role: message.role ?? "user",
+            content: message.content as string | ReadonlyArray<{
+              readonly type: string;
+              readonly text?: string;
+              readonly [key: string]: unknown;
+            }>,
+          },
+        }, { durable: true });
+      }
+    }
+
+    it("compacts a screenshot history, measuring shrink on the image-bounded request", async () => {
+      await withTransactionalStore("transaction-image-cap", async (store) => {
+        const source = screenshotHistory();
+        appendHistory(store, source);
+        const provider = compactionProvider();
+        const counted = vi.spyOn(tokenAccountingService, "count");
+        try {
+          const result = await runRealTransaction(store, source, provider);
+
+          // Every accounting request carries at most the sampling path's
+          // image budget (the newest screenshots), never the raw history
+          // that overflowed the 16 MiB cap; the source measurement is the
+          // bounded projection, not an image-free one.
+          const countedImageBytes = counted.mock.calls.map(([request]) =>
+            inlineImageBytes(request.messages),
+          );
+          expect(Math.max(...countedImageBytes)).toBeGreaterThan(0);
+          expect(Math.max(...countedImageBytes)).toBeLessThanOrEqual(DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES);
+          for (const [messages] of provider.chat.mock.calls) {
+            const modelInput = JSON.stringify(messages);
+            expect(modelInput).not.toContain(IMAGE_MARKER);
+            expect(modelInput).toContain("omitted from compaction model input");
+          }
+          const committed = result.transaction!.committed;
+          expect(committed.selected_history_indexes).toEqual(source.map((_, index) => index));
+          expect(committed.accounting.source_tokens).toBeGreaterThan(
+            committed.accounting.candidate_tokens,
+          );
+          expect(JSON.stringify(committed.replacement_history)).not.toContain(IMAGE_MARKER);
+        } finally {
+          counted.mockRestore();
+        }
+      });
+    }, 60_000);
+
+    it("keeps the retained screenshots in the replacement history", async () => {
+      await withTransactionalStore("transaction-image-keep", async (store) => {
+        // Two recent small screenshots are kept verbatim behind the summary
+        // (the contract provider meters images by bytes, so they stay small).
+        const keep = [screenshot(6, 64 * 1024), screenshot(7, 64 * 1024)];
+        const source = [...screenshotHistory(), ...keep];
+        appendHistory(store, source);
+        const provider = compactionProvider();
+
+        const result = await runRealTransaction(store, source, provider, {
+          messagesToKeep: keep,
+          messagesToSummarize: source.slice(0, -2),
+        });
+
+        const committed = result.transaction!.committed;
+        expect(committed.selected_history_indexes).toEqual(
+          source.slice(0, -2).map((_, index) => index),
+        );
+        // Durable history keeps every retained image; only the measurement
+        // is bounded.
+        expect(JSON.stringify(committed.replacement_history).split(IMAGE_MARKER)).toHaveLength(3);
+        expect(committed.accounting.source_tokens).toBeGreaterThan(
+          committed.accounting.candidate_tokens,
+        );
+      });
+    }, 60_000);
+  });
 
   it("redacts selected media from model input while preserving source provenance", async () => {
     await withTransactionalStore("transaction-media", async (store) => {

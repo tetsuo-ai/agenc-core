@@ -72,6 +72,20 @@ wrapper fields fail before commit.
 complete trusted wrapper with `summary_sha256` omitted. The response must finish
 with `stop`, satisfy the strict schema and provenance graph, fit the target
 context, save at least 1,024 tokens, and reduce tokens by at least 20 percent.
+The shrink measurement compares the request the model would actually be sent
+before and after: both histories pass through the same inline-image budget the
+sampling path applies (`AGENC_CONTEXT_IMAGE_BUDGET_BYTES`), never the raw
+history, which is capped at 16 MiB by token accounting and overflowed on a
+30-screenshot Terminal-Bench session. The summarizer itself never receives
+image bytes; media parts are placeholders in its projection.
+
+Payload bundles (`source_history`, `active_history_refs`, `final_summary`,
+`summary_dag`, `replacement_history`) are written as a chain of chunks, each
+under one 4 MiB canonical line, kind by kind. The strict reader accepts a
+kind's chunks back to back and refuses a kind switch while the previous kind is
+incomplete or a kind that resumes after another was written. It used to refuse
+the second chunk of the same kind, so any bundle over one line failed at
+commit as `durable compaction commit failed` (#2499).
 
 ### Failure, commit, and projection
 

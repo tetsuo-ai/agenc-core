@@ -13,6 +13,7 @@ import {
   createProvider,
 } from "../../helpers/compaction-transaction-harness.js";
 import { runWithStartupProviderSelection } from "../../utils/model/providers.js";
+import { MAX_TOKEN_ACCOUNTING_REQUEST_BYTES } from "../../../src/llm/token-accounting.js";
 
 describe("auto compact", () => {
   const savedEnv = { ...process.env };
@@ -103,6 +104,47 @@ describe("auto compact", () => {
     expect(result.compactionResult?.transaction).toBeDefined();
     harness.close();
   });
+
+  test("compacts a history whose inline images exceed the accounting request cap (#2498)", async () => {
+    process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "1";
+    // 3 MiB each (under the 4 MiB rollout record ceiling); six exceed the cap.
+    const perImage = 3 * 1024 * 1024;
+    expect(6 * perImage).toBeGreaterThan(MAX_TOKEN_ACCOUNTING_REQUEST_BYTES);
+    const screenshot = (index: number): RuntimeMessage => {
+      const content = [
+        { type: "text" as const, text: `screenshot ${index}` },
+        { type: "image_url" as const, image_url: { url: `data:image/png;base64,${"B".repeat(perImage)}` } },
+      ];
+      return { role: "user", type: "user", content, message: { role: "user", content } };
+    };
+    const messages = [
+      screenshot(0),
+      message("x".repeat(10_000)),
+      screenshot(1),
+      screenshot(2),
+      screenshot(3),
+      screenshot(4),
+      screenshot(5),
+      message("recent request"),
+    ];
+    const harness = createCompactionTransactionHarness(messages, {
+      compactionMode: "automatic",
+    });
+    installNoopCompactionHooks(harness.session);
+    const warnings: string[] = [];
+    harness.session.eventLog.subscribe((event) => {
+      if (event.msg.type === "warning") warnings.push(JSON.stringify(event.msg.payload));
+    });
+
+    const result = await runWithCapturedEnvironment(() =>
+      autoCompactIfNeeded(messages, harness.context)
+    );
+
+    expect(warnings.filter((warning) => warning.includes("inline image sources"))).toEqual([]);
+    expect(result, warnings.join("\n")).toMatchObject({ wasCompacted: true });
+    expect(result.compactionResult?.transaction).toBeDefined();
+    harness.close();
+  }, 60_000);
 
   test("force still refuses a candidate that cannot prove shrink", async () => {
     const messages = [message("small current turn")];

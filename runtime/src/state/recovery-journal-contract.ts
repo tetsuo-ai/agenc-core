@@ -611,11 +611,19 @@ export class StrictCanonicalJournalValidator {
         current.lastPayloadKind === undefined
           ? undefined
           : chunks.get(current.lastPayloadKind);
+      // A bundle's chunks must be written back to back: switching kind while
+      // the previous kind is still incomplete, or resuming a kind after
+      // another kind was written, is a break. A kind's own next chunk is not
+      // (it is checked against the chain below). The earlier form failed
+      // every second chunk of the same kind, so any bundle over one canonical
+      // line (4 MiB; a screenshot-heavy source history) could never commit:
+      // "durable compaction commit failed" with this as the hidden cause
+      // (Terminal-Bench `layout-config-recreation2__RtxCUzj`, #2499).
+      const switchedKind =
+        current.lastPayloadKind !== undefined && current.lastPayloadKind !== kind;
       if (
-        previousKindState?.complete === false ||
-        (current.lastPayloadKind !== undefined &&
-          current.lastPayloadKind !== kind &&
-          existing !== undefined)
+        switchedKind &&
+        (previousKindState?.complete === false || existing !== undefined)
       ) {
         this.#fail(
           "identity_conflict",

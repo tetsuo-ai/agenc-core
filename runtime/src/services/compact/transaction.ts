@@ -7,9 +7,15 @@ import {
   createTokenAccountingRequest,
   requireAdmissibleTokenAccounting,
   assertTokenAccountingWithinContext,
+  MAX_TOKEN_ACCOUNTING_REQUEST_BYTES,
   tokenAccountingService,
   type TokenAccountingResult,
 } from "../../llm/token-accounting.js";
+import {
+  DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES,
+  boundContextImageBytes,
+  resolveContextImageBudgetBytes,
+} from "../../session/query-image-budget.js";
 import {
   readProviderFactoryOptions,
   readProviderIdentity,
@@ -518,6 +524,7 @@ async function compactConversationTransactionBody(
       providerName,
       model,
       accountingRef,
+      imageBudgetBytes: shrinkAccountingImageBudgetBytes(session),
     }));
     deadline.assertActive();
     const replacementHistory = replacementRuntime.map(toProjectionMessage);
@@ -1372,6 +1379,32 @@ async function countCompactionProviderOutput(params: {
   };
 }
 
+/**
+ * Inline-image budget the shrink measurement applies to both histories.
+ *
+ * The measurement answers "what would the next sampling request cost, before
+ * and after". The sampling path never sends the raw history: it bounds inline
+ * images to `AGENC_CONTEXT_IMAGE_BUDGET_BYTES` first (`run-turn.ts`). Counting
+ * the raw history instead walked every screenshot into the accounting
+ * request, which is capped at 16 MiB, so a 30-screenshot session could not
+ * compact at all (Terminal-Bench `layout-config-recreation__Hrx5oPp`:
+ * "inline image sources exceed the 65447-byte remaining request budget" on
+ * every ladder tier). The operator's budget is the measurement budget; a
+ * disabled (`0`) or cap-sized value measures with the default so the
+ * measurement itself can never exceed the accounting cap.
+ */
+export function shrinkAccountingImageBudgetBytes(
+  session: NonNullable<CompactContext["admissionSession"]>,
+): number {
+  const configured = resolveContextImageBudgetBytes(
+    session.services.userShell?.childEnvironment ?? process.env,
+  );
+  if (configured <= 0 || configured > MAX_TOKEN_ACCOUNTING_REQUEST_BYTES / 2) {
+    return DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
+  }
+  return configured;
+}
+
 async function validateShrink(params: {
   readonly context: CompactContext;
   readonly sourceMessages: readonly RuntimeMessage[];
@@ -1379,6 +1412,8 @@ async function validateShrink(params: {
   readonly providerName: string;
   readonly model: string;
   readonly accountingRef: string;
+  /** See {@link shrinkAccountingImageBudgetBytes}. */
+  readonly imageBudgetBytes: number;
 }): Promise<{
   readonly source: TokenAccountingResult;
   readonly candidate: TokenAccountingResult;
@@ -1402,10 +1437,16 @@ async function validateShrink(params: {
       : {}),
   };
   const count = async (messages: readonly RuntimeMessage[]) => {
+    // Measure the projection the model would be sent, not the durable
+    // history: inline images beyond the budget become placeholders on the
+    // wire, and the same bound on both sides keeps the savings comparable.
     const request = createTokenAccountingRequest({
       provider: params.providerName,
       model: params.model,
-      messages: messages.map(toLlmMessage),
+      messages: boundContextImageBytes(
+        messages.map(toLlmMessage),
+        params.imageBudgetBytes,
+      ).messages,
       options: baseOptions,
       contextWindowTokens: contextWindow,
       reservedOutputTokens: outputReserve,
