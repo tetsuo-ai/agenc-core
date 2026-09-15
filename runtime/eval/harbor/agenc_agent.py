@@ -15,6 +15,10 @@ Options (``--ak key=value``):
   env           extra KEY=VALUE pairs for the agent process, comma separated
                 (for example ``env=AGENC_COMPLETION_CONTRACT=0`` to measure a
                 run without the headless completion contract)
+  deadline_sec  agent budget passed as ``--deadline`` (default: the trial's
+                agent timeout as Harbor computes it; ``0`` disables)
+  deadline_margin_sec  seconds kept between AgenC's deadline and Harbor's
+                kill (default: 120)
 """
 
 from __future__ import annotations
@@ -31,6 +35,12 @@ from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_templat
 from harbor.agents.options import InstalledAgentOptions
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+from agenc_deadline import (
+    DEFAULT_DEADLINE_MARGIN_SEC,
+    deadline_flag,
+    resolve_agent_budget_sec,
+)
 
 # Provider id (as AgenC names it) -> environment variables that carry its key,
 # first match wins. Mirrors runtime/src/llm/registry/provider-info.ts.
@@ -102,6 +112,23 @@ class AgencOptions(InstalledAgentOptions):
             "other harnesses have implicitly."
         ),
     )
+    deadline_sec: float | None = Field(
+        default=None,
+        description=(
+            "Agent budget in seconds, passed to AgenC as --deadline minus "
+            "deadline_margin_sec so the run wraps up and exits before Harbor "
+            "kills it (#2503). Unset: derived from the trial the way Harbor "
+            "computes its agent timeout (task.toml [agent] timeout_sec, the "
+            "agent override and cap, and the timeout multipliers). 0 disables."
+        ),
+    )
+    deadline_margin_sec: float = Field(
+        default=DEFAULT_DEADLINE_MARGIN_SEC,
+        description=(
+            "Seconds kept between AgenC's deadline and Harbor's kill: AgenC's "
+            "own 30 s backstop, the rollout copy after the turn, start-up."
+        ),
+    )
     stop_daemon: bool = Field(
         default=False,
         description=(
@@ -123,6 +150,19 @@ class Agenc(BaseInstalledAgent):
 
     def version(self) -> str | None:
         return self.options.version or super().version()
+
+    def _deadline_flag(self) -> str:
+        """``--deadline +<seconds>`` for this trial, or "" when there is none.
+
+        Harbor's agent timeout starts when ``run()`` is called and is never
+        passed to the agent; ``logs_dir`` is ``<trial>/agent`` and the trial's
+        ``config.json`` is written before the agent runs.
+        """
+        margin = self.options.deadline_margin_sec
+        explicit = self.options.deadline_sec
+        if explicit is not None:
+            return deadline_flag(explicit if explicit > 0 else None, margin)
+        return deadline_flag(resolve_agent_budget_sec(Path(self.logs_dir).parent), margin)
 
     def get_version_command(self) -> str | None:
         return 'export PATH="$HOME/.local/bin:$PATH"; agenc --version'
@@ -223,6 +263,8 @@ class Agenc(BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
+        # Harbor's agent clock started with this call: resolve the deadline first.
+        deadline = self._deadline_flag()
         provider, model = self._provider_and_model()
         env = self._key_env(provider)
         if self.options.base_url:
@@ -258,6 +300,7 @@ class Agenc(BaseInstalledAgent):
             "agenc --dangerously-bypass-approvals-and-sandbox "
             f"{add_dir_flags + ' ' if add_dir_flags else ''}"
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
+            f"{deadline + ' ' if deadline else ''}"
             f'-p 2>&1 | stdbuf -oL tee {AGENT_LOG}'
         )
         try:

@@ -25,7 +25,7 @@ installs AgenC with the public installer (`https://get.agenc.ag/install.sh
 which is how an unreleased commit of main is measured. It then runs
 
 ```
-agenc --dangerously-bypass-approvals-and-sandbox --provider <p> --model <m> -p "<instruction>"
+agenc --dangerously-bypass-approvals-and-sandbox --provider <p> --model <m> --deadline +<s> -p "<instruction>"
 ```
 
 in the task's working directory, trusting that directory first. The model
@@ -39,7 +39,21 @@ container and AgenC's shell write policy otherwise refuses writes outside
 the task directory, a boundary the other harnesses do not have), `env`
 (extra `KEY=VALUE` pairs for the agent process, comma separated, which is
 how a runtime switch such as `AGENC_COMPLETION_CONTRACT=0` is measured
-against the default), and `stop_daemon` (default false).
+against the default), `stop_daemon` (default false), `deadline_sec` and
+`deadline_margin_sec`.
+
+Harbor kills the agent when its run exceeds the trial's agent timeout but
+never tells the agent what that timeout is. The adapter recomputes it the way
+Harbor does (task.toml `[agent] timeout_sec`, the agent override and cap, the
+timeout multipliers) from the trial's `config.json` next to the agent's log
+directory, and passes it as `--deadline` minus `deadline_margin_sec` (default
+120 s, room for AgenC's own backstop and the rollout copy). AgenC then tells
+the model its budget, asks it to finish in the reserve, and exits 5 with the
+saved result before Harbor's kill (see the `--deadline` notes in
+[cli.md](../reference/cli.md)). `deadline_sec` overrides the budget in
+seconds; `deadline_sec=0` runs without a deadline, which is how the old
+behaviour is measured. The derivation lives in `agenc_deadline.py` next to the
+adapter and is tested with `python3 -m unittest discover -s runtime/eval/harbor`.
 
 The same file carries `HermesCurrent`, Harbor's Hermes adapter with its
 install check fixed (the current Hermes CLI has no `version` subcommand) and
