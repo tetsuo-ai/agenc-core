@@ -880,6 +880,20 @@ describe("strict canonical journal contract", () => {
     ).toBe(false);
   });
 
+  it("accepts scalar warning details and leaves older warnings valid (#2499)", () => {
+    const warning = { cause: "auto_compact_failed", message: "context_limit/in_turn: durable compaction commit failed" };
+    expect(isCanonicalEventPayload("warning", warning)).toBe(true);
+    expect(isCanonicalEventPayload("warning", {
+      ...warning,
+      details: { cause_code: "ENOSPC", cause_errno: -28, replacement_history_bytes: 4096, retried: false, cause_path: null },
+    })).toBe(true);
+    expect(isCanonicalEventPayload("warning", { ...warning, details: {} })).toBe(true);
+    // Details are flat facts a reader prints as-is: no nesting, no NaN.
+    expect(isCanonicalEventPayload("warning", { ...warning, details: { nested: { code: "ENOSPC" } } })).toBe(false);
+    expect(isCanonicalEventPayload("warning", { ...warning, details: { bytes: Number.NaN } })).toBe(false);
+    expect(isCanonicalEventPayload("warning", { ...warning, details: "ENOSPC" })).toBe(false);
+  });
+
   it("keeps an exhaustive fail-closed schema for every rollout discriminant", () => {
     expect(CANONICAL_ROLLOUT_SCHEMA_TYPES).toEqual([
       "compacted",

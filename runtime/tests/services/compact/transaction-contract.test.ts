@@ -23,11 +23,16 @@ import {
 } from "../../../src/services/compact/summary-v1.js";
 import { compactConversationTransactionally } from "../../../src/services/compact/transaction.js";
 import {
+  CompactionTransactionFailureWithDetails,
+  compactionFailureDetails,
+} from "../../../src/services/compact/failure-details.js";
+import {
   MAX_TOKEN_ACCOUNTING_REQUEST_BYTES,
   tokenAccountingService,
 } from "../../../src/llm/token-accounting.js";
 import { DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES } from "../../../src/session/query-image-budget.js";
 import {
+  CompactionTransactionError,
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
   MAX_COMPACTION_OUTPUT_NODES_TOTAL,
   MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
@@ -811,6 +816,83 @@ describe("transactional compaction production path", () => {
     });
   });
 
+  /**
+   * Terminal-Bench `layout-config-recreation2__RtxCUzj` died on "durable
+   * compaction commit failed" with nothing in the rollout, the log, or
+   * stderr to say why (#2499). The wrap now names the cause and the
+   * commit's size facts in the message, and carries them as details.
+   */
+  describe("commit failure diagnosability (#2499)", () => {
+    it("names a disk-full write and the commit's sizes", async () => {
+      await withTransactionalStore("transaction-commit-enospc", async (store) => {
+        const source = appendSourceMessages(store, 8, 4_000);
+        const provider = compactionProvider();
+        const adapter = failingCommitAdapter(store, () =>
+          Object.assign(new Error("ENOSPC: no space left on device, write"), {
+            code: "ENOSPC",
+            errno: -28,
+            syscall: "write",
+            path: store.rolloutPath,
+          }));
+
+        const failure = await runRealTransaction(store, source, provider, {
+          compactionTransaction: adapter,
+        }).then(() => undefined, (error: unknown) => error);
+
+        expect(failure).toBeInstanceOf(CompactionTransactionFailureWithDetails);
+        const typed = failure as CompactionTransactionFailureWithDetails;
+        expect(typed.reason).toBe("commit_failed");
+        expect(typed.message).toMatch(/durable compaction commit failed: Error: ENOSPC: no space left on device, write \(code=ENOSPC, syscall=write, path=/);
+        expect(typed.message).toMatch(/replacement history \d+ bytes \(\d+ messages\)/);
+        expect(typed.message).toMatch(/payload bundles 3 \(\d+ chunks, \d+ canonical bytes\)/);
+        expect(typed.message).toMatch(/summary \d+ bytes/);
+        expect(typed.details).toMatchObject({
+          replacement_history_messages: expect.any(Number),
+          payload_bundle_count: 3,
+        });
+        expect(typed.details.replacement_history_bytes).toBeGreaterThan(0);
+        expect(compactionFailureDetails(typed)).toMatchObject({
+          error_reason: "commit_failed",
+          cause_name: "Error",
+          cause_code: "ENOSPC",
+          cause_errno: -28,
+          cause_syscall: "write",
+          cause_path: store.rolloutPath,
+          payload_bundle_count: 3,
+        });
+        expect(store.readAll().filter(isCompactionLifecycleItem)).toMatchObject([
+          { type: "compaction_intent" },
+          { type: "compaction_failed", payload: { reason: "commit_failed" } },
+        ]);
+      });
+    });
+
+    it("keeps a typed validation failure's own reason", async () => {
+      await withTransactionalStore("transaction-commit-typed", async (store) => {
+        const source = appendSourceMessages(store, 8, 4_000);
+        const provider = compactionProvider();
+        const adapter = failingCommitAdapter(store, () =>
+          new CompactionTransactionError(
+            "output_limit_exceeded",
+            "replacement history exceeds the payload limit",
+          ));
+
+        const failure = await runRealTransaction(store, source, provider, {
+          compactionTransaction: adapter,
+        }).then(() => undefined, (error: unknown) => error);
+
+        expect(failure).toBeInstanceOf(CompactionTransactionError);
+        expect(failure).not.toBeInstanceOf(CompactionTransactionFailureWithDetails);
+        expect((failure as CompactionTransactionError).reason).toBe("output_limit_exceeded");
+        expect((failure as Error).message).toBe("replacement history exceeds the payload limit");
+        expect(store.readAll().filter(isCompactionLifecycleItem)).toMatchObject([
+          { type: "compaction_intent" },
+          { type: "compaction_failed", payload: { reason: "output_limit_exceeded" } },
+        ]);
+      });
+    });
+  });
+
   it("records a commit failure terminal and leaves source history active", async () => {
     await withTransactionalStore("transaction-commit-failure", async (store) => {
       const source = appendSourceMessages(store, 8, 4_000);
@@ -1363,12 +1445,13 @@ function observingTransactionAdapter(
 
 function failingCommitAdapter(
   store: RolloutStore,
+  failure: () => Error = () => new Error("injected commit failure"),
 ): CompactionTransactionAdapter {
   return new Proxy(store, {
     get(target, property, receiver) {
       if (property === "commit") {
         return () => {
-          throw new Error("injected commit failure");
+          throw failure();
         };
       }
       const value = Reflect.get(target, property, receiver) as unknown;

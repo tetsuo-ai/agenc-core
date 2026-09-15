@@ -164,6 +164,14 @@ const isNonNegativeInteger: Validator<number> = (value): value is number =>
 const isPositiveInteger: Validator<number> = (value): value is number =>
   Number.isSafeInteger(value) && (value as number) > 0;
 const isRecord: Validator<Record<string, unknown>> = isPlainRecord;
+/** Warning `details` values: flat facts a reader can print without recursion. */
+const isScalarOrNull: Validator<string | number | boolean | null> = (
+  value,
+): value is string | number | boolean | null =>
+  value === null ||
+  typeof value === "string" ||
+  typeof value === "boolean" ||
+  (typeof value === "number" && Number.isFinite(value));
 const isUnknown: Validator<unknown> = (_value): _value is unknown => true;
 const isNullableString = nullable(isString);
 const isStringArray = arrayOf(isString);
@@ -1005,7 +1013,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     { cause: isString, message: isString },
     { provider: isString, status: isNumber },
   ),
-  warning: objectShape({ cause: isString, message: isString }, { turnId: isString }),
+  warning: objectShape(
+    { cause: isString, message: isString },
+    { turnId: isString, details: recordOf(isScalarOrNull) },
+  ),
   effect_intent: objectShape(
     {
       runId: isString,

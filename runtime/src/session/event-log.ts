@@ -480,6 +480,12 @@ export interface WarningEvent {
   readonly message: string;
   /** Explicit scope for warnings produced before a daemon message submission. */
   readonly turnId?: string;
+  /**
+   * Structured facts behind the message: error names, messages, Node error
+   * codes and paths, byte sizes. Scalar values only. Readers that predate
+   * the field ignore it (journal schemas are additive).
+   */
+  readonly details?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 /**

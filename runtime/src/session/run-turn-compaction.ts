@@ -60,6 +60,11 @@ import {
   type CompactionLadderTier,
 } from "../services/compact/ladder.js";
 import type { CompactionTransactionError as CompactionTransactionErrorType } from "../services/compact/transaction-types.js";
+import {
+  compactionFailureDetails,
+  type CompactionFailureDetails,
+} from "../services/compact/failure-details.js";
+import { logForDebugging } from "../utils/debug.js";
 
 const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
 const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
@@ -78,6 +83,7 @@ interface AgenCAutoCompactResult {
   readonly skippedReason?: string;
   readonly skippedCode?: CompactionCannotReduceError["code"];
   readonly skippedFailureReason?: CompactionTransactionErrorType["reason"];
+  readonly skippedDetails?: CompactionFailureDetails;
   readonly advisoryFailure?: "summary_rejected";
   /** Ladder tier this result came from (#2497). */
   readonly tier?: CompactionLadderTier;
@@ -166,6 +172,7 @@ async function runAgenCAutoCompact(params: {
         result.skippedCode,
         result.advisoryFailure,
         result.skippedFailureReason,
+        result.skippedDetails,
       );
     }
     const compactionResult = await toAgenCCompactionResult(
@@ -302,12 +309,44 @@ function toCompactServiceResult(
   };
 }
 
+/**
+ * The `auto_compact_failed` warning, with the flattened error chain and
+ * facts as `details` (#2499). The same line goes to the debug log at warn
+ * level, so the cause survives even when the rollout write is what failed.
+ */
+function emitAutoCompactFailed(
+  session: Session,
+  reason: CompactionReason,
+  phase: CompactionPhase,
+  explanation: string,
+  details: CompactionFailureDetails | undefined,
+): void {
+  const message = `${reason}/${phase}: ${explanation}`;
+  const hasDetails = details !== undefined && Object.keys(details).length > 0;
+  logForDebugging(
+    `auto_compact_failed ${message}${hasDetails ? ` ${JSON.stringify(details)}` : ""}`,
+    { level: "warn" },
+  );
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "auto_compact_failed",
+        message,
+        ...(hasDetails ? { details } : {}),
+      },
+    },
+  });
+}
+
 function compactionNotRun(
   consecutiveFailures?: number,
   skippedReason?: string,
   skippedCode?: CompactionCannotReduceError["code"],
   advisoryFailure?: "summary_rejected",
   skippedFailureReason?: CompactionTransactionErrorType["reason"],
+  skippedDetails?: CompactionFailureDetails,
 ): AgenCAutoCompactResult {
   return {
     wasCompacted: false,
@@ -316,6 +355,7 @@ function compactionNotRun(
     ...(skippedCode !== undefined ? { skippedCode } : {}),
     ...(advisoryFailure !== undefined ? { advisoryFailure } : {}),
     ...(skippedFailureReason !== undefined ? { skippedFailureReason } : {}),
+    ...(skippedDetails !== undefined ? { skippedDetails } : {}),
   };
 }
 
@@ -400,6 +440,7 @@ export interface AutoCompactResult {
   readonly skippedReason?: string;
   readonly skippedCode?: CompactionCannotReduceError["code"];
   readonly skippedFailureReason?: CompactionTransactionErrorType["reason"];
+  readonly skippedDetails?: CompactionFailureDetails;
   readonly advisoryFailure?: "summary_rejected";
   readonly tier?: CompactionLadderTier;
 }
@@ -724,34 +765,26 @@ async function runAutoCompact(
      * dropped, leaving a turn that ended mid-plan with nothing to act on.
      */
     if (result.skippedReason !== undefined) {
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "auto_compact_failed",
-            message: `${reason}/${phase}: ${result.skippedReason}`,
-          },
-        },
-      });
+      emitAutoCompactFailed(
+        session,
+        reason,
+        phase,
+        result.skippedReason,
+        result.skippedDetails,
+      );
     }
     return false;
   } catch (error) {
     // Never silently swallow compact failures. Emit a structured
     // warning carrying the reason/phase so downstream observability can
     // distinguish model-downshift compacts from context-limit compacts.
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "auto_compact_failed",
-          message: `${reason}/${phase}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        },
-      },
-    });
+    emitAutoCompactFailed(
+      session,
+      reason,
+      phase,
+      error instanceof Error ? error.message : String(error),
+      compactionFailureDetails(error),
+    );
     // Expected unchanged-history refusals return typed results above. A thrown
     // error is not evidence that no write occurred: cancellation, persistence,
     // reconstruction, and unexpected pre-sampling failures must propagate.

@@ -8,6 +8,10 @@
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { compactConversation } from "./compact.js";
 import { readCompactionTransactionAdapter } from "./transaction.js";
+import {
+  compactionFailureDetails,
+  type CompactionFailureDetails,
+} from "./failure-details.js";
 import { isTransientProviderError } from "../../recovery/api-errors.js";
 import {
   CompactionCannotReduceError,
@@ -134,6 +138,8 @@ export async function autoCompactIfNeeded(
   readonly skippedCode?: CompactionCannotReduceError["code"];
   /** Transaction failure reason, when the decline was a typed transaction failure. */
   readonly skippedFailureReason?: CompactionTransactionError["reason"];
+  /** Flattened error chain and facts behind `skippedReason` (#2499). */
+  readonly skippedDetails?: CompactionFailureDetails;
   /** Proven terminal summary rejection with unchanged canonical history. */
   readonly advisoryFailure?: "summary_rejected";
 }> {
@@ -240,6 +246,7 @@ export async function autoCompactIfNeeded(
           error instanceof Error && error.message.trim().length > 0
             ? error.message
             : String(error),
+        skippedDetails: compactionFailureDetails(error),
       };
     }
   }

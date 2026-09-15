@@ -22,6 +22,11 @@ import {
 } from "../../llm/provider.js";
 import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
 import type { CompactionLocalSummarizer } from "./emergency-summarizer.js";
+import {
+  CompactionTransactionFailureWithDetails,
+  describeFailureCause,
+  type CompactionFailureDetails,
+} from "./failure-details.js";
 import type { BaseHookInput } from "../../entrypoints/sdk/coreTypes.js";
 import {
   accountCompactionCall,
@@ -549,9 +554,20 @@ async function compactConversationTransactionBody(
       committed = adapter.commit(commitInput);
     } catch (error) {
       if (error instanceof CompactionTransactionError) throw error;
-      throw new CompactionTransactionError(
+      // Name the cause and the commit's size facts in the message itself:
+      // the warning that reaches the rollout, the TUI, and stderr carries
+      // the message, and a disk-full write must be distinguishable from a
+      // size cap or a validation refusal after the fact (#2499).
+      const facts = commitSizeFacts(commitInput);
+      throw new CompactionTransactionFailureWithDetails(
         "commit_failed",
-        "durable compaction commit failed",
+        `durable compaction commit failed: ${describeFailureCause(error)}; ` +
+          `replacement history ${facts.replacement_history_bytes} bytes ` +
+          `(${facts.replacement_history_messages} messages), ` +
+          `payload bundles ${facts.payload_bundle_count} ` +
+          `(${facts.payload_chunk_count} chunks, ${facts.payload_canonical_bytes} canonical bytes), ` +
+          `summary ${facts.summary_bytes} bytes`,
+        facts,
         { cause: error },
       );
     }
@@ -1787,6 +1803,32 @@ function classifyFailure(
     }
   }
   return "provider_error";
+}
+
+/** Byte and count facts of a commit, for the failure message and warning. */
+function commitSizeFacts(commitInput: {
+  readonly summary: CompactionSummaryV1;
+  readonly replacement_history: readonly CompactionProjectionMessageV1[];
+  readonly payload_bundles: CompactionCommitPayloadBundlesV1;
+}): CompactionFailureDetails {
+  const bundles = Object.values(commitInput.payload_bundles);
+  return {
+    replacement_history_bytes: Buffer.byteLength(
+      canonicalizeJson(commitInput.replacement_history),
+      "utf8",
+    ),
+    replacement_history_messages: commitInput.replacement_history.length,
+    summary_bytes: Buffer.byteLength(canonicalizeJson(commitInput.summary), "utf8"),
+    payload_bundle_count: bundles.length,
+    payload_chunk_count: bundles.reduce(
+      (total, bundle) => total + bundle.manifest.chunk_count,
+      0,
+    ),
+    payload_canonical_bytes: bundles.reduce(
+      (total, bundle) => total + bundle.manifest.canonical_utf8_bytes,
+      0,
+    ),
+  };
 }
 
 function errorDetail(error: unknown): string {

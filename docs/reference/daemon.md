@@ -751,6 +751,16 @@ This closes the failed turn without killing the reusable run. The user-facing me
 the compact error text (for a skip,
 `mid_turn_compact_skipped: lastSamplePromptTokens=<n> limit=<n>`).
 
+The `auto_compact_failed` warning that precedes it names the cause. A
+durable commit failure reads
+`durable compaction commit failed: <cause> (code=…, syscall=…, path=…); replacement history <n> bytes (<m> messages), payload bundles <k> (<c> chunks, <b> canonical bytes), summary <s> bytes`,
+and the warning payload carries the same facts as `details`, a flat record
+of strings, numbers, booleans and nulls (`error_*`, `cause_*`,
+`root_cause_*` for the error chain; the size facts by name). The rollout
+schema is additive, so readers that predate `details` ignore it. The same
+line is written to the debug log at `warn`, so the cause survives even when
+the rollout write is what failed (#2499).
+
 A typed `no_shrink` result is different. The proposed summary did not meet
 the minimum reduction, and durable history is unchanged. AgenC defers
 repeated advisory attempts and prepares the next full sampling request.

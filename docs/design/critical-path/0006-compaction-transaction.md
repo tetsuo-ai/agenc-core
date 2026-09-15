@@ -94,6 +94,13 @@ injection, no-shrink, or commit-precondition failure leaves original history
 active and appends a typed, flushed `compaction_failed` event. If that failure
 event cannot be recorded, the pin remains for startup reconciliation. A
 deterministic extract may support diagnostics but can never replace history.
+The `compaction_failed` event carries only a digest of the detail; the
+readable cause travels in the turn's `auto_compact_failed` warning. A
+`commit_failed` wrap names the adapter's error (name, message, Node error
+code, syscall, path) and the commit's size facts in its message and as
+structured warning `details` (`runtime/src/services/compact/failure-details.ts`),
+so a disk-full write, a size cap, and a validation refusal are told apart
+after the fact.
 
 The loop guard permits at most two failed automatic attempts for the same source
 history/configuration digest. Restart reconstructs that guard; only changed
