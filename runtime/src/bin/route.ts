@@ -34,7 +34,7 @@ import {
   DeadlineFlagError,
   parseDeadlineFlag,
   parseDeadlineReserveFlag,
-} from "../session/run-deadline.js";
+} from "../session/deadline-flags.js";
 
 /**
  * Parse a `--flag <value>` or `--flag=<value>` pair out of an argv

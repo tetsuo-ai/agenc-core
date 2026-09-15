@@ -13,6 +13,7 @@ const allowedInputs = new Set([
   "src/bin/cli-option-region.ts",
   "src/bin/route.ts",
   "src/bin/startup-flags.ts",
+  "src/session/deadline-flags.ts",
 ]);
 
 export async function renderLauncherPreflight() {
