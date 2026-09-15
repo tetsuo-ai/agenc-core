@@ -62,6 +62,10 @@ import {
 } from "../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { validationErrorToolResult } from "../tools/results.js";
+import {
+  DEADLINE_RESERVE_SPAWN_REFUSAL,
+  inDeadlineReserve,
+} from "../session/run-deadline.js";
 import { safeStringify } from "../tools/types.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "../tools/system/notebook-edit.js";
@@ -1713,6 +1717,13 @@ function createMultiAgentV2RuntimeTools(
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const session = sessionOrError;
+    // A run in its deadline reserve (#2503) finishes with what it has.
+    if (inDeadlineReserve(session)) {
+      return validationErrorToolResult(
+        "tool:spawn_agents_on_csv:deadline_reserve",
+        JSON.stringify({ error: DEADLINE_RESERVE_SPAWN_REFUSAL }),
+      );
+    }
     const { control, registry } = ensureAgentControl(session);
     const current = currentAgentContext(session, args);
     const instruction = exactNonBlankStringValue(args.instruction);

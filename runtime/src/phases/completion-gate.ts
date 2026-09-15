@@ -44,6 +44,7 @@ import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import type { Config, TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 import { isPlanMode } from "../session/plan-mode.js";
+import { inDeadlineReserve } from "../session/run-deadline.js";
 import { isSubagentSessionSource } from "../session/run-turn-queued-commands.js";
 
 export const DEFAULT_COMPLETION_GATE_ROUNDS = 3;
@@ -78,7 +79,8 @@ export type CompletionGateReason =
   | "unmet_items"
   | "verified_with_tools"
   | "rounds_exhausted"
-  | "no_tool_use";
+  | "no_tool_use"
+  | "deadline_reserve";
 
 export function resolveCompletionGatePolicy(
   config: Pick<Config, "completionGate"> | undefined,
@@ -402,6 +404,12 @@ export async function completionGate(
   const hasSuccessfulResult = round > 0 && state.completedToolResults
     .slice(state.completionGateToolLedgerMark)
     .some((result) => result.isError !== true && result.metadata?.exitCode !== null);
+  if (inDeadlineReserve(session)) {
+    // The run's deadline reserve (#2503): the model was told to restore its
+    // best verified state and finish, so the answer is accepted rather than
+    // spending the last minutes on another verification round.
+    return settle("skipped", "deadline_reserve", toolCallsSinceInjection);
+  }
   const { hasCheckedItem, hasMalformedItem, unmetItems } = analyzeChecklist(text);
   if (
     hasSuccessfulResult &&

@@ -18,6 +18,7 @@ describe("stop-reason mapping decides turn versus run scope", () => {
     for (const reason of [
       "no_progress",
       "effect_review_required",
+      "deadline_reached",
       "max_turns",
       "max_budget_usd",
       "compact_failed",

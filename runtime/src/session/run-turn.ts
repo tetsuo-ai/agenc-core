@@ -153,6 +153,19 @@ import type {
   RunningTask,
 } from "./tasks.js";
 import { emitError, emitWarning } from "./event-log.js";
+import {
+  DEADLINE_REACHED_CAUSE,
+  DEADLINE_REACHED_MESSAGE,
+  armRunDeadline,
+  claimDeadlineReserveAnnouncement,
+  deadlineRemainingMs,
+  deadlineReserveReminder,
+  deadlineTurnReminder,
+  formatRemainingDuration,
+  isDeadlineAbort,
+  projectToolResultTimeRemaining,
+  runDeadlineOf,
+} from "./run-deadline.js";
 import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
 import {
   advanceModelSampleOrdinal,
@@ -487,6 +500,7 @@ function terminalToStopReason(
     case "cancelled":
     case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
     case "effect_review_required":
+    case "deadline_reached":
       return reason;
     default:
       return "error";
@@ -837,6 +851,15 @@ async function prepareSamplingRequestBoundary(
         },
       });
     }
+  }
+
+  // Remaining run budget on each tool result (#2503), fixed when the result
+  // completed so its bytes never change between requests. Projection only.
+  if (runDeadlineOf(session) !== undefined) {
+    state.messagesForQuery = projectToolResultTimeRemaining(
+      state.messagesForQuery,
+      session,
+    );
   }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
@@ -1704,6 +1727,7 @@ export async function* runTurnKernel(
         effect_review_required:
           content ||
           "Turn stopped: a tool effect has an unknown outcome and needs operator review (/resolve). Side-effecting tools stay blocked until it is resolved.",
+        deadline_reached: DEADLINE_REACHED_MESSAGE,
         compact_failed:
           "Turn stopped because compaction could not shrink the context.",
         empty_response:
@@ -2467,6 +2491,10 @@ async function* runTurnKernelInner(
   // Hand the disposers to the outer kernel's finally so they run on every
   // exit path (completed, aborted, error, abandoned generator).
   commons.signalCleanups.push(mergedSession.dispose, mergedTask.dispose);
+  // A run with a deadline (#2503) aborts its running turn when it passes;
+  // the abort reason turns the cancellation into `deadline_reached`.
+  commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
+  let deadlineTurnReminderInjected = false;
 
   let usage: LLMUsage = {
     promptTokens: 0,
@@ -2504,6 +2532,31 @@ async function* runTurnKernelInner(
       event: editorRequestFailedTurnComplete(message, usage, error),
     };
   };
+  // The deadline stop (#2503): a bounded failure, not a cancellation, so the
+  // turn reports `turn_failed deadline_reached` and the print-mode CLI exits
+  // with its own code instead of the one for an operator interrupt.
+  const finishDeadlineReached = (error?: Error): {
+    readonly terminal: Terminal;
+    readonly event: PhaseEvent;
+  } => {
+    emitWarning(
+      session.eventLog,
+      session.nextInternalSubId(),
+      DEADLINE_REACHED_CAUSE,
+      DEADLINE_REACHED_MESSAGE,
+    );
+    emitTurnComplete(DEADLINE_REACHED_MESSAGE, "deadline_reached");
+    return {
+      terminal: { reason: "deadline_reached" },
+      event: {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "deadline_reached",
+        ...(error !== undefined ? { error } : {}),
+      },
+    };
+  };
   const finishCancelledIfAborted = async (): Promise<{
     readonly terminal: Terminal;
     readonly event: PhaseEvent;
@@ -2511,6 +2564,7 @@ async function* runTurnKernelInner(
     if (!signal.aborted) return null;
     await drainInFlight(state, ctx, session);
     await syncSessionState();
+    if (isDeadlineAbort(signal)) return finishDeadlineReached();
     emitTurnAborted(
       String(
         (signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled",
@@ -2620,6 +2674,32 @@ async function* runTurnKernelInner(
         stopReason: "max_budget_usd",
       };
       return terminal;
+    }
+
+    // Run deadline (#2503): tell the model its remaining budget once per
+    // turn, and once per run when the reserve begins. Runtime-only messages:
+    // they never reach durable history, and a resumed turn gets fresh ones.
+    const runDeadline =
+      ctx.editorInteraction === undefined ? runDeadlineOf(session) : undefined;
+    if (runDeadline !== undefined) {
+      const remainingMs = deadlineRemainingMs(runDeadline);
+      if (!deadlineTurnReminderInjected) {
+        state.messages.push(deadlineTurnReminder(remainingMs));
+        deadlineTurnReminderInjected = true;
+      }
+      if (
+        remainingMs <= runDeadline.reserveMs &&
+        claimDeadlineReserveAnnouncement(session)
+      ) {
+        state.messages.push(deadlineReserveReminder(remainingMs));
+        emitWarning(
+          session.eventLog,
+          session.nextInternalSubId(),
+          "deadline_reserve",
+          `Deadline reserve entered: ${formatRemainingDuration(remainingMs)} remain; ` +
+            "the model was told to restore its best verified state and finish.",
+        );
+      }
     }
 
     // Behavioral backstop (goal #3): the SECOND whole-turn backstop —
@@ -2843,6 +2923,11 @@ async function* runTurnKernelInner(
         // T6 gap #119: cancelled-with-error still gets `turn_aborted`
         // so rollout reconstruction sees a closed turn boundary.
         await syncSessionState();
+        if (isDeadlineAbort(signal)) {
+          const stopped = finishDeadlineReached(underlying);
+          yield stopped.event;
+          return stopped.terminal;
+        }
         emitTurnAborted(
           String(
             (signal as AbortSignal & { reason?: unknown }).reason ??

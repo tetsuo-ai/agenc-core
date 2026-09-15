@@ -189,6 +189,20 @@ describe("static section emitters", () => {
     expect(s).toContain("The final message lists which requirements you verified and how");
   });
 
+  test("a deadline-bounded run trades 'time is not the constraint' for keeping the verified result (#2503)", () => {
+    const plain = getHeadlessCompletionSection({ nonInteractive: true, env: {} });
+    const bounded = getHeadlessCompletionSection({ nonInteractive: true, env: {}, deadline: true });
+    expect(plain).toContain("Turns and time are not the constraint");
+    expect(bounded).not.toContain("Turns and time are not the constraint");
+    expect(bounded).toContain("fixed time budget");
+    expect(bounded).toContain("time_remaining_sec");
+    expect(bounded).toContain("improve on a copy");
+    expect(bounded).toContain("restore your best verified state");
+    // Durations only, never a wall-clock instant (I-82).
+    expect(bounded).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    expect(getHeadlessCompletionSection({ nonInteractive: false, env: {}, deadline: true })).toBeNull();
+  });
+
   test("headless_completion honours the environment switch", () => {
     for (const off of ["0", "false", "off"]) {
       expect(

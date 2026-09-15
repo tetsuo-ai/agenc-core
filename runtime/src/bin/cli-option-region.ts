@@ -15,6 +15,8 @@ export const STARTUP_VALUE_OPTIONS = Object.freeze([
   "--output-format",
   "--input-format",
   "--image",
+  "--deadline",
+  "--deadline-reserve",
 ] as const);
 
 export const CLI_VALUE_OPTIONS = Object.freeze([

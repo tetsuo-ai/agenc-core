@@ -53,6 +53,7 @@ export type PhaseEvent =
         | "empty_response"
         | "no_progress" // behavioral backstop (semantic non-termination, goal #3)
         | "effect_review_required" // an unknown-outcome effect blocks side-effecting tools and nobody can review it now (#2501)
+        | "deadline_reached" // the run's --deadline passed; the running turn was stopped (#2503)
         | "compact_failed" // mid-turn / pre-sampling compact skip or throw
         | "editor_request_failed"; // request-scoped Editor limit, refusal, or blocked recovery
       readonly error?: Error;

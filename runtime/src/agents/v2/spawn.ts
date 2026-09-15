@@ -4,6 +4,10 @@ import {
   type ToolResult,
 } from "../../tools/types.js";
 import { validationErrorToolResult } from "../../tools/results.js";
+import {
+  DEADLINE_RESERVE_SPAWN_REFUSAL,
+  inDeadlineReserve,
+} from "../../session/run-deadline.js";
 import type { Session } from "../../session/session.js";
 import type { ModelInfo, ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
@@ -440,6 +444,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return confirmedNoSpawn(sessionOrError);
     }
     const rootSession = sessionOrError;
+    // A run in its deadline reserve (#2503) finishes with what it has.
+    if (inDeadlineReserve(rootSession)) {
+      return spawnValidationError(DEADLINE_RESERVE_SPAWN_REFUSAL);
+    }
     const strict = strictArgs(args, {
       allowed: new Set([
         "message",

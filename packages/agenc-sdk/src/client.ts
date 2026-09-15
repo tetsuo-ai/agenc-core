@@ -71,6 +71,7 @@ import type {
 function safeSdkRuntimeOptions(
   pluginStorageRoot: string,
   dangerouslyBypassApprovalsAndSandbox: boolean,
+  deadline: { readonly deadlineAt?: number; readonly deadlineReserveMs?: number } = {},
 ) {
   return Object.freeze({
     simpleMode: false,
@@ -79,6 +80,10 @@ function safeSdkRuntimeOptions(
     remoteMode: false,
     pluginStorageRoot,
     allowUntrustedHooks: false,
+    ...(deadline.deadlineAt !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
+    ...(deadline.deadlineReserveMs !== undefined
+      ? { deadlineReserveMs: deadline.deadlineReserveMs }
+      : {}),
   });
 }
 const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 8;
@@ -314,6 +319,15 @@ export interface AgencCreateSessionParams extends SessionCreateParams {
    * `{}` to forward nothing.
    */
   readonly envOverrides?: Readonly<Record<string, string>>;
+  /**
+   * Absolute instant (epoch ms) the session's run must end by, as
+   * `agenc -p --deadline` sets it. The model is told its remaining budget,
+   * asked to finish in the reserve before it, and a turn still running at
+   * the deadline ends with the bounded stop `deadline_reached`.
+   */
+  readonly deadlineAt?: number;
+  /** Reserve before `deadlineAt` in ms (default: the CLI computes 10 % clamped to 5-30 min). */
+  readonly deadlineReserveMs?: number;
 }
 
 export interface AgencPromptOptions {
@@ -1037,6 +1051,8 @@ export class AgencClient {
       envOverrides: requestedEnvOverrides,
       initialPrompt,
       metadata,
+      deadlineAt,
+      deadlineReserveMs,
       ...sessionParams
     } = params;
     if (
@@ -1097,6 +1113,10 @@ export class AgencClient {
       runtimeOptions: safeSdkRuntimeOptions(
         pluginStorageRoot,
         dangerouslyBypassApprovalsAndSandbox,
+        {
+          ...(deadlineAt !== undefined ? { deadlineAt } : {}),
+          ...(deadlineReserveMs !== undefined ? { deadlineReserveMs } : {}),
+        },
       ),
     } as AgentCreateParams);
     try {

@@ -996,6 +996,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
         "verified_with_tools",
         "rounds_exhausted",
         "no_tool_use",
+        "deadline_reserve",
       ),
       toolCallsSinceInjection: isNonNegativeInteger,
     },

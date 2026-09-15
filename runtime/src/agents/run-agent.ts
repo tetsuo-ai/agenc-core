@@ -3938,6 +3938,7 @@ export async function* runAgent(
         | "empty_response"
         | "no_progress"
         | "effect_review_required"
+        | "deadline_reached"
         | "compact_failed" = "completed";
       let terminalError: unknown;
 
@@ -4121,6 +4122,7 @@ export async function* runAgent(
         stopReason === "max_budget_usd" ||
         stopReason === "no_progress" ||
         stopReason === "effect_review_required" ||
+        stopReason === "deadline_reached" ||
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
       // A bounded stop in a keep-alive (interactive) run is a per-turn
@@ -4139,6 +4141,8 @@ export async function* runAgent(
           message =
             assistantText ||
             "subagent stopped by the no-progress backstop (semantic non-termination)";
+        } else if (stopReason === "deadline_reached") {
+          message = "subagent stopped because the run reached its deadline";
         } else if (stopReason === "effect_review_required") {
           message =
             assistantText ||

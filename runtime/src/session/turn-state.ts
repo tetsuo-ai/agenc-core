@@ -99,7 +99,8 @@ export type TerminalReason =
   | "max_budget_usd"
   | "cancelled"
   | "no_progress" // behavioral backstop (semantic non-termination, goal #3)
-  | "effect_review_required"; // live-effect gate refused a call nobody can unblock now (#2501)
+  | "effect_review_required" // live-effect gate refused a call nobody can unblock now (#2501)
+  | "deadline_reached"; // the run's --deadline passed (#2503)
 
 export interface Terminal {
   readonly reason: TerminalReason;

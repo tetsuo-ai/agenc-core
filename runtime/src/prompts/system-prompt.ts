@@ -213,6 +213,8 @@ export const COMPLETION_CONTRACT_COHERENT_ENV = "AGENC_COMPLETION_CONTRACT_COHER
 export function getHeadlessCompletionSection(input: {
   readonly nonInteractive: boolean | undefined;
   readonly env: NodeJS.ProcessEnv;
+  /** The run has a `--deadline` (#2503): time is a constraint after all. */
+  readonly deadline?: boolean;
 }): string | null {
   if (input.nonInteractive !== true) return null;
   if (isEnvDefinedFalsy(input.env[HEADLESS_COMPLETION_CONTRACT_ENV])) {
@@ -227,7 +229,12 @@ export function getHeadlessCompletionSection(input: {
     `A result that should work is not done; a result you have run and watched working is done. Do not stop at the first version that looks right. When a check fails, fix the cause and re-run the whole checklist, not only the failing item, because a fix can break something that passed before.`,
     `Your own summary is a claim that needs evidence. Before writing the final message, re-run every check the task implies and confirm each item on the checklist has been observed to pass. If something cannot be verified, say exactly what and why instead of implying success.`,
     `Never ask for clarification or confirmation and never end your turn waiting for input: decide, act, and state the assumption you made. When the task is ambiguous, choose the reading that satisfies the most likely check. Actions the task requires are authorized by the task; actions it does not require and that would be hard to reverse are still off limits.`,
-    `Turns and time are not the constraint; an unverified answer is. Keep working until every item on the checklist has been observed to pass, then stop.`,
+    input.deadline === true
+      ? // A deadline-bounded run (#2503) was killed mid-optimization with a
+        // broken file on disk hours after it had a passing one. Keep the
+        // verified result safe and finish inside the budget.
+        `This run has a fixed time budget and is stopped when it runs out; the runtime reports the remaining time at the start of each turn and on every tool result (time_remaining_sec). As soon as a result passes your checks, keep it: improve on a copy, and never leave the deliverable in a broken intermediate state. When the runtime says time is nearly up, stop exploring, restore your best verified state, and write the final message.`
+      : `Turns and time are not the constraint; an unverified answer is. Keep working until every item on the checklist has been observed to pass, then stop.`,
     `The final message lists which requirements you verified and how, in a few lines.`,
   ];
   return joinSection("# Completing work without a human", items);
@@ -1143,6 +1150,7 @@ export async function assembleSystemPrompt(
   const headlessCompletionSection = getHeadlessCompletionSection({
     nonInteractive: session.services?.runtimeOptions?.nonInteractive,
     env: promptEnvironment,
+    deadline: typeof session.services?.runtimeOptions?.deadlineAt === "number",
   });
   const headlessContract =
     headlessCompletionSection !== null &&

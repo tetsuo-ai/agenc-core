@@ -312,7 +312,8 @@ export interface CompletionGateEvent {
     | "unmet_items"
     | "verified_with_tools"
     | "rounds_exhausted"
-    | "no_tool_use";
+    | "no_tool_use"
+    | "deadline_reserve";
   /** Tool calls that completed between the last injection and this decision. */
   readonly toolCallsSinceInjection: number;
   /** Unchecked or explicitly unverified checklist items, when any. */

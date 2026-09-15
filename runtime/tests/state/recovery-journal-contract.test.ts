@@ -894,6 +894,18 @@ describe("strict canonical journal contract", () => {
     expect(isCanonicalEventPayload("warning", { ...warning, details: "ENOSPC" })).toBe(false);
   });
 
+  it("accepts the deadline_reserve completion gate reason (#2503)", () => {
+    const gate = {
+      turnId: "turn-1",
+      round: 0,
+      maxRounds: 3,
+      outcome: "skipped",
+      toolCallsSinceInjection: 0,
+    };
+    expect(isCanonicalEventPayload("completion_gate", { ...gate, reason: "deadline_reserve" })).toBe(true);
+    expect(isCanonicalEventPayload("completion_gate", { ...gate, reason: "deadline_soon" })).toBe(false);
+  });
+
   it("keeps an exhaustive fail-closed schema for every rollout discriminant", () => {
     expect(CANONICAL_ROLLOUT_SCHEMA_TYPES).toEqual([
       "compacted",

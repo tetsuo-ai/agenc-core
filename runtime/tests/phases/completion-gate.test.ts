@@ -282,6 +282,26 @@ describe("completionGate", () => {
     expect(session.emit).not.toHaveBeenCalled();
   });
 
+  test("accepts the final answer once the run's deadline reserve has begun (#2503)", async () => {
+    const session = mkSession({
+      services: {
+        runtimeOptions: {
+          nonInteractive: true,
+          // The reserve is the last 10 minutes; one minute is left.
+          deadlineAt: Date.now() + 60_000,
+          deadlineReserveMs: 10 * 60_000,
+        },
+      },
+    });
+    const state = mkState();
+    await completionGate(state, mkCtx(), session);
+    expect(state.transition).toBeUndefined();
+    expect(state.completionGateSettled).toBe(true);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "skipped", reason: "deadline_reserve", round: 0 }),
+    ]);
+  });
+
   test("skips a turn that never used a tool", async () => {
     const session = mkSession();
     const state = mkState({ completedToolResults: [] });

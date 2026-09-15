@@ -81,6 +81,8 @@ export function phaseEventToProgressEvent(
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
         effect_review_required:
           "Turn stopped: a tool effect has an unknown outcome and needs operator review; run /resolve <call-id> …, then send a new prompt to continue.",
+        deadline_reached:
+          "Run stopped at its deadline; the files on disk are what was saved before it.",
         compact_failed:
           "Turn stopped: compaction could not shrink the context; send a new prompt to continue.",
         editor_request_failed:

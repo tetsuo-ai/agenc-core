@@ -286,6 +286,7 @@ import {
 } from "./trajectories-cli.js";
 import { prepareUserPromptForTurn } from "../hooks/user-prompt-ingress.js";
 import {
+  readRunDeadlineFlags,
   readStartupCliFlags,
   resolveCanonicalStartupSelection,
   resolvedStartupProfileName,
@@ -434,6 +435,8 @@ export function formatCliHelpText(): string {
     "  -p, --print                             Run in headless one-shot print mode",
     "  --output-format <format>                 Print mode output: text, json, or stream-json",
     "  --input-format <format>                  Print mode input: stream-json",
+    "  --deadline <+seconds|ISO-8601>           Print mode: stop the run by this time (exit 5)",
+    "  --deadline-reserve <seconds>             Print mode: time before the deadline to wrap up",
     "  --no-tui                                 Force one-shot CLI mode",
     "  --bare                                   Run reduced startup and suppress all session hook extensions",
     "  -c, --continue                           Continue the latest project session",
@@ -1720,6 +1723,48 @@ const ONE_SHOT_EFFECT_REVIEW_EXIT_CODE = 3;
  * it; the work was not wrong, the provider produced nothing.
  */
 const ONE_SHOT_EMPTY_RESPONSE_EXIT_CODE = 4;
+
+/**
+ * Exit code for a print-mode run stopped by its `--deadline` (#2503). The
+ * harness grades whatever the run saved; the run itself did not fail.
+ */
+const ONE_SHOT_DEADLINE_EXIT_CODE = 5;
+const ONE_SHOT_DEADLINE_MARKER =
+  "agenc: the run reached its --deadline and was stopped; grade the files it saved.";
+const ONE_SHOT_DEADLINE_BACKSTOP_MESSAGE =
+  "Run stopped at its deadline by the client: the daemon did not end the turn in time.";
+
+/**
+ * How long past the deadline the client waits for the daemon's own
+ * `deadline_reached` before interrupting the turn itself, and how long it
+ * then waits for a terminal before exiting anyway. Both fit inside the
+ * Harbor adapter's default 120 s margin.
+ */
+const ONE_SHOT_DEADLINE_BACKSTOP_DEFAULTS = { afterDeadlineMs: 20_000, settleMs: 10_000 };
+
+type OneShotDeadlineBackstopGlobal = typeof globalThis & {
+  __agencOneShotDeadlineBackstop?: { afterDeadlineMs: number; settleMs: number } | null;
+};
+
+/** Test seam: shorten the one-shot deadline backstop (null restores it). */
+export function setOneShotDeadlineBackstopForTests(
+  timing: { afterDeadlineMs: number; settleMs: number } | null,
+): void {
+  (globalThis as OneShotDeadlineBackstopGlobal).__agencOneShotDeadlineBackstop = timing;
+}
+
+function oneShotDeadlineBackstopTiming(): { afterDeadlineMs: number; settleMs: number } {
+  return (
+    (globalThis as OneShotDeadlineBackstopGlobal).__agencOneShotDeadlineBackstop ??
+    ONE_SHOT_DEADLINE_BACKSTOP_DEFAULTS
+  );
+}
+
+function scheduleOneShotTimer(delayMs: number, fire: () => void): () => void {
+  const timer = setTimeout(fire, Math.max(0, delayMs));
+  (timer as { unref?: () => void }).unref?.();
+  return () => clearTimeout(timer);
+}
 const ONE_SHOT_EMPTY_RESPONSE_MARKER =
   "agenc: the model returned no assistant output after the retry ladder; " +
   "the provider produced empty samples, so this run is retryable rather " +
@@ -1847,6 +1892,8 @@ function oneShotExitCodeForTerminal(
       return ONE_SHOT_EFFECT_REVIEW_EXIT_CODE;
     case "empty_response":
       return ONE_SHOT_EMPTY_RESPONSE_EXIT_CODE;
+    case "deadline_reached":
+      return ONE_SHOT_DEADLINE_EXIT_CODE;
     default:
       return terminal.code;
   }
@@ -1879,6 +1926,8 @@ async function awaitDaemonOneShotRun(params: {
   readonly startTurn?: (streamId: string) => Promise<MessageStreamResult>;
   /** Re-enter the session after a retryable bounded stop (#2497). */
   readonly continuation?: OneShotContinuation;
+  /** The run's `--deadline` (epoch ms); arms the client backstop (#2503). */
+  readonly deadlineAt?: number;
 }): Promise<DaemonOneShotRunOutcome> {
   const { daemonClient, sessionId, outputFormat } = params;
   let unsubscribeEvents: (() => void) | null = null;
@@ -1908,11 +1957,13 @@ async function awaitDaemonOneShotRun(params: {
       let settled = false;
       let finalizing = false;
       let onAbort: (() => void) | null = null;
+      let disposeDeadlineBackstop: (() => void) | null = null;
       const settle = (
         next: { readonly code: number } | { readonly error: Error },
       ) => {
         if (settled) return;
         settled = true;
+        disposeDeadlineBackstop?.();
         if (onAbort !== null) {
           params.signal.removeEventListener("abort", onAbort);
         }
@@ -2033,6 +2084,9 @@ async function awaitDaemonOneShotRun(params: {
         if (finalStatus.failureCode === "empty_response") {
           process.stderr.write(`${ONE_SHOT_EMPTY_RESPONSE_MARKER}\n`);
         }
+        if (finalStatus.failureCode === "deadline_reached") {
+          process.stderr.write(`${ONE_SHOT_DEADLINE_MARKER}\n`);
+        }
         // A tool-blocked giveup must NOT masquerade as a successful answer.
         // When the run auto-denied a permission request (no human to approve;
         // see daemonOneShotPermissionRequestId) and then "completed", the
@@ -2056,6 +2110,37 @@ async function awaitDaemonOneShotRun(params: {
         });
         settle({ code: finalStatus.code });
       };
+
+      // Deadline backstop (#2503): the daemon ends the turn at the deadline
+      // on its own. If it has not by shortly after, interrupt the turn from
+      // here and exit with the deadline code anyway, before the harness
+      // that set the deadline kills the process with nothing written.
+      if (params.deadlineAt !== undefined) {
+        const timing = oneShotDeadlineBackstopTiming();
+        const cancelTimers: Array<() => void> = [];
+        disposeDeadlineBackstop = () => {
+          for (const cancel of cancelTimers.splice(0)) cancel();
+        };
+        cancelTimers.push(scheduleOneShotTimer(
+          params.deadlineAt + timing.afterDeadlineMs - Date.now(),
+          () => {
+            if (settled || finalizing) return;
+            void daemonClient.request("session.cancelTurn", {
+              sessionId,
+              reason: "deadline_reached",
+              ...(activeTurnId !== undefined ? { expectedTurnId: activeTurnId } : {}),
+            }).catch(() => {});
+            cancelTimers.push(scheduleOneShotTimer(timing.settleMs, () => {
+              if (settled || finalizing) return;
+              void finalize({
+                code: ONE_SHOT_DEADLINE_EXIT_CODE,
+                message: ONE_SHOT_DEADLINE_BACKSTOP_MESSAGE,
+                failureCode: "deadline_reached",
+              });
+            }));
+          },
+        ));
+      }
 
       unsubscribeConnection = daemonClient.subscribeToConnectionState(
         (state) => {
@@ -2329,6 +2414,9 @@ async function runDaemonOneShotPrompt(params: {
       agentId: started.agentId,
       outputFormat,
       signal: params.signal,
+      ...(params.runtimeOptions.deadlineAt !== undefined
+        ? { deadlineAt: params.runtimeOptions.deadlineAt }
+        : {}),
       ...oneShotCompactFailedContinuation({
         daemonClient,
         sessionId,
@@ -2596,6 +2684,9 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
       agentId: acquired.agent.agentId,
       outputFormat: params.outputFormat ?? "text",
       signal: params.signal,
+      ...(params.runtimeOptions.deadlineAt !== undefined
+        ? { deadlineAt: params.runtimeOptions.deadlineAt }
+        : {}),
       startTurn: (streamId) =>
         client.request(
           "message.stream",
@@ -2694,6 +2785,8 @@ export async function oneShotCLI(
       // auto-denied below, so tools that only exist to ask a person must not
       // be offered in the first place.
       nonInteractive: true,
+      // `--deadline` (#2503): the instant this run must end by.
+      ...readRunDeadlineFlags(process.argv, Date.now()),
     });
     validateAgencHome();
     throwIfAborted("validateAgencHome");

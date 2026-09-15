@@ -15,6 +15,11 @@ import type { AgenCConfig } from "../config/schema.js";
 import { tokenizeCliOptionRegion } from "./cli-option-region.js";
 import { extractFlagValue, extractFlagValues } from "./route.js";
 import {
+  parseDeadlineFlag,
+  parseDeadlineReserveFlag,
+  resolveDeadlineReserveMs,
+} from "../session/run-deadline.js";
+import {
   assertNoRetiredStartupFlags,
   AUTONOMOUS_FLAG,
   BYPASS_APPROVALS_FLAG,
@@ -44,6 +49,29 @@ export interface StartupCliFlags {
   readonly bypassApprovals?: boolean;
   readonly autonomousMode?: boolean;
   readonly simpleMode?: boolean;
+}
+
+/**
+ * `--deadline` / `--deadline-reserve` for a print-mode run (#2503), resolved
+ * once against `nowMs` into the runtime options the daemon receives. The
+ * router has already rejected malformed values and non-print modes.
+ */
+export function readRunDeadlineFlags(
+  argv: readonly string[],
+  nowMs: number,
+): { readonly deadlineAt?: number; readonly deadlineReserveMs?: number } {
+  const { optionArgs } = tokenizeCliOptionRegion(argv.slice(2));
+  const deadline = extractFlagValue(optionArgs, "--deadline");
+  if (deadline === null) return {};
+  const deadlineAt = parseDeadlineFlag(deadline, nowMs);
+  const reserve = extractFlagValue(optionArgs, "--deadline-reserve");
+  return {
+    deadlineAt,
+    deadlineReserveMs: resolveDeadlineReserveMs(
+      deadlineAt - nowMs,
+      reserve === null ? undefined : parseDeadlineReserveFlag(reserve),
+    ),
+  };
 }
 
 export interface StartupSelection {

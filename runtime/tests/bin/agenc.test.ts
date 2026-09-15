@@ -43,6 +43,7 @@ import {
   resumeTUIEntry,
   runSingleTurn,
   sessionConfigurationFromAgenCConfig,
+  setOneShotDeadlineBackstopForTests,
   shouldLoadMcpCliConfig,
   validateAgencHome,
   type ConfigReloadLatch,
@@ -2329,6 +2330,96 @@ describe("main() smoke", () => {
         });
       } finally {
         process.argv = previousArgv;
+      }
+    });
+  });
+
+  describe("--deadline (#2503)", () => {
+    const deadlineMessage = "Run stopped at its deadline. The files on disk are what was saved before it; any step still running was interrupted.";
+
+    function deadlineFixture(options: { readonly terminal: boolean }) {
+      const agentId = "agent_deadline";
+      const sessionId = "session_deadline";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId, eventId: id, event: { id, type, payload } },
+      });
+      const events = [
+        transcript("started", "turn_started", { turnId: "turn-1" }),
+        { method: "event.message_chunk", params: { sessionId, eventId: "partial", agentId, delta: "partial" } },
+        ...(options.terminal
+          ? [
+              transcript("deadline-warning", "warning", { cause: "deadline_reached", message: deadlineMessage }),
+              transcript("failed", "turn_failed", { turnId: "turn-1", code: "deadline_reached", message: deadlineMessage }),
+            ]
+          : []),
+      ];
+      return { agentId, sessionId, events };
+    }
+
+    async function withArgv<T>(argv: readonly string[], body: () => Promise<T>): Promise<T> {
+      const previousArgv = process.argv;
+      process.argv = ["node", "agenc", ...argv];
+      try {
+        return await body();
+      } finally {
+        process.argv = previousArgv;
+      }
+    }
+
+    it("sends the deadline to the daemon and exits 5 with the marker on deadline_reached", async () => {
+      const fixture = deadlineFixture({ terminal: true });
+      await withArgv(["--print", "--deadline", "+600", "work"], () =>
+        withOneShotTestEnvironment("agenc-deadline-", async ({ cwd, run, stdout, stderr }) => {
+          const daemon = installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          });
+          const before = Date.now();
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(5);
+          expect(stdout()).toContain("partial");
+          expect(stderr()).toContain("Run stopped at its deadline");
+          expect(stderr()).toContain("reached its --deadline");
+          const created = daemon.requests.find((request) => request.method === "agent.create")?.params as {
+            runtimeOptions: { deadlineAt?: number; deadlineReserveMs?: number };
+          };
+          expect(created.runtimeOptions.deadlineAt).toBeGreaterThanOrEqual(before + 600_000);
+          expect(created.runtimeOptions.deadlineAt).toBeLessThan(before + 610_000);
+          expect(created.runtimeOptions.deadlineReserveMs).toBe(300_000);
+          expect(daemon.requests.some((request) => request.method === "session.cancelTurn")).toBe(false);
+        }));
+    });
+
+    it("reports exitCode 5 in the json result", async () => {
+      const fixture = deadlineFixture({ terminal: true });
+      await withArgv(["--print", "--output-format=json", "work"], () =>
+        withOneShotTestEnvironment("agenc-deadline-json-", async ({ cwd, run, stdout }) => {
+          installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          });
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(5);
+          const lines = stdout().trim().split("\n");
+          expect(JSON.parse(lines.at(-1)!)).toMatchObject({ type: "result", exitCode: 5 });
+        }));
+    });
+
+    it("interrupts the turn itself and exits 5 when the daemon does not end it in time", async () => {
+      const fixture = deadlineFixture({ terminal: false });
+      setOneShotDeadlineBackstopForTests({ afterDeadlineMs: 0, settleMs: 20 });
+      try {
+        await withArgv(["--print", "--deadline", "+1", "work"], () =>
+          withOneShotTestEnvironment("agenc-deadline-backstop-", async ({ cwd, run, stderr }) => {
+            const daemon = installDaemonCliDepsForTest({
+              agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+            });
+            expect(await run(() => oneShotCLI("work"), 5000)).toBe(5);
+            expect(daemon.requests.find((request) => request.method === "session.cancelTurn")?.params)
+              .toMatchObject({ sessionId: fixture.sessionId, reason: "deadline_reached" });
+            expect(stderr()).toContain("the daemon did not end the turn in time");
+            expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+              .toMatchObject({ agentId: fixture.agentId });
+          }));
+      } finally {
+        setOneShotDeadlineBackstopForTests(null);
       }
     });
   });

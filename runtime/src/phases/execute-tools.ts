@@ -102,6 +102,7 @@ import {
 } from "../session/editor-interaction.js";
 import { EDITOR_PROPOSAL_TOOL_NAME } from "../tools/system/editor-proposal.js";
 import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
+import { stampToolResultRemaining } from "../session/run-deadline.js";
 
 function toolResultMessage(
   runId: string,
@@ -659,6 +660,9 @@ function recordCompletedToolCall(
   result: ToolDispatchResult,
   durationMs?: number,
 ): CompletedToolResultRecord {
+  // Remaining run budget when this result landed (#2503); rendered on the
+  // result in the query projection only.
+  stampToolResultRemaining(session, toolCall.id);
   const registryTool = session.services.registry.tools.find(
     (tool) => tool.name === toolCall.name,
   );

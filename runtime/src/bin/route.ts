@@ -30,6 +30,11 @@ import {
   findRetiredStartupFlag,
   retiredStartupFlagError,
 } from "./startup-flags.js";
+import {
+  DeadlineFlagError,
+  parseDeadlineFlag,
+  parseDeadlineReserveFlag,
+} from "../session/run-deadline.js";
 
 /**
  * Parse a `--flag <value>` or `--flag=<value>` pair out of an argv
@@ -180,6 +185,8 @@ const STARTUP_SELECTION_FLAG_USAGE: Readonly<
 const HEADLESS_FORMAT_VALUE_FLAGS = Object.freeze([
   "--output-format",
   "--input-format",
+  "--deadline",
+  "--deadline-reserve",
 ] as const);
 
 type HeadlessFormatValueFlag =
@@ -192,7 +199,38 @@ const HEADLESS_FORMAT_FLAG_USAGE: Readonly<
     "agenc --output-format requires a value (usage: agenc -p --output-format <text|json|stream-json>)",
   "--input-format":
     "agenc --input-format requires a value (usage: agenc -p --input-format <stream-json>)",
+  "--deadline":
+    "agenc --deadline requires a value (usage: agenc -p --deadline <+seconds|ISO-8601>)",
+  "--deadline-reserve":
+    "agenc --deadline-reserve requires a value (usage: agenc -p --deadline <…> --deadline-reserve <seconds>)",
 });
+
+/**
+ * `--deadline` / `--deadline-reserve` (#2503) only make sense for a run
+ * nobody attends; an interactive session is never stopped by a clock.
+ * Validated here so a malformed value is a usage error (exit 2) before any
+ * daemon work starts.
+ */
+function runDeadlineFlagError(
+  optionArgs: readonly string[],
+  headless: boolean,
+): string | null {
+  const deadline = extractFlagValue(optionArgs, "--deadline");
+  const reserve = extractFlagValue(optionArgs, "--deadline-reserve");
+  if (deadline === null && reserve === null) return null;
+  if (!headless) {
+    return "agenc --deadline applies to print mode (-p), piped stdin, --no-tui, and headless continue/resume";
+  }
+  if (deadline === null) return "agenc --deadline-reserve requires --deadline";
+  try {
+    parseDeadlineFlag(deadline, Date.now());
+    if (reserve !== null) parseDeadlineReserveFlag(reserve);
+  } catch (error) {
+    if (error instanceof DeadlineFlagError) return error.message;
+    throw error;
+  }
+  return null;
+}
 
 /**
  * Detect a selection value-flag (`--provider`/`--model`/`--profile`/`--image`)
@@ -429,6 +467,10 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
   // the prompt becomes one more turn of that session, the way
   // `hermes chat -c` and `opencode run --continue` work from a shell.
   const headless = hasPrintFlag || hasNoTuiFlag || !opts.isTTY;
+  const deadlineError = runDeadlineFlagError(optionArgs, headless);
+  if (deadlineError !== null) {
+    return { kind: "errorAndExit", message: deadlineError, exitCode: 2 };
+  }
 
   // 1. `--resume <id>` / `-r <id>` boots through the TUI resume path. Errors
   //    inside `resumeTUI` (missing session, corrupt rollout, etc.) are

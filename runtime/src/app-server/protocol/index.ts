@@ -1443,6 +1443,13 @@ export interface AgentRuntimeOptionsParams extends JsonObject {
   readonly sessionTempRoot?: string;
   readonly pluginStorageRoot: string;
   readonly allowUntrustedHooks: boolean;
+  /**
+   * Absolute instant (epoch ms) the run must end by; the one-shot CLI's
+   * `--deadline`. Omitted by older clients: no deadline.
+   */
+  readonly deadlineAt?: number;
+  /** Reserve before `deadlineAt`, in ms, when the model is told to finish. */
+  readonly deadlineReserveMs?: number;
 }
 
 export interface AgentCreateParams extends JsonObject {
