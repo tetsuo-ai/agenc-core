@@ -2548,7 +2548,7 @@ export async function oneShotCLI(
       startupImages.length > 0
         ? startupImages
         : extractFlagValues(process.argv.slice(2), "--image");
-    const initialContent = startupContentFromInputs(
+    const startupContent = startupContentFromInputs(
       resolvedUserMessage,
       resolvedStartupImages,
       daemonCwd,
@@ -2557,9 +2557,18 @@ export async function oneShotCLI(
     const daemonPrompt =
       resolvedUserMessage.trim().length > 0
         ? resolvedUserMessage
-        : initialContent !== undefined
+        : startupContent !== undefined
           ? "Multimodal AgenC startup"
           : resolvedUserMessage;
+    // agent.create trims the objective, and without initialContent the daemon
+    // sends that trimmed objective as the first user message. A text-only
+    // prompt therefore also travels as initialContent, so the model receives
+    // it byte for byte: leading indentation and the final newline of a stdin
+    // prompt survive. A whitespace-only prompt still meets the daemon's
+    // non-empty objective check exactly as before.
+    const initialContent =
+      startupContent ??
+      (resolvedUserMessage.trim().length > 0 ? resolvedUserMessage : undefined);
     // Forward the canonical dangerous-bypass selection to the daemon so the
     // print-mode one-shot agent runs under bypassPermissions, matching
     // the bootTUI path. See GAP-PE-GUARDIAN-YOLO-LEAK.
