@@ -26,8 +26,12 @@ export type CompactionFailureDetails = Readonly<
 
 /** Longest message kept per error in the chain. */
 export const MAX_FAILURE_DETAIL_MESSAGE_LENGTH = 512;
-/** Causes walked below the failure itself: `cause`, then `root_cause`. */
-const CAUSE_PREFIXES = ["cause", "root_cause"] as const;
+/**
+ * Links followed below the first cause while looking for the root cause.
+ * Real wrapping chains are a handful deep; the bound only matters for a
+ * pathological chain, which then reports `cause_chain_stopped: "depth_limit"`.
+ */
+export const MAX_FAILURE_CAUSE_DEPTH = 32;
 
 /**
  * A transaction failure that carries structured facts (for example the
@@ -88,33 +92,56 @@ function describeOneError(
   }
 }
 
+/** The next link of a cause chain, or undefined when there is none to follow. */
+function causeOf(value: unknown): unknown {
+  if (!(value instanceof Error)) return undefined;
+  return value.cause === null ? undefined : value.cause;
+}
+
 /**
  * Flatten a failure and its cause chain for the warning payload. Facts the
  * failure itself carries (see {@link CompactionTransactionFailureWithDetails})
  * come first; the chain adds `error_*`, `cause_*`, and `root_cause_*`.
+ *
+ * This runs synchronously on the compaction failure path, so the walk must
+ * always end: a cause chain can loop (an error whose cause is itself, or two
+ * errors naming each other) or run arbitrarily deep. Every error seen is
+ * remembered and never described twice, and the search for the root stops
+ * after {@link MAX_FAILURE_CAUSE_DEPTH} links. A walk cut short says why in
+ * `cause_chain_stopped` ("cycle" or "depth_limit").
  */
 export function compactionFailureDetails(error: unknown): CompactionFailureDetails {
   const details: Record<string, CompactionFailureDetailValue> = {
     ...(error instanceof CompactionTransactionFailureWithDetails ? error.details : {}),
   };
   describeOneError(error, "error", details);
-  let current: unknown = error instanceof Error ? error.cause : undefined;
-  for (const prefix of CAUSE_PREFIXES) {
-    if (current === undefined || current === null) break;
-    describeOneError(current, prefix, details);
-    const next: unknown = current instanceof Error ? current.cause : undefined;
-    if (prefix === "cause" && next !== undefined && next !== null) {
-      // Skip straight to the deepest cause: the middle of a long chain is
-      // wrapping, and the root names the physical failure.
-      let root: unknown = next;
-      while (root instanceof Error && root.cause !== undefined && root.cause !== null) {
-        root = root.cause;
-      }
-      current = root;
-      continue;
-    }
-    current = undefined;
+  const seen = new Set<unknown>([error]);
+  const first = causeOf(error);
+  if (first === undefined) return details;
+  if (seen.has(first)) {
+    details.cause_chain_stopped = "cycle";
+    return details;
   }
+  seen.add(first);
+  describeOneError(first, "cause", details);
+  // Skip straight to the deepest cause: the middle of a long chain is
+  // wrapping, and the root names the physical failure.
+  let root: unknown = first;
+  for (let depth = 0; ; depth += 1) {
+    const next = causeOf(root);
+    if (next === undefined) break;
+    if (seen.has(next)) {
+      details.cause_chain_stopped = "cycle";
+      break;
+    }
+    if (depth >= MAX_FAILURE_CAUSE_DEPTH) {
+      details.cause_chain_stopped = "depth_limit";
+      break;
+    }
+    seen.add(next);
+    root = next;
+  }
+  if (root !== first) describeOneError(root, "root_cause", details);
   return details;
 }
 
