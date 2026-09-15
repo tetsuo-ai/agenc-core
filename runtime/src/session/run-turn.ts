@@ -3158,7 +3158,10 @@ async function* runTurnKernelInner(
             (delayMs > 0 ? ` in ${Math.round(delayMs / 1000)} s` : "") +
             (rebind ? " with a fresh provider conversation" : ""),
         );
-        if (rebind) session.bindProviderConversation();
+        // Rebinding the same conversation id alone keeps the stale continuation
+        // (last request, response id and output); reset it so the retry does
+        // not resume a stuck server-side continuation.
+        if (rebind) session.resetProviderIncrementalState();
         // An abort during the wait is picked up at the loop head, which ends
         // the turn as cancelled rather than sampling again.
         if (delayMs > 0) await abortableSleep(delayMs, signal);

@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
+import {
+  ProviderHttpClient,
+  type ProviderHttpContinuationSnapshot,
+} from "../../src/llm/client.js";
 import type { LLMResponse } from "../../src/llm/types.js";
 import type { PhaseEvent } from "../../src/phases/events.js";
 import {
@@ -18,8 +22,8 @@ import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
  * Grok returned two empty samples in a row 3.4 hours into a healthy run and
  * the single retry ended the turn: "The model returned no assistant output
  * after a retry." Nobody attached to `agenc -p` can press enter again, so an
- * unattended turn now walks a small backoff ladder, rebinding the provider
- * conversation from the second retry, before it gives up. Attended sessions
+ * unattended turn now walks a small backoff ladder, resetting the provider
+ * continuation from the second retry, before it gives up. Attended sessions
  * keep their one immediate retry.
  */
 
@@ -78,10 +82,11 @@ describe("empty-response retry ladder (#2502)", () => {
     expect(EMPTY_RESPONSE_RETRY_DELAYS_MS).toEqual([2_000, 8_000, 30_000]);
   });
 
-  test("an unattended turn re-samples three times, rebinding the provider from the second retry", async () => {
+  test("an unattended turn re-samples three times, resetting the provider continuation from the second retry", async () => {
     const { provider, samples } = emptyThenAnswer(3);
     const { session, events } = mkSession({ provider, services: unattended() });
     const rebind = vi.spyOn(session, "bindProviderConversation");
+    const reset = vi.spyOn(session, "resetProviderIncrementalState");
     const ctx = mkCtx();
 
     // maxTurns 1: the retries happen before commit() and never consume an
@@ -95,8 +100,9 @@ describe("empty-response retry ladder (#2502)", () => {
       "The model returned no assistant output; retry 2/3 with a fresh provider conversation",
       "The model returned no assistant output; retry 3/3 with a fresh provider conversation",
     ]);
-    // One bind at turn start, then one per retry from the second on.
-    expect(rebind).toHaveBeenCalledTimes(3);
+    // The turn-start bind, then a full continuation reset per retry from the second on.
+    expect(rebind).toHaveBeenCalledTimes(1);
+    expect(reset).toHaveBeenCalledTimes(2);
     expect(terminals(events)).toEqual([
       expect.objectContaining({ outcome: "completed", code: 0 }),
     ]);
@@ -104,6 +110,54 @@ describe("empty-response retry ladder (#2502)", () => {
     expect(events.some((event) =>
       event.msg.type === "error" && event.msg.payload.cause === "stream_disconnected",
     )).toBe(false);
+  });
+
+  test("retries two and three clear the provider's stale Responses continuation", async () => {
+    // A spy on the rebind could not see this: binding the same conversation id keeps the last
+    // request, response id and output, so a stuck server-side continuation was reused anyway.
+    // A real ProviderHttpClient records what continuation each sample would have sent.
+    const client = new ProviderHttpClient({
+      providerName: "openai",
+      baseURL: "https://offline.invalid",
+      fetchImpl: async () => {
+        throw new Error("network is not used: every sample is mocked");
+      },
+    });
+    const provider = mkProvider({}, { client });
+    const seen: ProviderHttpContinuationSnapshot[] = [];
+    provider.chatStream = async (): Promise<LLMResponse> => {
+      seen.push(client.snapshotResponsesContinuation());
+      const sample = seen.length;
+      // Each sample leaves a server-side continuation behind, as a Responses provider does.
+      client.restoreResponsesContinuation({
+        ...client.snapshotResponsesContinuation(),
+        lastResponseId: `resp-${sample}`,
+        lastRequest: { sample },
+        lastResponseOutput: [],
+      });
+      return {
+        content: sample <= 3 ? "" : "done",
+        toolCalls: [],
+        usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session } = mkSession({ provider, services: unattended() });
+
+    const phases = await collect(session);
+
+    expect(phases.at(-1)).toMatchObject({ stopReason: "completed", content: "done" });
+    expect(seen).toHaveLength(4);
+    // The first retry keeps continuity; the second and third start from a clean continuation
+    // under the same conversation id.
+    expect(seen[1]).toMatchObject({ lastResponseId: "resp-1" });
+    for (const snapshot of seen.slice(2)) {
+      expect(snapshot.lastResponseId).toBeUndefined();
+      expect(snapshot.lastRequest).toBeUndefined();
+      expect(snapshot.lastResponseOutput).toBeUndefined();
+      expect(snapshot.conversationId).toBe(seen[0]?.conversationId);
+    }
   });
 
   test("the warning names the configured backoff", async () => {
@@ -142,14 +196,16 @@ describe("empty-response retry ladder (#2502)", () => {
     const { provider, samples } = emptyThenAnswer(10);
     const { session, events } = mkSession({ provider });
     const rebind = vi.spyOn(session, "bindProviderConversation");
+    const reset = vi.spyOn(session, "resetProviderIncrementalState");
 
     const started = Date.now();
     const phases = await collect(session);
 
     expect(samples()).toBe(2);
     expect(Date.now() - started).toBeLessThan(400);
-    // Only the turn-start bind; the single attended retry never rebinds.
+    // Only the turn-start bind; the single attended retry never resets the continuation.
     expect(rebind).toHaveBeenCalledTimes(1);
+    expect(reset).not.toHaveBeenCalled();
     expect(phases.at(-1)).toMatchObject({ stopReason: "empty_response" });
     expect(retryWarnings(events)).toEqual([
       "The model returned no assistant output; retry 1/1",
