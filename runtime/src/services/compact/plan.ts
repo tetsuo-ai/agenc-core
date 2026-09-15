@@ -366,7 +366,8 @@ function createPlanningWork(): MutableCompactionPlanningWork {
  * suffix for every chunk. Exponential growth establishes a local failure
  * bracket, then binary search resolves only that bracket. Every materialized
  * candidate is therefore no larger than the remaining source or twice the
- * preceding fitted prefix.
+ * preceding fitted prefix. Fitting includes bounded canonical source encoding,
+ * not just token accounting: many small messages can exhaust a node budget.
  */
 function findMaximalChunkCandidate(params: {
   readonly units: readonly CompactionSemanticUnit[];
@@ -379,7 +380,7 @@ function findMaximalChunkCandidate(params: {
   readonly planningWork: MutableCompactionPlanningWork;
 }): CompactionChunkCandidate | null {
   let best = evaluateChunkCandidate({ ...params, end: params.start + 1 });
-  if (!chunkCandidateFits(best, params.contextWindow)) return null;
+  if (best === null || !chunkCandidateFits(best, params.contextWindow)) return null;
 
   let growth = 1;
   let firstFailingEnd: number | undefined;
@@ -389,7 +390,7 @@ function findMaximalChunkCandidate(params: {
       safeSum(best.end, growth),
     );
     const candidate = evaluateChunkCandidate({ ...params, end: candidateEnd });
-    if (!chunkCandidateFits(candidate, params.contextWindow)) {
+    if (candidate === null || !chunkCandidateFits(candidate, params.contextWindow)) {
       firstFailingEnd = candidateEnd;
       break;
     }
@@ -403,7 +404,7 @@ function findMaximalChunkCandidate(params: {
   while (low <= high) {
     const candidateEnd = low + Math.floor((high - low) / 2);
     const candidate = evaluateChunkCandidate({ ...params, end: candidateEnd });
-    if (chunkCandidateFits(candidate, params.contextWindow)) {
+    if (candidate !== null && chunkCandidateFits(candidate, params.contextWindow)) {
       best = candidate;
       low = candidateEnd + 1;
     } else {
@@ -423,19 +424,8 @@ function evaluateChunkCandidate(params: {
   readonly contextWindow: number;
   readonly outputReserve: number;
   readonly planningWork: MutableCompactionPlanningWork;
-}): CompactionChunkCandidate {
+}): CompactionChunkCandidate | null {
   const units = params.units.slice(params.start, params.end);
-  const sourceRef = chunkSourceRef(
-    params.options.source,
-    units,
-    params.chunkIndex,
-    params.options.messageSourceRefs,
-  );
-  const messages = structuredTranscriptMessages(
-    units,
-    [sourceRef.ref_id],
-    params.options.requestedFocus,
-  );
   const sourceRefCount = units.length === 0
     ? 0
     : units.at(-1)!.last_message_index - units[0]!.first_message_index + 1;
@@ -455,6 +445,35 @@ function evaluateChunkCandidate(params: {
     params.planningWork.maximum_candidate_semantic_units,
     units.length,
   );
+  let sourceRef: RolloutSpanRefV1;
+  let messages: readonly LLMMessage[];
+  try {
+    sourceRef = chunkSourceRef(
+      params.options.source,
+      units,
+      params.chunkIndex,
+      params.options.messageSourceRefs,
+    );
+    messages = structuredTranscriptMessages(
+      units,
+      [sourceRef.ref_id],
+      params.options.requestedFocus,
+    );
+  } catch (error) {
+    // These are source-input candidates, not responses from a provider. A
+    // candidate can exceed the bounded canonicalizer's node/depth/work budget
+    // before it reaches the token estimator. Let the existing maximal-prefix
+    // search split it, without relaxing those limits or catching malformed
+    // source/provenance errors. A single unit that cannot fit remains a typed
+    // semantic_unit_oversized refusal at the caller.
+    if (
+      error instanceof CompactionTransactionError &&
+      error.reason === "output_limit_exceeded"
+    ) {
+      return null;
+    }
+    throw error;
+  }
   params.planningWork.candidate_transcript_utf8_bytes = safeSum(
     params.planningWork.candidate_transcript_utf8_bytes,
     messagesUtf8Bytes(messages),
