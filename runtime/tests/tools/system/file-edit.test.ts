@@ -17,6 +17,7 @@
 
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -124,6 +125,55 @@ describe("Edit tool", () => {
     const tool = createFileEditTool({ allowedPaths: [root] });
     expect(tool.name).toBe("Edit");
     expect(tool.metadata?.mutating).toBe(true);
+  });
+
+  test("a verified rollback after a post-write fault settles as no-effect (#2500)", async () => {
+    const file = await seedReadFile(root, "rolled-back.txt", "alpha\nbeta\n");
+    const tool = createFileEditTool({
+      allowedPaths: [root],
+      __testWrite: async ({ write }) => {
+        await write();
+        throw new Error("post-write fault");
+      },
+    });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "gamma",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+    expect(result.isError).toBe(true);
+    expectPreMutationNoEffect(result);
+    expect(result.effectDisposition).toMatchObject({ evidenceRef: "tool:Edit:rollback_verified" });
+    expect(String(result.content)).toContain("restored to its original contents");
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha\nbeta\n");
+  });
+
+  test("a refused exclusive create (EACCES) settles as no-effect with diagnostics (#2500)", async () => {
+    const sealed = join(root, "sealed");
+    await mkdir(sealed);
+    await chmod(sealed, 0o555);
+    if (process.getuid?.() === 0) {
+      await chmod(sealed, 0o755);
+      return;
+    }
+    try {
+      const tool = createFileMultiEditTool({ allowedPaths: [root] });
+      const result = await tool.execute({
+        file_path: join(sealed, "new.txt"),
+        edits: [{ old_string: "", new_string: "never lands\n" }],
+        [SESSION_ID_ARG]: SESSION_ID,
+      });
+      expect(result.isError).toBe(true);
+      expectPreMutationNoEffect(result);
+      expect(result.effectDisposition).toMatchObject({ evidenceRef: "tool:MultiEdit:original_state_verified" });
+      // The create path writes through a plain Node callback, not the bound
+      // helper, so the errno is present but the helper's uid/mode context is not.
+      expect(String(result.content)).toContain("EACCES");
+      expect(String(result.content)).toContain("No bytes were written");
+    } finally {
+      await chmod(sealed, 0o755);
+    }
   });
 
   test("exposes the AgenC multi-edit tool name", () => {

@@ -131,6 +131,54 @@ export class WorkspaceFileMutationPathBindingUnavailableError extends WorkspaceM
   }
 }
 
+/**
+ * A transaction that cancelled its admission proved the target holds its
+ * original bytes (#2500). That verdict rides on the rethrown error so the
+ * tool can settle the call as `confirmed_no_effect` instead of an unknown
+ * outcome that poisons the session's side-effecting tools.
+ */
+export type WorkspaceMutationNoEffectEvidence =
+  | "pre_effect"
+  | "original_state_verified"
+  | "rollback_verified";
+
+const WORKSPACE_MUTATION_NO_EFFECT = Symbol("agenc.workspaceMutationNoEffect");
+
+export function markWorkspaceMutationNoEffect<T>(
+  error: T,
+  evidence: WorkspaceMutationNoEffectEvidence,
+): T {
+  if (typeof error === "object" && error !== null) {
+    Object.defineProperty(error, WORKSPACE_MUTATION_NO_EFFECT, {
+      value: evidence,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return error;
+}
+
+export function workspaceMutationNoEffectEvidence(
+  error: unknown,
+): WorkspaceMutationNoEffectEvidence | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const value = (error as Record<symbol, unknown>)[WORKSPACE_MUTATION_NO_EFFECT];
+  return value === "pre_effect" ||
+    value === "original_state_verified" ||
+    value === "rollback_verified"
+    ? value
+    : undefined;
+}
+
+/** Model-facing sentence for a settled no-effect failure. */
+export function describeWorkspaceMutationNoEffect(
+  evidence: WorkspaceMutationNoEffectEvidence,
+): string {
+  return evidence === "rollback_verified"
+    ? "The file was restored to its original contents; the mutation had no lasting effect."
+    : "No bytes were written; the file is unchanged.";
+}
+
 export interface WorkspaceFileMutationTestHooks {
   /**
    * Fault-injection seam. Tests may touch the target and then reject to model
@@ -1808,7 +1856,7 @@ try {
 const BOUND_DIRECTORY_HELPER_SOURCE = String.raw`
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { constants, createReadStream } from "node:fs";
+import { constants, createReadStream, lstatSync } from "node:fs";
 import {
   link,
   lstat,
@@ -1893,12 +1941,47 @@ const preciseIdentity = (value) => ({
 });
 const sameIdentity = (left, right) =>
   left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
+// A permission or space failure names who was refused and what they hit,
+// so a refused write in an unattended run explains itself from the tool
+// result alone (#2500). Best effort: diagnostics never mask the failure.
+const failureContext = (error) => {
+  const parts = [];
+  if (typeof process.getuid === "function") {
+    try {
+      parts.push("uid=" + process.getuid() + " gid=" + process.getgid());
+    } catch {}
+  }
+  const errno = error && typeof error === "object" ? error.code : undefined;
+  if (
+    errno === "EACCES" ||
+    errno === "EPERM" ||
+    errno === "EROFS" ||
+    errno === "ENOSPC"
+  ) {
+    const describe = (label, target) => {
+      try {
+        const info = lstatSync(target);
+        parts.push(
+          label + " mode=0" + (info.mode & 0o7777).toString(8) +
+            " owner=" + info.uid + ":" + info.gid,
+        );
+      } catch {}
+    };
+    if (typeof error.path === "string" && error.path.length > 0) {
+      describe("target", error.path);
+    }
+    describe("cwd", ".");
+  }
+  return parts.length > 0 ? " (" + parts.join(", ") + ")" : "";
+};
 const fail = (code, error) => {
   send({
     type: "result",
     ok: false,
     code,
-    message: error instanceof Error ? error.message : String(error),
+    message:
+      (error instanceof Error ? error.message : String(error)) +
+      failureContext(error),
   });
 };
 const validSegment = (value) =>
@@ -4281,7 +4364,7 @@ export async function executeWorkspaceFileMutation(input: {
     beginWorkspaceMutation(input.admission);
   } catch (error) {
     cancelWorkspaceMutation(input.admission);
-    throw error;
+    throw markWorkspaceMutationNoEffect(error, "pre_effect");
   }
 
   let guard: WorkspaceFilePathTransactionGuard;
@@ -4290,7 +4373,7 @@ export async function executeWorkspaceFileMutation(input: {
   } catch (error) {
     // No target syscall has run, so this remains a true pre-effect failure.
     cancelWorkspaceMutation(input.admission);
-    throw error;
+    throw markWorkspaceMutationNoEffect(error, "pre_effect");
   }
 
   try {
@@ -4365,7 +4448,7 @@ export async function executeWorkspaceFileMutation(input: {
         // EEXIST guarantees this callback did not touch the file, so cancelling
         // is safe even though the open syscall itself was attempted.
         cancelWorkspaceMutation(input.admission);
-        throw writeError;
+        throw markWorkspaceMutationNoEffect(writeError, "pre_effect");
       }
       if (
         writeError instanceof WorkspacePathIdentityChangedError &&
@@ -4375,7 +4458,7 @@ export async function executeWorkspaceFileMutation(input: {
         // filesystem callback. Restoring through the now-aliased pathname would
         // itself risk modifying an unrelated file.
         cancelWorkspaceMutation(input.admission);
-        throw writeError;
+        throw markWorkspaceMutationNoEffect(writeError, "pre_effect");
       }
       if (writeError instanceof WorkspacePathIdentityChangedError) {
         // Once a syscall has started and the path identity changes, a path-based
@@ -4413,8 +4496,11 @@ export async function executeWorkspaceFileMutation(input: {
         transactionPostState === undefined &&
         (await guardedStateMatches(guard, originalState))
       ) {
+        // The helper may have announced its effect boundary before the failing
+        // syscall (an exclusive open refused with EACCES/EROFS/ENOSPC), but the
+        // target verifiably holds its original bytes: nothing happened.
         cancelWorkspaceMutation(input.admission);
-        throw writeError;
+        throw markWorkspaceMutationNoEffect(writeError, "original_state_verified");
       }
 
       let restoreError: unknown;
@@ -4451,7 +4537,7 @@ export async function executeWorkspaceFileMutation(input: {
         (await guardedStateMatches(guard, originalState))
       ) {
         cancelWorkspaceMutation(input.admission);
-        throw writeError;
+        throw markWorkspaceMutationNoEffect(writeError, "rollback_verified");
       }
 
       const observed = observedStateForCoordinator(

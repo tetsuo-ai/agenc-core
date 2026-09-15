@@ -40,7 +40,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
-import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import { createToolEffectDispositionEvidence, settledNoEffectToolResult } from "../effect-boundary.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   sessionPlanFileAuthority,
@@ -68,7 +68,9 @@ import {
   type WorkspaceMutationSource,
 } from "../../workspace/mutation-coordinator.js";
 import {
+  describeWorkspaceMutationNoEffect,
   executeWorkspaceFileMutation,
+  workspaceMutationNoEffectEvidence,
   type WorkspaceFileMutationTestHooks,
 } from "../../workspace/file-mutation-transaction.js";
 
@@ -610,6 +612,25 @@ function formatWriteFileError(err: unknown): string {
   return `Failed to write file: ${message}`;
 }
 
+/**
+ * A failure thrown by the mutation transaction: settled as no-effect when the
+ * transaction proved the file unchanged (#2500), otherwise an unknown outcome
+ * that the settlement supervisor must review.
+ */
+function mutationErrorResult(
+  err: unknown,
+  message: string,
+  toolName: typeof FILE_EDIT_TOOL_NAME | typeof FILE_MULTI_EDIT_TOOL_NAME,
+): ToolResult {
+  const evidence = workspaceMutationNoEffectEvidence(err);
+  if (evidence === undefined) return errorResult(message);
+  return settledNoEffectToolResult({
+    toolName,
+    message: `${message} ${describeWorkspaceMutationNoEffect(evidence)}`,
+    evidence,
+  });
+}
+
 function formatCreateFileError(err: unknown): string {
   if (
     err instanceof WorkspaceMutationCoordinatorError &&
@@ -986,7 +1007,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return errorResult(formatCreateFileError(err));
+          return mutationErrorResult(err, formatCreateFileError(err), FILE_EDIT_TOOL_NAME);
         }
         await snapshotPostWrite(
           resolveSessionId(rawArgs),
@@ -1104,7 +1125,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return errorResult(formatWriteFileError(err));
+          return mutationErrorResult(err, formatWriteFileError(err), FILE_EDIT_TOOL_NAME);
         }
         await snapshotPostWrite(sessionId, absoluteFilePath, new_string);
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
@@ -1150,7 +1171,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
         if (rejected !== null) return rejected;
       } catch (err) {
-        return errorResult(formatWriteFileError(err));
+        return mutationErrorResult(err, formatWriteFileError(err), FILE_EDIT_TOOL_NAME);
       }
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);
@@ -1363,7 +1384,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return errorResult(formatCreateFileError(err));
+          return mutationErrorResult(err, formatCreateFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
         }
         await snapshotPostWrite(
           resolveSessionId(rawArgs),
@@ -1472,7 +1493,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return errorResult(formatWriteFileError(err));
+          return mutationErrorResult(err, formatWriteFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
         }
         await snapshotPostWrite(
           sessionId,
@@ -1553,7 +1574,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         if (rejected !== null) return rejected;
       } catch (err) {
-        return errorResult(formatWriteFileError(err));
+        return mutationErrorResult(err, formatWriteFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
       }
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);

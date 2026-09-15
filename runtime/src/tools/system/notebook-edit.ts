@@ -19,7 +19,9 @@ import {
   workspaceMutationAdmissionToolResult,
 } from "../../workspace/mutation-coordinator.js";
 import {
+  describeWorkspaceMutationNoEffect,
   executeWorkspaceFileMutation,
+  workspaceMutationNoEffectEvidence,
   type WorkspaceFileMutationTestHooks,
 } from "../../workspace/file-mutation-transaction.js";
 
@@ -30,7 +32,11 @@ export interface NotebookEditToolConfig extends WorkspaceFileMutationTestHooks {
   readonly workspaceRoot: string;
 }
 
-function json(value: Record<string, unknown>, isError = false): ToolResult {
+function json(
+  value: Record<string, unknown>,
+  isError = false,
+  evidenceRef = "tool:NotebookEdit:pre-mutation",
+): ToolResult {
   const content = JSON.stringify(value);
   return {
     content,
@@ -40,7 +46,7 @@ function json(value: Record<string, unknown>, isError = false): ToolResult {
           effectDisposition: createToolEffectDispositionEvidence({
             disposition: "confirmed_no_effect",
             evidenceKind: "boundary_not_crossed",
-            evidenceRef: "tool:NotebookEdit:pre-mutation",
+            evidenceRef,
             evidenceMaterial: content,
           }),
         }
@@ -400,9 +406,18 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
           testHooks: config,
         });
       } catch (error) {
-        return ambiguousMutationErrorJson(
-          { error: error instanceof Error ? error.message : String(error) },
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        // A transaction that proved the notebook unchanged settles as
+        // no-effect (#2500); anything else stays an unknown outcome.
+        const evidence = workspaceMutationNoEffectEvidence(error);
+        if (evidence !== undefined) {
+          return json(
+            { error: `${message} ${describeWorkspaceMutationNoEffect(evidence)}` },
+            true,
+            `tool:NotebookEdit:${evidence}`,
+          );
+        }
+        return ambiguousMutationErrorJson({ error: message });
       }
       if (sessionId !== undefined) {
         let mtimeMs = Date.now();

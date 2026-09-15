@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ToolResult } from "./types.js";
 
 import type {
   EffectNoEffectProof,
@@ -106,4 +107,28 @@ function requireNonempty(value: string, label: string): string {
     throw new TypeError(`${label} must be a non-empty string`);
   }
   return value;
+}
+
+/**
+ * A side-effecting tool whose transaction proved the target unchanged (a
+ * refused pre-effect syscall, or a verified rollback) settles as
+ * `confirmed_no_effect` (#2500). Without this the settlement supervisor
+ * treats the error as an unknown outcome and blocks every later
+ * side-effecting call in the session.
+ */
+export function settledNoEffectToolResult(params: {
+  readonly toolName: string;
+  readonly message: string;
+  readonly evidence: string;
+}): ToolResult {
+  return {
+    content: params.message,
+    isError: true,
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: `tool:${params.toolName}:${params.evidence}`,
+      evidenceMaterial: params.message,
+    }),
+  };
 }

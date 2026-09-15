@@ -19,7 +19,12 @@
  *  - language resolution.
  *  - read-gate branch.
  */
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -225,6 +230,53 @@ describe("createNotebookEditTool", () => {
       expect(updated.cells[0].source).toBe("new");
       expect(updated.cells[0].execution_count).toBeNull();
       expect(updated.cells[0].outputs).toEqual([]);
+    });
+
+    it("settles a verified rollback after a post-write fault as no-effect (#2500)", async () => {
+      const original = notebook([{ id: "c1", cell_type: "code", source: "old", execution_count: null, outputs: [] }]);
+      const path = await writeNotebook("rollback.ipynb", original);
+      const tool = createNotebookEditTool({
+        workspaceRoot: workspace,
+        __testWrite: async ({ write }) => {
+          await write();
+          throw new Error("post-write fault");
+        },
+      });
+      const result = await tool.execute({
+        notebook_path: path,
+        edit_mode: "replace",
+        cell_id: "c1",
+        new_source: "new",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceRef: "tool:NotebookEdit:rollback_verified",
+      });
+      expect(JSON.parse(result.content).error).toContain("restored to its original contents");
+      expect(JSON.parse(await readFile(path, "utf8"))).toEqual(original);
+    });
+
+    it("keeps an unverifiable rollback as an unknown outcome", async () => {
+      const path = await writeNotebook("unknown.ipynb", notebook([{ id: "c1", cell_type: "code", source: "old", execution_count: null, outputs: [] }]));
+      const tool = createNotebookEditTool({
+        workspaceRoot: workspace,
+        __testWrite: async ({ write }) => {
+          await write();
+          throw new Error("post-write fault");
+        },
+        __testRestoreBackup: async () => {
+          throw new Error("restore failed too");
+        },
+      });
+      const result = await tool.execute({
+        notebook_path: path,
+        edit_mode: "replace",
+        cell_id: "c1",
+        new_source: "new",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition).toBeUndefined();
     });
 
     it("deletes outputs/execution_count when switching to markdown", async () => {
