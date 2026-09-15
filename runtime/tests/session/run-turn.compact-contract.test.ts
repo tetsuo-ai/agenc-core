@@ -256,7 +256,7 @@ describe("runTurn compact contract", () => {
       undefined,
       0,
       "before_last_user_message",
-      { force: true },
+      { force: true, tier: "standard" },
     );
     expect(events.some((event) =>
       event.msg.type === "error" &&

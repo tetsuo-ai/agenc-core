@@ -15,6 +15,7 @@ import {
   readProviderIdentity,
 } from "../../llm/provider.js";
 import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
+import type { CompactionLocalSummarizer } from "./emergency-summarizer.js";
 import type { BaseHookInput } from "../../entrypoints/sdk/coreTypes.js";
 import {
   accountCompactionCall,
@@ -107,6 +108,12 @@ interface CompactionOutputTokenAccounting {
 
 export interface TransactionalCompactionOptions {
   readonly customInstructions: string;
+  /**
+   * Runtime-local summarizer for the emergency ladder tier (#2497). When
+   * present, no provider call is made; the plan, byte limits, body
+   * validation, provenance, shrink floor and commit are unchanged.
+   */
+  readonly summarizer?: CompactionLocalSummarizer;
   readonly direction?: "from" | "up_to";
   readonly automatic: boolean;
   readonly messagesToKeep: readonly RuntimeMessage[];
@@ -443,6 +450,7 @@ async function compactConversationTransactionBody(
     deadline.assertActive();
     const run = await deadline.wait(runSummaryTree({
       context,
+      ...(options.summarizer !== undefined ? { summarizer: options.summarizer } : {}),
       plan,
       attemptId,
       policyDigest,
@@ -771,6 +779,7 @@ function buildCompactionDisplayMessage(
 
 async function runSummaryTree(params: {
   readonly context: CompactContext;
+  readonly summarizer?: CompactionLocalSummarizer;
   readonly plan: CompactionMapReducePlan;
   readonly attemptId: string;
   readonly policyDigest: string;
@@ -825,37 +834,90 @@ async function runSummaryTree(params: {
         "compaction exceeded its wall-clock budget",
       );
     }
-    accountCompactionCall({
-      messages,
-      systemPrompt: params.policyMaterial[stage],
-      providerName: params.providerName,
-      model: params.model,
-      contextWindowTokens: params.plan.context_window_tokens,
-      outputReserveTokens: params.plan.output_reserve_tokens,
-    });
-    const invocation = await invokeCompactionProvider({
-      context: params.context,
-      messages,
-      systemPrompt: params.policyMaterial[stage],
-      providerName: params.providerName,
-      model: params.model,
-      callCount,
-      attemptId: params.attemptId,
-      contextWindowTokens: params.plan.context_window_tokens,
-      outputReserveTokens: params.plan.output_reserve_tokens,
-      remainingInputTokens: MAX_COMPACTION_TOTAL_INPUT_TOKENS - inputTokens,
-    });
-    inputTokens = safeBudgetSum(
-      inputTokens,
-      invocation.accounting.inputTokens,
-    );
-    if (inputTokens > MAX_COMPACTION_TOTAL_INPUT_TOKENS) {
-      throw new CompactionTransactionError(
-        "token_budget_exceeded",
-        "exact provider token counts exceeded the aggregate compaction budget",
+    let response: { readonly content: string; readonly finishReason: string };
+    let outputTokenUpperBound: number;
+    if (params.summarizer !== undefined) {
+      // Emergency ladder tier (#2497): the summary is produced locally and
+      // nothing reaches a provider. The step still passes through execution
+      // admission, reserved as an explicitly unpriced zero-token call and
+      // reconciled at zero, so the canonical scanner sees the same
+      // queued/allowed/dispatched/reconciled cycle it requires of every
+      // planned call. The output reserve still binds the summary.
+      const admissionSession = params.context.admissionSession;
+      const client = admissionSession?.services.executionAdmission;
+      if (admissionSession === undefined || client === undefined) {
+        throw new CompactionTransactionError(
+          "provider_unavailable",
+          "runtime-local compaction requires an execution-admission client",
+        );
+      }
+      const lease = await client.acquire(
+        {
+          stepId: `compact:${params.attemptId}:${callCount}`,
+          kind: "model_turn",
+          sessionId: admissionSession.conversationId,
+          model: params.model,
+          provider: params.providerName,
+          maxInputTokens: 0,
+          maxOutputTokens: params.plan.output_reserve_tokens,
+          maxCostUsd: null,
+        },
+        params.context.abortController?.signal,
       );
+      const reservationId = lease.reservation.reservationId;
+      let content: string;
+      try {
+        content = params.summarizer({
+          stage,
+          messages,
+          allowedSourceRefIds: sourceRefs.map((ref) => ref.ref_id),
+          maxOutputTokens: params.plan.output_reserve_tokens,
+        });
+      } catch (error) {
+        client.void(reservationId, "runtime_local_summary_failed");
+        throw error;
+      }
+      client.markDispatched(reservationId, {
+        boundary: "provider_wire",
+        details: { runtime_local_summary: true, stage },
+      });
+      client.reconcile(reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+      response = { content, finishReason: "stop" };
+      outputTokenUpperBound = conservativeOutputTokenEstimate(content);
+    } else {
+      accountCompactionCall({
+        messages,
+        systemPrompt: params.policyMaterial[stage],
+        providerName: params.providerName,
+        model: params.model,
+        contextWindowTokens: params.plan.context_window_tokens,
+        outputReserveTokens: params.plan.output_reserve_tokens,
+      });
+      const invocation = await invokeCompactionProvider({
+        context: params.context,
+        messages,
+        systemPrompt: params.policyMaterial[stage],
+        providerName: params.providerName,
+        model: params.model,
+        callCount,
+        attemptId: params.attemptId,
+        contextWindowTokens: params.plan.context_window_tokens,
+        outputReserveTokens: params.plan.output_reserve_tokens,
+        remainingInputTokens: MAX_COMPACTION_TOTAL_INPUT_TOKENS - inputTokens,
+      });
+      inputTokens = safeBudgetSum(
+        inputTokens,
+        invocation.accounting.inputTokens,
+      );
+      if (inputTokens > MAX_COMPACTION_TOTAL_INPUT_TOKENS) {
+        throw new CompactionTransactionError(
+          "token_budget_exceeded",
+          "exact provider token counts exceeded the aggregate compaction budget",
+        );
+      }
+      response = invocation.response;
+      outputTokenUpperBound = invocation.outputTokenUpperBound;
     }
-    const response = invocation.response;
     if (response.finishReason !== "stop") {
       throw new CompactionTransactionError(
         "provider_non_stop",
@@ -871,7 +933,7 @@ async function runSummaryTree(params: {
     if (
       Buffer.byteLength(response.content, "utf8") >
         MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL ||
-      invocation.outputTokenUpperBound > params.plan.output_reserve_tokens
+      outputTokenUpperBound > params.plan.output_reserve_tokens
     ) {
       throw new CompactionTransactionError(
         "output_limit_exceeded",

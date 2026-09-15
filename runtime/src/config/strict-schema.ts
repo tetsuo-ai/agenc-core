@@ -290,6 +290,14 @@ function validateCompletionGate(value: unknown): void {
   }
 }
 
+function validateCompaction(value: unknown): void {
+  if (value === undefined) return;
+  const field = "compaction";
+  const record = requirePlainObject(value, field);
+  rejectUnknownFields(record, new Set(["emergency_mode"]), field);
+  optionalEnum(record.emergency_mode, `${field}.emergency_mode`, ["always", "never"]);
+}
+
 function validateDaemon(value: unknown): void {
   if (value === undefined) return;
   const field = "daemon";
@@ -651,6 +659,7 @@ const ROOT_FIELD_VALIDATORS = {
   agent: delegatedObjectValidator("agent"),
   durableTurns: validateDurableTurns,
   completion_gate: validateCompletionGate,
+  compaction: validateCompaction,
   stream_watchdog_timeout_ms: fieldValidator("stream_watchdog_timeout_ms", optionalNonNegativeInteger),
   provider_outage_wait_ms: fieldValidator("provider_outage_wait_ms", optionalNonNegativeInteger),
   provider_outage_retry_ms: fieldValidator("provider_outage_retry_ms", optionalPositiveInteger),

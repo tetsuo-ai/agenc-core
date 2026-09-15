@@ -243,6 +243,7 @@ import {
   runAutoCompact,
   runPreSamplingCompact,
 } from "./run-turn-compaction.js";
+import { compactionExhaustedReasonText } from "../services/compact/ladder.js";
 
 // Declarations that moved to the run-turn-* sibling modules. Re-exported so
 // every importer of run-turn.js keeps its surface.
@@ -2716,8 +2717,11 @@ async function* runTurnKernelInner(
             },
           );
           if (!compacted) {
+            const tiers = state.compactionLadder?.tiersAttempted ?? [];
             throw new DeferredCompactionError(
-              "Compaction could not shrink the context enough for the next request and reserved output.",
+              "Compaction could not shrink the context enough for the next request and reserved output." +
+                (tiers.length > 0 ? ` (compact_ladder_exhausted: tiers=[${tiers.join(",")}])` : "") +
+                (session.services?.runtimeOptions?.nonInteractive !== true ? "; run /compact to retry manually" : ""),
             );
           }
           session.bindProviderConversation();
@@ -3010,7 +3014,12 @@ async function* runTurnKernelInner(
         // loop — that would spin forever with unchanged state. Surface
         // the token-limit condition as a per-turn compact_failed.
         await drainInFlight(state, ctx, session);
-        const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
+        const reasonText = compactionExhaustedReasonText({
+          tiersAttempted: state.compactionLadder?.tiersAttempted ?? [],
+          lastSamplePromptTokens: totalUsageTokens,
+          limit: autoCompactLimit,
+          interactive: session.services?.runtimeOptions?.nonInteractive !== true,
+        });
         emitTurnWarning(
           session,
           MID_TURN_COMPACT_FAILED_CAUSE,
@@ -3346,7 +3355,12 @@ async function* runTurnKernelInner(
           state.lastResponseUsage?.promptTokens ?? 0,
           getActiveContextTokenUsage(session, ctx, state),
         );
-        const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${postToolUsageTokens} limit=${postToolAutoCompactLimit}`;
+        const reasonText = compactionExhaustedReasonText({
+          tiersAttempted: state.compactionLadder?.tiersAttempted ?? [],
+          lastSamplePromptTokens: postToolUsageTokens,
+          limit: postToolAutoCompactLimit,
+          interactive: session.services?.runtimeOptions?.nonInteractive !== true,
+        });
         emitTurnWarning(session, MID_TURN_COMPACT_FAILED_CAUSE, reasonText);
         await syncSessionState();
         const underlying = new Error(reasonText);

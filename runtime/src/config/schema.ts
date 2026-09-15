@@ -258,6 +258,16 @@ export interface CompletionGateConfig {
   readonly max_rounds?: number;
 }
 
+/**
+ * Degraded compaction ladder (#2497). When the standard auto-compaction
+ * declines to shrink the context, the runtime retries with a more
+ * aggressive summary and finally a model-free emergency compaction.
+ */
+export interface CompactionConfig {
+  /** `always` (default) runs the model-free emergency tier; `never` disables it. */
+  readonly emergency_mode?: "always" | "never";
+}
+
 export interface HookCommand {
   readonly type: "command";
   readonly command: string;
@@ -922,6 +932,7 @@ export interface AgenCConfig {
   readonly agent?: AgentConfig;
   readonly durableTurns?: DurableTurnsConfig;
   readonly completion_gate?: CompletionGateConfig;
+  readonly compaction?: CompactionConfig;
   readonly stream_watchdog_timeout_ms?: number;
   readonly provider_outage_wait_ms?: number;
   readonly provider_outage_retry_ms?: number;
@@ -1077,6 +1088,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "heartbeat",
   "durableTurns",
   "completion_gate",
+  "compaction",
   "_unknown",
 ]);
 

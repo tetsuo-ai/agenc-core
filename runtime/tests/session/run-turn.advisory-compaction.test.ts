@@ -123,7 +123,11 @@ describe("advisory compaction refusal", () => {
     await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
 
     expect(exercise.samples()).toBe(4);
-    const attempts = compact.mock.calls.filter((call) => call[4] === "before_last_user_message");
+    // The mandatory attempt escalates through the degraded ladder (#2497);
+    // only standard-tier attempts count as "mandatory attempts" here.
+    const attempts = compact.mock.calls.filter((call) =>
+      call[4] === "before_last_user_message" &&
+      (call[5] as { tier?: string } | undefined)?.tier === "standard");
     expect(attempts).toHaveLength(2);
     expect((attempts[1]?.[2] as { consecutiveFailures?: number } | undefined)?.consecutiveFailures ?? 0)
       .toBe(0);
@@ -206,9 +210,11 @@ describe("advisory compaction refusal", () => {
     };
     Object.assign(exercise.session.services.provider, { tokenCountCapability: capability });
     let attempts = 0;
-    setAutoCompactImplForTests(async (_messages, _context, _tracking, _snip, injection) => {
+    setAutoCompactImplForTests(async (_messages, _context, _tracking, _snip, injection, options) => {
       if (injection !== "before_last_user_message") return { wasCompacted: false };
-      attempts += 1;
+      // Degraded ladder tiers (#2497) retry after the mandatory attempt; count
+      // standard attempts only, as before.
+      if ((options as { tier?: string } | undefined)?.tier === "standard") attempts += 1;
       return refuse();
     });
 

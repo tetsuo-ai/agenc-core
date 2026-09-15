@@ -16,6 +16,7 @@
  * @module
  */
 
+import type { CompactionLadderTier } from "../services/compact/ladder.js";
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
 import type { CompletionGatePlan } from "../phases/completion-gate.js";
 import { readTextToolCallCorrection, type TextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
@@ -304,6 +305,10 @@ export interface TurnState {
    *  reflects the most recent compaction event. */
   autoCompactTracking: AutoCompactTrackingState | undefined;
 
+  /** Degraded compaction tiers attempted since the last committed compaction
+   *  in this turn (#2497). In-memory only; a commit resets the episode. */
+  compactionLadder: { tiersAttempted: CompactionLadderTier[] } | undefined;
+
   /** task_budget.remaining tracking across compaction boundaries.
    *  Undefined until first compact fires. AgenC query.ts:295, 521.
    *  Cumulative: each compaction subtracts the final context at that
@@ -536,6 +541,7 @@ export function buildInitialTurnState(
     messagesForQuery: [],
     modelInstructions: opts?.modelInstructions ?? _ctx.baseInstructions ?? "",
     autoCompactTracking: undefined,
+    compactionLadder: undefined,
     taskBudgetRemaining: undefined,
     snipTokensFreed: 0,
     pendingMemoryPrefetch: undefined,

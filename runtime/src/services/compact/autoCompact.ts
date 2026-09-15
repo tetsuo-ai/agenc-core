@@ -24,6 +24,12 @@ import {
   positiveNumber,
 } from "./_deps/runtime.js";
 import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
+import {
+  AGGRESSIVE_COMPACTION_FOCUS,
+  EMERGENCY_COMPACTION_FOCUS,
+  type CompactionLadderTier,
+} from "./ladder.js";
+import { createRuntimeEmergencySummarizer } from "./emergency-summarizer.js";
 import type { ProviderEnvironment } from "../../llm/provider-options.js";
 import { usesLocalToolProfile } from "../../llm/wire/capability-gating.js";
 
@@ -36,6 +42,8 @@ export type AutoCompactTrackingState = {
 
 export type AutoCompactOptions = {
   readonly force?: boolean;
+  /** Degraded compaction ladder tier (#2497); `standard` when absent. */
+  readonly tier?: CompactionLadderTier;
 };
 
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000;
@@ -124,16 +132,21 @@ export async function autoCompactIfNeeded(
    */
   readonly skippedReason?: string;
   readonly skippedCode?: CompactionCannotReduceError["code"];
+  /** Transaction failure reason, when the decline was a typed transaction failure. */
+  readonly skippedFailureReason?: CompactionTransactionError["reason"];
   /** Proven terminal summary rejection with unchanged canonical history. */
   readonly advisoryFailure?: "summary_rejected";
 }> {
+  const tier: CompactionLadderTier = options.tier ?? "standard";
   if (querySource === "compact" || querySource === "session_memory") {
     return { wasCompacted: false };
   }
   if (!isAutoCompactEnabled()) {
     return { wasCompacted: false, skippedReason: "auto-compaction is disabled" };
   }
-  if ((tracking?.consecutiveFailures ?? 0) >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) {
+  // The ladder is its own bound (each tier at most once per episode); the
+  // three-strike breaker applies to standard attempts only.
+  if (tier === "standard" && (tracking?.consecutiveFailures ?? 0) >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) {
     return {
       wasCompacted: false,
       consecutiveFailures: tracking?.consecutiveFailures,
@@ -160,7 +173,23 @@ export async function autoCompactIfNeeded(
       // Every destructive compaction uses the canonical transaction. Session
       // memory remains recall input; it is never an unauthenticated replacement
       // history or a bypass around pin/intent/provider validation/commit.
-      const compactionResult = await compactConversation(messages, context);
+      const compactionResult = await compactConversation(
+        messages,
+        context,
+        tier === "aggressive_summary"
+          ? AGGRESSIVE_COMPACTION_FOCUS
+          : tier === "emergency_local"
+            ? EMERGENCY_COMPACTION_FOCUS
+            : "",
+        tier === "standard"
+          ? {}
+          : {
+              keepCount: 0,
+              ...(tier === "emergency_local"
+                ? { summarizer: createRuntimeEmergencySummarizer() }
+                : {}),
+            },
+      );
       return {
         wasCompacted: true,
         compactionResult,
@@ -193,9 +222,16 @@ export async function autoCompactIfNeeded(
       }
       return {
         wasCompacted: false,
-        consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1,
+        // Tier attempts neither read nor bump the standard breaker.
+        consecutiveFailures:
+          tier === "standard"
+            ? (tracking?.consecutiveFailures ?? 0) + 1
+            : (tracking?.consecutiveFailures ?? 0),
         ...(error instanceof CompactionCannotReduceError
           ? { skippedCode: error.code }
+          : {}),
+        ...(error instanceof CompactionTransactionError
+          ? { skippedFailureReason: error.reason }
           : {}),
         ...(error instanceof CompactionSummaryRejectedError
           ? { advisoryFailure: "summary_rejected" as const }

@@ -397,6 +397,18 @@ verified. The turn still completes with its existing stop reason and exit
 code; text-mode `agenc -p` prints the warning to stderr, and structured
 output includes the warning event. `mode = "never"` turns the gate off,
 `mode = "always"` applies it to interactive sessions too.
+`compaction` controls the degraded compaction ladder. When automatic
+compaction at the context limit declines to shrink the history (the
+summary would not save enough, or the summarizer failed), the runtime
+retries once with an aggressive summary that keeps no verbatim tail, and
+then, with `compaction.emergency_mode = "always"` (the default), commits a
+model-free emergency compaction: a runtime-written summary that names the
+original request, the latest assistant text and tool calls, and the
+dropped message count, through the same durable transaction as every
+other compaction. An `auto_compact_degraded` warning records each tier;
+`compact_ladder_exhausted` in the `compact_failed` message means every
+tier declined. `compaction.emergency_mode` accepts `always` (default) or
+`never`; `never` disables the model-free tier only.
 `stream_watchdog_timeout_ms` defaults to `600000` (ten
 minutes of provider silence): the runtime warns at half that time and aborts
 the stream with a retryable `stream_idle` error at the deadline. Set it to

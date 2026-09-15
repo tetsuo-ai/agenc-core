@@ -50,6 +50,16 @@ import {
 import { sessionQuerySourceForTurn } from "./run-turn-queued-commands.js";
 import { buildSamplingRequestContract } from "./run-turn-sampling-request.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
+import {
+  describeCompactionDecline,
+  ladderAppliesToDecline,
+  ladderAppliesToReason,
+  nextLadderTiers,
+  resolveCompactionLadderPolicy,
+  strongerTierThan,
+  type CompactionLadderTier,
+} from "../services/compact/ladder.js";
+import type { CompactionTransactionError as CompactionTransactionErrorType } from "../services/compact/transaction-types.js";
 
 const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
 const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
@@ -67,7 +77,10 @@ interface AgenCAutoCompactResult {
   /** Why an attempt declined to compact; surfaced to the turn. */
   readonly skippedReason?: string;
   readonly skippedCode?: CompactionCannotReduceError["code"];
+  readonly skippedFailureReason?: CompactionTransactionErrorType["reason"];
   readonly advisoryFailure?: "summary_rejected";
+  /** Ladder tier this result came from (#2497). */
+  readonly tier?: CompactionLadderTier;
 }
 
 type AgenCCompactionResult = {
@@ -93,6 +106,7 @@ async function runAgenCAutoCompact(params: {
   readonly phase?: string;
   readonly initialContextInjection?: string;
   readonly force?: boolean;
+  readonly tier?: CompactionLadderTier;
 }): Promise<AgenCAutoCompactResult> {
   if (!params.session || !params.ctx || !params.state) {
     return compactionNotRun();
@@ -140,7 +154,7 @@ async function runAgenCAutoCompact(params: {
       params.querySource,
       state.autoCompactTracking,
       state.snipTokensFreed ?? 0,
-      { force: params.force === true },
+      { force: params.force === true, tier: params.tier ?? "standard" },
     );
     if (!result.wasCompacted || !result.compactionResult) {
       // The reason the attempt declined rides along: without it the caller
@@ -151,6 +165,7 @@ async function runAgenCAutoCompact(params: {
         result.skippedReason,
         result.skippedCode,
         result.advisoryFailure,
+        result.skippedFailureReason,
       );
     }
     const compactionResult = await toAgenCCompactionResult(
@@ -292,6 +307,7 @@ function compactionNotRun(
   skippedReason?: string,
   skippedCode?: CompactionCannotReduceError["code"],
   advisoryFailure?: "summary_rejected",
+  skippedFailureReason?: CompactionTransactionErrorType["reason"],
 ): AgenCAutoCompactResult {
   return {
     wasCompacted: false,
@@ -299,6 +315,7 @@ function compactionNotRun(
     ...(skippedReason !== undefined ? { skippedReason } : {}),
     ...(skippedCode !== undefined ? { skippedCode } : {}),
     ...(advisoryFailure !== undefined ? { advisoryFailure } : {}),
+    ...(skippedFailureReason !== undefined ? { skippedFailureReason } : {}),
   };
 }
 
@@ -382,7 +399,9 @@ export interface AutoCompactResult {
   readonly consecutiveFailures?: number;
   readonly skippedReason?: string;
   readonly skippedCode?: CompactionCannotReduceError["code"];
+  readonly skippedFailureReason?: CompactionTransactionErrorType["reason"];
   readonly advisoryFailure?: "summary_rejected";
+  readonly tier?: CompactionLadderTier;
 }
 export type AutoCompactImpl = (
   ...args: unknown[]
@@ -482,34 +501,68 @@ async function runAutoCompact(
   let replacementStarted = false;
   try {
     const autoCompactImplOverride = getAutoCompactImplOverride();
-    const result = autoCompactImplOverride
-      ? await autoCompactImplOverride(
-          messages,
-          { session, ctx, querySource },
-          state?.autoCompactTracking,
-          state?.snipTokensFreed ?? 0,
-          initialContextInjection,
-          { force },
-        )
-      : await runAgenCAutoCompact({
-          session,
-          ctx,
-          state,
-          messages,
-          querySource,
-          reason,
-          phase,
-          initialContextInjection,
-          force,
-        });
-
-    if (result.wasCompacted && state) {
-      if (!result.compactionResult) {
+    const policy = resolveCompactionLadderPolicy(ctx.config);
+    // After a committed compaction every message in the replacement is
+    // canonical, so a later tier in the same call may offer all of it.
+    let offeredCount = durableCount;
+    let unsentImageTurnKept = false;
+    const offered = (): LLMMessage[] =>
+      (state?.messages ?? history)
+        .slice(0, Math.max(0, offeredCount - (unsentImageTurnKept ? 1 : 0)))
+        .filter((message) => !excludeFromDurableHistory(message));
+    const attempt = async (
+      tier: CompactionLadderTier,
+    ): Promise<AgenCAutoCompactResult> => {
+      const offeredMessages =
+        tier === "standard" && offeredCount === durableCount ? messages : offered();
+      const attempted = autoCompactImplOverride
+        ? await autoCompactImplOverride(
+            offeredMessages,
+            { session, ctx, querySource, tier },
+            state?.autoCompactTracking,
+            state?.snipTokensFreed ?? 0,
+            initialContextInjection,
+            { force, tier },
+          )
+        : await runAgenCAutoCompact({
+            session,
+            ctx,
+            state,
+            messages: offeredMessages,
+            querySource,
+            reason,
+            phase,
+            initialContextInjection,
+            force,
+            tier,
+          });
+      return { ...attempted, tier };
+    };
+    const emitDegraded = (message: string): void => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "auto_compact_degraded",
+            message: `${reason}/${phase}: ${message}`,
+          },
+        },
+      });
+    };
+    const recordTier = (tier: CompactionLadderTier): void => {
+      if (!state) return;
+      const attempted = state.compactionLadder?.tiersAttempted ?? [];
+      state.compactionLadder = { tiersAttempted: [...attempted, tier] };
+    };
+    const applyCommitted = async (committed: AgenCAutoCompactResult): Promise<void> => {
+      if (!state) return;
+      if (!committed.compactionResult) {
         throw new Error(
           "autoCompactIfNeeded reported success without a compactionResult",
         );
       }
-      const cr = result.compactionResult;
+      const cr = committed.compactionResult;
       committedAttemptId = cr.transaction?.attempt_id;
       // A legacy projection/write may partially succeed before throwing, too.
       // From this point onward a failure is never an unchanged-history no-op.
@@ -559,6 +612,9 @@ async function runAutoCompact(
           state.messagesForQuery.push({ ...unsentImageTurn });
         }
         options.onDurableHistoryReplaced?.(compacted.length);
+        // A commit ends the ladder episode: the next decline may climb again.
+        state.compactionLadder = undefined;
+        unsentImageTurnKept = unsentImageTurn !== undefined;
         // Stamp auto-compact tracking so the commit phase emits the
         // boundary marker (runtime/src/phases/commit.ts).
         state.autoCompactTracking = {
@@ -592,14 +648,63 @@ async function runAutoCompact(
         applyProjection();
         cleanupSessionAfterCompaction(session);
       }
-      return true;
-    }
+    };
 
-    const deferredRefusal =
-      (result.skippedCode === "no_shrink" || result.advisoryFailure === "summary_rejected") &&
-      options.onAdvisoryRefusal !== undefined;
-    if (deferredRefusal) options.onAdvisoryRefusal?.();
-    if (result.consecutiveFailures !== undefined && state && !deferredRefusal) {
+    let result = await attempt("standard");
+    if (!result.wasCompacted) {
+      const deferredRefusal =
+        (result.skippedCode === "no_shrink" || result.advisoryFailure === "summary_rejected") &&
+        options.onAdvisoryRefusal !== undefined;
+      if (deferredRefusal) {
+        // The cheap advisory path: the caller continues while the next full
+        // request still fits, and asks again (without deferral) if not.
+        options.onAdvisoryRefusal?.();
+        return false;
+      }
+      // Degraded ladder (#2497): a decline the standard plan lost is retried
+      // with a more aggressive summary, then a model-free emergency
+      // compaction, each at most once per episode. A turn only ends in
+      // `compact_failed` when every tier declines.
+      if (state && ladderAppliesToReason(reason) && ladderAppliesToDecline(result)) {
+        const tiers = nextLadderTiers(policy, result, state.compactionLadder?.tiersAttempted ?? []);
+        for (const tier of tiers) {
+          recordTier(tier);
+          emitDegraded(`tier=${tier} attempting after ${describeCompactionDecline(result)}`);
+          result = await attempt(tier);
+          if (result.wasCompacted) break;
+        }
+      }
+    }
+    while (result.wasCompacted && state) {
+      await applyCommitted(result);
+      offeredCount = state.messages.length;
+      const tier = result.tier ?? "standard";
+      const cr = result.compactionResult;
+      if (tier !== "standard") {
+        emitDegraded(
+          `tier=${tier} compacted ${cr?.preCompactTokens ?? "?"}->${cr?.postCompactTokens ?? "?"} tokens`,
+        );
+      }
+      const limit = getPreSamplingAutoCompactTokenLimit(ctx);
+      if (
+        limit === undefined ||
+        !ladderAppliesToReason(reason) ||
+        getActiveContextTokenUsage(session, ctx, state) < limit
+      ) {
+        return true;
+      }
+      // Still at the limit after a commit: escalate once more. A decline
+      // here is not a failure — the history did shrink; let the loop sample.
+      const next = strongerTierThan(tier, policy, state.compactionLadder?.tiersAttempted ?? []);
+      if (next === undefined) return true;
+      recordTier(next);
+      emitDegraded(`tier=${next} attempting: history still above the limit after ${tier}`);
+      result = await attempt(next);
+      if (!result.wasCompacted) return true;
+    }
+    if (result.wasCompacted) return true;
+
+    if (result.consecutiveFailures !== undefined && state) {
       const previousTracking = state.autoCompactTracking;
       state.autoCompactTracking = {
         compacted: previousTracking?.compacted ?? false,
@@ -618,7 +723,7 @@ async function runAutoCompact(
      * `mid_turn_compact_skipped` — the reason was computed and then
      * dropped, leaving a turn that ended mid-plan with nothing to act on.
      */
-    if (!deferredRefusal && result.wasCompacted !== true && result.skippedReason !== undefined) {
+    if (result.skippedReason !== undefined) {
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
@@ -630,7 +735,7 @@ async function runAutoCompact(
         },
       });
     }
-    return result.wasCompacted === true;
+    return false;
   } catch (error) {
     // Never silently swallow compact failures. Emit a structured
     // warning carrying the reason/phase so downstream observability can
