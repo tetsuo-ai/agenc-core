@@ -229,6 +229,10 @@ therefore end the turn with `warning` cause `mid_turn_compact_failed` and
 message `mid_turn_compact_skipped`. The turn stop is `compact_failed`.
 Keep-alive sessions stay promptable; see
 [daemon.md](daemon.md#compact-skip-stays-per-turn).
+A transactional compact that runs ~15 min and then fails with
+`wall_time_exceeded` hit the 900 s whole-transaction wall budget, not a
+provider idle timeout; see
+[CP-0006](../design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget).
 
 A configured `providers.<slug>.context_window_tokens` overrides the
 model-string table for the hard-limit line. Free headroom clamps to **0**

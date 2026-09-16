@@ -170,6 +170,12 @@ active turn.
   `--print` and `--no-tui` exit 1, and the compatibility `runAgent` surface
   with `keepAlive: false` reports failure. See
   [daemon.md](daemon.md#compact-skip-stays-per-turn).
+- A transactional compact — `/compact` or automatic — has a 900 s
+  whole-transaction wall budget. The former 300 s bound cut off a
+  measured grok-4.6 summarizer. Expiry is `wall_time_exceeded` after
+  intent, not `provider_timeout` and not `mid_turn_compact_skipped`.
+  There is no env override. See
+  [CP-0006 wall budget](../design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget).
 
 ---
 

@@ -359,6 +359,52 @@ least **1,024** tokens and **20 percent**. Automatic compaction is suppressed
 after **two** durable `compaction_failed` rows for the same
 history/configuration digest; `/compact` (manual) is the explicit retry.
 
+### Compaction transaction wall budget
+
+`/compact` and every automatic transactional compact share one
+whole-transaction wall budget: **900 seconds**
+(`MAX_COMPACTION_WALL_MS` in `transaction-types.ts`). It is not a
+per-call timeout and is not an environment or `config.toml` override.
+
+The timer starts when `compactConversationTransactionally` creates the
+deadline, after the exclusive lease and admission scope. Two checks
+enforce it:
+
+1. Before each admitted summary call, `compactionWallTimeExceeded`
+   throws `wall_time_exceeded` once elapsed time is greater than 900 s.
+2. A `setTimeout` aborts the transaction controller with
+   `compaction exceeded its 900000 ms wall-clock deadline`. Admission
+   cancellation then uses cause `compaction_wall_time_exceeded`.
+
+The former 300 s bound cut off a measured grok-4.6 compaction of a
+~356k-token source at effort high (observed healthy calls 109–290 s).
+The current bound is three times that cutoff.
+
+On expiry:
+
+- Durable history stays unchanged. Only a flushed `compaction_committed`
+  replaces it.
+- After intent exists, the adapter records `compaction_failed` with
+  `reason: "wall_time_exceeded"`. A wall abort before intent is rethrown
+  without that durable row (PreCompact and planning sit on the same
+  timer).
+- The summarizer is given **5 seconds**
+  (`MAX_COMPACTION_ABORT_QUIESCENCE_MS`) to settle. If it does not, the
+  recorded reason becomes `recovery_interrupted`
+  (`compaction provider did not quiesce within 5000 ms after cancellation`).
+- Automatic compact is suppressed after **two** durable failures for the
+  same history/configuration digest. `/compact` remains the explicit
+  retry.
+- A thrown compact still follows the
+  [compact-skip session survival](#compact-skip-and-session-survival)
+  turn mapping.
+
+This bound is not the source-span rollback window. An active retention
+pin does not expire by wall clock. It is also not `provider_timeout`
+(that classify path is only for errors that are not already a
+`CompactionTransactionError`) and not `mid_turn_compact_skipped` (that
+is a no-op after the outer token gate).
+
 ### Rollback and retention
 
 Committed source spans stay rollback-eligible for at least seven days
@@ -410,6 +456,7 @@ checkpoint. See [checkpoint prefix items](../durable-runs-effects-events.md#chec
 | Auto never runs, then the next turn is `context_window_exceeded` | Confirm the live window instead of assuming the 128k fallback. Above 13k, the threshold is `min(window-13k, 75%)`. Also check `AGENC_AUTOCOMPACT_PCT_OVERRIDE` and `AGENC_DISABLE_AUTO_COMPACT`. |
 | A post-compact checkpoint reports `compactionHistory requires prefix hash version 3` | The rollout pairs marker-bearing history with an old checkpoint or hash version. Preserve the rollout and let the schema upgrader validate the old checkpoint before rewriting it; do not edit the version fields by hand. |
 | After switching to a smaller-window model, the first turn overflows | Model-downshift only runs when the previous slug differs, the old window is larger, and usage is greater than the new pre-sampling limit or at least the new window. Three failed automatic attempts skip later ones this turn. `AGENC_DISABLE_AUTO_COMPACT` makes the compact return without changing history. |
+| Compact runs ~15 min then `compaction_failed` / `wall_time_exceeded` | The whole-transaction wall budget fired. Check the rollout `compaction_failed.reason`. History should be unchanged. Manual `/compact` retries; a second auto failure for the same digest is suppressed. Distinct from `provider_timeout` and from `mid_turn_compact_skipped`. If the reason is `recovery_interrupted` after 5 s, the summarizer ignored abort. See [compaction transaction wall budget](#compaction-transaction-wall-budget). |
 | A summary call includes a client or provider-native tool | This violates the summary-call contract. Summary calls must send an empty client catalog and an empty native-tool routing allowlist. Admission must account the same selected native catalog as the wire. |
 | History vanished after a failed compact | Only a flushed `compaction_committed` may replace active history. Any earlier replacement is a transaction bug and must not be treated as a commit. |
 | `/compact` says durable adapter unavailable | Compaction requires the canonical rollout owner (`readCompactionTransactionAdapter`). There is no character-extract fallback. |

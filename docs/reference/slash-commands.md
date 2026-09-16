@@ -166,6 +166,8 @@ with code `compact_failed`. Keep-alive sessions stay promptable, while
 daemon-backed `--print` / `--no-tui` exits 1.
 Env catalog: [env.md](env.md). Session survival:
 [daemon.md](daemon.md#compact-skip-stays-per-turn).
+The transaction itself has a 900 s wall budget
+([CP-0006](../design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget)).
 
 Successful transactional compaction reports its durable attempt ID in the
 command result. A replacement-history boundary also displays the ID, so it
