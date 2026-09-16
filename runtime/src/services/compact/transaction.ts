@@ -1307,7 +1307,21 @@ async function invokeCompactionProvider(params: {
         content: candidate.content,
         signal: admittedOptions.signal,
       });
-      const reported = candidate.usage?.completionTokens;
+      // `coerceUsage` normalises an ABSENT usage object AND a partial one
+      // (prompt-only or total-only) to completionTokens 0, and marks the partial
+      // case `availability: "reported"`. So neither the value nor `availability`
+      // can distinguish "the provider counted zero output tokens" from "the
+      // provider never counted the output at all". Trusting the coerced 0
+      // BYPASSED this bound whenever usage was unknown or partial; a response
+      // carrying a valid completion count was always bounded correctly. A
+      // non-empty body cannot have cost zero
+      // completion tokens, so a non-positive count against real content is not a
+      // count: fall back to the estimate, which is what this bound exists to apply.
+      const reportedCompletion = candidate.usage?.completionTokens;
+      const reported =
+        reportedCompletion !== undefined && reportedCompletion > 0
+          ? reportedCompletion
+          : undefined;
       outputTokenUpperBound = outputAccounting.source === "conservative_fallback"
         ? compactionOutputTokenUpperBound(candidate.content, reported)
         : Math.max(reported ?? 0, outputAccounting.tokens);
