@@ -100,6 +100,8 @@ import {
   createCompactionPayloadBundleV1,
 } from "./payload-manifest.js";
 import { redactSecretsInValue } from "../../secrets/sanitizer.js";
+import { durableRedactionDropsProviderReplay } from "../../session/message-history-conversion.js";
+import type { ProviderReasoningReplay } from "../../llm/types.js";
 
 const COMPACTION_BOUNDARY_MESSAGE = "Conversation compacted transactionally";
 const COMPACTION_UNKNOWN_MODEL = "unknown";
@@ -1664,6 +1666,39 @@ function createAuthoritativeSelectionMapper(
   // so a sealed tool result maps to its canonical record by that identity.
   // The canonical body is what gets summarized either way; the caller only
   // ever points at a position.
+  // Durable persistence drops an opaque replay when redaction would alter it,
+  // keeping the message. Project the caller's live message the same way, so a
+  // message whose replay was dropped on the canonical side still matches.
+  // Nothing else about the message changes, so a forged body or an altered
+  // ordinary replay is still refused.
+  const durablyProjected = (message: RuntimeMessage): RuntimeMessage => {
+    const content = message.providerReasoningContent;
+    if (typeof content !== "string" || content.length === 0) return message;
+    const provenance = message.providerReasoningProvenance;
+    const replay: ProviderReasoningReplay =
+      provenance !== undefined &&
+      typeof provenance.provider === "string" &&
+      provenance.provider.trim().length > 0 &&
+      typeof provenance.model === "string" &&
+      provenance.model.trim().length > 0
+        ? {
+            version: 2,
+            content,
+            // llmMessageToResponseItem normalizes provider and model before the
+            // durable drop decision is made, so normalize identically here or a
+            // secret-shaped provider/model would redact on one side only.
+            provider: provenance.provider.trim().toLowerCase(),
+            model: provenance.model.trim().toLowerCase(),
+          }
+        : { version: 1, content };
+    if (!durableRedactionDropsProviderReplay(replay)) return message;
+    const {
+      providerReasoningContent: _droppedContent,
+      providerReasoningProvenance: _droppedProvenance,
+      ...withoutReplay
+    } = message;
+    return withoutReplay as RuntimeMessage;
+  };
   const key = (message: RuntimeMessage): string => {
     const role =
       message.originalRole ?? message.role ?? message.message?.role ?? "user";
@@ -1682,7 +1717,9 @@ function createAuthoritativeSelectionMapper(
     // caller's live message the same way so a secret in a user or assistant
     // message does not read as "no canonical match" (redaction is idempotent).
     return canonicalizeJson(
-      redactSecretsInValue(canonicalCompactionSourceMessages([message])),
+      redactSecretsInValue(
+        canonicalCompactionSourceMessages([durablyProjected(message)]),
+      ),
     );
   };
   const preparedByKey = new Map<string, number[]>();

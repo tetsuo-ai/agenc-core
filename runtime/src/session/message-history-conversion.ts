@@ -1,4 +1,8 @@
-import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMMessage,
+  ProviderReasoningReplay,
+} from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
 import type { ResponseItem } from "./rollout-item.js";
@@ -257,6 +261,38 @@ function currentIntegrity(
   throw new Error(`cannot persist tool result: ${verification.failure.reason}`);
 }
 
+/**
+ * True when durable persistence drops this opaque replay because secret
+ * redaction would alter it.
+ *
+ * The durable record then carries no replay while the caller's live message
+ * still does, so anything that projects a live message onto the canonical
+ * rollout has to apply the same drop or the two can never match. Keeping this
+ * rule in one place is the point: the writer dropping the replay while the
+ * compaction projection kept it is what made a redacted replay fail the pin
+ * check with "caller history is not an ordered projection of canonical active
+ * history".
+ *
+ * Redaction is context free (per-string patterns plus per-key names, none of
+ * which match `providerReasoning`, `content`, `provider`, `model` or
+ * `version`), so redacting the replay alone gives the same answer as reading
+ * it back off a whole-item redaction.
+ */
+export function durableRedactionDropsProviderReplay(
+  providerReasoning: ProviderReasoningReplay | undefined,
+): boolean {
+  if (providerReasoning === undefined) return false;
+  const redacted = redactSecretsInValue(providerReasoning);
+  return (
+    redacted?.content !== providerReasoning.content ||
+    redacted.version !== providerReasoning.version ||
+    (providerReasoning.version === 2 &&
+      (redacted.version !== 2 ||
+        redacted.provider !== providerReasoning.provider ||
+        redacted.model !== providerReasoning.model))
+  );
+}
+
 function redactResponseItemForPersistence(
   item: ResponseItem,
   integrity: ToolResultIntegrity | undefined,
@@ -281,16 +317,7 @@ function redactResponseItemForPersistence(
             agentInvocation,
           } as ResponseItem;
         })();
-  if (
-    item.providerReasoning !== undefined &&
-    (redacted.providerReasoning?.content !== item.providerReasoning.content ||
-      redacted.providerReasoning.version !== item.providerReasoning.version ||
-      (item.providerReasoning.version === 2 &&
-        (redacted.providerReasoning.version !== 2 ||
-          redacted.providerReasoning.provider !==
-            item.providerReasoning.provider ||
-          redacted.providerReasoning.model !== item.providerReasoning.model)))
-  ) {
+  if (durableRedactionDropsProviderReplay(item.providerReasoning)) {
     // The replay is opaque provider state: redacting it would corrupt what
     // the provider gets back, and persisting it unredacted would write the
     // matched secret into the rollout. Neither is acceptable, so the replay
