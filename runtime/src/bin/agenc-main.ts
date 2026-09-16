@@ -1680,11 +1680,13 @@ function oneShotAbortedByBrokenPipe(signal: AbortSignal): boolean {
  * client must answer.
  *
  * The one-shot `--print` CLI is inherently non-interactive: there is no human
- * attached to answer an "ask"/"pause" permission request. The daemon forces
- * `--autonomous`, so any tool the model invokes that is not on the (empty by
- * default) unattended allowlist resolves to a pause → the evaluator surfaces an
- * "ask", and the runner suspends the turn awaiting a client decision that never
- * arrives — the run hangs until the wrapper SIGTERMs it. Answering the request
+ * attached to answer an "ask"/"pause" permission request. The session runs in
+ * the permission mode it was started with (`default` unless overridden), so a
+ * read-only tool inside the workspace runs on its own while an edit or a shell
+ * command surfaces an "ask", and the runner suspends the turn awaiting a client
+ * decision that never arrives — the run hangs until the wrapper SIGTERMs it.
+ * (A run created with an unattended allow/deny list pauses on every unlisted
+ * tool the same way.) Answering the request
  * with a DENY (see {@link runDaemonOneShotPrompt}) lets the agent continue: the
  * tool call is rejected, and the agent produces a terminal answer/error so the
  * run terminates. This NEVER grants a permission — the only behavior change is
@@ -2867,11 +2869,10 @@ export async function oneShotCLI(
     // Honor a validated `--permission-mode <value>` in the print path. Without
     // this, only bypassPermissions propagated and acceptEdits/plan/default were
     // silently dropped. readStartupCliFlags already validated the flag (throwing
-    // on a typo so a less-restrictive session can't boot silently). The daemon's
-    // forced --autonomous does NOT override a forwarded acceptEdits/plan:
-    // applyUnattendedPermissionPolicyToContext explicitly preserves the user's
-    // explicit mode (only default → unattended), so forwarding takes effect
-    // without weakening the unattended/security posture. Explicit bypass still wins:
+    // on a typo so a less-restrictive session can't boot silently). A one-shot
+    // carries no unattended allow/deny list, so the daemon leaves the forwarded
+    // mode alone (a run that does carry one has applyUnattendedPermissionPolicyToContext
+    // preserve an explicit acceptEdits/plan and rewrite only default). Explicit bypass still wins:
     // bypassPermissions takes precedence over any other forwarded mode. Narrow
     // to the daemon-accepted subset (agent.create rejects dontAsk/auto); other
     // user-addressable modes fall back to the unattended default as before.

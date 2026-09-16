@@ -2810,7 +2810,10 @@ describe("AgenC delegate background-agent runner", () => {
     await expect(
       harness.runner.getAgentSnapshot("session-restore-hydration-retry"),
     ).resolves.not.toBeNull();
-    expect(hydrateStateWith).toHaveBeenCalledTimes(3);
+    // The failed attempt and the retry's recovered-history hydration. A run
+    // without an unattended policy no longer publishes a permission-context
+    // update at restore, so nothing else touches session state here.
+    expect(hydrateStateWith).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the hydration failure primary when restore cleanup also fails", async () => {
@@ -2938,7 +2941,7 @@ describe("AgenC delegate background-agent runner", () => {
           }
         | undefined;
       expect(initialSettings?.payload.msg.payload).toMatchObject(baseline);
-      expect(harness.permissionModeRegistry.current().mode).toBe("unattended");
+      expect(harness.permissionModeRegistry.current().mode).toBe("default");
 
       await vi.waitFor(() =>
         expect(harness.stub.thread.submit).toHaveBeenCalledOnce(),
@@ -5692,6 +5695,31 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("keeps the requested permission mode when the run carries no unattended policy", async () => {
+    // A TUI root and a print-mode one-shot arrive with empty lists. The
+    // runner used to install the unattended policy anyway, which rewrote
+    // `default` into `unattended` with nothing allowlisted, so every tool
+    // (a FileRead inside the workspace included) paused for approval.
+    const { runner, permissionUpdates, permissionModeRegistry } =
+      makeTopLevelRunner({
+        conversationId: "parent-session",
+        argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js"],
+      });
+
+    await runner.startAgent({
+      objective: "read the project",
+      cwd: "/workspace",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(permissionModeRegistry.current().mode).toBe("default");
+    expect(permissionModeRegistry.current().unattendedPolicy).toBeUndefined();
+    expect(permissionUpdates.map((update) => update.mode)).not.toContain(
+      "unattended",
+    );
+  });
+
   it("starts agent.create through the managed-thread path and keeps it alive", async () => {
     const csvAgentJobsRepositories = {
       withRepository: vi.fn(),
@@ -6510,7 +6538,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(result).toEqual({
       applied: true,
-      previousMode: "unattended",
+      previousMode: "default",
       mode: "plan",
     });
     // The genuine daemon registry — the one the tool evaluator reads — is
@@ -6664,7 +6692,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(result).toEqual({
       applied: true,
-      previousMode: "unattended",
+      previousMode: "default",
       mode: "auto",
     });
     expect(permissionUpdates.at(-1)).toMatchObject({
@@ -6915,7 +6943,7 @@ describe("AgenC delegate background-agent runner", () => {
     releaseBypass();
     await expect(bypass).resolves.toMatchObject({
       applied: true,
-      previousMode: "unattended",
+      previousMode: "default",
       mode: "bypassPermissions",
     });
     await expect(toDefault).resolves.toMatchObject({
@@ -8086,7 +8114,7 @@ describe("AgenC delegate background-agent runner", () => {
         }),
       ).resolves.toEqual({
         applied: true,
-        previousMode: "unattended",
+        previousMode: "default",
         mode: "plan",
       });
       expect(reloadSettled).toBe(false);

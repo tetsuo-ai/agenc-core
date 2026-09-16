@@ -1119,6 +1119,35 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
   }, 60_000);
 
+  it("keeps the recovered run in its own permission mode when it carries no unattended policy", async () => {
+    // The restore path mirrors startAgent: retained metadata without an
+    // allowlist or a denylist means no policy was ever declared, so the
+    // recovered turn keeps `default` instead of pausing every tool.
+    await stubProvider();
+    stubProviderAndMcp();
+
+    const modes: string[] = [];
+    stubTurn((session, isResume) => {
+      if (!isResume) return;
+      const context = session.permissionModeRegistry!.current();
+      modes.push(context.mode);
+      expect(context.unattendedPolicy).toBeUndefined();
+    });
+
+    const runner = makeRunner();
+    await expect(
+      runner.restoreAgent(
+        restoreParams({
+          metadata: { unattendedAllow: [], unattendedDeny: [] },
+        }),
+      ),
+    ).resolves.toBe(true);
+
+    expect(modes).toEqual(["default"]);
+
+    await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+  }, 60_000);
+
   it("neither polls nor warns when the recovered run has nothing to merge", async () => {
     // The emptiness test lives inside the merge thunk
     // (`hydrateRecoveredSessionHistory` returns immediately for an empty

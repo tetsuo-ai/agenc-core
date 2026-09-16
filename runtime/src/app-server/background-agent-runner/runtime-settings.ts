@@ -39,6 +39,7 @@ import {
 import type { McpRefreshResult } from "../../session/mcp-startup.js";
 import {
   applyUnattendedPermissionPolicyToContext,
+  normalizeUnattendedToolList,
 } from "../../permissions/unattended-policy.js";
 import type { Session } from "../../session/session.js";
 import type { Event } from "../../session/event-log.js";
@@ -1411,12 +1412,32 @@ function buildBootstrapArgv(
   );
 }
 
+/**
+ * Install a run's unattended policy, when it has one.
+ *
+ * The daemon hosts every session, including a TUI root and a print-mode
+ * one-shot, and those arrive with empty lists because nobody declared an
+ * unattended policy for them. Installing the policy anyway rewrote the user's
+ * `default` mode into `unattended` with nothing allowlisted, so every tool,
+ * FileRead of a workspace file included, paused for approval in the TUI and
+ * was refused in print mode. A run carries a policy only when an operator
+ * declared one (`agent start --unattended-allow/--unattended-deny`, the
+ * gateway, a workflow spec) or the routine service asked for the read-only
+ * grant; every other run keeps the permission mode it was created with.
+ */
 async function installUnattendedPermissionPolicy(
   registry: PermissionModeRegistry,
   allow: readonly string[] | undefined,
   deny: readonly string[] | undefined,
   readOnly = false,
 ): Promise<void> {
+  if (
+    normalizeUnattendedToolList(allow).length === 0 &&
+    normalizeUnattendedToolList(deny).length === 0 &&
+    !readOnly
+  ) {
+    return;
+  }
   const next = applyUnattendedPermissionPolicyToContext(registry.current(), {
     ...(allow !== undefined ? { allowlist: allow } : {}),
     ...(deny !== undefined ? { denylist: deny } : {}),

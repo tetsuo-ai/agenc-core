@@ -105,9 +105,11 @@ export function applyUnattendedPermissionPolicyToContext(
   // Preserve modes the user explicitly opted into. The user chose
   // bypassPermissions (--dangerously-bypass-approvals-and-sandbox), plan (--permission-mode plan / EnterPlanMode),
   // or acceptEdits (--permission-mode acceptEdits / approving a plan with
-  // auto-accept); the background-agent-runner's default unattended-policy
-  // install — which runs on every startAgent/restoreAgent because the daemon
-  // always forces --autonomous — MUST NOT override those.
+  // auto-accept); the background-agent-runner's unattended-policy install —
+  // which runs on every startAgent/restoreAgent that carries an allowlist,
+  // a denylist, or the routine read-only grant — MUST NOT override those.
+  // A run without any of these keeps its mode: the runner does not call
+  // this at all, so a `default` TUI or print-mode session stays `default`.
   //
   // Without this guard, every daemon session with an explicit mode had it
   // silently rewritten to "unattended": with --dangerously-bypass-approvals-and-sandbox the evaluator's unattended
