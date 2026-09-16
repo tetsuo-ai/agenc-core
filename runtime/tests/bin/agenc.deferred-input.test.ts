@@ -491,6 +491,19 @@ describe("deferred daemon input ownership", () => {
     expect(harness.requests).toHaveLength(0);
   });
 
+  it("reports the live daemon session id once the first turn activates it", async () => {
+    // `/status` reads `session.conversationId` off this outer wrapper. It used
+    // to keep the synthetic idle placeholder for the life of the TUI, so the
+    // dashboard said "(idle — assigned when you send your first message)"
+    // after dozens of turns.
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps });
+    const idSession = session as typeof session & { readonly conversationId: string };
+    expect(idSession.conversationId).toBe("deferred-input-base");
+    await session.submit("first turn");
+    expect(idSession.conversationId).toBe("agent-1");
+  });
+
   it("forwards status-line requests after live activation without another model turn", async () => {
     const harness = daemonHarness();
     const session = await createDeferredInputSession({ baseSession: harness.baseSession, deps: harness.deps });

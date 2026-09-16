@@ -4346,6 +4346,16 @@ async function createDeferredDaemonPromptTuiSession(params: {
   };
   const session: TuiSessionShape & Record<string, unknown> = {
     ...daemonSessionBase,
+    // The base carries the synthetic `agenc-tui-idle-<pid>` id until the
+    // first turn; the daemon then vends the real `conv-*` id to the live
+    // session. `/status` and anything else reading the outer wrapper must see
+    // that id, not the placeholder the spread copied at construction.
+    get conversationId(): string {
+      const live = liveSession as { conversationId?: unknown } | null;
+      return live !== null && typeof live.conversationId === "string"
+        ? live.conversationId
+        : (base.conversationId as string);
+    },
     workflowApprovalControls: createWorkflowApprovalControls({
       async request(method, requestParams, options) {
         options.signal.throwIfAborted();
