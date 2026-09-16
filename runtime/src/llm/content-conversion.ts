@@ -71,6 +71,56 @@ function runtimeImageUrl(item: object): string | null {
   return null;
 }
 
+/**
+ * True when `body` is canonical base64: well formed, and re-encoding the bytes
+ * reproduces it exactly. The round-trip is the part that matters. Splicing a
+ * redaction marker into a base64 payload leaves something that still looks
+ * base64-ish but no longer round-trips, and that is what reaches a provider as
+ * "Invalid base64 data".
+ */
+export function isCanonicalBase64Body(body: string): boolean {
+  if (body.length === 0) return false;
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body)) {
+    return false;
+  }
+  return Buffer.from(body, "base64").toString("base64") === body;
+}
+
+/** The base64 body of a `data:<type>;base64,<body>` URL, or null. */
+export function base64DataUrlBody(url: string): string | null {
+  const match = /^data:[^;,]+;base64,(.*)$/s.exec(url);
+  return match === null ? null : match[1]!;
+}
+
+/**
+ * True when this content part carries validated binary whose bytes must reach
+ * the provider intact: an inline base64 image, or a base64 PDF document. A
+ * payload that merely claims to be binary but is not canonical base64 is NOT
+ * media, so labelling plaintext `data:image/png;base64,` buys it nothing and
+ * it stays subject to ordinary redaction.
+ */
+export function validatedBinaryCarrierBody(part: unknown): string | null {
+  if (!part || typeof part !== "object") return null;
+  const record = part as Record<string, unknown>;
+  if (record.type === "image_url") {
+    const image = record.image_url;
+    if (!image || typeof image !== "object") return null;
+    const url = (image as Record<string, unknown>).url;
+    if (typeof url !== "string") return null;
+    const body = base64DataUrlBody(url);
+    return body !== null && isCanonicalBase64Body(body) ? body : null;
+  }
+  if (record.type === "document") {
+    const source = record.source;
+    if (!source || typeof source !== "object") return null;
+    const data = (source as Record<string, unknown>).data;
+    if ((source as Record<string, unknown>).type !== "base64") return null;
+    if (typeof data !== "string") return null;
+    return isCanonicalBase64Body(data) ? data : null;
+  }
+  return null;
+}
+
 export function cloneLlmContent(content: unknown): LLMMessage["content"] {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

@@ -5,6 +5,7 @@ import type {
 } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
+import { validatedBinaryCarrierBody } from "../llm/content-conversion.js";
 import type { ResponseItem } from "./rollout-item.js";
 import {
   deterministicToolResultId,
@@ -329,6 +330,7 @@ function redactResponseItemForPersistence(
     const { providerReasoning: _droppedReplay, ...withoutReplay } = redacted;
     redacted = withoutReplay as ResponseItem;
   }
+  redacted = withoutAlteredBinaryCarriers(item, redacted);
   assertResponseAgentInvocationItem(redacted);
   if (integrity === undefined) return redacted;
   if (redacted.role !== "tool" || redacted.toolCallId === undefined) {
@@ -364,6 +366,44 @@ function redactResponseItemForPersistence(
     }
   }
   return { ...redacted, toolResultIntegrity: durableIntegrity };
+}
+
+/**
+ * Secret redaction is text-oriented, and a long base64 payload can contain a
+ * run that matches a credential heuristic by chance: a Solana secret key is an
+ * unbroken 80-90 character base58 run, and base58 is a subset of the base64
+ * alphabet, so a large enough inline image will eventually contain one. Marking
+ * it rewrites bytes inside the payload, and the provider then rejects the whole
+ * request with "Invalid base64 data", losing the turn.
+ *
+ * Persisting the original is not acceptable either: the match may be a real
+ * secret. So a carrier whose validated binary redaction would alter is dropped
+ * and replaced with a text omission, exactly as an altered opaque replay is
+ * dropped. Only carriers that are canonical base64 to begin with are treated
+ * as binary, so plaintext wearing a `data:image/png;base64,` label stays
+ * redacted as text rather than passing through.
+ */
+function withoutAlteredBinaryCarriers(
+  original: ResponseItem,
+  redacted: ResponseItem,
+): ResponseItem {
+  const source = original.content;
+  const current = redacted.content;
+  if (typeof source === "string" || typeof current === "string") return redacted;
+  if (source.length !== current.length) return redacted;
+  let altered = false;
+  const kept = current.map((part, index) => {
+    const before = validatedBinaryCarrierBody(source[index]);
+    if (before === null) return part;
+    const after = validatedBinaryCarrierBody(part);
+    if (after === before) return part;
+    altered = true;
+    return {
+      type: "text",
+      text: "[omitted: secret redaction would have altered this binary payload]",
+    };
+  });
+  return altered ? ({ ...redacted, content: kept } as ResponseItem) : redacted;
 }
 
 function assertResponseAgentInvocationItem(item: ResponseItem): void {
