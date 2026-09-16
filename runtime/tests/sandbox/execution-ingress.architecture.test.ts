@@ -45,6 +45,7 @@ describe("sandbox execution ingress architecture", () => {
       "agents/run-agent.ts:forkForReadOnlyInspection",
       "agents/run-agent.ts:runtimeSandbox",
       "agents/worktree.ts:prepareSpawn",
+      "agents/worktree.ts:runtimeSandbox",
       "app-server/workflow/session-adapters.ts:forkForCwd",
       "app-server/workflow/session-adapters.ts:prepareSpawn",
       "browser/cdp.ts:prepareSpawn",

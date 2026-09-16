@@ -1,7 +1,7 @@
 import path from "node:path";
 import { canonicalAuthorityPath, isWithinAuthorityPath } from "../desktop-authority-protection.js";
 import type { BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
-import { INHERITED_CWD_SANDBOX_PATH } from "../linux-launcher/config.js";
+import { AGENC_INHERITED_CWD_SANDBOX_PATH } from "./constants.js";
 import { resolvePermissionPath, type PermissionProfile, type FileSystemSandboxEntry } from "./index.js";
 
 export function narrowBoundReadOnlyProfile(
@@ -33,6 +33,6 @@ export function narrowBoundReadOnlyProfile(
     entries.push({ path: { kind: "path", path: root }, access: "read" });
   }
   if (!covered) throw new Error("narrow inherited cwd is not wholly covered by a directory read grant");
-  entries.push({ path: { kind: "path", path: INHERITED_CWD_SANDBOX_PATH }, access: "read" });
+  entries.push({ path: { kind: "path", path: AGENC_INHERITED_CWD_SANDBOX_PATH }, access: "read" });
   return { ...profile, network: "disabled", fileSystem: { ...policy, entries } };
 }
