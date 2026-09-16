@@ -26,7 +26,10 @@ import type {
 import type { AdmissionLease } from "../budget/admission-types.js";
 import { WorkflowHandoffSpool } from "../agents/workflow-handoff-spool.js";
 import { defaultConfig } from "../config/schema.js";
-import { STREAM_IDLE_ABORT_REASON } from "../llm/stream-watchdog.js";
+import {
+  STREAM_IDLE_ABORT_REASON,
+  STREAM_IDLE_WARNING_REASON,
+} from "../llm/stream-watchdog.js";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -614,6 +617,64 @@ describe("streamModel — live assistant text sanitization", () => {
       expect(error).toBeInstanceOf(StreamModelError);
       expect((error as Error).message).toMatch(/^stream_idle: no data for 600000ms/);
       expect(isRetryableStreamError(error)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a stream that produced a chunk warns on quiet idle and does not abort", async () => {
+    vi.useFakeTimers();
+    const external = new AbortController();
+    try {
+      const ctx = mkCtx("chat");
+      let providerSignal: AbortSignal | undefined;
+      const provider = mkProvider(
+        (_messages, onChunk, options) =>
+          new Promise<LLMResponse>((_resolve, reject) => {
+            providerSignal = options?.signal;
+            onChunk({ content: "hi", done: false });
+            options?.signal?.addEventListener(
+              "abort",
+              () => reject(new Error(String(options.signal?.reason))),
+              { once: true },
+            );
+          }),
+      );
+      const { session, events } = mkSession(provider);
+      (session.services as { configStore?: unknown }).configStore = {
+        current: () => ({ stream_watchdog_timeout_ms: 100 }),
+      };
+
+      const outcome = streamModel(
+        mkState(ctx),
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "hello" }]),
+        external.signal,
+      ).then(
+        () => "resolved" as const,
+        (error: unknown) => error,
+      );
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(
+        events.some(
+          (event) =>
+            event.msg.type === "warning" &&
+            (event.msg.payload as { cause?: string }).cause ===
+              STREAM_IDLE_WARNING_REASON,
+        ),
+      ).toBe(true);
+      expect(providerSignal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(providerSignal?.aborted).toBe(false);
+      expect(
+        events.some((event) => event.msg.type === "stream_error"),
+      ).toBe(false);
+
+      external.abort();
+      await outcome;
     } finally {
       vi.useRealTimers();
     }
