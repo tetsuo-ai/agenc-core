@@ -131,7 +131,8 @@ import { __installDaemonTurnDriverHooksForTest } from "../app-server/background-
 import { startSessionCronScheduler } from "./session-cron-scheduler.js";
 import { resetCronSchedulerForTests } from "../utils/cronScheduler.js";
 import { addCronTask, listAllCronTasks, readCronTasks } from "../utils/cronTasks.js";
-import { resetStateForTests, setScheduledTasksEnabled } from "../bootstrap/state.js";
+import { withConfinedDirectory } from "../../src/fs/descriptor-confined-io.js";
+import { getSessionCronTasks, resetStateForTests, setScheduledTasksEnabled } from "../bootstrap/state.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
@@ -773,6 +774,28 @@ function mkStaticToolRegistry(
   } as unknown as ToolRegistry;
 }
 
+// Durable cron storage requires descriptor-root confinement, which darwin does
+// not provide. cron-storage POLICY.unavailableAlias=reject is a security policy,
+// so the tests that genuinely exercise durable storage are gated on a real
+// capability probe rather than the policy being relaxed to green a platform.
+const supportsDurableCron = await (async () => {
+  const probeRoot = mkdtempSync(join(tmpdir(), "agenc-cron-capability-probe-"));
+  try {
+    await withConfinedDirectory(probeRoot, {
+      hardLinks: "reject", privateDirectory: false, privateFile: false,
+      unavailableAlias: "reject",
+    }, async () => {});
+    return true;
+  } catch (error) {
+    if ((error as { code?: string }).code === "DESCRIPTOR_UNSUPPORTED") return false;
+    throw error;
+  } finally { rmSync(probeRoot, { recursive: true, force: true }); }
+})();
+async function observedSessionTasks(workspaceRoot: string, conversationId: string) {
+  if (supportsDurableCron) return listAllCronTasks(workspaceRoot, conversationId);
+  return getSessionCronTasks().filter((task) => task.queueOwner?.conversationId === conversationId);
+}
+
 describe("daemon-owned scheduled turns", () => {
   async function withCronSessions(
     work: (fixture: {
@@ -847,7 +870,8 @@ describe("daemon-owned scheduled turns", () => {
       });
       expect(created.isError).toBeUndefined();
       expect(JSON.parse(String(created.content)).cron.durable).toBe(false);
-      expect(await readCronTasks(workspaceRoot)).toEqual([]);
+      if (supportsDurableCron) expect(await readCronTasks(workspaceRoot)).toEqual([]);
+      else await expect(readCronTasks(workspaceRoot)).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
       expect(calls()).toBe(0);
       await advance();
       expect(submit).toHaveBeenCalledTimes(1);
@@ -860,7 +884,7 @@ describe("daemon-owned scheduled turns", () => {
       expect(events.filter((event) => event.msg.type === "turn_complete")).toHaveLength(1);
       expect(events.filter((event) => event.msg.type === "tool_call_started")).toHaveLength(1);
       expect(getCommandQueueSnapshot()).toEqual([]);
-      expect(await listAllCronTasks(workspaceRoot, session.conversationId)).toEqual([]);
+      expect(await observedSessionTasks(workspaceRoot, session.conversationId)).toEqual([]);
       await advance();
       await scheduler.drain();
       expect(calls()).toBe(2);
@@ -883,15 +907,15 @@ describe("daemon-owned scheduled turns", () => {
         const scheduler = await start(session);
         await advance();
         expect(calls).toEqual(["busy"]);
-        expect(await listAllCronTasks(workspaceRoot, session.conversationId)).toHaveLength(1);
+        expect(await observedSessionTasks(workspaceRoot, session.conversationId)).toHaveLength(1);
         busy.resolve();
         await active;
         await advance();
         expect(calls).toEqual(["busy", "run the scheduled check"]);
-        expect(await listAllCronTasks(workspaceRoot, session.conversationId)).toEqual([]);
+        expect(await observedSessionTasks(workspaceRoot, session.conversationId)).toEqual([]);
         scheduled.resolve();
         await scheduler.drain();
-        expect(await listAllCronTasks(workspaceRoot, session.conversationId)).toEqual([]);
+        expect(await observedSessionTasks(workspaceRoot, session.conversationId)).toEqual([]);
       } finally {
         busy.resolve();
         scheduled.resolve();
@@ -899,7 +923,7 @@ describe("daemon-owned scheduled turns", () => {
     });
   });
 
-  test("CronDelete cancels a queued turn without suppressing another scheduled tool turn", async () => {
+  test.skipIf(!supportsDurableCron)("CronDelete cancels a queued turn without suppressing another scheduled tool turn", async () => {
     await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
       const busy = Promise.withResolvers<void>();
       const started = Promise.withResolvers<void>();
@@ -951,7 +975,7 @@ describe("daemon-owned scheduled turns", () => {
     });
   });
 
-  test("a durable claim is absent from a restarted reader before the first tool finishes", async () => {
+  test.skipIf(!supportsDurableCron)("a durable claim is absent from a restarted reader before the first tool finishes", async () => {
     await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
       const pending = Promise.withResolvers<void>();
       const started = Promise.withResolvers<void>();
@@ -987,7 +1011,7 @@ describe("daemon-owned scheduled turns", () => {
     });
   });
 
-  test.each([false, true])("persisted rearm waits for a submit driver and respects closed=%s", async (closed) => {
+  test.skipIf(!supportsDurableCron).each([false, true])("persisted rearm waits for a submit driver and respects closed=%s", async (closed) => {
     await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
       const { session } = create();
       await add(session, { durable: true });
@@ -1011,7 +1035,7 @@ describe("daemon-owned scheduled turns", () => {
     });
   });
 
-  test.each(["failed", "aborted"] as const)("an actual tool turn that ends %s consumes its one-shot without replay", async (outcome) => {
+  test.skipIf(!supportsDurableCron).each(["failed", "aborted"] as const)("an actual tool turn that ends %s consumes its one-shot without replay", async (outcome) => {
     await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
       let session: Session;
       let samples = 0;
@@ -1049,7 +1073,7 @@ describe("daemon-owned scheduled turns", () => {
     });
   });
 
-  test("queued shutdown preserves durable jobs that never crossed acceptance", async () => {
+  test.skipIf(!supportsDurableCron)("queued shutdown preserves durable jobs that never crossed acceptance", async () => {
     await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
       const { session } = create();
       const busy = Promise.withResolvers<void>();
@@ -1076,7 +1100,7 @@ describe("daemon-owned scheduled turns", () => {
     });
   });
 
-  test.each(["preparation failed", "unexpected driver failure"])(
+  test.skipIf(!supportsDurableCron).each(["preparation failed", "unexpected driver failure"])(
     "consumes an accepted failed one-shot without replay when %s",
     async (message) => {
       await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
@@ -1141,7 +1165,7 @@ describe("daemon-owned scheduled turns", () => {
     });
   });
 
-  test("abort during durable claim commit prevents dispatch after the claim", async () => {
+  test.skipIf(!supportsDurableCron)("abort during durable claim commit prevents dispatch after the claim", async () => {
     await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
       const { session, events } = create();
       const attempt = vi.fn(async () => {});
@@ -1170,7 +1194,7 @@ describe("daemon-owned scheduled turns", () => {
     });
   });
 
-  test("sibling sessions run their own jobs and share one durable owner with close-time handoff", async () => {
+  test.skipIf(!supportsDurableCron)("sibling sessions run their own jobs and share one durable owner with close-time handoff", async () => {
     await withCronSessions(async ({ create, add, start, workspaceRoot, advance }) => {
       const first = create("cron-first").session;
       const second = create("cron-second").session;

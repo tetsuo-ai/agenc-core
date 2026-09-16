@@ -3,7 +3,7 @@ import {
   SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
   shutdownSessionLifecycle,
 } from "./lifecycle.js";
-import { mkSession } from "../fixtures.js";
+import { mkCtx, mkSession } from "../fixtures.js";
 import {
   executeExtractMemories,
   initExtractMemories,
@@ -59,7 +59,7 @@ describe("shutdownSessionLifecycle", () => {
         { role: "assistant", content: "ok" },
       ],
       completedToolResults: [],
-      ctx: { cwd: "/tmp", depth: 0, sessionSource: "cli_main" } as unknown as TurnContext,
+      ctx: mkCtx({ sandboxPolicy: { value: "danger_full_access" } }),
       session: {
         conversationId: "lifecycle-extraction",
         services: { runtimeOptions: resolveAgentRuntimeOptions({}) },
