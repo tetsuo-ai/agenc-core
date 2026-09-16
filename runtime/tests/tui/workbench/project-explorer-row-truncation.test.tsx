@@ -208,6 +208,7 @@ describe("ProjectExplorer row truncation", () => {
       activePath: null,
       expandedPaths: [],
       fileCount: 380,
+      git: { branch: "main", head: null, dirtyCount: 7 },
       rows: Array.from({ length: 7 }, (_, index) =>
         fileRow(`dirty-${index}.ts`, `dirty-${index}.ts`, {
           gitState: "modified",
