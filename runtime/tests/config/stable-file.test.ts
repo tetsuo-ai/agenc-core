@@ -154,12 +154,12 @@ describe("ensurePrivateDescendantDirectory", () => {
     const root = fixtureRoot();
     const created = await ensurePrivateDescendantDirectory(root, [
       "secure-storage",
-      "vault",
+      "private-store",
     ]);
     expect(created.canonicalPath).toBe(
-      realpathSync(join(root, "secure-storage", "vault")),
+      realpathSync(join(root, "secure-storage", "private-store")),
     );
-    expect(created.path).toBe(join(root, "secure-storage", "vault"));
+    expect(created.path).toBe(join(root, "secure-storage", "private-store"));
     expect(statSync(created.canonicalPath).mode & 0o777).toBe(0o700);
   });
 
@@ -194,9 +194,9 @@ describe("ensurePrivateDescendantDirectory", () => {
 
   test("is idempotent for an already-private directory", async () => {
     const root = fixtureRoot();
-    const first = await ensurePrivateDescendantDirectory(root, ["vault"]);
+    const first = await ensurePrivateDescendantDirectory(root, ["private-store"]);
     chmodSync(first.canonicalPath, 0o755);
-    const second = await ensurePrivateDescendantDirectory(root, ["vault"]);
+    const second = await ensurePrivateDescendantDirectory(root, ["private-store"]);
     expect(second.canonicalPath).toBe(first.canonicalPath);
   });
 });

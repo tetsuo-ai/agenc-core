@@ -112,7 +112,7 @@ describe("migrateRetiredOpenAiCredential", () => {
     expect(migrated.authMode).toBe("chatgpt");
   });
 
-  test("merges when the current vault already holds the same values", () => {
+  test("merges when the current secure storage already holds the same values", () => {
     const current = {
       apiKey: "retired-api-key",
       accessToken: "retired-access-token",
@@ -131,7 +131,7 @@ describe("migrateRetiredOpenAiCredential", () => {
     ).toEqual(current);
   });
 
-  test("refuses a field conflict with the current vault", () => {
+  test("refuses a field conflict with the current secure storage", () => {
     expect(() =>
       migrateRetiredOpenAiCredential(
         { apiKey: "retired-api-key" },
