@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -55,25 +62,61 @@ describe("path-validation", () => {
     const memory = join(outside, ".agenc", "memory");
     await mkdir(memory, { recursive: true });
     const target = join(memory, "feedback.md");
-    const store = new ConfigStore({ home: outside, cwd: root,
-      cliOverrides: { autoMemoryEnabled: true, autoMemoryDirectory: memory } });
+    const store = new ConfigStore({
+      home: outside,
+      cwd: root,
+      cliOverrides: { autoMemoryEnabled: true, autoMemoryDirectory: memory },
+    });
     await store.reload();
     await runWithCanonicalSettingsAuthority(store, async () => {
       expect(validatePath(target, root, ctx(), "write").allowed).toBe(true);
       expect(validatePath(memory, root, ctx(), "read").allowed).toBe(true);
-      expect(validatePath(join(memory + "-other", "feedback.md"), root, ctx(), "write").allowed).toBe(false);
+      expect(
+        validatePath(
+          join(memory + "-other", "feedback.md"),
+          root,
+          ctx(),
+          "write",
+        ).allowed,
+      ).toBe(false);
       for (const behavior of ["ask", "deny"] as const) {
-        const permissions = applyPermissionUpdate(ctx(), { type: "addRules", destination: "session", behavior,
-          rules: [{ toolName: "Write", ruleContent: target }] });
-        expect(checkToolPathPermission({ toolName: "Write", input: { file_path: target },
-          path: target, cwd: root, context: permissions, operationType: "write" }).behavior).toBe(behavior);
+        const permissions = applyPermissionUpdate(ctx(), {
+          type: "addRules",
+          destination: "session",
+          behavior,
+          rules: [{ toolName: "Write", ruleContent: target }],
+        });
+        expect(
+          checkToolPathPermission({
+            toolName: "Write",
+            input: { file_path: target },
+            path: target,
+            cwd: root,
+            context: permissions,
+            operationType: "write",
+          }).behavior,
+        ).toBe(behavior);
       }
       // A trusted root does not authorize links pointing at unrelated files.
-      await symlink(root, join(memory, "escape"));
-      expect(validatePath(join(memory, "escape", "other.md"), outside, ctx(), "write").allowed).toBe(false);
+      try {
+        await symlink(root, join(memory, "escape"));
+        expect(
+          validatePath(
+            join(memory, "escape", "other.md"),
+            outside,
+            ctx(),
+            "write",
+          ).allowed,
+        ).toBe(false);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      }
     });
-    const disabled = new ConfigStore({ home: outside, cwd: root,
-      cliOverrides: { autoMemoryEnabled: false, autoMemoryDirectory: memory } });
+    const disabled = new ConfigStore({
+      home: outside,
+      cwd: root,
+      cliOverrides: { autoMemoryEnabled: false, autoMemoryDirectory: memory },
+    });
     await disabled.reload();
     runWithCanonicalSettingsAuthority(disabled, () => {
       expect(validatePath(target, root, ctx(), "write").allowed).toBe(false);
@@ -465,7 +508,10 @@ describe("path-validation", () => {
       });
 
       expect(result.behavior).toBe("allow");
-      expect(result.decisionReason).toEqual({ type: "mode", mode: "bypassPermissions" });
+      expect(result.decisionReason).toEqual({
+        type: "mode",
+        mode: "bypassPermissions",
+      });
       expect(signedRoots(result.updatedInput)).toContain(
         dirname(join(await realpath(outside), "nginx.conf")),
       );
@@ -501,6 +547,156 @@ describe("path-validation", () => {
       });
 
       expect(result.behavior).not.toBe("allow");
+    });
+  });
+
+  describe("relative path rules resolve against their source roots (#2128)", () => {
+    const srcFile = () => join(root, "src", "app.ts");
+
+    function withRule(
+      destination:
+        | "userSettings"
+        | "projectSettings"
+        | "localSettings"
+        | "session"
+        | "cliArg",
+      behavior: "allow" | "ask" | "deny",
+      ruleContent: string,
+      toolName = "FileRead",
+    ) {
+      return applyPermissionUpdate(ctx(), {
+        type: "addRules",
+        destination,
+        behavior,
+        rules: [{ toolName, ruleContent }],
+      });
+    }
+
+    test("project FileRead(./src/**) deny matches the project src file", async () => {
+      const target = srcFile();
+      await mkdir(dirname(target), { recursive: true });
+      const store = new ConfigStore({ home: outside, cwd: root });
+      await store.reload();
+      await runWithCanonicalSettingsAuthority(store, async () => {
+        const permissions = withRule("projectSettings", "deny", "./src/**");
+        const result = checkToolPathPermission({
+          toolName: "FileRead",
+          input: { file_path: target },
+          path: target,
+          cwd: root,
+          context: permissions,
+          operationType: "read",
+        });
+        expect(result.behavior).toBe("deny");
+        expect(result.decisionReason?.type).toBe("rule");
+      });
+    });
+
+    test("session and command FileRead(./src/**) deny use the workspace cwd", () => {
+      const target = srcFile();
+      const session = withRule("session", "deny", "./src/**");
+      expect(
+        checkToolPathPermission({
+          toolName: "FileRead",
+          input: { file_path: target },
+          path: target,
+          cwd: root,
+          context: session,
+          operationType: "read",
+        }).behavior,
+      ).toBe("deny");
+
+      const command = ctx({
+        alwaysDenyRules: { command: ["FileRead(./src/**)"] },
+      });
+      expect(
+        checkToolPathPermission({
+          toolName: "FileRead",
+          input: { file_path: target },
+          path: target,
+          cwd: root,
+          context: command,
+          operationType: "read",
+        }).behavior,
+      ).toBe("deny");
+    });
+
+    test("user FileRead(./src/**) deny does not match the project src file", async () => {
+      const target = srcFile();
+      await mkdir(dirname(target), { recursive: true });
+      const store = new ConfigStore({ home: outside, cwd: root });
+      await store.reload();
+      await runWithCanonicalSettingsAuthority(store, async () => {
+        const permissions = withRule("userSettings", "deny", "./src/**");
+        const result = checkToolPathPermission({
+          toolName: "FileRead",
+          input: { file_path: target },
+          path: target,
+          cwd: root,
+          context: permissions,
+          operationType: "read",
+        });
+        expect(result.behavior).toBe("allow");
+      });
+    });
+
+    test("local Write(./src/**) allow authorizes a project src write in default mode", async () => {
+      const target = srcFile();
+      const store = new ConfigStore({ home: outside, cwd: root });
+      await store.reload();
+      await runWithCanonicalSettingsAuthority(store, async () => {
+        const permissions = withRule(
+          "localSettings",
+          "allow",
+          "./src/**",
+          "Write",
+        );
+        const result = checkToolPathPermission({
+          toolName: "Write",
+          input: { file_path: target },
+          path: target,
+          cwd: root,
+          context: permissions,
+          operationType: "write",
+        });
+        expect(result.behavior).toBe("allow");
+        expect(result.decisionReason?.type).toBe("rule");
+      });
+    });
+
+    test("relative deny still wins over workspace read auto-allow", async () => {
+      const target = srcFile();
+      await mkdir(dirname(target), { recursive: true });
+      const store = new ConfigStore({ home: outside, cwd: root });
+      await store.reload();
+      await runWithCanonicalSettingsAuthority(store, async () => {
+        const permissions = withRule("projectSettings", "deny", "src/**");
+        expect(
+          checkToolPathPermission({
+            toolName: "FileRead",
+            input: { file_path: target },
+            path: target,
+            cwd: root,
+            context: permissions,
+            operationType: "read",
+          }).behavior,
+        ).toBe("deny");
+      });
+    });
+
+    test("absolute and home-relative patterns keep matching the expanded path", () => {
+      const abs = join(outside, "secret.txt");
+      const absDeny = withRule("session", "deny", abs.replace(/\\/g, "/"));
+      expect(
+        checkToolPathPermission({
+          toolName: "FileRead",
+          input: { file_path: abs },
+          path: abs,
+          cwd: root,
+          context: absDeny,
+          operationType: "read",
+        }).behavior,
+      ).toBe("deny");
     });
   });
 });
