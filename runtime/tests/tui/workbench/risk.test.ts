@@ -22,6 +22,22 @@ describe("approval risk helpers", () => {
     expect(classifyApprovalRisk({ toolName: "Bash", command })).toBe("destructive");
   });
 
+  it.each([
+    "git log --format='%H%n%s' -50",
+    "git log --oneline --decorate -100 && git tag -l --sort=-v:refname && git log --format='%H%n%s%n%b%n---' -50",
+    "date +%Y-%m-%d --format=iso",
+    "agenc -p --output-format json 'hello'",
+  ])("does not read an output-format option as a disk format: %s", (command) => {
+    expect(classifyApprovalRisk({ toolName: "Bash", command })).not.toBe("destructive");
+  });
+
+  it.each(["format C: /q", "mkfs.ext4 /dev/sdb1", "Format the data disk before install"])(
+    "keeps a real format destructive: %s",
+    (command) => {
+      expect(classifyApprovalRisk({ toolName: "Bash", command })).toBe("destructive");
+    },
+  );
+
   it("requires specific confirmation words for destructive actions", () => {
     expect(typedConfirmationWordForRisk({ risk: "destructive", command: "transfer tokens" })).toBe("transfer");
     expect(typedConfirmationWordForRisk({ risk: "destructive", command: "delete branch" })).toBe("delete");

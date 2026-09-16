@@ -65,7 +65,14 @@ export function classifyApprovalRisk(input: {
   // the slash-command registry was misclassified as a destructive Solana
   // slash and forced a typed confirmation. Real slashing still escalates via
   // settle/stake/escrow context and the command heuristics.
-  if (/\b(delete|destroy|wipe|format|mainnet|settle|stake|transfer|escrow)\b/u.test(haystack)) {
+  if (/\b(delete|destroy|wipe|mainnet|settle|stake|transfer|escrow)\b/u.test(haystack)) {
+    return "destructive";
+  }
+  // "format" means a disk format (`format C:`), never an output-format
+  // option: `git log --format=…`, `date +format`, `--output-format json`
+  // forced a typed "approve" on read-only commands. Match the word only when
+  // it is not spelled as a flag or a key.
+  if (/(?<![-=\w])format\b(?!=)/u.test(haystack)) {
     return "destructive";
   }
   if (/\b(write|edit|patch|chmod|chown|mv|deploy|install|network|curl|wget)\b/u.test(haystack)) {
