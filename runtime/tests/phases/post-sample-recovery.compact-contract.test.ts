@@ -1,9 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { buildInitialTurnState } from "../session/turn-state.js";
 import {
+  attemptContextCollapse,
+  isCompactionLimitRefusal,
   postSampleRecovery,
   runContextCollapseOverflowRecovery,
 } from "./post-sample-recovery.js";
+import { CompactionTransactionError } from "../services/compact/transaction-types.js";
 import { findToolTurnValidationIssue } from "../llm/tool-turn-validator.js";
 import { mkCtx, mkSession } from "../../tests/fixtures.js";
 import type { LLMMessage } from "../llm/types.js";
@@ -298,5 +301,52 @@ describe("post-sample context-collapse recovery contract", () => {
     expect(harness.store.readAll().some((item) => item.type === "compaction_committed"))
       .toBe(false);
     harness.close();
+  });
+});
+
+// #2520: compaction can refuse to plan a history inside its own resource bounds
+// before any provider call. That refusal used to escape 413 recovery as an
+// untyped throw, which the ladder turned into `trigger_threw`, ending the turn
+// without the typed prompt_too_long_exhausted record.
+describe("compaction resource refusals are separated from faults", () => {
+  test("a bounded planner refusal is classified as a refusal", () => {
+    expect(
+      isCompactionLimitRefusal(
+        new CompactionTransactionError(
+          "output_limit_exceeded",
+          "provider output exceeds its node limit",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  test("schema and provenance failures are never refusals, so they still propagate", () => {
+    expect(
+      isCompactionLimitRefusal(
+        new CompactionTransactionError("output_schema_invalid", "bad schema"),
+      ),
+    ).toBe(false);
+    expect(
+      isCompactionLimitRefusal(
+        new CompactionTransactionError("provenance_invalid", "bad provenance"),
+      ),
+    ).toBe(false);
+  });
+
+  test("an unrelated error is never a refusal", () => {
+    expect(isCompactionLimitRefusal(new Error("boom"))).toBe(false);
+    expect(isCompactionLimitRefusal(undefined)).toBe(false);
+    expect(isCompactionLimitRefusal("output_limit_exceeded")).toBe(false);
+  });
+
+  test("attemptContextCollapse passes through when there is nothing to collapse", async () => {
+    const ctx = mkCtx();
+    const state = buildInitialTurnState(ctx, {
+      role: "user",
+      content: "continue",
+    });
+    await expect(attemptContextCollapse({ state })).resolves.toEqual({
+      kind: "pass",
+    });
   });
 });

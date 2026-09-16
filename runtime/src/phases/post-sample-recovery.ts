@@ -39,6 +39,7 @@ import {
   CompactionCleanupPendingError,
   finalizeCompactionTransaction,
 } from "../services/compact/finalize-transaction.js";
+import { CompactionTransactionError } from "../services/compact/transaction-types.js";
 import { runPostCompactCleanup } from "../services/compact/postCompactCleanup.js";
 import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
@@ -137,6 +138,50 @@ export async function runContextCollapseOverflowRecovery(params: {
     kind: "applied",
     reason: "context_collapse",
   } as const;
+}
+
+export type ContextCollapseAttempt =
+  | ContextCollapseOverflowRecoveryResult
+  | { readonly kind: "limit_refused"; readonly reason: string };
+
+/**
+ * Run the bounded 413 collapse, separating "this history could not be planned
+ * inside compaction's own resource bounds" from a genuine fault.
+ *
+ * A source history can exceed the compaction planner's canonical encoding
+ * budget before any provider call (#2520): many small messages exhaust the
+ * node ceiling while the transcript is nowhere near the context window. That
+ * is a refusal to collapse, not a crash, and it must not escape as an untyped
+ * throw. When it escapes, the recovery ladder converts any exception into
+ * `surface` with `trigger_threw` and the turn ends WITHOUT the typed
+ * `prompt_too_long_exhausted` record the caller would otherwise emit.
+ *
+ * Every other error still propagates, including `CompactionCleanupPendingError`,
+ * which the transaction deliberately rethrows after registering its retry.
+ */
+export function isCompactionLimitRefusal(
+  error: unknown,
+): error is CompactionTransactionError {
+  return (
+    error instanceof CompactionTransactionError &&
+    error.reason === "output_limit_exceeded"
+  );
+}
+
+export async function attemptContextCollapse(params: {
+  readonly state: TurnState;
+  readonly session?: Session;
+  readonly turnContext?: TurnContext;
+  readonly signal?: AbortSignal;
+}): Promise<ContextCollapseAttempt> {
+  try {
+    return await runContextCollapseOverflowRecovery(params);
+  } catch (error) {
+    if (isCompactionLimitRefusal(error)) {
+      return { kind: "limit_refused", reason: error.message };
+    }
+    throw error;
+  }
 }
 
 function cleanupSessionAfterCompaction(session: Session): void {
@@ -353,7 +398,7 @@ export async function postSampleRecovery(
         const gate = evaluateWithholdCascade(c.state, c.lastMessage, c.streamError);
         if (gate.kind === "route_to_collapse_drain") {
           markContextCollapseAttempted(c.state);
-          const drain = await runContextCollapseOverflowRecovery({
+          const drain = await attemptContextCollapse({
             state: c.state,
             session: c.session,
             turnContext: ctx,
@@ -362,6 +407,14 @@ export async function postSampleRecovery(
           if (drain.kind === "applied") {
             c.state.transition = { reason: "collapse_drain_retry" };
             return drain;
+          }
+          if (drain.kind === "limit_refused") {
+            emitWarning(
+              c.session.eventLog,
+              c.session.nextInternalSubId(),
+              "context_collapse_limit_refused",
+              drain.reason,
+            );
           }
         }
         emitError(c.session, c.session.nextInternalSubId(), {
