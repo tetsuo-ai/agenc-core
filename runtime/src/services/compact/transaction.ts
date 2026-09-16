@@ -102,6 +102,7 @@ import {
 import { redactSecretsInValue } from "../../secrets/sanitizer.js";
 import { durableRedactionDropsProviderReplay } from "../../session/message-history-conversion.js";
 import type { ProviderReasoningReplay } from "../../llm/types.js";
+import { omitAlteredBinaryCarriers } from "../../llm/content-conversion.js";
 
 const COMPACTION_BOUNDARY_MESSAGE = "Conversation compacted transactionally";
 const COMPACTION_UNKNOWN_MODEL = "unknown";
@@ -1671,9 +1672,27 @@ function createAuthoritativeSelectionMapper(
   // message whose replay was dropped on the canonical side still matches.
   // Nothing else about the message changes, so a forged body or an altered
   // ordinary replay is still refused.
+  // Durable persistence also omits a binary carrier whose bytes redaction would
+  // alter. The projection has to apply the identical omission or a caller
+  // message keeps an image its own canonical record no longer has.
+  const withoutMedia = (message: RuntimeMessage): RuntimeMessage => {
+    const { content, omitted } = omitAlteredBinaryCarriers(
+      message.content,
+      message.content,
+      (body) => redactSecretsInValue(body) !== body,
+    );
+    return omitted
+      ? ({ ...message, content } as RuntimeMessage)
+      : message;
+  };
   const durablyProjected = (message: RuntimeMessage): RuntimeMessage => {
     const content = message.providerReasoningContent;
-    if (typeof content !== "string" || content.length === 0) return message;
+    // A user attachment carries no provider replay, so returning early here
+    // would skip the media omission entirely and the caller would keep an
+    // image its canonical record no longer has.
+    if (typeof content !== "string" || content.length === 0) {
+      return withoutMedia(message);
+    }
     const provenance = message.providerReasoningProvenance;
     const replay: ProviderReasoningReplay =
       provenance !== undefined &&
@@ -1691,13 +1710,13 @@ function createAuthoritativeSelectionMapper(
             model: provenance.model.trim().toLowerCase(),
           }
         : { version: 1, content };
-    if (!durableRedactionDropsProviderReplay(replay)) return message;
+    if (!durableRedactionDropsProviderReplay(replay)) return withoutMedia(message);
     const {
       providerReasoningContent: _droppedContent,
       providerReasoningProvenance: _droppedProvenance,
       ...withoutReplay
     } = message;
-    return withoutReplay as RuntimeMessage;
+    return withoutMedia(withoutReplay as RuntimeMessage);
   };
   const key = (message: RuntimeMessage): string => {
     const role =

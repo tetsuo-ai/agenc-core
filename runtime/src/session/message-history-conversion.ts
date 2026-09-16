@@ -5,7 +5,11 @@ import type {
 } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
-import { validatedBinaryCarrierBody } from "../llm/content-conversion.js";
+import {
+  OMITTED_BINARY_CARRIER_TEXT,
+  omitAlteredBinaryCarriers,
+  validatedBinaryCarrierBody,
+} from "../llm/content-conversion.js";
 import type { ResponseItem } from "./rollout-item.js";
 import {
   deterministicToolResultId,
@@ -118,7 +122,21 @@ export function llmMessageToReplacementResponseItem(
 export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
   const message: LLMMessage = {
     role: item.role,
-    content: cloneContent(item.content),
+    // A rollout written before binary carriers were protected can hold an
+    // already-damaged payload. Replaying it fails the next provider call, so a
+    // carrier that is no longer canonical is omitted on the way out. The
+    // durable record is not rewritten.
+    //
+    // A sealed tool result is left exactly as persisted: its integrity record
+    // covers these bytes, so omitting them here would leave a body the seal no
+    // longer verifies, and re-digesting would authenticate whatever the record
+    // now contains, including tampering. Such a result still replays broken and
+    // fails at the provider, which is the honest outcome for a seal we must not
+    // silently void.
+    content:
+      item.toolResultIntegrity === undefined
+        ? withoutBrokenBinaryCarriers(cloneContent(item.content))
+        : cloneContent(item.content),
     ...(item.toolCalls !== undefined
       ? {
           toolCalls: item.toolCalls.map((call) => ({
@@ -383,27 +401,42 @@ function redactResponseItemForPersistence(
  * as binary, so plaintext wearing a `data:image/png;base64,` label stays
  * redacted as text rather than passing through.
  */
+/** Drop carriers already damaged on disk, so historical rollouts still replay. */
+function withoutBrokenBinaryCarriers(
+  content: LLMMessage["content"],
+): LLMMessage["content"] {
+  if (!Array.isArray(content)) return content;
+  const kept = content.map((part) => {
+    const record = part as unknown as Record<string, unknown>;
+    // Only inline payloads can be damaged by text redaction. A remote https
+    // image carries no bytes here, so it must survive untouched.
+    const image = record.image_url as Record<string, unknown> | undefined;
+    const source = record.source as Record<string, unknown> | undefined;
+    const isInline =
+      (record.type === "image_url" &&
+        typeof image?.url === "string" &&
+        image.url.startsWith("data:")) ||
+      (record.type === "document" &&
+        source?.type === "base64" &&
+        typeof source.data === "string");
+    if (!isInline) return part;
+    return validatedBinaryCarrierBody(part) === null
+      ? ({ type: "text", text: OMITTED_BINARY_CARRIER_TEXT } as typeof part)
+      : part;
+  });
+  return kept as LLMMessage["content"];
+}
+
 function withoutAlteredBinaryCarriers(
   original: ResponseItem,
   redacted: ResponseItem,
 ): ResponseItem {
-  const source = original.content;
-  const current = redacted.content;
-  if (typeof source === "string" || typeof current === "string") return redacted;
-  if (source.length !== current.length) return redacted;
-  let altered = false;
-  const kept = current.map((part, index) => {
-    const before = validatedBinaryCarrierBody(source[index]);
-    if (before === null) return part;
-    const after = validatedBinaryCarrierBody(part);
-    if (after === before) return part;
-    altered = true;
-    return {
-      type: "text",
-      text: "[omitted: secret redaction would have altered this binary payload]",
-    };
-  });
-  return altered ? ({ ...redacted, content: kept } as ResponseItem) : redacted;
+  const { content, omitted } = omitAlteredBinaryCarriers(
+    original.content,
+    redacted.content,
+    (body) => redactSecretsInValue(body) !== body,
+  );
+  return omitted ? ({ ...redacted, content } as ResponseItem) : redacted;
 }
 
 function assertResponseAgentInvocationItem(item: ResponseItem): void {

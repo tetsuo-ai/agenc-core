@@ -1,4 +1,13 @@
+import { expect } from "vitest";
 import { deflateSync } from "node:zlib";
+import type { LLMMessage } from "../../src/llm/types.js";
+import {
+  llmMessageToCheckpointResponseItem,
+  llmMessageToDurableResponseItem,
+  llmMessageToReplacementResponseItem,
+  responseItemToLlmMessage,
+} from "../../src/session/message-history-conversion.js";
+import { parseRolloutLine, serializeRolloutItem } from "../../src/session/rollout-item.js";
 
 // Generated one-pixel PNG with harmless bytes chosen to collide with the
 // base58 secret heuristic. Never uses benchmark data or real credentials.
@@ -44,3 +53,38 @@ export function isCanonicalBase64Image(url: string): boolean {
     Buffer.from(body, "base64").toString("base64") === body;
 }
 
+
+export const projections = [
+  ["durable", llmMessageToDurableResponseItem],
+  ["checkpoint", llmMessageToCheckpointResponseItem],
+  ["replacement", llmMessageToReplacementResponseItem],
+] as const;
+
+/** Persist a message through one projection and read it back, as a session would. */
+export function roundTrip(
+  source: LLMMessage,
+  project: typeof llmMessageToDurableResponseItem,
+): LLMMessage {
+  const parsed = parseRolloutLine(serializeRolloutItem({
+    type: "response_item", payload: project(source),
+  }));
+  if (parsed?.type !== "response_item") throw new Error("Wrong durable record type");
+  return responseItemToLlmMessage(parsed.payload);
+}
+
+/**
+ * Every surviving inline carrier must still be canonical, and the message must
+ * keep its sibling text. A safe implementation may preserve validated binary or
+ * replace an altered carrier with an omission; it must never transmit damaged
+ * base64.
+ */
+export function assertNoBrokenInlineImages(message: LLMMessage): void {
+  expect(Array.isArray(message.content)).toBe(true);
+  if (!Array.isArray(message.content)) return;
+  for (const part of message.content) {
+    if (part.type === "image_url") {
+      expect(isCanonicalBase64Image(part.image_url.url)).toBe(true);
+    }
+  }
+  expect(JSON.stringify(message.content)).toContain("synthetic thumbnail");
+}

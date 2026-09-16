@@ -2,13 +2,7 @@ import { deflateSync } from "node:zlib";
 import { describe, expect, test } from "vitest";
 import type { LLMMessage } from "../../src/llm/types.js";
 import { redactSecrets } from "../../src/secrets/sanitizer.js";
-import {
-  llmMessageToCheckpointResponseItem,
-  llmMessageToDurableResponseItem,
-  llmMessageToReplacementResponseItem,
-  responseItemToLlmMessage,
-} from "../../src/session/message-history-conversion.js";
-import { parseRolloutLine, serializeRolloutItem } from "../../src/session/rollout-item.js";
+import { projections, roundTrip } from "../helpers/redacted-inline-image-fixture.js";
 import { isCanonicalBase64Body } from "../../src/llm/content-conversion.js";
 
 // A base64 PDF body carries the same exposure as an inline image: base58 is a
@@ -28,20 +22,6 @@ function syntheticPdf(withCollision: boolean): string {
   const pad = Buffer.alloc((3 - (head.length % 3)) % 3);
   const collision = Buffer.from(`00${"A".repeat(80)}00`, "base64");
   return Buffer.concat([head, pad, collision, tail]).toString("base64");
-}
-
-const projections = [
-  ["durable", llmMessageToDurableResponseItem],
-  ["checkpoint", llmMessageToCheckpointResponseItem],
-  ["replacement", llmMessageToReplacementResponseItem],
-] as const;
-
-function roundTrip(source: LLMMessage, project: typeof llmMessageToDurableResponseItem) {
-  const parsed = parseRolloutLine(serializeRolloutItem({
-    type: "response_item", payload: project(source),
-  }));
-  if (parsed?.type !== "response_item") throw new Error("Wrong durable record type");
-  return responseItemToLlmMessage(parsed.payload);
 }
 
 function documentOf(message: LLMMessage): Record<string, unknown> | null {
