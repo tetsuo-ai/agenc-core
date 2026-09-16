@@ -230,7 +230,13 @@ function inputPlan(args: Record<string, unknown>): string | undefined {
 
 async function updatePermissionMode(params: {
   readonly controller: WorkflowToolController | undefined;
-  readonly target: "plan" | "default" | PermissionMode;
+  /**
+   * `restore` leaves plan mode for whatever mode the session was in before
+   * it entered; a `PermissionMode` is an explicit choice (the plan-approval
+   * overlay's "manually approve edits" is `default` even when the session
+   * entered plan mode from acceptEdits).
+   */
+  readonly target: "plan" | "restore" | PermissionMode;
   readonly permissionUpdates?: readonly PermissionUpdate[];
 }): Promise<
   | {
@@ -288,7 +294,7 @@ async function updatePermissionMode(params: {
       };
     }
     const requestedTarget =
-      params.target === "default"
+      params.target === "restore"
         ? current.prePlanMode && current.prePlanMode !== "plan"
           ? current.prePlanMode
           : "default"
@@ -571,10 +577,13 @@ Remember: DO NOT write or edit any files except the plan file.`,
         : [];
       const result = await updatePermissionMode({
         controller: options.workflowController,
+        // An approval that names a mode is the user's explicit choice; one
+        // that does not (or a model-initiated exit) goes back to the mode the
+        // session entered plan mode from.
         target:
-          approval?.action === "approve"
-            ? (approval.mode ?? "default")
-            : "default",
+          approval?.action === "approve" && approval.mode !== undefined
+            ? approval.mode
+            : "restore",
         permissionUpdates,
       });
       if ("error" in result) return errorResult(result.error);
