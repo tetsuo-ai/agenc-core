@@ -551,15 +551,17 @@ describe("path-validation", () => {
   });
 
   describe("relative path rules resolve against their source roots (#2128)", () => {
+    type RuleDestination =
+      | "userSettings"
+      | "projectSettings"
+      | "localSettings"
+      | "session"
+      | "cliArg";
+
     const srcFile = () => join(root, "src", "app.ts");
 
     function withRule(
-      destination:
-        | "userSettings"
-        | "projectSettings"
-        | "localSettings"
-        | "session"
-        | "cliArg",
+      destination: RuleDestination,
       behavior: "allow" | "ask" | "deny",
       ruleContent: string,
       toolName = "FileRead",
@@ -572,21 +574,38 @@ describe("path-validation", () => {
       });
     }
 
+    function checkPath(
+      toolName: string,
+      path: string,
+      context: ToolPermissionContext,
+      operationType: "read" | "write",
+    ) {
+      return checkToolPathPermission({
+        toolName,
+        input: { file_path: path },
+        path,
+        cwd: root,
+        context,
+        operationType,
+      });
+    }
+
+    async function withAuthority(run: () => void | Promise<void>) {
+      const store = new ConfigStore({ home: outside, cwd: root });
+      await store.reload();
+      await runWithCanonicalSettingsAuthority(store, run);
+    }
+
     test("project FileRead(./src/**) deny matches the project src file", async () => {
       const target = srcFile();
       await mkdir(dirname(target), { recursive: true });
-      const store = new ConfigStore({ home: outside, cwd: root });
-      await store.reload();
-      await runWithCanonicalSettingsAuthority(store, async () => {
-        const permissions = withRule("projectSettings", "deny", "./src/**");
-        const result = checkToolPathPermission({
-          toolName: "FileRead",
-          input: { file_path: target },
-          path: target,
-          cwd: root,
-          context: permissions,
-          operationType: "read",
-        });
+      await withAuthority(async () => {
+        const result = checkPath(
+          "FileRead",
+          target,
+          withRule("projectSettings", "deny", "./src/**"),
+          "read",
+        );
         expect(result.behavior).toBe("deny");
         expect(result.decisionReason?.type).toBe("rule");
       });
@@ -594,71 +613,47 @@ describe("path-validation", () => {
 
     test("session and command FileRead(./src/**) deny use the workspace cwd", () => {
       const target = srcFile();
-      const session = withRule("session", "deny", "./src/**");
       expect(
-        checkToolPathPermission({
-          toolName: "FileRead",
-          input: { file_path: target },
-          path: target,
-          cwd: root,
-          context: session,
-          operationType: "read",
-        }).behavior,
+        checkPath(
+          "FileRead",
+          target,
+          withRule("session", "deny", "./src/**"),
+          "read",
+        ).behavior,
       ).toBe("deny");
-
-      const command = ctx({
-        alwaysDenyRules: { command: ["FileRead(./src/**)"] },
-      });
       expect(
-        checkToolPathPermission({
-          toolName: "FileRead",
-          input: { file_path: target },
-          path: target,
-          cwd: root,
-          context: command,
-          operationType: "read",
-        }).behavior,
+        checkPath(
+          "FileRead",
+          target,
+          ctx({ alwaysDenyRules: { command: ["FileRead(./src/**)"] } }),
+          "read",
+        ).behavior,
       ).toBe("deny");
     });
 
     test("user FileRead(./src/**) deny does not match the project src file", async () => {
       const target = srcFile();
       await mkdir(dirname(target), { recursive: true });
-      const store = new ConfigStore({ home: outside, cwd: root });
-      await store.reload();
-      await runWithCanonicalSettingsAuthority(store, async () => {
-        const permissions = withRule("userSettings", "deny", "./src/**");
-        const result = checkToolPathPermission({
-          toolName: "FileRead",
-          input: { file_path: target },
-          path: target,
-          cwd: root,
-          context: permissions,
-          operationType: "read",
-        });
-        expect(result.behavior).toBe("allow");
+      await withAuthority(async () => {
+        expect(
+          checkPath(
+            "FileRead",
+            target,
+            withRule("userSettings", "deny", "./src/**"),
+            "read",
+          ).behavior,
+        ).toBe("allow");
       });
     });
 
     test("local Write(./src/**) allow authorizes a project src write in default mode", async () => {
-      const target = srcFile();
-      const store = new ConfigStore({ home: outside, cwd: root });
-      await store.reload();
-      await runWithCanonicalSettingsAuthority(store, async () => {
-        const permissions = withRule(
-          "localSettings",
-          "allow",
-          "./src/**",
+      await withAuthority(async () => {
+        const result = checkPath(
           "Write",
+          srcFile(),
+          withRule("localSettings", "allow", "./src/**", "Write"),
+          "write",
         );
-        const result = checkToolPathPermission({
-          toolName: "Write",
-          input: { file_path: target },
-          path: target,
-          cwd: root,
-          context: permissions,
-          operationType: "write",
-        });
         expect(result.behavior).toBe("allow");
         expect(result.decisionReason?.type).toBe("rule");
       });
@@ -667,58 +662,40 @@ describe("path-validation", () => {
     test("relative deny still wins over workspace read auto-allow", async () => {
       const target = srcFile();
       await mkdir(dirname(target), { recursive: true });
-      const store = new ConfigStore({ home: outside, cwd: root });
-      await store.reload();
-      await runWithCanonicalSettingsAuthority(store, async () => {
-        const permissions = withRule("projectSettings", "deny", "src/**");
+      await withAuthority(async () => {
         expect(
-          checkToolPathPermission({
-            toolName: "FileRead",
-            input: { file_path: target },
-            path: target,
-            cwd: root,
-            context: permissions,
-            operationType: "read",
-          }).behavior,
+          checkPath(
+            "FileRead",
+            target,
+            withRule("projectSettings", "deny", "src/**"),
+            "read",
+          ).behavior,
         ).toBe("deny");
       });
     });
 
     test("relative patterns with .. cannot grant access outside the source root", async () => {
-      const target = join(outside, "secret.txt");
-      const store = new ConfigStore({ home: outside, cwd: root });
-      await store.reload();
-      await runWithCanonicalSettingsAuthority(store, async () => {
-        const permissions = withRule(
-          "projectSettings",
-          "allow",
-          "../**",
-          "Write",
-        );
-        const result = checkToolPathPermission({
-          toolName: "Write",
-          input: { file_path: target },
-          path: target,
-          cwd: root,
-          context: permissions,
-          operationType: "write",
-        });
-        expect(result.behavior).not.toBe("allow");
+      await withAuthority(async () => {
+        expect(
+          checkPath(
+            "Write",
+            join(outside, "secret.txt"),
+            withRule("projectSettings", "allow", "../**", "Write"),
+            "write",
+          ).behavior,
+        ).not.toBe("allow");
       });
     });
 
-    test("absolute and home-relative patterns keep matching the expanded path", () => {
+    test("absolute patterns keep matching the expanded path", () => {
       const abs = join(outside, "secret.txt");
-      const absDeny = withRule("session", "deny", abs.replace(/\\/g, "/"));
       expect(
-        checkToolPathPermission({
-          toolName: "FileRead",
-          input: { file_path: abs },
-          path: abs,
-          cwd: root,
-          context: absDeny,
-          operationType: "read",
-        }).behavior,
+        checkPath(
+          "FileRead",
+          abs,
+          withRule("session", "deny", abs.replace(/\\/g, "/")),
+          "read",
+        ).behavior,
       ).toBe("deny");
     });
   });

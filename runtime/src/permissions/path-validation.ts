@@ -346,6 +346,27 @@ function matchingRuleForPath(
   return null;
 }
 
+function matchingRuleResult(
+  filePath: string,
+  context: ToolPermissionContext,
+  operationType: FileOperationType,
+  behavior: "allow" | "ask" | "deny",
+  cwd: string,
+): PathCheckResult | null {
+  const rule = matchingRuleForPath(
+    filePath,
+    context,
+    operationType,
+    behavior,
+    cwd,
+  );
+  if (rule === null) return null;
+  return {
+    allowed: behavior === "allow",
+    decisionReason: { type: "rule", rule },
+  };
+}
+
 function isProtectedRuntimePath(resolvedPath: string): string | null {
   const normalizedPath = normalizeSlashes(resolvedPath);
   const segments = normalizedPath.split("/");
@@ -452,19 +473,12 @@ function durableMemoryPathPermission(
   const paths =
     precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
   if (!underDurableMemoryRoots(paths)) return null;
-  const askRule = matchingRuleForPath(
-    resolvedPath,
-    context,
-    operationType,
-    "ask",
-    cwd,
+  return (
+    matchingRuleResult(resolvedPath, context, operationType, "ask", cwd) ?? {
+      allowed: true,
+      decisionReason: { type: "other", reason: "durable memory files" },
+    }
   );
-  return askRule === null
-    ? {
-        allowed: true,
-        decisionReason: { type: "other", reason: "durable memory files" },
-      }
-    : { allowed: false, decisionReason: { type: "rule", rule: askRule } };
 }
 
 export function isPathAllowed(
@@ -477,34 +491,22 @@ export function isPathAllowed(
 ): PathCheckResult {
   const permissionOperation = operationType === "read" ? "read" : "write";
 
-  const denyRule = matchingRuleForPath(
+  const denyRule = matchingRuleResult(
     resolvedPath,
     context,
     operationType,
     "deny",
     cwd,
   );
-  if (denyRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: "rule", rule: denyRule },
-    };
-  }
+  if (denyRule !== null) return denyRule;
 
   if (matchesSessionPlanFile(resolvedPath, options.planFileAuthority)) {
-    const askRule = matchingRuleForPath(
-      resolvedPath,
-      context,
-      operationType,
-      "ask",
-      cwd,
+    return (
+      matchingRuleResult(resolvedPath, context, operationType, "ask", cwd) ?? {
+        allowed: true,
+        decisionReason: { type: "other", reason: "owning session plan file" },
+      }
     );
-    return askRule === null
-      ? {
-          allowed: true,
-          decisionReason: { type: "other", reason: "owning session plan file" },
-        }
-      : { allowed: false, decisionReason: { type: "rule", rule: askRule } };
   }
 
   const memoryPermission = durableMemoryPathPermission(
@@ -552,33 +554,23 @@ export function isPathAllowed(
     }
   }
 
-  const askRule = matchingRuleForPath(
+  const askRule = matchingRuleResult(
     resolvedPath,
     context,
     operationType,
     "ask",
     cwd,
   );
-  if (askRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: "rule", rule: askRule },
-    };
-  }
+  if (askRule !== null) return askRule;
 
-  const allowRule = matchingRuleForPath(
+  const allowRule = matchingRuleResult(
     resolvedPath,
     context,
     operationType,
     "allow",
     cwd,
   );
-  if (allowRule !== null) {
-    return {
-      allowed: true,
-      decisionReason: { type: "rule", rule: allowRule },
-    };
-  }
+  if (allowRule !== null) return allowRule;
 
   return {
     allowed: false,
