@@ -1,14 +1,26 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { ConfigStore } from "../../src/config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
-import { createFileEditTool } from "../tools/system/file-edit.js";
+import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
+import {
+  createFileEditTool,
+  createFileMultiEditTool,
+} from "../tools/system/file-edit.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
 import { createFileWriteTool } from "../tools/system/file-write.js";
+import { createNotebookEditTool } from "../tools/system/notebook-edit.js";
 import type { ToolEvaluatorContext } from "./evaluator.js";
 import {
   checkToolPathPermission,
@@ -55,25 +67,61 @@ describe("path-validation", () => {
     const memory = join(outside, ".agenc", "memory");
     await mkdir(memory, { recursive: true });
     const target = join(memory, "feedback.md");
-    const store = new ConfigStore({ home: outside, cwd: root,
-      cliOverrides: { autoMemoryEnabled: true, autoMemoryDirectory: memory } });
+    const store = new ConfigStore({
+      home: outside,
+      cwd: root,
+      cliOverrides: { autoMemoryEnabled: true, autoMemoryDirectory: memory },
+    });
     await store.reload();
     await runWithCanonicalSettingsAuthority(store, async () => {
       expect(validatePath(target, root, ctx(), "write").allowed).toBe(true);
       expect(validatePath(memory, root, ctx(), "read").allowed).toBe(true);
-      expect(validatePath(join(memory + "-other", "feedback.md"), root, ctx(), "write").allowed).toBe(false);
+      expect(
+        validatePath(
+          join(memory + "-other", "feedback.md"),
+          root,
+          ctx(),
+          "write",
+        ).allowed,
+      ).toBe(false);
       for (const behavior of ["ask", "deny"] as const) {
-        const permissions = applyPermissionUpdate(ctx(), { type: "addRules", destination: "session", behavior,
-          rules: [{ toolName: "Write", ruleContent: target }] });
-        expect(checkToolPathPermission({ toolName: "Write", input: { file_path: target },
-          path: target, cwd: root, context: permissions, operationType: "write" }).behavior).toBe(behavior);
+        const permissions = applyPermissionUpdate(ctx(), {
+          type: "addRules",
+          destination: "session",
+          behavior,
+          rules: [{ toolName: "Write", ruleContent: target }],
+        });
+        expect(
+          checkToolPathPermission({
+            toolName: "Write",
+            input: { file_path: target },
+            path: target,
+            cwd: root,
+            context: permissions,
+            operationType: "write",
+          }).behavior,
+        ).toBe(behavior);
       }
       // A trusted root does not authorize links pointing at unrelated files.
-      await symlink(root, join(memory, "escape"));
-      expect(validatePath(join(memory, "escape", "other.md"), outside, ctx(), "write").allowed).toBe(false);
+      try {
+        await symlink(root, join(memory, "escape"));
+        expect(
+          validatePath(
+            join(memory, "escape", "other.md"),
+            outside,
+            ctx(),
+            "write",
+          ).allowed,
+        ).toBe(false);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      }
     });
-    const disabled = new ConfigStore({ home: outside, cwd: root,
-      cliOverrides: { autoMemoryEnabled: false, autoMemoryDirectory: memory } });
+    const disabled = new ConfigStore({
+      home: outside,
+      cwd: root,
+      cliOverrides: { autoMemoryEnabled: false, autoMemoryDirectory: memory },
+    });
     await disabled.reload();
     runWithCanonicalSettingsAuthority(disabled, () => {
       expect(validatePath(target, root, ctx(), "write").allowed).toBe(false);
@@ -465,7 +513,10 @@ describe("path-validation", () => {
       });
 
       expect(result.behavior).toBe("allow");
-      expect(result.decisionReason).toEqual({ type: "mode", mode: "bypassPermissions" });
+      expect(result.decisionReason).toEqual({
+        type: "mode",
+        mode: "bypassPermissions",
+      });
       expect(signedRoots(result.updatedInput)).toContain(
         dirname(join(await realpath(outside), "nginx.conf")),
       );
@@ -501,6 +552,150 @@ describe("path-validation", () => {
       });
 
       expect(result.behavior).not.toBe("allow");
+    });
+  });
+
+  describe("system file tools share the established protected-path classifier (#2129)", () => {
+    const modes = ["acceptEdits", "bypassPermissions", "auto"] as const;
+    const protectedTargets = [
+      {
+        name: ".vscode/settings.json",
+        path: () => join(root, ".vscode", "settings.json"),
+      },
+      {
+        name: ".idea/workspace.xml",
+        path: () => join(root, ".idea", "workspace.xml"),
+      },
+      { name: ".bashrc", path: () => join(root, ".bashrc") },
+      {
+        name: "trailing-dot settings.json.",
+        path: () => `${root}${sep}settings.json.`,
+      },
+      {
+        name: "trailing-space settings.json ",
+        path: () => `${root}${sep}settings.json `,
+      },
+      { name: "8.3 GIT~1/config", path: () => join(root, "GIT~1", "config") },
+      {
+        name: "mixed-case .VsCoDe/settings.json",
+        path: () => join(root, ".VsCoDe", "settings.json"),
+      },
+      {
+        name: "device-name settings.json.CON",
+        path: () => join(root, "settings.json.CON"),
+      },
+    ] as const;
+
+    function permission(mode: (typeof modes)[number], path: string) {
+      return checkToolPathPermission({
+        toolName: "Write",
+        input: { file_path: path },
+        path,
+        cwd: root,
+        context: ctx({ mode }),
+        operationType: "write",
+      });
+    }
+
+    function evaluator(mode: (typeof modes)[number]): ToolEvaluatorContext {
+      return {
+        getAppState() {
+          return {
+            toolPermissionContext: ctx({ mode }),
+            denialTracking: { consecutiveDenials: 0, totalDenials: 0 },
+            autoModeActive: mode === "auto",
+          };
+        },
+        session: {},
+      } as ToolEvaluatorContext;
+    }
+
+    test.each(
+      modes.flatMap((mode) =>
+        protectedTargets.map((target) => ({ mode, ...target })),
+      ),
+    )("does not auto-allow $name under $mode", ({ mode, path }) => {
+      const result = permission(mode, path());
+      expect(result.behavior).not.toBe("allow");
+      expect(result.decisionReason?.type).toBe("safetyCheck");
+    });
+
+    test("does not auto-allow a symlink that resolves into .vscode", async () => {
+      const vscode = join(root, ".vscode");
+      await mkdir(vscode);
+      const real = join(vscode, "settings.json");
+      await writeFile(real, "{}", "utf8");
+      const alias = join(root, "innocent.json");
+      try {
+        await symlink(real, alias);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
+
+      const result = permission("acceptEdits", alias);
+      expect(result.behavior).not.toBe("allow");
+      expect(result.decisionReason?.type).toBe("safetyCheck");
+    });
+
+    test("ordinary workspace files still auto-allow under acceptEdits", () => {
+      const target = join(root, "src", "app.ts");
+      const result = permission("acceptEdits", target);
+      expect(result.behavior).toBe("allow");
+    });
+
+    test("retired .agenc/commands paths keep their narrow exception", () => {
+      const target = join(root, ".agenc", "commands", "review.md");
+      const result = permission("acceptEdits", target);
+      expect(result.behavior).toBe("allow");
+    });
+
+    test("Write, Edit, MultiEdit, NotebookEdit, and apply_patch all refuse .vscode", () => {
+      const vscode = join(root, ".vscode", "settings.json");
+      const notebook = join(root, ".vscode", "notes.ipynb");
+      const context = evaluator("acceptEdits");
+      const write = createFileWriteTool({ allowedPaths: [root] });
+      const edit = createFileEditTool({ allowedPaths: [root] });
+      const multi = createFileMultiEditTool({ allowedPaths: [root] });
+      const notebookTool = createNotebookEditTool({ workspaceRoot: root });
+      const patch = createApplyPatchTool({ cwd: root, allowedPaths: [root] });
+
+      expect(
+        write.checkPermissions?.(
+          { file_path: vscode, content: "{}", cwd: root },
+          context,
+        )?.behavior,
+      ).not.toBe("allow");
+      expect(
+        edit.checkPermissions?.(
+          { file_path: vscode, old_string: "", new_string: "{}", cwd: root },
+          context,
+        )?.behavior,
+      ).not.toBe("allow");
+      expect(
+        multi.checkPermissions?.(
+          {
+            file_path: vscode,
+            edits: [{ old_string: "", new_string: "{}" }],
+            cwd: root,
+          },
+          context,
+        )?.behavior,
+      ).not.toBe("allow");
+      expect(
+        notebookTool.checkPermissions?.(
+          { notebook_path: notebook, new_source: "", cwd: root },
+          context,
+        )?.behavior,
+      ).not.toBe("allow");
+      expect(
+        patch.checkPermissions?.(
+          {
+            input: `*** Begin Patch\n*** Add File: ${vscode}\n+{}\n*** End Patch`,
+          },
+          context,
+        )?.behavior,
+      ).not.toBe("allow");
     });
   });
 });

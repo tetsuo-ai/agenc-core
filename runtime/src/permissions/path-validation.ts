@@ -11,11 +11,7 @@
  *     in the tool/runtime boundary.
  */
 
-import {
-  lstatSync,
-  realpathSync,
-  readlinkSync,
-} from "node:fs";
+import { lstatSync, realpathSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   dirname,
@@ -26,13 +22,13 @@ import {
   sep,
 } from "node:path";
 
+import { getRuleByContentsForTool } from "./rules.js";
+import { checkProtectedPathSafety } from "./protected-paths.js";
+import { withSignedAllowedRoots } from "../agents/_deps/filesystem-args.js";
 import {
-  getRuleByContentsForTool,
-} from "./rules.js";
-import {
-  withSignedAllowedRoots,
-} from "../agents/_deps/filesystem-args.js";
-import { matchesSessionPlanFile, type SessionPlanFileAuthority } from "../planning/session-plan-authority.js";
+  matchesSessionPlanFile,
+  type SessionPlanFileAuthority,
+} from "../planning/session-plan-authority.js";
 import type {
   PermissionDecisionReason,
   PermissionResult,
@@ -69,6 +65,8 @@ export interface ResolvedPathCheckResult extends PathCheckResult {
 export interface ValidatePathOptions {
   readonly extraWorkingDirectories?: readonly string[];
   readonly planFileAuthority?: SessionPlanFileAuthority | null;
+  /** Unresolved spellings (trailing dots, 8.3, relative names) for safety only. */
+  readonly extraSafetyPaths?: readonly string[];
 }
 
 export interface ToolPathPermissionOptions {
@@ -190,9 +188,20 @@ function safeResolvePath(filePath: string): {
   return resolveExistingAncestor(filePath);
 }
 
+function uniquePaths(paths: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const path of paths) {
+    if (path.length > 0 && !out.includes(path)) out.push(path);
+  }
+  return out;
+}
+
 function getPathsForPermissionCheck(filePath: string): readonly string[] {
   const { resolvedPath } = safeResolvePath(filePath);
-  const out = [resolvedPath.normalize("NFC")];
+  const out = uniquePaths([
+    filePath.normalize("NFC"),
+    resolvedPath.normalize("NFC"),
+  ]);
 
   try {
     const linkTarget = readlinkSync(filePath);
@@ -200,7 +209,8 @@ function getPathsForPermissionCheck(filePath: string): readonly string[] {
       ? linkTarget
       : resolve(dirname(filePath), linkTarget);
     const { resolvedPath: resolvedTarget } = safeResolvePath(absoluteTarget);
-    if (!out.includes(resolvedTarget)) out.push(resolvedTarget.normalize("NFC"));
+    const normalizedTarget = resolvedTarget.normalize("NFC");
+    if (!out.includes(normalizedTarget)) out.push(normalizedTarget);
   } catch {
     // Non-symlink and unreadable symlink cases fall back to the resolved path.
   }
@@ -231,9 +241,15 @@ function pathInAllowedWorkingPath(
   precomputedPathsToCheck?: readonly string[],
   extraWorkingDirectories?: readonly string[],
 ): boolean {
-  const pathsToCheck = precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
+  const pathsToCheck =
+    precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
+  const absoluteCandidates = pathsToCheck.filter((candidate) =>
+    isAbsolute(candidate),
+  );
+  const toCheck =
+    absoluteCandidates.length > 0 ? absoluteCandidates : pathsToCheck;
   const dirs = workingDirectories(cwd, context, extraWorkingDirectories);
-  return pathsToCheck.every((candidate) =>
+  return toCheck.every((candidate) =>
     dirs.some((dir) => isPathInside(candidate, dir)),
   );
 }
@@ -241,9 +257,7 @@ function pathInAllowedWorkingPath(
 function toolNamesForOperation(
   operationType: FileOperationType,
 ): readonly string[] {
-  return operationType === "read"
-    ? ["FileRead"]
-    : ["Edit", "Write"];
+  return operationType === "read" ? ["FileRead"] : ["Edit", "Write"];
 }
 
 function wildcardPatternToRegExp(pattern: string): RegExp {
@@ -268,7 +282,10 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
   return new RegExp(`^${body}$`);
 }
 
-export function matchPathRuleContent(ruleContent: string, filePath: string): boolean {
+export function matchPathRuleContent(
+  ruleContent: string,
+  filePath: string,
+): boolean {
   const expandedRule = normalizeSlashes(expandTilde(ruleContent));
   const expandedPath = normalizeSlashes(filePath);
   if (expandedRule === expandedPath) return true;
@@ -304,43 +321,24 @@ function matchingRuleForPath(
   return null;
 }
 
-function isProtectedRuntimePath(resolvedPath: string): string | null {
-  const normalizedPath = normalizeSlashes(resolvedPath);
-  const segments = normalizedPath.split("/");
-  if (segments.includes(".git")) return ".git paths require manual approval";
-  if (segments.includes(".agenc")) return ".agenc paths require manual approval";
-  if (segments.includes(".agents")) return ".agents paths require manual approval";
-  return null;
-}
-
 function checkPathSafetyForAutoEdit(
   resolvedPath: string,
   precomputedPathsToCheck?: readonly string[],
-): { readonly safe: true } | {
-  readonly safe: false;
-  readonly message: string;
-  readonly classifierApprovable: boolean;
-} {
-  const pathsToCheck = precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
-  for (const pathToCheck of pathsToCheck) {
-    const protectedReason = isProtectedRuntimePath(pathToCheck);
-    if (protectedReason !== null) {
-      return {
-        safe: false,
-        message: protectedReason,
-        classifierApprovable: false,
-      };
-    }
-    const slashPath = normalizeSlashes(pathToCheck);
-    if (/\.\.\./.test(slashPath) || /:[^/\\]/.test(slashPath.replace(/^[A-Za-z]:/, ""))) {
-      return {
-        safe: false,
-        message: "Suspicious path syntax requires manual approval",
-        classifierApprovable: false,
-      };
-    }
-  }
-  return { safe: true };
+  extraSafetyPaths?: readonly string[],
+):
+  | { readonly safe: true }
+  | {
+      readonly safe: false;
+      readonly message: string;
+      readonly classifierApprovable: boolean;
+    } {
+  return checkProtectedPathSafety(
+    resolvedPath,
+    uniquePaths([
+      ...(precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath)),
+      ...(extraSafetyPaths ?? []),
+    ]),
+  );
 }
 
 export function isDangerousRemovalPath(resolvedPath: string): boolean {
@@ -392,13 +390,26 @@ function durableMemoryPathPermission(
   operationType: FileOperationType,
   precomputedPathsToCheck?: readonly string[],
 ): PathCheckResult | null {
-  if (!isAutoMemoryEnabled() || (operationType !== "read" && hasAutoMemPathOverride())) return null;
+  if (
+    !isAutoMemoryEnabled() ||
+    (operationType !== "read" && hasAutoMemPathOverride())
+  )
+    return null;
   // An arbitrary SDK override gets no write carveout.
-  const paths = precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
+  const paths =
+    precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
   if (!underDurableMemoryRoots(paths)) return null;
-  const askRule = matchingRuleForPath(resolvedPath, context, operationType, "ask");
+  const askRule = matchingRuleForPath(
+    resolvedPath,
+    context,
+    operationType,
+    "ask",
+  );
   return askRule === null
-    ? { allowed: true, decisionReason: { type: "other", reason: "durable memory files" } }
+    ? {
+        allowed: true,
+        decisionReason: { type: "other", reason: "durable memory files" },
+      }
     : { allowed: false, decisionReason: { type: "rule", rule: askRule } };
 }
 
@@ -427,7 +438,10 @@ export function isPathAllowed(
 
   if (matchesSessionPlanFile(resolvedPath, options.planFileAuthority)) {
     const askRule = matchingRuleForPath(
-      resolvedPath, context, operationType, "ask",
+      resolvedPath,
+      context,
+      operationType,
+      "ask",
     );
     return askRule === null
       ? {
@@ -438,7 +452,10 @@ export function isPathAllowed(
   }
 
   const memoryPermission = durableMemoryPathPermission(
-    resolvedPath, context, operationType, precomputedPathsToCheck,
+    resolvedPath,
+    context,
+    operationType,
+    precomputedPathsToCheck,
   );
   if (memoryPermission !== null) return memoryPermission;
 
@@ -446,6 +463,7 @@ export function isPathAllowed(
     const safetyCheck = checkPathSafetyForAutoEdit(
       resolvedPath,
       precomputedPathsToCheck,
+      options.extraSafetyPaths,
     );
     if (!safetyCheck.safe) {
       return {
@@ -524,13 +542,13 @@ export function validateGlobPattern(
     const absolutePath = isAbsolute(cleanPath)
       ? cleanPath
       : resolve(cwd, cleanPath);
-    const { resolvedPath, isCanonical } = safeResolvePath(absolutePath);
+    const { resolvedPath } = safeResolvePath(absolutePath);
     const result = isPathAllowed(
       resolvedPath,
       toolPermissionContext,
       operationType,
       cwd,
-      isCanonical ? [resolvedPath] : undefined,
+      getPathsForPermissionCheck(absolutePath),
       options,
     );
     return {
@@ -544,13 +562,13 @@ export function validateGlobPattern(
   const absoluteBasePath = isAbsolute(basePath)
     ? basePath
     : resolve(cwd, basePath);
-  const { resolvedPath, isCanonical } = safeResolvePath(absoluteBasePath);
+  const { resolvedPath } = safeResolvePath(absoluteBasePath);
   const result = isPathAllowed(
     resolvedPath,
     toolPermissionContext,
     operationType,
     cwd,
-    isCanonical ? [resolvedPath] : undefined,
+    getPathsForPermissionCheck(absoluteBasePath),
     options,
   );
   return {
@@ -642,14 +660,21 @@ export function validatePath(
   const absolutePath = isAbsolute(cleanPath)
     ? cleanPath
     : resolve(cwd, cleanPath);
-  const { resolvedPath, isCanonical } = safeResolvePath(absolutePath);
+  const { resolvedPath } = safeResolvePath(absolutePath);
   const result = isPathAllowed(
     resolvedPath,
     toolPermissionContext,
     operationType,
     cwd,
-    isCanonical ? [resolvedPath] : undefined,
-    options,
+    getPathsForPermissionCheck(absolutePath),
+    {
+      ...options,
+      extraSafetyPaths: uniquePaths([
+        ...(options.extraSafetyPaths ?? []),
+        path,
+        cleanPath,
+      ]),
+    },
   );
   return {
     allowed: result.allowed,
@@ -670,15 +695,19 @@ function buildSuggestions(
   const shouldSuggestAcceptEdits =
     context.mode === "default" || context.mode === "plan";
   if (operationType === "read") {
-    return [{
-      type: "addRules",
-      destination: "session",
-      behavior: "allow",
-      rules: [{
-        toolName: "FileRead",
-        ruleContent: `${dirname(resolvedPath)}${sep}**`,
-      }],
-    }];
+    return [
+      {
+        type: "addRules",
+        destination: "session",
+        behavior: "allow",
+        rules: [
+          {
+            toolName: "FileRead",
+            ruleContent: `${dirname(resolvedPath)}${sep}**`,
+          },
+        ],
+      },
+    ];
   }
   const suggestions: PermissionUpdate[] = [];
   if (shouldSuggestAcceptEdits) {
@@ -714,8 +743,12 @@ export function checkToolPathPermission(
     {
       extraWorkingDirectories: opts.extraWorkingDirectories,
       planFileAuthority: matchesSessionPlanFile(
-        opts.path, opts.planFileAuthority, opts.cwd,
-      ) ? opts.planFileAuthority : null,
+        opts.path,
+        opts.planFileAuthority,
+        opts.cwd,
+      )
+        ? opts.planFileAuthority
+        : null,
     },
   );
   // A file tool confines itself to the workspace root plus the signed roots
@@ -760,7 +793,7 @@ export function checkToolPathPermission(
   //
   // SECURITY: this bypass runs AFTER validatePath, so a path-specific
   // Deny(...) rule (handled above) and the safety gates surfaced as a
-  // "safetyCheck" decisionReason (the .git/.agenc/.agents protected-path and
+  // "safetyCheck" decisionReason (the shared protected-path classifier and
   // dangerous-removal checks in isPathAllowed/checkPathSafetyForAutoEdit) are
   // still honored. These are exactly the two bypass-immune categories the
   // evaluator enforces at permissions/evaluator.ts (step 1d deny, step 1g
@@ -769,9 +802,11 @@ export function checkToolPathPermission(
   if (
     opts.context.mode === "bypassPermissions" &&
     decisionReason?.type !== "safetyCheck" &&
-    !(decisionReason?.type === "rule" &&
+    !(
+      decisionReason?.type === "rule" &&
       decisionReason.rule.ruleBehavior === "ask" &&
-      matchesSessionPlanFile(opts.path, opts.planFileAuthority, opts.cwd))
+      matchesSessionPlanFile(opts.path, opts.planFileAuthority, opts.cwd)
+    )
   ) {
     return {
       behavior: "allow",
@@ -790,7 +825,11 @@ export function checkToolPathPermission(
     message: `AgenC requested permissions to ${verb} ${opts.path} with ${opts.toolName}, but you haven't granted it yet.`,
     updatedInput,
     decisionReason,
-    suggestions: buildSuggestions(result.resolvedPath, opts.operationType, opts.context),
+    suggestions: buildSuggestions(
+      result.resolvedPath,
+      opts.operationType,
+      opts.context,
+    ),
     blockedPath: result.resolvedPath,
   };
 }
