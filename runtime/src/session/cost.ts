@@ -749,7 +749,7 @@ export function resolveModelCostEntry(
   usage: Pick<ModelUsage, "model" | "provider">,
   registry: Readonly<Record<string, ModelCostEntry>>,
 ): { readonly key: string; readonly entry: ModelCostEntry } | null {
-  for (const key of costLookupKeys(usage.model, usage.provider)) {
+  for (const key of costLookupKeys(usage.model, usage.provider, registry)) {
     const entry = registry[key];
     if (entry) return { key, entry };
   }
@@ -828,6 +828,7 @@ function usageKey(model: string, provider: string | undefined): string {
 function costLookupKeys(
   model: string,
   provider: string | undefined,
+  registry: Readonly<Record<string, ModelCostEntry>>,
 ): string[] {
   const normalizedProvider = normalizeProviderMetadataIdentity(provider);
   const canonical = canonicalModel(model);
@@ -839,13 +840,15 @@ function costLookupKeys(
   }
   // The provider-less fallbacks below exist so a bare model slug still prices.
   // They must not hand a hosted provider the LOCAL free-inference entry:
-  // canonicalModel collapses every `ollama:`/`lmstudio:` slug to `ollama` or
-  // `lmstudio`, which are localZeroCost entries, so an ollama-cloud model would
-  // otherwise resolve as a KNOWN zero cost instead of unknown, hiding real
-  // spend. A different provider therefore skips that collapse; the local
-  // provider itself, and an unattributed slug, still reach it.
-  const collapsesToLocalZero =
-    canonical === "ollama" || canonical === "lmstudio";
+  // canonicalModel collapses every `ollama:`/`lmstudio:` slug onto a bare local
+  // key, and a bare `openai-compatible` slug already is one, so an ollama-cloud
+  // model would otherwise resolve as a KNOWN zero cost instead of unknown,
+  // hiding real spend. `localZeroCost` is the registry's own mark for those
+  // entries, so this reads the flag rather than naming the keys: a fourth local
+  // entry cannot silently reopen the hole. A different provider therefore skips
+  // that collapse; the local provider itself, and an unattributed slug, still
+  // reach it.
+  const collapsesToLocalZero = registry[canonical]?.localZeroCost === true;
   const foreignProvider =
     normalizedProvider !== undefined && normalizedProvider !== canonical;
   if (!(collapsesToLocalZero && foreignProvider)) {
