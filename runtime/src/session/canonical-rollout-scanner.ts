@@ -31,7 +31,9 @@ import {
   type CompactionPersistedRollbackCommittedV1,
   type CompactionRollbackCommittedV1,
 } from "../services/compact/transaction-types.js";
-import { digestWithDomain } from "../services/compact/summary-v1.js";
+import {
+  digestSourceWithDomain,
+} from "../services/compact/summary-v1.js";
 import { DiskCanonicalIdentityRegistry } from "../state/recovery-file.js";
 import {
   StrictCanonicalJournalValidator,
@@ -1105,7 +1107,7 @@ function observeCanonicalRecord(
   ) {
     attempt.terminal = true;
     if (item.type === "compaction_committed") {
-      attempt.commitSha256 = digestWithDomain(
+      attempt.commitSha256 = digestSourceWithDomain(
         COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
         item.payload,
       );

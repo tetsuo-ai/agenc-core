@@ -30,6 +30,8 @@ import {
 } from "../services/compact/transaction-types.js";
 import {
   canonicalizeJson,
+  canonicalizeSourceJson,
+  digestSourceWithDomain,
   digestWithDomain,
 } from "../services/compact/summary-v1.js";
 import {
@@ -729,8 +731,8 @@ export class StrictCanonicalJournalValidator {
         const sourceAuthorityMatches = persistedManifestCommit
           ? canonicalizeJson(source.active_history_refs_manifest) ===
             canonicalizeJson(intentSource.active_history_refs_manifest)
-          : canonicalizeJson(source.active_history_refs) ===
-            canonicalizeJson(intentSource.active_history_refs);
+          : canonicalizeSourceJson(source.active_history_refs) ===
+            canonicalizeSourceJson(intentSource.active_history_refs);
         if (!sourceAuthorityMatches) {
           this.#fail(
             "identity_conflict",
@@ -805,7 +807,7 @@ export class StrictCanonicalJournalValidator {
         item.type === "compaction_failed" ? "failed" : "committed";
       if (item.type === "compaction_committed") {
         if (payload.final_summary_manifest === undefined) {
-          current.commitSha256 = digestWithDomain(
+          current.commitSha256 = digestSourceWithDomain(
             COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
             payload,
           );

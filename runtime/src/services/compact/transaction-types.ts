@@ -54,6 +54,14 @@ export const MAX_COMPACTION_RECONCILIATION_MS_PER_START = 30_000;
 
 export const MAX_COMPACTION_SOURCE_BYTES = 67_108_864;
 export const MAX_COMPACTION_SOURCE_MESSAGES = 100_000;
+
+/**
+ * Budgets for canonicalizing OUR OWN compaction source. They are deliberately
+ * far larger than the provider-output ceilings: a legal long history is not a
+ * hostile provider response, but it still must not be unbounded.
+ */
+export const MAX_COMPACTION_SOURCE_NODES = MAX_COMPACTION_SOURCE_BYTES;
+export const MAX_COMPACTION_SOURCE_WORK_UNITS = MAX_COMPACTION_SOURCE_BYTES * 2;
 export const MAX_COMPACTION_SEMANTIC_UNITS = 100_000;
 export const MAX_COMPACTION_CHUNKS = 64;
 export const MAX_COMPACTION_REDUCTION_LEVELS = 4;
