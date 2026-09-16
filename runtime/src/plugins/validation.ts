@@ -1,5 +1,11 @@
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  PLUGIN_MARKDOWN_WALK,
+  bindContainedRoot,
+  readContainedUtf8,
+  walkContainedFiles,
+} from "../fs/root-contained-read.js";
 import { load as loadYaml } from "js-yaml";
 import {
   findPluginManifestPath,
@@ -62,8 +68,6 @@ const MARKETPLACE_ONLY_MANIFEST_FIELDS = new Set([
   "tags",
   "id",
 ]);
-const MAX_VALIDATION_MARKDOWN_FILES = 512;
-const MAX_VALIDATION_SCAN_DEPTH = 8;
 
 function errno(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
@@ -429,59 +433,34 @@ export async function validatePluginContents(
 ): Promise<readonly ValidationResult[]> {
   const parsed = await loadPluginManifest(pluginDir).catch(() => null);
   if (!parsed) return [];
+  const bound = await bindContainedRoot(pluginDir);
+  if (bound === null) return [];
   const results: ValidationResult[] = [];
   for (const [fileType, dir] of [
     ["skill", "skills"],
     ["agent", "agents"],
     ["command", "commands"],
   ] as const) {
-    for (const filePath of await collectMarkdown(join(pluginDir, dir), fileType === "skill")) {
-      const raw = await readFile(filePath, "utf8").catch(() => null);
-      if (raw === null) continue;
-      const result = validateMarkdownComponent(filePath, raw, fileType);
+    const walked = await walkContainedFiles(
+      bound,
+      join(pluginDir, dir),
+      fileType === "skill"
+        ? {
+            ...PLUGIN_MARKDOWN_WALK,
+            collectFile: (name) => name === "SKILL.md",
+          }
+        : PLUGIN_MARKDOWN_WALK,
+    );
+    for (const filePath of walked.files) {
+      const read = await readContainedUtf8(bound, filePath);
+      if (!read.ok) continue;
+      const result = validateMarkdownComponent(filePath, read.text, fileType);
       if (result.errors.length > 0 || result.warnings.length > 0) {
         results.push(result);
       }
     }
   }
   return results;
-}
-
-async function collectMarkdown(dir: string, skillsDir: boolean): Promise<string[]> {
-  const out: string[] = [];
-  const queue: Array<{ readonly path: string; readonly depth: number }> = [
-    { path: dir, depth: 0 },
-  ];
-  const visited = new Set<string>();
-  while (queue.length > 0) {
-    if (out.length >= MAX_VALIDATION_MARKDOWN_FILES) break;
-    const current = queue.shift()!;
-    if (current.depth > MAX_VALIDATION_SCAN_DEPTH) continue;
-    let identity = current.path;
-    try {
-      identity = await realpath(current.path);
-    } catch {
-      // Keep walking best-effort if a path disappears during validation.
-    }
-    if (visited.has(identity)) continue;
-    visited.add(identity);
-    const currentEntries = await readdir(current.path, { withFileTypes: true }).catch(() => []);
-    for (const entry of currentEntries) {
-      if (out.length >= MAX_VALIDATION_MARKDOWN_FILES) break;
-      const fullPath = join(current.path, entry.name);
-      if (entry.isDirectory()) {
-        queue.push({ path: fullPath, depth: current.depth + 1 });
-      } else if (
-        entry.isFile() &&
-        (skillsDir
-          ? entry.name === "SKILL.md"
-          : entry.name.toLowerCase().endsWith(".md"))
-      ) {
-        out.push(fullPath);
-      }
-    }
-  }
-  return out;
 }
 
 function validateMarkdownComponent(
