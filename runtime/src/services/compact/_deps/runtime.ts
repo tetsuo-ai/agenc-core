@@ -189,5 +189,18 @@ function toAccountingMessage(message: RuntimeMessage): LLMMessage {
     ...(message.runtimeOnly !== undefined
       ? { runtimeOnly: { ...message.runtimeOnly } }
       : {}),
+    // Admission accounts the original LLMMessage, so every field it charges must
+    // survive this projection or the auto-compaction gate measures less than
+    // admission will (#2520). `phase` is an open string here and a two-value
+    // union on LLMMessage, so it is narrowed rather than cast.
+    ...(message.providerReasoningContent !== undefined
+      ? { providerReasoningContent: message.providerReasoningContent }
+      : {}),
+    ...(message.providerReasoningProvenance !== undefined
+      ? { providerReasoningProvenance: message.providerReasoningProvenance }
+      : {}),
+    ...(message.phase === "commentary" || message.phase === "final_answer"
+      ? { phase: message.phase }
+      : {}),
   };
 }
