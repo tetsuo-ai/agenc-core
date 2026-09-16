@@ -140,6 +140,71 @@ export function canonicalizeJson(value: unknown): string {
 }
 
 /**
+ * Validate one JSON scalar for the source encoder. `remainingBytes` lets an
+ * oversized string be refused before JSON.stringify renders a second copy.
+ */
+function validateSourceScalar(current: unknown, remainingBytes: number): void {
+  if (typeof current === "number" && !Number.isFinite(current)) {
+    throw invalid("compaction source contains a non-JSON scalar");
+  }
+  if (typeof current === "string") {
+    // Every UTF-16 unit costs at least one UTF-8 byte and JSON escaping only
+    // ever adds, so this lower bound is safe.
+    if (current.length + 2 > remainingBytes) {
+      throw limit("compaction source exceeds its canonical byte limit");
+    }
+    assertUnicodeScalarString(current, "compaction source string");
+    return;
+  }
+  if (
+    current !== null &&
+    typeof current !== "boolean" &&
+    typeof current !== "number"
+  ) {
+    throw invalid("compaction source contains a non-JSON scalar");
+  }
+}
+
+/**
+ * Validate a container's own properties through descriptors, exactly as the
+ * provider path does, so a getter or hidden property is rejected rather than
+ * silently rendered. Returns the number of validated dense array indexes.
+ */
+function validateSourceMembers(
+  container: object,
+  isArray: boolean,
+  chargeWork: () => void,
+): number {
+  const descriptors = Object.getOwnPropertyDescriptors(container);
+  let arrayIndex = 0;
+  for (const key of Reflect.ownKeys(descriptors)) {
+    chargeWork();
+    if (typeof key !== "string") {
+      throw invalid("compaction source contains a symbol key");
+    }
+    if (isArray && key === "length") continue;
+    const descriptor = descriptors[key]!;
+    if (
+      !descriptor.enumerable ||
+      descriptor.get !== undefined ||
+      descriptor.set !== undefined
+    ) {
+      throw invalid("compaction source contains a getter or hidden property");
+    }
+    if (isArray) {
+      if (!/^(?:0|[1-9]\d*)$/u.test(key)) {
+        throw invalid("compaction source array contains a named property");
+      }
+      if (Number(key) !== arrayIndex) {
+        throw invalid("compaction source contains a sparse array");
+      }
+      arrayIndex += 1;
+    }
+  }
+  return arrayIndex;
+}
+
+/**
  * Canonical JSON for OUR OWN compaction source (histories, ref manifests,
  * accounting payloads), byte-identical to `canonicalizeJson` for every value
  * both accept. The provider encoder clones and validates the whole value
@@ -193,24 +258,7 @@ export function canonicalizeSourceJson(value: unknown): string {
     const current = frame.value;
 
     if (current === null || typeof current !== "object") {
-      if (typeof current === "number" && !Number.isFinite(current)) {
-        throw invalid("compaction source contains a non-JSON scalar");
-      }
-      if (typeof current === "string") {
-        // Every UTF-16 unit costs at least one UTF-8 byte and JSON escaping
-        // only ever adds, so this lower bound refuses an oversized string
-        // before JSON.stringify would render a second copy of it.
-        if (current.length + 2 > MAX_COMPACTION_SOURCE_BYTES - bytes) {
-          throw limit("compaction source exceeds its canonical byte limit");
-        }
-        assertUnicodeScalarString(current, "compaction source string");
-      } else if (
-        current !== null &&
-        typeof current !== "boolean" &&
-        typeof current !== "number"
-      ) {
-        throw invalid("compaction source contains a non-JSON scalar");
-      }
+      validateSourceScalar(current, MAX_COMPACTION_SOURCE_BYTES - bytes);
       const rendered = JSON.stringify(current);
       if (rendered === undefined) throw invalid("value is not canonical JSON");
       emit(rendered);
@@ -239,37 +287,12 @@ export function canonicalizeSourceJson(value: unknown): string {
       }
     }
 
-    // Validate through descriptors, exactly as the provider path does, so a
-    // getter or hidden property is rejected rather than silently rendered.
-    const descriptors = Object.getOwnPropertyDescriptors(current);
-    let arrayIndex = 0;
-    for (const key of Reflect.ownKeys(descriptors)) {
+    const arrayIndex = validateSourceMembers(current, isArray, () => {
       work += 1;
       if (work > MAX_COMPACTION_SOURCE_WORK_UNITS) {
         throw limit("compaction source exceeds its traversal work limit");
       }
-      if (typeof key !== "string") {
-        throw invalid("compaction source contains a symbol key");
-      }
-      if (isArray && key === "length") continue;
-      const descriptor = descriptors[key]!;
-      if (
-        !descriptor.enumerable ||
-        descriptor.get !== undefined ||
-        descriptor.set !== undefined
-      ) {
-        throw invalid("compaction source contains a getter or hidden property");
-      }
-      if (isArray) {
-        if (!/^(?:0|[1-9][0-9]*)$/u.test(key)) {
-          throw invalid("compaction source array contains a named property");
-        }
-        if (Number(key) !== arrayIndex) {
-          throw invalid("compaction source contains a sparse array");
-        }
-        arrayIndex += 1;
-      }
-    }
+    });
 
     if (isArray && arrayIndex !== (current as readonly unknown[]).length) {
       // Descriptors carry no entry for a hole, so a trailing hole validates as
@@ -292,14 +315,19 @@ export function canonicalizeSourceJson(value: unknown): string {
     }
 
     const record = current as Record<string, unknown>;
-    const keys = Object.keys(record).sort();
+    // JCS requires UTF-16 code-unit order. The relational operators give
+    // exactly that, matching canonicalizeJson. localeCompare is
+    // locale-dependent and would break byte identity with it.
+    const keys = Object.keys(record).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     admitChildren(keys.length);
     frames.push({ kind: "literal", value: "}" });
     for (let index = keys.length - 1; index >= 0; index -= 1) {
       const key = keys[index]!;
-      frames.push({ kind: "value", value: record[key], depth: frame.depth + 1 });
-      frames.push({ kind: "literal", value: ":" });
-      frames.push({ kind: "literal", value: JSON.stringify(key) });
+      frames.push(
+        { kind: "value", value: record[key], depth: frame.depth + 1 },
+        { kind: "literal", value: ":" },
+        { kind: "literal", value: JSON.stringify(key) },
+      );
       if (index > 0) frames.push({ kind: "literal", value: "," });
     }
     frames.push({ kind: "literal", value: "{" });
