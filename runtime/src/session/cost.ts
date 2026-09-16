@@ -837,8 +837,21 @@ function costLookupKeys(
     if (canonical !== model) keys.push(`${normalizedProvider}:${canonical}`);
     keys.push(normalizedProvider);
   }
-  keys.push(model);
-  if (canonical !== model) keys.push(canonical);
+  // The provider-less fallbacks below exist so a bare model slug still prices.
+  // They must not hand a hosted provider the LOCAL free-inference entry:
+  // canonicalModel collapses every `ollama:`/`lmstudio:` slug to `ollama` or
+  // `lmstudio`, which are localZeroCost entries, so an ollama-cloud model would
+  // otherwise resolve as a KNOWN zero cost instead of unknown, hiding real
+  // spend. A different provider therefore skips that collapse; the local
+  // provider itself, and an unattributed slug, still reach it.
+  const collapsesToLocalZero =
+    canonical === "ollama" || canonical === "lmstudio";
+  const foreignProvider =
+    normalizedProvider !== undefined && normalizedProvider !== canonical;
+  if (!(collapsesToLocalZero && foreignProvider)) {
+    keys.push(model);
+    if (canonical !== model) keys.push(canonical);
+  }
   return [...new Set(keys)];
 }
 
