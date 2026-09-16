@@ -209,13 +209,17 @@ describe("cost helpers", () => {
     )) {
       // Meta and QwenCloud Token Plan do not expose a single authoritative
       // per-token rate. Qwen PayGo pricing is model/region/tier dependent and
-      // is intentionally not guessed here. Their regressions below remain
+      // is intentionally not guessed here. Ollama Cloud is the same shape: its
+      // built-in default model has no entry in the cost registry and no single
+      // authoritative per-token rate has been established for it, so there is
+      // nothing to assert without inventing one. Their regressions below remain
       // unknown rather than claiming the conservative fallback as a rate.
       if (
         provider === "meta" ||
         provider === "qwen" ||
         provider === "qwen-token-plan" ||
-        provider === "zai-coding-plan"
+        provider === "zai-coding-plan" ||
+        provider === "ollama-cloud"
       ) {
         continue;
       }
