@@ -1,6 +1,12 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type {
+  ProjectTreeGitBranch,
+  ProjectTreeSnapshot,
+} from "../../../src/tui/workbench/types.js";
+import { buildProjectTreeRows } from "../../../src/tui/workbench/project-tree/buildTree.js";
+
 // Render the WORKSPACE project-tree pane and assert its rows do not pick up a
 // spurious truncation ellipsis. Two regressions are guarded here:
 //   1. Off-by-one row width — the container reserves paddingX(2) + borderRight(1)
@@ -224,4 +230,80 @@ describe("ProjectExplorer row truncation", () => {
     expect(headerLine).toContain("380 7 changed");
     expect(headerLine).not.toContain("WORKSPAC ");
   });
+});
+
+const paths = ["src/nested/first.ts", "src/nested/second.ts"];
+const gitStatus = new Map([
+  ["src/nested/first.ts", "modified" as const],
+  ["src/nested/second.ts", "modified" as const],
+]);
+const dirtyGit: ProjectTreeGitBranch = {
+  branch: "main",
+  head: "abc1234",
+  dirtyCount: 2,
+};
+
+function snapshot(
+  expandedPaths: readonly string[],
+  git: ProjectTreeGitBranch | null | undefined,
+): ProjectTreeSnapshot {
+  return {
+    cwd: "/repo",
+    loading: false,
+    error: null,
+    cursorPath: null,
+    activePath: null,
+    expandedPaths,
+    fileCount: paths.length,
+    directoryCount: 2,
+    git,
+    rows: buildProjectTreeRows({
+      cwd: "/repo",
+      paths,
+      expandedPaths: new Set(expandedPaths),
+      cursorPath: null,
+      activePath: null,
+      gitStatus,
+    }),
+  };
+}
+
+async function renderSnapshot(value: ProjectTreeSnapshot): Promise<string> {
+  harness.snapshot = { ...value };
+  return (await renderTree(50)).join("\n");
+}
+
+function header(output: string): string | undefined {
+  return output.split("\n").find((line) => line.includes("WORKSPACE"));
+}
+
+describe("ProjectExplorer changed-file count", () => {
+  it("keeps the header and branch footer in agreement while nested files are collapsed and expanded", async () => {
+    const expandedPaths = ["src", "src/nested"];
+    const expanded = await renderSnapshot(snapshot(expandedPaths, dirtyGit));
+    const collapsed = await renderSnapshot(snapshot(["src"], dirtyGit));
+    const reexpanded = await renderSnapshot(snapshot(expandedPaths, dirtyGit));
+
+    expect(expanded).toContain("first.ts");
+    expect(expanded).toContain("second.ts");
+    expect(collapsed).not.toContain("first.ts");
+    expect(collapsed).not.toContain("second.ts");
+    expect(reexpanded).toContain("first.ts");
+    for (const output of [expanded, collapsed, reexpanded]) {
+      expect(header(output)).toMatch(/WORKSPACE\s+2 2 changed/u);
+      expect(output).toMatch(/main\s+2\*/u);
+    }
+  });
+
+  it.each([null, undefined])(
+    "omits changed-file metadata when the Git snapshot is %s",
+    async (git) => {
+      const output = await renderSnapshot(snapshot(["src", "src/nested"], git));
+
+      expect(header(output)).toMatch(/WORKSPACE\s+2/u);
+      expect(header(output)).not.toContain("changed");
+      expect(output).not.toContain("main");
+      expect(output).not.toContain("2*");
+    },
+  );
 });

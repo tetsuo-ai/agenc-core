@@ -80,77 +80,96 @@ export function parseGitBranchPorcelainV2(
 /** Paths remain relative to the repository root, as in porcelain v1. */
 export function parseGitSnapshotPorcelainV2(raw: string): GitSnapshot {
   const status = new Map<string, ProjectTreeGitState>();
-  let branch: string | null = null;
-  let head: string | null = null;
-  let upstream: string | undefined;
-  let ahead: number | undefined;
-  let behind: number | undefined;
+  let branch: ProjectTreeGitBranch | null = null;
   let dirtyCount = 0;
-  let sawHeader = false;
 
   const nulDelimited = raw.includes("\0");
   const records = raw.split(nulDelimited ? "\0" : "\n");
   for (let index = 0; index < records.length; index += 1) {
     const line = records[index]!;
-    if (line.length === 0) continue;
     if (line.startsWith("# branch.")) {
-      sawHeader = true;
-      const [key, ...rest] = line.slice(2).split(" ");
-      const value = rest.join(" ");
-      // git spells a detached HEAD "(detached)" and an unborn branch
-      // "(initial)"; neither is a branch name a user could check out.
-      if (key === "branch.head") {
-        branch = value.startsWith("(") ? null : value;
-      } else if (key === "branch.oid") {
-        head = value.startsWith("(") ? null : value.slice(0, 7);
-      } else if (key === "branch.upstream") {
-        upstream = value;
-      } else if (key === "branch.ab") {
-        const match = /^\+(\d+) -(\d+)$/u.exec(value);
-        if (match !== null) {
-          ahead = Number(match[1]);
-          behind = Number(match[2]);
-        }
-      }
+      branch = parseBranchHeader(line, branch);
       continue;
     }
-    if (line.startsWith("#")) continue;
-    const kind = line[0];
-    let path: string | null = null;
-    let state: ProjectTreeGitState;
-    if ((kind === "?" || kind === "!") && line[1] === " ") {
-      path = line.slice(2);
-      state = kind === "?" ? "untracked" : "ignored";
-    } else if ((kind === "1" || kind === "2" || kind === "u") && line[1] === " ") {
-      // Consume only metadata fields: spaces, tabs and newlines can be part
-      // of the path, and must never be trimmed or split in the -z format.
-      path = pathAfterFields(line, kind === "1" ? 8 : kind === "2" ? 9 : 10);
-      state = kind === "u" ? "unmerged" : statusForCode(line.slice(2, 4));
-      if (kind === "2") {
-        // Rename/copy origins are a separate NUL record, not another change.
-        if (nulDelimited) index += 1;
-        else if (path !== null) path = path.split("\t", 1)[0]!;
-      }
-    } else {
-      continue;
-    }
-    if (!path) continue;
-    if (!nulDelimited) path = path.replace(/^"|"$/gu, "");
-    status.set(path, state);
-    if (state !== "ignored") dirtyCount += 1;
+    const entry = parseStatusRecord(line);
+    if (entry === null) continue;
+    // Rename/copy origins are a separate NUL record, not another change.
+    if (entry.hasOrigin && nulDelimited) index += 1;
+    const path = normalizeV2Path(entry, nulDelimited);
+    if (path === null) continue;
+    status.set(path, entry.state);
+    if (entry.state !== "ignored") dirtyCount += 1;
   }
 
   return {
     status,
-    branch: sawHeader ? {
-      branch,
-      head,
-      ...(upstream !== undefined ? { upstream } : {}),
-      ...(ahead !== undefined ? { ahead } : {}),
-      ...(behind !== undefined ? { behind } : {}),
-      dirtyCount,
-    } : null,
+    branch: branch === null ? null : { ...branch, dirtyCount },
   };
+}
+
+function parseBranchHeader(
+  record: string,
+  previous: ProjectTreeGitBranch | null,
+): ProjectTreeGitBranch {
+  const branch = previous ?? { branch: null, head: null, dirtyCount: 0 };
+  const [key, ...rest] = record.slice(2).split(" ");
+  const value = rest.join(" ");
+  // Git spells a detached HEAD "(detached)" and an unborn commit "(initial)".
+  switch (key) {
+    case "branch.head":
+      return { ...branch, branch: value.startsWith("(") ? null : value };
+    case "branch.oid":
+      return { ...branch, head: value.startsWith("(") ? null : value.slice(0, 7) };
+    case "branch.upstream":
+      return { ...branch, upstream: value };
+    case "branch.ab": {
+      const match = /^\+(\d+) -(\d+)$/u.exec(value);
+      if (match !== null) {
+        return { ...branch, ahead: Number(match[1]), behind: Number(match[2]) };
+      }
+      return branch;
+    }
+    default:
+      return branch;
+  }
+}
+
+type PorcelainV2Entry = {
+  readonly path: string | null;
+  readonly state: ProjectTreeGitState;
+  readonly hasOrigin: boolean;
+};
+
+const PORCELAIN_V2_PATH_FIELDS = new Map([["1", 8], ["2", 9], ["u", 10]]);
+
+function parseStatusRecord(record: string): PorcelainV2Entry | null {
+  if (record[1] !== " ") return null;
+  const kind = record[0]!;
+  if (kind === "?" || kind === "!") {
+    return {
+      path: record.slice(2),
+      state: kind === "?" ? "untracked" : "ignored",
+      hasOrigin: false,
+    };
+  }
+  const fieldCount = PORCELAIN_V2_PATH_FIELDS.get(kind);
+  if (fieldCount === undefined) return null;
+  return {
+    // Consume only metadata fields: spaces, tabs and newlines can be part
+    // of the path, and must never be trimmed or split in the -z format.
+    path: pathAfterFields(record, fieldCount),
+    state: kind === "u" ? "unmerged" : statusForCode(record.slice(2, 4)),
+    hasOrigin: kind === "2",
+  };
+}
+
+function normalizeV2Path(entry: PorcelainV2Entry, nulDelimited: boolean): string | null {
+  let path = entry.path;
+  if (entry.hasOrigin && !nulDelimited && path !== null) {
+    path = path.split("\t", 1)[0]!;
+  }
+  if (!path) return null;
+  return nulDelimited ? path : path.replace(/^"|"$/gu, "");
 }
 
 function pathAfterFields(record: string, fieldCount: number): string | null {
