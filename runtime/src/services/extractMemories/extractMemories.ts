@@ -50,7 +50,11 @@ import type { delegate as delegateFn } from "../../agents/delegate.js";
 import type { ensureAgentControl as ensureAgentControlFn } from "../../bin/delegate-tool.js";
 import { withSignedAllowedRoots } from "../../agents/_deps/filesystem-args.js";
 import { canWritePathWithCwd } from "../../sandbox/engine/index.js";
-import { permissionProfileForLiveSandboxPolicies } from "../../tools/runtimes/sandboxing.js";
+import {
+  agencHomeCarveOutAllowsWrite,
+  permissionProfileForLiveSandboxPolicies,
+} from "../../tools/runtimes/sandboxing.js";
+import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
 import type { AgentPath } from "../../agents/registry.js";
 import {
   createMemoryExtractionTriggerState,
@@ -892,11 +896,14 @@ export function initExtractMemories(
       ctx.fileSystemSandboxPolicy,
       ctx.networkSandboxPolicy,
     );
-    if (ctx.sandboxPolicy.value === "read_only" || !canWritePathWithCwd(
-      profile.fileSystem,
-      memoryDir,
-      ctx.cwd,
-      session.services.runtimeOptions.sessionTempRoot,
+    const sessionTempRoot = session.services.runtimeOptions.sessionTempRoot;
+    if (ctx.sandboxPolicy.value === "read_only" || (
+      !canWritePathWithCwd(profile.fileSystem, memoryDir, ctx.cwd, sessionTempRoot) &&
+      // The file tools may write the durable memory roots under
+      // workspace_write; the extractor's Write calls go through the same
+      // runtime sandbox check, so admit exactly what it admits.
+      !(isDurableMemoryWritePath(memoryDir) &&
+        agencHomeCarveOutAllowsWrite(profile.fileSystem, memoryDir, ctx.cwd, sessionTempRoot))
     )) {
       // A child path allowlist cannot grant filesystem authority. Do not
       // spend provider turns retrying writes the inherited sandbox denies.

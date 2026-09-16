@@ -364,6 +364,28 @@ export function isDangerousRemovalPath(resolvedPath: string): boolean {
 }
 
 /** Use the existing memory capability only after resolving the path's symlinks. */
+/**
+ * Whether every path the permission check would inspect for `resolvedPath`
+ * lies under a durable memory root. Match legacy file-tool authority: these
+ * roots come from trusted settings, never tool input.
+ */
+function underDurableMemoryRoots(paths: readonly string[]): boolean {
+  const roots = [getAutoMemPath(), getGlobalMemoryPath()];
+  return paths.every((path) => roots.some((root) => isPathInside(path, root)));
+}
+
+/**
+ * A write target the file tools may take under a durable memory root
+ * (`$AGENC_HOME/memory/` or the project memory directory): auto memory is
+ * on and no SDK override has moved the roots. The memory prompt points the
+ * model at exactly these directories, and the permission layer already
+ * admits them; the runtime sandbox check consults this so it agrees.
+ */
+export function isDurableMemoryWritePath(resolvedPath: string): boolean {
+  if (!isAutoMemoryEnabled() || hasAutoMemPathOverride()) return false;
+  return underDurableMemoryRoots(getPathsForPermissionCheck(resolvedPath));
+}
+
 function durableMemoryPathPermission(
   resolvedPath: string,
   context: ToolPermissionContext,
@@ -371,11 +393,9 @@ function durableMemoryPathPermission(
   precomputedPathsToCheck?: readonly string[],
 ): PathCheckResult | null {
   if (!isAutoMemoryEnabled() || (operationType !== "read" && hasAutoMemPathOverride())) return null;
-  // Match legacy file-tool authority. These roots come from trusted settings,
-  // never tool input. An arbitrary SDK override gets no write carveout.
-  const roots = [getAutoMemPath(), getGlobalMemoryPath()];
+  // An arbitrary SDK override gets no write carveout.
   const paths = precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
-  if (!paths.every((path) => roots.some((root) => isPathInside(path, root)))) return null;
+  if (!underDurableMemoryRoots(paths)) return null;
   const askRule = matchingRuleForPath(resolvedPath, context, operationType, "ask");
   return askRule === null
     ? { allowed: true, decisionReason: { type: "other", reason: "durable memory files" } }

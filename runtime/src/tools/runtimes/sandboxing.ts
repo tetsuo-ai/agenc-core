@@ -28,6 +28,7 @@ import {
   matchesSessionPlanFile,
   sessionPlanFileAuthority,
 } from "../../planning/session-plan-authority.js";
+import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
 import type { SandboxMode } from "../orchestrator.js";
 import type { Tool } from "../types.js";
 import type { ToolRuntimeAttemptContext } from "./context.js";
@@ -452,8 +453,9 @@ export function enforceRuntimeSandboxAttempt(
         sessionTempRoot,
       ) &&
       !(shellAccess === null &&
-        isActiveSessionPlanFile(input.context, target) &&
-        planFilePolicyAllowsWrite(profile.fileSystem, target, cwd, sessionTempRoot))
+        (isActiveSessionPlanFile(input.context, target) ||
+          isDurableMemoryWritePath(target)) &&
+        agencHomeCarveOutAllowsWrite(profile.fileSystem, target, cwd, sessionTempRoot))
     ) {
       throw new SandboxDeniedError(
         `sandbox workspace_write blocked write outside workspace: ${target}`,
@@ -467,7 +469,14 @@ export function enforceRuntimeSandboxAttempt(
   }
 }
 
-function planFilePolicyAllowsWrite(
+/**
+ * Whether a restricted policy admits a write to one of the AgenC-home paths
+ * the file tools may take outside the workspace: the owning session's plan
+ * file and the durable memory roots. The root read entry is treated as a
+ * write entry so the target's own deny entries still decide. Shell writes
+ * never reach this: `shellAccess === null` gates the callers.
+ */
+export function agencHomeCarveOutAllowsWrite(
   policy: EngineFileSystemSandboxPolicy,
   target: string,
   cwd: string,
