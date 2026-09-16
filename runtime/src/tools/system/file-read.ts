@@ -65,6 +65,7 @@ import {
   isAgentNamespacePath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
 import {
   parsePDFPageRange as parseSharedPDFPageRange,
@@ -1542,6 +1543,12 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         context: context.getAppState().toolPermissionContext,
         operationType: "read",
         extraWorkingDirectories: config.allowedPaths,
+        // `execute` already reads the owning session's plan file through
+        // `safePathAllowingSessionPlanFile`. Without the same authority here
+        // the permission layer asked to approve a read the tool would then
+        // perform anyway, and a print-mode run (which auto-denies requests)
+        // could not read the plan file it was told to keep (#2131).
+        planFileAuthority: sessionPlanFileAuthority(context.session),
       });
       if (decision.behavior !== "allow") return decision;
 

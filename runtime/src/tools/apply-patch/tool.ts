@@ -13,6 +13,7 @@
  */
 
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
@@ -133,6 +134,13 @@ function permissionForPatch(
     };
   }
 
+  // Resolved once: the lookup canonicalizes AGENC_HOME, and a patch can
+  // carry many targets. `execute` applies the owning session's plan file
+  // through `safePathAllowingSessionPlanFile`; without the same authority
+  // here the permission layer asked to approve a patch the tool would then
+  // apply anyway (#2131).
+  const planFileAuthority = sessionPlanFileAuthority(context.session);
+
   for (const hunk of hunks) {
     for (const target of pathsForHunk(hunk)) {
       const result = checkToolPathPermission({
@@ -143,6 +151,7 @@ function permissionForPatch(
         context: context.getAppState().toolPermissionContext,
         operationType: target.operationType,
         extraWorkingDirectories: allowedPaths,
+        planFileAuthority,
       });
       if (result.behavior !== "allow") return result;
     }
