@@ -133,7 +133,8 @@ export interface MemoryPromptSections {
 async function ensureMemoryDirExists(memoryDir: string): Promise<void> {
   const fs = getFsImplementation()
   try {
-    await fs.mkdir(memoryDir)
+    // Owner-only like the rest of the AgenC home, whatever the umask.
+    await fs.mkdir(memoryDir, { mode: 0o700 })
   } catch (e) {
     // fs.mkdir already handles EEXIST internally. Anything reaching here is
     // a real problem (EACCES/EPERM/EROFS) — log so --debug shows why. Prompt

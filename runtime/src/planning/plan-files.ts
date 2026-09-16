@@ -78,7 +78,9 @@ function resolveAgencHome(ctx: PlanFileContext = {}): string {
 export function getPlansDirectory(ctx: PlanFileContext = {}): string {
   const dir = join(resolveAgencHome(ctx), "plans");
   try {
-    mkdirSync(dir, { recursive: true });
+    // AgenC home state is owner-only regardless of the caller's umask, the
+    // way every other directory under the home is created.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
     // Let the eventual read/write operation surface the filesystem error.
   }

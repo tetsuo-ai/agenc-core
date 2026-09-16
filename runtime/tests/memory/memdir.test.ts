@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -134,6 +134,21 @@ describe("memory prompt", () => {
     expect(existsSync(getGlobalMemoryPath())).toBe(true);
     expect(existsSync(getProjectMemoryPath())).toBe(true);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "loadMemoryPrompt creates the memory directories owner-only under a permissive umask",
+    async () => {
+      installMemoryAuthority();
+      const previousUmask = process.umask(0o007);
+      try {
+        await memory.loadMemoryPrompt();
+        expect(statSync(getGlobalMemoryPath()).mode & 0o777).toBe(0o700);
+        expect(statSync(getProjectMemoryPath()).mode & 0o777).toBe(0o700);
+      } finally {
+        process.umask(previousUmask);
+      }
+    },
+  );
 
   it("loads both global and project durable memory entrypoints", async () => {
     installMemoryAuthority();

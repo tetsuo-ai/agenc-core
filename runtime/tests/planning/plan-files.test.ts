@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -275,4 +275,18 @@ describe("isSessionPlanFile", () => {
     expect(copiedPath).toBe(getPlanFilePath(target));
     expect(getPlan(target)).toBe("# Transcript Plan\n\nRecovered.");
   });
+  test.skipIf(process.platform === "win32")(
+    "getPlansDirectory creates the directory owner-only under a permissive umask",
+    () => {
+      const home = mkdtempSync(join(tmpdir(), "agenc-plan-mode-"));
+      const previousUmask = process.umask(0o007);
+      try {
+        const dir = getPlansDirectory({ agencHome: home });
+        expect(statSync(dir).mode & 0o777).toBe(0o700);
+      } finally {
+        process.umask(previousUmask);
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });
