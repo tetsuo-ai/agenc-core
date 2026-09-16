@@ -950,6 +950,15 @@ export class OpenAIProvider implements LLMProvider {
       model: this.config.model,
       usageReporting: "authoritative" as const,
       supportsMaxOutputTokens: this.config.chatgptBackend !== true,
+      // Only the chat-completions path applies this buffer
+      // (`fitRequestWithinContextWindow`). The Responses path does not, so it
+      // must not inherit it.
+      ...(this.config.useResponsesApi === false
+        ? {
+            contextSafetyBufferTokens:
+              CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS,
+          }
+        : {}),
       ...(this.config.contextWindowTokens !== undefined
         ? { contextWindowTokens: this.config.contextWindowTokens }
         : {}),

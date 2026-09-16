@@ -387,6 +387,13 @@ export interface LLMProviderExecutionProfile {
   /** Whether request-scoped output-token limits reach the provider wire. */
   readonly supportsMaxOutputTokens: boolean;
   /**
+   * Extra context this provider reserves beyond prompt and output before it
+   * will accept a request. Preflight and admission must reserve the same room
+   * or they admit requests the provider then refuses at its own boundary.
+   * Declared only by providers whose request preparation actually enforces it.
+   */
+  readonly contextSafetyBufferTokens?: number;
+  /**
    * Opaque provider-owned handle that pins this exact routed execution for the
    * admitted wire attempt. The admission boundary copies it to
    * `LLMChatOptions.providerExecutionHandle`; callers must not inspect or

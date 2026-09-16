@@ -370,10 +370,19 @@ export function fitOutputReservationToContext(
   accounting: Pick<TokenAccountingResult, "admissible" | "inputTokens" | "totalTokens">,
   contextWindowTokens: number,
   maxOutputTokens: number,
+  // Room the provider itself withholds before it will accept a request. A
+  // provider that declares nothing keeps the previous arithmetic exactly.
+  providerContextSafetyBufferTokens = 0,
 ): number | undefined {
   if (!accounting.admissible) return undefined;
-  if (accounting.totalTokens <= contextWindowTokens) return maxOutputTokens;
-  const roomLeftByPrompt = contextWindowTokens - accounting.inputTokens;
+  const providerBuffer = Number.isFinite(providerContextSafetyBufferTokens)
+    ? Math.max(0, Math.floor(providerContextSafetyBufferTokens))
+    : 0;
+  if (accounting.totalTokens + providerBuffer <= contextWindowTokens) {
+    return maxOutputTokens;
+  }
+  const roomLeftByPrompt =
+    contextWindowTokens - accounting.inputTokens - providerBuffer;
   return roomLeftByPrompt >= MIN_ADMISSIBLE_OUTPUT_TOKENS
     ? Math.min(maxOutputTokens, roomLeftByPrompt)
     : undefined;
@@ -561,6 +570,7 @@ export async function runAdmittedModelCall(
       // reply needs.
       const fittedOutputTokens = fitOutputReservationToContext(
         accountingResult, contextWindowTokens, maxOutputTokens,
+        profile?.contextSafetyBufferTokens ?? 0,
       );
       if (fittedOutputTokens === undefined) {
         accountingFailureReason = "context_window_exceeded";

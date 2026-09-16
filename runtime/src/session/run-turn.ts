@@ -1317,7 +1317,10 @@ async function preparedRequestFitsContext(
   // Admission may lower the output ceiling while retaining every input token.
   // Checking the nominal ceiling here would force compaction on requests the
   // actual provider boundary can safely admit, notably small Ollama windows.
-  return fitOutputReservationToContext(accounting, window, maxOutputTokens) !== undefined;
+  return fitOutputReservationToContext(
+    accounting, window, maxOutputTokens,
+    profile?.contextSafetyBufferTokens ?? 0,
+  ) !== undefined;
 }
 
 function isTransientSamplingError(err: unknown): boolean {
