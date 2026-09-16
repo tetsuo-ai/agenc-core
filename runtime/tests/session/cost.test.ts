@@ -210,10 +210,12 @@ describe("cost helpers", () => {
       // Meta and QwenCloud Token Plan do not expose a single authoritative
       // per-token rate. Qwen PayGo pricing is model/region/tier dependent and
       // is intentionally not guessed here. Ollama Cloud is the same shape: its
-      // built-in default model has no entry in the cost registry and no single
-      // authoritative per-token rate has been established for it, so there is
-      // nothing to assert without inventing one. Their regressions below remain
+      // published peak tariff is NOT MODELLED in this registry, and its
+      // built-in default model has no entry here at all, so any single
+      // per-token rate would misprice it. Their regressions below remain
       // unknown rather than claiming the conservative fallback as a rate.
+      // The explicit regression after this test pins ollama-cloud as unknown
+      // and NOT free, so skipping it here cannot quietly become zero-rating.
       if (
         provider === "meta" ||
         provider === "qwen" ||
@@ -255,6 +257,36 @@ describe("cost helpers", () => {
         expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0);
       }
     }
+  });
+
+  // Skipping ollama-cloud above removes it from the known-price sweep. This
+  // pins what must stay true meanwhile: it resolves UNKNOWN, and it must never
+  // fall through to the local free-inference entry that #2537 closed off.
+  // When the peak tariff is modelled, replace this with a real rate assertion.
+  test("ollama-cloud stays unknown and never free while its tariff is unmodelled", () => {
+    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS["ollama-cloud"]!;
+    const sidecar = new CostSidecar({
+      defaultProvider: "ollama-cloud",
+      defaultModel: model,
+    });
+    sidecar.onEvent({
+      id: "usage-ollama-cloud",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: 1000,
+          completionTokens: 500,
+          totalTokens: 1500,
+        },
+      },
+    });
+    const usage = sidecar.getPerModelUsage()[0]!;
+    expect(sidecar.hasUnknownModelCost()).toBe(true);
+    expect(computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS).known).toBe(
+      false,
+    );
+    expect(resolveModelCostEntry(usage, DEFAULT_MODEL_COSTS)).toBeNull();
   });
 
   test.each(BUILT_IN_PROVIDER_MODEL_CATALOG.meta)(
