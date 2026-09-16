@@ -72,6 +72,7 @@ import {
 } from "../sandbox/execution-broker.js";
 import {
   clearCurrentRuntimeSession,
+  getCurrentRuntimeSession,
   peekScopedRuntimeSession,
   runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
@@ -4232,6 +4233,65 @@ describe("AgenC delegate background-agent runner", () => {
     invalidationListener?.(14);
     await new Promise((resolve) => setImmediate(resolve));
     expect(emitted).toHaveLength(emittedAfterRetirement);
+  });
+
+  it("binds the owning session while a partial compaction runs in a multi-session daemon", async () => {
+    // Compaction samples the provider through the ambient "current session"
+    // the way a turn does. With two sessions live the unscoped fallback
+    // throws ("Ambiguous runtime session"), which is exactly what `/compact`
+    // hit on a daemon hosting a TUI session and a print-mode one-shot.
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-scoped-compact",
+    });
+    const otherSessionA = { conversationId: "other-a" } as unknown as Session;
+    const otherSessionB = { conversationId: "other-b" } as unknown as Session;
+    setCurrentRuntimeSession(otherSessionA);
+    setCurrentRuntimeSession(otherSessionB);
+    const observed: { scoped: unknown; ambient: unknown }[] = [];
+    Object.assign(session, {
+      partialCompactFromMessage: vi.fn(async () => {
+        observed.push({
+          scoped: peekScopedRuntimeSession(),
+          ambient: getCurrentRuntimeSession(),
+        });
+        return { ok: false as const, code: "NO_CHANGE", message: "nothing to compact" };
+      }),
+      rollbackCompaction: vi.fn(async () => {
+        observed.push({
+          scoped: peekScopedRuntimeSession(),
+          ambient: getCurrentRuntimeSession(),
+        });
+        return { ok: false as const, code: "NOT_FOUND", message: "no such attempt" };
+      }),
+    });
+    try {
+      const started = await runner.startAgent({
+        objective: "compact under ambiguity",
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      await expect(
+        runner.partialCompactFromMessage?.(started.agentId, {
+          sessionId: "session-scoped-compact",
+          messageOrdinal: 0,
+          direction: "from",
+        }),
+      ).resolves.toMatchObject({ ok: false, code: "NO_CHANGE" });
+      await expect(
+        runner.rollbackCompaction?.(started.agentId, {
+          sessionId: "session-scoped-compact",
+          attemptId: "compact-00000000-0000-4000-8000-000000000000",
+        }),
+      ).resolves.toMatchObject({ ok: false, code: "NOT_FOUND" });
+      expect(observed).toEqual([
+        { scoped: session, ambient: session },
+        { scoped: session, ambient: session },
+      ]);
+    } finally {
+      clearCurrentRuntimeSession(otherSessionA);
+      clearCurrentRuntimeSession(otherSessionB);
+      await runner.stopAgent("session-scoped-compact").catch(() => undefined);
+    }
   });
 
   it("preserves compaction recovery details while broadcasting replacement history", async () => {

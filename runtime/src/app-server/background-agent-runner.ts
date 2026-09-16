@@ -3141,12 +3141,22 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (compact === undefined) {
       throw new Error("session.partialCompactFromMessage is not available");
     }
-    const result = await compact.call(active.bootstrap.session, {
-      messageOrdinal: params.messageOrdinal,
-      direction: params.direction,
-      ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
-      ...(params.signal !== undefined ? { signal: params.signal } : {}),
-    });
+    // Compaction samples the provider and reads session-scoped defaults on
+    // the way, through the ambient "current session" like a turn does. A
+    // daemon hosting more than one session refuses that read outside a
+    // bound scope, so `/compact` failed with "Ambiguous runtime session" as
+    // soon as a second session existed. Bind the owning session the way
+    // every other RPC path in this runner does.
+    const result = await runWithCurrentRuntimeSession(
+      active.bootstrap.session,
+      () =>
+        compact.call(active.bootstrap.session, {
+          messageOrdinal: params.messageOrdinal,
+          direction: params.direction,
+          ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+          ...(params.signal !== undefined ? { signal: params.signal } : {}),
+        }),
+    );
     if (result.ok && result.event !== undefined) {
       await this.#persistTranscriptEpoch(
         active,
@@ -3185,14 +3195,19 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
-    const result = await active.bootstrap.session.rollbackCompaction({
-      attemptId: params.attemptId,
-      ...(params.reviewedBranchTargetSessionId !== undefined
-        ? {
-            reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId,
-          }
-        : {}),
-    });
+    const result = await runWithCurrentRuntimeSession(
+      active.bootstrap.session,
+      () =>
+        active.bootstrap.session.rollbackCompaction({
+          attemptId: params.attemptId,
+          ...(params.reviewedBranchTargetSessionId !== undefined
+            ? {
+                reviewedBranchTargetSessionId:
+                  params.reviewedBranchTargetSessionId,
+              }
+            : {}),
+        }),
+    );
     if (result.ok && result.event !== undefined) {
       await this.#persistTranscriptEpoch(
         active,
