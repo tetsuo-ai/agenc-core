@@ -139,7 +139,7 @@ export function readShellCommand(
 }
 
 /**
- * The run's own folder, named as a containment root for this one check.
+ * The run's own folder, named as the only process-independent root.
  *
  * `checkPathConstraints` does not measure containment against the cwd it is
  * handed; that argument only says where a relative path argument resolves
@@ -147,20 +147,27 @@ export function readShellCommand(
  * (utils/permissions/filesystem.ts): the process-global `getOriginalCwd()`
  * plus `additionalWorkingDirectories`. In a daemon that hosts many sessions,
  * `getOriginalCwd()` is the folder the daemon itself was started in, never a
- * routine's project, and on the routine path the Map is empty. The file tools
- * do not have this problem, because their own path check
- * (permissions/path-validation.ts) adds the cwd it is handed to the root set;
- * this brings the shell gate to the same rule. Added to a copy, so the
- * session's context is left untouched.
+ * routine's project. Adding the run folder as a root is not enough: the
+ * daemon folder would still be readable. File tools avoid this because
+ * `permissions/path-validation.ts` builds roots from the cwd it is handed,
+ * not the process directory. This copy names the run folder (and any
+ * caller-declared extra directories) and drops the process directory.
  */
 function withRunFolderAsRoot(
   cwd: string,
   context: ToolPermissionContext,
 ): ToolPermissionContext {
-  if (context.additionalWorkingDirectories.has(cwd)) return context;
-  const roots = new Map(context.additionalWorkingDirectories);
-  roots.set(cwd, { path: cwd, source: "session" });
-  return { ...context, additionalWorkingDirectories: roots };
+  const roots = context.additionalWorkingDirectories.has(cwd)
+    ? context.additionalWorkingDirectories
+    : new Map(context.additionalWorkingDirectories).set(cwd, {
+        path: cwd,
+        source: "session",
+      });
+  return {
+    ...context,
+    additionalWorkingDirectories: roots,
+    excludeProcessWorkingDirectory: true,
+  };
 }
 
 /** `child` is `root` or sits under it. */

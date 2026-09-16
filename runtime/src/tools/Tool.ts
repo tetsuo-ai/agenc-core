@@ -150,6 +150,11 @@ export type ToolPermissionContext = DeepImmutable<{
   awaitAutomatedChecksBeforeDialog?: boolean;
   /** Stores the permission mode before model-initiated plan mode entry, so it can be restored on exit */
   prePlanMode?: PermissionMode;
+  /**
+   * When true, path checks use only `additionalWorkingDirectories` and do
+   * not treat the process working directory as an allowed root.
+   */
+  excludeProcessWorkingDirectory?: boolean;
 }>;
 
 export const getEmptyToolPermissionContext: () => ToolPermissionContext =
