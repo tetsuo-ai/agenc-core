@@ -684,6 +684,29 @@ describe("path-validation", () => {
       });
     });
 
+    test("relative patterns with .. cannot grant access outside the source root", async () => {
+      const target = join(outside, "secret.txt");
+      const store = new ConfigStore({ home: outside, cwd: root });
+      await store.reload();
+      await runWithCanonicalSettingsAuthority(store, async () => {
+        const permissions = withRule(
+          "projectSettings",
+          "allow",
+          "../**",
+          "Write",
+        );
+        const result = checkToolPathPermission({
+          toolName: "Write",
+          input: { file_path: target },
+          path: target,
+          cwd: root,
+          context: permissions,
+          operationType: "write",
+        });
+        expect(result.behavior).not.toBe("allow");
+      });
+    });
+
     test("absolute and home-relative patterns keep matching the expanded path", () => {
       const abs = join(outside, "secret.txt");
       const absDeny = withRule("session", "deny", abs.replace(/\\/g, "/"));

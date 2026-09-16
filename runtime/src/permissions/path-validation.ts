@@ -313,7 +313,13 @@ function resolvePathRulePattern(
   ) {
     return expanded;
   }
-  return resolve(baseForRuleSource(source, cwd), expanded);
+  const base = baseForRuleSource(source, cwd);
+  const resolved = resolve(base, expanded);
+  const prefix = getGlobBaseDirectory(resolved);
+  if (!isPathInside(prefix, base)) {
+    return expanded;
+  }
+  return resolved;
 }
 
 function matchingRuleForPath(
