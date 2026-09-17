@@ -698,4 +698,154 @@ describe("path-validation", () => {
       ).not.toBe("allow");
     });
   });
+
+  describe("relative path rules resolve against their source roots (#2128)", () => {
+    type RuleDestination =
+      | "userSettings"
+      | "projectSettings"
+      | "localSettings"
+      | "session"
+      | "cliArg";
+
+    const srcFile = () => join(root, "src", "app.ts");
+
+    function withRule(
+      destination: RuleDestination,
+      behavior: "allow" | "ask" | "deny",
+      ruleContent: string,
+      toolName = "FileRead",
+    ) {
+      return applyPermissionUpdate(ctx(), {
+        type: "addRules",
+        destination,
+        behavior,
+        rules: [{ toolName, ruleContent }],
+      });
+    }
+
+    function checkPath(
+      toolName: string,
+      path: string,
+      context: ToolPermissionContext,
+      operationType: "read" | "write",
+    ) {
+      return checkToolPathPermission({
+        toolName,
+        input: { file_path: path },
+        path,
+        cwd: root,
+        context,
+        operationType,
+      });
+    }
+
+    async function withAuthority(run: () => void | Promise<void>) {
+      const store = new ConfigStore({ home: outside, cwd: root });
+      await store.reload();
+      await runWithCanonicalSettingsAuthority(store, run);
+    }
+
+    test("project FileRead(./src/**) deny matches the project src file", async () => {
+      const target = srcFile();
+      await mkdir(dirname(target), { recursive: true });
+      await withAuthority(async () => {
+        const result = checkPath(
+          "FileRead",
+          target,
+          withRule("projectSettings", "deny", "./src/**"),
+          "read",
+        );
+        expect(result.behavior).toBe("deny");
+        expect(result.decisionReason?.type).toBe("rule");
+      });
+    });
+
+    test("session and command FileRead(./src/**) deny use the workspace cwd", () => {
+      const target = srcFile();
+      expect(
+        checkPath(
+          "FileRead",
+          target,
+          withRule("session", "deny", "./src/**"),
+          "read",
+        ).behavior,
+      ).toBe("deny");
+      expect(
+        checkPath(
+          "FileRead",
+          target,
+          ctx({ alwaysDenyRules: { command: ["FileRead(./src/**)"] } }),
+          "read",
+        ).behavior,
+      ).toBe("deny");
+    });
+
+    test("user FileRead(./src/**) deny does not match the project src file", async () => {
+      const target = srcFile();
+      await mkdir(dirname(target), { recursive: true });
+      await withAuthority(async () => {
+        expect(
+          checkPath(
+            "FileRead",
+            target,
+            withRule("userSettings", "deny", "./src/**"),
+            "read",
+          ).behavior,
+        ).toBe("allow");
+      });
+    });
+
+    test("local Write(./src/**) allow authorizes a project src write in default mode", async () => {
+      await withAuthority(async () => {
+        const result = checkPath(
+          "Write",
+          srcFile(),
+          withRule("localSettings", "allow", "./src/**", "Write"),
+          "write",
+        );
+        expect(result.behavior).toBe("allow");
+        expect(result.decisionReason?.type).toBe("rule");
+      });
+    });
+
+    test("relative deny still wins over workspace read auto-allow", async () => {
+      const target = srcFile();
+      await mkdir(dirname(target), { recursive: true });
+      await withAuthority(async () => {
+        expect(
+          checkPath(
+            "FileRead",
+            target,
+            withRule("projectSettings", "deny", "src/**"),
+            "read",
+          ).behavior,
+        ).toBe("deny");
+      });
+    });
+
+    test("relative patterns with .. cannot grant access outside the source root", async () => {
+      await withAuthority(async () => {
+        expect(
+          checkPath(
+            "Write",
+            join(outside, "secret.txt"),
+            withRule("projectSettings", "allow", "../**", "Write"),
+            "write",
+          ).behavior,
+        ).not.toBe("allow");
+      });
+    });
+
+    test("absolute patterns keep matching the expanded path", () => {
+      const abs = join(outside, "secret.txt");
+      expect(
+        checkPath(
+          "FileRead",
+          abs,
+          withRule("session", "deny", abs.replace(/\\/g, "/")),
+          "read",
+        ).behavior,
+      ).toBe("deny");
+    });
+  });
 });

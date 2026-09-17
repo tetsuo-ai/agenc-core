@@ -25,6 +25,7 @@ import {
 import { getRuleByContentsForTool } from "./rules.js";
 import { checkProtectedPathSafety } from "./protected-paths.js";
 import { withSignedAllowedRoots } from "../agents/_deps/filesystem-args.js";
+import { getSettingsRootPathForSource } from "../utils/settings/settings.js";
 import {
   matchesSessionPlanFile,
   type SessionPlanFileAuthority,
@@ -33,6 +34,7 @@ import type {
   PermissionDecisionReason,
   PermissionResult,
   PermissionRule,
+  PermissionRuleSource,
   PermissionUpdate,
   ToolPermissionContext,
 } from "./types.js";
@@ -299,19 +301,92 @@ export function matchPathRuleContent(
   return false;
 }
 
+/**
+ * The canonical form of a path whose ancestors exist, leaving anything that
+ * cannot be resolved untouched. Rule prefixes and the paths they are matched
+ * against must agree, or a symlinked source root hides every rule under it.
+ */
+function canonicalizeExistingPath(path: string): string {
+  const { resolvedPath } = safeResolvePath(path);
+  return resolvedPath;
+}
+
+function baseForRuleSource(source: PermissionRuleSource, cwd: string): string {
+  if (
+    source === "userSettings" ||
+    source === "projectSettings" ||
+    source === "localSettings" ||
+    source === "flagSettings" ||
+    source === "policySettings"
+  ) {
+    try {
+      return getSettingsRootPathForSource(source);
+    } catch {
+      // Tests and early startup may lack a ConfigStore; fall through.
+    }
+  }
+  if (source === "userSettings") return homedir();
+  return resolve(cwd);
+}
+
+function resolvePathRulePattern(
+  ruleContent: string,
+  source: PermissionRuleSource,
+  cwd: string,
+): string {
+  const expanded = expandTilde(ruleContent);
+  if (
+    isAbsolute(expanded) ||
+    expanded.startsWith("~") ||
+    containsVulnerableUncPath(expanded)
+  ) {
+    return expanded;
+  }
+  // A pattern with no literal directory component, such as `**` or `*.ts`,
+  // names files anywhere rather than a subtree of one source root. Anchoring
+  // it would silently narrow an all-path rule like FileRead(**) to the
+  // settings root. `./**` is excluded from that: it states its directory.
+  if (
+    getGlobBaseDirectory(expanded) === "." &&
+    !expanded.startsWith("./") &&
+    !expanded.startsWith("../")
+  ) {
+    return expanded;
+  }
+  // Anchor the rule the same way targets are resolved. matchingRuleForPath
+  // canonicalizes what it checks through realpath, so a lexically resolved
+  // base describes the same tree under a different prefix whenever the source
+  // root is reached through a symlink, and no rule ever matches. The
+  // containment check still runs, on canonical paths for both sides, so a
+  // rule cannot escape its source root.
+  const base = canonicalizeExistingPath(baseForRuleSource(source, cwd));
+  const resolved = resolve(base, expanded);
+  const lexicalPrefix = getGlobBaseDirectory(resolved);
+  const prefix = canonicalizeExistingPath(lexicalPrefix);
+  if (!isPathInside(prefix, base)) {
+    return expanded;
+  }
+  // Match on the canonical prefix, not the lexical one. Candidates arrive
+  // canonicalized, so a pattern still describing the alias matches nothing.
+  // An exact path has no glob suffix and becomes its own canonical form.
+  return prefix + resolved.slice(lexicalPrefix.length);
+}
+
 function matchingRuleForPath(
   filePath: string,
   context: ToolPermissionContext,
   operationType: FileOperationType,
   behavior: "allow" | "ask" | "deny",
+  cwd: string,
 ): PermissionRule | null {
   const pathsToCheck = getPathsForPermissionCheck(filePath);
   for (const toolName of toolNamesForOperation(operationType)) {
     const rules = getRuleByContentsForTool(context, toolName, behavior);
     for (const [content, rule] of rules) {
+      const resolvedContent = resolvePathRulePattern(content, rule.source, cwd);
       if (
         pathsToCheck.some((candidate) =>
-          matchPathRuleContent(content, candidate),
+          matchPathRuleContent(resolvedContent, candidate),
         )
       ) {
         return rule;
@@ -319,6 +394,27 @@ function matchingRuleForPath(
     }
   }
   return null;
+}
+
+function matchingRuleResult(
+  filePath: string,
+  context: ToolPermissionContext,
+  operationType: FileOperationType,
+  behavior: "allow" | "ask" | "deny",
+  cwd: string,
+): PathCheckResult | null {
+  const rule = matchingRuleForPath(
+    filePath,
+    context,
+    operationType,
+    behavior,
+    cwd,
+  );
+  if (rule === null) return null;
+  return {
+    allowed: behavior === "allow",
+    decisionReason: { type: "rule", rule },
+  };
 }
 
 function checkPathSafetyForAutoEdit(
@@ -388,6 +484,7 @@ function durableMemoryPathPermission(
   resolvedPath: string,
   context: ToolPermissionContext,
   operationType: FileOperationType,
+  cwd: string,
   precomputedPathsToCheck?: readonly string[],
 ): PathCheckResult | null {
   if (
@@ -399,18 +496,12 @@ function durableMemoryPathPermission(
   const paths =
     precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
   if (!underDurableMemoryRoots(paths)) return null;
-  const askRule = matchingRuleForPath(
-    resolvedPath,
-    context,
-    operationType,
-    "ask",
+  return (
+    matchingRuleResult(resolvedPath, context, operationType, "ask", cwd) ?? {
+      allowed: true,
+      decisionReason: { type: "other", reason: "durable memory files" },
+    }
   );
-  return askRule === null
-    ? {
-        allowed: true,
-        decisionReason: { type: "other", reason: "durable memory files" },
-      }
-    : { allowed: false, decisionReason: { type: "rule", rule: askRule } };
 }
 
 export function isPathAllowed(
@@ -423,38 +514,29 @@ export function isPathAllowed(
 ): PathCheckResult {
   const permissionOperation = operationType === "read" ? "read" : "write";
 
-  const denyRule = matchingRuleForPath(
+  const denyRule = matchingRuleResult(
     resolvedPath,
     context,
     operationType,
     "deny",
+    cwd,
   );
-  if (denyRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: "rule", rule: denyRule },
-    };
-  }
+  if (denyRule !== null) return denyRule;
 
   if (matchesSessionPlanFile(resolvedPath, options.planFileAuthority)) {
-    const askRule = matchingRuleForPath(
-      resolvedPath,
-      context,
-      operationType,
-      "ask",
+    return (
+      matchingRuleResult(resolvedPath, context, operationType, "ask", cwd) ?? {
+        allowed: true,
+        decisionReason: { type: "other", reason: "owning session plan file" },
+      }
     );
-    return askRule === null
-      ? {
-          allowed: true,
-          decisionReason: { type: "other", reason: "owning session plan file" },
-        }
-      : { allowed: false, decisionReason: { type: "rule", rule: askRule } };
   }
 
   const memoryPermission = durableMemoryPathPermission(
     resolvedPath,
     context,
     operationType,
+    cwd,
     precomputedPathsToCheck,
   );
   if (memoryPermission !== null) return memoryPermission;
@@ -496,31 +578,23 @@ export function isPathAllowed(
     }
   }
 
-  const askRule = matchingRuleForPath(
+  const askRule = matchingRuleResult(
     resolvedPath,
     context,
     operationType,
     "ask",
+    cwd,
   );
-  if (askRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: "rule", rule: askRule },
-    };
-  }
+  if (askRule !== null) return askRule;
 
-  const allowRule = matchingRuleForPath(
+  const allowRule = matchingRuleResult(
     resolvedPath,
     context,
     operationType,
     "allow",
+    cwd,
   );
-  if (allowRule !== null) {
-    return {
-      allowed: true,
-      decisionReason: { type: "rule", rule: allowRule },
-    };
-  }
+  if (allowRule !== null) return allowRule;
 
   return {
     allowed: false,
