@@ -637,10 +637,13 @@ export async function runAdmittedModelCall(
       ...(configuredMaxOutputTokens !== undefined
         ? { maxOutputTokens: admittedMaxOutputTokens }
         : {}),
-      // Warning only. Fitting above already lowered the reservation, so the
-      // adapter would otherwise see the fitted value as the request and could
-      // not report the squeeze. This never widens the wire ceiling.
-      ...(configuredMaxOutputTokens !== undefined
+      // Warning only, and only when fitting actually took something away.
+      // The adapter would otherwise see the fitted value as the request and
+      // could not report the squeeze. Omitted when nothing was lowered, so a
+      // call that was never squeezed dispatches exactly the options it did
+      // before. Never widens the wire ceiling.
+      ...(configuredMaxOutputTokens !== undefined &&
+      admittedMaxOutputTokens < configuredMaxOutputTokens
         ? { requestedMaxOutputTokens: configuredMaxOutputTokens }
         : {}),
       ...(accountingResult !== undefined
@@ -735,6 +738,13 @@ export async function runAdmittedModelCall(
       },
     });
     dispatched = true;
+    // The lease minimum can be lower than the admitted ceiling, so this is the
+    // figure actually dispatched and therefore the one a squeeze is measured
+    // against.
+    const dispatchedMaxOutputTokens = Math.min(
+      admittedMaxOutputTokens,
+      lease.request.estimate.maxOutputTokens,
+    );
     const response = await params.invoke({
       ...accountingOptions,
       ...(profile?.providerExecutionHandle !== undefined
@@ -749,14 +759,10 @@ export async function runAdmittedModelCall(
         : {}),
       // The admitted maximum is the provider-facing maximum. A caller cannot
       // raise it after reservation by mutating/rebuilding options.
-      maxOutputTokens: Math.min(
-        admittedMaxOutputTokens,
-        lease.request.estimate.maxOutputTokens,
-      ),
-      // Warning only, as above. The adapter compares it against what it is
-      // actually sending, so the lease minimum is reflected without any
-      // special case here.
-      ...(configuredMaxOutputTokens !== undefined
+      maxOutputTokens: dispatchedMaxOutputTokens,
+      // Warning only, as above, measured against what is actually dispatched.
+      ...(configuredMaxOutputTokens !== undefined &&
+      dispatchedMaxOutputTokens < configuredMaxOutputTokens
         ? { requestedMaxOutputTokens: configuredMaxOutputTokens }
         : {}),
       // The lease signal also carries parent cancellation, deadline expiry,
