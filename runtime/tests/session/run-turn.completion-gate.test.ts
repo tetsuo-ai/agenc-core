@@ -331,7 +331,7 @@ describe("completion gate in the turn loop", () => {
     expectCompletedTurn(events);
   });
 
-  test("an evidenced unavailable leftover settles as partial without exhausting", async () => {
+  test("an unavailable leftover keeps being asked and settles as partial at the round cap", async () => {
     const unavailable = "Official oracle is unavailable in this environment.";
     const { requests, events } = await runGateScenario([
       toolStep("work-1"),
@@ -340,15 +340,28 @@ describe("completion gate in the turn loop", () => {
       textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${unavailable}`),
       toolStep("smoke-2"),
       textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${unavailable}`),
+      toolStep("smoke-3"),
+      textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${unavailable}`),
     ], [
       "/app/out.txt contains done",
       "/app/out.txt contains done; local smoke passed",
       "/app/out.txt contains done; local smoke passed",
+      "/app/out.txt contains done; local smoke passed",
     ]);
 
-    expect(requests).toHaveLength(6);
+    // Successful local smoke work does not establish that the oracle is absent,
+    // so the gate re-asks instead of settling and the leftover reaches the cap.
+    // The model keeps re-checking the item it can verify, which is what keeps
+    // the outcome partial: a final round with no work leaves nothing verified
+    // since the latest request and is reported as exhausted instead.
+    expect(requests).toHaveLength(8);
     expect(gatePayloads(events)).toEqual([
       ...unavailablePromptedPrefix(unavailable),
+      expect.objectContaining({
+        outcome: "injected",
+        reason: "unavailable_unproven",
+        unmetItems: [unavailable],
+      }),
       expect.objectContaining({
         outcome: "partial",
         reason: "unavailable_checks",

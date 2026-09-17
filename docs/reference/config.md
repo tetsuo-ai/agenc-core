@@ -387,9 +387,11 @@ outside code fences to have an associated successful tool result after the
 latest request. Association is token overlap between the item text and the
 tool name, arguments, or content — a successful unrelated FileRead does
 not verify a numerical claim. Unchecked `- [ ]` or malformed items prevent
-verification. Explicit `- [-]` unavailable claims get one investigation
-round, then settle as `partial` with `unavailable_checks` instead of
-retrying to the round cap. A `- [-]` mark is not itself evidence: if the
+verification. Explicit `- [-]` unavailable claims get an investigation
+request every round and settle as `partial` with `unavailable_checks` only
+at the round cap. The gate does not accept a probe as proof of a missing
+capability, because a probe and the check itself are both runnable results
+associated with the same item and cannot be told apart structurally. A `- [-]` mark is not itself evidence: if the
 named check actually ran (numeric `exitCode`), the item is unmet, not
 unavailable. A tool error or an explicitly still-running command
 (`metadata.exitCode = null`) does not count as a successful check; a later

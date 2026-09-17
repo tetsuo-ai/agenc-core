@@ -706,7 +706,7 @@ describe("completionGate", () => {
     expect(state.completionGateSettled).toBe(false);
   });
 
-  test("settles a disclosed unavailable check as partial without exhausting identical retries", async () => {
+  test("settles a disclosed unavailable check as partial at the round cap", async () => {
     const session = mkSession();
     const state = laterAnswer(
       "- [x] Local smoke test passed.\n- [-] Official oracle is unavailable in this environment.",
@@ -720,15 +720,18 @@ describe("completionGate", () => {
       }));
       await completionGate(state, mkCtx(), session);
     }
+    // The gate keeps asking for the observed limitation rather than settling on
+    // evidence about the other item, so the leftover reaches the round cap.
     expect(gateEvents(session).map((event) => [event.round, event.outcome, event.reason])).toEqual([
       [2, "injected", "unavailable_unproven"],
-      [2, "partial", "unavailable_checks"],
+      [3, "injected", "unavailable_unproven"],
+      [3, "partial", "unavailable_checks"],
     ]);
     expect(warningEvents(session)).toHaveLength(1);
     expect(warningEvents(session)[0]).toMatchObject({ cause: "completion_gate_partial" });
     expect(state.completionGateSettled).toBe(true);
     await completionGate(state, mkCtx(), session);
-    expect(gateEvents(session)).toHaveLength(2);
+    expect(gateEvents(session)).toHaveLength(3);
     expect(warningEvents(session)).toHaveLength(1);
   });
 

@@ -96,8 +96,10 @@ From `formatCliHelpText()`:
   result since the latest request (the tool name, arguments, or content
   must share a distinctive token with the claim). Unchecked `- [ ]` items
   and malformed checklist items prevent verification. An explicit `- [-]`
-  unavailable claim is investigated once, then the gate settles as
-  `partial` rather than repeating the same request to the round cap. Failed
+  unavailable claim is asked to show its observed limitation, and the gate
+  keeps asking until `completion_gate.max_rounds`, where the leftover
+  settles as `partial`. It is never settled early on a successful check
+  for some other item. Failed
   tools and explicitly still-running commands do not count, and an
   unrelated successful read does not verify a different claim. This is a
   structural check, not a guarantee of task correctness and not a

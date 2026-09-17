@@ -669,30 +669,16 @@ export async function completionGate(
   ) {
     return settle("verified", "verified_with_tools", toolCallsSinceInjection);
   }
-  // Runtime-authored facts only, never transcript text: the gate asked for
-  // proof, and the answer carries verified work. Scanning messages for the
-  // marker trusted the gate's own prompt and any quotation of it.
-  //
-  // hasCheckedItem is load-bearing. Activity alone is not evidence: an
-  // unrelated file read or a pwd is a successful result, and a file read
-  // carries no exitCode at all, so a turn that only re-asserted the
-  // unavailable item could settle without ever investigating it. Combined
-  // with leftoverIsOnlyUnavailable, which requires no unmet items, this means
-  // the answer has at least one checked item and every checked item is backed
-  // by an associated success.
-  if (
-    leftoverIsOnlyUnavailable &&
-    state.completionGateUnavailablePrompted &&
-    hasCheckedItem &&
-    hasSuccessfulResult
-  ) {
-    return settle(
-      "partial",
-      "unavailable_checks",
-      toolCallsSinceInjection,
-      unavailableItems,
-    );
-  }
+  // No early partial. The prompt tells the model to run the check or show the
+  // observed limitation for each unavailable item, and that evidence cannot be
+  // recognised structurally: a capability probe and the check itself are both
+  // runnable results associated with the same item, and an item that has any
+  // runnable associated result is already routed to unmet as a dishonest mark.
+  // Requiring a probe here would therefore be unreachable, and accepting a
+  // runnable failure as proof would make a failing check look like an absent
+  // one. Anything weaker settled on activity about some other item. So an
+  // unavailable leftover keeps getting the investigation request and settles
+  // as partial only through the round-cap fallback below.
   if (round >= plan.maxRounds) {
     if (leftoverIsOnlyUnavailable) {
       return settle(
