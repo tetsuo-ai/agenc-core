@@ -207,14 +207,24 @@ export function checkProtectedPathSafety(
     }
   }
 
+  // Every candidate, not the first match. pathsToCheck carries the path as
+  // written and its canonical target, so a `.vscode` symlink into `.git` would
+  // otherwise be judged by the weaker alias inspected first and never reach the
+  // root it actually points at. Take the strongest restriction any candidate
+  // implies.
+  let dangerous = false;
+  let explicitApprovalOnly = false;
   for (const pathToCheck of pathsToCheck) {
-    if (isDangerousFilePathToAutoEdit(pathToCheck)) {
-      return {
-        safe: false,
-        message: `AgenC requested permissions to edit ${path} which is a sensitive file.`,
-        classifierApprovable: !requiresExplicitApproval(pathToCheck),
-      };
-    }
+    if (!isDangerousFilePathToAutoEdit(pathToCheck)) continue;
+    dangerous = true;
+    if (requiresExplicitApproval(pathToCheck)) explicitApprovalOnly = true;
+  }
+  if (dangerous) {
+    return {
+      safe: false,
+      message: `AgenC requested permissions to edit ${path} which is a sensitive file.`,
+      classifierApprovable: !explicitApprovalOnly,
+    };
   }
 
   return { safe: true };
