@@ -85,6 +85,18 @@ const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
   "OpenAI chat-completions stream emitted invalid tool_call";
 const CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
 const CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS = 256;
+/**
+ * `fitRequestWithinContextWindow` keeps a request admissible by shrinking its
+ * output reservation to whatever the estimated prompt leaves. That is silent
+ * by design for a one-off large prompt, but on a long tool loop it is the
+ * only visible sign that the history is walking into the context window:
+ * one observed run (#2520) decayed from 131,072 to 1,256 reserved output
+ * tokens over 80 minutes and ~110 dispatches, with no compaction event,
+ * before the adapter refused the next request. Below this fraction of the
+ * requested maximum the squeeze is reported as a warning so the run degrades
+ * loudly. The fit itself is unchanged.
+ */
+const OUTPUT_RESERVATION_SQUEEZE_WARNING_FRACTION = 0.5;
 
 interface OpenAISseEvent {
   readonly event?: string;
@@ -684,6 +696,12 @@ export class OpenAIProvider implements LLMProvider {
   private readonly config: ResolvedOpenAIProviderConfig;
   private readonly client: ProviderHttpClient;
   private readonly auth: OpenAIAuthSession;
+  /**
+   * Output reservation the last `output_reservation_squeezed` warning
+   * reported, so a decaying run warns as it halves rather than on every
+   * dispatch; cleared once a request fits above the warning fraction again.
+   */
+  private lastSqueezeWarningOutputTokens: number | undefined;
 
   constructor(config: OpenAIProviderConfig) {
     this.config = resolveOpenAIProviderConfig(config);
@@ -1085,6 +1103,7 @@ export class OpenAIProvider implements LLMProvider {
     request: Record<string, unknown>,
     metadata: ChatCompletionsRequestMetadata,
     contextWindowTokens: number | undefined,
+    requestedOutputTokens?: number,
   ): ChatCompletionsRequestMetadata {
     if (contextWindowTokens === undefined || metadata.maxTokens === undefined) {
       return metadata;
@@ -1096,9 +1115,28 @@ export class OpenAIProvider implements LLMProvider {
         metadata.estimatedPromptTokens -
         CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS,
     );
-    if (metadata.maxTokens <= availableOutputTokens) return metadata;
+    if (metadata.maxTokens <= availableOutputTokens) {
+      // Nothing left for this method to shrink. That is not the same as no
+      // squeeze: admission fits the reservation before dispatch, so on that
+      // path the value below is already the fitted one and comparing it with
+      // itself can never report anything. The pre-admission ceiling, when the
+      // caller passes it, is what makes the squeeze visible. Without it the
+      // helper's own fraction check just clears the latch, as before.
+      this.warnOnSqueezedOutputReservation(
+        metadata,
+        metadata.maxTokens,
+        contextWindowTokens,
+        requestedOutputTokens,
+      );
+      return metadata;
+    }
     if (availableOutputTokens >= CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS) {
       request[maxTokenField] = availableOutputTokens;
+      this.warnOnSqueezedOutputReservation(
+        metadata,
+        availableOutputTokens,
+        contextWindowTokens,
+      );
       return collectChatCompletionsRequestMetadata(request);
     }
     const requestedTokens = metadata.estimatedPromptTokens + metadata.maxTokens;
@@ -1110,6 +1148,43 @@ export class OpenAIProvider implements LLMProvider {
         maxTokens: contextWindowTokens,
       },
     );
+  }
+
+  /**
+   * Report a squeeze that left less than
+   * `OUTPUT_RESERVATION_SQUEEZE_WARNING_FRACTION` of the requested output.
+   * Emitted when the squeeze first crosses the fraction and again each time
+   * the remaining reservation halves, so a run that decays over hours leaves
+   * a handful of escalating warnings instead of one per dispatch.
+   */
+  private warnOnSqueezedOutputReservation(
+    metadata: ChatCompletionsRequestMetadata,
+    availableOutputTokens: number,
+    contextWindowTokens: number,
+    requestedOutputTokens?: number,
+  ): void {
+    // The pre-admission ceiling when the caller supplied one, otherwise the
+    // request's own maximum, which is what the un-admitted path still sends.
+    const requested = requestedOutputTokens ?? metadata.maxTokens;
+    if (requested === undefined) return;
+    if (
+      availableOutputTokens >=
+      requested * OUTPUT_RESERVATION_SQUEEZE_WARNING_FRACTION
+    ) {
+      this.lastSqueezeWarningOutputTokens = undefined;
+      return;
+    }
+    const previous = this.lastSqueezeWarningOutputTokens;
+    if (previous !== undefined && availableOutputTokens > previous / 2) return;
+    this.lastSqueezeWarningOutputTokens = availableOutputTokens;
+    const percent = Math.floor((availableOutputTokens / requested) * 100);
+    this.config.emitWarning?.({
+      cause: "output_reservation_squeezed",
+      message:
+        `${this.name} reduced the output reservation to ${availableOutputTokens} of the requested ${requested} tokens (${percent}%): ` +
+        `the estimated prompt (${metadata.estimatedPromptTokens}) leaves that much of the ${contextWindowTokens} token context window ` +
+        `after the ${CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS} token safety buffer; the prompt is approaching the context window`,
+    });
   }
 
   private prepareChatCompletionsRequest(args: {
@@ -1152,6 +1227,7 @@ export class OpenAIProvider implements LLMProvider {
       request,
       metadata,
       this.resolveContextWindowTokens(args.options),
+      normalizePositiveInteger(args.options?.requestedMaxOutputTokens),
     );
     this.emitRequestMetadata("chat_completions", metadata);
     return request;

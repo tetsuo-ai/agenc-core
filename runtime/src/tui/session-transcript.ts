@@ -305,6 +305,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "pre_sampling_compact_failed",
   "auto_compact_failed",
   "auto_compact_degraded",
+  "output_reservation_squeezed",
   "effect_review_required",
   "empty_response_retry",
   "deadline_reserve",

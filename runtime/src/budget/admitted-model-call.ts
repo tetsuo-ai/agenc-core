@@ -637,6 +637,12 @@ export async function runAdmittedModelCall(
       ...(configuredMaxOutputTokens !== undefined
         ? { maxOutputTokens: admittedMaxOutputTokens }
         : {}),
+      // Warning only. Fitting above already lowered the reservation, so the
+      // adapter would otherwise see the fitted value as the request and could
+      // not report the squeeze. This never widens the wire ceiling.
+      ...(configuredMaxOutputTokens !== undefined
+        ? { requestedMaxOutputTokens: configuredMaxOutputTokens }
+        : {}),
       ...(accountingResult !== undefined
         ? { accountedInputTokens: accountingResult.inputTokens }
         : {}),
@@ -747,6 +753,12 @@ export async function runAdmittedModelCall(
         admittedMaxOutputTokens,
         lease.request.estimate.maxOutputTokens,
       ),
+      // Warning only, as above. The adapter compares it against what it is
+      // actually sending, so the lease minimum is reflected without any
+      // special case here.
+      ...(configuredMaxOutputTokens !== undefined
+        ? { requestedMaxOutputTokens: configuredMaxOutputTokens }
+        : {}),
       // The lease signal also carries parent cancellation, deadline expiry,
       // daemon shutdown, and restart recovery decisions.
       signal: lease.signal,

@@ -39,7 +39,20 @@ import {
   CompactionCleanupPendingError,
   finalizeCompactionTransaction,
 } from "../services/compact/finalize-transaction.js";
-import { CompactionTransactionError } from "../services/compact/transaction-types.js";
+import {
+  CompactionCannotReduceError,
+  CompactionFailurePersistenceError,
+  CompactionTransactionError,
+  type CompactionFailureReason,
+} from "../services/compact/transaction-types.js";
+import {
+  AGGRESSIVE_COMPACTION_FOCUS,
+  EMERGENCY_COMPACTION_FOCUS,
+  nextLadderTiers,
+  resolveCompactionLadderPolicy,
+  type CompactionLadderTier,
+} from "../services/compact/ladder.js";
+import { createRuntimeEmergencySummarizer } from "../services/compact/emergency-summarizer.js";
 import { runPostCompactCleanup } from "../services/compact/postCompactCleanup.js";
 import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
@@ -67,10 +80,25 @@ import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
 import { recoverRejectedTextToolCall } from "../recovery/rejected-text-tool-call.js";
 
-type ContextCollapseOverflowRecoveryResult =
-  | { readonly kind: "applied"; readonly reason: string }
+/** One compaction ladder tier that declined during a 413 collapse, with history unchanged. */
+export interface ContextCollapseTierFailure {
+  readonly tier: CompactionLadderTier;
+  readonly reason: CompactionFailureReason | CompactionCannotReduceError["code"];
+  readonly message: string;
+}
+
+export type ContextCollapseAttempt =
+  | { readonly kind: "applied"; readonly reason: string; readonly tier: CompactionLadderTier }
   | { readonly kind: "pass" }
-  | { readonly kind: "surface"; readonly reason: string };
+  | {
+      /** Every allowed tier declined without changing history. */
+      readonly kind: "ladder_exhausted";
+      readonly reason: string;
+      readonly failures: readonly ContextCollapseTierFailure[];
+    };
+
+/** The reactive collapse shares its degraded-tier warning with the proactive ladder. */
+const REACTIVE_COLLAPSE_LADDER_LABEL = "reactive_recovery/in_turn";
 
 type RuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
 
@@ -95,12 +123,25 @@ type CollapseRuntimeMessage = Omit<
   };
 };
 
+/**
+ * The bounded 413 collapse: compact the overflowing query projection through
+ * the degraded compaction ladder and commit the first tier that succeeds.
+ *
+ * Every tier runs the same durable transaction; only the summary focus, the
+ * verbatim tail and (for `emergency_local`) the summarizer differ. Each tier
+ * either commits or declines with history unchanged, so a decline is a
+ * reason to step down the ladder, never to end the turn. When every allowed
+ * tier has declined the caller receives `ladder_exhausted` and ends the turn
+ * on its typed `prompt_too_long_exhausted` path. Faults that leave the
+ * history state uncertain (`intent_failed`, `commit_failed`, a pending
+ * cleanup, a persistence failure, an abort) still propagate.
+ */
 export async function runContextCollapseOverflowRecovery(params: {
   readonly state: TurnState;
   readonly session?: Session;
   readonly turnContext?: TurnContext;
   readonly signal?: AbortSignal;
-}): Promise<ContextCollapseOverflowRecoveryResult> {
+}): Promise<ContextCollapseAttempt> {
   const session = params.session;
   if (session?.rolloutStore === null || session?.rolloutStore === undefined) {
     return { kind: "pass" } as const;
@@ -108,15 +149,11 @@ export async function runContextCollapseOverflowRecovery(params: {
   const recovered = await recoverFromOverflow(
     toCollapseRuntimeMessages(params.state.messagesForQuery),
     session,
+    params.state,
     params.turnContext,
     params.signal,
   );
-  if (recovered.committed <= 0) {
-    return { kind: "pass" } as const;
-  }
-  if (recovered.attemptId === undefined) {
-    throw new Error("overflow recovery committed without an attempt id");
-  }
+  if (recovered.kind !== "committed") return recovered;
   const cleanup = (): void => cleanupSessionAfterCompaction(session);
   try {
     await finalizeCompactionTransaction({
@@ -125,6 +162,8 @@ export async function runContextCollapseOverflowRecovery(params: {
       applyProjection: () => {
         params.state.messagesForQuery = [...recovered.messages];
         params.state.messages = [...params.state.messagesForQuery];
+        // A commit ends the ladder episode: the next decline may climb again.
+        params.state.compactionLadder = undefined;
       },
       cleanup,
     });
@@ -137,51 +176,51 @@ export async function runContextCollapseOverflowRecovery(params: {
   return {
     kind: "applied",
     reason: "context_collapse",
+    tier: recovered.tier,
   } as const;
 }
 
-export type ContextCollapseAttempt =
-  | ContextCollapseOverflowRecoveryResult
-  | { readonly kind: "limit_refused"; readonly reason: string };
+/**
+ * Transaction failures after which no further tier may run: the history
+ * state is uncertain (a pin, intent or commit failed part-way; a recovery
+ * was interrupted) or the run is stopping. `ladderAppliesToDecline` excludes
+ * the same `pin_failed` and `aborted` cases from the proactive ladder.
+ */
+const FATAL_COLLAPSE_FAILURE_REASONS: ReadonlySet<CompactionFailureReason> =
+  new Set([
+    "aborted",
+    "pin_failed",
+    "intent_failed",
+    "commit_failed",
+    "recovery_interrupted",
+  ]);
 
 /**
- * Run the bounded 413 collapse, separating "this history could not be planned
- * inside compaction's own resource bounds" from a genuine fault.
+ * True for a compaction failure that left history unchanged and that a more
+ * aggressive tier may still resolve: a planner refusal inside compaction's
+ * own resource bounds (#2520: many small messages exhaust the node ceiling
+ * while the transcript is nowhere near the context window), a rejected or
+ * failed summary, a shrink floor the standard plan could not meet.
  *
- * A source history can exceed the compaction planner's canonical encoding
- * budget before any provider call (#2520): many small messages exhaust the
- * node ceiling while the transcript is nowhere near the context window. That
- * is a refusal to collapse, not a crash, and it must not escape as an untyped
- * throw. When it escapes, the recovery ladder converts any exception into
- * `surface` with `trigger_threw` and the turn ends WITHOUT the typed
- * `prompt_too_long_exhausted` record the caller would otherwise emit.
+ * Such a failure must not escape the 413 trigger as an untyped throw: the
+ * recovery ladder converts any exception into `surface` with
+ * `trigger_threw`, ending the turn without the typed
+ * `prompt_too_long_exhausted` record and with ladder tiers unused.
  *
  * Every other error still propagates, including `CompactionCleanupPendingError`,
  * which the transaction deliberately rethrows after registering its retry.
  */
-export function isCompactionLimitRefusal(
+export function isCompactionTierFailure(
   error: unknown,
-): error is CompactionTransactionError {
-  return (
-    error instanceof CompactionTransactionError &&
-    error.reason === "output_limit_exceeded"
-  );
+): error is CompactionTransactionError | CompactionCannotReduceError {
+  if (error instanceof CompactionCannotReduceError) return true;
+  if (!(error instanceof CompactionTransactionError)) return false;
+  if (error instanceof CompactionFailurePersistenceError) return false;
+  return !FATAL_COLLAPSE_FAILURE_REASONS.has(error.reason);
 }
 
-export async function attemptContextCollapse(params: {
-  readonly state: TurnState;
-  readonly session?: Session;
-  readonly turnContext?: TurnContext;
-  readonly signal?: AbortSignal;
-}): Promise<ContextCollapseAttempt> {
-  try {
-    return await runContextCollapseOverflowRecovery(params);
-  } catch (error) {
-    if (isCompactionLimitRefusal(error)) {
-      return { kind: "limit_refused", reason: error.message };
-    }
-    throw error;
-  }
+function describeCollapseTierFailure(failure: ContextCollapseTierFailure): string {
+  return `${failure.tier}=${failure.reason} (${failure.message.slice(0, 160)})`;
 }
 
 function cleanupSessionAfterCompaction(session: Session): void {
@@ -207,27 +246,95 @@ function cleanupSessionAfterCompaction(session: Session): void {
   });
 }
 
+type OverflowRecovery =
+  | { readonly kind: "pass" }
+  | {
+      readonly kind: "committed";
+      readonly messages: readonly LLMMessage[];
+      readonly attemptId: string;
+      readonly tier: CompactionLadderTier;
+    }
+  | {
+      readonly kind: "ladder_exhausted";
+      readonly reason: string;
+      readonly failures: readonly ContextCollapseTierFailure[];
+    };
+
+const STANDARD_COLLAPSE_FOCUS =
+  "Recover from a prompt-too-long provider response.";
+
 /**
- * Cap applied to each tool result retained in the recovery tail. The
- * overflow usually IS one oversized recent result — retaining it
- * verbatim used to reproduce the very overflow this recovery exists to
- * fix, looping the 413. Head+tail slicing keeps the pairing valid while
- * guaranteeing the rebuilt prompt is small.
+ * Focus strings double as each tier's identity in the durable configuration
+ * digest (`requested_focus`), so the transaction's failure guard counts each
+ * tier separately, exactly as the proactive ladder does.
+ */
+function collapseTierFocus(tier: CompactionLadderTier): string {
+  switch (tier) {
+    case "standard":
+      return STANDARD_COLLAPSE_FOCUS;
+    case "aggressive_summary":
+      return AGGRESSIVE_COMPACTION_FOCUS;
+    case "emergency_local":
+      return EMERGENCY_COMPACTION_FOCUS;
+    default: {
+      const exhaustive: never = tier;
+      throw new Error(`unknown compaction ladder tier: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function collapseTierOptions(
+  tier: CompactionLadderTier,
+): Parameters<typeof compactConversation>[3] {
+  switch (tier) {
+    case "standard":
+      return {};
+    case "aggressive_summary":
+      return { keepCount: 0 };
+    case "emergency_local":
+      return { keepCount: 0, summarizer: createRuntimeEmergencySummarizer() };
+    default: {
+      const exhaustive: never = tier;
+      throw new Error(`unknown compaction ladder tier: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function collapseTierFailure(
+  tier: CompactionLadderTier,
+  error: CompactionTransactionError | CompactionCannotReduceError,
+): ContextCollapseTierFailure {
+  return {
+    tier,
+    reason:
+      error instanceof CompactionTransactionError ? error.reason : error.code,
+    message: error.message,
+  };
+}
+
+/**
+ * Compact the overflowing projection through the compaction ladder
+ * (`standard`, then `aggressive_summary`, then `emergency_local`), stopping
+ * at the first tier that commits.
+ *
+ * The overflow usually IS one oversized recent result, and the standard plan
+ * keeps a verbatim tail that may reproduce it; the degraded tiers keep no
+ * tail, and the last one needs no model call at all. A tier that declines
+ * leaves history unchanged and steps down; the run-turn ladder already did
+ * this for the proactive gate (#2497), while this reactive path made one
+ * attempt and ended the turn with tiers unused (#2520).
  */
 async function recoverFromOverflow(
   messages: RuntimeMessage[],
   session: Session,
+  state: TurnState,
   turnContext?: TurnContext,
   signal?: AbortSignal,
-): Promise<{
-  readonly messages: readonly LLMMessage[];
-  readonly committed: number;
-  readonly attemptId?: string;
-}> {
-  if (messages.length < 4) return { messages: [], committed: 0 };
+): Promise<OverflowRecovery> {
+  if (messages.length < 4) return { kind: "pass" };
   const rolloutStore = session.rolloutStore;
   if (rolloutStore === null || rolloutStore === undefined) {
-    return { messages: [], committed: 0 };
+    return { kind: "pass" };
   }
   const provider = turnContext?.provider ?? session.services.provider;
   const modelInfo = turnContext?.modelInfo ?? session.modelInfo;
@@ -235,44 +342,105 @@ async function recoverFromOverflow(
   const forwardAbort = (): void => abortController.abort(signal?.reason);
   if (signal?.aborted === true) forwardAbort();
   else signal?.addEventListener("abort", forwardAbort, { once: true });
-  let compacted;
+  const context = {
+    provider,
+    admissionSession: session,
+    compactionTransaction: rolloutStore,
+    compactionMode: "automatic" as const,
+    abortController,
+    options: {
+      mainLoopModel: modelInfo.slug,
+      ...(modelInfo.contextWindow !== undefined
+        ? { contextWindowTokens: modelInfo.contextWindow }
+        : {}),
+      ...(modelInfo.maxOutputTokens !== undefined
+        ? { maxOutputTokens: modelInfo.maxOutputTokens }
+        : {}),
+      ...(turnContext?.baseInstructions !== undefined
+        ? { systemPrompt: turnContext.baseInstructions }
+        : {}),
+      querySource: "overflow_recovery",
+    },
+  };
+  const policy = resolveCompactionLadderPolicy(turnContext?.config);
+  const failures: ContextCollapseTierFailure[] = [];
+  /** Commits, or records the tier's decline and returns it. Faults propagate. */
+  const attempt = async (
+    tier: CompactionLadderTier,
+  ): Promise<
+    | OverflowRecovery
+    | {
+        readonly kind: "declined";
+        readonly error: CompactionTransactionError | CompactionCannotReduceError;
+      }
+  > => {
+    try {
+      const compacted = await compactConversation(
+        messages,
+        context,
+        collapseTierFocus(tier),
+        collapseTierOptions(tier),
+      );
+      if (compacted.transaction === undefined) {
+        throw new Error(
+          "overflow recovery did not produce a durable transaction",
+        );
+      }
+      return {
+        kind: "committed",
+        messages: compacted.transaction.committed.replacement_history.map(
+          responseItemToLlmMessage,
+        ),
+        attemptId: compacted.transaction.attempt_id,
+        tier,
+      };
+    } catch (error) {
+      if (abortController.signal.aborted || !isCompactionTierFailure(error)) {
+        throw error;
+      }
+      failures.push(collapseTierFailure(tier, error));
+      return { kind: "declined", error };
+    }
+  };
   try {
-    compacted = await compactConversation(
-      messages,
+    const standard = await attempt("standard");
+    if (standard.kind !== "declined") return standard;
+    // Each degraded tier runs at most once per episode, shared with the
+    // proactive ladder; a commit on either path starts a new episode.
+    const degradedTiers = nextLadderTiers(
+      policy,
       {
-        provider,
-        admissionSession: session,
-        compactionTransaction: rolloutStore,
-        compactionMode: "automatic",
-        abortController,
-        options: {
-          mainLoopModel: modelInfo.slug,
-          ...(modelInfo.contextWindow !== undefined
-            ? { contextWindowTokens: modelInfo.contextWindow }
-            : {}),
-          ...(modelInfo.maxOutputTokens !== undefined
-            ? { maxOutputTokens: modelInfo.maxOutputTokens }
-            : {}),
-          ...(turnContext?.baseInstructions !== undefined
-            ? { systemPrompt: turnContext.baseInstructions }
-            : {}),
-          querySource: "overflow_recovery",
-        },
+        wasCompacted: false,
+        skippedReason: standard.error.message,
+        consecutiveFailures: 0,
+        ...(standard.error instanceof CompactionTransactionError
+          ? { skippedFailureReason: standard.error.reason }
+          : { skippedCode: standard.error.code }),
       },
-      "Recover from a prompt-too-long provider response.",
+      state.compactionLadder?.tiersAttempted ?? [],
     );
+    for (const tier of degradedTiers) {
+      const previous = failures.at(-1);
+      const attempted = state.compactionLadder?.tiersAttempted ?? [];
+      state.compactionLadder = { tiersAttempted: [...attempted, tier] };
+      emitWarning(
+        session.eventLog,
+        session.nextInternalSubId(),
+        "auto_compact_degraded",
+        `${REACTIVE_COLLAPSE_LADDER_LABEL}: tier=${tier} attempting after ${previous?.reason ?? "decline"}`,
+      );
+      const degraded = await attempt(tier);
+      if (degraded.kind !== "declined") return degraded;
+    }
   } finally {
     signal?.removeEventListener("abort", forwardAbort);
   }
-  if (compacted.transaction === undefined) {
-    throw new Error("overflow recovery did not produce a durable transaction");
-  }
   return {
-    messages: compacted.transaction.committed.replacement_history.map(
-      responseItemToLlmMessage,
-    ),
-    committed: 1,
-    attemptId: compacted.transaction.attempt_id,
+    kind: "ladder_exhausted",
+    reason: `compaction declined at every ladder tier: ${failures
+      .map(describeCollapseTierFailure)
+      .join("; ")}`,
+    failures,
   };
 }
 
@@ -398,21 +566,29 @@ export async function postSampleRecovery(
         const gate = evaluateWithholdCascade(c.state, c.lastMessage, c.streamError);
         if (gate.kind === "route_to_collapse_drain") {
           markContextCollapseAttempted(c.state);
-          const drain = await attemptContextCollapse({
+          const drain = await runContextCollapseOverflowRecovery({
             state: c.state,
             session: c.session,
             turnContext: ctx,
             ...(signal !== undefined ? { signal } : {}),
           });
           if (drain.kind === "applied") {
+            if (drain.tier !== "standard") {
+              emitWarning(
+                c.session.eventLog,
+                c.session.nextInternalSubId(),
+                "auto_compact_degraded",
+                `${REACTIVE_COLLAPSE_LADDER_LABEL}: tier=${drain.tier} compacted`,
+              );
+            }
             c.state.transition = { reason: "collapse_drain_retry" };
-            return drain;
+            return { kind: "applied", reason: drain.reason };
           }
-          if (drain.kind === "limit_refused") {
+          if (drain.kind === "ladder_exhausted") {
             emitWarning(
               c.session.eventLog,
               c.session.nextInternalSubId(),
-              "context_collapse_limit_refused",
+              "context_collapse_ladder_exhausted",
               drain.reason,
             );
           }

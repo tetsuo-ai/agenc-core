@@ -652,6 +652,14 @@ export interface LLMChatOptions {
    */
   readonly accountedInputTokens?: number;
   /**
+   * @internal Pre-admission output ceiling, for warning only. Admission fits
+   * the reservation to the context window before dispatch, so an adapter
+   * otherwise sees only the already-fitted value and cannot tell a squeezed
+   * reservation from a request that only ever asked for that much. Never sent
+   * on the wire, and never used to widen any limit.
+   */
+  readonly requestedMaxOutputTokens?: number;
+  /**
    * Runtime admission boundary: one provider wire attempt is permitted for
    * this logical call. Provider adapters must not perform continuation,
    * transport, authentication, or configured-fallback retries while set;

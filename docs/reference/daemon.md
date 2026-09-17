@@ -781,6 +781,7 @@ as do normal model-admission checks.
 | Mid-turn sampling loop | Thrown compact or no committed result after the outer token gate, except a safely deferred `no_shrink`. | `warning` cause `mid_turn_compact_failed`, then `turn_failed` code `compact_failed` |
 | Pre-sampling | Thrown compact only. A no-op continues the turn. | `warning` cause `pre_sampling_compact_failed`, then `turn_failed` code `compact_failed` |
 | Post-tool checkpoint | After the outer token gate, compact returns no committed result, except a safely deferred `no_shrink`. | `warning` cause `mid_turn_compact_failed`, then `turn_failed` code `compact_failed` |
+| Provider context refusal (413) | Every compaction ladder tier declined the bounded collapse, or the collapse was already attempted for this overflow. A tier that declines steps down first (`warning` cause `auto_compact_degraded`, prefixed `reactive_recovery/in_turn`). | `warning` cause `context_collapse_ladder_exhausted` (when tiers ran), then `error` cause `prompt_too_long_exhausted` |
 
 Keep-alive (interactive / desktop / `keepAlive` subagent) sessions
 stay promptable. A later `message.send` can start a new turn. The
