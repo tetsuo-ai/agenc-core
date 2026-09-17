@@ -407,8 +407,19 @@ original request, the latest assistant text and tool calls, and the
 dropped message count, through the same durable transaction as every
 other compaction. An `auto_compact_degraded` warning records each tier;
 `compact_ladder_exhausted` in the `compact_failed` message means every
-tier declined. `compaction.emergency_mode` accepts `always` (default) or
-`never`; `never` disables the model-free tier only.
+tier declined. The reactive path walks the same ladder: when a provider
+refuses a request at its context window and the standard collapse fails
+inside compaction's own bounds (a planner or output limit, a rejected or
+failed summary, the shrink floor), the runtime steps down to the aggressive
+summary and then the emergency compaction instead of ending the turn with
+tiers unused. Each step is an `auto_compact_degraded` warning prefixed
+`reactive_recovery/in_turn`; when every tier declines, a
+`context_collapse_ladder_exhausted` warning names each tier's reason and
+the turn ends with `prompt_too_long_exhausted`. Faults that leave the
+history state uncertain (a failed intent or commit, an interrupted
+recovery, an abort) still end the turn at once. `compaction.emergency_mode`
+accepts `always` (default) or `never`; `never` disables the model-free tier
+only, on both paths.
 `stream_watchdog_timeout_ms` defaults to `600000` (ten
 minutes of provider silence): the runtime warns at half that time and aborts
 the stream with a retryable `stream_idle` error at the deadline. Set it to
