@@ -5054,11 +5054,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
 
   // Transient-message helper for local slash-command results.
   const transientResultTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // True while a transient result owns the tool surface. A persistent result
+  // (the provider sign-in outcomes) has no timer, and the old early return on
+  // "no timer" meant the next submission could never clear it: a timed-out
+  // `/grok-login` left "Error: Timed out waiting for the browser sign-in."
+  // on screen for the rest of the session.
+  const transientResultActiveRef = useRef(false);
   const cancelTransientResult = useCallback(
     (clearSurface: boolean) => {
-      if (transientResultTimerRef.current === null) return;
-      clearTimeout(transientResultTimerRef.current);
-      transientResultTimerRef.current = null;
+      if (transientResultTimerRef.current !== null) {
+        clearTimeout(transientResultTimerRef.current);
+        transientResultTimerRef.current = null;
+      }
+      if (!transientResultActiveRef.current) return;
+      transientResultActiveRef.current = false;
       if (clearSurface) setToolJSX(null);
     },
     [setToolJSX],
@@ -5086,9 +5095,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         ),
         shouldHidePromptInput: false,
       });
+      transientResultActiveRef.current = true;
       if (opts?.persistent === true) return;
       transientResultTimerRef.current = setTimeout(() => {
         transientResultTimerRef.current = null;
+        transientResultActiveRef.current = false;
         setToolJSX(null);
       }, 3000);
     },

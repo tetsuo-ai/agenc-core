@@ -6864,6 +6864,48 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("clears a persistent sign-in error on the next prompt submission", async () => {
+    // A timed-out /grok-login is shown persistently (no 3s timer). The next
+    // submission must clear it; before the fix the clear path returned early
+    // when no timer was armed, so the error box outlived the whole session.
+    const { AgenCTuiApp } = await import("./App.js");
+    const { xaiAuthCommands } = await import("../../commands/xai-auth.js");
+    const command = xaiAuthCommands.find((candidate) => candidate.name === "grok-login")!;
+    const execute = vi.spyOn(command, "execute").mockImplementation(async () => ({
+      kind: "error",
+      message: "Timed out waiting for the browser sign-in.",
+    }));
+    const submit = vi.fn(async () => {});
+    const session = { ...createSession(), submit } satisfies AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    resetShellSurfaceProbe();
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async () => {
+          vi.useFakeTimers();
+          try {
+            await providerProbe.promptSubmits.at(-1)!("/grok-login", helpers);
+            await vi.advanceTimersByTimeAsync(4_000);
+            await vi.advanceTimersByTimeAsync(50);
+            expect(providerProbe.messageProps.at(-1)?.toolJSX).toMatchObject({
+              jsx: { props: { children: { props: { children: "Error: Timed out waiting for the browser sign-in." } } } },
+            });
+
+            await providerProbe.promptSubmits.at(-1)!("hello again", helpers);
+            await vi.advanceTimersByTimeAsync(50);
+            expect(providerProbe.messageProps.at(-1)?.toolJSX).toBeNull();
+            expect(submit).toHaveBeenCalledOnce();
+          } finally {
+            vi.useRealTimers();
+          }
+        },
+      );
+    } finally {
+      execute.mockRestore();
+    }
+  });
+
   test("keeps the canonical model menu open after a prior transient result expires", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const dispatcher = await import("../../commands/dispatcher.js");
