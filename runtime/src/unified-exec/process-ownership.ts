@@ -46,3 +46,19 @@ export function assertProcessOwnerAccess(params: {
   }
   return { ok: true };
 }
+
+/**
+ * Enumeration rule (#2477), stricter than the per-id access rule above: a
+ * session sees and bulk-stops only work stamped with its own owner id. An
+ * unowned legacy entry stays addressable by id (backward compat) but is not
+ * presented as another session's work, and a session without an owner id
+ * sees only unowned entries.
+ */
+export function isProcessOwnedBy(params: {
+  readonly entryOwnerId: string | undefined;
+  readonly requestOwnerId: string | undefined;
+}): boolean {
+  const entryOwner = params.entryOwnerId?.trim() ?? "";
+  const requestOwner = params.requestOwnerId?.trim() ?? "";
+  return entryOwner === requestOwner;
+}

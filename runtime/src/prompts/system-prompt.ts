@@ -337,6 +337,12 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
     );
   }
 
+  if (hasShell && enabledTools.has("kill_process")) {
+    items.push(
+      `To stop background work you started, call kill_process with its session_id (session_ids for several, all=true for every session you still have running)${enabledTools.has("list_processes") ? "; list_processes shows which of your sessions are still live" : ""}. A terminated=false result means that session already exited. Never clean up by searching the process table for task filenames or command text and signalling the matches: that also selects AgenC's own CLI and process brokers and ends the session.`,
+    );
+  }
+
   // Stated once here instead of inside every tool result. Per-result frames
   // now carry only a provenance line and the boundary marker (external
   // results keep the full text inline), so this paragraph is what makes the

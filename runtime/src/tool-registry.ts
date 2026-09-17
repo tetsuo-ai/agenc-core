@@ -44,6 +44,7 @@ import { registerBuiltinTool } from "./tools/builtin-provenance.js";
 import { createExecCommandTool } from "./tools/system/exec-command.js";
 import { createWriteStdinTool } from "./tools/system/write-stdin.js";
 import { createKillProcessTool } from "./tools/system/kill-process.js";
+import { createListProcessesTool } from "./tools/system/list-processes.js";
 import { createPlanningTools } from "./tools/system/planning.js";
 import { createAskUserQuestionTool } from "./tools/ask-user-question/tool.js";
 import { createSleepTool } from "./tools/system/sleep.js";
@@ -696,6 +697,10 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
       unifiedExecManager,
     }),
+    createListProcessesTool({
+      cwd: options.workspaceRoot,
+      unifiedExecManager,
+    }),
     createBashTool({
       cwd: options.workspaceRoot,
       ...(options.getSession !== undefined
@@ -872,6 +877,7 @@ export function buildToolRegistry(
         shellToolSurface.execCommand,
         shellToolSurface.writeStdin,
         "kill_process",
+        "list_processes",
       ],
       stringArgumentFields: {
         [shellToolSurface.execCommand]: "cmd",

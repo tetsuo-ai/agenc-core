@@ -20,6 +20,10 @@ import {
   type DetachedProcessRequest,
   type ExecCommandRequest,
   type ExecCommandToolOutput,
+  type ListOwnedProcessesRequest,
+  type OwnedProcessView,
+  type TerminateOwnedProcessesOutcome,
+  type TerminateOwnedProcessesRequest,
   type TerminateProcessRequest,
   type UnifiedExecManagerOptions,
   type UnifiedExecProcessManagerLike,
@@ -31,7 +35,10 @@ import {
   type WriteStdinRequest,
   UnifiedExecError,
 } from "./types.js";
-import { assertProcessOwnerAccess } from "./process-ownership.js";
+import {
+  assertProcessOwnerAccess,
+  isProcessOwnedBy,
+} from "./process-ownership.js";
 import { buildScrubbedSpawnEnv } from "./scrub-env.js";
 import {
   loadPty as loadRequiredPty,
@@ -383,6 +390,18 @@ function backgroundProcessStatus(
   if (entry.exitState === null) return "running";
   if (entry.stopRequested) return "killed";
   return entry.exitState.exitCode === 0 ? "completed" : "failed";
+}
+
+function ownedProcessStatus(entry: ProcessEntry): OwnedProcessView["status"] {
+  if (entry.exitState === null) {
+    return entry.stopRequested ? "stopping" : "running";
+  }
+  return backgroundProcessStatus(entry);
+}
+
+function normalizeOwnerId(ownerId: string | undefined): string | undefined {
+  const trimmed = ownerId?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function makeDeferredExit(): {
@@ -974,6 +993,88 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     enforceOwnerAccess(entry, ownerId);
     this.forceTerminate(entry);
     return { terminated: true };
+  }
+
+  /**
+   * The yielded sessions one owner started (#2477): live ones, plus exited
+   * ones whose final output has not been collected yet. This is the
+   * model-facing recovery inventory. It answers "what of mine is still
+   * running?" from manager-owned identity, so an agent never has to match
+   * task filenames against `/proc/*\/cmdline` — a predicate that also selects
+   * the AgenC CLI and the process brokers, which is how a Terminal-Bench run
+   * killed itself. Another owner's sessions are not listed; a stale or
+   * foreign id is simply absent.
+   */
+  listOwnedProcesses(request: ListOwnedProcessesRequest = {}): OwnedProcessView[] {
+    const ownerId = normalizeOwnerId(request.ownerId);
+    return [...this.processes.values()]
+      .filter(
+        (entry) =>
+          entry.backgrounded &&
+          isProcessOwnedBy({ entryOwnerId: entry.ownerId, requestOwnerId: ownerId }),
+      )
+      .sort((left, right) => left.startedAt - right.startedAt)
+      .map((entry) => this.ownedProcessView(entry));
+  }
+
+  /**
+   * Bulk stop through manager-owned identities (#2477). With `processIds`,
+   * every named live session is ownership-checked *before* any signal is
+   * sent, so a batch that names another owner's session is refused whole
+   * (`owner_denied`) and has no effect; unknown or exited ids report
+   * `terminated: false` like `terminateProcess`. Without `processIds`, only
+   * the owner's own live yielded sessions are stopped — never another
+   * owner's, never an unowned legacy entry, never anything found by scanning
+   * the process table.
+   */
+  terminateOwnedProcesses(
+    request: TerminateOwnedProcessesRequest,
+  ): TerminateOwnedProcessesOutcome {
+    const ownerId = normalizeOwnerId(request.ownerId);
+    if (request.processIds !== undefined) {
+      const results: { sessionId: number; terminated: boolean }[] = [];
+      const targets: ProcessEntry[] = [];
+      for (const processId of new Set(request.processIds)) {
+        const entry = this.processes.get(processId);
+        if (!entry || entry.exitState !== null) {
+          results.push({ sessionId: processId, terminated: false });
+          continue;
+        }
+        enforceOwnerAccess(entry, ownerId);
+        targets.push(entry);
+        results.push({ sessionId: processId, terminated: true });
+      }
+      for (const entry of targets) this.forceTerminate(entry);
+      return { results };
+    }
+    const targets = [...this.processes.values()]
+      .filter(
+        (entry) =>
+          entry.backgrounded &&
+          entry.exitState === null &&
+          isProcessOwnedBy({ entryOwnerId: entry.ownerId, requestOwnerId: ownerId }),
+      )
+      .sort((left, right) => left.startedAt - right.startedAt);
+    for (const entry of targets) this.forceTerminate(entry);
+    return {
+      results: targets.map((entry) => ({
+        sessionId: entry.processId,
+        terminated: true,
+      })),
+    };
+  }
+
+  private ownedProcessView(entry: ProcessEntry): OwnedProcessView {
+    return {
+      sessionId: entry.processId,
+      command: entry.command,
+      cwd: entry.cwd,
+      tty: entry.tty,
+      status: ownedProcessStatus(entry),
+      startedAt: entry.startedAt,
+      ...(entry.endedAt !== undefined ? { endedAt: entry.endedAt } : {}),
+      ...(entry.exitState?.exitCode != null ? { exitCode: entry.exitState.exitCode } : {}),
+    };
   }
 
   /** The owning session's control plane may inspect its root and child work. */

@@ -361,6 +361,7 @@ const LOCAL_PROFILE_TOOL_NAMES = new Set([
   "exec_command",
   "write_stdin",
   "kill_process",
+  "list_processes",
   "FileRead",
   "Edit",
   "MultiEdit",

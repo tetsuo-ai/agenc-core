@@ -478,6 +478,8 @@ describe("tool-registry dynamic and deferred catalog", () => {
     const registeredNames = registry.tools.map((tool) => tool.name);
     expect(registeredNames).toContain("exec_command");
     expect(registeredNames).toContain("write_stdin");
+    expect(registeredNames).toContain("kill_process");
+    expect(registeredNames).toContain("list_processes");
     expect(registeredNames).toContain("system.bash");
     expect(registeredNames).toContain("FileRead");
     expect(registeredNames).toContain("Write");
@@ -520,6 +522,8 @@ describe("tool-registry dynamic and deferred catalog", () => {
       .map((tool) => tool.function.name);
     expect(visibleNames).toContain("exec_command");
     expect(visibleNames).toContain("write_stdin");
+    expect(visibleNames).toContain("kill_process");
+    expect(visibleNames).toContain("list_processes");
     expect(visibleNames).toContain("TodoWrite");
     expect(visibleNames).toContain("EnterPlanMode");
     expect(visibleNames).toContain("ExitPlanMode");
