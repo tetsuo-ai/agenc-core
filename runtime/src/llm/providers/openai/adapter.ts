@@ -1132,10 +1132,15 @@ export class OpenAIProvider implements LLMProvider {
     }
     if (availableOutputTokens >= CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS) {
       request[maxTokenField] = availableOutputTokens;
+      // The pre-admission ceiling matters here too. Admission may already have
+      // fitted the reservation and this method then shrinks it again, so
+      // measuring against metadata.maxTokens would compare the second squeeze
+      // against the result of the first and stay silent through both.
       this.warnOnSqueezedOutputReservation(
         metadata,
         availableOutputTokens,
         contextWindowTokens,
+        requestedOutputTokens,
       );
       return collectChatCompletionsRequestMetadata(request);
     }
