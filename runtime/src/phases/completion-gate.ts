@@ -647,12 +647,21 @@ export async function completionGate(
   ) {
     return settle("verified", "verified_with_tools", toolCallsSinceInjection);
   }
-  // Two runtime-authored facts, never transcript text: the gate asked for
-  // proof, and real work happened since that ask. Scanning messages for the
+  // Runtime-authored facts only, never transcript text: the gate asked for
+  // proof, and the answer carries verified work. Scanning messages for the
   // marker trusted the gate's own prompt and any quotation of it.
+  //
+  // hasCheckedItem is load-bearing. Activity alone is not evidence: an
+  // unrelated file read or a pwd is a successful result, and a file read
+  // carries no exitCode at all, so a turn that only re-asserted the
+  // unavailable item could settle without ever investigating it. Combined
+  // with leftoverIsOnlyUnavailable, which requires no unmet items, this means
+  // the answer has at least one checked item and every checked item is backed
+  // by an associated success.
   if (
     leftoverIsOnlyUnavailable &&
     state.completionGateUnavailablePrompted &&
+    hasCheckedItem &&
     hasSuccessfulResult
   ) {
     return settle(
