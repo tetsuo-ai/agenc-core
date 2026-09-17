@@ -326,39 +326,66 @@ function resultSessionId(
   return typeof id === "number" ? id : undefined;
 }
 
-function associatedResults(
+interface IndexedResult {
+  readonly result: CompletedToolResultRecord;
+  readonly index: number;
+}
+
+function associatedIndexed(
   itemText: string,
   results: readonly CompletedToolResultRecord[],
-): CompletedToolResultRecord[] {
-  const direct = results.filter((result) => isAssociated(itemText, result));
+): IndexedResult[] {
+  const indexed = results.map((result, index) => ({ result, index }));
+  const direct = indexed.filter(({ result }) => isAssociated(itemText, result));
   // An async command is launched by one call and observed by later polls that
   // carry only its session id, so the command text and its output never share
   // a record. Those polls are evidence about the same work.
   const sessions = new Set<number>();
-  for (const result of direct) {
+  for (const { result } of direct) {
     const sessionId = resultSessionId(result);
     if (sessionId !== undefined) sessions.add(sessionId);
   }
   if (sessions.size === 0) return direct;
-  return results.filter((result) => {
+  return indexed.filter(({ result }) => {
     if (isAssociated(itemText, result)) return true;
     const sessionId = resultSessionId(result);
     return sessionId !== undefined && sessions.has(sessionId);
   });
 }
 
+function associatedResults(
+  itemText: string,
+  results: readonly CompletedToolResultRecord[],
+): CompletedToolResultRecord[] {
+  return associatedIndexed(itemText, results).map(({ result }) => result);
+}
+
+/**
+ * Lineage spans the whole turn, the successful observation does not.
+ *
+ * An async launch recorded before the mark is what a later poll refers to, and
+ * a runnable failure anywhere in the turn still counts against the item. The
+ * success itself has to be fresh: docs/reference/cli.md requires an associated
+ * successful result since the latest request, and a pass recorded before a
+ * subsequent source edit does not verify the edited state.
+ */
 function itemHasAssociatedSuccess(
   itemText: string,
   results: readonly CompletedToolResultRecord[],
+  freshFrom: number,
 ): boolean {
-  const related = associatedResults(itemText, results);
-  const lastSuccess = lastMatchingIndex(related, isSuccessfulResult);
-  if (lastSuccess === -1) return false;
-  const lastRunnableFailure = lastMatchingIndex(
-    related,
-    (result) => isRunnableEvidence(result) && !isSuccessfulResult(result),
-  );
-  return lastRunnableFailure === -1 || lastRunnableFailure < lastSuccess;
+  const related = associatedIndexed(itemText, results);
+  const lastSuccess = related
+    .filter((entry) => entry.index >= freshFrom && isSuccessfulResult(entry.result))
+    .at(-1);
+  if (lastSuccess === undefined) return false;
+  const lastFailure = related
+    .filter(
+      (entry) =>
+        isRunnableEvidence(entry.result) && !isSuccessfulResult(entry.result),
+    )
+    .at(-1);
+  return lastFailure === undefined || lastFailure.index < lastSuccess.index;
 }
 
 function itemRanAsCommand(
@@ -382,6 +409,7 @@ function pushBounded(items: string[], text: string): void {
 function classifyChecklist(
   text: string,
   allResults: readonly CompletedToolResultRecord[],
+  freshFrom: number,
 ): {
   hasCheckedItem: boolean;
   hasMalformedItem: boolean;
@@ -399,7 +427,7 @@ function classifyChecklist(
     }
     if (item.mark === "x" || item.mark === "X") {
       hasCheckedItem = true;
-      if (!itemHasAssociatedSuccess(item.text, allResults)) {
+      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom)) {
         pushBounded(unmetItems, item.text);
       }
       continue;
@@ -631,7 +659,11 @@ export async function completionGate(
     return settle("skipped", "deadline_reserve", toolCallsSinceInjection);
   }
   const { hasCheckedItem, hasMalformedItem, unmetItems, unavailableItems } =
-    classifyChecklist(text, state.completedToolResults);
+    classifyChecklist(
+      text,
+      state.completedToolResults,
+      round === 0 ? 0 : state.completionGateToolLedgerMark,
+    );
   const reportedItems = [...unmetItems, ...unavailableItems].slice(
     0,
     COMPLETION_GATE_MAX_UNMET_ITEMS,
