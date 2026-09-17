@@ -309,16 +309,6 @@ function isRunnableEvidence(result: CompletedToolResultRecord): boolean {
   return typeof result.metadata?.exitCode === "number";
 }
 
-function lastMatchingIndex(
-  results: readonly CompletedToolResultRecord[],
-  predicate: (result: CompletedToolResultRecord) => boolean,
-): number {
-  for (let i = results.length - 1; i >= 0; i -= 1) {
-    if (predicate(results[i]!)) return i;
-  }
-  return -1;
-}
-
 function resultSessionId(
   result: CompletedToolResultRecord,
 ): number | undefined {
