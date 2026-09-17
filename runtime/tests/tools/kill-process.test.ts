@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  createKillProcessTool,
-  REMAINING_OWNED_WORK_NOTE,
-} from "./system/kill-process.js";
+import { createKillProcessTool } from "./system/kill-process.js";
 import type {
   OwnedProcessView,
   UnifiedExecProcessManagerLike,
@@ -153,7 +150,9 @@ describe("kill_process recovery through owned identity (#2477)", () => {
       terminated: false,
       note: "no live process with this id (already exited or unknown)",
       owned_live_sessions: [83, 86, 87],
-      owned_live_sessions_note: REMAINING_OWNED_WORK_NOTE,
+      owned_live_sessions_note: expect.stringMatching(
+        /stop them by session_id or with all=true.*Do not search the process table/u,
+      ),
     });
     expect(manager.listOwnedProcesses).toHaveBeenCalledWith({ ownerId: "conv-a" });
   });

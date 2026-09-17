@@ -168,7 +168,8 @@ Legacy `system.*` utilities (not the primary edit surface):
 | --- | --- |
 | `exec_command` | **Canonical** shell (unified-exec) |
 | `write_stdin` | Write to a running unified-exec process |
-| `kill_process` | Kill a managed process |
+| `kill_process` | Stop managed sessions by `session_id`, `session_ids`, or `all: true` (this conversation's own live sessions). Every result lists the caller's remaining live sessions. |
+| `list_processes` | Read-only inventory of the sessions this conversation started (`status: live` by default, `all` to include exited-but-uncollected ones). Never another conversation's work; never a process-table scan. |
 | `system.bash` | Direct/shell fallback — **deferred** by default; prefer `exec_command` |
 | `PowerShell` | Registered only when `pwsh`/`powershell` is on `PATH` **and** a unified-exec manager is available; **deferred** |
 
@@ -187,6 +188,55 @@ or `sandbox_mode = "danger-full-access"`): a detached process escapes every
 containment a sandbox lease relies on, so under a sandbox the tool refuses it
 and points at `yield_time_ms`. It cannot be combined with `tty`, and
 `kill_process` does not know detached processes; stop one with `kill <pid>`.
+A detached service is not a managed session handle: it does not appear in
+`list_processes`, and `kill_process all: true` does not reach it.
+
+#### Recovering background work
+
+Recovery from hung or leftover work goes through the identities the manager
+already owns, not through the process table. Every yielded `exec_command`
+returns a `session_id` stamped with the owning conversation; `list_processes`
+enumerates that conversation's sessions and their state (`running`,
+`stopping`, `completed`, `failed`, `killed`); `kill_process` stops them by
+`session_id`, by `session_ids`, or with `all: true`, and every `kill_process`
+result carries `owned_live_sessions` so a `terminated: false` (the session had
+already exited — a benign race, not an error) points straight at the work
+that remains. The rules the manager enforces, shared by the single-id and
+bulk paths:
+
+- Owned-only: a conversation sees and bulk-stops only sessions it started.
+  Another conversation's session is refused with `owner_denied`; a batch of
+  `session_ids` is ownership-checked in full before any signal is sent, so a
+  refused batch has no effect.
+- Stale ids are harmless: an unknown or already-exited id reports
+  `terminated: false`; no signal is sent anywhere.
+- No command-line matching: nothing in this path reads `/proc`, `ps`, or a
+  command string to find a process. This matters because a filename or task
+  predicate applied to the process table also selects AgenC's own CLI (which
+  once carried the prompt in its argv) and its process brokers (which once
+  carried the shell payload in theirs). A Terminal-Bench run ended exactly
+  that way: the model's cleanup SIGKILLed the CLI and two brokers along with
+  its work ([#2477](https://github.com/tetsuo-ai/agenc-core/issues/2477)).
+  [#2494](https://github.com/tetsuo-ai/agenc-core/pull/2494) removed those
+  argv collisions (prompt over stdin, broker bootstrap over a private FD);
+  the managed path above removes the reason to scan at all.
+
+**What this does not guarantee.** Argv hygiene and managed cancellation are
+reliability mitigations. They are not an OS-enforced boundary. Under
+`danger-full-access` (and any mode where the agent's shell runs as the same
+UID as, or as root over, the AgenC process), arbitrary shell or Python the
+model runs can still `kill -9` the CLI, the daemon, or a process broker;
+`PR_SET_CHILD_SUBREAPER`, cgroups, `setsid`, `PR_SET_PDEATHSIG`, a PID
+denylist, command-string filters, and prompt instructions do not change who
+is permitted to signal whom. Preventing that requires OS-enforced separation
+of the controller from the workload (distinct users or namespaces with an
+explicit permission model), which AgenC does not currently provide; see
+[design/fail-closed-sandbox-execution.md](../design/fail-closed-sandbox-execution.md)
+for what the sandbox does isolate. When a broker is killed before it
+publishes cleanup proof, the run keeps its fail-closed diagnostic (`Linux
+process containment broker exited without cleanup proof` / `could not verify
+descendant process cleanup`) and closes execution authority; that error is
+deliberately never suppressed or reported as a successful cleanup.
 
 ### Search / discovery / code intel
 
@@ -369,7 +419,7 @@ Exact visibility is request-scoped and config-dependent. As coded in
 `buildToolRegistry` defaults:
 
 - **Typically advertised early:** `exec_command`, `write_stdin`, `kill_process`,
-  `FileRead`, `Edit`, `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`,
+  `list_processes`, `FileRead`, `Edit`, `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`,
   `AskUserQuestion`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`,
   `system.searchTools`, plus non-deferred model-facing tools (web, multi-agent
   v2, Skill, `report_agent_job_result`, Imagine when registered). Task* /
@@ -619,7 +669,7 @@ Native helpers:
 | --- | --- | --- |
 | `agenc-linux-sandbox` | `runtime/bin/agenc-linux-sandbox` → `dist/sandbox/linux-launcher/main.js` | Policy helper. Builds bwrap argv, or falls back to `agenc-landlock-run`. Must sit outside the writable workspace. Override path: `AGENC_LINUX_SANDBOX_EXE`. |
 | `agenc-landlock-run` | `runtime/native/agenc-landlock-run.c` | Self-restrict then exec. `--ro` / `--rw` / `--probe` / `--seccomp <fd>`. Exit 125 on failure. Same seccomp network filter as bwrap. Cannot express deny-inside-allow (writable project with read-only `.git`). |
-| `agenc-process-broker` | `runtime/native/agenc-process-broker.c` | Linux **lifecycle** subreaper (`PR_SET_CHILD_SUBREAPER`). Not filesystem isolation. Preferred tree-kill path is cgroup-v2; this is the fallback. |
+| `agenc-process-broker` | `runtime/native/agenc-process-broker.c` | Linux **lifecycle** subreaper (`PR_SET_CHILD_SUBREAPER`). Not filesystem isolation, and not a signal-permission boundary: it manages descendant lifetime and proves cleanup; it cannot stop a same-UID process from signalling the broker or the CLI (see [Recovering background work](#recovering-background-work)). Receives the target program/argv/env over a private bootstrap FD, not its command line. Preferred tree-kill path is cgroup-v2; this is the fallback. |
 | `agenc-process-job-broker.exe` | `runtime/native/agenc-process-job-broker.cs` | Windows **lifecycle** Job Object (`KILL_ON_JOB_CLOSE`). Not a restricted-token sandbox. |
 
 `npm run test:fast` typechecks these C/C# sources only. Use the kernel or

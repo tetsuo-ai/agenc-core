@@ -33,7 +33,7 @@ export interface KillProcessToolConfig {
 }
 
 /** Guidance attached whenever owned live sessions remain after a kill. */
-export const REMAINING_OWNED_WORK_NOTE =
+const REMAINING_OWNED_WORK_NOTE =
   "these are the sessions this conversation started that are still running; stop them by session_id or with all=true. Do not search the process table for task filenames or command text: that also matches AgenC's own CLI and process brokers.";
 
 function asNumber(value: unknown): number | undefined {
@@ -63,7 +63,12 @@ function selectTargets(
     args.session_ids !== undefined,
     args.all !== undefined,
   ].filter(Boolean).length;
-  if (provided !== 1) {
+  if (provided === 0) {
+    return {
+      error: "session_id must be a number (or pass session_ids, or all=true)",
+    };
+  }
+  if (provided > 1) {
     return {
       error: "pass exactly one of session_id, session_ids, or all=true",
     };

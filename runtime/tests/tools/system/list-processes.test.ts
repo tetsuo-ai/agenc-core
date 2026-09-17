@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  createListProcessesTool,
-  LIST_PROCESSES_SCOPE_NOTE,
-} from "../../../src/tools/system/list-processes.js";
+import { createListProcessesTool } from "../../../src/tools/system/list-processes.js";
 import type { OwnedProcessView } from "../../../src/unified-exec/types.js";
 
 function view(
@@ -55,7 +52,8 @@ describe("list_processes tool (#2477)", () => {
     expect(result.isError).toBeUndefined();
     const parsed = JSON.parse(String(result.content));
     expect(parsed.live_count).toBe(2);
-    expect(parsed.note).toBe(LIST_PROCESSES_SCOPE_NOTE);
+    expect(parsed.note).toMatch(/Only sessions this conversation started/u);
+    expect(parsed.note).toMatch(/rather than matching command text in the process table/u);
     expect(parsed.sessions).toEqual([
       {
         session_id: 83,

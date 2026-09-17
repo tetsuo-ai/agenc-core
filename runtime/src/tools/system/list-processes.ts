@@ -28,10 +28,10 @@ export interface ListProcessesToolConfig {
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
 }
 
-export const LIST_PROCESSES_SCOPE_NOTE =
+const LIST_PROCESSES_SCOPE_NOTE =
   "Only sessions this conversation started with exec_command are listed; another conversation's sessions and detached services (detach: true) are not. Stop live sessions with kill_process by session_id or all=true rather than matching command text in the process table, which also selects AgenC's own CLI and process brokers.";
 
-export interface ListProcessesSessionEntry {
+interface ListProcessesSessionEntry {
   readonly session_id: number;
   readonly status: OwnedProcessView["status"];
   readonly command: string;
@@ -42,7 +42,7 @@ export interface ListProcessesSessionEntry {
   readonly exit_code?: number;
 }
 
-export function formatOwnedProcessView(view: OwnedProcessView): ListProcessesSessionEntry {
+function formatOwnedProcessView(view: OwnedProcessView): ListProcessesSessionEntry {
   return {
     session_id: view.sessionId,
     status: view.status,

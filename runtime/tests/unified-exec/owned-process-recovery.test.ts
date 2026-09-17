@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { UnifiedExecProcessManager } from "./process-manager.js";
 import { UnifiedExecError } from "./types.js";
@@ -165,6 +166,33 @@ describe.skipIf(process.platform === "win32")("owned process recovery (#2477)", 
     const immediate = statusOf(processes, "conv-agent", stubborn);
     expect(["stopping", "killed"]).toContain(immediate);
     await expect.poll(() => statusOf(processes, "conv-agent", stubborn), { timeout: 5_000 }).toBe("killed");
+  }, 15_000);
+
+  /**
+   * The residual boundary, stated as a test so the docs cannot drift: the
+   * ownership rules above govern the manager's API only. A command the
+   * model runs without an OS sandbox is an ordinary same-UID process and can
+   * signal anything the UID may signal — including, in a real session, the
+   * AgenC CLI, the daemon, and the process brokers. The stand-in here is a
+   * disposable `sleep` owned by this test; nothing else is signalled.
+   */
+  it("does not prevent a full-access command from signalling a same-UID process outside the manager", async () => {
+    const processes = manager();
+    const standIn = spawn("sleep", ["30"], { stdio: "ignore" });
+    const standInExit = new Promise<string | null>((resolveExit) => {
+      standIn.once("exit", (_code, signal) => resolveExit(signal));
+    });
+    try {
+      const result = await processes.execCommand({
+        cmd: `kill -TERM ${standIn.pid}`,
+        yield_time_ms: 250,
+        ownerId: "conv-agent",
+      });
+      expect(result.exitCode).toBe(0);
+      expect(await standInExit).toBe("SIGTERM");
+    } finally {
+      if (standIn.exitCode === null && standIn.signalCode === null) standIn.kill("SIGKILL");
+    }
   }, 15_000);
 
   it("keeps unowned legacy entries addressable by id but out of every owner's inventory", async () => {
