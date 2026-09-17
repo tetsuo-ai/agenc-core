@@ -420,6 +420,16 @@ history state uncertain (a failed intent or commit, an interrupted
 recovery, an abort) still end the turn at once. `compaction.emergency_mode`
 accepts `always` (default) or `never`; `never` disables the model-free tier
 only, on both paths.
+
+Before any of that, a chat-completions provider that has to shrink the
+output reservation to fit the estimated prompt reports it once the
+reservation falls below half of the requested maximum: an
+`output_reservation_squeezed` warning names the granted and requested
+output tokens, the estimated prompt and the context window. It repeats
+each time the remaining reservation halves and re-arms once a request fits
+again, so a long tool loop that is walking toward the context window is
+visible in the transcript and the rollout before the provider refuses a
+request. The fit itself is unchanged.
 `stream_watchdog_timeout_ms` defaults to `600000` (ten
 minutes of provider silence): the runtime warns at half that time and aborts
 the stream with a retryable `stream_idle` error at the deadline. Set it to

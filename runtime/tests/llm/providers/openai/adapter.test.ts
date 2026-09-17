@@ -877,6 +877,83 @@ describe("OpenAIProvider", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  // #2520: on a long tool loop the output reservation decayed from 131,072 to
+  // 1,256 tokens over ~110 dispatches with nothing in the rollout to show for
+  // it. The squeeze itself is unchanged; below half of the requested maximum
+  // it is reported, first when it crosses the fraction and then as it halves.
+  describe("output reservation squeeze warning", () => {
+    const CONTEXT_WINDOW = 950_000;
+    const REQUESTED_OUTPUT = 131_072;
+
+    function squeezeExercise() {
+      const emitWarning = vi.fn();
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+        new Response(
+          JSON.stringify({
+            id: "chatcmpl_squeezed",
+            model: "glm-5.3",
+            choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "local-token",
+        model: "glm-5.3",
+        baseURL: "http://127.0.0.1:8000/v1",
+        useResponsesApi: false,
+        fetchImpl,
+        emitWarning,
+      });
+      const dispatch = async (accountedInputTokens: number): Promise<number> => {
+        await provider.chat([{ role: "user", content: "hello" }], {
+          accountedInputTokens,
+          maxOutputTokens: REQUESTED_OUTPUT,
+          contextWindowTokens: CONTEXT_WINDOW,
+        });
+        const body = JSON.parse(String(fetchImpl.mock.calls.at(-1)?.[1]?.body)) as Record<string, unknown>;
+        return body.max_tokens as number;
+      };
+      const squeezeWarnings = (): string[] =>
+        emitWarning.mock.calls.flatMap(([warning]) =>
+          warning.cause === "output_reservation_squeezed" ? [warning.message as string] : []);
+      return { dispatch, squeezeWarnings };
+    }
+
+    test("warns when the squeeze crosses half of the requested output, then again as it halves, without changing the fit", async () => {
+      const { dispatch, squeezeWarnings } = squeezeExercise();
+      // The incident's own decay, as implied input estimates against a 950k window.
+      expect(await dispatch(818_000)).toBe(130_976);
+      expect(squeezeWarnings()).toEqual([]);
+      expect(await dispatch(908_202)).toBe(40_774);
+      expect(squeezeWarnings()).toEqual([
+        expect.stringContaining("reduced the output reservation to 40774 of the requested 131072 tokens (31%)"),
+      ]);
+      expect(await dispatch(927_892)).toBe(21_084);
+      expect(squeezeWarnings()).toHaveLength(1);
+      expect(await dispatch(944_618)).toBe(4_358);
+      expect(await dispatch(947_720)).toBe(1_256);
+      expect(squeezeWarnings()).toEqual([
+        expect.stringContaining("40774 of the requested 131072 tokens (31%)"),
+        expect.stringContaining("4358 of the requested 131072 tokens (3%)"),
+        expect.stringContaining("1256 of the requested 131072 tokens (0%)"),
+      ]);
+      expect(squeezeWarnings()[0]).toContain(
+        "the estimated prompt (908202) leaves that much of the 950000 token context window after the 1024 token safety buffer",
+      );
+    });
+
+    test("re-arms once a request fits above the fraction again", async () => {
+      const { dispatch, squeezeWarnings } = squeezeExercise();
+      await dispatch(908_202);
+      expect(squeezeWarnings()).toHaveLength(1);
+      // Compaction restored headroom: the next request needs no squeeze at all.
+      expect(await dispatch(100_000)).toBe(REQUESTED_OUTPUT);
+      await dispatch(908_202);
+      expect(squeezeWarnings()).toHaveLength(2);
+    });
+  });
+
   test("refreshes oauth credentials after a 401 and retries once", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
