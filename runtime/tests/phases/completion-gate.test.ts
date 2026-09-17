@@ -789,4 +789,36 @@ describe("completionGate", () => {
       expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" }),
     ]);
   });
+
+  test("does not settle partial for [-] until an unavailable investigation ran", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass\n- [ ] output file exists", 2);
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "unmet_items" }),
+    ]);
+    state.transition = undefined;
+    state.assistantMessages = answer("- [x] tests pass\n- [-] official oracle is unavailable");
+    state.completedToolResults.push(toolResult("c3", { content: ASSOCIATED_SUCCESS }));
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "unmet_items" }),
+      expect.objectContaining({ outcome: "injected", reason: "unavailable_unproven" }),
+    ]);
+    expect(state.completionGateSettled).toBe(false);
+  });
+
+  test("an unrelated tool saying done does not verify a numerical claim", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] Numerical accuracy verified.", 1);
+    state.completedToolResults.push(toolResult("echo-done", {
+      content: "done",
+      metadata: { exitCode: 0 },
+    }));
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)[0]).toMatchObject({
+      outcome: "injected",
+      reason: "unmet_items",
+    });
+  });
 });

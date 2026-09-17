@@ -198,7 +198,7 @@ describe("completion gate in the turn loop", () => {
     const { registry, execute } = queuedToolRegistry([
       { content: "Wrote /app/out.txt", isError: false },
       { content: "Verification command failed", isError: true },
-      { content: "done\n3 passed", isError: false },
+      { content: "/app/out.txt contains done; pytest 3 passed", isError: false },
     ]);
     const { session, events, state } = headlessSession(provider, true, registry);
     const phases = await collect(session);
@@ -228,7 +228,7 @@ describe("completion gate in the turn loop", () => {
       expect.objectContaining({
         toolCallId: "verify-failed", content: expect.stringContaining("Verification command failed"),
       }),
-      expect.objectContaining({ toolCallId: "verify-success", content: expect.stringContaining("done\n3 passed") }),
+      expect.objectContaining({ toolCallId: "verify-success", content: expect.stringContaining("/app/out.txt contains done; pytest 3 passed") }),
     ]);
     const injections = state.history.filter(
       (message) => message.role === "user" && String(message.content).includes("<completion_gate"),
