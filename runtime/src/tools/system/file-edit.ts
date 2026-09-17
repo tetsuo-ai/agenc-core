@@ -53,9 +53,8 @@ import {
 } from "./filesystem.js";
 import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
-  agentNamespacePathHint,
-  denyAgentNamespacePath,
-  isAgentNamespacePath,
+  FILE_TOOL_PATH_SCHEMA,
+  FILE_TOOL_PATH_USAGE,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
@@ -134,7 +133,7 @@ const FILE_EDIT_DESCRIPTION = `Performs exact string replacements in files.
 
 Usage:
 - You must use your \`FileRead\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- Use workspace-relative paths like \`game.py\` unless the user provided a real absolute path. Do not use \`/root/...\`; \`/root\` is the agent namespace, not the filesystem.
+- ${FILE_TOOL_PATH_USAGE}
 - When editing text from FileRead tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
@@ -146,7 +145,7 @@ const FILE_MULTI_EDIT_DESCRIPTION = `Performs multiple exact string replacements
 Usage:
 - Use this tool when you need to make several coordinated edits to the same file.
 - You must use your \`FileRead\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- Use workspace-relative paths like \`game.py\` unless the user provided a real absolute path. Do not use \`/root/...\`; \`/root\` is the agent namespace, not the filesystem.
+- ${FILE_TOOL_PATH_USAGE}
 - Each edit is applied in order to the result of the previous edit.
 - The file is only written after every edit validates successfully. If any edit fails, the file is left unchanged.
 - The edit will FAIL if any \`old_string\` is not unique in the file at the time that edit is applied. Either provide more surrounding context or set \`replace_all\` to true for that edit.
@@ -857,7 +856,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         file_path: {
           type: "string",
           description:
-            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
+            FILE_TOOL_PATH_SCHEMA,
         },
         old_string: {
           type: "string",
@@ -888,9 +887,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       }
       const cwd =
         asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
-      if (isAgentNamespacePath(filePath)) {
-        return denyAgentNamespacePath(filePath, cwd);
-      }
       return checkToolPathPermission({
         toolName: FILE_EDIT_TOOL_NAME,
         input: input as Record<string, unknown>,
@@ -925,12 +921,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         asNonEmptyString(rawArgs.cwd) ??
         config.allowedPaths[0] ??
         process.cwd();
-      if (isAgentNamespacePath(file_path)) {
-        return preMutationErrorResult(
-          agentNamespacePathHint(file_path, cwd),
-          FILE_EDIT_TOOL_NAME,
-        );
-      }
       const candidatePath = isAbsolute(file_path)
         ? file_path
         : resolve(cwd, file_path);
@@ -1213,7 +1203,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         file_path: {
           type: "string",
           description:
-            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
+            FILE_TOOL_PATH_SCHEMA,
         },
         edits: {
           type: "array",
@@ -1258,9 +1248,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       const cwd =
         asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
       const firstEdit = Array.isArray(args.edits) ? args.edits[0] : undefined;
-      if (isAgentNamespacePath(filePath)) {
-        return denyAgentNamespacePath(filePath, cwd);
-      }
       const firstOldString =
         firstEdit !== null &&
         typeof firstEdit === "object" &&
@@ -1310,12 +1297,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         asNonEmptyString(rawArgs.cwd) ??
         config.allowedPaths[0] ??
         process.cwd();
-      if (isAgentNamespacePath(file_path)) {
-        return preMutationErrorResult(
-          agentNamespacePathHint(file_path, cwd),
-          FILE_MULTI_EDIT_TOOL_NAME,
-        );
-      }
       const candidatePath = isAbsolute(file_path)
         ? file_path
         : resolve(cwd, file_path);

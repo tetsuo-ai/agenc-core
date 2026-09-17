@@ -426,17 +426,38 @@ describe("FileRead tool", () => {
     expect(events).toEqual([file]);
   });
 
-  test("rejects agent namespace paths with a workspace-relative hint", async () => {
+  test("does not treat /root filesystem paths as an agent namespace", async () => {
     const tool = createFileReadTool({ allowedPaths: [root] });
+    const filePath = "/root/data/training_examples.json";
+    const evaluatorContext = {
+      getAppState() {
+        return {
+          toolPermissionContext: createEmptyToolPermissionContext(),
+          denialTracking: { consecutiveDenials: 0, totalDenials: 0 },
+          autoModeActive: false,
+        };
+      },
+      session: {},
+    } as ToolEvaluatorContext;
+
+    const permission = tool.checkPermissions?.(
+      { file_path: filePath, cwd: root },
+      evaluatorContext,
+    );
+    expect(permission?.decisionReason).not.toEqual(
+      expect.objectContaining({ reason: "agent_namespace_path" }),
+    );
 
     const result = await tool.execute({
-      file_path: "/root/game.py",
+      file_path: filePath,
       cwd: root,
     });
 
     expect(result.isError).toBe(true);
-    expect(String(result.content)).toContain("agent namespace");
-    expect(String(result.content)).toContain('"game.py"');
+    expect(String(result.content)).not.toContain("agent namespace");
+    expect(String(result.content)).not.toContain(
+      '"data/training_examples.json"',
+    );
   });
 
   test("rejects a file that exceeds the token budget", async () => {
@@ -883,7 +904,9 @@ describe("FileRead tool", () => {
         __agencSessionId: sessionId,
         __agencSessionIdSig: signSessionId(sessionId),
         [SESSION_AGENC_HOME_ARG]: agencHome,
-        ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId })),
+        ...signedSessionPlanFileArgs(
+          planFileAuthorityFromContext({ agencHome, sessionId }),
+        ),
       });
 
       expect(result.isError).toBeUndefined();

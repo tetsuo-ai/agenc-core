@@ -84,15 +84,15 @@ describe("createTuiTools — pre-seed canonicalization", () => {
     );
   });
 
-  test("file tool-use cards call out agent namespace paths", () => {
+  test("file tool-use cards show /root paths as filesystem paths", () => {
     const write = createTuiTool("Write");
     const read = createTuiTool("FileRead");
 
     expect(
       write.renderToolUseMessage({ file_path: "/root/game.py", content: "x" }),
-    ).toBe("/root/game.py (agent namespace, not a file path)");
+    ).toBe("/root/game.py");
     expect(read.renderToolUseMessage({ file_path: "/root/game.py" })).toBe(
-      "/root/game.py (agent namespace, not a file path)",
+      "/root/game.py",
     );
   });
 

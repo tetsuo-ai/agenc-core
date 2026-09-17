@@ -100,7 +100,9 @@ describe("Write tool", () => {
       const result = await tool.execute({
         file_path: planPath,
         content: "# Plan\n\n- [ ] Fix plan file writes\n",
-        ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId })),
+        ...signedSessionPlanFileArgs(
+          planFileAuthorityFromContext({ agencHome, sessionId }),
+        ),
         __agencSessionId: sessionId,
         __agencSessionIdSig: signSessionId(sessionId),
         [SESSION_AGENC_HOME_ARG]: agencHome,
@@ -400,7 +402,10 @@ describe("Write tool", () => {
 
     /** A Write whose transaction faults right after the bytes land. */
     function writeToolFaultingAfterWrite(
-      hooks: Omit<Parameters<typeof createFileWriteTool>[0], "allowedPaths" | "__testWrite"> = {},
+      hooks: Omit<
+        Parameters<typeof createFileWriteTool>[0],
+        "allowedPaths" | "__testWrite"
+      > = {},
     ) {
       return createFileWriteTool({
         allowedPaths: [root],
@@ -427,7 +432,9 @@ describe("Write tool", () => {
         disposition: "confirmed_no_effect",
         evidenceRef: "tool:Write:rollback_verified",
       });
-      expect(String(result.content)).toContain("restored to its original contents");
+      expect(String(result.content)).toContain(
+        "restored to its original contents",
+      );
       await expect(readFile(target, "utf8")).resolves.toBe("original\n");
     });
 
@@ -694,20 +701,20 @@ describe("Write tool", () => {
     }
   });
 
-  test("rejects agent namespace paths with a workspace-relative hint", async () => {
+  test("does not treat /root filesystem paths as an agent namespace", async () => {
     const tool = createFileWriteTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
-      file_path: "/root/game.py",
+      file_path: "/root/data/new.txt",
       content: "print('hi')\n",
       cwd: root,
       __agencSessionId: sessionId,
     });
 
     expect(result.isError).toBe(true);
-    expect(String(result.content)).toContain("agent namespace");
-    expect(String(result.content)).toContain('"game.py"');
-    await expect(stat(join(root, "game.py"))).rejects.toThrow();
+    expect(String(result.content)).not.toContain("agent namespace");
+    expect(String(result.content)).not.toContain('"data/new.txt"');
+    await expect(stat(join(root, "data", "new.txt"))).rejects.toThrow();
   });
 
   test("error results are plain-text strings, not JSON-wrapped envelopes", async () => {

@@ -144,8 +144,12 @@ describe("Edit tool", () => {
     });
     expect(result.isError).toBe(true);
     expectPreMutationNoEffect(result);
-    expect(result.effectDisposition).toMatchObject({ evidenceRef: "tool:Edit:rollback_verified" });
-    expect(String(result.content)).toContain("restored to its original contents");
+    expect(result.effectDisposition).toMatchObject({
+      evidenceRef: "tool:Edit:rollback_verified",
+    });
+    expect(String(result.content)).toContain(
+      "restored to its original contents",
+    );
     await expect(readFile(file, "utf8")).resolves.toBe("alpha\nbeta\n");
   });
 
@@ -166,7 +170,9 @@ describe("Edit tool", () => {
       });
       expect(result.isError).toBe(true);
       expectPreMutationNoEffect(result);
-      expect(result.effectDisposition).toMatchObject({ evidenceRef: "tool:MultiEdit:original_state_verified" });
+      expect(result.effectDisposition).toMatchObject({
+        evidenceRef: "tool:MultiEdit:original_state_verified",
+      });
       // The create path writes through a plain Node callback, not the bound
       // helper, so the errno is present but the helper's uid/mode context is not.
       expect(String(result.content)).toContain("EACCES");
@@ -193,10 +199,10 @@ describe("Edit tool", () => {
     });
   });
 
-  test("rejects agent namespace paths with a workspace-relative hint", async () => {
+  test("does not treat /root filesystem paths as an agent namespace", async () => {
     const edit = createFileEditTool({ allowedPaths: [root] });
     const editResult = await edit.execute({
-      file_path: "/root/game.py",
+      file_path: "/root/data/input.json",
       old_string: "alpha",
       new_string: "beta",
       cwd: root,
@@ -204,20 +210,20 @@ describe("Edit tool", () => {
     });
 
     expect(editResult.isError).toBe(true);
-    expect(String(editResult.content)).toContain("agent namespace");
-    expect(String(editResult.content)).toContain('"game.py"');
+    expect(String(editResult.content)).not.toContain("agent namespace");
+    expect(String(editResult.content)).not.toContain('"data/input.json"');
 
     const multi = createFileMultiEditTool({ allowedPaths: [root] });
     const multiResult = await multi.execute({
-      file_path: "/root/game.py",
+      file_path: "/root/data/input.json",
       edits: [{ old_string: "alpha", new_string: "beta" }],
       cwd: root,
       [SESSION_ID_ARG]: SESSION_ID,
     });
 
     expect(multiResult.isError).toBe(true);
-    expect(String(multiResult.content)).toContain("agent namespace");
-    expect(String(multiResult.content)).toContain('"game.py"');
+    expect(String(multiResult.content)).not.toContain("agent namespace");
+    expect(String(multiResult.content)).not.toContain('"data/input.json"');
   });
 
   test("successful edit on a previously-read file", async () => {
@@ -283,7 +289,9 @@ describe("Edit tool", () => {
         file_path: planPath,
         old_string: "Verify allowlist",
         new_string: "Verify plan edits",
-        ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId: SESSION_ID })),
+        ...signedSessionPlanFileArgs(
+          planFileAuthorityFromContext({ agencHome, sessionId: SESSION_ID }),
+        ),
         [SESSION_ID_ARG]: SESSION_ID,
         [SESSION_ID_SIG_ARG]: signSessionId(SESSION_ID),
         [SESSION_AGENC_HOME_ARG]: agencHome,

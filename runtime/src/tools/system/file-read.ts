@@ -60,9 +60,8 @@ import {
   withSignedAllowedRoots,
 } from "./filesystem.js";
 import {
-  agentNamespacePathHint,
-  denyAgentNamespacePath,
-  isAgentNamespacePath,
+  FILE_TOOL_PATH_SCHEMA,
+  FILE_TOOL_PATH_USAGE,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
@@ -296,7 +295,7 @@ const FILE_READ_DESCRIPTION = `Reads a file from the local filesystem. You can a
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- Use workspace-relative paths like 'game.py' unless the user provided a real absolute path. Do not use '/root/...'; '/root' is the agent namespace, not the filesystem.
+- ${FILE_TOOL_PATH_USAGE}
 - By default, it reads up to ${DEFAULT_LINE_LIMIT} lines starting from the beginning of the file
 - Output is capped at ${DEFAULT_MAX_OUTPUT_TOKENS} tokens; a read that would exceed the cap returns an error instead of content, so for large files pass offset and limit.
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
@@ -605,9 +604,6 @@ async function resolveAndCheck(
     typeof args.cwd === "string" && args.cwd.trim().length > 0
       ? args.cwd
       : (config.allowedPaths[0] ?? process.cwd());
-  if (isAgentNamespacePath(rawPath)) {
-    return { err: errorResult(agentNamespacePathHint(rawPath, cwdArg)) };
-  }
   const absolute = isAbsolute(rawPath) ? rawPath : resolve(cwdArg, rawPath);
   const safe = await safePathAllowingSessionPlanFile(
     absolute,
@@ -1492,8 +1488,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       properties: {
         file_path: {
           type: "string",
-          description:
-            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
+          description: FILE_TOOL_PATH_SCHEMA,
         },
         offset: {
           anyOf: [
@@ -1532,9 +1527,6 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         typeof args.cwd === "string" && args.cwd.length > 0
           ? args.cwd
           : (config.allowedPaths[0] ?? process.cwd());
-      if (isAgentNamespacePath(filePath)) {
-        return denyAgentNamespacePath(filePath, cwd);
-      }
       const decision = checkToolPathPermission({
         toolName: FILE_READ_TOOL_NAME,
         input: input as Record<string, unknown>,
@@ -1604,7 +1596,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           !readOnlyDelegationReadPathAllowed(rawArgs, resolved.absolute) ||
           !readOnlyDelegationReadPathAllowed(rawArgs, resolved.canonical)
         ) {
-          throw new Error("Access denied: file is outside delegated read authority");
+          throw new Error(
+            "Access denied: file is outside delegated read authority",
+          );
         }
       };
       const finalizeRead = async (
