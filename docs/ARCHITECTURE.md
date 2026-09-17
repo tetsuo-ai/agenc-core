@@ -367,7 +367,7 @@ phase machine. Module files under `runtime/src/phases/` own the heavy steps;
 | 2   | `streamModel`        | `phases/stream-model.ts`         | Admit one physical sample; stream the provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
 | 3   | `postSampleRecovery` | `phases/post-sample-recovery.ts` | Run recovery ladder on stream outcome / withheld errors                                           |
 | 4   | `continuationNudge`  | `phases/continuation-nudge.ts`   | Nudge re-entry when the model stopped without required follow-up                                  |
-| 4b  | `completionGate`     | `phases/completion-gate.ts`      | Non-interactive sessions only: hold the first tool-free final answer, inject a durable verification request, accept once a tool-backed answer arrives or rounds run out |
+| 4b  | `completionGate`     | `phases/completion-gate.ts`      | Non-interactive sessions only: hold the first tool-free final answer, inject a durable verification request, accept once each checked item has associated tool evidence, settle `partial` for evidenced unavailable checks, or `exhausted` at the round cap |
 | 5   | `executeTools`       | `phases/execute-tools.ts`        | Drain / finalize tool dispatch → tool results                                                     |
 | 6   | `commit`             | `phases/commit.ts`               | Terminal commit for the iteration; may re-enter via stop-hooks                                    |
 

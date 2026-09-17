@@ -64,12 +64,16 @@ function mkState(overrides?: Partial<TurnState>): TurnState {
   } as unknown as TurnState;
 }
 
+const ASSOCIATED_SUCCESS = "pytest tests pass 3 passed; checked; built";
+
 /** A state after one gate injection whose next answer is `text`, with `tools` completed calls in total. */
 function laterAnswer(text: string, tools: number): TurnState {
   return mkState({
     completionGateRound: 1,
     completionGateToolLedgerMark: 1,
-    completedToolResults: Array.from({ length: tools }, (_, i) => toolResult(`c${i + 1}`)),
+    completedToolResults: Array.from({ length: tools }, (_, i) =>
+      toolResult(`c${i + 1}`, i === 0 ? undefined : { content: ASSOCIATED_SUCCESS }),
+    ),
     assistantMessages: answer(text),
   } as Partial<TurnState>);
 }
@@ -228,6 +232,15 @@ describe("buildCompletionGateMessage", () => {
       unmetItems: ["output file exists"],
     });
     expect(unmet).toContain('- "output file exists"');
+    const unavailable = buildCompletionGateMessage({
+      round: 2,
+      maxRounds: 3,
+      taskText: "t",
+      reason: "unavailable_unproven",
+      unmetItems: ["official oracle is unavailable"],
+    });
+    expect(unavailable).toContain("not itself evidence");
+    expect(unavailable).toContain('- "official oracle is unavailable"');
   });
 
   test.each([
@@ -419,18 +432,18 @@ describe("completionGate", () => {
   });
 
   test.each([
-    ["unchecked", "- [x] tests pass\n- [ ] output file exists", "output file exists"],
-    ["blocked", "- [x] tests pass\n- [-] GPU test cannot run here", "GPU test cannot run here"],
-    ["only blocked", "- [-] GPU test cannot run here", "GPU test cannot run here"],
-    ["unchecked after a list-scoped fence", "- [x] checked\n\n    ```\n- [ ] unmet", "unmet"],
-  ])("does not verify a checklist with %s requirements", async (_name, text, unmetItem) => {
+    ["unchecked", "- [x] tests pass\n- [ ] output file exists", "unmet_items", "output file exists"],
+    ["unchecked after a list-scoped fence", "- [x] checked\n\n    ```\n- [ ] unmet", "unmet_items", "unmet"],
+    ["blocked", "- [x] tests pass\n- [-] GPU test cannot run here", "unavailable_unproven", "GPU test cannot run here"],
+    ["only blocked", "- [-] GPU test cannot run here", "unavailable_unproven", "GPU test cannot run here"],
+  ])("does not verify a checklist with %s requirements", async (_name, text, reason, unmetItem) => {
     const session = mkSession();
     const state = laterAnswer(text, 2);
     await completionGate(state, mkCtx(), session);
     expect(state.completionGateSettled).toBe(false);
     expect(state.transition).toEqual({ reason: "completion_gate" });
     expect(gateEvents(session)).toEqual([
-      expect.objectContaining({ outcome: "injected", reason: "unmet_items", unmetItems: [unmetItem] }),
+      expect.objectContaining({ outcome: "injected", reason, unmetItems: [unmetItem] }),
     ]);
     expect(String(state.messages.at(-1)?.content)).toContain(unmetItem);
   });
@@ -457,7 +470,7 @@ describe("completionGate", () => {
     const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 1);
     state.completedToolResults.push(
       toolResult("explore", { content: "file not found", isError: true }),
-      toolResult("verify", { content: "3 passed", metadata: { exitCode: 0 } }),
+      toolResult("verify", { content: "pytest 3 passed", metadata: { exitCode: 0 } }),
     );
     await completionGate(state, mkCtx(), session);
     expect(state.completionGateSettled).toBe(true);
@@ -496,7 +509,7 @@ describe("completionGate", () => {
       }),
       toolResult("poll-tests", {
         toolName: "write_stdin",
-        content: "3 passed",
+        content: "pytest 3 passed",
         metadata: { exitCode: 0, sessionId: 42 },
       }),
     );
@@ -516,7 +529,7 @@ describe("completionGate", () => {
     expect(state.completionGateToolLedgerMark).toBe(2);
     expect(state.completionGateRound).toBe(2);
     state.transition = undefined;
-    state.completedToolResults.push(toolResult("recheck", { content: "3 passed" }));
+    state.completedToolResults.push(toolResult("recheck", { content: "pytest 3 passed" }));
     await completionGate(state, mkCtx(), session);
     expect(state.completionGateSettled).toBe(true);
     expect(state.transition).toBeUndefined();
@@ -528,7 +541,7 @@ describe("completionGate", () => {
 
   test.each([
     ["unchecked", "- [ ] late requirement", "unmet_items"],
-    ["blocked", "- [-] late requirement cannot run", "unmet_items"],
+    ["blocked", "- [-] late requirement cannot run", "unavailable_unproven"],
     ["malformed", "- [?] late requirement", "no_checklist"],
   ])("scans beyond twenty checked items for a %s requirement", async (_name, finalItem, reason) => {
     const session = mkSession();
@@ -547,7 +560,7 @@ describe("completionGate", () => {
     const state = laterAnswer(`- [x] tests pass\n${blockedItems}`, 2);
     await completionGate(state, mkCtx(), session);
     const [event] = gateEvents(session);
-    expect(event).toMatchObject({ outcome: "injected", reason: "unmet_items" });
+    expect(event).toMatchObject({ outcome: "injected", reason: "unavailable_unproven" });
     expect(event.unmetItems).toHaveLength(20);
     expect(event.unmetItems.every((item: string) => item.length <= 203)).toBe(true);
     expect(state.completionGateSettled).toBe(false);
@@ -587,7 +600,6 @@ describe("completionGate", () => {
     ["missing checklist", "Done.", 2],
     ["no verification", "- [x] tests pass: pytest, 3 passed", 1],
     ["unchecked requirement", "- [x] tests pass\n- [ ] output exists", 2],
-    ["blocked requirement", "- [x] tests pass\n- [-] no GPU here", 2],
   ])("exhausts %s at the round cap and warns exactly once without re-entering", async (_name, text, tools) => {
     const session = mkSession();
     const state = laterAnswer(text, tools);
@@ -624,5 +636,189 @@ describe("completionGate", () => {
       expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", round: 3 }),
     ]);
     expect(warningEvents(session)).toEqual([]);
+  });
+
+  test("settles an unavailable leftover as partial at the round cap", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass\n- [-] no GPU here", 2);
+    state.completionGateRound = 3;
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(true);
+    expect(state.transition).toBeUndefined();
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({
+        outcome: "partial",
+        reason: "unavailable_checks",
+        unmetItems: ["no GPU here"],
+      }),
+    ]);
+    expect(warningEvents(session)).toEqual([
+      {
+        cause: "completion_gate_partial",
+        message:
+          "completion gate settled as partial after 3 rounds; some checks were unavailable in this environment",
+        turnId: "turn-gate",
+      },
+    ]);
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toHaveLength(1);
+    expect(warningEvents(session)).toHaveLength(1);
+  });
+
+  test("does not verify an unrelated successful FileRead", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] Numerical accuracy verified.", 1);
+    state.completedToolResults.push(toolResult("read-unrelated", {
+      toolName: "FileRead",
+      content: "project README",
+      metadata: undefined,
+    }));
+    await completionGate(state, mkCtx(), session);
+    expect(state.completionGateSettled).toBe(false);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({
+        outcome: "injected",
+        reason: "unmet_items",
+        unmetItems: ["Numerical accuracy verified."],
+      }),
+    ]);
+  });
+
+  test("does not let a failed accuracy check hide behind an unrelated read", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] Numerical accuracy verified.", 1);
+    state.completedToolResults.push(
+      toolResult("failed-accuracy", {
+        content: "accuracy check failed",
+        isError: true,
+        metadata: { exitCode: 1 },
+      }),
+      toolResult("read-unrelated", {
+        toolName: "FileRead",
+        content: "project README",
+        metadata: undefined,
+      }),
+    );
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)[0]).toMatchObject({
+      outcome: "injected", reason: "unmet_items",
+    });
+    expect(state.completionGateSettled).toBe(false);
+  });
+
+  test("settles a disclosed unavailable check as partial without exhausting identical retries", async () => {
+    const session = mkSession();
+    const state = laterAnswer(
+      "- [x] Local smoke test passed.\n- [-] Official oracle is unavailable in this environment.",
+      1,
+    );
+    for (let i = 0; i < 3; i += 1) {
+      state.transition = undefined;
+      state.completedToolResults.push(toolResult(`local-smoke-${i}`, {
+        content: "local smoke passed",
+        metadata: { exitCode: 0 },
+      }));
+      await completionGate(state, mkCtx(), session);
+    }
+    expect(gateEvents(session).map((event) => [event.round, event.outcome, event.reason])).toEqual([
+      [2, "injected", "unavailable_unproven"],
+      [2, "partial", "unavailable_checks"],
+    ]);
+    expect(warningEvents(session)).toHaveLength(1);
+    expect(warningEvents(session)[0]).toMatchObject({ cause: "completion_gate_partial" });
+    expect(state.completionGateSettled).toBe(true);
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toHaveLength(2);
+    expect(warningEvents(session)).toHaveLength(1);
+  });
+
+  test("treats a dishonest unavailable mark as unmet when the check actually ran", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [-] pytest cannot run here", 1);
+    state.completedToolResults.push(
+      toolResult("pytest-ran", {
+        content: "pytest 1 failed",
+        isError: true,
+        metadata: { exitCode: 1 },
+      }),
+      toolResult("read-unrelated", {
+        toolName: "FileRead",
+        content: "project README",
+        metadata: undefined,
+      }),
+    );
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({
+        outcome: "injected",
+        reason: "unmet_items",
+        unmetItems: ["pytest cannot run here"],
+      }),
+    ]);
+    expect(state.completionGateSettled).toBe(false);
+  });
+
+  test("lets a later associated success supersede an earlier associated failure", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass: pytest, 3 passed", 1);
+    state.completedToolResults.push(
+      toolResult("failed-accuracy", {
+        content: "pytest 1 failed",
+        isError: true,
+        metadata: { exitCode: 1 },
+      }),
+      toolResult("rerun", { content: "pytest 3 passed", metadata: { exitCode: 0 } }),
+    );
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" }),
+    ]);
+  });
+
+  test("a FileRead of the claimed path can verify a file-content item", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] /app/out.txt contains the header", 1);
+    state.completedToolResults.push(toolResult("read-output", {
+      toolName: "FileRead",
+      arguments: JSON.stringify({ file_path: "/app/out.txt" }),
+      content: "header\nbody",
+      metadata: undefined,
+    }));
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" }),
+    ]);
+  });
+
+  test("does not settle partial for [-] until an unavailable investigation ran", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] tests pass\n- [ ] output file exists", 2);
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "unmet_items" }),
+    ]);
+    state.transition = undefined;
+    state.assistantMessages = answer("- [x] tests pass\n- [-] official oracle is unavailable");
+    state.completedToolResults.push(toolResult("c3", { content: ASSOCIATED_SUCCESS }));
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "unmet_items" }),
+      expect.objectContaining({ outcome: "injected", reason: "unavailable_unproven" }),
+    ]);
+    expect(state.completionGateSettled).toBe(false);
+  });
+
+  test("an unrelated tool saying done does not verify a numerical claim", async () => {
+    const session = mkSession();
+    const state = laterAnswer("- [x] Numerical accuracy verified.", 1);
+    state.completedToolResults.push(toolResult("echo-done", {
+      content: "done",
+      metadata: { exitCode: 0 },
+    }));
+    await completionGate(state, mkCtx(), session);
+    expect(gateEvents(session)[0]).toMatchObject({
+      outcome: "injected",
+      reason: "unmet_items",
+    });
   });
 });

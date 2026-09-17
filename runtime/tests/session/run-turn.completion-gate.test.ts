@@ -57,7 +57,10 @@ function scriptedProvider(script: readonly Partial<LLMResponse>[]) {
 }
 
 function toolRegistry(
-  execute: Tool["execute"] = async () => ({ content: "ok", isError: false }),
+  execute: Tool["execute"] = async () => ({
+    content: "/app/out.txt contains done; pytest tests pass 3 passed; checked",
+    isError: false,
+  }),
 ): ToolRegistry {
   const tool: Tool = {
     name: "completion_probe",
@@ -195,7 +198,7 @@ describe("completion gate in the turn loop", () => {
     const { registry, execute } = queuedToolRegistry([
       { content: "Wrote /app/out.txt", isError: false },
       { content: "Verification command failed", isError: true },
-      { content: "done\n3 passed", isError: false },
+      { content: "/app/out.txt contains done; pytest 3 passed", isError: false },
     ]);
     const { session, events, state } = headlessSession(provider, true, registry);
     const phases = await collect(session);
@@ -225,7 +228,7 @@ describe("completion gate in the turn loop", () => {
       expect.objectContaining({
         toolCallId: "verify-failed", content: expect.stringContaining("Verification command failed"),
       }),
-      expect.objectContaining({ toolCallId: "verify-success", content: expect.stringContaining("done\n3 passed") }),
+      expect.objectContaining({ toolCallId: "verify-success", content: expect.stringContaining("/app/out.txt contains done; pytest 3 passed") }),
     ]);
     const injections = state.history.filter(
       (message) => message.role === "user" && String(message.content).includes("<completion_gate"),
@@ -283,16 +286,67 @@ describe("completion gate in the turn loop", () => {
       toolStep("verify-2"),
       textStep("- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed"),
     ]);
-    const { session, events } = headlessSession(provider, true);
+    const { registry } = queuedToolRegistry([
+      { content: "/app/out.txt contains done", isError: false },
+      { content: "/app/out.txt contains done", isError: false },
+      { content: "/app/out.txt contains done; pytest 3 passed", isError: false },
+    ]);
+    const { session, events } = headlessSession(provider, true, registry);
     await collect(session);
 
     expect(requests).toHaveLength(6);
     expect(gatePayloads(events)).toEqual([
       expect.objectContaining({ outcome: "injected", reason: "initial" }),
-      expect.objectContaining({ outcome: "injected", reason: "unmet_items", unmetItems: [blockedItem] }),
+      expect.objectContaining({
+        outcome: "injected",
+        reason: "unavailable_unproven",
+        unmetItems: [blockedItem],
+      }),
       expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" }),
     ]);
     expect(lastUserText(requests[4] ?? [])).toContain(blockedItem);
+    expect(lastUserText(requests[4] ?? [])).toContain("not itself evidence");
+    expectCompletedTurn(events);
+  });
+
+  test("an evidenced unavailable leftover settles as partial without exhausting", async () => {
+    const unavailable = "Official oracle is unavailable in this environment.";
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"),
+      textStep("Done."),
+      toolStep("smoke-1"),
+      textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${unavailable}`),
+      toolStep("smoke-2"),
+      textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${unavailable}`),
+    ]);
+    const { registry } = queuedToolRegistry([
+      { content: "/app/out.txt contains done", isError: false },
+      { content: "/app/out.txt contains done; local smoke passed", isError: false },
+      { content: "/app/out.txt contains done; local smoke passed", isError: false },
+    ]);
+    const { session, events } = headlessSession(provider, true, registry);
+    await collect(session);
+
+    expect(requests).toHaveLength(6);
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "initial" }),
+      expect.objectContaining({
+        outcome: "injected",
+        reason: "unavailable_unproven",
+        unmetItems: [unavailable],
+      }),
+      expect.objectContaining({
+        outcome: "partial",
+        reason: "unavailable_checks",
+        unmetItems: [unavailable],
+      }),
+    ]);
+    expect(events.some((event) =>
+      event.msg.type === "warning" && event.msg.payload.cause === "completion_gate_partial",
+    )).toBe(true);
+    for (const payload of gatePayloads(events)) {
+      expect(isCanonicalEventPayload("completion_gate", payload)).toBe(true);
+    }
     expectCompletedTurn(events);
   });
 
@@ -350,7 +404,7 @@ describe("completion gate in the turn loop", () => {
   });
 
   test("completion_gate.mode overrides the session default in both directions", async () => {
-    const always = scriptedProvider([toolStep("w"), textStep("Done."), toolStep("v"), textStep("- [x] ok")]);
+    const always = scriptedProvider([toolStep("w"), textStep("Done."), toolStep("v"), textStep("- [x] /app/out.txt contains done")]);
     const alwaysSession = headlessSession(always.provider, false);
     const ctx = mkCtx();
     await collect(alwaysSession.session, {
@@ -447,7 +501,7 @@ describe("completion gate in the turn loop", () => {
       textStep("Now I'll create the file."),
       textStep("Done."),
       toolStep("verify-1"),
-      textStep("- [x] verified"),
+      textStep("- [x] /app/out.txt contains done"),
     ]);
     const { session, events } = headlessSession(provider, true);
     await collect(session);
@@ -515,6 +569,27 @@ describe("completion gate in the turn loop", () => {
         reason: "initial",
         toolCallsSinceInjection: 0,
         unmetItems: ["x"],
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("completion_gate", {
+        turnId: "t",
+        round: 2,
+        maxRounds: 3,
+        outcome: "partial",
+        reason: "unavailable_checks",
+        toolCallsSinceInjection: 1,
+        unmetItems: ["oracle unavailable"],
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("completion_gate", {
+        turnId: "t",
+        round: 2,
+        maxRounds: 3,
+        outcome: "injected",
+        reason: "unavailable_unproven",
+        toolCallsSinceInjection: 1,
       }),
     ).toBe(true);
   });

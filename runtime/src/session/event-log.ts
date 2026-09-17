@@ -297,26 +297,30 @@ export interface TurnResumedEvent {
 /**
  * One decision of the non-interactive completion gate (phase 4b): a
  * verification prompt was injected, or a final answer was accepted as
- * verified, accepted because the rounds ran out, or the turn was not gated.
+ * verified, accepted as partial because remaining checks are unavailable,
+ * accepted because the rounds ran out, or the turn was not gated.
+ * `verified` is structural compliance, not a benchmark pass.
  */
 export interface CompletionGateEvent {
   readonly turnId: string;
   /** Gate prompts injected so far in this turn, after this decision. */
   readonly round: number;
   readonly maxRounds: number;
-  readonly outcome: "injected" | "verified" | "exhausted" | "skipped";
+  readonly outcome: "injected" | "verified" | "partial" | "exhausted" | "skipped";
   readonly reason:
     | "initial"
     | "no_verification"
     | "no_checklist"
     | "unmet_items"
+    | "unavailable_unproven"
     | "verified_with_tools"
+    | "unavailable_checks"
     | "rounds_exhausted"
     | "no_tool_use"
     | "deadline_reserve";
   /** Tool calls that completed between the last injection and this decision. */
   readonly toolCallsSinceInjection: number;
-  /** Unchecked or explicitly unverified checklist items, when any. */
+  /** Unchecked, unassociated, or explicitly unverified checklist items, when any. */
   readonly unmetItems?: ReadonlyArray<string>;
 }
 

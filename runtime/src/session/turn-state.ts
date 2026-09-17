@@ -422,6 +422,13 @@ export interface TurnState {
   completionGateToolLedgerMark: number;
   /** Latched once a final answer was accepted (verified, exhausted or skipped). */
   completionGateSettled: boolean;
+  /**
+   * Whether the gate itself asked for proof of an unavailable check this turn.
+   * Runtime-authored provenance: the injected request is an ordinary user
+   * message, so its presence in the transcript proves nothing about who wrote
+   * it. Turn-scoped like the ledger mark, and deliberately not journaled.
+   */
+  completionGateUnavailablePrompted: boolean;
 
   // ── Phase 5 — execute tools (AgenC query.ts:572, 1467-1635) ──
   /** Streaming tool executor instance (T7). Kept loop-local so the
@@ -584,6 +591,7 @@ export function buildInitialTurnState(
     completionGateRound: 0,
     completionGateToolLedgerMark: 0,
     completionGateSettled: false,
+    completionGateUnavailablePrompted: false,
     // Phase 5
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,

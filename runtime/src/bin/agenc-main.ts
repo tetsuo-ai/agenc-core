@@ -1558,7 +1558,11 @@ function daemonOneShotCompletionWarning(
   if (params?.sessionId !== sessionId || turnId === undefined ||
       transcriptEvent?.type !== "warning" || !isJsonRecord(transcriptEvent.payload)) return null;
   const payload = transcriptEvent.payload;
-  if (payload.cause !== "completion_gate_exhausted" || typeof payload.message !== "string") return null;
+  if (
+    (payload.cause !== "completion_gate_exhausted" &&
+      payload.cause !== "completion_gate_partial") ||
+    typeof payload.message !== "string"
+  ) return null;
   const scopes = [params.turnId, transcriptEvent.turnId, payload.turnId].filter(
     (scope): scope is string => typeof scope === "string",
   );
