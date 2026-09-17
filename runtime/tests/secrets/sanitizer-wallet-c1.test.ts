@@ -80,7 +80,9 @@ describe("secrets sanitizer — C1 wallet-secret gaps", () => {
   });
 
   it("does not over-redact ordinary integer arrays or prose", () => {
-    // Short byte arrays and arrays with out-of-range / large integers are not keypairs.
+    // Short byte arrays and arrays with out-of-range / large integers are not
+    // keypairs. Longer benign lists (80/100-element permutations and the
+    // 31/33/63/65 boundaries) are covered by sanitizer-integer-lists.test.ts.
     const benign = 'counts: [1, 2, 3, 4, 5]; ids: [1024, 65535, 300000]; ratio [1,2]';
     expect(redactSecrets(benign)).toBe(benign);
     const prose = "Please deliver the winner list to the legal team this year.";

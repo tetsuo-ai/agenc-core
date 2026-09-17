@@ -271,6 +271,249 @@ function redactBareMnemonics(input: string): string {
   return changed ? parts.join("") : input;
 }
 
+/**
+ * Integer-list classification policy (wallet byte arrays vs analytical data).
+ *
+ * Solana / ed25519 secret keys are commonly exported as a bracketed list of
+ * comma-separated bytes: the standard `~/.config/solana/id.json` file is a
+ * 64-element list (32-byte secret scalar followed by the 32-byte public key),
+ * and the bare secret scalar is a 32-element list. Nothing about the numeric
+ * syntax distinguishes such a list from ordinary analytical output: an index
+ * permutation, a histogram, a byte dump of a file, or a table of small counts
+ * printed by a tool has exactly the same shape. An earlier rule redacted every
+ * textual list of 32–200 bytes and claimed that this excluded ordinary numeric
+ * arrays; it did not, and it erased benign 80/100-element permutations from
+ * durable tool history (#2476). The ambiguity is unavoidable, so the policy
+ * below is explicit about what decides:
+ *
+ *  1. Supported key formats. Only the two raw ed25519 encodings exist as a
+ *     bare byte list: exactly 32 elements (secret scalar) or exactly 64
+ *     elements (keypair). A list of any other length is not a supported
+ *     raw-key encoding and is preserved byte-for-byte. Length is therefore a
+ *     *negative* test only (it proves a list is not a key); it never proves a
+ *     list is one.
+ *  2. Missing context (fail closed). A list of exactly 32 or 64 unsigned bytes
+ *     is ambiguous: a benign 32-index permutation and a secret scalar are the
+ *     same text. With no trusted signal either way the list is redacted, since
+ *     a leaked key is unrecoverable while a lost 32/64-element analytical
+ *     list is a bounded evidence loss. Nothing in the surrounding text can
+ *     lift this: labels such as `permutation =` or `T[:64]` are untrusted tool
+ *     output, so a cosmetic label cannot grant a real key an exemption.
+ *  3. Sensitive-field / key-file context (widen only). A list of integers of
+ *     any length whose immediate label is a sensitive key name
+ *     (`"secretKey": [...]`, `private_key = [...]`, mirrors `isSensitiveKey`)
+ *     is redacted regardless of length or value range, matching the structured
+ *     leaf rule where any value under a sensitive key is redacted. In-band
+ *     context can only widen redaction, never narrow it.
+ *  4. Trusted provenance. The only trusted provenance the sanitizer has is
+ *     structural: in `redactSecretsInValue` a numeric JSON array is typed data
+ *     produced by the runtime, not pasted text, so it is preserved under an
+ *     ordinary key and leaf-redacted under a sensitive key. That decision is
+ *     made from the JSON position, never from the string content, so a tool
+ *     cannot reach it by formatting its stdout.
+ *
+ * Signed-byte dumps (`[-12, 34, ...]`), fractional values and values above
+ * 255 are never treated as key material by rules 1–2 (they are not the raw
+ * ed25519 encodings); rule 3 still redacts them under a sensitive label.
+ *
+ * Already-persisted `[REDACTED_SECRET]` markers written by the earlier rule are
+ * not recoverable: the durable record holds a digest of the original body,
+ * not the body. This module never rewrites history or synthesizes values.
+ */
+const AMBIGUOUS_RAW_KEY_LENGTHS: ReadonlySet<number> = new Set([32, 64]);
+const MAX_AMBIGUOUS_RAW_KEY_LENGTH = Math.max(...AMBIGUOUS_RAW_KEY_LENGTHS);
+const MAX_INTEGER_LIST_LABEL_LENGTH = 128;
+const MAX_UNSIGNED_BYTE = 255;
+
+type IntegerListClassification =
+  | "benign_length"
+  | "ambiguous_raw_key_length"
+  | "sensitive_label";
+
+interface ParsedIntegerList {
+  /** Index just past the closing bracket. */
+  readonly end: number;
+  readonly count: number;
+  readonly allUnsignedBytes: boolean;
+}
+
+function classifyIntegerList(
+  list: ParsedIntegerList,
+  hasSensitiveLabel: boolean,
+): IntegerListClassification {
+  if (hasSensitiveLabel) return "sensitive_label";
+  if (list.allUnsignedBytes && AMBIGUOUS_RAW_KEY_LENGTHS.has(list.count)) {
+    return "ambiguous_raw_key_length";
+  }
+  return "benign_length";
+}
+
+function shouldRedactIntegerList(
+  classification: IntegerListClassification,
+): boolean {
+  switch (classification) {
+    case "sensitive_label":
+    case "ambiguous_raw_key_length":
+      return true;
+    case "benign_length":
+      return false;
+    default: {
+      const exhaustive: never = classification;
+      throw new Error(`unhandled integer-list classification: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function isAsciiDigit(code: number): boolean {
+  return code >= 0x30 && code <= 0x39;
+}
+
+function isWhitespaceCode(code: number): boolean {
+  // Must recognise exactly what an ECMAScript /\s/u class matches (WhiteSpace +
+  // LineTerminator). The bracket scanner is hand-rolled for bounded cost, but an
+  // ASCII-only notion of "separator" lets a byte list formatted with NBSP or EM
+  // SPACE parse as something other than 32/64 elements, so a real key survives
+  // redaction unchanged. Length stays a negative test and the 32/64 fail-closed
+  // policy is untouched; this only restores the separator coverage the previous
+  // \s-based rule already had (#2476).
+  return (
+    code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d ||
+    code === 0x0b || code === 0x0c ||
+    code === 0xa0 || code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 || code === 0x2029 ||
+    code === 0x202f || code === 0x205f ||
+    code === 0x3000 || code === 0xfeff
+  );
+}
+
+function isIdentifierCode(code: number): boolean {
+  return (
+    isAsciiDigit(code) ||
+    (code >= 0x41 && code <= 0x5a) ||
+    (code >= 0x61 && code <= 0x7a) ||
+    code === 0x5f || // _
+    code === 0x2d // -
+  );
+}
+
+/**
+ * Parses a flat list of optionally-negative decimal integers starting at the
+ * `[` at `open`. Returns null when the bracket does not open such a list
+ * (nested brackets, fractions, identifiers, trailing commas) or when the list
+ * exceeds `maxCount` elements, which lets callers stop scanning a long benign
+ * list as soon as it can no longer match a redactable shape.
+ */
+function parseIntegerList(
+  input: string,
+  open: number,
+  maxCount: number,
+): ParsedIntegerList | null {
+  const length = input.length;
+  let i = open + 1;
+  let count = 0;
+  let allUnsignedBytes = true;
+  const skipWhitespace = (): void => {
+    while (i < length && isWhitespaceCode(input.charCodeAt(i))) i += 1;
+  };
+  skipWhitespace();
+  while (i < length) {
+    let negative = false;
+    if (input.charCodeAt(i) === 0x2d) {
+      negative = true;
+      i += 1;
+    }
+    const digitsStart = i;
+    while (i < length && isAsciiDigit(input.charCodeAt(i))) i += 1;
+    const digitCount = i - digitsStart;
+    if (digitCount === 0) return null;
+    count += 1;
+    if (count > maxCount) return null;
+    if (allUnsignedBytes) {
+      allUnsignedBytes =
+        !negative &&
+        digitCount <= 3 &&
+        Number(input.slice(digitsStart, i)) <= MAX_UNSIGNED_BYTE;
+    }
+    skipWhitespace();
+    if (i >= length) return null;
+    const code = input.charCodeAt(i);
+    if (code === 0x5d) return { end: i + 1, count, allUnsignedBytes };
+    if (code !== 0x2c) return null;
+    i += 1;
+    skipWhitespace();
+    // A trailing comma is tolerated so that `[..., 12,]` cannot dodge the
+    // 32/64 rule while still reading as the same list.
+    if (i < length && input.charCodeAt(i) === 0x5d) {
+      return { end: i + 1, count, allUnsignedBytes };
+    }
+  }
+  return null;
+}
+
+/**
+ * True when the `[` at `open` is immediately labelled by a sensitive key name
+ * (`secretKey: [`, `"private_key": [`, `SEED_PHRASE = [`). Only the identifier
+ * directly bound to the list by `:` or `=` counts; prose or other tokens
+ * between the name and the bracket do not. Labels widen redaction only, so an
+ * untrusted producer gains nothing by choosing one.
+ */
+function hasSensitiveLabelBefore(input: string, open: number): boolean {
+  let i = open - 1;
+  while (i >= 0 && isWhitespaceCode(input.charCodeAt(i))) i -= 1;
+  if (i < 0) return false;
+  const separator = input.charCodeAt(i);
+  if (separator !== 0x3a && separator !== 0x3d) return false; // : or =
+  i -= 1;
+  while (i >= 0 && isWhitespaceCode(input.charCodeAt(i))) i -= 1;
+  if (i < 0) return false;
+  let quote = 0;
+  const maybeQuote = input.charCodeAt(i);
+  if (maybeQuote === 0x22 || maybeQuote === 0x27) {
+    quote = maybeQuote;
+    i -= 1;
+  }
+  const labelEnd = i + 1;
+  const labelFloor = Math.max(-1, labelEnd - 1 - MAX_INTEGER_LIST_LABEL_LENGTH);
+  while (i > labelFloor && isIdentifierCode(input.charCodeAt(i))) i -= 1;
+  const labelStart = i + 1;
+  if (labelStart === labelEnd) return false;
+  if (quote !== 0 && (i < 0 || input.charCodeAt(i) !== quote)) return false;
+  return isSensitiveKey(input.slice(labelStart, labelEnd));
+}
+
+/**
+ * Applies the integer-list policy documented above to every bracketed list
+ * in `input`. Single linear pass: each `[` is parsed at most once and parsing
+ * stops as soon as an unlabelled list is longer than any redactable shape.
+ */
+function redactIntegerListKeyMaterial(input: string): string {
+  let open = input.indexOf("[");
+  if (open === -1) return input;
+  let output = "";
+  let copiedUpTo = 0;
+  while (open !== -1) {
+    const sensitiveLabel = hasSensitiveLabelBefore(input, open);
+    const parsed = parseIntegerList(
+      input,
+      open,
+      sensitiveLabel ? Number.POSITIVE_INFINITY : MAX_AMBIGUOUS_RAW_KEY_LENGTH,
+    );
+    if (
+      parsed !== null &&
+      shouldRedactIntegerList(classifyIntegerList(parsed, sensitiveLabel))
+    ) {
+      output += input.slice(copiedUpTo, open) + REDACTED_SECRET;
+      copiedUpTo = parsed.end;
+      open = input.indexOf("[", parsed.end);
+      continue;
+    }
+    open = input.indexOf("[", open + 1);
+  }
+  if (copiedUpTo === 0) return input;
+  return output + input.slice(copiedUpTo);
+}
+
 const SECRET_PATTERNS: ReadonlyArray<{
   readonly pattern: RegExp;
   readonly replacement: string;
@@ -348,17 +591,9 @@ const SECRET_PATTERNS: ReadonlyArray<{
     pattern: /(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{80,90}(?![1-9A-HJ-NP-Za-km-z])/g,
     replacement: REDACTED_SECRET,
   },
-  {
-    // Solana keypairs are also exported as a JSON byte array (the standard
-    // `~/.config/solana/id.json` format): a bracketed run of 32 (secret scalar)
-    // or 64 (full keypair) comma-separated bytes (0-255). Every element must be
-    // a valid byte and the run must be at least 32 long, which excludes ordinary
-    // numeric arrays (embeddings are floats; token-id arrays exceed 255). The
-    // upper bound caps the match and avoids pathological scanning.
-    pattern:
-      /\[\s*(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\s*,\s*(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){31,199}\s*\]/g,
-    replacement: REDACTED_SECRET,
-  },
+  // Bracketed integer lists (Solana `id.json`-style byte arrays) are not a
+  // regex entry: their classification needs the exact element count and the
+  // surrounding label, so `redactIntegerListKeyMaterial` handles them below.
   {
     // PEM private-key blocks (PKCS#1/PKCS#8/EC/OpenSSH/encrypted). Redact the
     // whole armored block including the base64 body rather than leaking it as a
@@ -399,6 +634,7 @@ export function redactSecrets(input: string): string {
   for (const { pattern, replacement } of SECRET_PATTERNS) {
     redacted = redacted.replace(pattern, replacement);
   }
+  redacted = redactIntegerListKeyMaterial(redacted);
   redacted = redacted.replace(
     QUOTED_SECRET_ASSIGNMENT_PATTERN,
     (match, quote: string, key: string, separator: string, valueQuote: string) =>
