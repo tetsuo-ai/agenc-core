@@ -131,6 +131,36 @@ function lastUserText(request: readonly LLMMessage[]): string {
   return typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
 }
 
+/**
+ * The unavailable-leftover scenarios build the same provider, registry and
+ * session and then drive one turn. Only the script and the tool output differ,
+ * so spelling the construction out per test duplicated it verbatim.
+ */
+async function runGateScenario(
+  script: readonly Partial<LLMResponse>[],
+  toolContents: readonly string[],
+) {
+  const { provider, requests } = scriptedProvider(script);
+  const { registry } = queuedToolRegistry(
+    toolContents.map((content) => ({ content, isError: false })),
+  );
+  const { session, events } = headlessSession(provider, true, registry);
+  await collect(session);
+  return { requests, events };
+}
+
+/** The gate's first two payloads when it asks for proof of an unavailable item. */
+function unavailablePromptedPrefix(item: string) {
+  return [
+    expect.objectContaining({ outcome: "injected", reason: "initial" }),
+    expect.objectContaining({
+      outcome: "injected",
+      reason: "unavailable_unproven",
+      unmetItems: [item],
+    }),
+  ];
+}
+
 async function collect(session: ReturnType<typeof mkSession>["session"], ctx = mkCtx()) {
   const phases: PhaseEvent[] = [];
   for await (const phase of runTurn(session, ctx, TASK)) phases.push(phase);
@@ -278,30 +308,22 @@ describe("completion gate in the turn loop", () => {
 
   test("a blocked checklist item prevents verification even when another item is checked", async () => {
     const blockedItem = "tests: pytest is unavailable";
-    const { provider, requests } = scriptedProvider([
+    const { requests, events } = await runGateScenario([
       toolStep("work-1"),
       textStep("Done."),
       toolStep("verify-1"),
       textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${blockedItem}`),
       toolStep("verify-2"),
       textStep("- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed"),
+    ], [
+      "/app/out.txt contains done",
+      "/app/out.txt contains done",
+      "/app/out.txt contains done; pytest 3 passed",
     ]);
-    const { registry } = queuedToolRegistry([
-      { content: "/app/out.txt contains done", isError: false },
-      { content: "/app/out.txt contains done", isError: false },
-      { content: "/app/out.txt contains done; pytest 3 passed", isError: false },
-    ]);
-    const { session, events } = headlessSession(provider, true, registry);
-    await collect(session);
 
     expect(requests).toHaveLength(6);
     expect(gatePayloads(events)).toEqual([
-      expect.objectContaining({ outcome: "injected", reason: "initial" }),
-      expect.objectContaining({
-        outcome: "injected",
-        reason: "unavailable_unproven",
-        unmetItems: [blockedItem],
-      }),
+      ...unavailablePromptedPrefix(blockedItem),
       expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" }),
     ]);
     expect(lastUserText(requests[4] ?? [])).toContain(blockedItem);
@@ -311,30 +333,22 @@ describe("completion gate in the turn loop", () => {
 
   test("an evidenced unavailable leftover settles as partial without exhausting", async () => {
     const unavailable = "Official oracle is unavailable in this environment.";
-    const { provider, requests } = scriptedProvider([
+    const { requests, events } = await runGateScenario([
       toolStep("work-1"),
       textStep("Done."),
       toolStep("smoke-1"),
       textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${unavailable}`),
       toolStep("smoke-2"),
       textStep(`- [x] /app/out.txt contains done: cat showed done\n- [-] ${unavailable}`),
+    ], [
+      "/app/out.txt contains done",
+      "/app/out.txt contains done; local smoke passed",
+      "/app/out.txt contains done; local smoke passed",
     ]);
-    const { registry } = queuedToolRegistry([
-      { content: "/app/out.txt contains done", isError: false },
-      { content: "/app/out.txt contains done; local smoke passed", isError: false },
-      { content: "/app/out.txt contains done; local smoke passed", isError: false },
-    ]);
-    const { session, events } = headlessSession(provider, true, registry);
-    await collect(session);
 
     expect(requests).toHaveLength(6);
     expect(gatePayloads(events)).toEqual([
-      expect.objectContaining({ outcome: "injected", reason: "initial" }),
-      expect.objectContaining({
-        outcome: "injected",
-        reason: "unavailable_unproven",
-        unmetItems: [unavailable],
-      }),
+      ...unavailablePromptedPrefix(unavailable),
       expect.objectContaining({
         outcome: "partial",
         reason: "unavailable_checks",
