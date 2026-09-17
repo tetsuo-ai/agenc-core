@@ -337,6 +337,12 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
     );
   }
 
+  if (hasShell && enabledTools.has("kill_process")) {
+    items.push(
+      `To stop background work you started, call kill_process with its session_id (session_ids for several, all=true for every session you still have running)${enabledTools.has("list_processes") ? "; list_processes shows which of your sessions are still live" : ""}. A terminated=false result means that session already exited. Never clean up by searching the process table for task filenames or command text and signalling the matches: that also selects AgenC's own CLI and process brokers and ends the session.`,
+    );
+  }
+
   // Stated once here instead of inside every tool result. Per-result frames
   // now carry only a provenance line and the boundary marker (external
   // results keep the full text inline), so this paragraph is what makes the
@@ -571,11 +577,13 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   // I-82: wall-clock OK here — display only, not a deadline.
   const now = new Date().toISOString();
   // The first two lines below carry an explicit <cwd>...</cwd> anchor and a
-  // disambiguation note. Agent-tree identifiers such as `/root/task1` are
-  // not files; absolute Linux paths under `/root` are filesystem paths.
+  // disambiguation note. Tool descriptions elsewhere mention agent-namespace
+  // pseudo-paths like `/root/task1`; without this anchor, smaller / local
+  // models confuse the agent-tree pseudo-path with a filesystem path and
+  // try to read `/root/<file>` instead of resolving against the actual cwd.
   const items: string[] = [
     `Filesystem working directory: <cwd>${cwd}</cwd>`,
-    `All relative file paths in tool calls resolve against <cwd>. Absolute filesystem paths, including Linux paths under /root, are valid file paths. Agent-tree identifiers such as /root/task1 are agent addresses, not files.`,
+    `All relative file paths in tool calls resolve against <cwd>. Do NOT use \`/root\` as a filesystem path — it is the agent-tree namespace prefix and is unrelated to the filesystem.`,
     `Primary working directory: ${cwd}`,
     `Platform: ${osPlatform()}`,
     `OS: ${osType()} ${osRelease()}`,

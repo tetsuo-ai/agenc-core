@@ -30,7 +30,7 @@ export function isReadOnlyCoordinationName(name: string): boolean {
 export function readOnlyDelegationToolAvailable(tool: ReadOnlyDelegationTool): boolean {
   return hasTrustedBuiltinImplementation(tool) && (
     COORDINATION_TOOLS.has(tool.name) || NATIVE_INSPECTION_TOOLS.has(tool.name) ||
-    ["exec_command", "system.bash", "write_stdin", "kill_process"].includes(tool.name)
+    ["exec_command", "system.bash", "write_stdin", "kill_process", "list_processes"].includes(tool.name)
   );
 }
 

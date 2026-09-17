@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertProcessOwnerAccess,
+  isProcessOwnedBy,
   processOwnerIdFromToolArgs,
 } from "../../src/unified-exec/process-ownership.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
@@ -50,6 +51,16 @@ describe("process ownership (TOOL-01)", () => {
         requestOwnerId: "agent-a",
       }).ok,
     ).toBe(true);
+  });
+
+  it("enumeration is stricter than per-id access: only same-owner work is owned (#2477)", () => {
+    expect(isProcessOwnedBy({ entryOwnerId: "agent-a", requestOwnerId: " agent-a " })).toBe(true);
+    expect(isProcessOwnedBy({ entryOwnerId: "agent-a", requestOwnerId: "agent-b" })).toBe(false);
+    expect(isProcessOwnedBy({ entryOwnerId: "agent-a", requestOwnerId: undefined })).toBe(false);
+    // An unowned legacy entry is addressable by id but is nobody's work to list.
+    expect(assertProcessOwnerAccess({ entryOwnerId: undefined, requestOwnerId: "agent-a" }).ok).toBe(true);
+    expect(isProcessOwnedBy({ entryOwnerId: undefined, requestOwnerId: "agent-a" })).toBe(false);
+    expect(isProcessOwnedBy({ entryOwnerId: undefined, requestOwnerId: undefined })).toBe(true);
   });
 
   it("manager denies write_stdin and kill across owners on a live process", async () => {

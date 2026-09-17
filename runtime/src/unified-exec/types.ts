@@ -131,6 +131,51 @@ export interface TerminateProcessRequest {
   readonly ownerId?: string;
 }
 
+/**
+ * The model-facing, owner-scoped view of one yielded session (#2477). A
+ * recovering agent enumerates *its own* live work through this view instead
+ * of matching task filenames against `/proc/*\/cmdline`, which also selects
+ * the AgenC CLI and its process brokers.
+ */
+export interface OwnedProcessView {
+  /** The `session_id` exec_command returned; the handle kill_process accepts. */
+  readonly sessionId: number;
+  readonly command: string;
+  readonly cwd: string;
+  readonly tty: boolean;
+  /**
+   * `stopping` is a stop that has been signalled but whose exit the manager
+   * has not yet observed; it is reported as such rather than as a finished
+   * stop so no cleanup is claimed before it is proven.
+   */
+  readonly status: "running" | "stopping" | "completed" | "failed" | "killed";
+  readonly startedAt: number;
+  readonly endedAt?: number;
+  readonly exitCode?: number;
+}
+
+export interface ListOwnedProcessesRequest {
+  readonly ownerId?: string;
+}
+
+export interface TerminateOwnedProcessesRequest {
+  readonly ownerId?: string;
+  /**
+   * Sessions to stop. Omit to stop every live yielded session the owner
+   * started. Ownership of every named session is checked before any signal
+   * is sent, so a refused batch has no effect.
+   */
+  readonly processIds?: readonly number[];
+}
+
+export interface TerminateOwnedProcessesOutcome {
+  readonly results: readonly {
+    readonly sessionId: number;
+    /** False for an unknown or already-exited id; a benign race, not an error. */
+    readonly terminated: boolean;
+  }[];
+}
+
 /** Operator-visible state; taskId is unique across manager lifetimes. */
 export interface UnifiedExecBackgroundProcess {
   readonly taskId: string;
@@ -190,6 +235,19 @@ export interface UnifiedExecProcessManagerLike {
   terminateProcess?(
     processIdOrRequest: number | TerminateProcessRequest,
   ): { terminated: boolean };
+  /**
+   * Yielded sessions the requesting owner started, live or retained after
+   * exit. Never another owner's work, and never a process table scan.
+   */
+  listOwnedProcesses?(request: ListOwnedProcessesRequest): OwnedProcessView[];
+  /**
+   * Bulk stop through manager-owned identities. Named sessions keep the
+   * per-id ownership rule (`owner_denied` before any signal); an unnamed
+   * request stops only the owner's own live yielded sessions.
+   */
+  terminateOwnedProcesses?(
+    request: TerminateOwnedProcessesRequest,
+  ): TerminateOwnedProcessesOutcome;
   listBackgroundProcesses?(): UnifiedExecBackgroundProcess[];
   stopBackgroundProcess?(taskId: string): Promise<{ stopped: boolean }>;
   closeAll(reason?: string): Promise<void>;
