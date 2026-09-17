@@ -502,6 +502,8 @@ type Props = {
     readonly placeholder: string;
     readonly footerHint: string;
     readonly allowEmptySubmit: boolean;
+    /** ↑/↓ move the wizard's highlighted choice instead of walking prompt history. */
+    readonly onMoveSelection?: (delta: -1 | 1) => void;
   };
   runtimeStateRepository: RuntimeStateRepository;
   settingsAuthority: CanonicalSettingsAuthority;
@@ -3604,9 +3606,18 @@ function PromptInput({
     // NOT via useKeybindings. This allows useTextInput's upOrHistoryUp/downOrHistoryDown
     // to try cursor movement first and only fall through to history navigation when the
     // cursor can't move further (important for wrapped text and multi-line input).
-    onHistoryUp: onboardingInput === undefined ? handleHistoryUp : undefined,
+    onHistoryUp:
+      onboardingInput === undefined
+        ? handleHistoryUp
+        : onboardingInput.onMoveSelection === undefined
+          ? undefined
+          : () => onboardingInput.onMoveSelection?.(-1),
     onHistoryDown:
-      onboardingInput === undefined ? handleHistoryDown : undefined,
+      onboardingInput === undefined
+        ? handleHistoryDown
+        : onboardingInput.onMoveSelection === undefined
+          ? undefined
+          : () => onboardingInput.onMoveSelection?.(1),
     onHistoryReset: resetHistory,
     placeholder,
     onExit,

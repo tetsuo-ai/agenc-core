@@ -7101,9 +7101,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
 
   // Onboarding renders standalone — composer-only flow drives its own input.
   if (onboarding.active) {
-    const onboardingInput = firstRunOnboardingInputPresentation(
-      onboarding.state,
-    );
+    const onboardingInput = {
+      ...firstRunOnboardingInputPresentation(onboarding.state),
+      onMoveSelection: onboarding.moveSelection,
+    };
     return (
       <FullscreenModeProvider enabled={fullscreen}>
         <Box flexDirection="column" width="100%">

@@ -49,6 +49,9 @@ vi.mock("../tui/ink.js", async () => {
 import {
   checkOnboardingProviderConnection,
   createInitialFirstRunOnboardingState,
+  firstRunOnboardingChoiceCount,
+  firstRunOnboardingHighlightedChoice,
+  moveFirstRunOnboardingHighlight,
   detectRunningLocalProviders,
   detailLinesForStep,
   firstRunOnboardingInputPresentation,
@@ -794,7 +797,7 @@ describe("first-run onboarding wizard", () => {
       currentStepId: "provider" as const,
     };
     const listedProviders = detailLinesForStep(state, context)
-      .flatMap((line) => line.match(/^\d+\. ([a-z0-9-]+)/u)?.[1] ?? []);
+      .flatMap((line) => line.match(/^[❯ ] \d+\. ([a-z0-9-]+)/u)?.[1] ?? []);
 
     expect(listedProviders).toEqual(
       listBuiltInProviderInfo().map((provider) => provider.id),
@@ -1085,7 +1088,7 @@ describe("first-run onboarding wizard", () => {
             { ...state, currentStepId: "provider" },
             context,
           )[0],
-        ).toBe("1. grok (current)");
+        ).toBe("❯ 1. grok (current)");
         expect(
           detailLinesForStep(
             { ...state, currentStepId: "model-access" },
@@ -2117,7 +2120,7 @@ describe("account sign-in from the model-access step", () => {
     );
     expect(details).not.toContain("/login");
     expect(firstRunOnboardingInputPresentation(state).placeholder).toBe(
-      "Choose 1–4, or paste a provider API key directly",
+      "Use ↑/↓ or choose 1–4, or paste a provider API key directly",
     );
   });
 
@@ -2261,5 +2264,82 @@ describe("account sign-in from the model-access step", () => {
       "URL: https://id.agenc.ag/activate",
       "Finish sign-in in your browser; AgenC will continue automatically.",
     ]);
+  });
+});
+
+describe("first-run onboarding arrow-key selection", () => {
+  const context = { config: defaultConfig(), env: {}, checkLocalProviders: false };
+
+  async function atStep(step: "theme" | "provider" | "model-access") {
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    if (step === "theme") return state;
+    state = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    if (step === "provider") return state;
+    return (await submitFirstRunOnboardingInput(state, "", context)).state;
+  }
+
+  test("steps without a list ignore the arrows", () => {
+    const state = createInitialFirstRunOnboardingState(context);
+    expect(firstRunOnboardingChoiceCount(state)).toBe(0);
+    expect(moveFirstRunOnboardingHighlight(state, 1)).toBe(state);
+  });
+
+  test("the default highlight is the current theme, and Enter without a move keeps it", async () => {
+    const state = await atStep("theme");
+    const lines = detailLinesForStep(state, context);
+    const current = firstRunOnboardingHighlightedChoice(state)!;
+    expect(lines[current - 1]).toMatch(/^❯ \d+\. .*\(current\)/u);
+    const next = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(next.selectedTheme).toBe(state.selectedTheme);
+    expect(next.currentStepId).toBe("provider");
+  });
+
+  test("down then Enter picks the next theme, wrapping at the end", async () => {
+    let state = await atStep("theme");
+    const count = firstRunOnboardingChoiceCount(state);
+    const start = firstRunOnboardingHighlightedChoice(state)!;
+    state = moveFirstRunOnboardingHighlight(state, 1);
+    expect(state.highlightedChoice).toBe((start % count) + 1);
+    expect(detailLinesForStep(state, context)[state.highlightedChoice! - 1]).toMatch(/^❯ /u);
+    for (let i = 0; i < count; i += 1) state = moveFirstRunOnboardingHighlight(state, 1);
+    expect(state.highlightedChoice).toBe((start % count) + 1);
+    const expectedTheme = detailLinesForStep(state, context)[state.highlightedChoice! - 1]!
+      .replace(/^❯ \d+\. /u, "").replace(/ \(current\)$/u, "");
+    const next = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(next.selectedTheme).toBe(expectedTheme);
+    expect(next.highlightedChoice).toBeNull();
+  });
+
+  test("up from the first provider wraps to the last and Enter selects it with its default model", async () => {
+    let state = await atStep("provider");
+    expect(firstRunOnboardingHighlightedChoice(state)).toBe(1);
+    state = moveFirstRunOnboardingHighlight(state, -1);
+    const count = firstRunOnboardingChoiceCount(state);
+    expect(state.highlightedChoice).toBe(count);
+    const lastProvider = detailLinesForStep(state, context)[count - 1]!
+      .replace(/^❯ \d+\. /u, "").split(" ")[0];
+    const next = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(next.selectedProvider).toBe(lastProvider);
+    expect(next.currentStepId).toBe("model-access");
+  });
+
+  test("the model-access menu defaults to Configure later and an arrow move changes what Enter does", async () => {
+    let state = await atStep("model-access");
+    expect(firstRunOnboardingChoiceCount(state)).toBe(4);
+    expect(firstRunOnboardingHighlightedChoice(state)).toBe(4);
+    state = moveFirstRunOnboardingHighlight(state, -1);
+    expect(state.highlightedChoice).toBe(3);
+    const next = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(next.modelAccessInput).toBe("api-key");
+    expect(next.currentStepId).toBe("model-access");
+  });
+
+  test("a typed number still wins over the highlight", async () => {
+    let state = await atStep("theme");
+    state = moveFirstRunOnboardingHighlight(state, 1);
+    const next = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    expect(next.selectedTheme).toBe(detailLinesForStep(await atStep("theme"), context)[0]!
+      .replace(/^[❯ ] \d+\. /u, "").replace(/ \(current\)$/u, ""));
   });
 });

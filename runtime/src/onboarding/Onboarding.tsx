@@ -170,6 +170,12 @@ export interface FirstRunOnboardingState {
   readonly isCheckingConnection: boolean;
   /** Local runtimes found listening (O-1): annotated in the provider step. */
   readonly detectedLocalProviders: readonly BuiltInProviderSlug[];
+  /**
+   * 1-based choice the arrow keys moved to on the current step, or null
+   * when the user has not moved: Enter then keeps the step's own default.
+   * Reset on every step change.
+   */
+  readonly highlightedChoice: number | null;
 }
 
 export interface FirstRunByokAuthBackend {
@@ -402,6 +408,8 @@ export interface UseFirstRunOnboardingResult {
   readonly steps: readonly FirstRunOnboardingStep[];
   readonly currentStep: FirstRunOnboardingStep;
   submit(input: string): Promise<boolean>;
+  /** Move the highlighted choice with the arrow keys; no-op on steps without a list. */
+  moveSelection(delta: -1 | 1): void;
 }
 
 const FIRST_RUN_STEP_ORDER: readonly FirstRunOnboardingStepId[] = Object.freeze([
@@ -525,6 +533,7 @@ export function createInitialFirstRunOnboardingState(
     error: null,
     isCheckingConnection: false,
     detectedLocalProviders: [],
+    highlightedChoice: null,
   };
 }
 
@@ -577,6 +586,7 @@ function withCompletedStep(
     ...state,
     completedStepIds: [...completed],
     ...(next !== null ? { currentStepId: next } : {}),
+    highlightedChoice: null,
     error: null,
   };
 }
@@ -592,8 +602,72 @@ function withCompletedSteps(
     ...state,
     completedStepIds: [...completed],
     ...(next !== null ? { currentStepId: next } : {}),
+    highlightedChoice: null,
     error: null,
   };
+}
+
+/** Number of numbered choices the current step lists, 0 when it lists none. */
+export function firstRunOnboardingChoiceCount(
+  state: FirstRunOnboardingState,
+): number {
+  switch (state.currentStepId) {
+    case "theme":
+      return THEME_CHOICES.length;
+    case "provider":
+      return providerChoices().length;
+    case "model-access":
+      return state.pendingApiKeyApproval === null &&
+          state.authPrompt === null &&
+          state.modelAccessInput === "menu"
+        ? 4
+        : 0;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * The 1-based choice Enter confirms on a step with a list: the arrow-key
+ * selection when the user moved, otherwise the step's own default (the
+ * current theme or provider; "Configure later" on the model-access menu).
+ */
+export function firstRunOnboardingHighlightedChoice(
+  state: FirstRunOnboardingState,
+): number | null {
+  const count = firstRunOnboardingChoiceCount(state);
+  if (count === 0) return null;
+  const moved = state.highlightedChoice;
+  if (moved !== null && moved >= 1 && moved <= count) return moved;
+  switch (state.currentStepId) {
+    case "theme":
+      return Math.max(1, THEME_CHOICES.indexOf(state.selectedTheme) + 1);
+    case "provider":
+      return Math.max(1, providerChoices().indexOf(state.selectedProvider) + 1);
+    default:
+      return count;
+  }
+}
+
+/** Move the highlighted choice, wrapping at both ends; unchanged on steps without a list. */
+export function moveFirstRunOnboardingHighlight(
+  state: FirstRunOnboardingState,
+  delta: -1 | 1,
+): FirstRunOnboardingState {
+  const count = firstRunOnboardingChoiceCount(state);
+  if (count === 0) return state;
+  const current = firstRunOnboardingHighlightedChoice(state) ?? 1;
+  const next = ((current - 1 + delta + count) % count) + 1;
+  return { ...state, highlightedChoice: next, error: null };
+}
+
+function choiceLine(
+  state: FirstRunOnboardingState,
+  index: number,
+  text: string,
+): string {
+  const highlighted = firstRunOnboardingHighlightedChoice(state) === index + 1;
+  return `${highlighted ? "❯" : " "} ${index + 1}. ${text}`;
 }
 
 function parseTheme(raw: string, current: ThemeSetting): ThemeSetting | null {
@@ -1431,9 +1505,15 @@ export async function submitFirstRunOnboardingInput(
   rawInput: string,
   context: FirstRunOnboardingContext,
 ): Promise<FirstRunOnboardingSubmitResult> {
+  // Enter after moving the highlight with the arrow keys confirms that
+  // choice; without a move it keeps the step's default as before.
+  const highlightedInput =
+    rawInput.trim() === "" && state.highlightedChoice !== null
+      ? String(firstRunOnboardingHighlightedChoice(state) ?? "")
+      : rawInput;
   const raw = defaultOnboardingCommand(
     state,
-    normalizeOnboardingCommand(rawInput),
+    normalizeOnboardingCommand(highlightedInput),
   );
   const slashError = onboardingSlashCommandError(raw);
   if (slashError !== null) {
@@ -1995,6 +2075,16 @@ export function useFirstRunOnboardingController(
     });
   }, [active, options.agencHome]);
 
+  const moveSelection = useCallback(
+    (delta: -1 | 1): void => {
+      if (!active || submitInFlight.current) return;
+      const next = moveFirstRunOnboardingHighlight(stateRef.current, delta);
+      if (next === stateRef.current) return;
+      stateRef.current = next;
+      setState(next);
+    },
+    [active],
+  );
   const submit = useCallback(
     async (input: string): Promise<boolean> => {
       if (!active) return false;
@@ -2078,6 +2168,7 @@ export function useFirstRunOnboardingController(
     steps,
     currentStep: currentStepFor(state, steps),
     submit,
+    moveSelection,
   };
 }
 
@@ -2179,7 +2270,7 @@ export function firstRunOnboardingInputPresentation(
   state: FirstRunOnboardingState,
 ): FirstRunOnboardingInputPresentation {
   const standardFooter =
-    "Enter confirms the shown default · type a listed choice to change it · /exit leaves setup";
+    "Enter confirms the highlighted choice · ↑/↓ or a number changes it · /exit leaves setup";
   switch (state.currentStepId) {
     case "preflight":
       return {
@@ -2189,13 +2280,13 @@ export function firstRunOnboardingInputPresentation(
       };
     case "theme":
       return {
-        placeholder: `Press Enter to keep ${state.selectedTheme}, or type 1–${THEME_CHOICES.length}`,
+        placeholder: `Press Enter to keep ${state.selectedTheme}, use ↑/↓, or type 1–${THEME_CHOICES.length}`,
         footerHint: standardFooter,
         allowEmptySubmit: true,
       };
     case "provider":
       return {
-        placeholder: `Press Enter to keep ${state.selectedProvider}, or type a provider number`,
+        placeholder: `Press Enter to keep ${state.selectedProvider}, use ↑/↓, or type a provider number`,
         footerHint: standardFooter,
         allowEmptySubmit: true,
       };
@@ -2219,9 +2310,9 @@ export function firstRunOnboardingInputPresentation(
         };
       }
       return {
-        placeholder: "Choose 1–4, or paste a provider API key directly",
+        placeholder: "Use ↑/↓ or choose 1–4, or paste a provider API key directly",
         footerHint:
-          "No slash commands needed · Enter chooses Configure later · /exit leaves setup",
+          "Enter chooses the highlighted option · /exit leaves setup",
         allowEmptySubmit: true,
       };
     case "connection-test":
@@ -2278,24 +2369,24 @@ export function detailLinesForStep(
         : `Tip: couldn't detect your terminal background — if it's light, pick "light" or "auto"; if dark, "dark" or "auto".`;
       return [
         ...THEME_CHOICES.map((theme, index) =>
-          `${index + 1}. ${theme}${theme === state.selectedTheme ? " (current)" : ""}`
+          choiceLine(state, index, `${theme}${theme === state.selectedTheme ? " (current)" : ""}`)
         ),
         themeTip,
-        `Press Enter to keep ${state.selectedTheme}, or type a number or theme name.`,
+        "Use ↑/↓ and press Enter, or type a number or theme name.",
       ];
     }
     case "provider": {
       const detected = new Set(state.detectedLocalProviders);
       return [
         ...providerChoices().map((provider, index) =>
-          `${index + 1}. ${provider}${provider === state.selectedProvider ? " (current)" : ""}${detected.has(provider) ? " — detected, running locally, no key needed" : ""}`
+          choiceLine(state, index, `${provider}${provider === state.selectedProvider ? " (current)" : ""}${detected.has(provider) ? " — detected, running locally, no key needed" : ""}`)
         ),
         ...(detected.size > 0
           ? [
               `Tip: ${[...detected][0]} is already running on this machine — pick it for a zero-key start.`,
             ]
           : []),
-        `Press Enter to keep ${state.selectedProvider}, or type a number or provider slug.`,
+        "Use ↑/↓ and press Enter, or type a number or provider slug.",
       ];
     }
     case "connection-test":
@@ -2347,15 +2438,15 @@ export function detailLinesForStep(
         return [
           `Provider: ${state.selectedProvider}`,
           `Model: ${state.selectedModel}`,
-          "1. Sign in or create an AgenC account — use hosted models; free accounts get the free-model catalog.",
-          "2. Sign in with X / xAI — use Grok through an eligible X or xAI subscription.",
-          `3. ${providerAccess}`,
-          "4. Configure later — continue without signing in or saving a key.",
+          choiceLine(state, 0, "Sign in or create an AgenC account — use hosted models; free accounts get the free-model catalog."),
+          choiceLine(state, 1, "Sign in with X / xAI — use Grok through an eligible X or xAI subscription."),
+          choiceLine(state, 2, providerAccess),
+          choiceLine(state, 3, "Configure later — continue without signing in or saving a key."),
           ...(geminiPlan?.kind === "none" &&
             (geminiPlan.expected === "access-token" ||
               geminiPlan.expected === "adc")
-            ? ["Choose a number. Configure the forced Gemini credential source before testing."]
-            : ["Choose a number. You can also paste a provider API key directly."]),
+            ? ["Use ↑/↓ and press Enter, or type a number. Configure the forced Gemini credential source before testing."]
+            : ["Use ↑/↓ and press Enter, or type a number. You can also paste a provider API key directly."]),
         ];
       }
       const connection = state.connection;

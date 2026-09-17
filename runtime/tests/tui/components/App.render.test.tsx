@@ -9068,10 +9068,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           );
           expect(output()).toContain("Preflight");
           expect(session.setPendingProviderSwitch).not.toHaveBeenCalled();
-          await submit("", "PressEntertokeepdark,ortypeanumberorthemename.");
+          await submit("", "Use↑/↓andpressEnter,ortypeanumberorthemename.");
           await submit(
             "1",
-            "PressEntertokeepgrok,ortypeanumberorproviderslug.",
+            "Use↑/↓andpressEnter,ortypeanumberorproviderslug.",
           );
           await submit("2", "OPENAI_API_KEY");
           await submit("sk-onboarding-app-fixture", "ApproveBYOKAPIkey");
@@ -9161,11 +9161,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
             await submit(
               "next",
-              "PressEntertokeepdark,ortypeanumberorthemename.",
+              "Use↑/↓andpressEnter,ortypeanumberorthemename.",
             );
             await submit(
               "1",
-              "PressEntertokeepgrok,ortypeanumberorproviderslug.",
+              "Use↑/↓andpressEnter,ortypeanumberorproviderslug.",
             );
             await submit("2", "OPENAI_API_KEY");
             await submit("skip", "PressEntertoruntheconnectioncheck");
