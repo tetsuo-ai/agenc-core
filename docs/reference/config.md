@@ -382,21 +382,29 @@ synthetic stop. `completion_gate` defaults to `mode = "auto"` with
 evaluation harness) the first tool-free final answer of a turn that used
 tools is not accepted; the runtime injects a durable `<completion_gate>`
 user message that quotes the task and asks for a checklist backed by
-executed checks. Acceptance requires at least one successful tool result
-after the latest request and a nonempty checked `- [x]` item outside code
-fences. Unchecked `- [ ]`, explicitly unverified `- [-]`, or malformed
-checklist items prevent verification. A tool error or an explicitly
-still-running command (`metadata.exitCode = null`) does not count as a
-successful check; a later successful result can satisfy the requirement.
+executed checks. Acceptance requires each nonempty checked `- [x]` item
+outside code fences to have an associated successful tool result after the
+latest request. Association is token overlap between the item text and the
+tool name, arguments, or content — a successful unrelated FileRead does
+not verify a numerical claim. Unchecked `- [ ]` or malformed items prevent
+verification. Explicit `- [-]` unavailable claims get one investigation
+round, then settle as `partial` with `unavailable_checks` instead of
+retrying to the round cap. A `- [-]` mark is not itself evidence: if the
+named check actually ran (numeric `exitCode`), the item is unmet, not
+unavailable. A tool error or an explicitly still-running command
+(`metadata.exitCode = null`) does not count as a successful check; a later
+associated successful result can supersede an earlier associated failure.
 The gate checks this structure, not whether the evidence proves every task
-requirement or whether the delivered work is correct. A turn that never
-called a tool (a plain question) is not gated. At `max_rounds` the answer is
-recorded as `exhausted`, not `verified`, in the `completion_gate` event.
-A `completion_gate_exhausted` warning states that the final answer was not
-verified. The turn still completes with its existing stop reason and exit
-code; text-mode `agenc -p` prints the warning to stderr, and structured
-output includes the warning event. `mode = "never"` turns the gate off,
-`mode = "always"` applies it to interactive sessions too.
+requirement or whether the delivered work is correct, and a `verified`
+event is not a benchmark pass. A turn that never called a tool (a plain
+question) is not gated. At `max_rounds` an unmet answer is recorded as
+`exhausted`; an unavailable leftover is `partial`. Warnings
+`completion_gate_exhausted` and `completion_gate_partial` state that the
+final answer was not fully verified. The turn still completes with its
+existing stop reason and exit code; text-mode `agenc -p` prints the
+warning to stderr, and structured output includes the warning event.
+`mode = "never"` turns the gate off, `mode = "always"` applies it to
+interactive sessions too.
 `compaction` controls the degraded compaction ladder. When automatic
 compaction at the context limit declines to shrink the history (the
 summary would not save enough, or the summarizer failed), the runtime

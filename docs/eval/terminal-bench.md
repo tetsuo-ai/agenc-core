@@ -206,8 +206,10 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   the completion gate (`phases/completion-gate.ts`, config `completion_gate`):
   the first tool-free final answer of a tool-using non-interactive turn is
   held while a durable `<completion_gate>` message quoting the task asks for
-  a checklist backed by executed checks; the answer is accepted once a
-  tool-backed one arrives, or after three rounds. Every decision is a
+  a checklist backed by executed checks; the answer is accepted once each
+  checked item has associated tool evidence, or as `partial` when remaining
+  checks are unavailable, or after three rounds (`exhausted`). A
+  `verified` gate event is not a Terminal-Bench pass. Every decision is a
   `completion_gate` rollout event, so a trial's transcript shows whether the
   verification round happened. `agenc config set completion_gate.mode never`
   runs a build without the gate.

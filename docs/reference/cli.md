@@ -91,16 +91,21 @@ From `formatCliHelpText()`:
   re-verify, and the advice to escalate with the ask-user-question tool). The
   contract is also enforced structurally: the first tool-free final answer of
   a turn that used tools is held back while the runtime injects a
-  `<completion_gate>` verification request. Verification requires a
-  nonempty checked checklist item and a successful tool result since the
-  latest request, with no unchecked, unverified or malformed checklist
-  items. Failed tools and explicitly still-running commands do not count.
-  This is a structural check, not a guarantee of task correctness. After
-  `completion_gate.max_rounds` (default 3), an unverified answer still ends
-  the turn with the existing exit code, but a warning is printed to stderr
-  in text mode and included in structured-output events. The gate records
-  `exhausted`, not `verified`. `completion_gate.mode = "never"` in the
-  config turns that off; see
+  `<completion_gate>` verification request. Verification requires each
+  nonempty checked `- [x]` item to have an associated successful tool
+  result since the latest request (the tool name, arguments, or content
+  must share a distinctive token with the claim). Unchecked `- [ ]` items
+  and malformed checklist items prevent verification. An explicit `- [-]`
+  unavailable claim is investigated once, then the gate settles as
+  `partial` rather than repeating the same request to the round cap. Failed
+  tools and explicitly still-running commands do not count, and an
+  unrelated successful read does not verify a different claim. This is a
+  structural check, not a guarantee of task correctness and not a
+  benchmark pass. After `completion_gate.max_rounds` (default 3), an
+  unmet answer still ends the turn with the existing exit code. Text-mode
+  `agenc -p` prints a warning to stderr (`exhausted` or `partial`) and
+  structured output includes the event. `completion_gate.mode = "never"`
+  in the config turns that off; see
   [config.md](config.md#built-in-defaults).
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport

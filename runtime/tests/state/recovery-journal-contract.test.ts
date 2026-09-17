@@ -906,6 +906,25 @@ describe("strict canonical journal contract", () => {
     expect(isCanonicalEventPayload("completion_gate", { ...gate, reason: "deadline_soon" })).toBe(false);
   });
 
+  it("accepts partial unavailable-check completion gate outcomes (#2478)", () => {
+    const gate = {
+      turnId: "turn-1",
+      round: 2,
+      maxRounds: 3,
+      toolCallsSinceInjection: 1,
+      unmetItems: ["official oracle is unavailable"],
+    };
+    expect(isCanonicalEventPayload("completion_gate", {
+      ...gate, outcome: "partial", reason: "unavailable_checks",
+    })).toBe(true);
+    expect(isCanonicalEventPayload("completion_gate", {
+      ...gate, outcome: "injected", reason: "unavailable_unproven",
+    })).toBe(true);
+    expect(isCanonicalEventPayload("completion_gate", {
+      ...gate, outcome: "partial", reason: "deadline_soon",
+    })).toBe(false);
+  });
+
   it("keeps an exhaustive fail-closed schema for every rollout discriminant", () => {
     expect(CANONICAL_ROLLOUT_SCHEMA_TYPES).toEqual([
       "compacted",
