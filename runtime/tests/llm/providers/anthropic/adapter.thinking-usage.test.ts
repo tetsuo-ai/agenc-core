@@ -11,10 +11,10 @@ const EXPECTED_USAGE = {
   promptTokens: 120,
   completionTokens: 348,
   totalTokens: 468,
-  availability: "reported",
-  provenance: "provider",
+  availability: "reported" as const,
+  provenance: "provider" as const,
   reasoningOutputTokens: 312,
-} as const;
+};
 
 function jsonResponse(body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), {
@@ -56,30 +56,22 @@ function sseEvent(event: string, data: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+function messageStart(id: string, usage: Record<string, unknown>): string {
+  return sseEvent("message_start", {
+    type: "message_start",
+    message: { id, type: "message", role: "assistant", model: MODEL, content: [], usage },
+  });
+}
+
 function textAssistantFrames(args: {
   readonly id: string;
   readonly startUsage: Record<string, unknown>;
   readonly deltaUsage: Record<string, unknown>;
-  readonly text?: string;
 }): string[] {
   return [
-    sseEvent("message_start", {
-      type: "message_start",
-      message: {
-        id: args.id,
-        type: "message",
-        role: "assistant",
-        model: MODEL,
-        content: [],
-        usage: args.startUsage,
-      },
-    }),
+    messageStart(args.id, args.startUsage),
     'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
-    `event: content_block_delta\ndata: ${JSON.stringify({
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: args.text ?? "ok" },
-    })}\n\n`,
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
     'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
     sseEvent("message_delta", {
       type: "message_delta",
@@ -88,6 +80,12 @@ function textAssistantFrames(args: {
     }),
     'event: message_stop\ndata: {"type":"message_stop"}\n\n',
   ];
+}
+
+async function streamWith(
+  fetchImpl: typeof fetch,
+): Promise<Awaited<ReturnType<AnthropicProvider["chatStream"]>>> {
+  return providerFor(fetchImpl).chatStream([{ role: "user", content: "hello" }], () => {});
 }
 
 describe("AnthropicProvider thinking-token usage (#2112)", () => {
@@ -122,9 +120,10 @@ describe("AnthropicProvider thinking-token usage (#2112)", () => {
     expect(stream.usage).toEqual(chat.usage);
   });
 
-  test("streaming preserves thinking details reported on message_start", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      ssePayload(textAssistantFrames({
+  test.each([
+    {
+      name: "streaming preserves thinking details reported on message_start",
+      frames: textAssistantFrames({
         id: "msg_start_thinking",
         startUsage: {
           input_tokens: 120,
@@ -132,50 +131,25 @@ describe("AnthropicProvider thinking-token usage (#2112)", () => {
           output_tokens_details: { thinking_tokens: 312 },
         },
         deltaUsage: { output_tokens: 348 },
-      })),
+      }),
+      error: undefined,
+      partial: false,
+    },
+    {
+      name: "partial stream failure keeps nested thinking tokens",
+      frames: [
+        messageStart("msg_partial", EXAMPLE_USAGE),
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n',
+      ],
+      error: new Error("network blip"),
+      partial: true,
+    },
+  ])("$name", async ({ frames, error, partial }) => {
+    const response = await streamWith(
+      vi.fn<typeof fetch>().mockResolvedValue(ssePayload(frames, error)),
     );
-
-    const response = await providerFor(fetchImpl).chatStream(
-      [{ role: "user", content: "hello" }],
-      () => {},
-    );
-
-    expect(response.usage).toMatchObject({
-      completionTokens: 348,
-      reasoningOutputTokens: 312,
-    });
-  });
-
-  test("partial stream failure keeps nested thinking tokens", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      ssePayload(
-        [
-          sseEvent("message_start", {
-            type: "message_start",
-            message: {
-              id: "msg_partial",
-              type: "message",
-              role: "assistant",
-              model: MODEL,
-              content: [],
-              usage: EXAMPLE_USAGE,
-            },
-          }),
-          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n',
-        ],
-        new Error("network blip"),
-      ),
-    );
-
-    const response = await providerFor(fetchImpl).chatStream(
-      [{ role: "user", content: "hello" }],
-      () => {},
-    );
-
-    expect(response.partial).toBe(true);
-    expect(response.usage).toMatchObject({
-      completionTokens: 348,
-      reasoningOutputTokens: 312,
-    });
+    expect(response.partial ?? false).toBe(partial);
+    expect(response.usage.completionTokens).toBe(348);
+    expect(response.usage.reasoningOutputTokens).toBe(312);
   });
 });
