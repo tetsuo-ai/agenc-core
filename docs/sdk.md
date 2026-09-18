@@ -24,6 +24,17 @@ npm run build --workspace=@tetsuo-ai/agenc-sdk   # plain tsc → dist/
 Both produce the same typed event iterable (`AgencPromptEvent`) and the same
 final `AgencPromptResult`, so downstream consumption code is shared.
 
+Both transports share `AGENC_SDK_MAX_FRAME_BYTES` (16 MiB), the same numeric
+ceiling as the daemon socket and MCP stdio servers. Measurement is versioned
+on purpose: the socket transport still measures UTF-8 bytes of the unsliced
+receive buffer before line split, so a completed frame plus its delimiter can
+trip that ceiling one byte earlier. The subprocess transport counts raw
+payload bytes excluding the LF (and a preceding CR), decodes UTF-8 only after
+the payload is within the bound, and fails the run once when the payload is
+one byte over — whether or not a delimiter has arrived. Overflow stops
+further reads, SIGTERMs the child, and keeps only the existing 8 KiB stderr
+tail.
+
 ## Daemon transport
 
 ```js
@@ -724,6 +735,9 @@ daemon projects it as diagnostic with `statusProjection: "session_only"`.
   and client multiplexer).
 - `subprocess-transport.test.ts` — stream-json adaptation with a fake child
   process (argv contract, event mapping, exit-code-2 mapping, error paths).
+- `subprocess-stdout-framing.test.ts` — 16 MiB stdout payload ceiling, CRLF,
+  split UTF-8, multi-frame chunks, and overflow cleanup.
+- `frame-limits.contract.test.ts` — SDK / daemon / MCP 16 MiB ceiling pin.
 - `events.contract.test.ts` — trusted object `clientAction` preservation and
   malformed/scalar rejection at the SDK event boundary.
 - `replay-safe-client.contract.test.ts` — reconnect cursors, duplicate
