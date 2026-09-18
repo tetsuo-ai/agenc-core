@@ -18,6 +18,10 @@ import {
   isReservedPluginStorageChildName,
   migrateLegacyPluginDataDirectories,
 } from "./directories.js";
+import {
+  isPluginInstallTransactionArtifactName,
+  recoverPluginInstallTransactions,
+} from "./cli/plugin-install-transaction.js";
 import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import {
   assertNoRetiredRootPluginManifest,
@@ -91,7 +95,8 @@ export type PluginLoadIssueType =
   | "mcp"
   | "lsp"
   | "dependency"
-  | "settings";
+  | "settings"
+  | "install-recovery";
 
 export interface PluginLoadIssue {
   readonly type: PluginLoadIssueType;
@@ -362,7 +367,8 @@ async function discoverRootsUnder(
     if (
       !entry.isDirectory() ||
       SKIP_PLUGIN_ROOTS.has(entry.name) ||
-      isReservedPluginStorageChildName(entry.name)
+      isReservedPluginStorageChildName(entry.name) ||
+      isPluginInstallTransactionArtifactName(entry.name)
     ) continue;
     const candidate = join(baseDir, entry.name);
     if (await hasPluginShape(candidate)) {
@@ -554,6 +560,20 @@ export async function discoverPluginRoots(
 export async function loadPlugins(
   options: PluginLoaderOptions,
 ): Promise<PluginLoadResult> {
+  const recoveryIssues = options.readOnly === true
+    ? []
+    : (await recoverPluginInstallTransactions({
+      installRoots: [
+        options.pluginStorageRoot,
+        join(options.workspaceRoot, ".agents", "plugins"),
+      ],
+    })).issues.map((issue): PluginLoadIssue => ({
+      type: "install-recovery",
+      source: issue.destination ?? options.pluginStorageRoot,
+      ...(issue.pluginId === undefined ? {} : { plugin: issue.pluginId }),
+      path: issue.preservedPaths[0],
+      message: issue.message,
+    }));
   const roots = await discoverPluginRoots(options);
   const configured = configuredPluginEntries(options.config);
   const allowlist = configuredPluginAllowlist(options.config);
@@ -674,6 +694,7 @@ export async function loadPlugins(
     enabled: finalPlugins.filter((plugin) => plugin.enabled),
     disabled: finalPlugins.filter((plugin) => !plugin.enabled),
     errors: [
+      ...recoveryIssues,
       ...loaded.flatMap((entry) => entry.errors),
       ...identityErrors,
       ...dataMigrationErrors,
