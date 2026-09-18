@@ -12,6 +12,10 @@ import { useKeybindings, useInputCapture } from "../../keybindings/useKeybinding
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState } from "../../state/AppState.js";
 import { taskMayReferencePath } from "../agents/activity.js";
+import {
+  previewTaskEpoch,
+  usePreviewFileRevision,
+} from "../previewInvalidation.js";
 import { attachFileRangeCommand, openBufferCommand } from "../commands.js";
 import { collectGitStatus } from "../project-tree/gitStatus.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
@@ -97,7 +101,12 @@ export function PreviewSurface({
     ),
     [activePath, tasks],
   );
+  const taskEpoch = useMemo(
+    () => previewTaskEpoch(tasks, activePath),
+    [activePath, tasks],
+  );
   const absolutePath = activePath ? path.resolve(getCwd(), activePath) : null;
+  const fileRevision = usePreviewFileRevision(absolutePath);
   const diagnostics = useMemo(
     () => absolutePath
       ? peekLSPDiagnosticsForFile(
@@ -184,7 +193,7 @@ export function PreviewSurface({
         });
       });
     return () => controller.abort();
-  }, [absolutePath, activePath, initialStartLine, startLine]);
+  }, [absolutePath, activePath, fileRevision, initialStartLine, startLine, taskEpoch]);
 
   useEffect(() => {
     if (!activePath) {
