@@ -154,6 +154,12 @@ export interface ChatCompletionsCapabilityHints {
   readonly allowedFinishReasons?: ReadonlySet<string>;
   /** Reject EOF/[DONE] unless a documented terminal finish reason was seen. */
   readonly requiresExplicitFinishReason?: boolean;
+  /**
+   * If `true`, a clean byte-stream EOF is treated as a successful
+   * terminal. Only for endpoints that document a terminal rule other
+   * than choice `finish_reason` or `data: [DONE]`.
+   */
+  readonly acceptsCleanEofAsTerminal?: boolean;
   /** Whether caller-supplied temperature is accepted by this wire contract. */
   readonly acceptsTemperature?: boolean;
   /**

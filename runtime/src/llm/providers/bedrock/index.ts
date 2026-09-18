@@ -35,6 +35,10 @@ import {
   type ProviderTokenCountCapability,
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
+import {
+  LLMInvalidResponseError,
+  LLMStreamTruncatedError,
+} from "../../errors.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
 import {
   isOpaqueBedrockModelArn,
@@ -794,11 +798,25 @@ async function* bedrockEventStreamPayloads(
         continue;
       }
       const text = decoder.decode(payload).trim();
-      yield text.length === 0 ? {} : JSON.parse(text);
+      if (text.length === 0) {
+        yield {};
+        continue;
+      }
+      try {
+        yield JSON.parse(text) as unknown;
+      } catch (error) {
+        throw new LLMInvalidResponseError(
+          BEDROCK_PROVIDER_ID,
+          `Malformed JSON in Amazon Bedrock stream event: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
   if (pending.length > 0) {
-    throw new Error("Amazon Bedrock stream ended with a partial event frame");
+    throw new LLMStreamTruncatedError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream ended with a partial event frame",
+    );
   }
 }
 
@@ -839,6 +857,8 @@ async function parseStreamResponse(params: {
   let content = "";
   let stopReason: string | undefined;
   let usage: BedrockResponse["usage"] | undefined;
+  let sawMessageStop = false;
+  const openStartedBlocks = new Set<number>();
   const toolBlocks = new Map<number, BedrockStreamToolBlock>();
   const toolCalls: LLMToolCall[] = [];
 
@@ -856,6 +876,9 @@ async function parseStreamResponse(params: {
       const index = numericField(startEvent, "contentBlockIndex") ?? -1;
       const start = isRecord(startEvent.start) ? startEvent.start : {};
       const toolUse = isRecord(start.toolUse) ? start.toolUse : null;
+      if (index >= 0) {
+        openStartedBlocks.add(index);
+      }
       if (index >= 0 && toolUse !== null) {
         const id = String(toolUse.toolUseId ?? "");
         // Decode the encoded wire name back to the internal-registry
@@ -919,6 +942,9 @@ async function parseStreamResponse(params: {
       : null;
     if (stopEvent !== null) {
       const index = numericField(stopEvent, "contentBlockIndex") ?? -1;
+      if (index >= 0) {
+        openStartedBlocks.delete(index);
+      }
       const block = toolBlocks.get(index);
       if (block !== undefined) {
         const toolCall = parseCompletedToolCall(block);
@@ -933,6 +959,7 @@ async function parseStreamResponse(params: {
       ? rawEvent.messageStop
       : null;
     if (messageStop !== null) {
+      sawMessageStop = true;
       stopReason =
         typeof messageStop.stopReason === "string"
           ? messageStop.stopReason
@@ -946,6 +973,18 @@ async function parseStreamResponse(params: {
     }
   }
 
+  if (!sawMessageStop) {
+    throw new LLMStreamTruncatedError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream closed before a messageStop event",
+    );
+  }
+  if (openStartedBlocks.size > 0 || toolBlocks.size > 0) {
+    throw new LLMInvalidResponseError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream ended with an open content or tool block",
+    );
+  }
   const response: LLMResponse = {
     content,
     toolCalls,
