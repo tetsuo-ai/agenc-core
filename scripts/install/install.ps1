@@ -2660,16 +2660,92 @@ if (process.versions.node !== "26.5.0" || process.versions.modules !== "147" ||
     Write-Log "NOTE: $binDir is not on your PATH. Add it via:  setx PATH `"$binDir;%PATH%`""
   }
 
-  # Daemon-as-service on Windows uses WinSW with packaging/windows/agenc-daemon.xml;
-  # see docs/install.md. Manual start works out of the box:
+  $systemRoot = [Environment]::GetEnvironmentVariable("SystemRoot")
+  if (-not $systemRoot -or $systemRoot -notmatch '^[A-Za-z]:[\\/]') {
+    $systemRoot = "C:\Windows"
+  }
+  $cmdExe = ($systemRoot.TrimEnd("\", "/") + "\System32\cmd.exe") -replace "/", "\"
+  $accountUser = [Environment]::GetEnvironmentVariable("USERNAME")
+  if (-not $accountUser) { $accountUser = [Environment]::GetEnvironmentVariable("USER") }
+  $accountDomain = [Environment]::GetEnvironmentVariable("USERDOMAIN")
+  if (-not $accountUser) { Fail "could not resolve the installing Windows user for the WinSW service account" }
+  if ($accountUser -eq "SYSTEM" -or $accountUser -eq "LocalSystem") {
+    Fail "WinSW service account must be the installing user, not LocalSystem"
+  }
+  $account = if ($accountDomain) { "$accountDomain\$accountUser" } else { ".\$accountUser" }
+  $xmlPath = Join-Path $prefix "agenc-daemon.xml"
+  # BEGIN AGENC WINSW RENDERER
+  $RenderWinSW = @'
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { dirname, win32 } = require("node:path");
+const [commandPrompt, launcher, agencHome, accountUsername, outputPath] = process.argv.slice(1);
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+function escapeXmlAttr(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+function isAbsoluteServicePath(value) {
+  return typeof value === "string" && value !== "agenc" && win32.isAbsolute(value)
+    && !/[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value) && !value.includes("\"");
+}
+if (!isAbsoluteServicePath(commandPrompt) || !/(?:^|[\\/])cmd\.exe$/i.test(commandPrompt)) {
+  fail("commandPrompt must be an absolute cmd.exe path");
+}
+if (!isAbsoluteServicePath(launcher) || !/(?:^|[\\/])agenc\.cmd$/i.test(launcher)) {
+  fail("launcher must be an absolute agenc.cmd path");
+}
+if (!isAbsoluteServicePath(agencHome)) fail("AGENC_HOME must be an absolute path");
+if (!isAbsoluteServicePath(outputPath)) fail("WinSW output path must be absolute");
+const account = String(accountUsername || "").trim().replaceAll("/", "\\");
+if (!account || /^(localsystem|system|nt authority\\system|\.\\system)$/i.test(account)) {
+  fail("service account must be the installing user, not LocalSystem");
+}
+const args = `/d /v:off /s /c ""${String(launcher).replaceAll("%", "%%")}" daemon start --foreground"`;
+const xml = [
+  "<service>",
+  "  <id>agenc-daemon</id>",
+  "  <name>AgenC Daemon</name>",
+  "  <description>Runs the local AgenC daemon control plane for the installing user's AGENC_HOME.</description>",
+  `  <executable>${escapeXmlAttr(commandPrompt)}</executable>`,
+  `  <arguments>${escapeXmlAttr(args)}</arguments>`,
+  `  <workingdirectory>${escapeXmlAttr(agencHome)}</workingdirectory>`,
+  `  <env name="AGENC_HOME" value="${escapeXmlAttr(agencHome)}"/>`,
+  '  <env name="NODE_ENV" value="production"/>',
+  "  <serviceaccount>",
+  `    <username>${escapeXmlAttr(account)}</username>`,
+  "    <allowservicelogon>true</allowservicelogon>",
+  "  </serviceaccount>",
+  "  <startmode>Automatic</startmode>",
+  '  <onfailure action="restart" delay="5 sec"/>',
+  '  <log mode="roll-by-size">',
+  "    <sizeThreshold>10485760</sizeThreshold>",
+  "    <keepFiles>5</keepFiles>",
+  "  </log>",
+  "</service>",
+  "",
+].join("\n");
+mkdirSync(dirname(outputPath), { recursive: true, mode: 0o700 });
+writeFileSync(outputPath, xml, { encoding: "utf8" });
+process.stdout.write(outputPath);
+'@
+  # END AGENC WINSW RENDERER
+  $xmlResult = (& node -e $RenderWinSW $cmdExe $shim $agencHome $account $xmlPath | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $xmlResult) { Fail "could not generate the WinSW service definition" }
+  Write-Log "wrote WinSW service definition: $xmlPath (service install is a separate WinSW step)"
+
   Write-Log "install complete"
   Write-Host ""
   Write-Host "  AgenC $version installed."
   Write-Host ""
   Write-Host "  Next steps:"
-  Write-Host "    $shim                # start the interactive TUI"
-  Write-Host "    $shim doctor         # verify the installation"
-  Write-Host "    $shim daemon start   # start the daemon"
+  Write-Host "    $shim                      # start the interactive TUI"
+  Write-Host "    $shim doctor               # verify the installation"
+  Write-Host "    $shim daemon start         # start the daemon without a Windows service"
+  Write-Host "    $shim daemon install-service  # regenerate the WinSW XML"
+  Write-Host "    # WinSW install/start/stop/restart is a separate elevated step; see docs/install.md"
   Write-Host ""
 } finally {
   $parentUnchanged = $workParentIdentity -and

@@ -1,9 +1,41 @@
+<!--
+  Example only. Do not install this file unchanged.
+
+  A WinSW service that names a bare `agenc` executable cannot resolve the
+  user-local agenc.cmd the Windows installer places under
+  %LOCALAPPDATA%\agenc\bin. The default LocalSystem account does not inherit
+  that user's PATH or AGENC_HOME, so the service may fail to start or supervise
+  a different install.
+
+  The one-line installer (install.ps1) installs the CLI and writes a generated
+  definition next to the install prefix. Generating or installing the Windows
+  service is a separate step:
+
+    agenc daemon install-service
+
+  Then, typically elevated, use WinSW against that generated file:
+
+    winsw install <generated-agenc-daemon.xml>
+    winsw start agenc-daemon
+    winsw stop agenc-daemon
+    winsw restart agenc-daemon
+
+  Required substitutions: absolute cmd.exe, absolute agenc.cmd, AGENC_HOME,
+  working directory, and the installing-user service account.
+-->
 <service>
   <id>agenc-daemon</id>
   <name>AgenC Daemon</name>
-  <description>Runs the local AgenC daemon control plane.</description>
-  <executable>agenc</executable>
-  <arguments>daemon start --foreground</arguments>
+  <description>Example WinSW service. Replace every __PLACEHOLDER__ before use.</description>
+  <executable>__AGENC_CMD_EXE__</executable>
+  <arguments>/d /v:off /s /c ""__AGENC_LAUNCHER__" daemon start --foreground"</arguments>
+  <workingdirectory>__AGENC_HOME__</workingdirectory>
+  <env name="AGENC_HOME" value="__AGENC_HOME__"/>
+  <env name="NODE_ENV" value="production"/>
+  <serviceaccount>
+    <username>__AGENC_SERVICE_ACCOUNT__</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
   <startmode>Automatic</startmode>
   <onfailure action="restart" delay="5 sec"/>
   <log mode="roll-by-size">

@@ -1,0 +1,269 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { win32 } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, test } from "vitest";
+import {
+  parseAgenCDaemonCliArgs,
+  runAgenCDaemonCli,
+} from "../../src/app-server/daemon-cli.js";
+import {
+  installAgencDaemonWinSWService,
+  parseAgencDaemonWinSWServiceXml,
+  renderAgencDaemonWinSWService,
+  resolveWindowsCmdExe,
+  resolveWindowsServiceAccount,
+  writeAgencDaemonWinSWServiceXml,
+} from "../../src/packaging/windows-winsw-service.js";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const INSTALL_PS1 = join(REPO_ROOT, "scripts", "install", "install.ps1");
+
+const CMD_EXE = "C:\\Windows\\System32\\cmd.exe";
+const LAUNCHER = "C:\\Users\\Ada\\AppData\\Local\\agenc\\bin\\agenc.cmd";
+const HOME = "C:\\Users\\Ada\\.agenc";
+const ACCOUNT = "ADA-PC\\Ada";
+
+function renderDefault(
+  overrides: Partial<Parameters<typeof renderAgencDaemonWinSWService>[0]> = {},
+) {
+  return renderAgencDaemonWinSWService({
+    commandPrompt: CMD_EXE,
+    launcher: LAUNCHER,
+    agencHome: HOME,
+    accountUsername: ACCOUNT,
+    ...overrides,
+  });
+}
+
+describe("WinSW daemon service definition", () => {
+  test("uses absolute cmd.exe and the installed agenc.cmd, not a bare agenc", () => {
+    const definition = renderDefault();
+    const parsed = parseAgencDaemonWinSWServiceXml(definition.xml);
+
+    expect(parsed.executable).toBe(CMD_EXE);
+    expect(win32.isAbsolute(parsed.executable)).toBe(true);
+    expect(parsed.executable.toLowerCase()).toMatch(/cmd\.exe$/u);
+    expect(parsed.arguments).toContain(LAUNCHER);
+    expect(parsed.arguments).toContain("daemon start --foreground");
+    expect(parsed.xml).not.toContain("<executable>agenc</executable>");
+    expect(parsed.xml).not.toMatch(/<executable>\s*agenc\s*<\/executable>/u);
+  });
+
+  test("sets the installing-user account, AGENC_HOME, and working directory", () => {
+    const definition = renderDefault();
+    const parsed = parseAgencDaemonWinSWServiceXml(definition.xml);
+
+    expect(parsed.id).toBe("agenc-daemon");
+    expect(parsed.accountUsername).toBe(ACCOUNT);
+    expect(parsed.agencHome).toBe(HOME);
+    expect(parsed.workingDirectory).toBe(HOME);
+    expect(parsed.allowServiceLogon).toBe(true);
+    expect(definition.accountUsername).toBe(ACCOUNT);
+    expect(definition.agencHome).toBe(HOME);
+  });
+
+  test("escapes spaces and XML-sensitive characters in paths and account", () => {
+    const launcher =
+      "C:\\Users\\Ada O'Neil\\AppData\\Local\\agenc & tools\\bin\\agenc.cmd";
+    const agencHome = "C:\\Users\\Ada O'Neil\\.agenc & home";
+    const account = "ADA-PC\\Ada O'Neil";
+    const parsed = parseAgencDaemonWinSWServiceXml(
+      renderDefault({ launcher, agencHome, accountUsername: account }).xml,
+    );
+
+    expect(parsed.launcher).toBe(launcher);
+    expect(parsed.agencHome).toBe(agencHome);
+    expect(parsed.accountUsername).toBe(account);
+    expect(parsed.workingDirectory).toBe(agencHome);
+    expect(parsed.xml).toContain("agenc &amp; tools");
+    expect(parsed.xml).toContain(".agenc &amp; home");
+    expect(parsed.xml).toContain("Ada O&apos;Neil");
+    expect(parsed.xml).not.toContain("agenc & tools");
+    expect(parsed.xml).not.toContain(".agenc & home");
+  });
+
+  test("does not depend on PATH or PATHEXT and disables cmd AutoRun", () => {
+    const parsed = parseAgencDaemonWinSWServiceXml(renderDefault().xml);
+    expect(parsed.arguments).toMatch(/^\/d \/v:off \/s \/c /u);
+    expect(parsed.executable).toBe(CMD_EXE);
+  });
+
+  test("rejects a bare executable, relative paths, and LocalSystem", () => {
+    expect(() =>
+      renderDefault({ commandPrompt: "agenc" }),
+    ).toThrow(/absolute/i);
+    expect(() =>
+      renderDefault({ launcher: "agenc.cmd" }),
+    ).toThrow(/absolute/i);
+    expect(() =>
+      renderDefault({ agencHome: ".agenc" }),
+    ).toThrow(/absolute/i);
+    expect(() =>
+      renderDefault({ accountUsername: "LocalSystem" }),
+    ).toThrow(/LocalSystem|installing user/i);
+    expect(() =>
+      renderDefault({ accountUsername: "NT AUTHORITY\\SYSTEM" }),
+    ).toThrow(/LocalSystem|installing user/i);
+  });
+
+  test("resolves cmd.exe from SystemRoot and the installing-user account", () => {
+    expect(
+      resolveWindowsCmdExe({ SystemRoot: "D:\\Windows" }),
+    ).toBe("D:\\Windows\\System32\\cmd.exe");
+    expect(resolveWindowsCmdExe({})).toBe(CMD_EXE);
+    expect(
+      resolveWindowsServiceAccount({
+        USERDOMAIN: "ADA-PC",
+        USERNAME: "Ada",
+      }),
+    ).toBe("ADA-PC\\Ada");
+    expect(resolveWindowsServiceAccount({ USERNAME: "Ada" })).toBe(".\\Ada");
+    expect(() =>
+      resolveWindowsServiceAccount({
+        USERDOMAIN: "NT AUTHORITY",
+        USERNAME: "SYSTEM",
+      }),
+    ).toThrow(/LocalSystem|installing user/i);
+  });
+});
+
+describe("writeAgencDaemonWinSWServiceXml", () => {
+  let work: string | undefined;
+  afterEach(() => {
+    if (work !== undefined) rmSync(work, { recursive: true, force: true });
+  });
+
+  test("writes a machine-checkable service definition to disk", () => {
+    work = mkdtempSync(join(tmpdir(), "agenc-winsw-"));
+    const outputPath = join(work, "agenc-daemon.xml");
+    const definition = writeAgencDaemonWinSWServiceXml({
+      commandPrompt: CMD_EXE,
+      launcher: LAUNCHER,
+      agencHome: HOME,
+      accountUsername: ACCOUNT,
+      outputPath,
+    });
+    const onDisk = readFileSync(outputPath, "utf8");
+    expect(onDisk).toBe(definition.xml);
+    const parsed = parseAgencDaemonWinSWServiceXml(onDisk);
+    expect(parsed.executable).toBe(CMD_EXE);
+    expect(parsed.launcher).toBe(LAUNCHER);
+    expect(parsed.agencHome).toBe(HOME);
+    expect(parsed.accountUsername).toBe(ACCOUNT);
+    writeFileSync(join(work, "empty"), "");
+    expect(readFileSync(outputPath, "utf8")).toContain("<env");
+  });
+});
+
+describe("installer and CLI WinSW generation", () => {
+  let work: string | undefined;
+  afterEach(() => {
+    if (work !== undefined) rmSync(work, { recursive: true, force: true });
+  });
+
+  test("install.ps1 embedded renderer matches the TypeScript generator", () => {
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    const begin = ps1.indexOf("$RenderWinSW = @'\n");
+    const end = ps1.indexOf("\n'@\n", begin);
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(begin);
+    const script = ps1.slice(begin + "$RenderWinSW = @'\n".length, end);
+    work = mkdtempSync(join(tmpdir(), "agenc-winsw-ps1-"));
+    const outputPath = join(work, "agenc-daemon.xml");
+    const launcher =
+      "C:\\Users\\Ada O'Neil\\AppData\\Local\\agenc & tools\\bin\\agenc.cmd";
+    const agencHome = "C:\\Users\\Ada O'Neil\\.agenc & home";
+    const account = "ADA-PC\\Ada O'Neil";
+    const result = spawnSync(
+      process.execPath,
+      ["-e", script, CMD_EXE, launcher, agencHome, account, outputPath],
+      { encoding: "utf8" },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(outputPath, "utf8")).toBe(
+      renderDefault({
+        launcher,
+        agencHome,
+        accountUsername: account,
+      }).xml,
+    );
+  });
+
+  test("agenc daemon install-service writes XML and documents the separate WinSW step", async () => {
+    work = mkdtempSync(join(tmpdir(), "agenc-winsw-cli-"));
+    const outputPath = join(work, "agenc-daemon.xml");
+    const lines: string[] = [];
+    expect(parseAgenCDaemonCliArgs(["daemon", "install-service"])).toEqual({
+      kind: "install-service",
+    });
+    const code = installAgencDaemonWinSWService({
+      env: {
+        SystemRoot: "C:\\Windows",
+        AGENC_INSTALL_PREFIX: "C:\\Users\\Ada\\AppData\\Local\\agenc",
+        USERDOMAIN: "ADA-PC",
+        USERNAME: "Ada",
+        AGENC_WINSW_XML: outputPath,
+      },
+      agencHome: HOME,
+      stdout: (line) => lines.push(line),
+      stderr: (line) => lines.push(line),
+    });
+    expect(code).toBe(0);
+    const parsed = parseAgencDaemonWinSWServiceXml(readFileSync(outputPath, "utf8"));
+    expect(parsed.executable).toBe(CMD_EXE);
+    expect(parsed.launcher).toBe(LAUNCHER);
+    expect(parsed.agencHome).toBe(HOME);
+    expect(parsed.accountUsername).toBe(ACCOUNT);
+    expect(lines.join("\n")).toContain("does not install or start a Windows service");
+    expect(lines.join("\n")).toContain("winsw install");
+
+    const stdout: string[] = [];
+    const exit = await runAgenCDaemonCli(
+      { kind: "install-service" },
+      {
+        io: {
+          stdout: { write: (chunk: string) => stdout.push(chunk) && true },
+          stderr: { write: () => true },
+        },
+        host: {
+          env: {
+            AGENC_HOME: work,
+            SystemRoot: "C:\\Windows",
+            AGENC_INSTALL_PREFIX: "C:\\Users\\Ada\\AppData\\Local\\agenc",
+            USERDOMAIN: "ADA-PC",
+            USERNAME: "Ada",
+            AGENC_WINSW_XML: join(work, "from-cli.xml"),
+          },
+          userHome: work,
+          entrypointPath: LAUNCHER,
+          execPath: "C:\\Users\\Ada\\.agenc\\runtime\\node.exe",
+          pid: 4100,
+          spawnDetachedDaemon: () => 4200,
+          isPidRunning: () => false,
+          terminatePid: () => {},
+          sleep: async () => {},
+        },
+      },
+    );
+    expect(exit).toBe(0);
+    expect(readFileSync(join(work, "from-cli.xml"), "utf8")).toContain(
+      "<id>agenc-daemon</id>",
+    );
+  });
+
+  test("docs distinguish the one-line installer from the WinSW service step", () => {
+    const install = readFileSync(join(REPO_ROOT, "docs/install.md"), "utf8");
+    const daemon = readFileSync(join(REPO_ROOT, "docs/reference/daemon.md"), "utf8");
+    const cli = readFileSync(join(REPO_ROOT, "docs/reference/cli.md"), "utf8");
+    expect(install).toContain("That is not a service install");
+    expect(install).toContain("agenc daemon install-service");
+    expect(install).not.toContain(
+      "Running the\ndaemon as a Windows service uses WinSW with `packaging/windows/agenc-daemon.xml`",
+    );
+    expect(daemon).toContain("separate elevated step");
+    expect(cli).toContain("Does not install or start the Windows service");
+  });
+});

@@ -33,6 +33,7 @@ import {
   parseInstallShWrapper,
   renderInstallShWrapper,
 } from "../../src/bin/update-cli.js";
+import { parseAgencDaemonWinSWServiceXml } from "../../src/packaging/windows-winsw-service.js";
 import {
   resolveActivationLockRegistry,
   wrapperActivationLockPath,
@@ -3548,6 +3549,34 @@ function registerInstallPs1Tests(): void {
       expect(second.status, second.stderr).toBe(0);
       expect(second.stdout).toContain("already installed");
       expect(existsSync(backup)).toBe(false);
+    });
+
+    test("PowerShell writes a WinSW definition from installed absolute paths", () => {
+      const home = join(work, "winsw-home");
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      const artifact = makeSyntheticArtifact(work);
+      const manifest = writeManifest(work, artifact, {
+        platform: "win",
+        arch: "x64",
+      });
+      const agencHome = join(home, ".agenc & home");
+      const prefix = join(home, "prefix & tools");
+      const result = runPowerShell(home, manifest, agencHome, {
+        AGENC_INSTALL_PREFIX: prefix,
+        USERDOMAIN: "ADA-PC",
+        USERNAME: "Ada",
+      });
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      const xmlPath = join(prefix, "agenc-daemon.xml");
+      const parsed = parseAgencDaemonWinSWServiceXml(readFileSync(xmlPath, "utf8"));
+      expect(parsed.executable).toBe("C:\\Windows\\System32\\cmd.exe");
+      expect(parsed.launcher).toBe(join(prefix, "bin", "agenc.cmd"));
+      expect(parsed.agencHome).toBe(agencHome);
+      expect(parsed.accountUsername).toBe("ADA-PC\\Ada");
+      expect(parsed.xml).toContain("prefix &amp; tools");
+      expect(parsed.xml).toContain(".agenc &amp; home");
+      expect(parsed.xml).not.toContain("<executable>agenc</executable>");
+      expect(result.stdout).toContain("service install is a separate WinSW step");
     });
 
     test("PowerShell cached retry replaces an exact pre-private-Node metadata wrapper", () => {
