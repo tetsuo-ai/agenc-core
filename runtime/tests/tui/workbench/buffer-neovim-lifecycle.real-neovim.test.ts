@@ -39,6 +39,7 @@ import {
   getTrackedNeovimProcessCountForTesting,
 } from "../../../src/tui/workbench/buffer/neovim/NeovimProcess.js";
 import { canonicalNeovimPath } from "../../../src/tui/workbench/buffer/neovim/NeovimPath.js";
+import { WORKSPACE_WRITE_MAX_BUFFER_BYTES } from "../../../src/tui/workbench/buffer/neovim/NeovimWorkspaceWriteGate.js";
 import {
   discardRecoverySwapFiles,
   installPrivateNeovimRecovery,
@@ -435,6 +436,87 @@ describe("real embedded Neovim lifecycle", () => {
           kind: "buffer",
         },
       });
+    } finally {
+      await session.quit(true);
+      await session.cleanup();
+      await waitUntilDead(pid);
+    }
+  });
+
+  it("saves a workspace file while an oversized external buffer stays loaded", async () => {
+    const workspace = join(dir, "workspace");
+    const outside = join(dir, "outside");
+    const filePath = join(workspace, "workspace.txt");
+    const externalPath = join(outside, "huge.txt");
+    await Promise.all([
+      mkdir(workspace, { recursive: true }),
+      mkdir(outside, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(filePath, "workspace\n", "utf8"),
+      writeFile(
+        externalPath,
+        `${"x".repeat(WORKSPACE_WRITE_MAX_BUFFER_BYTES + 1)}\n`,
+        "utf8",
+      ),
+    ]);
+    const requests: BufferWorkspaceWriteRequest[] = [];
+    let command: EmbeddedNeovimStartupContext["command"] | null = null;
+    let execLua: EmbeddedNeovimStartupContext["execLua"] | null = null;
+    const session = await startEmbeddedNeovim({
+      executable: neovim.executable,
+      args: neovim.args,
+      filePath,
+      line: 1,
+      column: 0,
+      cwd: workspace,
+      workspaceRoot: workspace,
+      requireWorkspaceWriteAuthority: true,
+      beforeOpenFile: (context) => {
+        command = context.command;
+        execLua = context.execLua;
+        return Promise.resolve();
+      },
+      size: { rows: 6, columns: 48 },
+      onSnapshot: () => {},
+      onBeforeWorkspaceWrite: async (request) => {
+        requests.push(request);
+        return { allowed: true };
+      },
+      onError: () => {},
+      onExit: () => {},
+    });
+    const pid = session.pid;
+
+    try {
+      const nvimCommand = command;
+      const nvimExecLua = execLua;
+      if (nvimCommand === null || nvimExecLua === null) {
+        throw new Error("embedded Neovim command hook was not captured");
+      }
+      await nvimExecLua(
+        [
+          "local path = select(1, ...)",
+          "vim.cmd('badd ' .. vim.fn.fnameescape(path))",
+          "vim.fn.bufload(vim.fn.bufnr(path, true))",
+          "return true",
+        ].join("\n"),
+        [externalPath],
+      );
+      await nvimCommand("write");
+      await waitForAsync(async () => requests.length === 1);
+      expect(requests[0]?.buffers).toEqual([
+        expect.objectContaining({
+          path: canonicalNeovimPath(filePath),
+          content: "workspace\n",
+        }),
+      ]);
+      expect(
+        requests[0]?.buffers.some((buffer) =>
+          buffer.path.includes("huge.txt"),
+        ),
+      ).toBe(false);
+      expect(await readFile(filePath, "utf8")).toBe("workspace\n");
     } finally {
       await session.quit(true);
       await session.cleanup();

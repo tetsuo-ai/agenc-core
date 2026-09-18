@@ -690,6 +690,50 @@ describe("embedded Neovim BUFFER provider", () => {
     await provider.cleanup();
   });
 
+  it("keeps TypeScript workspace containment as write-gate defense in depth", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      workspaceRoot: TEST_WORKSPACE_ROOT,
+      requireWorkspaceWriteAuthority: true,
+    });
+    const authority = vi.fn(
+      async (): Promise<BufferWorkspaceWriteDecision> => ({
+        allowed: true,
+      }),
+    );
+    provider.setWorkspaceWriteAuthorityHandler(authority);
+    await provider.open({ filePath: "target.txt" });
+
+    const request = workspaceWriteRequest({
+      path: workspacePath("target.txt"),
+      sourcePath: workspacePath("target.txt"),
+      kind: "buffer",
+    });
+    await expect(
+      harness.requestWorkspaceWrite({
+        ...request,
+        buffers: [
+          ...request.buffers,
+          {
+            path: outsidePath("huge.txt"),
+            bufferHandle: 99,
+            changedtick: 1,
+            endOfLine: true,
+            dirty: false,
+            content: "x".repeat(64),
+          },
+        ],
+      }),
+    ).resolves.toEqual({ allowed: true });
+    expect(authority).toHaveBeenCalledWith({
+      ...request,
+      buffers: request.buffers,
+    });
+
+    await provider.cleanup();
+  });
+
   it("retries workspace capture when only final-line-ending state changes", async () => {
     const harness = createHarness();
     const provider = new NeovimBufferProvider({

@@ -18,6 +18,10 @@ import {
 } from "./NeovimRpc.js";
 import type { NeovimRenderSnapshot } from "./NeovimGrid.js";
 import { canonicalNeovimPath } from "./NeovimPath.js";
+import {
+  INSTALL_WORKSPACE_WRITE_GATE,
+  workspaceWriteRequestFromRpcParams,
+} from "./NeovimWorkspaceWriteGate.js";
 import type {
   BufferCaptureRequest,
   BufferCapturedContext,
@@ -31,6 +35,8 @@ import type {
   BufferWorkspaceWriteDecision,
   BufferWorkspaceWriteRequest,
 } from "../providers/types.js";
+
+export { workspaceWriteRequestFromRpcParams } from "./NeovimWorkspaceWriteGate.js";
 
 export type StartEmbeddedNeovimOptions = {
   readonly executable: string;
@@ -473,92 +479,6 @@ const PRESERVE_DIRTY_BUFFERS_FOR_ABNORMAL_EXIT = [
   "end",
   "return swaps",
 ].join("\n");
-
-const INSTALL_WORKSPACE_WRITE_GATE = String.raw`
-local agenc_rpc_channel = select(1, ...)
-if type(agenc_rpc_channel) ~= 'number' or agenc_rpc_channel <= 0 then
-  error('AgenC workspace write authority has no valid RPC channel')
-end
-
-local function agenc_capture_workspace_write(event)
-  local target = event.buf
-  local buffers = {}
-  for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(buffer) then
-      local name = vim.api.nvim_buf_get_name(buffer)
-      local buffer_type =
-        vim.api.nvim_get_option_value('buftype', { buf = buffer })
-      if name ~= '' and buffer_type == '' then
-        local end_of_line =
-          vim.api.nvim_get_option_value('eol', { buf = buffer })
-        local content = table.concat(
-          vim.api.nvim_buf_get_lines(buffer, 0, -1, true),
-          '\n'
-        )
-        if end_of_line then content = content .. '\n' end
-        table.insert(buffers, {
-          path = name,
-          buffer_handle = buffer,
-          changedtick = vim.api.nvim_buf_get_changedtick(buffer),
-          end_of_line = end_of_line,
-          dirty = vim.api.nvim_get_option_value('modified', { buf = buffer }),
-          content = content,
-        })
-      end
-    end
-  end
-  return {
-    target = {
-      path = event.file,
-      source_path = vim.api.nvim_buf_get_name(target),
-      kind = event.event == 'BufWritePre'
-          and 'buffer'
-        or event.event == 'FileAppendPre'
-          and 'append'
-        or 'file',
-      buffer_handle = target,
-      changedtick = vim.api.nvim_buf_get_changedtick(target),
-      end_of_line =
-        vim.api.nvim_get_option_value('eol', { buf = target }),
-      line_start = vim.fn.line("'["),
-      line_end = vim.fn.line("']"),
-    },
-    buffers = buffers,
-  }
-end
-
-vim.api.nvim_create_autocmd(
-  { 'BufWritePre', 'FileWritePre', 'FileAppendPre' },
-{
-  group = vim.api.nvim_create_augroup(
-    'AgenCWorkspaceWriteAuthority',
-    { clear = true }
-  ),
-  callback = function(event)
-    local request = agenc_capture_workspace_write(event)
-    local ok, response = pcall(
-      vim.rpcrequest,
-      agenc_rpc_channel,
-      'agenc_before_workspace_write',
-      request
-    )
-    if not ok then
-      error(
-        'AgenC blocked :write because workspace authority could not be verified: '
-          .. string.sub(tostring(response), 1, 512)
-      )
-    end
-    if type(response) ~= 'table' or response.allowed ~= true then
-      local reason = type(response) == 'table'
-          and type(response.reason) == 'string'
-          and response.reason
-        or 'the daemon did not acknowledge this exact buffer revision'
-      error('AgenC blocked :write: ' .. string.sub(reason, 1, 512))
-    end
-  end,
-})
-return true
-`;
 
 // --cmd runs before user init. This launch-time guard closes the interval
 // before the host RPC transport exists, when a vimrc/plugin could otherwise
@@ -1742,13 +1662,14 @@ export async function startEmbeddedNeovim(
   );
   try {
     startupAbort.signal.throwIfAborted();
+    const workspaceRoot = options.workspaceRoot ?? options.cwd ?? getCwd();
     const handle = spawnNeovimProcess({
       executable: options.executable,
       args:
         options.requireWorkspaceWriteAuthority === true
           ? ["--cmd", EARLY_WORKSPACE_WRITE_GUARD_COMMAND, ...options.args]
           : options.args,
-      cwd: options.cwd ?? options.workspaceRoot ?? getCwd(),
+      cwd: options.cwd ?? workspaceRoot,
       ...(options.linuxContainment !== undefined
         ? { linuxContainment: options.linuxContainment }
         : {}),
@@ -1771,7 +1692,10 @@ export async function startEmbeddedNeovim(
       rpc.onRequest(
         "agenc_before_workspace_write",
         async (params): Promise<RpcValue> => {
-          const request = workspaceWriteRequestFromRpcParams(params);
+          const request = workspaceWriteRequestFromRpcParams(
+            params,
+            workspaceRoot,
+          );
           if (request === null) {
             return {
               allowed: false,
@@ -1853,13 +1777,13 @@ export async function startEmbeddedNeovim(
         await configureEmbeddedEditing(rpc);
         if (options.requireWorkspaceWriteAuthority === true) {
           startupPhase = "installing the workspace write gate";
-          await installWorkspaceWriteGate(rpc);
+          await installWorkspaceWriteGate(rpc, workspaceRoot);
         }
         startupPhase = "installing the agent bridge";
         await installAgentBridge(rpc);
         startupPhase = "preparing the workspace";
         preparation = await options.beforeOpenFile?.({
-          workspaceRoot: options.workspaceRoot ?? options.cwd ?? getCwd(),
+          workspaceRoot,
           agencHome: options.agencHome,
           command: async (command) => {
             await rpc.request("nvim_command", [command]);
@@ -2991,7 +2915,13 @@ async function installAgentBridge(rpc: NeovimRpcTransport): Promise<void> {
 
 async function installWorkspaceWriteGate(
   rpc: NeovimRpcTransport,
+  workspaceRoot: string,
 ): Promise<void> {
+  if (workspaceRoot.trim().length === 0) {
+    throw new Error(
+      "Neovim workspace write authority has no valid workspace root.",
+    );
+  }
   const apiInfo = await rpc.request("nvim_get_api_info", []);
   const channel = Array.isArray(apiInfo) ? positiveInteger(apiInfo[0]) : null;
   if (channel === null) {
@@ -2999,7 +2929,10 @@ async function installWorkspaceWriteGate(
       "Neovim did not report a valid embedded RPC channel for workspace write authority.",
     );
   }
-  await rpc.request("nvim_exec_lua", [INSTALL_WORKSPACE_WRITE_GATE, [channel]]);
+  await rpc.request("nvim_exec_lua", [
+    INSTALL_WORKSPACE_WRITE_GATE,
+    [channel, canonicalNeovimPath(workspaceRoot)],
+  ]);
 }
 
 async function installDirtyAutocmds(rpc: NeovimRpcTransport): Promise<void> {
@@ -3318,87 +3251,6 @@ function positiveInteger(value: RpcValue | number | undefined): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0
     ? value
     : null;
-}
-
-function workspaceWriteRequestFromRpcParams(
-  params: RpcParams,
-): BufferWorkspaceWriteRequest | null {
-  if (params.length !== 1) return null;
-  const request = rpcRecord(params[0]);
-  const target = rpcRecord(request?.target);
-  const rawBuffers = request?.buffers;
-  const targetPath = typeof target?.path === "string" ? target.path : "";
-  const sourcePath =
-    typeof target?.source_path === "string" ? target.source_path : "";
-  const targetKind = target?.kind;
-  const targetBufferHandle = positiveInteger(target?.buffer_handle);
-  const targetChangedtick = nonNegativeInteger(target?.changedtick);
-  const lineStart = positiveInteger(target?.line_start);
-  const lineEnd = positiveInteger(target?.line_end);
-  if (
-    targetPath.length === 0 ||
-    targetPath.length > 32_768 ||
-    sourcePath.length === 0 ||
-    sourcePath.length > 32_768 ||
-    (targetKind !== "buffer" &&
-      targetKind !== "file" &&
-      targetKind !== "append") ||
-    targetBufferHandle === null ||
-    targetChangedtick === null ||
-    lineStart === null ||
-    lineEnd === null ||
-    lineEnd < lineStart ||
-    typeof target?.end_of_line !== "boolean" ||
-    !Array.isArray(rawBuffers) ||
-    rawBuffers.length > 512
-  ) {
-    return null;
-  }
-  const buffers: BufferWorkspaceWriteRequest["buffers"][number][] = [];
-  let totalBytes = 0;
-  for (const rawBuffer of rawBuffers) {
-    const buffer = rpcRecord(rawBuffer);
-    const path = typeof buffer?.path === "string" ? buffer.path : "";
-    const bufferHandle = positiveInteger(buffer?.buffer_handle);
-    const changedtick = nonNegativeInteger(buffer?.changedtick);
-    const content = typeof buffer?.content === "string" ? buffer.content : null;
-    if (
-      path.length === 0 ||
-      path.length > 32_768 ||
-      bufferHandle === null ||
-      changedtick === null ||
-      typeof buffer?.end_of_line !== "boolean" ||
-      typeof buffer?.dirty !== "boolean" ||
-      content === null
-    ) {
-      return null;
-    }
-    const contentBytes = Buffer.byteLength(content, "utf8");
-    if (contentBytes > 5 * 1024 * 1024) return null;
-    totalBytes += contentBytes;
-    if (totalBytes > 16 * 1024 * 1024) return null;
-    buffers.push({
-      path,
-      bufferHandle,
-      changedtick,
-      endOfLine: buffer.end_of_line,
-      dirty: buffer.dirty,
-      content,
-    });
-  }
-  return {
-    target: {
-      path: targetPath,
-      sourcePath,
-      kind: targetKind,
-      bufferHandle: targetBufferHandle,
-      changedtick: targetChangedtick,
-      endOfLine: target.end_of_line,
-      lineStart,
-      lineEnd,
-    },
-    buffers,
-  };
 }
 
 function assertAbnormalRecoveryManifest(
