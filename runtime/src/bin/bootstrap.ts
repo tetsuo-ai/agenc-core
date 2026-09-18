@@ -2193,13 +2193,16 @@ async function bootstrapLocalRuntimeSessionScoped(
               }
             } catch (error) {
               if (!startupWasCancelled()) {
-                s.emit({
-                  id: s.nextInternalSubId(),
-                  msg: { type: "warning", payload: {
-                    cause: "cron_storage_unavailable",
-                    message: `Durable scheduled tasks could not be restored: ${error instanceof Error ? error.message : String(error)}`,
-                  } },
-                });
+                const { cronRestoreFailureNeedsWarning } = await import("../utils/cronTasks.js");
+                if (await cronRestoreFailureNeedsWarning(error, workspaceRoot)) {
+                  s.emit({
+                    id: s.nextInternalSubId(),
+                    msg: { type: "warning", payload: {
+                      cause: "cron_storage_unavailable",
+                      message: `Durable scheduled tasks could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+                    } },
+                  });
+                }
               }
             }
             assertStartupActive();

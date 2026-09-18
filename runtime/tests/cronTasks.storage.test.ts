@@ -12,7 +12,7 @@ import { startSessionCronScheduler } from "../src/session/session-cron-scheduler
 import type { Session } from "../src/session/session.js";
 import { cronLockAuthorityRoot } from "../src/sandbox/cron-authority-protection.js";
 import { acquireCronStorageLock, withCronStorage } from "../src/utils/cron-storage.js";
-import { appendCronTask, getCronFilePath, readCronFile, readCronTasks, writeCronTasks, type CronTask } from "../src/utils/cronTasks.js";
+import { appendCronTask, cronRestoreFailureNeedsWarning, getCronFilePath, readCronFile, readCronTasks, writeCronTasks, type CronTask } from "../src/utils/cronTasks.js";
 
 const hooks = vi.hoisted(() => ({
   beforeRename: undefined as ((from: string, to: string) => void) | undefined,
@@ -112,6 +112,18 @@ describe("descriptor-confined durable cron storage", () => {
     await expect(readCronFile(workspace)).rejects.toThrow(/descriptor-confined I\/O is unsupported/);
     await expect(readCronTasks(workspace)).rejects.toThrow();
     expect(await readdir(workspace)).toEqual([]);
+  });
+
+  test("startup restore warns only when an unrestorable durable record exists", async () => {
+    hooks.descriptorUnavailable = true;
+    const unsupported: unknown = await readCronTasks(workspace).catch((error: unknown) => error);
+    expect(unsupported).toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+    expect(await cronRestoreFailureNeedsWarning(unsupported, workspace)).toBe(false);
+    hooks.descriptorUnavailable = false;
+    await writeCronTasks([task("kept")], workspace);
+    hooks.descriptorUnavailable = true;
+    expect(await cronRestoreFailureNeedsWarning(unsupported, workspace)).toBe(true);
+    expect(await cronRestoreFailureNeedsWarning(new Error("Cron storage must be owned by the current user"), workspace)).toBe(true);
   });
 
   test("distinguishes missing or malformed records from storage capability failures", async () => {
