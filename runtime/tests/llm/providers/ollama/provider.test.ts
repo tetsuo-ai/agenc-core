@@ -218,7 +218,8 @@ describe("providers/ollama entrypoint", () => {
         { role: "user", content: "review" },
       ],
     });
-    expect(chat.mock.calls[0]).toHaveLength(1);
+    expect(chat.mock.calls[0]).toHaveLength(2);
+    expect(chat.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
   });
 
   test("preserves assistant tool-call history before tool results", async () => {
