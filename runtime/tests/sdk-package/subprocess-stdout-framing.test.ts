@@ -6,9 +6,6 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter, getEventListeners } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AGENC_SDK_MAX_FRAME_BYTES,
@@ -164,10 +161,9 @@ describe("SDK subprocess stdout frame limit", () => {
 });
 
 describe("SDK subprocess overflow reaps a real child", () => {
-  const tempDirs: string[] = [];
   const livePids = new Set<number>();
 
-  afterEach(async () => {
+  afterEach(() => {
     for (const pid of livePids) {
       try {
         process.kill(pid, "SIGKILL");
@@ -176,32 +172,33 @@ describe("SDK subprocess overflow reaps a real child", () => {
       }
     }
     livePids.clear();
-    await Promise.all(
-      tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
-    );
   });
 
   it.skipIf(process.platform === "win32")(
     "terminates a newline-free overflowing writer",
     async () => {
-      const dir = await mkdtemp(join(tmpdir(), "agenc-sdk-stdout-cap-"));
-      tempDirs.push(dir);
-      const pidFile = join(dir, "child.pid");
+      let childExit: Promise<void> | undefined;
       const spawn: AgencSubprocessSpawnFn = () => {
         const child = nodeSpawn(
           process.execPath,
           [
             "-e",
-            `require('node:fs').writeFileSync(process.env.PID_FILE, String(process.pid)); process.stdout.write(Buffer.alloc(${AGENC_SDK_MAX_FRAME_BYTES} + 1, 0x61)); setInterval(() => {}, 1000);`,
+            `process.stdout.write(Buffer.alloc(${AGENC_SDK_MAX_FRAME_BYTES + 1}, 0x61)); setInterval(() => {}, 1000);`,
           ],
-          {
-            stdio: ["pipe", "pipe", "pipe"],
-            env: { ...process.env, PID_FILE: pidFile },
-          },
+          { stdio: ["pipe", "pipe", "pipe"] },
         );
         if (child.pid !== undefined) livePids.add(child.pid);
-        child.once("exit", () => {
-          if (child.pid !== undefined) livePids.delete(child.pid);
+        childExit = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(
+              new Error(`overflowing child ${String(child.pid)} did not exit`),
+            );
+          }, 10_000);
+          child.once("exit", () => {
+            clearTimeout(timer);
+            if (child.pid !== undefined) livePids.delete(child.pid);
+            resolve();
+          });
         });
         return child as unknown as AgencSubprocessChild;
       };
@@ -210,33 +207,7 @@ describe("SDK subprocess overflow reaps a real child", () => {
       await expect(run.result()).rejects.toThrow(
         /stdout frame exceeded 16777216 bytes/i,
       );
-
-      const pid = Number.parseInt((await readFile(pidFile, "utf8")).trim(), 10);
-      await waitFor(() => !isPidAlive(pid), `overflowing child ${pid} exit`);
+      await childExit;
     },
   );
 });
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  label: string,
-  timeoutMs = 10_000,
-): Promise<void> {
-  const started = Date.now();
-  for (;;) {
-    if (await predicate()) return;
-    if (Date.now() - started > timeoutMs) {
-      throw new Error(`Timed out waiting for ${label} after ${timeoutMs}ms`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
