@@ -223,6 +223,18 @@ function pluginErrorFromIssue(issue: PluginLoadIssue): Record<string, unknown> {
         plugin: issue.plugin ?? "unknown",
         reason: issue.message,
       };
+    case "install-recovery":
+      return {
+        type: "plugin-install-recovery",
+        source: issue.source,
+        plugin: issue.plugin ?? "unknown",
+        path: issue.path ?? issue.source,
+        reason: issue.message,
+      };
+    default: {
+      const exhaustive: never = issue.type;
+      throw new Error(`unexpected plugin load issue type: ${String(exhaustive)}`);
+    }
   }
 }
 
