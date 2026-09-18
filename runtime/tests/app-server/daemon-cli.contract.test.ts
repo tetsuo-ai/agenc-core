@@ -16,6 +16,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createConnection, createServer, type Socket } from "node:net";
@@ -78,6 +79,7 @@ import {
   type AgenCDaemonCliIo,
   validateAgenCDaemonWebSocketOrigin,
   writeAgenCDaemonPid,
+  resolveAgenCDaemonSpawnStderrPath,
 } from "./daemon-cli.js";
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -1466,6 +1468,75 @@ describe("AgenC daemon CLI", () => {
     expect(host.runningPids).toEqual(new Set([4201]));
 
     await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("keeps waiting for a spawned daemon whose startup log is still advancing", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const ready = createReadyPublishedDaemonOptions(agencHome, host);
+    let probes = 0;
+    const waitForDaemonReady = async (probeHost: AgenCDaemonCliHost, singleShot: boolean) => {
+      probes += 1;
+      if (probes < 3) {
+        // Hydration in progress: the spawn stderr capture keeps growing.
+        await writeFile(
+          resolveAgenCDaemonSpawnStderrPath(host.env, host.userHome),
+          `agenc: daemon opened state DB ${probes}\n`,
+        );
+        return false;
+      }
+      return ready.waitForDaemonReady(probeHost, singleShot);
+    };
+
+    try {
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "start" },
+          { host, io, ...ready, waitForDaemonReady },
+        ),
+      ).resolves.toBe(0);
+      expect(probes).toBe(3);
+      expect(io.stderrText()).toContain("daemon process (pid 4201) is still starting");
+      expect(io.stderrText()).not.toContain("did not become ready before timeout");
+      expect(host.terminatedPids).toEqual([]);
+      expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("gives up on a spawned daemon whose startup log went quiet", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const stderrPath = resolveAgenCDaemonSpawnStderrPath(host.env, host.userHome);
+    await writeFile(stderrPath, "agenc: daemon opened state DB 1\n");
+    const quietSince = new Date(Date.now() - 5 * 60_000);
+    await utimes(stderrPath, quietSince, quietSince);
+    let probes = 0;
+
+    try {
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "start" },
+          {
+            host,
+            io,
+            inspectLegacyDaemonProcess: inspectLegacyTestDaemon,
+            waitForDaemonReady: async () => {
+              probes += 1;
+              return false;
+            },
+          },
+        ),
+      ).resolves.toBe(1);
+      expect(probes).toBe(1);
+      expect(io.stderrText()).not.toContain("is still starting");
+      expect(io.stderrText()).toContain("did not become ready before timeout");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("leaves canonical config validation to the spawned daemon", async () => {

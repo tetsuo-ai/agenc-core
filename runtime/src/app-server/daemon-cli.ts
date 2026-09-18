@@ -350,6 +350,36 @@ export function resolveAgenCDaemonReadyTimeoutMs(
   return DEFAULT_DAEMON_READY_TIMEOUT_MS;
 }
 
+/**
+ * Env override (ms) for the total time `daemon start` keeps waiting for a
+ * spawned daemon that is still hydrating past the readiness budget.
+ */
+export const AGENC_DAEMON_START_MAX_WAIT_MS_ENV =
+  "AGENC_DAEMON_START_MAX_WAIT_MS";
+
+/**
+ * Bound for that extended wait. A home with hundreds of sessions takes longer
+ * than {@link DEFAULT_DAEMON_READY_TIMEOUT_MS} to open its state and recover
+ * its runs (observed: 60 s for 877 sessions). Cancelling such a daemon at the
+ * deadline and letting the caller start another one produced a loop in which
+ * no daemon ever finished starting. While the startup log keeps advancing the
+ * wait continues, in readiness-budget steps, up to this total.
+ */
+export const DEFAULT_DAEMON_START_MAX_WAIT_MS = 600_000;
+
+export function resolveAgenCDaemonStartMaxWaitMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const envValue = env[AGENC_DAEMON_START_MAX_WAIT_MS_ENV];
+  if (envValue !== undefined && envValue.trim().length > 0) {
+    const parsed = Number(envValue);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_DAEMON_START_MAX_WAIT_MS;
+}
+
 const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
   AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
 );
@@ -775,6 +805,31 @@ export function resolveAgenCDaemonSpawnStderrPath(
     resolveAgenCDaemonHome(env, userHome),
     AGENC_DAEMON_SPAWN_STDERR_FILENAME,
   );
+}
+
+/**
+ * Milliseconds since the daemon last wrote to a startup log (the spawn stderr
+ * capture or the daemon log), or undefined when neither file exists. A daemon
+ * that is hydrating writes to one of them every few seconds; a hung one goes
+ * quiet.
+ */
+function daemonStartupLogAgeMs(
+  host: AgenCDaemonCliHost,
+  now = Date.now(),
+): number | undefined {
+  let latest: number | undefined;
+  for (const path of [
+    resolveAgenCDaemonSpawnStderrPath(host.env, host.userHome),
+    resolveAgenCDaemonLogPath(host.env, host.userHome),
+  ]) {
+    try {
+      const { mtimeMs } = statSync(path);
+      if (latest === undefined || mtimeMs > latest) latest = mtimeMs;
+    } catch {
+      /* a missing capture is no evidence either way */
+    }
+  }
+  return latest === undefined ? undefined : Math.max(0, now - latest);
 }
 
 const DAEMON_SPAWN_STDERR_TAIL_BYTES = 2_048;
@@ -1515,7 +1570,32 @@ async function startAgenCDaemon(
   const targetPid = decision.pid;
   const waitForReady =
     options.waitForDaemonReady ?? defaultWaitForAgenCDaemonReady;
-  const ready = await waitForReady(host, false);
+  let ready = await waitForReady(host, false);
+  if (!ready) {
+    // A daemon that is alive and still writing its startup log at the
+    // deadline is hydrating, not hung. Keep waiting in readiness-budget
+    // steps while the log advances, up to DEFAULT_DAEMON_START_MAX_WAIT_MS;
+    // a quiet log or a dead pid falls through to the failure path below.
+    const budgetMs = resolveAgenCDaemonReadyTimeoutMs(host.env);
+    const extensions = Math.max(
+      0,
+      Math.ceil(resolveAgenCDaemonStartMaxWaitMs(host.env) / budgetMs) - 1,
+    );
+    for (
+      let extension = 1;
+      !ready && extension <= extensions && host.isPidRunning(targetPid);
+      extension += 1
+    ) {
+      const ageMs = daemonStartupLogAgeMs(host);
+      if (ageMs === undefined || ageMs > budgetMs) break;
+      io.stderr.write(
+        `agenc: daemon process (pid ${targetPid}) is still starting; its ` +
+          `startup log advanced ${Math.round(ageMs / 1000)} s ago, waiting ` +
+          `another ${Math.round(budgetMs / 1000)} s (${extension}/${extensions})\n`,
+      );
+      ready = await waitForReady(host, false);
+    }
+  }
   if (!ready) {
     const wasRunning = host.isPidRunning(targetPid);
     if (wasRunning) {
