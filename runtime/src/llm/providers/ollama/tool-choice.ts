@@ -35,14 +35,21 @@ export interface OllamaToolChoiceResolution {
 function ollamaToolChoiceKind(
   toolChoice: LLMToolChoice | undefined,
 ): "auto" | "none" | "required" | "function" {
-  if (toolChoice === undefined || toolChoice === "auto") return "auto";
-  if (toolChoice === "none") return "none";
-  if (toolChoice === "required") return "required";
-  if (typeof toolChoice === "object" && toolChoice.type === "function") {
-    return "function";
+  if (toolChoice === undefined || toolChoice === "auto") {
+    return "auto";
   }
-  const exhaustive: never = toolChoice;
-  return exhaustive;
+
+  if (toolChoice === "none") {
+    return "none";
+  }
+
+  if (toolChoice === "required") {
+    return "required";
+  }
+
+  // The remaining LLMToolChoice variant is the named function choice.
+  // TypeScript 6 does not narrow that object union to `never` here.
+  return "function";
 }
 
 export function summarizeOllamaRequestedToolChoice(
