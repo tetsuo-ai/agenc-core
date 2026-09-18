@@ -306,6 +306,13 @@ environment when `options.env` is omitted, is captured as automation startup
 authority. The child sends the captured typed value to the daemon; it does not
 install the variable as mutable daemon environment state.
 
+Node can emit child `exit` before stdout closes. The transport records the
+exit status, keeps parsing until stdout `end` and child `close`, and only then
+decides whether a stream-json result arrived. The final unterminated line is
+parsed once after stdout ends. If stdio stays open after `exit` longer than
+`postExitDrainTimeoutMs` (default 5s), the run fails with a distinct drain
+error and the SDK SIGKILLs the child plus, on Unix, its process group.
+
 ## Runnable example
 
 `packages/agenc-sdk/examples/one-shot.mjs` exercises both transports:
@@ -723,7 +730,8 @@ daemon projects it as diagnostic with `statusProjection: "session_only"`.
   on the **real** in-process transport (real dispatcher, session lifecycle,
   and client multiplexer).
 - `subprocess-transport.test.ts` — stream-json adaptation with a fake child
-  process (argv contract, event mapping, exit-code-2 mapping, error paths).
+  process (argv contract, event mapping, exit-code-2 mapping, error paths,
+  post-exit stdout drain, and a real inherited-stdout descendant).
 - `events.contract.test.ts` — trusted object `clientAction` preservation and
   malformed/scalar rejection at the SDK event boundary.
 - `replay-safe-client.contract.test.ts` — reconnect cursors, duplicate

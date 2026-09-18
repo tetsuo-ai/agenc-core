@@ -112,6 +112,13 @@ without an adapter. No protocol or stored-state migration is needed.
 `AGENC_ALLOW_UNTRUSTED_HOOKS` from `options.env`, or from its inherited
 environment when `options.env` is omitted, at automation startup.
 
+The subprocess transport does not settle on child `exit` alone. It waits for
+stdout `end` and child `close` so a result still in the pipe after the wrapper
+exits is not dropped. Custom `AgencSubprocessSpawnFn` adapters must expose
+`on`/`removeListener` for `error`, `exit`, and `close`, plus stdout `end`.
+`postExitDrainTimeoutMs` (default 5,000) bounds that wait; a timeout SIGKILLs
+the child and, on Unix, its process group.
+
 ## Docs & example
 
 - Full documentation: [`docs/sdk.md`](../../docs/sdk.md)

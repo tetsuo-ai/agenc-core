@@ -7,6 +7,7 @@
  * emits it.
  */
 
+import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter, getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
 import {
@@ -58,6 +59,7 @@ function createFakeSpawn(script: FakeChildScript): {
           return true;
         },
         on: () => {},
+        removeListener: () => {},
         end: () => {
           capture.stdinEnded = true;
           // Replay the scripted run asynchronously, split mid-line to prove
@@ -73,6 +75,8 @@ function createFakeSpawn(script: FakeChildScript): {
               stderr.emit("data", script.stderr);
             }
             emitter.emit("exit", script.exitCode, null);
+            stdout.emit("end");
+            emitter.emit("close", script.exitCode, null);
           });
         },
       },
@@ -82,8 +86,21 @@ function createFakeSpawn(script: FakeChildScript): {
         emitter.once(event, listener as (...args: unknown[]) => void);
         return child;
       },
+      on: (event: string, listener: (...args: never[]) => void) => {
+        emitter.on(event, listener as (...args: unknown[]) => void);
+        return child;
+      },
+      removeListener: (event: string, listener: (...args: never[]) => void) => {
+        emitter.removeListener(
+          event,
+          listener as (...args: unknown[]) => void,
+        );
+        return child;
+      },
       kill: () => {
         emitter.emit("exit", null, "SIGTERM");
+        stdout.emit("end");
+        emitter.emit("close", null, "SIGTERM");
         return true;
       },
     };
@@ -97,6 +114,155 @@ const agentId = "agent_sub_1";
 
 function eventLine(event: unknown): unknown {
   return { type: "event", sessionId, agentId, event };
+}
+
+function streamResult(finalMessage: string, exitCode = 0): unknown {
+  return {
+    type: "result",
+    sessionId,
+    agentId,
+    exitCode,
+    finalMessage,
+    deniedPermissionRequestIds: [],
+  };
+}
+
+interface ControllableChild {
+  readonly pid: number;
+  readonly kills: string[];
+  emitExit(code: number | null, signal?: string | null): void;
+  emitClose(code: number | null, signal?: string | null): void;
+  emitSpawnError(error: Error): void;
+  writeStdout(chunk: string): void;
+  endStdout(): void;
+  writeStderr(chunk: string): void;
+  listenerCounts(): {
+    child: { error: number; exit: number; close: number };
+    stdout: { data: number; end: number };
+    stderr: { data: number };
+    stdin: { error: number };
+  };
+}
+
+function createControllableSpawn(): {
+  readonly spawn: AgencSubprocessSpawnFn;
+  readonly child: () => ControllableChild;
+} {
+  let handle: ControllableChild | undefined;
+  const spawn: AgencSubprocessSpawnFn = () => {
+    const processEmitter = new EventEmitter();
+    const stdout = new EventEmitter() as EventEmitter & {
+      setEncoding: (encoding: string) => void;
+    };
+    stdout.setEncoding = () => {};
+    const stderr = new EventEmitter() as EventEmitter & {
+      setEncoding: (encoding: string) => void;
+    };
+    stderr.setEncoding = () => {};
+    const stdin = new EventEmitter();
+    const kills: string[] = [];
+    const child = {
+      pid: 4242,
+      stdin: {
+        write: () => true,
+        end: () => undefined,
+        on: (event: "error", listener: (error: Error) => void) => {
+          stdin.on(event, listener);
+          return child.stdin;
+        },
+        removeListener: (event: "error", listener: (error: Error) => void) => {
+          stdin.removeListener(event, listener);
+          return child.stdin;
+        },
+      },
+      stdout: stdout as unknown as AgencSubprocessChild["stdout"],
+      stderr: stderr as unknown as AgencSubprocessChild["stderr"],
+      once: (event: string, listener: (...args: never[]) => void) => {
+        processEmitter.once(event, listener as (...args: unknown[]) => void);
+        return child;
+      },
+      on: (event: string, listener: (...args: never[]) => void) => {
+        processEmitter.on(event, listener as (...args: unknown[]) => void);
+        return child;
+      },
+      removeListener: (event: string, listener: (...args: never[]) => void) => {
+        processEmitter.removeListener(
+          event,
+          listener as (...args: unknown[]) => void,
+        );
+        return child;
+      },
+      kill: (signal?: string) => {
+        kills.push(signal ?? "SIGTERM");
+        return true;
+      },
+    } as unknown as AgencSubprocessChild;
+    handle = {
+      pid: 4242,
+      kills,
+      emitExit: (code, signal = null) => {
+        processEmitter.emit("exit", code, signal);
+      },
+      emitClose: (code, signal = null) => {
+        processEmitter.emit("close", code, signal);
+      },
+      emitSpawnError: (error) => {
+        processEmitter.emit("error", error);
+      },
+      writeStdout: (chunk) => {
+        stdout.emit("data", chunk);
+      },
+      endStdout: () => {
+        stdout.emit("end");
+      },
+      writeStderr: (chunk) => {
+        stderr.emit("data", chunk);
+      },
+      listenerCounts: () => ({
+        child: {
+          error: processEmitter.listenerCount("error"),
+          exit: processEmitter.listenerCount("exit"),
+          close: processEmitter.listenerCount("close"),
+        },
+        stdout: {
+          data: stdout.listenerCount("data"),
+          end: stdout.listenerCount("end"),
+        },
+        stderr: { data: stderr.listenerCount("data") },
+        stdin: { error: stdin.listenerCount("error") },
+      }),
+    };
+    return child;
+  };
+  return {
+    spawn,
+    child: () => {
+      if (handle === undefined) {
+        throw new Error("spawn has not been called");
+      }
+      return handle;
+    },
+  };
+}
+
+function spawnLateResultWrapper(): AgencSubprocessSpawnFn {
+  return (_command, _args, options) => {
+    const result = JSON.stringify(streamResult("late-pipe"));
+    const descendant = `setTimeout(() => { process.stdout.write(${JSON.stringify(`${result}\n`)}); }, 40);`;
+    const wrapper = `
+      const { spawn } = require("node:child_process");
+      const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], {
+        stdio: ["ignore", "inherit", "inherit"],
+      });
+      child.unref();
+      process.exit(0);
+    `;
+    return nodeSpawn(process.execPath, ["-e", wrapper], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as unknown as AgencSubprocessChild;
+  };
 }
 
 describe("agenc-sdk subprocess transport", () => {
@@ -322,6 +488,20 @@ describe("agenc-sdk subprocess transport", () => {
           emitter.once(event, listener as (...args: unknown[]) => void);
           return child;
         },
+        on: (event: string, listener: (...args: never[]) => void) => {
+          emitter.on(event, listener as (...args: unknown[]) => void);
+          return child;
+        },
+        removeListener: (
+          event: string,
+          listener: (...args: never[]) => void,
+        ) => {
+          emitter.removeListener(
+            event,
+            listener as (...args: unknown[]) => void,
+          );
+          return child;
+        },
         kill: () => true,
       };
       return child;
@@ -396,5 +576,110 @@ describe("agenc-sdk subprocess transport", () => {
     // Uncapped this would be 1500; the cap holds only the most recent 1000.
     expect(drained.length).toBeGreaterThan(0);
     expect(drained.length).toBeLessThanOrEqual(1000);
+  });
+
+  it("resolves a valid result delivered after exit but before close", async () => {
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("late result", { spawn });
+    const pending = run.result();
+
+    child().emitExit(0, null);
+    await Promise.resolve();
+    child().writeStdout(`${JSON.stringify(streamResult("after-exit"))}\n`);
+    child().endStdout();
+    child().emitClose(0, null);
+
+    await expect(pending).resolves.toMatchObject({
+      exitCode: 0,
+      finalMessage: "after-exit",
+      stopReason: "completed",
+    });
+  });
+
+  it("parses the final unterminated stream-json line once after stdout ends", async () => {
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("partial line", { spawn });
+
+    child().writeStdout(JSON.stringify(streamResult("unterminated")));
+    child().endStdout();
+    child().writeStdout(`${JSON.stringify(streamResult("should-be-ignored"))}\n`);
+    child().emitExit(0, null);
+    child().emitClose(0, null);
+
+    await expect(run.result()).resolves.toMatchObject({
+      exitCode: 0,
+      finalMessage: "unterminated",
+    });
+  });
+
+  it("still rejects with the missing stream-json result error when the child closes empty", async () => {
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("hello", { spawn });
+
+    child().writeStderr("agenc: no prompt provided");
+    child().emitExit(1, null);
+    child().endStdout();
+    child().emitClose(1, null);
+
+    await expect(run.result()).rejects.toThrow(
+      /exited \(code 1\).*no prompt provided/s,
+    );
+  });
+
+  it("settles abort and spawn-error races once and removes every listener", async () => {
+    const abort = new AbortController();
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("race", {
+      spawn,
+      signal: abort.signal,
+    });
+    const first = run.result();
+    const second = run.result();
+
+    abort.abort();
+    child().emitSpawnError(new Error("spawn ENOENT"));
+    child().emitExit(null, "SIGTERM");
+    child().endStdout();
+    child().emitClose(null, "SIGTERM");
+
+    await expect(first).rejects.toThrow(/failed to spawn AgenC CLI|exited/);
+    await expect(second).rejects.toBe(await first.catch((error: unknown) => error));
+    expect(child().listenerCounts()).toEqual({
+      child: { error: 0, exit: 0, close: 0 },
+      stdout: { data: 0, end: 0 },
+      stderr: { data: 0 },
+      stdin: { error: 0 },
+    });
+    expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
+  });
+
+  it("times out a post-exit drain with a distinct error and kills retained descendants", async () => {
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("hung stdout", {
+      spawn,
+      postExitDrainTimeoutMs: 30,
+    });
+
+    child().emitExit(0, null);
+    await expect(run.result()).rejects.toThrow(
+      /exited \(code 0\).*did not close within 30ms/s,
+    );
+    expect(child().kills).toContain("SIGKILL");
+    expect(child().listenerCounts()).toEqual({
+      child: { error: 0, exit: 0, close: 0 },
+      stdout: { data: 0, end: 0 },
+      stderr: { data: 0 },
+      stdin: { error: 0 },
+    });
+  });
+
+  it("accepts a real wrapper that exits before an inherited-stdout descendant writes the result", async () => {
+    const run = promptViaSubprocess("real late pipe", {
+      spawn: spawnLateResultWrapper(),
+    });
+    await expect(run.result()).resolves.toMatchObject({
+      exitCode: 0,
+      finalMessage: "late-pipe",
+    });
   });
 });

@@ -18,6 +18,10 @@
  * non-interactive — the CLI auto-DENIES permission requests, so permission
  * callbacks cannot grant tools over this transport. Exit code 2 marks a
  * tool-denied giveup, exactly like the CLI.
+ *
+ * Settlement waits for child `exit`, stdout `end`, and child `close`. Node
+ * may emit `exit` while a descendant still holds the inherited stdout pipe;
+ * deciding on `exit` alone drops a valid result that arrives before `close`.
  */
 
 import { spawn as nodeSpawn } from "node:child_process";
@@ -32,25 +36,45 @@ import {
 /** Cap on internally buffered, not-yet-consumed prompt events (mirrors client.ts). */
 const MAX_BUFFERED_PROMPT_EVENTS = 1_000;
 
+/** Default bound on waiting for stdio to close after the child process exits. */
+export const DEFAULT_POST_EXIT_DRAIN_TIMEOUT_MS = 5_000;
+
+type ChildExitListener = (
+  code: number | null,
+  signal: string | null,
+) => void;
+
 export interface AgencSubprocessChild {
+  readonly pid?: number | undefined;
   readonly stdin: {
     write(chunk: string): unknown;
     end(): unknown;
     on(event: "error", listener: (error: Error) => void): unknown;
+    removeListener(event: "error", listener: (error: Error) => void): unknown;
   } | null;
   readonly stdout: {
     setEncoding(encoding: string): unknown;
     on(event: "data", listener: (chunk: string) => void): unknown;
+    on(event: "end", listener: () => void): unknown;
+    removeListener(event: "data", listener: (chunk: string) => void): unknown;
+    removeListener(event: "end", listener: () => void): unknown;
+    destroy?(): unknown;
   } | null;
   readonly stderr: {
     setEncoding(encoding: string): unknown;
     on(event: "data", listener: (chunk: string) => void): unknown;
+    removeListener(event: "data", listener: (chunk: string) => void): unknown;
+    destroy?(): unknown;
   } | null;
+  on(event: "error", listener: (error: Error) => void): unknown;
+  on(event: "exit", listener: ChildExitListener): unknown;
+  on(event: "close", listener: ChildExitListener): unknown;
   once(event: "error", listener: (error: Error) => void): unknown;
-  once(
-    event: "exit",
-    listener: (code: number | null, signal: string | null) => void,
-  ): unknown;
+  once(event: "exit", listener: ChildExitListener): unknown;
+  once(event: "close", listener: ChildExitListener): unknown;
+  removeListener(event: "error", listener: (error: Error) => void): unknown;
+  removeListener(event: "exit", listener: ChildExitListener): unknown;
+  removeListener(event: "close", listener: ChildExitListener): unknown;
   kill(signal?: string): unknown;
 }
 
@@ -86,6 +110,11 @@ export interface AgencSubprocessOptions {
   /** Extra argv appended verbatim after the built-in flags. */
   readonly extraArgs?: readonly string[];
   readonly signal?: AbortSignal;
+  /**
+   * Bound on waiting for stdout `end` and child `close` after `exit`.
+   * Defaults to {@link DEFAULT_POST_EXIT_DRAIN_TIMEOUT_MS}.
+   */
+  readonly postExitDrainTimeoutMs?: number;
   /** Injectable for tests. */
   readonly spawn?: AgencSubprocessSpawnFn;
 }
@@ -110,6 +139,9 @@ export function promptViaSubprocess(
   if (executable === undefined || executable.length === 0) {
     throw new Error("agencCommand must name an executable");
   }
+  const drainTimeoutMs = resolvePostExitDrainTimeoutMs(
+    options.postExitDrainTimeoutMs,
+  );
   const args = [
     ...prefixArgs,
     "-p",
@@ -138,6 +170,9 @@ export function promptViaSubprocess(
       nodeSpawn(spawnCommand, [...spawnArgs], {
         ...spawnOptions,
         stdio: [...spawnOptions.stdio],
+        // A new process group lets a post-exit drain timeout SIGKILL
+        // retained descendants that inherited the child's stdout.
+        ...(process.platform === "win32" ? {} : { detached: true }),
       }) as unknown as AgencSubprocessChild);
 
   const child = spawner(executable, args, {
@@ -167,12 +202,28 @@ export function promptViaSubprocess(
     wake?.();
     wake = null;
   };
+  const listenerCleanups: Array<() => void> = [];
   // Removes the abort listener on completion so a reused long-lived AbortSignal
   // does not accumulate one dead listener per prompt run.
   let removeAbortListener: (() => void) | null = null;
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  let exited = false;
+  let closed = false;
+  let stdoutEnded = child.stdout === null;
+  let remainderParsed = false;
+  let exitCode: number | null = null;
+  let exitSignal: string | null = null;
+
   const runCleanup = () => {
+    if (drainTimer !== undefined) {
+      clearTimeout(drainTimer);
+      drainTimer = undefined;
+    }
     removeAbortListener?.();
     removeAbortListener = null;
+    for (const cleanup of listenerCleanups.splice(0)) {
+      cleanup();
+    }
   };
   const finishOk = (value: AgencPromptResult) => {
     if (done) return;
@@ -215,43 +266,40 @@ export function promptViaSubprocess(
     }
   };
 
-  child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    stdoutRemainder += chunk;
+  const parseCompleteLines = () => {
     let newlineIndex = stdoutRemainder.indexOf("\n");
     while (newlineIndex >= 0) {
       handleLine(stdoutRemainder.slice(0, newlineIndex));
       stdoutRemainder = stdoutRemainder.slice(newlineIndex + 1);
       newlineIndex = stdoutRemainder.indexOf("\n");
     }
-  });
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk: string) => {
-    stderrTail = `${stderrTail}${chunk}`.slice(-8_192);
-  });
-
-  child.once("error", (error) => {
-    finishError(
-      new Error(`failed to spawn AgenC CLI (${executable}): ${error.message}`),
-    );
-  });
-  child.once("exit", (code, signal) => {
+  };
+  const parseRemainderOnce = () => {
+    if (remainderParsed) return;
+    remainderParsed = true;
     if (stdoutRemainder.length > 0) {
       handleLine(stdoutRemainder);
       stdoutRemainder = "";
     }
+  };
+  const settleFromTerminalState = () => {
+    if (done || !exited || !closed) return;
+    if (!stdoutEnded) {
+      stdoutEnded = true;
+      parseRemainderOnce();
+    }
     if (resultLine !== null) {
       const line = resultLine;
-      const exitCode =
-        typeof line.exitCode === "number" ? line.exitCode : code ?? 1;
+      const resolvedExitCode =
+        typeof line.exitCode === "number" ? line.exitCode : exitCode ?? 1;
       const denied = Array.isArray(line.deniedPermissionRequestIds)
         ? line.deniedPermissionRequestIds.filter(
             (value): value is string => typeof value === "string",
           )
         : [];
       finishOk({
-        stopReason: stopReasonFromExitCode(exitCode),
-        exitCode,
+        stopReason: stopReasonFromExitCode(resolvedExitCode),
+        exitCode: resolvedExitCode,
         finalMessage:
           typeof line.finalMessage === "string" ? line.finalMessage : "",
         deniedPermissionRequestIds: denied,
@@ -261,13 +309,119 @@ export function promptViaSubprocess(
     }
     finishError(
       new Error(
-        `AgenC CLI exited (code ${code ?? "null"}${
-          signal !== null ? `, signal ${signal}` : ""
+        `AgenC CLI exited (code ${exitCode ?? "null"}${
+          exitSignal !== null ? `, signal ${exitSignal}` : ""
         }) without a stream-json result${
           stderrTail.trim().length > 0 ? `: ${stderrTail.trim()}` : ""
         }`,
       ),
     );
+  };
+  const terminateRetainedDescendants = () => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The wrapper may already be gone.
+    }
+    if (typeof child.pid === "number" && process.platform !== "win32") {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // ESRCH / EINVAL / EPERM: no group, or already reaped.
+      }
+    }
+    try {
+      child.stdout?.destroy?.();
+    } catch {
+      // Stream already closed.
+    }
+    try {
+      child.stderr?.destroy?.();
+    } catch {
+      // Stream already closed.
+    }
+  };
+  const beginPostExitDrain = () => {
+    if (done || closed || drainTimer !== undefined) return;
+    drainTimer = setTimeout(() => {
+      drainTimer = undefined;
+      finishError(
+        new Error(
+          `AgenC CLI exited (code ${exitCode ?? "null"}${
+            exitSignal !== null ? `, signal ${exitSignal}` : ""
+          }) but stdio did not close within ${drainTimeoutMs}ms`,
+        ),
+      );
+      // Kill after settle so a synchronous stdout destroy cannot
+      // race a successful result onto the same run.
+      terminateRetainedDescendants();
+    }, drainTimeoutMs);
+  };
+  const onStdoutData = (chunk: string) => {
+    if (done || stdoutEnded) return;
+    stdoutRemainder += chunk;
+    parseCompleteLines();
+  };
+  const onStdoutEnd = () => {
+    if (stdoutEnded) return;
+    stdoutEnded = true;
+    parseRemainderOnce();
+    settleFromTerminalState();
+  };
+  const onStderrData = (chunk: string) => {
+    stderrTail = `${stderrTail}${chunk}`.slice(-8_192);
+  };
+  const onSpawnError = (error: Error) => {
+    finishError(
+      new Error(`failed to spawn AgenC CLI (${executable}): ${error.message}`),
+    );
+  };
+  const onExit = (code: number | null, signal: string | null) => {
+    if (exited) return;
+    exited = true;
+    exitCode = code;
+    exitSignal = signal;
+    beginPostExitDrain();
+    settleFromTerminalState();
+  };
+  const onClose = (code: number | null, signal: string | null) => {
+    if (closed) return;
+    closed = true;
+    if (!exited) {
+      exited = true;
+      exitCode = code;
+      exitSignal = signal;
+    }
+    if (!stdoutEnded) {
+      stdoutEnded = true;
+      parseRemainderOnce();
+    }
+    settleFromTerminalState();
+  };
+
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  if (child.stdout !== null) {
+    child.stdout.on("data", onStdoutData);
+    child.stdout.on("end", onStdoutEnd);
+    listenerCleanups.push(() => {
+      child.stdout?.removeListener("data", onStdoutData);
+      child.stdout?.removeListener("end", onStdoutEnd);
+    });
+  }
+  if (child.stderr !== null) {
+    child.stderr.on("data", onStderrData);
+    listenerCleanups.push(() => {
+      child.stderr?.removeListener("data", onStderrData);
+    });
+  }
+  child.on("error", onSpawnError);
+  child.on("exit", onExit);
+  child.on("close", onClose);
+  listenerCleanups.push(() => {
+    child.removeListener("error", onSpawnError);
+    child.removeListener("exit", onExit);
+    child.removeListener("close", onClose);
   });
 
   if (options.signal !== undefined) {
@@ -287,13 +441,18 @@ export function promptViaSubprocess(
   } else {
     // Without an "error" listener a broken stdin pipe (the child exited before
     // draining stdin — startup crash, bad flag) surfaces as an uncaught EPIPE in
-    // the embedder's process. child.once("error") (above) only covers
+    // the embedder's process. child.on("error") (above) only covers
     // ChildProcess spawn errors, not stream errors — route those into finishError.
-    child.stdin.on("error", (error: Error) => {
+    const stdin = child.stdin;
+    const onStdinError = (error: Error) => {
       finishError(new Error(`AgenC CLI stdin write failed: ${error.message}`));
+    };
+    stdin.on("error", onStdinError);
+    listenerCleanups.push(() => {
+      stdin.removeListener("error", onStdinError);
     });
-    child.stdin.write(`${JSON.stringify({ type: "prompt", prompt })}\n`);
-    child.stdin.end();
+    stdin.write(`${JSON.stringify({ type: "prompt", prompt })}\n`);
+    stdin.end();
   }
 
   return {
@@ -316,4 +475,14 @@ export function promptViaSubprocess(
       }
     },
   };
+}
+
+function resolvePostExitDrainTimeoutMs(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_POST_EXIT_DRAIN_TIMEOUT_MS;
+  if (!Number.isFinite(value) || value <= 0 || value > 2_147_483_647) {
+    throw new RangeError(
+      "postExitDrainTimeoutMs must be positive and no greater than 2147483647",
+    );
+  }
+  return value;
 }
