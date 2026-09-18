@@ -6001,6 +6001,10 @@ export class Session {
    * provider_switched re-entry).
    */
   abortTerminal(reason: AbortReason): void {
+    if (reason === "provider_switched") {
+      this.abortActiveTurnForProviderSwitch();
+      return;
+    }
     if (this.abortController.signal.aborted) return;
     const activeTurnId = this.activeTurn.unsafePeek()?.turnId;
     this.abortController.abort(reason);
@@ -6012,6 +6016,34 @@ export class Session {
         payload: {
           turnId: activeTurnId,
           reason,
+        },
+      },
+    });
+  }
+
+  /**
+   * I-13: a mid-turn provider switch cancels only the turn in flight. The
+   * session-level controller is the lifetime shutdown token; tripping it for a
+   * switch left every later prompt aborting with `provider_switched` before
+   * the staged selection could apply. Phases observe the merged turn signal,
+   * so the same reason reaches them through the turn's own controller.
+   */
+  private abortActiveTurnForProviderSwitch(): void {
+    const active = this.activeTurn.unsafePeek();
+    if (active === null || active.abortController.signal.aborted) return;
+    active.abortController.abort("provider_switched");
+    for (const task of active.tasks.values()) {
+      if (!task.abortController.signal.aborted) {
+        task.abortController.abort("provider_switched");
+      }
+    }
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "turn_aborted",
+        payload: {
+          turnId: active.turnId,
+          reason: "provider_switched",
         },
       },
     });

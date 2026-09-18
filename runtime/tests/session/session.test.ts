@@ -806,6 +806,46 @@ describe("Session.abortTerminal", () => {
     });
   });
 
+  it("scopes provider_switched to the turn in flight and keeps the session promptable", async () => {
+    const session = buildSession();
+    const turn = new AbortController();
+    const child = new AbortController();
+    await session.activeTurn.swap({
+      turnId: "turn-live",
+      startedAtMs: 123,
+      abortController: turn,
+      tasks: new Map([
+        ["turn-live", { abortController: turn }],
+        ["turn-live:child", { abortController: child }],
+      ]),
+    } as never);
+
+    session.abortTerminal("provider_switched");
+
+    expect(turn.signal.reason).toBe("provider_switched");
+    expect(child.signal.reason).toBe("provider_switched");
+    expect(session.abortController.signal.aborted).toBe(false);
+    expect(session.txEvent.tryRecv()).toMatchObject({
+      msg: {
+        type: "turn_aborted",
+        payload: { turnId: "turn-live", reason: "provider_switched" },
+      },
+    });
+
+    // The lifetime token is untouched: a real terminal abort still works.
+    session.abortTerminal("stdin_lost");
+    expect(session.abortController.signal.reason).toBe("stdin_lost");
+  });
+
+  it("treats provider_switched as a no-op when no turn is active", () => {
+    const session = buildSession();
+
+    session.abortTerminal("provider_switched");
+
+    expect(session.abortController.signal.aborted).toBe(false);
+    expect(session.txEvent.tryRecv()).toBeUndefined();
+  });
+
   it("omits turnId when no turn is active", () => {
     const session = buildSession();
 
