@@ -715,6 +715,99 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("serves the persisted transcript for a daemon session addressed by its session id", async () => {
+    // The desktop attaches a session and then addresses it by the daemon's
+    // session record id (session_<uuid>), while the rollout is filed under
+    // the agent id. After a daemon restart the agent row is recovered without
+    // a runtime, so the transcript must come from the persisted thread; the
+    // fallback used to look the session id up as a thread id and miss.
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "conv-desktop-thread");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "conv-desktop-thread",
+        rolloutStore: rollout,
+        source: "cli_main",
+        cwd,
+      });
+      // Sequenced events, as a daemon session writes them: the v2 snapshot
+      // reconstruction keys its messages on eventId and seq.
+      rollout.appendRollout({
+        type: "event_msg",
+        payload: {
+          id: "user-event",
+          eventId: "user-event",
+          seq: 1,
+          msg: {
+            type: "user_message",
+            payload: { message: "sleep for a while", displayText: "sleep for a while" },
+          },
+        },
+      });
+      rollout.appendRollout({
+        type: "event_msg",
+        payload: {
+          id: "agent-event",
+          eventId: "agent-event",
+          seq: 2,
+          msg: { type: "agent_message", payload: { message: "starting" } },
+        },
+      });
+      threadStore.shutdownThread("conv-desktop-thread");
+
+      const sessions = new AgenCDaemonSessionManager({ threadStore });
+      const created = await sessions.createSession({
+        agentId: "conv-desktop-thread",
+        cwd,
+      });
+      expect(created.sessionId).not.toBe("conv-desktop-thread");
+
+      const manager = new AgenCDaemonAgentManager({
+        threadStore,
+        sessionManager: sessions,
+        runner: {
+          startAgent: async () => ({
+            agentId: "unused",
+            startedAt: "2026-05-01T12:00:00.000Z",
+            status: "running",
+          }),
+          getAgentSessionTranscript: async () => {
+            throw new Error("AgenC daemon agent not running: conv-desktop-thread");
+          },
+          getAgentSessionTranscriptV2: async () => {
+            throw new Error("AgenC daemon agent not running: conv-desktop-thread");
+          },
+        },
+      });
+      await expect(
+        manager.getSessionTranscriptV2({ sessionId: created.sessionId }),
+      ).resolves.toMatchObject({
+        sessionId: created.sessionId,
+        runId: "conv-desktop-thread",
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: "user", text: "sleep for a while" }),
+          expect.objectContaining({ role: "assistant", text: "starting" }),
+        ]),
+      });
+      await expect(
+        manager.getSessionTranscript({ sessionId: created.sessionId }),
+      ).resolves.toEqual({
+        sessionId: created.sessionId,
+        messages: [
+          { role: "user", text: "sleep for a while" },
+          { role: "assistant", text: "starting" },
+        ],
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("reads persisted agent logs when source agent id differs from thread id", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const rollout = openRollout(cwd, "thread-distinct-agent-log");

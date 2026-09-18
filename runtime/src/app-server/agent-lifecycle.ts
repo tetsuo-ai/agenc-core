@@ -3287,7 +3287,7 @@ export class AgenCDaemonAgentManager {
     // persisted thread from the same thread store `agenc agent logs` uses,
     // rather than throwing. The live-agent path below is unchanged.
     if (this.#runner?.getAgentSessionTranscript === undefined) {
-      const persisted = this.#readPersistedSessionTranscript(params.sessionId);
+      const persisted = await this.#readPersistedSessionTranscript(params.sessionId);
       if (persisted !== undefined) return persisted;
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
@@ -3301,7 +3301,7 @@ export class AgenCDaemonAgentManager {
       });
     } catch (error) {
       if (isNoLiveAgentError(error)) {
-        const persisted = this.#readPersistedSessionTranscript(
+        const persisted = await this.#readPersistedSessionTranscript(
           params.sessionId,
         );
         if (persisted !== undefined) return persisted;
@@ -3317,7 +3317,7 @@ export class AgenCDaemonAgentManager {
       // runner has no live in-memory agent for it (e.g. a recovered terminal
       // session). Fall back to the persisted thread for the same reason.
       if (isNoLiveAgentRunnerError(error)) {
-        const persisted = this.#readPersistedSessionTranscript(
+        const persisted = await this.#readPersistedSessionTranscript(
           params.sessionId,
         );
         if (persisted !== undefined) return persisted;
@@ -3336,7 +3336,7 @@ export class AgenCDaemonAgentManager {
       );
     }
     if (this.#runner?.getAgentSessionTranscriptV2 === undefined) {
-      const persisted = this.#readPersistedSessionTranscriptV2(
+      const persisted = await this.#readPersistedSessionTranscriptV2(
         params.sessionId,
       );
       if (persisted !== undefined) return persisted;
@@ -3352,7 +3352,7 @@ export class AgenCDaemonAgentManager {
       });
     } catch (error) {
       if (isNoLiveAgentError(error)) {
-        const persisted = this.#readPersistedSessionTranscriptV2(
+        const persisted = await this.#readPersistedSessionTranscriptV2(
           params.sessionId,
         );
         if (persisted !== undefined) return persisted;
@@ -3365,7 +3365,7 @@ export class AgenCDaemonAgentManager {
       });
     } catch (error) {
       if (isNoLiveAgentRunnerError(error)) {
-        const persisted = this.#readPersistedSessionTranscriptV2(
+        const persisted = await this.#readPersistedSessionTranscriptV2(
           params.sessionId,
         );
         if (persisted !== undefined) return persisted;
@@ -3383,44 +3383,74 @@ export class AgenCDaemonAgentManager {
    * `undefined` when there is no persisted thread to read so callers can
    * decide whether to surface the original no-live-agent error.
    */
-  #readPersistedSessionTranscript(
+  /**
+   * Thread ids under which a session's persisted transcript may be filed. A
+   * terminal session's id is its own thread id. A daemon session record
+   * (`session_<uuid>`) belongs to an agent whose rollout is filed under the
+   * agent id, and that record id is how the desktop addresses a session it
+   * attached. The fallback used to look the session id up as a thread and
+   * missed for every such session, so after a daemon restart the app got
+   * "recovered without a live runtime" for its history until a prompt
+   * revived the runtime.
+   */
+  async #persistedThreadIdsForSession(
     sessionId: string,
-  ): SessionTranscriptResult | undefined {
+  ): Promise<readonly string[]> {
+    const threadIds = [sessionId];
+    if (this.#sessionManager !== undefined) {
+      try {
+        const session = await this.#sessionManager.getSession(sessionId);
+        const agentId = session?.agentId;
+        if (
+          typeof agentId === "string" &&
+          agentId.length > 0 &&
+          agentId !== sessionId
+        ) {
+          threadIds.push(agentId);
+        }
+      } catch {
+        // The session record is extra evidence; the direct lookup still runs.
+      }
+    }
+    return threadIds;
+  }
+
+  async #readPersistedThreadForSession(
+    sessionId: string,
+  ): Promise<StoredThread | undefined> {
     const threadStore = this.#threadStore;
     if (threadStore === undefined) return undefined;
-    let thread: StoredThread;
-    try {
-      thread = threadStore.readThread({
-        threadId: sessionId,
-        includeArchived: true,
-        includeHistory: true,
-      });
-    } catch (error) {
-      if (isThreadLogReadMiss(error)) return undefined;
-      throw error;
+    for (const threadId of await this.#persistedThreadIdsForSession(sessionId)) {
+      try {
+        return threadStore.readThread({
+          threadId,
+          includeArchived: true,
+          includeHistory: true,
+        });
+      } catch (error) {
+        if (isThreadLogReadMiss(error)) continue;
+        throw error;
+      }
     }
+    return undefined;
+  }
+
+  async #readPersistedSessionTranscript(
+    sessionId: string,
+  ): Promise<SessionTranscriptResult | undefined> {
+    const thread = await this.#readPersistedThreadForSession(sessionId);
+    if (thread === undefined) return undefined;
     const messages = transcriptMessagesFromRolloutItems(
       thread.history?.items ?? [],
     );
     return { sessionId, messages };
   }
 
-  #readPersistedSessionTranscriptV2(
+  async #readPersistedSessionTranscriptV2(
     sessionId: string,
-  ): SessionTranscriptV2Result | undefined {
-    const threadStore = this.#threadStore;
-    if (threadStore === undefined) return undefined;
-    let thread: StoredThread;
-    try {
-      thread = threadStore.readThread({
-        threadId: sessionId,
-        includeArchived: true,
-        includeHistory: true,
-      });
-    } catch (error) {
-      if (isThreadLogReadMiss(error)) return undefined;
-      throw error;
-    }
+  ): Promise<SessionTranscriptV2Result | undefined> {
+    const thread = await this.#readPersistedThreadForSession(sessionId);
+    if (thread === undefined) return undefined;
     return sessionTranscriptV2FromRollout(
       thread.history?.items ?? [],
       sessionId,
