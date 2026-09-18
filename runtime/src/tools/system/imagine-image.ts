@@ -28,6 +28,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
@@ -59,6 +60,43 @@ function json(payload: unknown, isError?: boolean): ToolResult {
   return {
     content: safeStringify(payload),
     ...(isError ? { isError: true } : {}),
+  };
+}
+
+/**
+ * MiniMax answers HTTP 200 for a refused request and names the refusal in
+ * base_resp. These codes are refusals made before any generation: rate
+ * limit, authentication, balance, content policy, invalid parameters and
+ * invalid key. Other non-zero codes (unknown error, timeout) stay unknown.
+ */
+const MINIMAX_REFUSAL_STATUS_CODES: ReadonlySet<number> = new Set([
+  1002, 1004, 1008, 1026, 2013, 2049,
+]);
+
+/**
+ * A provider answer that refused the request: HTTP 4xx, or one of MiniMax's
+ * refusal codes. The backend generated nothing, so the failure is a
+ * confirmed no-effect outcome and not an unknown one. A bare error from this
+ * side-effecting tool is filed as an unknown outcome and gates the whole
+ * session behind /resolve (#2190); live, one expired Meta token ("The OAuth2
+ * access token could not be validated.") blocked every later shell, skill
+ * and image call in the session. Network failures, 5xx answers and empty or
+ * truncated results keep the bare form: the provider may have generated and
+ * billed something the model never saw.
+ */
+function providerRejection(
+  backend: ImageBackend,
+  receipt: string,
+  message: string,
+): ToolResult {
+  return {
+    ...json({ error: message }, true),
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "provider_receipt",
+      evidenceRef: `tool:ImagineImage:${backend.kind}:${receipt}`,
+      evidenceMaterial: `${imageBackendLabel(backend)} ${receipt}: ${message}`,
+    }),
   };
 }
 
@@ -1379,25 +1417,21 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           };
         };
         if (!res.ok) {
-          return json(
-            {
-              error: imageRequestError(payload, backend, res.status),
-            },
-            true,
-          );
+          const message = imageRequestError(payload, backend, res.status);
+          return res.status >= 400 && res.status < 500
+            ? providerRejection(backend, `http-${res.status}`, message)
+            : json({ error: message }, true);
         }
         // MiniMax reports invalid params and quota failures with HTTP 200.
         if (backend.kind === "minimax") {
           const status = payload.base_resp?.status_code;
           if (status !== 0) {
-            return json(
-              {
-                error:
-                  payload.base_resp?.status_msg ??
-                  `MiniMax image request failed with status ${status ?? "unknown"}`,
-              },
-              true,
-            );
+            const message =
+              payload.base_resp?.status_msg ??
+              `MiniMax image request failed with status ${status ?? "unknown"}`;
+            return status !== undefined && MINIMAX_REFUSAL_STATUS_CODES.has(status)
+              ? providerRejection(backend, `base_resp-${status}`, message)
+              : json({ error: message }, true);
           }
         }
         if (

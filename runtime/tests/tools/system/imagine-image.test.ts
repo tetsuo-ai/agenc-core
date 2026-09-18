@@ -565,6 +565,72 @@ describe("ImagineImage tool", () => {
     });
   });
 
+  it("files a provider rejection as a confirmed no-effect outcome", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-meta-rejected-"));
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({
+        error: "The OAuth2 access token could not be validated.",
+      }),
+    })) as unknown as typeof fetch;
+    const tool = createImagineImageTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => null,
+      env: { MODEL_API_KEY: "canonical-meta-image-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({
+      prompt: "robot bookkeeper",
+      aspect_ratio: "16:9",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toEqual({
+      error: "The OAuth2 access token could not be validated.",
+    });
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "provider_receipt",
+      evidenceRef: "tool:ImagineImage:meta:http-401",
+    });
+    expect(result.effectDisposition?.evidenceSha256).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  it("keeps a provider server error and a network failure as unknown outcomes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-meta-unknown-"));
+    const answers = [
+      async () => ({
+        ok: false,
+        status: 502,
+        json: async () => ({ error: { message: "upstream unavailable" } }),
+      }),
+      async () => {
+        throw new Error("socket hang up");
+      },
+    ];
+    const fetchImpl = vi.fn(async () => answers.shift()!()) as unknown as typeof fetch;
+    const tool = createImagineImageTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => null,
+      env: { MODEL_API_KEY: "canonical-meta-image-key" },
+      fetchImpl,
+    });
+
+    const serverError = await tool.execute({ prompt: "robot bookkeeper" });
+    expect(serverError.isError).toBe(true);
+    expect(JSON.parse(serverError.content)).toEqual({ error: "upstream unavailable" });
+    expect(serverError.effectDisposition).toBeUndefined();
+
+    const networkError = await tool.execute({ prompt: "robot bookkeeper" });
+    expect(networkError.isError).toBe(true);
+    expect(JSON.parse(networkError.content)).toEqual({ error: "socket hang up" });
+    expect(networkError.effectDisposition).toBeUndefined();
+  });
+
   it("uses Z.ai GLM-Image synchronously with its own key and trusted URL", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-zai-native-"));
     const provider = createProvider("zai", {
@@ -1108,7 +1174,14 @@ describe("ImagineImage tool", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(String(fetchImpl.mock.calls[0]?.[0]))
       .toBe("https://api.x.ai/v1/images/generations");
-    expect(result.effectDisposition).toBeUndefined();
+    // The provider refused the request, so nothing was generated: the
+    // refusal settles as a confirmed no-effect outcome instead of gating
+    // the session behind /resolve.
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "provider_receipt",
+      evidenceRef: "tool:ImagineImage:xai:http-403",
+    });
   });
 
   it("redacts credentials before bounding an image refusal", async () => {
