@@ -29,7 +29,6 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { StartupDeadline } from "./startup-deadline.js";
 import { waitForStartupChild, type StartupChild } from "./startup-child.js";
-import { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
 import {
   AGENC_SDK_JSON_RPC_VERSION,
   isJsonObject,
@@ -50,6 +49,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_READY_TIMEOUT_MS = 45_000;
 const MAX_TIMER_TIMEOUT_MS = 2_147_483_647;
 const READY_POLL_MS = 50;
+/** Mirrors the daemon transports' 16 MiB max-line bound. */
+const MAX_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
 // These RPCs respond only after the full model/tool turn. They must not inherit
 // the short control-RPC timeout: SDK-backed agents may legitimately run for
 // hours. Explicit cancellation, socket closure, and daemon shutdown still
@@ -319,9 +320,9 @@ export class AgencSocketTransport implements AgencTransport {
   #handleData(chunk: string): void {
     if (this.#closed) return;
     this.#buffer += chunk;
-    if (Buffer.byteLength(this.#buffer, "utf8") > AGENC_SDK_MAX_FRAME_BYTES) {
+    if (Buffer.byteLength(this.#buffer, "utf8") > MAX_CLIENT_BUFFER_BYTES) {
       const overflow = new Error(
-        `AgenC daemon connection exceeded ${AGENC_SDK_MAX_FRAME_BYTES} bytes without a complete message`,
+        `AgenC daemon connection exceeded ${MAX_CLIENT_BUFFER_BYTES} bytes without a complete message`,
       );
       this.#terminate(overflow);
       return;

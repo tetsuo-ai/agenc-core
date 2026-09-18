@@ -28,6 +28,7 @@ import {
   type AgencPromptResult,
 } from "./events.js";
 import { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
+import { SdkNewlineFrameDecoder } from "./newline-frame.js";
 import { isJsonObject, type JsonObject } from "./protocol.js";
 
 /** Cap on internally buffered, not-yet-consumed prompt events (mirrors client.ts). */
@@ -160,9 +161,7 @@ export function promptViaSubprocess(
   let finalResult: AgencPromptResult | null = null;
   let resultLine: JsonObject | null = null;
   let stderrTail = "";
-  const stdoutChunks: Buffer[] = [];
-  let stdoutFrameBytes = 0;
-  let stdoutOverflowed = false;
+  const stdoutDecoder = new SdkNewlineFrameDecoder();
 
   let resolveResult!: (value: AgencPromptResult) => void;
   let rejectResult!: (error: Error) => void;
@@ -224,16 +223,8 @@ export function promptViaSubprocess(
     }
   };
 
-  const resetStdoutFrame = () => {
-    stdoutChunks.length = 0;
-    stdoutFrameBytes = 0;
-  };
-  const decodeStdoutFrame = (frame: Buffer): string =>
-    frame.toString("utf8").replace(/\r$/u, "");
   const failOversizedStdout = () => {
-    if (stdoutOverflowed) return;
-    stdoutOverflowed = true;
-    resetStdoutFrame();
+    if (done) return;
     child.stdout?.removeListener?.("data", onStdoutData);
     child.stdout?.pause?.();
     const detail = stderrTail.trim();
@@ -246,28 +237,13 @@ export function promptViaSubprocess(
     finishError(error);
   };
   const onStdoutData = (chunk: string | Buffer): void => {
-    if (done || stdoutOverflowed) return;
-    const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    let offset = 0;
-    while (offset < bytes.length) {
-      const newline = bytes.indexOf(0x0a, offset);
-      const end = newline === -1 ? bytes.length : newline;
-      const segment = bytes.subarray(offset, end);
-      if (stdoutFrameBytes + segment.length > AGENC_SDK_MAX_FRAME_BYTES) {
-        failOversizedStdout();
-        return;
-      }
-      if (segment.length > 0) {
-        stdoutChunks.push(Buffer.from(segment));
-        stdoutFrameBytes += segment.length;
-      }
-      if (newline === -1) return;
-      const frame = Buffer.concat(stdoutChunks, stdoutFrameBytes);
-      resetStdoutFrame();
-      handleLine(decodeStdoutFrame(frame));
-      if (done || stdoutOverflowed) return;
-      offset = newline + 1;
+    if (done || stdoutDecoder.overflowed) return;
+    const frames = stdoutDecoder.push(chunk);
+    for (const frame of frames) {
+      handleLine(frame);
+      if (done) return;
     }
+    if (stdoutDecoder.overflowed) failOversizedStdout();
   };
 
   // Keep stdout as raw bytes so the frame ceiling is counted before UTF-8
@@ -284,10 +260,9 @@ export function promptViaSubprocess(
     );
   });
   child.once("exit", (code, signal) => {
-    if (!stdoutOverflowed && stdoutFrameBytes > 0) {
-      const frame = Buffer.concat(stdoutChunks, stdoutFrameBytes);
-      resetStdoutFrame();
-      handleLine(decodeStdoutFrame(frame));
+    if (!stdoutDecoder.overflowed) {
+      const remainder = stdoutDecoder.flush();
+      if (remainder !== undefined) handleLine(remainder);
     }
     if (resultLine !== null) {
       const line = resultLine;

@@ -735,8 +735,10 @@ daemon projects it as diagnostic with `statusProjection: "session_only"`.
   and client multiplexer).
 - `subprocess-transport.test.ts` — stream-json adaptation with a fake child
   process (argv contract, event mapping, exit-code-2 mapping, error paths).
-- `subprocess-stdout-framing.test.ts` — 16 MiB stdout payload ceiling, CRLF,
-  split UTF-8, multi-frame chunks, and overflow cleanup.
+- `newline-frame.test.ts` — subprocess payload ceiling rules (exact limit,
+  overflow, CRLF, split UTF-8, multi-frame chunks).
+- `subprocess-stdout-framing.test.ts` — overflow settlement, listener cleanup,
+  and child reaping at the production 16 MiB bound.
 - `frame-limits.contract.test.ts` — SDK / daemon / MCP 16 MiB ceiling pin.
 - `events.contract.test.ts` — trusted object `clientAction` preservation and
   malformed/scalar rejection at the SDK event boundary.
