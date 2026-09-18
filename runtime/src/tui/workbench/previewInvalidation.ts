@@ -24,7 +24,7 @@ export function previewTaskEpoch(
   return Object.values(tasks)
     .filter((task) => taskMayReferencePath(task, path))
     .map((task) => `${task.id}:${task.status}:${task.endTime ?? ""}`)
-    .sort()
+    .sort((left, right) => left.localeCompare(right))
     .join("\n");
 }
 

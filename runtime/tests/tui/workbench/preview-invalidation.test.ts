@@ -70,6 +70,22 @@ describe("previewTaskEpoch", () => {
     expect(after).toBe(before);
   });
 
+  it("orders referencing tasks with a locale-stable key", () => {
+    const zetaFirst = epochFor(
+      "target.ts",
+      previewAgentTask({ id: "zeta", status: "running" }),
+      previewAgentTask({ id: "alpha", status: "running" }),
+    );
+    const alphaFirst = epochFor(
+      "target.ts",
+      previewAgentTask({ id: "alpha", status: "running" }),
+      previewAgentTask({ id: "zeta", status: "running" }),
+    );
+
+    expect(zetaFirst).toBe(alphaFirst);
+    expect(zetaFirst.startsWith("alpha:running:")).toBe(true);
+  });
+
   it("returns an empty epoch when no path is selected", () => {
     expect(
       epochFor(
