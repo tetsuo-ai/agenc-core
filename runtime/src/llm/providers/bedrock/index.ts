@@ -28,6 +28,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "../../wire/mcp-tool-naming.js";
+import { parseProviderJson } from "../../wire/parse-json.js";
 import { coerceUsage } from "../../wire/shared.js";
 import {
   createTokenAccountingConfigurationRevision,
@@ -716,14 +717,11 @@ async function* bedrockEventStreamPayloads(
         yield {};
         continue;
       }
-      try {
-        yield JSON.parse(text) as unknown;
-      } catch (error) {
-        throw new LLMInvalidResponseError(
-          BEDROCK_PROVIDER_ID,
-          `Malformed JSON in Amazon Bedrock stream event: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+      yield parseProviderJson(
+        BEDROCK_PROVIDER_ID,
+        text,
+        "Amazon Bedrock stream event",
+      );
     }
   }
   if (pending.length > 0) {
