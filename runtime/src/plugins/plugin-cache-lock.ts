@@ -1,0 +1,377 @@
+import { randomUUID } from "node:crypto";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rmdir,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, join } from "node:path";
+
+import { getErrnoCode, isENOENT } from "../utils/errors.js";
+import { isRecord } from "../utils/record.js";
+
+/** Heartbeat validity. Covers the 120s plugin process/download budget plus slack. */
+export const PLUGIN_CACHE_LOCK_LEASE_TTL_MS = 150_000;
+/** How long a waiter polls before giving up. Independent of lease duration. */
+export const PLUGIN_CACHE_LOCK_ACQUIRE_TIMEOUT_MS = 60_000;
+const PLUGIN_CACHE_LOCK_HEARTBEAT_INTERVAL_MS = 30_000;
+const PLUGIN_CACHE_LOCK_INCOMPLETE_GRACE_MS = 1_000;
+const PLUGIN_CACHE_LOCK_POLL_INTERVAL_MS = 100;
+
+const OWNER_FILE_PREFIX = "owner.";
+const OWNER_TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/u;
+
+export interface PluginCacheLockHooks {
+  readonly nowMs?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly createOwnerToken?: () => string;
+  readonly pid?: number;
+  readonly isProcessAlive?: (pid: number) => boolean;
+  readonly leaseTtlMs?: number;
+  readonly acquireTimeoutMs?: number;
+  readonly heartbeatIntervalMs?: number;
+  readonly pollIntervalMs?: number;
+  readonly incompleteGraceMs?: number;
+}
+
+export interface PluginCacheLockHandle {
+  readonly ownerToken: string;
+  refresh(): Promise<void>;
+  release(): Promise<void>;
+}
+
+interface LockIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+interface OwnerLease {
+  readonly fileName: string;
+  readonly ownerToken: string;
+  readonly pid: number;
+  readonly heartbeatAtMs: number;
+}
+
+interface ResolvedLockHooks {
+  readonly nowMs: () => number;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly createOwnerToken: () => string;
+  readonly pid: number;
+  readonly isProcessAlive: (pid: number) => boolean;
+  readonly leaseTtlMs: number;
+  readonly acquireTimeoutMs: number;
+  readonly heartbeatIntervalMs: number;
+  readonly pollIntervalMs: number;
+  readonly incompleteGraceMs: number;
+}
+
+export function pluginCacheLockDirectory(cacheRoot: string): string {
+  return `${cacheRoot}.lock`;
+}
+
+export async function withPluginCacheLock<T>(
+  cacheRoot: string,
+  fn: () => Promise<T>,
+  hooks: PluginCacheLockHooks = {},
+): Promise<T> {
+  const resolved = resolveHooks(hooks);
+  const lock = await acquirePluginCacheLock(cacheRoot, hooks);
+  const timer = setInterval(() => {
+    void lock.refresh();
+  }, resolved.heartbeatIntervalMs);
+  timer.unref();
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+    await lock.release();
+  }
+}
+
+export async function acquirePluginCacheLock(
+  cacheRoot: string,
+  hooks: PluginCacheLockHooks = {},
+): Promise<PluginCacheLockHandle> {
+  const resolved = resolveHooks(hooks);
+  const lockDir = pluginCacheLockDirectory(cacheRoot);
+  const ownerToken = assertSafeOwnerToken(resolved.createOwnerToken());
+  const startedAt = resolved.nowMs();
+  await mkdir(dirname(lockDir), { recursive: true, mode: 0o700 });
+
+  for (;;) {
+    const handle = await tryAcquire(lockDir, ownerToken, resolved);
+    if (handle !== undefined) return handle;
+    await reclaimExpiredOwners(lockDir, resolved);
+    const retried = await tryAcquire(lockDir, ownerToken, resolved);
+    if (retried !== undefined) return retried;
+    if (resolved.nowMs() - startedAt >= resolved.acquireTimeoutMs) {
+      throw new Error(`timed out waiting for plugin cache lock: ${cacheRoot}`);
+    }
+    await resolved.sleep(resolved.pollIntervalMs);
+  }
+}
+
+function resolveHooks(hooks: PluginCacheLockHooks): ResolvedLockHooks {
+  return {
+    nowMs: hooks.nowMs ?? Date.now,
+    sleep: hooks.sleep ?? defaultSleep,
+    createOwnerToken: hooks.createOwnerToken ?? randomUUID,
+    pid: hooks.pid ?? process.pid,
+    isProcessAlive: hooks.isProcessAlive ?? defaultIsProcessAlive,
+    leaseTtlMs: hooks.leaseTtlMs ?? PLUGIN_CACHE_LOCK_LEASE_TTL_MS,
+    acquireTimeoutMs: hooks.acquireTimeoutMs ?? PLUGIN_CACHE_LOCK_ACQUIRE_TIMEOUT_MS,
+    heartbeatIntervalMs: hooks.heartbeatIntervalMs ?? PLUGIN_CACHE_LOCK_HEARTBEAT_INTERVAL_MS,
+    pollIntervalMs: hooks.pollIntervalMs ?? PLUGIN_CACHE_LOCK_POLL_INTERVAL_MS,
+    incompleteGraceMs: hooks.incompleteGraceMs ?? PLUGIN_CACHE_LOCK_INCOMPLETE_GRACE_MS,
+  };
+}
+
+async function tryAcquire(
+  lockDir: string,
+  ownerToken: string,
+  hooks: ResolvedLockHooks,
+): Promise<PluginCacheLockHandle | undefined> {
+  const identity = await tryCreateLockDir(lockDir);
+  if (identity === undefined) return undefined;
+  try {
+    await writeOwnerLease(lockDir, {
+      ownerToken,
+      pid: hooks.pid,
+      heartbeatAtMs: hooks.nowMs(),
+    });
+  } catch (error) {
+    await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
+    await rmdir(lockDir).catch(() => {});
+    if (isENOENT(error)) return undefined;
+    throw error;
+  }
+  return createHandle(lockDir, ownerToken, identity, hooks);
+}
+
+function createHandle(
+  lockDir: string,
+  ownerToken: string,
+  identity: LockIdentity,
+  hooks: ResolvedLockHooks,
+): PluginCacheLockHandle {
+  return {
+    ownerToken,
+    refresh: async () => {
+      if (!await lockIdentityMatches(lockDir, identity)) return;
+      if (!await ownerFileExists(lockDir, ownerToken)) return;
+      await writeOwnerLease(lockDir, {
+        ownerToken,
+        pid: hooks.pid,
+        heartbeatAtMs: hooks.nowMs(),
+      });
+      if (!await lockIdentityMatches(lockDir, identity)) {
+        await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
+      }
+    },
+    release: async () => {
+      if (!await lockIdentityMatches(lockDir, identity)) return;
+      await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
+      await rmdir(lockDir).catch(() => {});
+    },
+  };
+}
+
+async function tryCreateLockDir(lockDir: string): Promise<LockIdentity | undefined> {
+  try {
+    await mkdir(lockDir, { recursive: false, mode: 0o700 });
+  } catch (error) {
+    if (getErrnoCode(error) !== "EEXIST") throw error;
+    return undefined;
+  }
+  return readLockIdentity(lockDir);
+}
+
+async function reclaimExpiredOwners(
+  lockDir: string,
+  hooks: ResolvedLockHooks,
+): Promise<void> {
+  const entries = await readLockEntries(lockDir);
+  if (entries === undefined) return;
+  if (entries.length === 0) {
+    await reclaimIncompleteLockDir(lockDir, hooks);
+    return;
+  }
+
+  const now = hooks.nowMs();
+  for (const entry of entries) {
+    if (entry.endsWith(".tmp")) {
+      if (await fileAgeMs(lockDir, entry, now) >= hooks.leaseTtlMs) {
+        await unlink(join(lockDir, entry)).catch(() => {});
+      }
+      continue;
+    }
+    const lease = await readOwnerLease(lockDir, entry);
+    if (lease === undefined) {
+      if (await fileAgeMs(lockDir, entry, now) >= hooks.incompleteGraceMs) {
+        await unlink(join(lockDir, entry)).catch(() => {});
+      }
+      continue;
+    }
+    if (shouldReclaimLease(lease, now, hooks)) {
+      await unlink(join(lockDir, lease.fileName)).catch(() => {});
+    }
+  }
+  await rmdir(lockDir).catch(() => {});
+}
+
+async function reclaimIncompleteLockDir(
+  lockDir: string,
+  hooks: ResolvedLockHooks,
+): Promise<void> {
+  let lockStat;
+  try {
+    lockStat = await stat(lockDir);
+  } catch (error) {
+    if (isENOENT(error)) return;
+    throw error;
+  }
+  if (hooks.nowMs() - lockStat.mtimeMs < hooks.incompleteGraceMs) return;
+  await rmdir(lockDir).catch(() => {});
+}
+
+function shouldReclaimLease(
+  lease: OwnerLease,
+  nowMs: number,
+  hooks: ResolvedLockHooks,
+): boolean {
+  if (!hooks.isProcessAlive(lease.pid)) return true;
+  return nowMs - lease.heartbeatAtMs >= hooks.leaseTtlMs;
+}
+
+async function writeOwnerLease(
+  lockDir: string,
+  lease: Pick<OwnerLease, "ownerToken" | "pid" | "heartbeatAtMs">,
+): Promise<void> {
+  const dest = ownerFilePath(lockDir, lease.ownerToken);
+  const temp = `${dest}.${lease.pid}.tmp`;
+  const body = `${JSON.stringify({
+    ownerToken: lease.ownerToken,
+    pid: lease.pid,
+    heartbeatAtMs: lease.heartbeatAtMs,
+  })}\n`;
+  try {
+    await writeFile(temp, body, { mode: 0o600 });
+    await rename(temp, dest);
+  } catch (error) {
+    await unlink(temp).catch(() => {});
+    throw error;
+  }
+}
+
+async function readOwnerLease(
+  lockDir: string,
+  fileName: string,
+): Promise<OwnerLease | undefined> {
+  const ownerToken = ownerTokenFromFileName(fileName);
+  if (ownerToken === undefined) return undefined;
+  let raw: string;
+  try {
+    raw = await readFile(join(lockDir, fileName), "utf8");
+  } catch (error) {
+    if (isENOENT(error)) return undefined;
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed)) return undefined;
+  if (parsed.ownerToken !== ownerToken) return undefined;
+  if (!Number.isInteger(parsed.pid) || (parsed.pid as number) <= 1) return undefined;
+  if (!Number.isInteger(parsed.heartbeatAtMs)) return undefined;
+  return {
+    fileName,
+    ownerToken,
+    pid: parsed.pid as number,
+    heartbeatAtMs: parsed.heartbeatAtMs as number,
+  };
+}
+
+function ownerTokenFromFileName(fileName: string): string | undefined {
+  if (!fileName.startsWith(OWNER_FILE_PREFIX)) return undefined;
+  const ownerToken = fileName.slice(OWNER_FILE_PREFIX.length);
+  return OWNER_TOKEN_PATTERN.test(ownerToken) ? ownerToken : undefined;
+}
+
+function ownerFilePath(lockDir: string, ownerToken: string): string {
+  return join(lockDir, `${OWNER_FILE_PREFIX}${ownerToken}`);
+}
+
+function assertSafeOwnerToken(ownerToken: string): string {
+  if (!OWNER_TOKEN_PATTERN.test(ownerToken)) {
+    throw new Error("plugin cache lock owner token must be a filesystem-safe identifier");
+  }
+  return ownerToken;
+}
+
+async function ownerFileExists(lockDir: string, ownerToken: string): Promise<boolean> {
+  try {
+    await stat(ownerFilePath(lockDir, ownerToken));
+    return true;
+  } catch (error) {
+    if (isENOENT(error)) return false;
+    throw error;
+  }
+}
+
+async function readLockEntries(lockDir: string): Promise<string[] | undefined> {
+  try {
+    return await readdir(lockDir);
+  } catch (error) {
+    if (isENOENT(error)) return undefined;
+    throw error;
+  }
+}
+
+async function readLockIdentity(lockDir: string): Promise<LockIdentity | undefined> {
+  try {
+    const lockStat = await stat(lockDir);
+    return { dev: lockStat.dev, ino: lockStat.ino };
+  } catch (error) {
+    if (isENOENT(error)) return undefined;
+    throw error;
+  }
+}
+
+async function lockIdentityMatches(
+  lockDir: string,
+  identity: LockIdentity,
+): Promise<boolean> {
+  const current = await readLockIdentity(lockDir);
+  return current !== undefined && current.dev === identity.dev && current.ino === identity.ino;
+}
+
+async function fileAgeMs(lockDir: string, fileName: string, nowMs: number): Promise<number> {
+  try {
+    const fileStat = await stat(join(lockDir, fileName));
+    return nowMs - fileStat.mtimeMs;
+  } catch (error) {
+    if (isENOENT(error)) return Number.POSITIVE_INFINITY;
+    throw error;
+  }
+}
+
+function defaultIsProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return getErrnoCode(error) === "EPERM";
+  }
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
