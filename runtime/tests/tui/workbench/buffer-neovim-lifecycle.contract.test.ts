@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
@@ -14,6 +14,8 @@ import {
   NeovimStartupCleanupError,
   startEmbeddedNeovim,
 } from "../../../src/tui/workbench/buffer/neovim/NeovimLifecycle.js";
+import { canonicalNeovimPath } from "../../../src/tui/workbench/buffer/neovim/NeovimPath.js";
+import { INSTALL_WORKSPACE_WRITE_GATE } from "../../../src/tui/workbench/buffer/neovim/NeovimWorkspaceWriteGate.js";
 import {
   NeovimRpcError,
   NeovimRpcRequestTimeoutError,
@@ -1541,6 +1543,56 @@ describe("embedded Neovim lifecycle", () => {
       expect(registered.some((command) => command.includes("BufModifiedSet"))).toBe(supportsBufModifiedSet);
       expect(registered).toContain("autocmd OptionSet endofline,modified call AgenCBufferPublishState()");
       expect(registered.some((command) => command.includes("TextChanged"))).toBe(true);
+    } finally {
+      await session.cleanup();
+    }
+  });
+
+  it("installs the write gate with the canonical workspace root before opening files", async () => {
+    const filePath = join(dir, "target.txt");
+    const workspace = join(dir, "workspace");
+    const launcher = join(dir, "fake-nvim.mjs");
+    await writeFile(
+      launcher,
+      ["#!/usr/bin/env node", "setInterval(() => {}, 1000);"].join("\n"),
+    );
+    await chmod(launcher, 0o755);
+    const execLua: Array<{ readonly source: string; readonly args: unknown }> =
+      [];
+    vi.spyOn(NeovimRpcTransport.prototype, "request").mockImplementation(
+      async (method, params = []) => {
+        if (method === "nvim_get_api_info") return [7, {}];
+        if (method === "nvim_exec_lua") {
+          execLua.push({ source: String(params[0]), args: params[1] });
+          return true;
+        }
+        if (method === "nvim_eval") return 1;
+        if (method === "nvim_buf_get_name") return filePath;
+        return null;
+      },
+    );
+    const session = await startEmbeddedNeovim({
+      executable: launcher,
+      args: [],
+      cwd: dir,
+      workspaceRoot: workspace,
+      filePath,
+      line: 1,
+      column: 0,
+      size: { rows: 6, columns: 40 },
+      cleanupTimeoutMs: 20,
+      requireWorkspaceWriteAuthority: true,
+      onSnapshot: () => {},
+      onError: () => {},
+      onExit: () => {},
+    });
+    try {
+      expect(
+        execLua.find((call) => call.source === INSTALL_WORKSPACE_WRITE_GATE),
+      ).toEqual({
+        source: INSTALL_WORKSPACE_WRITE_GATE,
+        args: [7, canonicalNeovimPath(workspace)],
+      });
     } finally {
       await session.cleanup();
     }
