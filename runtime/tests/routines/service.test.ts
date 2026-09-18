@@ -2,7 +2,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_ROUTINE_RUNS, RoutineExecutionUnsettledError, RoutineService, type RoutineExecutor } from "../../src/routines/service.js";
+import { MAX_ROUTINE_RUNS, RoutineExecutionUnsettledError, RoutineService, type RoutineExecutor, type RoutineRunFailure } from "../../src/routines/service.js";
 
 const roots: string[] = [];
 const services: RoutineService[] = [];
@@ -11,7 +11,7 @@ afterEach(async () => {
   vi.useRealTimers();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-function setup(executor: RoutineExecutor = { execute: vi.fn(async () => "completed" as const) }, extra: { onRunFailure?: (failure: { routineId: string; runId: string; cause: unknown }) => void } = {}) {
+function setup(executor: RoutineExecutor = { execute: vi.fn(async () => "completed" as const) }, extra: { onRunFailure?: (failure: RoutineRunFailure) => void } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "agenc-routines-test-"))); roots.push(home);
   const cwd = join(home, "project"); mkdirSync(cwd);
   const service = new RoutineService({ home, executor, ...extra }); services.push(service); service.start();
@@ -260,7 +260,21 @@ describe("daemon-owned local routines", () => {
     const { routine } = f.service.create({ ...f.params, provider: "deepseek" }); const { run } = f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
     expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Routine could not run: the daemon has no credentials for the deepseek provider." });
     expect(JSON.stringify(f.service.runs({ id: routine.id }))).not.toContain("DEEPSEEK_API_KEY");
-    expect(onRunFailure).toHaveBeenCalledWith({ routineId: routine.id, runId: run.id, cause });
+    expect(onRunFailure).toHaveBeenCalledWith({ routineId: routine.id, runId: run.id, reason: "credentials_missing" });
+    expect(cause.message).toContain("DEEPSEEK_API_KEY"); // the sink never received it
+    expect(JSON.stringify(onRunFailure.mock.calls)).not.toContain("DEEPSEEK_API_KEY");
+  });
+  it("reduces an unknown cause to its class name and identifier code; secret text reaches neither the sink nor the record", async () => {
+    const onRunFailure = vi.fn();
+    class ProviderRefused extends Error { code = "PROVIDER_REFUSED"; }
+    const f = setup({ execute: async () => { throw Object.assign(new ProviderRefused("refused sk-live-private-password"), { name: "ProviderRefused" }); } }, { onRunFailure });
+    const { routine } = f.service.create(f.params); const { run } = f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Routine could not run. Check its workspace, provider configuration, and session details." });
+    expect(onRunFailure).toHaveBeenCalledWith({ routineId: routine.id, runId: run.id, reason: "unknown", errorName: "ProviderRefused", errorCode: "PROVIDER_REFUSED" });
+    expect(JSON.stringify(onRunFailure.mock.calls) + JSON.stringify(f.service.runs({ id: routine.id }))).not.toContain("sk-live");
+    const g = setup({ execute: async () => { throw Object.assign(new Error("odd"), { code: "not an identifier; sk-live-private-password" }); } }, { onRunFailure });
+    const created = g.service.create(g.params); g.service.run({ id: created.routine.id }); await terminal(g.service, created.routine.id);
+    expect(onRunFailure).toHaveBeenLastCalledWith({ routineId: created.routine.id, runId: expect.any(String), reason: "unknown" });
   });
   it("names a changed workspace and survives a throwing diagnostic sink", async () => {
     const f = setup({ execute: vi.fn(async () => "completed" as const) }, { onRunFailure: () => { throw new Error("sink down"); } });

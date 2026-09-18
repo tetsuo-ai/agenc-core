@@ -170,7 +170,7 @@ import { RoutineService } from "../routines/service.js";
 import { createDaemonRoutineExecutor } from "../routines/daemon-executor.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
 import { CodePredictionService } from "../services/code-prediction/service.js";
-import { BUILT_IN_PROVIDER_BASE_URLS } from "../llm/registry/provider-info.js";
+import { BUILT_IN_PROVIDER_BASE_URLS, resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import {
   prepareMcpSseServerReconfigurationFromConfig,
   resolveMcpServeDefaults,
@@ -3851,13 +3851,14 @@ async function runAgenCDaemonForegroundLocked(
         executor: createDaemonRoutineExecutor({
           agentManager,
           environment: host.env,
+          defaultProvider: () => resolveBuiltInProviderSlug(activeConfig.model_provider),
           runtimeOptions: resolveAgentRuntimeOptions(
             { ...host.env, AGENC_HOME: authStartup.daemonHome },
             { dangerouslyBypassApprovalsAndSandbox: false, allowUntrustedHooks: false, remoteMode: false, stdinDataMode: false },
           ),
         }),
-        onRunFailure: ({ routineId, runId, cause }) => {
-          io.stderr.write(`agenc: routine ${routineId} run ${runId} could not run: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+        onRunFailure: ({ routineId, runId, reason, errorCode, errorName }) => {
+          io.stderr.write(`agenc: routine ${routineId} run ${runId} could not run: ${reason}${errorCode ? ` ${errorCode}` : ""}${errorName ? ` (${errorName})` : ""}\n`);
         },
       });
       routines.start();

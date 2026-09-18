@@ -10,15 +10,34 @@ const GENERIC_RUN_FAILURE = "Routine could not run. Check its workspace, provide
 /** Raised by Core when the agent's provider has no usable credential. */
 const CREDENTIALS_MISSING = /requires credentials/u;
 
-/** Diagnostic for the daemon log; the persisted run record never carries cause text. */
-export interface RoutineRunFailure { readonly routineId: string; readonly runId: string; readonly cause: unknown }
+export type RoutineRunFailureReason = "credentials_missing" | "workspace_changed" | "unknown";
+/**
+ * Diagnostic for the daemon log. It never carries cause text: a cause may quote
+ * secrets or provider responses. Only a fixed reason, the error class name and an
+ * identifier-shaped code cross.
+ */
+export interface RoutineRunFailure { readonly routineId: string; readonly runId: string; readonly reason: RoutineRunFailureReason; readonly errorName?: string; readonly errorCode?: string }
 
-/** Fixed strings only: a cause may quote secrets or provider responses, and run.error is client-visible. */
-function describeRunFailure(cause: unknown, routine: Routine): string {
+function classifyRunFailure(cause: unknown): RoutineRunFailureReason {
   const message = cause instanceof Error ? cause.message : "";
-  if (message === "workspace changed") return "Routine could not run: its workspace changed since it was approved.";
-  if (CREDENTIALS_MISSING.test(message)) return `Routine could not run: the daemon has no credentials for the ${routine.provider ?? "configured"} provider.`;
+  if (message === "workspace changed") return "workspace_changed";
+  if (CREDENTIALS_MISSING.test(message)) return "credentials_missing";
+  return "unknown";
+}
+/** Fixed strings only; run.error is client-visible. */
+function describeRunFailure(reason: RoutineRunFailureReason, routine: Routine): string {
+  if (reason === "workspace_changed") return "Routine could not run: its workspace changed since it was approved.";
+  if (reason === "credentials_missing") return `Routine could not run: the daemon has no credentials for the ${routine.provider ?? "configured"} provider.`;
   return GENERIC_RUN_FAILURE;
+}
+function runFailureDiagnostic(routineId: string, runId: string, reason: RoutineRunFailureReason, cause: unknown): RoutineRunFailure {
+  const errorName = cause instanceof Error && cause.name !== "Error" ? cause.name : undefined;
+  const code = typeof cause === "object" && cause !== null ? (cause as { code?: unknown }).code : undefined;
+  return {
+    routineId, runId, reason,
+    ...(errorName !== undefined ? { errorName } : {}),
+    ...(typeof code === "string" && /^[A-Z0-9_]{1,64}$/u.test(code) ? { errorCode: code } : {}),
+  };
 }
 const MAX_STORE_BYTES = 8 * 1024 * 1024;
 const ACTIVE = new Set<RoutineRunStatus>(["starting", "running", "waiting_permission"]);
@@ -347,8 +366,9 @@ export class RoutineService {
           this.#held.add(entry.routine.id); status = "running";
           error = "Core could not confirm this run stopped. Further invocations are blocked until the daemon restarts.";
         } else {
-          error = describeRunFailure(cause, snapshot);
-          try { this.#onRunFailure?.({ routineId: entry.routine.id, runId: run.id, cause }); }
+          const reason = classifyRunFailure(cause);
+          error = describeRunFailure(reason, snapshot);
+          try { this.#onRunFailure?.(runFailureDiagnostic(entry.routine.id, run.id, reason, cause)); }
           catch { /* A diagnostic sink never owns run state. */ }
         }
       }

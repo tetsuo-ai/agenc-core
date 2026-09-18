@@ -1,24 +1,39 @@
 import { randomUUID } from "node:crypto";
 import type { AgenCDaemonAgentManager } from "../app-server/agent-lifecycle.js";
-import { canonicalSessionEnvironmentKeys } from "../session/environment.js";
+import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import { RoutineExecutionUnsettledError, type RoutineExecutor } from "./service.js";
 
-/** The routine configuration owns provider and model; the daemon env never overrides them. */
-const ROUTINE_ENV_EXCLUDED = new Set(["AGENC_PROVIDER", "AGENC_MODEL"]);
+/** Tool execution needs the user's PATH, exactly as every desktop-created session gets it. */
+const ROUTINE_ENV_ALWAYS: readonly string[] = ["PATH"];
+
+/** Variables the selected provider itself reads: its credential fields and base-URL override. */
+export function providerEnvironmentKeys(provider: string | undefined): readonly string[] {
+  const info = resolveBuiltInProviderInfo(provider);
+  if (info === undefined) return [];
+  const keys = [...info.baseURLEnvVars];
+  const credentials = info.credentials;
+  if (credentials.kind === "api-key") keys.push(...credentials.apiKey.envVars);
+  else if (credentials.kind === "aws-sigv4") {
+    keys.push(...credentials.accessKeyId.envVars, ...credentials.secretAccessKey.envVars, ...credentials.sessionToken.envVars, ...credentials.regionEnvVars);
+  }
+  return keys;
+}
 
 /**
- * Client-owned session environment for a routine agent, taken from the daemon's
- * own process environment. A daemon-created agent inherits nothing on its own
- * (the daemon materializes exactly `envOverrides`), so without this snapshot a
- * routine on any keyed provider dies at agent creation with
- * "<provider> provider requires credentials" even when the daemon holds the key.
+ * Session environment for one routine agent: PATH plus the selected provider's
+ * own variables, read from the daemon process. A daemon-created agent inherits
+ * nothing by itself (the daemon materializes exactly `envOverrides`), so without
+ * this a routine on any keyed provider dies at agent creation with "<provider>
+ * provider requires credentials" even when the daemon holds the key. Nothing
+ * else crosses: no MCP bearers, no session or remote tokens, no browser flags,
+ * no other provider's key. The routine configuration decides the provider.
  */
-export function routineSessionEnvironment(env: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string>> {
+export function routineSessionEnvironment(env: Readonly<Record<string, string | undefined>>, provider: string | undefined): Readonly<Record<string, string>> {
   const overrides: Record<string, string> = {};
-  for (const key of canonicalSessionEnvironmentKeys(env)) {
+  for (const key of [...ROUTINE_ENV_ALWAYS, ...providerEnvironmentKeys(provider)]) {
     const value = env[key];
-    if (typeof value === "string" && value.length > 0 && !ROUTINE_ENV_EXCLUDED.has(key)) overrides[key] = value;
+    if (typeof value === "string" && value.length > 0) overrides[key] = value;
   }
   return Object.freeze(overrides);
 }
@@ -27,8 +42,10 @@ export function routineSessionEnvironment(env: Readonly<Record<string, string | 
 export function createDaemonRoutineExecutor(options: {
   agentManager: Pick<AgenCDaemonAgentManager, "createAgent" | "streamAgentMessage" | "cancelRunTree" | "stopAgent" | "finishRoutineRun">;
   runtimeOptions: AgentRuntimeOptions;
-  /** Daemon process environment, frozen at construction; only canonical client keys are forwarded. */
+  /** Daemon process environment, snapshotted at construction; only PATH and the provider's own keys are forwarded. */
   environment?: Readonly<Record<string, string | undefined>>;
+  /** Provider a routine without an explicit one runs on (the daemon's configured default). */
+  defaultProvider?: () => string | undefined;
 }): RoutineExecutor {
   const authority = Object.freeze({
     ...options.runtimeOptions,
@@ -37,7 +54,7 @@ export function createDaemonRoutineExecutor(options: {
     stdinDataMode: false,
     remoteMode: false,
   });
-  const envOverrides = routineSessionEnvironment(options.environment ?? {});
+  const environment: Readonly<Record<string, string | undefined>> = Object.freeze({ ...(options.environment ?? {}) });
   return {
     async execute(routine, run, context) {
       if (context.signal.aborted) return "cancelled";
@@ -63,6 +80,7 @@ export function createDaemonRoutineExecutor(options: {
       };
       context.signal.addEventListener("abort", cancel, { once: true });
       try {
+        const envOverrides = routineSessionEnvironment(environment, routine.provider ?? options.defaultProvider?.());
         const agent = await options.agentManager.createAgent({
           objective: routine.name, cwd: routine.cwd, deferInitialTurn: true,
           ...(routine.provider ? { provider: routine.provider } : {}),
