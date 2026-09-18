@@ -976,13 +976,7 @@ export class AnthropicProvider implements LLMProvider {
             cachedInputTokens: usage.cache_read_input_tokens,
             cacheCreationInputTokens: usage.cache_creation_input_tokens,
             reasoningOutputTokens: readAnthropicReasoningOutputTokens({
-              output_tokens: usage.output_tokens,
-              ...(usage.output_tokens_details !== undefined
-                ? { output_tokens_details: usage.output_tokens_details }
-                : {}),
-              ...(usage.reasoning_output_tokens !== undefined
-                ? { reasoning_output_tokens: usage.reasoning_output_tokens }
-                : {}),
+              ...usage,
             }),
             webSearchRequests: usage.server_tool_use?.web_search_requests,
             availability: "unknown",

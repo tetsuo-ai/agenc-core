@@ -465,6 +465,12 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 /**
  * Nested `usage.output_tokens_details.thinking_tokens` when the count is a
  * finite, non-negative number. Malformed values are omitted so stream
@@ -473,11 +479,7 @@ function isFiniteNumber(value: unknown): value is number {
 export function readAnthropicThinkingTokenDetails(
   usageRecord: Record<string, unknown>,
 ): { readonly thinking_tokens: number } | undefined {
-  const details = usageRecord.output_tokens_details;
-  if (!details || typeof details !== "object" || Array.isArray(details)) {
-    return undefined;
-  }
-  const nested = (details as Record<string, unknown>).thinking_tokens;
+  const nested = asRecord(usageRecord.output_tokens_details)?.thinking_tokens;
   return isFiniteNumber(nested) && nested >= 0
     ? { thinking_tokens: nested }
     : undefined;
@@ -494,23 +496,17 @@ export function readAnthropicThinkingTokenDetails(
 export function readAnthropicReasoningOutputTokens(
   usageRecord: Record<string, unknown>,
 ): number | undefined {
-  const details = usageRecord.output_tokens_details;
-  const hasNestedField =
-    !!details &&
-    typeof details === "object" &&
-    !Array.isArray(details) &&
-    Object.prototype.hasOwnProperty.call(details, "thinking_tokens");
+  const details = asRecord(usageRecord.output_tokens_details);
   let raw: number | undefined;
-  if (hasNestedField) {
-    const nested = readAnthropicThinkingTokenDetails(usageRecord);
-    if (!nested) {
+  if (details && Object.prototype.hasOwnProperty.call(details, "thinking_tokens")) {
+    raw = readAnthropicThinkingTokenDetails(usageRecord)?.thinking_tokens;
+    if (raw === undefined) {
       return undefined;
     }
-    raw = nested.thinking_tokens;
-  } else if (isFiniteNumber(usageRecord.reasoning_output_tokens)) {
-    if (usageRecord.reasoning_output_tokens < 0) {
-      return undefined;
-    }
+  } else if (
+    isFiniteNumber(usageRecord.reasoning_output_tokens) &&
+    usageRecord.reasoning_output_tokens >= 0
+  ) {
     raw = usageRecord.reasoning_output_tokens;
   } else {
     return undefined;

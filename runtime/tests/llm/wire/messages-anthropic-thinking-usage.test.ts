@@ -8,30 +8,20 @@ import {
   type ModelUsage,
 } from "src/session/cost.js";
 
+const MODEL = "claude-sonnet-4.5";
+const BASE_USAGE = { input_tokens: 120, output_tokens: 348 } as const;
+
 function parseUsage(usage: Record<string, unknown>) {
   return parseAnthropicMessagesResponse(
-    "claude-sonnet-4.5",
-    {
-      id: "msg_usage",
-      model: "claude-sonnet-4.5",
-      stop_reason: "end_turn",
-      content: [{ type: "text", text: "ok" }],
-      usage,
-    },
-    {
-      model: "claude-sonnet-4.5",
-      messages: [{ role: "user", content: "hello" }],
-      tools: [],
-    },
+    MODEL,
+    { model: MODEL, stop_reason: "end_turn", content: [{ type: "text", text: "ok" }], usage },
+    { model: MODEL, messages: [{ role: "user", content: "hi" }], tools: [] },
   ).usage;
 }
 
-function modelUsageFromParsed(
-  usage: ReturnType<typeof parseUsage>,
-  model = "claude-sonnet-4.5",
-): ModelUsage {
-  return {
-    model,
+function billedCost(usage: ReturnType<typeof parseUsage>): number {
+  const modelUsage: ModelUsage = {
+    model: MODEL,
     inputTokens: usage.promptTokens,
     outputTokens: usage.completionTokens,
     cachedInputTokens: usage.cachedInputTokens ?? 0,
@@ -41,18 +31,14 @@ function modelUsageFromParsed(
     totalTokens: usage.totalTokens,
     turns: 1,
   };
+  return computeUsdCost(modelUsage, DEFAULT_MODEL_COSTS);
 }
-
-const BASE_USAGE = { input_tokens: 120, output_tokens: 348 } as const;
 
 describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
   test.each([
     {
       name: "maps nested thinking_tokens as a subset of inclusive output",
-      usage: {
-        ...BASE_USAGE,
-        output_tokens_details: { thinking_tokens: 312 },
-      },
+      usage: { ...BASE_USAGE, output_tokens_details: { thinking_tokens: 312 } },
       expected: {
         promptTokens: 120,
         completionTokens: 348,
@@ -76,18 +62,12 @@ describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
     },
     {
       name: "keeps a reported zero thinking count",
-      usage: {
-        ...BASE_USAGE,
-        output_tokens_details: { thinking_tokens: 0 },
-      },
+      usage: { ...BASE_USAGE, output_tokens_details: { thinking_tokens: 0 } },
       expected: { completionTokens: 348, reasoningOutputTokens: 0 },
     },
     {
       name: "clamps a thinking count above inclusive output",
-      usage: {
-        ...BASE_USAGE,
-        output_tokens_details: { thinking_tokens: 400 },
-      },
+      usage: { ...BASE_USAGE, output_tokens_details: { thinking_tokens: 400 } },
       expected: { completionTokens: 348, reasoningOutputTokens: 348 },
     },
     {
@@ -131,14 +111,9 @@ describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
       ...BASE_USAGE,
       output_tokens_details: { thinking_tokens: 312 },
     });
-    expect(usage).toMatchObject({
-      completionTokens: 348,
-      reasoningOutputTokens: 312,
-    });
-    const cost = computeUsdCost(
-      modelUsageFromParsed(usage),
-      DEFAULT_MODEL_COSTS,
-    );
+    expect(usage.completionTokens).toBe(348);
+    expect(usage.reasoningOutputTokens).toBe(312);
+    const cost = billedCost(usage);
 
     // Claude Sonnet 4.5: $3 / $15 per MTok. Reasoning is a subset of the
     // inclusive 348 output tokens and has no separate Anthropic rate, so
