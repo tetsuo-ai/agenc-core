@@ -36,6 +36,10 @@ import type {
 } from "../../../src/tui/workbench/buffer/providers/types.js";
 import { BufferWorkspaceCaptureUnstableError } from "../../../src/tui/workbench/buffer/providers/types.js";
 import {
+  WORKSPACE_CAPTURE_READ_CONCURRENCY,
+  WorkspaceEditorSnapshotBudgetError,
+} from "../../../src/workspace/editor-sync-frame.js";
+import {
   NeovimStartupCleanupError,
   type EmbeddedNeovimSession,
   type EmbeddedNeovimRecoveryInfo,
@@ -598,6 +602,54 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(harness.session.inspectBuffers).toHaveBeenCalledTimes(4);
 
     await controller.cleanup();
+  });
+
+  it("reads workspace capture contents with bounded concurrency", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      workspaceRoot: TEST_WORKSPACE_ROOT,
+    });
+    await provider.open({ filePath: "target.txt" });
+    for (const name of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"]) {
+      harness.mutateBuffer(workspacePath(name));
+    }
+    let inflight = 0;
+    let maxInflight = 0;
+    harness.setBufferTextReader(async (handle) => {
+      inflight += 1;
+      maxInflight = Math.max(maxInflight, inflight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inflight -= 1;
+      return `buffer-${handle}`;
+    });
+
+    const captured = await provider.captureWorkspaceBuffers();
+    expect(captured).toHaveLength(7);
+    expect(maxInflight).toBeLessThanOrEqual(WORKSPACE_CAPTURE_READ_CONCURRENCY);
+    expect(maxInflight).toBeGreaterThan(1);
+    await provider.cleanup();
+  });
+
+  it("fails workspace capture locally when one dirty buffer exceeds the per-buffer budget", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      workspaceRoot: TEST_WORKSPACE_ROOT,
+    });
+    await provider.open({ filePath: "target.txt" });
+    harness.setDirty(true);
+    let reads = 0;
+    harness.setBufferTextReader(async () => {
+      reads += 1;
+      return "x".repeat(5 * 1024 * 1024 + 1);
+    });
+
+    await expect(provider.captureWorkspaceBuffers()).rejects.toBeInstanceOf(
+      WorkspaceEditorSnapshotBudgetError,
+    );
+    expect(reads).toBe(1);
+    await provider.cleanup();
   });
 
   it("classifies continuously changing workspace captures as retryable instability", async () => {

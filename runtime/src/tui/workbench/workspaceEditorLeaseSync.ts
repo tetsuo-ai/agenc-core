@@ -46,6 +46,10 @@ import type {
   BufferWorkspaceWriteRequest,
 } from "./buffer/providers/types.js";
 import { BufferWorkspaceCaptureUnstableError } from "./buffer/providers/types.js";
+import {
+  WorkspaceEditorSnapshotBudgetError,
+  assertWorkspaceEditorRpcFitsFrame,
+} from "../../workspace/editor-sync-frame.js";
 
 const DEFAULT_SYNC_DEBOUNCE_MS = 80;
 const DEFAULT_HEARTBEAT_MS = 3_000;
@@ -535,7 +539,7 @@ export class WorkspaceEditorLeaseSynchronizer {
         );
         const prepared = captures.map(workspaceBufferSync);
         const sequence = this.#sequence + 1;
-        const result = await resolveRecovered({
+        const recoveredParams = {
           workspaceRoot: this.#workspaceRoot,
           editorInstanceId: this.#editorInstanceId,
           leaseToken: lease.leaseToken,
@@ -543,7 +547,12 @@ export class WorkspaceEditorLeaseSynchronizer {
           tokenId,
           sequence,
           buffers: prepared,
-        });
+        };
+        assertWorkspaceEditorRpcFitsFrame(
+          "workspace.editor.topology.recovered.resolve",
+          recoveredParams,
+        );
+        const result = await resolveRecovered(recoveredParams);
         if (
           result.resolved !== true ||
           result.tokenId !== tokenId ||
@@ -1144,13 +1153,17 @@ export class WorkspaceEditorLeaseSynchronizer {
         sequence,
         buffers: prepared,
       };
+      const finalizeMethod =
+        action === "complete"
+          ? "workspace.editor.topology.complete"
+          : "workspace.editor.topology.release";
+      const finalizeParams =
+        action === "complete" ? { ...base, status } : base;
+      assertWorkspaceEditorRpcFitsFrame(finalizeMethod, finalizeParams);
       const result =
         action === "complete"
-          ? await this.#client.completeWorkspaceEditorTopology!({
-              ...base,
-              status,
-            })
-          : await this.#client.releaseWorkspaceEditorTopology!(base);
+          ? await this.#client.completeWorkspaceEditorTopology!(finalizeParams)
+          : await this.#client.releaseWorkspaceEditorTopology!(finalizeParams);
       if (
         result.tokenId !== tokenId ||
         (action === "complete" &&
@@ -1420,14 +1433,19 @@ export class WorkspaceEditorLeaseSynchronizer {
       }
       const prepared = captures.map(workspaceBufferSync);
       const sequence = this.#sequence + 1;
-      const result = await this.#client.syncWorkspaceEditor({
+      const writeSyncParams = {
         workspaceRoot: this.#workspaceRoot,
         editorInstanceId: this.#editorInstanceId,
         leaseToken: lease.leaseToken,
         epoch: lease.epoch,
         sequence,
         buffers: prepared,
-      });
+      };
+      assertWorkspaceEditorRpcFitsFrame(
+        "workspace.editor.sync",
+        writeSyncParams,
+      );
+      const result = await this.#client.syncWorkspaceEditor(writeSyncParams);
       if (
         result.accepted !== true ||
         !Number.isSafeInteger(result.sequence) ||
@@ -1453,6 +1471,10 @@ export class WorkspaceEditorLeaseSynchronizer {
     } catch (cause) {
       const reason = errorMessage(cause);
       this.#report(cause);
+      if (cause instanceof WorkspaceEditorSnapshotBudgetError) {
+        this.#publishAuthority({ status: "blocked", reason });
+        return { allowed: false, reason };
+      }
       this.#lease = null;
       this.#initialSynchronizationComplete = false;
       this.#publishAuthority({ status: "blocked", reason });
@@ -1552,7 +1574,7 @@ export class WorkspaceEditorLeaseSynchronizer {
           this.#staleAuthority,
         );
       const sequence = this.#sequence + 1;
-      const result = await this.#client.syncWorkspaceEditor({
+      const syncParams = {
         workspaceRoot: this.#workspaceRoot,
         editorInstanceId: this.#editorInstanceId,
         leaseToken: lease.leaseToken,
@@ -1562,7 +1584,9 @@ export class WorkspaceEditorLeaseSynchronizer {
         ...(effectiveAbandonStaleAuthority !== undefined
           ? { abandonStaleAuthority: effectiveAbandonStaleAuthority }
           : {}),
-      });
+      };
+      assertWorkspaceEditorRpcFitsFrame("workspace.editor.sync", syncParams);
+      const result = await this.#client.syncWorkspaceEditor(syncParams);
       const returnedStaleAuthority =
         result.staleAuthority ?? this.#staleAuthority;
       if (
@@ -1606,6 +1630,20 @@ export class WorkspaceEditorLeaseSynchronizer {
         this.#observe();
       }
     } catch (cause) {
+      if (cause instanceof WorkspaceEditorSnapshotBudgetError) {
+        this.#report(cause);
+        this.#publishAuthority({
+          status: "blocked",
+          reason: errorMessage(cause),
+          ...(this.#staleAuthority.length > 0
+            ? { staleAuthority: this.#staleAuthority }
+            : {}),
+        });
+        // The snapshot cannot be sent. Keep the local lease for a live
+        // session, and let forced teardown release it without writing a
+        // frame the daemon peer cannot accept.
+        return;
+      }
       if (cause instanceof BufferWorkspaceCaptureUnstableError) {
         // Ordinary insert-mode input can advance changedtick faster than the
         // multi-RPC background snapshot can settle. Keep the existing lease
