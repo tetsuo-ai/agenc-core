@@ -21,13 +21,15 @@
  */
 
 import { spawn as nodeSpawn } from "node:child_process";
-import { isJsonObject, type JsonObject } from "./protocol.js";
 import {
   promptEventFromNotification,
   stopReasonFromExitCode,
   type AgencPromptEvent,
   type AgencPromptResult,
 } from "./events.js";
+import { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
+import { SdkNewlineFrameDecoder } from "./newline-frame.js";
+import { isJsonObject, type JsonObject } from "./protocol.js";
 
 /** Cap on internally buffered, not-yet-consumed prompt events (mirrors client.ts). */
 const MAX_BUFFERED_PROMPT_EVENTS = 1_000;
@@ -40,7 +42,13 @@ export interface AgencSubprocessChild {
   } | null;
   readonly stdout: {
     setEncoding(encoding: string): unknown;
-    on(event: "data", listener: (chunk: string) => void): unknown;
+    on(event: "data", listener: (chunk: string | Buffer) => void): unknown;
+    removeListener?(
+      event: "data",
+      listener: (chunk: string | Buffer) => void,
+    ): unknown;
+    pause?(): unknown;
+    destroy?(): unknown;
   } | null;
   readonly stderr: {
     setEncoding(encoding: string): unknown;
@@ -153,7 +161,7 @@ export function promptViaSubprocess(
   let finalResult: AgencPromptResult | null = null;
   let resultLine: JsonObject | null = null;
   let stderrTail = "";
-  let stdoutRemainder = "";
+  const stdoutDecoder = new SdkNewlineFrameDecoder();
 
   let resolveResult!: (value: AgencPromptResult) => void;
   let rejectResult!: (error: Error) => void;
@@ -215,16 +223,32 @@ export function promptViaSubprocess(
     }
   };
 
-  child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    stdoutRemainder += chunk;
-    let newlineIndex = stdoutRemainder.indexOf("\n");
-    while (newlineIndex >= 0) {
-      handleLine(stdoutRemainder.slice(0, newlineIndex));
-      stdoutRemainder = stdoutRemainder.slice(newlineIndex + 1);
-      newlineIndex = stdoutRemainder.indexOf("\n");
+  const failOversizedStdout = () => {
+    if (done) return;
+    child.stdout?.removeListener?.("data", onStdoutData);
+    child.stdout?.pause?.();
+    const detail = stderrTail.trim();
+    const error = new Error(
+      `AgenC CLI stdout frame exceeded ${AGENC_SDK_MAX_FRAME_BYTES} bytes${
+        detail.length > 0 ? `: ${detail}` : ""
+      }`,
+    );
+    child.kill("SIGTERM");
+    finishError(error);
+  };
+  const onStdoutData = (chunk: string | Buffer): void => {
+    if (done || stdoutDecoder.overflowed) return;
+    const frames = stdoutDecoder.push(chunk);
+    for (const frame of frames) {
+      handleLine(frame);
+      if (done) return;
     }
-  });
+    if (stdoutDecoder.overflowed) failOversizedStdout();
+  };
+
+  // Keep stdout as raw bytes so the frame ceiling is counted before UTF-8
+  // decode. String chunks from test fakes are encoded on receipt.
+  child.stdout?.on("data", onStdoutData);
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => {
     stderrTail = `${stderrTail}${chunk}`.slice(-8_192);
@@ -236,9 +260,9 @@ export function promptViaSubprocess(
     );
   });
   child.once("exit", (code, signal) => {
-    if (stdoutRemainder.length > 0) {
-      handleLine(stdoutRemainder);
-      stdoutRemainder = "";
+    if (!stdoutDecoder.overflowed) {
+      const remainder = stdoutDecoder.flush();
+      if (remainder !== undefined) handleLine(remainder);
     }
     if (resultLine !== null) {
       const line = resultLine;

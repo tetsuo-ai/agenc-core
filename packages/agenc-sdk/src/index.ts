@@ -7,6 +7,7 @@
 export * from "./protocol.js";
 export * from "./events.js";
 export * from "./client.js";
+export { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
 export * from "./csv-jobs.js";
 export * from "./workflow-handoff.generated.js";
 export * from "./workflow-result.generated.js";

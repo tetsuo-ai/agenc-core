@@ -177,11 +177,17 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 
 ## Protocol
 
-The daemon's local socket and the MCP stdio server accept at most 16 MiB of
-UTF-8 payload per JSON line, excluding the LF, CRLF, or CR delimiter. A line
-exactly at the limit is valid. An oversized line closes the input before JSON
-parsing or dispatch, including when the terminating newline arrives in the
-chunk that crosses the limit. Multiple bounded lines can share a chunk.
+The daemon's local socket, the MCP stdio server, and the embedding SDK's
+socket and subprocess transports accept at most 16 MiB per JSON line
+(`AGENC_SDK_MAX_FRAME_BYTES`). A line exactly at the limit is valid. An
+oversized line closes the input before JSON parsing or dispatch, including
+when the terminating newline arrives in the chunk that crosses the limit.
+Multiple bounded lines can share a chunk.
+
+The daemon socket, MCP stdio, and SDK subprocess paths measure payload bytes
+excluding the LF, CRLF, or CR delimiter. The SDK socket transport still
+measures UTF-8 bytes of the unsliced receive buffer before line split, so a
+completed frame plus its delimiter can trip that ceiling one byte earlier.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
 - Protocol version constant: **`1.12.0`**
