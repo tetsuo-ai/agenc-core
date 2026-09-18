@@ -5823,6 +5823,7 @@ describe("AgenC delegate background-agent runner", () => {
         argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
         cwd: "/workspace",
         executionAdmissionAutonomous: true,
+        costSummaryOnExit: false,
         csvAgentJobsRepositories,
       }),
     );

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   CostSidecar,
   computeUsdCostWithResolution,
@@ -870,6 +870,21 @@ describe("CostSidecar", () => {
 
     expect(handlers).toHaveLength(0);
     expect(writes).toEqual(["\nlifecycle-summary\n"]);
+  });
+
+  test("exitSummary false registers no process exit hook and writes nothing on stop", async () => {
+    const on = vi.spyOn(process, "on");
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const sidecar = new CostSidecar({ exitSummary: false });
+      sidecar.start();
+      expect(on.mock.calls.filter(([event]) => event === "exit")).toHaveLength(0);
+      await sidecar.stop();
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      on.mockRestore();
+      write.mockRestore();
+    }
   });
 
   test("formatSummary produces one-line output", () => {

@@ -633,6 +633,12 @@ export interface BootstrapLocalRuntimeSessionOptions {
   >;
   /** Production daemon entrypoints require a healthy boundary before startup. */
   readonly requireSandboxReadyAtStartup?: boolean;
+  /**
+   * Print the CLI cost summary when the process exits (default). Daemon-hosted
+   * sessions pass `false`: one multiplexed process must not register an exit
+   * hook per session nor write per-session summaries to its own stdout.
+   */
+  readonly costSummaryOnExit?: boolean;
   /** Shared daemon authority. Omit only for an independently owned session. */
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   /** Shared daemon authority. Omit only for an independently owned session. */
@@ -2072,9 +2078,13 @@ async function bootstrapLocalRuntimeSessionScoped(
         const costSidecar = new CostSidecar({
           defaultModel: model,
           defaultProvider: resolvedProvider,
-          exitSummary: {
-            shouldPrint: () => process.env.AGENC_DISABLE_COST_SUMMARY !== "1",
-          },
+          exitSummary:
+            options.costSummaryOnExit === false
+              ? false
+              : {
+                  shouldPrint: () =>
+                    process.env.AGENC_DISABLE_COST_SUMMARY !== "1",
+                },
           budgetTracker: s.budgetTracker,
           projectDir,
           sessionId: conversationId,
