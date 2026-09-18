@@ -3018,15 +3018,25 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    // The live turn is whatever the runtime is executing now, not only a
+    // submission this daemon lifetime accepted: a turn continued after a
+    // daemon restart has no messageSubmission here, and a client attaching
+    // then saw an idle transcript while every prompt was refused as busy.
+    const submission = active.messageSubmission;
+    const liveTurnId =
+      submission?.turnId ?? runtimeActiveTurnId(active.bootstrap.session);
     return sessionTranscriptV2FromRollout(
       active.bootstrap.rolloutStore.readAll(),
       params.sessionId,
       active.thread.threadId,
-      active.messageSubmission?.turnId === undefined
+      liveTurnId === undefined
         ? undefined
         : {
-            turnId: active.messageSubmission.turnId,
-            clientMessageId: active.messageSubmission.clientMessageId,
+            turnId: liveTurnId,
+            ...(submission?.turnId === liveTurnId &&
+            submission.clientMessageId !== undefined
+              ? { clientMessageId: submission.clientMessageId }
+              : {}),
           },
     );
   }

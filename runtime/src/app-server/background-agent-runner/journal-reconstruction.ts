@@ -277,11 +277,16 @@ function transcriptNoticesFromRollout(
   return notices;
 }
 
+/**
+ * `activeTurn` names the turn the runtime is executing now. Its client
+ * message id may be unknown to the caller (a turn continued after a daemon
+ * restart); the rollout's own open turn supplies it when the ids match.
+ */
 export function sessionTranscriptV2FromRollout(
   items: readonly RolloutItem[],
   sessionId: string,
   runId: string,
-  activeTurn?: { readonly turnId: string; readonly clientMessageId: string },
+  activeTurn?: { readonly turnId: string; readonly clientMessageId?: string },
 ): SessionTranscriptV2Result {
   const boundary = latestTranscriptBoundary(items);
   const boundaryIndex = boundary?.index ?? -1;
@@ -502,6 +507,13 @@ export function sessionTranscriptV2FromRollout(
     }
   }
 
+  const liveTurn =
+    activeTurn === undefined ||
+    activeTurn.clientMessageId !== undefined ||
+    currentTurnId !== activeTurn.turnId ||
+    currentClientMessageId === undefined
+      ? activeTurn
+      : { turnId: activeTurn.turnId, clientMessageId: currentClientMessageId };
   return {
     schemaVersion: 2,
     sessionId,
@@ -510,7 +522,7 @@ export function sessionTranscriptV2FromRollout(
     asOfSequence,
     messages,
     events: transcriptNoticesFromRollout(items, boundaryIndex, runId),
-    ...(activeTurn !== undefined ? { activeTurn } : {}),
+    ...(liveTurn !== undefined ? { activeTurn: liveTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
     ...(planMode !== undefined
       ? {

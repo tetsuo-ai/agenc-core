@@ -66,6 +66,56 @@ describe("session.transcript.v2 durable projection", () => {
     },
   );
 
+  it("names the live turn from the rollout when the caller knows only its id", () => {
+    const items: RolloutItem[] = [
+      event(10, "user-live", {
+        type: "user_message",
+        payload: {
+          message: "keep going",
+          messageId: "client-live",
+          acceptedAt: "2026-09-18T00:00:00.000Z",
+        },
+      }),
+      event(11, "turn-live", {
+        type: "turn_started",
+        payload: { turnId: "turn-live" },
+      }),
+      event(12, "assistant-live", {
+        type: "agent_message",
+        payload: { message: "working" },
+      }),
+    ];
+
+    // A turn continued after a daemon restart: the runtime knows the turn id,
+    // the submission that started it belongs to the previous lifetime.
+    const continued = sessionTranscriptV2FromRollout(items, "session-1", "run-1", {
+      turnId: "turn-live",
+    });
+    expect(continued.activeTurn).toEqual({
+      turnId: "turn-live",
+      clientMessageId: "client-live",
+    });
+
+    // A caller that knows the client message id keeps its own.
+    const submitted = sessionTranscriptV2FromRollout(items, "session-1", "run-1", {
+      turnId: "turn-live",
+      clientMessageId: "client-submitted",
+    });
+    expect(submitted.activeTurn).toEqual({
+      turnId: "turn-live",
+      clientMessageId: "client-submitted",
+    });
+
+    // The rollout's open turn is a different one: nothing is borrowed.
+    const other = sessionTranscriptV2FromRollout(items, "session-1", "run-1", {
+      turnId: "turn-other",
+    });
+    expect(other.activeTurn).toEqual({ turnId: "turn-other" });
+
+    // No live turn: no active turn, whatever the rollout left open.
+    expect(sessionTranscriptV2FromRollout(items, "session-1", "run-1").activeTurn).toBeUndefined();
+  });
+
   it("keeps a migrated response_item prefix when canonical events are appended", () => {
     const prefix: RolloutItem[] = [
       {
