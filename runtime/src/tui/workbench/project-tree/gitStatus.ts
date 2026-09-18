@@ -4,6 +4,11 @@ import type { ProjectTreeGitBranch, ProjectTreeGitState } from "../types.js";
 
 export type GitStatusByPath = ReadonlyMap<string, ProjectTreeGitState>;
 
+export type GitSnapshot = {
+  readonly status: Map<string, ProjectTreeGitState>;
+  readonly branch: ProjectTreeGitBranch | null;
+};
+
 export function parseGitStatusPorcelain(raw: string): Map<string, ProjectTreeGitState> {
   const out = new Map<string, ProjectTreeGitState>();
   for (const line of raw.split("\n")) {
@@ -17,7 +22,7 @@ export function parseGitStatusPorcelain(raw: string): Map<string, ProjectTreeGit
   return out;
 }
 
-function parseGitStatusPorcelainZ(raw: string): Map<string, ProjectTreeGitState> {
+export function parseGitStatusPorcelainZ(raw: string): Map<string, ProjectTreeGitState> {
   const out = new Map<string, ProjectTreeGitState>();
   const fields = raw.split("\0");
   for (let index = 0; index < fields.length;) {
@@ -31,96 +36,150 @@ function parseGitStatusPorcelainZ(raw: string): Map<string, ProjectTreeGitState>
   return out;
 }
 
-export function collectGitStatus(cwd: string): Promise<Map<string, ProjectTreeGitState>> {
+/** Read file states and branch identity from the same Git status scan. */
+export function collectGitSnapshot(cwd: string): Promise<GitSnapshot> {
   return new Promise((resolve) => {
     execFile(
       "git",
-      ["-c", "core.quotepath=false", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { cwd, encoding: "utf8", timeout: 5_000 },
+      ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
+      {
+        cwd,
+        encoding: "utf8",
+        timeout: 5_000,
+        // V2 adds modes and object IDs to each tracked path. Allow its metadata
+        // overhead without reducing v1's usable capacity, while staying bounded.
+        maxBuffer: 64 * 1024 * 1024,
+      },
       (error, stdout) => {
         if (error) {
-          resolve(new Map());
+          resolve({ status: new Map(), branch: null });
           return;
         }
-        resolve(parseGitStatusPorcelainZ(stdout));
+        resolve(parseGitSnapshotPorcelainV2(stdout));
       },
     );
   });
 }
 
-/**
- * Branch identity for the explorer footer, read on the same refresh as the
- * per-file states so the panel never shows a branch from a previous checkout.
- *
- * `--porcelain=v2 --branch` returns the branch, the head sha and the upstream
- * divergence in ONE call, so adding the footer costs no extra git invocation
- * beyond the one this module already makes. Resolves to null outside a
- * repository, which is how the footer decides to render nothing at all.
- */
-export function collectGitBranch(
+export async function collectGitStatus(cwd: string): Promise<Map<string, ProjectTreeGitState>> {
+  return (await collectGitSnapshot(cwd)).status;
+}
+
+export async function collectGitBranch(
   cwd: string,
 ): Promise<ProjectTreeGitBranch | null> {
-  return new Promise((resolve) => {
-    execFile(
-      "git",
-      ["status", "--porcelain=v2", "--branch", "--untracked-files=all"],
-      { cwd, encoding: "utf8", timeout: 5_000 },
-      (error, stdout) => {
-        resolve(error ? null : parseGitBranchPorcelainV2(stdout));
-      },
-    );
-  });
+  return (await collectGitSnapshot(cwd)).branch;
 }
 
 export function parseGitBranchPorcelainV2(
   raw: string,
 ): ProjectTreeGitBranch | null {
-  let branch: string | null = null;
-  let head: string | null = null;
-  let upstream: string | undefined;
-  let ahead: number | undefined;
-  let behind: number | undefined;
-  let dirtyCount = 0;
-  let sawHeader = false;
+  return parseGitSnapshotPorcelainV2(raw).branch;
+}
 
-  for (const line of raw.split("\n")) {
-    if (line.length === 0) continue;
+/** Paths remain relative to the repository root, as in porcelain v1. */
+export function parseGitSnapshotPorcelainV2(raw: string): GitSnapshot {
+  const status = new Map<string, ProjectTreeGitState>();
+  let branch: ProjectTreeGitBranch | null = null;
+  let dirtyCount = 0;
+
+  const nulDelimited = raw.includes("\0");
+  const records = raw.split(nulDelimited ? "\0" : "\n");
+  for (let index = 0; index < records.length; index += 1) {
+    const line = records[index]!;
     if (line.startsWith("# branch.")) {
-      sawHeader = true;
-      const [key, ...rest] = line.slice(2).split(" ");
-      const value = rest.join(" ");
-      // git spells a detached HEAD "(detached)" and an unborn branch
-      // "(initial)"; neither is a branch name a user could check out.
-      if (key === "branch.head") {
-        branch = value.startsWith("(") ? null : value;
-      } else if (key === "branch.oid") {
-        head = value.startsWith("(") ? null : value.slice(0, 7);
-      } else if (key === "branch.upstream") {
-        upstream = value;
-      } else if (key === "branch.ab") {
-        const match = /^\+(\d+) -(\d+)$/u.exec(value);
-        if (match !== null) {
-          ahead = Number(match[1]);
-          behind = Number(match[2]);
-        }
-      }
+      branch = parseBranchHeader(line, branch);
       continue;
     }
-    if (line.startsWith("#")) continue;
-    // Every remaining record is one changed path: 1/2 tracked, u unmerged,
-    // ? untracked, ! ignored (never emitted without --ignored).
-    if (/^[12u?]\s/u.test(line)) dirtyCount += 1;
+    const entry = parseStatusRecord(line);
+    if (entry === null) continue;
+    // Rename/copy origins are a separate NUL record, not another change.
+    if (entry.hasOrigin && nulDelimited) index += 1;
+    const path = normalizeV2Path(entry, nulDelimited);
+    if (path === null) continue;
+    status.set(path, entry.state);
+    if (entry.state !== "ignored") dirtyCount += 1;
   }
 
-  if (!sawHeader) return null;
   return {
-    branch,
-    head,
-    ...(upstream !== undefined ? { upstream } : {}),
-    ...(ahead !== undefined ? { ahead } : {}),
-    ...(behind !== undefined ? { behind } : {}),
-    dirtyCount,
+    status,
+    branch: branch === null ? null : { ...branch, dirtyCount },
   };
+}
+
+function parseBranchHeader(
+  record: string,
+  previous: ProjectTreeGitBranch | null,
+): ProjectTreeGitBranch {
+  const branch = previous ?? { branch: null, head: null, dirtyCount: 0 };
+  const [key, ...rest] = record.slice(2).split(" ");
+  const value = rest.join(" ");
+  // Git spells a detached HEAD "(detached)" and an unborn commit "(initial)".
+  switch (key) {
+    case "branch.head":
+      return { ...branch, branch: value.startsWith("(") ? null : value };
+    case "branch.oid":
+      return { ...branch, head: value.startsWith("(") ? null : value.slice(0, 7) };
+    case "branch.upstream":
+      return { ...branch, upstream: value };
+    case "branch.ab": {
+      const match = /^\+(\d+) -(\d+)$/u.exec(value);
+      if (match !== null) {
+        return { ...branch, ahead: Number(match[1]), behind: Number(match[2]) };
+      }
+      return branch;
+    }
+    default:
+      return branch;
+  }
+}
+
+type PorcelainV2Entry = {
+  readonly path: string | null;
+  readonly state: ProjectTreeGitState;
+  readonly hasOrigin: boolean;
+};
+
+const PORCELAIN_V2_PATH_FIELDS = new Map([["1", 8], ["2", 9], ["u", 10]]);
+
+function parseStatusRecord(record: string): PorcelainV2Entry | null {
+  if (record[1] !== " ") return null;
+  const kind = record[0]!;
+  if (kind === "?" || kind === "!") {
+    return {
+      path: record.slice(2),
+      state: kind === "?" ? "untracked" : "ignored",
+      hasOrigin: false,
+    };
+  }
+  const fieldCount = PORCELAIN_V2_PATH_FIELDS.get(kind);
+  if (fieldCount === undefined) return null;
+  return {
+    // Consume only metadata fields: spaces, tabs and newlines can be part
+    // of the path, and must never be trimmed or split in the -z format.
+    path: pathAfterFields(record, fieldCount),
+    state: kind === "u" ? "unmerged" : statusForCode(record.slice(2, 4)),
+    hasOrigin: kind === "2",
+  };
+}
+
+function normalizeV2Path(entry: PorcelainV2Entry, nulDelimited: boolean): string | null {
+  let path = entry.path;
+  if (entry.hasOrigin && !nulDelimited && path !== null) {
+    path = path.split("\t", 1)[0]!;
+  }
+  if (!path) return null;
+  return nulDelimited ? path : path.replace(/^"|"$/gu, "");
+}
+
+function pathAfterFields(record: string, fieldCount: number): string | null {
+  let offset = 0;
+  for (let field = 0; field < fieldCount; field += 1) {
+    const separator = record.indexOf(" ", offset);
+    if (separator < 0) return null;
+    offset = separator + 1;
+  }
+  return record.slice(offset);
 }
 
 export function listGitFiles(cwd: string): Promise<string[] | null> {
@@ -153,7 +212,7 @@ function isRenameOrCopyCode(code: string): boolean {
 }
 
 function statusForCode(code: string): ProjectTreeGitState {
-  if (code.includes("U")) return "unmerged";
+  if (UNMERGED_CODES.has(code)) return "unmerged";
   if (code.includes("?")) return "untracked";
   if (code.includes("!")) return "ignored";
   if (code.includes("D")) return "deleted";
@@ -162,3 +221,5 @@ function statusForCode(code: string): ProjectTreeGitState {
   if (code.includes("M")) return "modified";
   return "modified";
 }
+
+const UNMERGED_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);

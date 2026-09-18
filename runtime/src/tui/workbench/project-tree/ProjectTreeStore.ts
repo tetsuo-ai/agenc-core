@@ -13,8 +13,7 @@ import { globbyStream } from "globby";
 
 import { buildProjectTreeRows } from "./buildTree.js";
 import {
-  collectGitBranch,
-  collectGitStatus,
+  collectGitSnapshot,
   listGitFiles,
   type GitStatusByPath,
 } from "./gitStatus.js";
@@ -209,16 +208,15 @@ export class ProjectTreeStore {
     this.#loading = true;
     this.#emit();
     try {
-      const [paths, gitStatus, gitBranch] = await Promise.all([
+      const [paths, gitSnapshot] = await Promise.all([
         listWorkspacePaths(this.#cwd),
-        collectGitStatus(this.#cwd),
-        collectGitBranch(this.#cwd),
+        collectGitSnapshot(this.#cwd),
       ]);
       if (version !== this.#refreshVersion) return;
       this.#autoExpandNewDirectories(paths);
       this.#paths = paths;
-      this.#gitStatus = gitStatus;
-      this.#gitBranch = gitBranch;
+      this.#gitStatus = gitSnapshot.status;
+      this.#gitBranch = gitSnapshot.branch;
       this.#cursorPath =
         this.#cursorPath ?? firstFilePath(paths) ?? paths[0] ?? null;
       this.#loading = false;

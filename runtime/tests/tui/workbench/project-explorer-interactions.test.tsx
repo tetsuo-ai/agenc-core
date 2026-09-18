@@ -642,6 +642,7 @@ describe("ProjectExplorer interactions", () => {
       activePath: null,
       expandedPaths: ["src"],
       fileCount: rows.length,
+      git: { branch: "main", head: null, dirtyCount: 1 },
       rows,
     };
     const { output, root, stdin, stdout } = await renderExplorer({ width: 48 });

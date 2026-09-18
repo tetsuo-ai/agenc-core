@@ -856,9 +856,9 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const directoryCount =
     snapshot.directoryCount ??
     snapshot.rows.filter((row) => row.kind === "directory").length;
-  const dirtyCount = snapshot.rows.filter(
-    (row) => row.gitState && row.gitState !== "clean",
-  ).length;
+  // Use the same complete Git snapshot as the branch footer; collapsed
+  // directories hide changed descendants from the rendered rows.
+  const dirtyCount = snapshot.git?.dirtyCount ?? 0;
   const headerMeta = `${itemCount}${dirtyCount > 0 ? ` ${dirtyCount} changed` : ""}${snapshot.loading ? " sync" : ""}`;
   // Render the header as one measured row. Two independently shrinking Text
   // nodes can steal the last cell from WORKSPACE when the count exactly fills
