@@ -114,13 +114,10 @@ function decodeOpenAISseEvent(
       data: JSON.parse(frame.data) as Record<string, unknown>,
     };
   } catch (error) {
-    if (requiresStrictChatCompletionsSse(providerName)) {
-      throw new LLMInvalidResponseError(
-        providerName,
-        `Malformed JSON in ${strictSseProviderLabel(providerName)} SSE event: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    return undefined;
+    throw new LLMInvalidResponseError(
+      providerName,
+      `Malformed JSON in ${strictSseProviderLabel(providerName)} SSE event: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -254,7 +251,10 @@ function isZaiProviderName(providerName: string): boolean {
 function strictSseProviderLabel(providerName: string): string {
   if (providerName === "kimi") return "Kimi";
   if (providerName === "deepseek") return "DeepSeek";
-  return "Z.AI";
+  if (isZaiProviderName(providerName)) return "Z.AI";
+  if (providerName === "openai-compatible") return "OpenAI-compatible";
+  if (providerName === "openai") return "OpenAI";
+  return providerName;
 }
 
 /**
@@ -1845,10 +1845,34 @@ export class OpenAIProvider implements LLMProvider {
             : `${strictSseProviderLabel(this.name)} SSE stream closed before any finish_reason`,
         );
       }
+      if (
+        !requiresStrictChatCompletionsSse(this.name) &&
+        streamCapabilityHints.acceptsCleanEofAsTerminal !== true &&
+        !sawFinishReason &&
+        !sawDone
+      ) {
+        throw new LLMStreamTruncatedError(
+          this.name,
+          endedWithUnterminatedEvent
+            ? `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event before a finish_reason or [DONE]`
+            : `${strictSseProviderLabel(this.name)} SSE stream closed before a finish_reason or [DONE]`,
+        );
+      }
       if (endedWithUnterminatedEvent) {
         throw new LLMInvalidResponseError(
           this.name,
           `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
+        );
+      }
+      if (
+        sawDone &&
+        !sawFinishReason &&
+        toolCallAccumulator.size > 0 &&
+        streamCapabilityHints.requiresExplicitFinishReason !== true
+      ) {
+        throw new LLMInvalidResponseError(
+          this.name,
+          "Streamed tool calls arrived without finish_reason=tool_calls",
         );
       }
       if (
@@ -2014,17 +2038,14 @@ export class OpenAIProvider implements LLMProvider {
       onDone?.();
       return;
     }
-    if (
-      requiresStrictChatCompletionsSse(this.name) &&
-      parsed.remaining.trim().length > 0
-    ) {
+    if (parsed.remaining.trim().length > 0) {
       // A caller that tracks the stream's terminal signals decides whether
       // this is a cut connection or a malformed stream.
       if (onUnterminatedEnd !== undefined) {
         onUnterminatedEnd(parsed.remaining);
         return;
       }
-      throw new LLMInvalidResponseError(
+      throw new LLMStreamTruncatedError(
         this.name,
         `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
       );
