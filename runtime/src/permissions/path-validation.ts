@@ -24,6 +24,11 @@ import {
 
 import { getRuleByContentsForTool } from "./rules.js";
 import { checkProtectedPathSafety } from "./protected-paths.js";
+import {
+  comparablePath,
+  pathCaseSemantics,
+  type PathCaseSemantics,
+} from "./path-case.js";
 import { withSignedAllowedRoots } from "../agents/_deps/filesystem-args.js";
 import { getSettingsRootPathForSource } from "../utils/settings/settings.js";
 import {
@@ -133,9 +138,21 @@ function normalizeSlashes(path: string): string {
   return path.replace(/[\\/]+/g, "/");
 }
 
+/**
+ * Whether `candidate` is `root` or lies under it. Case folds the way the
+ * volume holding the candidate does, so a working root spelled `/Users/me`
+ * still contains `/users/me/file` where those are one directory.
+ */
 function isPathInside(candidate: string, root: string): boolean {
-  const normalizedCandidate = normalize(candidate).normalize("NFC");
-  const normalizedRoot = normalize(root).normalize("NFC");
+  const semantics = pathCaseSemantics(candidate);
+  const normalizedCandidate = comparablePath(
+    normalize(candidate).normalize("NFC"),
+    semantics,
+  );
+  const normalizedRoot = comparablePath(
+    normalize(root).normalize("NFC"),
+    semantics,
+  );
   if (normalizedCandidate === normalizedRoot) return true;
   const rel = relative(normalizedRoot, normalizedCandidate);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -284,12 +301,23 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
   return new RegExp(`^${body}$`);
 }
 
+/**
+ * Whether a path rule names `filePath`, as an exact path, a recursive `/**`
+ * prefix, or a glob. Separators fold to `/` and, when the volume holding the
+ * file ignores case, so does letter case, including a Windows drive letter.
+ * Callers keep the original spellings for display and audit; only the
+ * comparison folds.
+ */
 export function matchPathRuleContent(
   ruleContent: string,
   filePath: string,
+  caseSemantics: PathCaseSemantics = pathCaseSemantics(filePath),
 ): boolean {
-  const expandedRule = normalizeSlashes(expandTilde(ruleContent));
-  const expandedPath = normalizeSlashes(filePath);
+  const expandedRule = comparablePath(
+    normalizeSlashes(expandTilde(ruleContent)),
+    caseSemantics,
+  );
+  const expandedPath = comparablePath(normalizeSlashes(filePath), caseSemantics);
   if (expandedRule === expandedPath) return true;
   if (expandedRule.endsWith("/**")) {
     const root = expandedRule.slice(0, -3).replace(/\/$/, "");
@@ -379,14 +407,16 @@ function matchingRuleForPath(
   behavior: "allow" | "ask" | "deny",
   cwd: string,
 ): PermissionRule | null {
-  const pathsToCheck = getPathsForPermissionCheck(filePath);
+  const pathsToCheck = getPathsForPermissionCheck(filePath).map(
+    (candidate) => [candidate, pathCaseSemantics(candidate)] as const,
+  );
   for (const toolName of toolNamesForOperation(operationType)) {
     const rules = getRuleByContentsForTool(context, toolName, behavior);
     for (const [content, rule] of rules) {
       const resolvedContent = resolvePathRulePattern(content, rule.source, cwd);
       if (
-        pathsToCheck.some((candidate) =>
-          matchPathRuleContent(resolvedContent, candidate),
+        pathsToCheck.some(([candidate, semantics]) =>
+          matchPathRuleContent(resolvedContent, candidate, semantics),
         )
       ) {
         return rule;

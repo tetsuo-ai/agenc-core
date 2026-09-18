@@ -279,6 +279,7 @@ const permissionContractExportFiles = [
   "src/permissions/guardian/reviewer.ts",
   "src/permissions/mode-display.ts",
   "src/permissions/network-approval.ts",
+  "src/permissions/path-case.ts",
   "src/permissions/path-validation.ts",
   "src/permissions/permission-audit-log.ts",
   "src/permissions/permission-cli.ts",
