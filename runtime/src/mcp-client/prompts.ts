@@ -17,7 +17,15 @@ import { runAdmittedSessionBoundToolCall } from "../budget/admitted-legacy-tool-
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
 import type { Tool } from "../tools/types.js";
 import { asRecord } from "../utils/record.js";
+import { isAbortError } from "../utils/errors.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
+import {
+  collectMcpListPages,
+  MAX_MCP_LIST_AGGREGATE_BYTES,
+  MAX_MCP_LIST_ITEMS,
+  MAX_MCP_LIST_PAGES,
+  McpListPaginationError,
+} from "./list-pagination.js";
 
 export const DEFAULT_PROMPT_RPC_TIMEOUT_MS = 30_000;
 
@@ -51,7 +59,7 @@ export interface MCPPromptRendered {
 
 export interface MCPPromptBridge {
   readonly serverName: string;
-  listPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>>;
+  listPrompts(signal?: AbortSignal): Promise<ReadonlyArray<MCPPromptDescriptor>>;
   renderPrompt(
     name: string,
     args?: Record<string, unknown>,
@@ -62,6 +70,12 @@ export interface MCPPromptBridge {
 
 interface CreatePromptBridgeOpts {
   readonly rpcTimeoutMs?: number;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_PAGES`. */
+  readonly maxListPages?: number;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_ITEMS`. */
+  readonly maxListItems?: number;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_AGGREGATE_BYTES`. */
+  readonly maxListAggregateBytes?: number;
 }
 
 type PromptRole = MCPPromptRenderedMessage["role"];
@@ -81,20 +95,33 @@ export async function createPromptBridge(
 
   return {
     serverName,
-    async listPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>> {
+    async listPrompts(
+      signal?: AbortSignal,
+    ): Promise<ReadonlyArray<MCPPromptDescriptor>> {
       if (disposed) return [];
       try {
-        const response = await withDeadline<unknown>(
-          `MCP server "${serverName}" listPrompts`,
-          rpcTimeoutMs,
-          (effectSignal) =>
-            client.listPrompts(
-              {},
-              { signal: effectSignal, timeout: rpcTimeoutMs },
-            ),
-        );
-        return normalizePromptCatalog(response, serverName);
+        const rawPrompts = await collectMcpListPages({
+          serverName,
+          method: "prompts/list",
+          itemsKey: "prompts",
+          deadlineMs: rpcTimeoutMs,
+          ...(signal !== undefined ? { signal } : {}),
+          maxPages: opts.maxListPages ?? MAX_MCP_LIST_PAGES,
+          maxItems: opts.maxListItems ?? MAX_MCP_LIST_ITEMS,
+          maxAggregateBytes:
+            opts.maxListAggregateBytes ?? MAX_MCP_LIST_AGGREGATE_BYTES,
+          fetchPage: (cursor, callOptions) =>
+            client.listPrompts(cursor === undefined ? {} : { cursor }, {
+              signal: callOptions.signal,
+              timeout: callOptions.timeout,
+            }),
+        });
+        return normalizePromptCatalog(rawPrompts, serverName);
       } catch (err) {
+        signal?.throwIfAborted();
+        if (err instanceof McpListPaginationError || isAbortError(err)) {
+          throw err;
+        }
         logger.warn?.(
           `MCP server "${serverName}" listPrompts failed:`,
           err,
@@ -231,10 +258,10 @@ function arrayField(
 }
 
 function normalizePromptCatalog(
-  response: unknown,
+  rawPrompts: readonly unknown[],
   serverName: string,
 ): MCPPromptDescriptor[] {
-  return arrayField(asRecord(response), "prompts")
+  return rawPrompts
     .map((raw) => normalizePromptDescriptor(raw, serverName))
     .filter((prompt): prompt is MCPPromptDescriptor => prompt !== null);
 }

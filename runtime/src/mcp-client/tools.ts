@@ -62,8 +62,13 @@ import {
 import { asRecord } from "../utils/record.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { MAX_TOOL_CALL_ID_UTF8_BYTES } from "../session/tool-result-integrity.js";
-import { sleep } from "../utils/sleep.js";
 import { snapshotMcpRequestEnvironment } from "./environment.js";
+import {
+  collectMcpListPages,
+  MAX_MCP_LIST_AGGREGATE_BYTES,
+  MAX_MCP_LIST_ITEMS,
+  MAX_MCP_LIST_PAGES,
+} from "./list-pagination.js";
 import { normalizeMcpToolOutput } from "./tool-output.js";
 import {
   sanitizeMcpOutputText,
@@ -248,16 +253,20 @@ interface ToolBridgeOptions {
   serverOrigin?: string;
   transport?: "stdio" | "sse" | "http" | "streamable_http";
   environment: ProviderEnvironment;
+  /** Optional abort for the catalog-list pagination walk. */
+  signal?: AbortSignal;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_PAGES`. */
+  maxListPages?: number;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_ITEMS`. */
+  maxListItems?: number;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_AGGREGATE_BYTES`. */
+  maxListAggregateBytes?: number;
 }
 
 interface MCPToolDescriptor {
   name: string;
   description?: string;
   inputSchema?: JSONSchema;
-}
-
-interface MCPListToolsResponse {
-  tools?: unknown;
 }
 
 type PermissionResolution =
@@ -790,31 +799,39 @@ async function withRPCDeadline<T>(
   }
 }
 
-async function listMcpToolsWithRetry(
+async function listMcpToolsCatalog(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client: any,
   serverName: string,
   timeoutMs: number,
   logger: Logger,
-): Promise<MCPListToolsResponse> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= MAX_MCP_LIST_TOOLS_ATTEMPTS; attempt += 1) {
-    try {
-      return await withRPCDeadline<MCPListToolsResponse>(
-        `MCP server "${serverName}" listTools`,
-        timeoutMs,
-        (signal) => client.listTools(undefined, { signal, timeout: timeoutMs }),
-      );
-    } catch (error) {
-      lastError = error;
-      if (attempt === MAX_MCP_LIST_TOOLS_ATTEMPTS) break;
-      logger.warn?.(
-        `MCP server ${JSON.stringify(serverName)} listTools attempt ${attempt} failed; retrying`,
-      );
-      await sleep(MCP_LIST_TOOLS_RETRY_BASE_DELAY_MS * attempt);
-    }
-  }
-  throw lastError;
+  options: Pick<
+    ToolBridgeOptions,
+    "signal" | "maxListPages" | "maxListItems" | "maxListAggregateBytes"
+  >,
+): Promise<unknown[]> {
+  return collectMcpListPages({
+    serverName,
+    method: "tools/list",
+    itemsKey: "tools",
+    deadlineMs: timeoutMs,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    maxPages: options.maxListPages ?? MAX_MCP_LIST_PAGES,
+    maxItems: options.maxListItems ?? MAX_MCP_LIST_ITEMS,
+    maxAggregateBytes:
+      options.maxListAggregateBytes ?? MAX_MCP_LIST_AGGREGATE_BYTES,
+    retry: {
+      maxAttempts: MAX_MCP_LIST_TOOLS_ATTEMPTS,
+      baseDelayMs: MCP_LIST_TOOLS_RETRY_BASE_DELAY_MS,
+      logger,
+      operationName: "listTools",
+    },
+    fetchPage: (cursor, callOptions) =>
+      client.listTools(cursor === undefined ? undefined : { cursor }, {
+        signal: callOptions.signal,
+        timeout: callOptions.timeout,
+      }),
+  });
 }
 
 function abortSignalFromArgs(
@@ -894,9 +911,10 @@ function forwardMcpProgress(
 /**
  * Create a tool bridge from an MCP client connection.
  *
- * Queries the server for available tools via `client.listTools()`,
- * then wraps each as a runtime `Tool` with namespaced names:
- * `mcp.{serverName}.{toolName}`
+ * Queries the server for available tools via bounded `tools/list`
+ * pagination, then wraps each as a runtime `Tool` with namespaced names:
+ * `mcp.{serverName}.{toolName}`. Allow/deny filters and catalog hashing
+ * run only after every page has been collected.
  *
  * @param client - Connected MCP Client instance (from createMCPConnection)
  * @param serverName - Server name for tool namespacing
@@ -922,13 +940,15 @@ export async function createToolBridge(
       ? Math.max(1, Math.floor(options.callToolTimeoutMs))
       : undefined;
 
-  const response = await listMcpToolsWithRetry(
-    client,
-    serverName,
-    listToolsTimeoutMs,
-    logger,
+  const rawTools = normalizeMCPToolCatalog(
+    await listMcpToolsCatalog(
+      client,
+      serverName,
+      listToolsTimeoutMs,
+      logger,
+      options,
+    ),
   );
-  const rawTools = normalizeMCPToolCatalog(response.tools);
   const mcpTools: MCPToolDescriptorLike[] = options.serverConfig
     ? (filterMCPToolCatalog(
         options.serverConfig,

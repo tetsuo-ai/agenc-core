@@ -12,6 +12,7 @@ import {
 import type { Session } from "../session/session.js";
 import { createTestEffectJournal } from "../helpers/test-effect-journal.js";
 import { createPromptBridge } from "./prompts.js";
+import { McpListPaginationError } from "./list-pagination.js";
 
 const UNTRUSTED_MCP_PROMPT_BOUNDARY =
   "===== AGENC UNTRUSTED MCP PROMPT CONTENT =====";
@@ -182,6 +183,202 @@ describe("createPromptBridge", () => {
     });
     const bridge = await createPromptBridge(client, "srv");
     await expect(bridge.listPrompts()).resolves.toEqual([]);
+  });
+
+  it("returns every prompt from a two-page catalog in protocol order", async () => {
+    const listPrompts = vi
+      .fn()
+      .mockResolvedValueOnce({
+        prompts: [{ name: "alpha", description: "first page" }],
+        nextCursor: "page-2",
+      })
+      .mockResolvedValueOnce({
+        prompts: [{ name: "beta", description: "second page" }],
+      });
+    const bridge = await createPromptBridge(makeClient({ listPrompts }), "srv");
+
+    await expect(bridge.listPrompts()).resolves.toEqual([
+      {
+        serverName: "srv",
+        name: "alpha",
+        namespacedName: "mcp.srv.alpha",
+        description: "first page",
+      },
+      {
+        serverName: "srv",
+        name: "beta",
+        namespacedName: "mcp.srv.beta",
+        description: "second page",
+      },
+    ]);
+    expect(listPrompts).toHaveBeenNthCalledWith(
+      1,
+      {},
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(listPrompts).toHaveBeenNthCalledWith(
+      2,
+      { cursor: "page-2" },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("passes the exact prior nextCursor to later prompts/list pages", async () => {
+    const listPrompts = vi.fn(
+      async (params: { cursor?: string }) => {
+        if (params.cursor === undefined) {
+          return {
+            prompts: [{ name: "one" }],
+            nextCursor: "exact-prompt-cursor",
+          };
+        }
+        if (params.cursor === "exact-prompt-cursor") {
+          return { prompts: [{ name: "two" }], nextCursor: "page-3" };
+        }
+        expect(params).toEqual({ cursor: "page-3" });
+        return { prompts: [{ name: "three" }] };
+      },
+    );
+    const bridge = await createPromptBridge(makeClient({ listPrompts }), "srv");
+
+    await expect(
+      bridge.listPrompts().then((items) => items.map((item) => item.name)),
+    ).resolves.toEqual(["one", "two", "three"]);
+    expect(listPrompts.mock.calls.map((call) => call[0])).toEqual([
+      {},
+      { cursor: "exact-prompt-cursor" },
+      { cursor: "page-3" },
+    ]);
+  });
+
+  it("fails closed on a repeated prompts/list cursor", async () => {
+    const listPrompts = vi.fn(async () => ({
+      prompts: [{ name: "loop" }],
+      nextCursor: "again",
+    }));
+    const bridge = await createPromptBridge(makeClient({ listPrompts }), "srv");
+
+    await expect(bridge.listPrompts()).rejects.toBeInstanceOf(
+      McpListPaginationError,
+    );
+    await expect(bridge.listPrompts()).rejects.toThrow(
+      'MCP server "srv" repeated a prompts/list cursor',
+    );
+    expect(listPrompts).toHaveBeenCalledTimes(4);
+  });
+
+  it("fails closed when prompts/list pagination exceeds its page bound", async () => {
+    const listPrompts = vi.fn(async (params: { cursor?: string }) => ({
+      prompts: [{ name: params.cursor ?? "first" }],
+      nextCursor: params.cursor === undefined ? "page-2" : "page-3",
+    }));
+    const bridge = await createPromptBridge(
+      makeClient({ listPrompts }),
+      "srv",
+      undefined,
+      { maxListPages: 2 },
+    );
+
+    await expect(bridge.listPrompts()).rejects.toMatchObject({
+      code: "page_limit",
+      message: 'MCP server "srv" prompts/list exceeded 2 pages',
+    });
+    expect(listPrompts).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when the collected prompt catalog exceeds its item bound", async () => {
+    const bridge = await createPromptBridge(
+      makeClient({
+        listPrompts: vi.fn().mockResolvedValue({
+          prompts: [{ name: "a" }, { name: "b" }],
+        }),
+      }),
+      "srv",
+      undefined,
+      { maxListItems: 1 },
+    );
+
+    await expect(bridge.listPrompts()).rejects.toMatchObject({
+      code: "item_limit",
+    });
+  });
+
+  it("fails closed when the collected prompt catalog exceeds its aggregate byte bound", async () => {
+    const bridge = await createPromptBridge(
+      makeClient({
+        listPrompts: vi.fn().mockResolvedValue({
+          prompts: [{ name: "huge", pad: "x".repeat(50) }],
+        }),
+      }),
+      "srv",
+      undefined,
+      { maxListAggregateBytes: 8 },
+    );
+
+    await expect(bridge.listPrompts()).rejects.toMatchObject({
+      code: "aggregate_size",
+    });
+  });
+
+  it("times out the whole prompts/list walk", async () => {
+    vi.useFakeTimers();
+    try {
+      const listPrompts = vi.fn(
+        async (
+          _params: { cursor?: string },
+          opts: { signal: AbortSignal },
+        ) =>
+          new Promise((_resolve, reject) => {
+            opts.signal.addEventListener(
+              "abort",
+              () => {
+                reject(opts.signal.reason ?? new Error("aborted"));
+              },
+              { once: true },
+            );
+          }),
+      );
+      const bridge = await createPromptBridge(
+        makeClient({ listPrompts }),
+        "srv",
+        undefined,
+        { rpcTimeoutMs: 20 },
+      );
+      const pending = bridge.listPrompts();
+      const rejection = expect(pending).rejects.toThrow(
+        /prompts\/list timed out after 20ms/,
+      );
+      await vi.advanceTimersByTimeAsync(20);
+      await rejection;
+      expect(listPrompts).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels prompt catalog pagination promptly", async () => {
+    const controller = new AbortController();
+    const listPrompts = vi.fn(
+      async (
+        _params: { cursor?: string },
+        opts: { signal: AbortSignal },
+      ) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener(
+            "abort",
+            () => {
+              reject(opts.signal.reason ?? new Error("aborted"));
+            },
+            { once: true },
+          );
+        }),
+    );
+    const bridge = await createPromptBridge(makeClient({ listPrompts }), "srv");
+    const pending = bridge.listPrompts(controller.signal);
+    await Promise.resolve();
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(listPrompts).toHaveBeenCalledOnce();
   });
 
   it("propagates upstream prompt rendering failures", async () => {
