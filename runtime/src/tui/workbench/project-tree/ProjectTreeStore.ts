@@ -16,7 +16,11 @@ import {
   collectGitBranch,
   collectGitStatus,
   listGitFiles,
+  listingWarning,
+  shouldScanWorkspaceFallback,
   type GitStatusByPath,
+  type GitFilesListing,
+  type ProjectTreeGitCommandOptions,
 } from "./gitStatus.js";
 import { normalizeWorkspacePathForReferences } from "../pathReferences.js";
 import type {
@@ -141,10 +145,16 @@ export class ProjectTreeStore {
   // auto-revealed. Stays null until the first scan establishes the baseline — the
   // initial repo tree must NOT auto-expand (that would explode a large repo).
   #knownDirectories: ReadonlySet<string> | null = null;
+  #gitOptions: ProjectTreeGitCommandOptions;
 
-  constructor(cwd = process.cwd(), refreshIntervalMs = 5_000) {
+  constructor(
+    cwd = process.cwd(),
+    refreshIntervalMs = 5_000,
+    gitOptions: ProjectTreeGitCommandOptions = {},
+  ) {
     this.#cwd = cwd;
     this.#refreshIntervalMs = refreshIntervalMs;
+    this.#gitOptions = gitOptions;
     this.#mutationWorkspaceRootIdentity =
       captureInitialWorkspaceRootIdentity(cwd);
   }
@@ -209,20 +219,33 @@ export class ProjectTreeStore {
     this.#loading = true;
     this.#emit();
     try {
-      const [paths, gitStatus, gitBranch] = await Promise.all([
-        listWorkspacePaths(this.#cwd),
-        collectGitStatus(this.#cwd),
-        collectGitBranch(this.#cwd),
+      const [pathListing, gitStatus, gitBranch] = await Promise.all([
+        listWorkspacePaths(this.#cwd, this.#gitOptions),
+        collectGitStatus(this.#cwd, this.#gitOptions),
+        collectGitBranch(this.#cwd, this.#gitOptions),
       ]);
       if (version !== this.#refreshVersion) return;
-      this.#autoExpandNewDirectories(paths);
-      this.#paths = paths;
-      this.#gitStatus = gitStatus;
-      this.#gitBranch = gitBranch;
+      const warning =
+        pathListing.warning ??
+        listingWarning(gitStatus) ??
+        listingWarning(gitBranch);
+      if (pathListing.paths.length === 0 && warning) {
+        this.#loading = false;
+        this.#error = warning;
+        this.#emit();
+        return;
+      }
+      this.#autoExpandNewDirectories(pathListing.paths);
+      this.#paths = pathListing.paths;
+      this.#gitStatus = gitStatus.status;
+      this.#gitBranch = gitBranch.branch;
       this.#cursorPath =
-        this.#cursorPath ?? firstFilePath(paths) ?? paths[0] ?? null;
+        this.#cursorPath ??
+        firstFilePath(pathListing.paths) ??
+        pathListing.paths[0] ??
+        null;
       this.#loading = false;
-      this.#error = null;
+      this.#error = warning;
       this.#emit();
     } catch (error) {
       if (version !== this.#refreshVersion) return;
@@ -986,20 +1009,55 @@ async function readTopLevelPaths(cwd: string): Promise<string[]> {
     .sort((a, b) => a.localeCompare(b));
 }
 
-async function listWorkspacePaths(cwd: string): Promise<string[]> {
-  const gitPaths = await listGitFiles(cwd);
-  if (gitPaths && gitPaths.length > 0) return gitPaths;
+export type WorkspacePathListing = {
+  readonly paths: readonly string[];
+  readonly source: "git" | "scan" | "top-level";
+  readonly kind: GitFilesListing["kind"];
+  readonly warning: string | null;
+};
+
+/**
+ * Git listings that fail or hit an explicit bound keep their Git result.
+ * Only a non-Git workspace or an empty successful index may fall back to
+ * the bounded filesystem scan.
+ */
+export async function listWorkspacePaths(
+  cwd: string,
+  gitOptions: ProjectTreeGitCommandOptions = {},
+): Promise<WorkspacePathListing> {
+  const gitListing = await listGitFiles(cwd, gitOptions);
+  if (!shouldScanWorkspaceFallback(gitListing)) {
+    return {
+      paths: gitListing.paths,
+      source: "git",
+      kind: gitListing.kind,
+      warning: listingWarning(gitListing),
+    };
+  }
 
   const scannedPaths = await scanWorkspacePaths(cwd);
-  if (scannedPaths.length > 0) return scannedPaths;
+  if (scannedPaths.length > 0) {
+    return {
+      paths: scannedPaths,
+      source: "scan",
+      kind: gitListing.kind,
+      warning: null,
+    };
+  }
 
-  return readTopLevelPaths(cwd);
+  return {
+    paths: await readTopLevelPaths(cwd),
+    source: "top-level",
+    kind: gitListing.kind,
+    warning: null,
+  };
 }
 
 /**
- * Hard bounds for the fallback workspace scan (non-git workspaces only — git
- * repos list files via `git ls-files`, which is fast and already bounded by
- * the repo).
+ * Hard bounds for the fallback workspace scan (non-git workspaces and empty
+ * Git indexes only). A failed or truncated Git listing must not fall through
+ * here: that would silently replace a multi-megabyte index with a 10,000-entry
+ * depth-8 walk.
  *
  * The scan MUST be bounded: a user launching agenc from a huge cwd (e.g.
  * `$HOME`, millions of entries under ~/Library and project node_modules)

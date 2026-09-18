@@ -195,8 +195,13 @@ export function PreviewSurface({
     setGitStateState({ path: statusPath, status: null });
     let mounted = true;
     collectGitStatus(getCwd())
-      .then((status) => {
-        if (mounted) setGitStateState({ path: statusPath, status: status.get(statusPath) ?? "clean" });
+      .then((listing) => {
+        if (mounted) {
+          setGitStateState({
+            path: statusPath,
+            status: listing.status.get(statusPath) ?? "clean",
+          });
+        }
       })
       .catch((error) => {
         if (!mounted) return;

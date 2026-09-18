@@ -228,8 +228,9 @@ describe("project tree helpers", () => {
 
       const status = await collectGitStatus(repo);
 
-      expect(status.get(fileName)).toBe("untracked");
-      expect([...status.keys()]).not.toContain('"\\303\\251.ts"');
+      expect(status.kind).toBe("ok");
+      expect(status.status.get(fileName)).toBe("untracked");
+      expect([...status.status.keys()]).not.toContain('"\\303\\251.ts"');
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -245,7 +246,10 @@ describe("project tree helpers", () => {
       await writeFile(join(repo, leading), "leading\n", "utf8");
       await writeFile(join(repo, trailing), "trailing\n", "utf8");
 
-      await expect(listGitFiles(repo)).resolves.toEqual([leading, trailing]);
+      await expect(listGitFiles(repo)).resolves.toMatchObject({
+        kind: "ok",
+        paths: [leading, trailing],
+      });
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -279,8 +283,9 @@ describe("project tree helpers", () => {
 
       const status = await collectGitStatus(repo);
 
-      expect(status.get(newPath)).toBe("renamed");
-      expect(status.has("d.ts")).toBe(false);
+      expect(status.kind).toBe("ok");
+      expect(status.status.get(newPath)).toBe("renamed");
+      expect(status.status.has("d.ts")).toBe(false);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
