@@ -559,6 +559,19 @@ export function isPathAllowed(
     }
   }
 
+  // A content-specific ask names a path the user wants to confirm. It sits
+  // directly under deny and the safety floor, above the working-directory
+  // and mode auto-allows: before, a workspace read or an acceptEdits write
+  // returned `mode` here and the rule never surfaced (#2125).
+  const askRule = matchingRuleResult(
+    resolvedPath,
+    context,
+    operationType,
+    "ask",
+    cwd,
+  );
+  if (askRule !== null) return askRule;
+
   const isInWorkingDir = pathInAllowedWorkingPath(
     resolvedPath,
     context,
@@ -577,15 +590,6 @@ export function isPathAllowed(
       };
     }
   }
-
-  const askRule = matchingRuleResult(
-    resolvedPath,
-    context,
-    operationType,
-    "ask",
-    cwd,
-  );
-  if (askRule !== null) return askRule;
 
   const allowRule = matchingRuleResult(
     resolvedPath,
@@ -866,20 +870,22 @@ export function checkToolPathPermission(
   // Read/Glob still prompted, breaking GAP-TEST-* scenarios 11/13/35.
   //
   // SECURITY: this bypass runs AFTER validatePath, so a path-specific
-  // Deny(...) rule (handled above) and the safety gates surfaced as a
+  // Deny(...) rule (handled above), the safety gates surfaced as a
   // "safetyCheck" decisionReason (the shared protected-path classifier and
-  // dangerous-removal checks in isPathAllowed/checkPathSafetyForAutoEdit) are
-  // still honored. These are exactly the two bypass-immune categories the
-  // evaluator enforces at permissions/evaluator.ts (step 1d deny, step 1g
-  // safetyCheck); everything else (workingDir/ask) is auto-allowed under
-  // bypass.
+  // dangerous-removal checks in isPathAllowed/checkPathSafetyForAutoEdit),
+  // and a content-specific ask rule are still honored. These are exactly the
+  // bypass-immune categories the evaluator enforces at
+  // permissions/evaluator.ts (step 1d deny, step 1f content ask rule, step 1g
+  // safetyCheck); the evaluator only sees the rule when this wrapper reports
+  // it, so converting the ask into an allow here silenced a confirmation the
+  // settings promised (#2125). Everything else (workingDir) is auto-allowed
+  // under bypass.
   if (
     opts.context.mode === "bypassPermissions" &&
     decisionReason?.type !== "safetyCheck" &&
     !(
       decisionReason?.type === "rule" &&
-      decisionReason.rule.ruleBehavior === "ask" &&
-      matchesSessionPlanFile(opts.path, opts.planFileAuthority, opts.cwd)
+      decisionReason.rule.ruleBehavior === "ask"
     )
   ) {
     return {
