@@ -1,17 +1,20 @@
-import { PassThrough } from "node:stream";
-
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createRoot } from "../../../src/tui/ink.js";
-import { getInkInstance } from "../../../src/tui/ink/instances.js";
-import { cellAt } from "../../../src/tui/ink/screen.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
 import { PreviewSurface } from "../../../src/tui/workbench/surfaces/PreviewSurface.js";
+import {
+  createPreviewHighlightIo,
+  delayPaint,
+  pollUntil,
+  readInkFrontFrame,
+} from "../../helpers/preview-highlight-ink.js";
 
 const IDENTICAL_PAGE = "const value = 1;\nconst other = 2;";
-const PAGE_START_DELTA = 80;
-const SECOND_START_LINE = PAGE_START_DELTA;
+const FIRST_OFFSET = 0;
+const SECOND_OFFSET = 80;
+const PAGE_STEP = 20;
 const TOTAL_LINES = 200;
 
 type VisibleLine = {
@@ -23,7 +26,6 @@ type HighlightCall = {
   readonly path: string | null;
   readonly lines: readonly VisibleLine[];
   readonly resolve: (map: ReadonlyMap<number, string>) => void;
-  readonly reject: (error: unknown) => void;
 };
 
 const previewHarness = vi.hoisted(() => ({
@@ -34,7 +36,7 @@ const previewHarness = vi.hoisted(() => ({
 vi.mock("../../../src/utils/readFileInRange.js", () => ({
   readFileInRange: vi.fn(async () => ({
     content: IDENTICAL_PAGE,
-    lineCount: IDENTICAL_PAGE.split("\n").length,
+    lineCount: 2,
     totalLines: TOTAL_LINES,
     totalBytes: Buffer.byteLength(IDENTICAL_PAGE),
     readBytes: Buffer.byteLength(IDENTICAL_PAGE),
@@ -59,128 +61,72 @@ vi.mock("../../../src/tui/workbench/buffer/highlight.js", () => ({
     filePath: string | null,
     lines: readonly VisibleLine[],
   ) => {
-    let resolve!: (map: ReadonlyMap<number, string>) => void;
-    let reject!: (error: unknown) => void;
-    const promise = new Promise<ReadonlyMap<number, string>>((resolvePromise, rejectPromise) => {
-      resolve = resolvePromise;
-      reject = rejectPromise;
-    });
+    const deferred = Promise.withResolvers<ReadonlyMap<number, string>>();
     previewHarness.highlightCalls.push({
       path: filePath,
-      lines: lines.map((line) => ({ number: line.number, text: line.text })),
-      resolve,
-      reject,
+      lines: lines.map(({ number, text }) => ({ number, text })),
+      resolve: deferred.resolve,
     });
-    return promise;
+    return deferred.promise;
   }),
 }));
 
-type TestStdin = PassThrough & {
-  isTTY: boolean;
-  ref: () => void;
-  setRawMode: (mode: boolean) => void;
-  unref: () => void;
-};
-
-function createStreams(): {
-  readonly stdin: TestStdin;
-  readonly stdout: PassThrough;
-} {
-  const stdout = new PassThrough();
-  const stdin = new PassThrough() as TestStdin;
-
-  stdin.isTTY = true;
-  stdin.ref = () => {};
-  stdin.setRawMode = () => {};
-  stdin.unref = () => {};
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 80;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
-  stdout.resume();
-
-  return { stdin, stdout };
+function previewAppState() {
+  const base = getDefaultAppState();
+  return {
+    ...base,
+    workbench: {
+      ...base.workbench,
+      activeSurfaceMode: "preview" as const,
+      activeFilePath: "repeated.ts",
+      activeFileLine: 1,
+    },
+  };
 }
 
-function sleep(ms = 25): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForHighlightWindow(startNumber: number): Promise<HighlightCall> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const call = previewHarness.highlightCalls.find(
-      (entry) => entry.lines[0]?.number === startNumber,
-    );
-    if (call) return call;
-    await sleep();
-  }
-  throw new Error(`Preview highlight for line ${startNumber} did not start`);
-}
-
-function currentScreenText(stdout: PassThrough): string {
-  const screen = getInkInstance(stdout as unknown as NodeJS.WriteStream)
-    ?.frontFrame.screen;
-  if (!screen) return "";
-  return Array.from({ length: screen.height }, (_, row) =>
-    Array.from(
-      { length: screen.width },
-      (_, column) => cellAt(screen, column, row)?.char ?? " ",
-    )
-      .join("")
-      .trimEnd(),
-  ).join("\n");
-}
-
-function highlightMap(
+function markWindow(
   lines: readonly VisibleLine[],
-  prefix: string,
+  tag: string,
 ): ReadonlyMap<number, string> {
-  return new Map(lines.map((line) => [line.number, `${prefix}:${line.number}`]));
+  return new Map(lines.map(({ number }) => [number, `${tag}:${number}`]));
 }
 
-function lineNumbers(call: HighlightCall): readonly number[] {
-  return call.lines.map((line) => line.number);
+function windowAt(offset: number): Promise<HighlightCall> {
+  const startNumber = offset + 1;
+  return pollUntil(
+    () => previewHarness.highlightCalls.find(
+      (call) => call.lines[0]?.number === startNumber,
+    ),
+    `highlight window at offset ${offset} did not start`,
+  );
 }
 
-async function renderPreview(): Promise<{
-  readonly stdin: TestStdin;
-  readonly stdout: PassThrough;
-  readonly unmount: () => void;
-}> {
-  const { stdin, stdout } = createStreams();
+async function withMountedPreview(
+  run: (stdout: ReturnType<typeof createPreviewHighlightIo>["stdout"]) => Promise<void>,
+): Promise<void> {
+  const { stdin, stdout } = createPreviewHighlightIo();
   const root = await createRoot({
     patchConsole: false,
     stdin: stdin as unknown as NodeJS.ReadStream,
     stdout: stdout as unknown as NodeJS.WriteStream,
   });
   root.render(
-    <AppStateProvider
-      initialState={{
-        ...getDefaultAppState(),
-        workbench: {
-          ...getDefaultAppState().workbench,
-          activeSurfaceMode: "preview",
-          activeFilePath: "repeated.ts",
-          activeFileLine: 1,
-        },
-      }}
-    >
+    <AppStateProvider initialState={previewAppState()}>
       <PreviewSurface focused={true} />
     </AppStateProvider>,
   );
-  return {
-    stdin,
-    stdout,
-    unmount() {
-      root.unmount();
-      stdin.end();
-      stdout.end();
-    },
-  };
+  try {
+    await run(stdout);
+  } finally {
+    root.unmount();
+    stdin.end();
+    stdout.end();
+  }
 }
 
-function movePreviewToSecondWindow(): void {
-  const pageDowns = PAGE_START_DELTA / 20;
-  for (let index = 0; index < pageDowns; index += 1) {
+function pageToOffset(offset: number): void {
+  const steps = offset / PAGE_STEP;
+  for (let step = 0; step < steps; step += 1) {
     previewHarness.handlers["surface:pageDown"]?.();
   }
 }
@@ -191,66 +137,44 @@ describe("PreviewSurface highlight startLine", () => {
     previewHarness.highlightCalls = [];
   });
 
-  it("recomputes a highlight map when identical text appears at a new startLine", async () => {
-    const { stdout, unmount } = await renderPreview();
+  it("rebuilds the highlight map when the same text is shown at offset 80", async () => {
+    await withMountedPreview(async (stdout) => {
+      const origin = await windowAt(FIRST_OFFSET);
+      expect(origin.lines.map((line) => line.number)).toEqual([1, 2]);
+      origin.resolve(markWindow(origin.lines, "WIN-A"));
+      await delayPaint();
+      expect(readInkFrontFrame(stdout)).toContain("WIN-A:1");
 
-    try {
-      const first = await waitForHighlightWindow(1);
-      expect(lineNumbers(first)).toEqual([1, 2]);
-      first.resolve(highlightMap(first.lines, "WIN-A"));
-      await sleep();
+      pageToOffset(SECOND_OFFSET);
+      const shifted = await windowAt(SECOND_OFFSET);
+      expect(shifted.lines.map((line) => line.number)).toEqual([81, 82]);
+      shifted.resolve(markWindow(shifted.lines, "WIN-B"));
+      await delayPaint();
 
-      expect(currentScreenText(stdout)).toContain("WIN-A:1");
-
-      movePreviewToSecondWindow();
-
-      const second = await waitForHighlightWindow(SECOND_START_LINE + 1);
-      expect(lineNumbers(second)).toEqual([
-        SECOND_START_LINE + 1,
-        SECOND_START_LINE + 2,
-      ]);
-      second.resolve(highlightMap(second.lines, "WIN-B"));
-      await sleep();
-
-      const screen = currentScreenText(stdout);
-      expect(screen).toContain("WIN-B:81");
-      expect(screen).not.toContain("WIN-A:1");
-    } finally {
-      unmount();
-    }
+      const frame = readInkFrontFrame(stdout);
+      expect(frame).toContain("WIN-B:81");
+      expect(frame).not.toContain("WIN-A:1");
+    });
   });
 
-  it("does not let a late highlight for the old window replace the new map", async () => {
-    const { stdout, unmount } = await renderPreview();
+  it("ignores a late poison-pill map from the cancelled offset-0 request", async () => {
+    await withMountedPreview(async (stdout) => {
+      const origin = await windowAt(FIRST_OFFSET);
+      pageToOffset(SECOND_OFFSET);
+      const shifted = await windowAt(SECOND_OFFSET);
 
-    try {
-      const first = await waitForHighlightWindow(1);
-      expect(lineNumbers(first)).toEqual([1, 2]);
-
-      movePreviewToSecondWindow();
-
-      const second = await waitForHighlightWindow(SECOND_START_LINE + 1);
-      expect(lineNumbers(second)).toEqual([
-        SECOND_START_LINE + 1,
-        SECOND_START_LINE + 2,
-      ]);
-
-      first.resolve(new Map([
+      origin.resolve(new Map([
         [1, "STALE:1"],
-        [SECOND_START_LINE + 1, "STALE:81"],
+        [81, "STALE:81"],
       ]));
-      await sleep();
+      await delayPaint();
+      expect(readInkFrontFrame(stdout)).not.toContain("STALE:81");
 
-      expect(currentScreenText(stdout)).not.toContain("STALE:81");
-
-      second.resolve(highlightMap(second.lines, "FRESH"));
-      await sleep();
-
-      const screen = currentScreenText(stdout);
-      expect(screen).toContain("FRESH:81");
-      expect(screen).not.toContain("STALE:81");
-    } finally {
-      unmount();
-    }
+      shifted.resolve(markWindow(shifted.lines, "FRESH"));
+      await delayPaint();
+      const frame = readInkFrontFrame(stdout);
+      expect(frame).toContain("FRESH:81");
+      expect(frame).not.toContain("STALE:81");
+    });
   });
 });
