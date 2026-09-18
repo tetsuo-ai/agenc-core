@@ -1261,18 +1261,19 @@ describe("tools/runtimes", () => {
     ).not.toThrow();
   });
 
-  test("fixedWriteTargets are verified like path arguments instead of denied as unverifiable", () => {
+  /** Direct-dispatch attempt context under /repo for a targetless tool call. */
+  function repoAttempt(callId: string, toolName: string) {
     const invocation = {
       session: { services: TEST_RUNTIME_SERVICES } as never,
       turn: { cwd: "/repo" } as never,
       tracker: tracker() as never,
-      callId: "call-fixed-write-targets",
-      toolName: { name: "ImagineImage" },
+      callId,
+      toolName: { name: toolName },
       payload: { kind: "function", arguments: "{}" },
       source: "direct",
     } as const;
-    const base = callContext("call-fixed-write-targets", EXCLUSIVE, false);
-    const attempt = (sandboxMode: "read_only" | "workspace_write") => ({
+    const base = callContext(callId, EXCLUSIVE, false);
+    return (sandboxMode: "read_only" | "workspace_write") => ({
       ...base,
       approvalPolicy: "never" as const,
       requestedSandboxMode: sandboxMode,
@@ -1281,13 +1282,19 @@ describe("tools/runtimes", () => {
       rawArgs: "{}",
       invocation,
     });
-    const mediaTool = (outputDir: string): Tool => ({
-      name: "ImagineImage",
+  }
+
+  test("fixedWriteTargets are verified like path arguments instead of denied as unverifiable", () => {
+    const attempt = repoAttempt("call-fixed-write-targets", "ImagineImage");
+    const stub = (name: string, metadata: Tool["metadata"]): Tool => ({
+      name,
       description: "",
       inputSchema: { type: "object" },
-      metadata: { mutating: true, fixedWriteTargets: () => [outputDir] },
+      metadata,
       execute: async () => ({ content: "not reached" }),
     });
+    const mediaTool = (outputDir: string): Tool =>
+      stub("ImagineImage", { mutating: true, fixedWriteTargets: () => [outputDir] });
 
     // The declared output directory under the workspace is a verified write.
     expect(() =>
@@ -1317,17 +1324,10 @@ describe("tools/runtimes", () => {
     ).toThrow(/read_only blocked write-capable operation ImagineImage/);
 
     // A model-directed path into the protected .agenc directory stays denied.
-    const pathWriter: Tool = {
-      name: "Write",
-      description: "",
-      inputSchema: { type: "object" },
-      metadata: { mutating: true },
-      execute: async () => ({ content: "not reached" }),
-    };
     expect(() =>
       enforceRuntimeSandboxAttempt({
         context: attempt("workspace_write"),
-        tool: pathWriter,
+        tool: stub("Write", { mutating: true }),
         args: { file_path: "/repo/.agenc/config.toml", contents: "x" },
       }),
     ).toThrow(/blocked write outside workspace: \/repo\/\.agenc\/config\.toml/);
