@@ -49,38 +49,66 @@ describe("project-tree Git listing bounds (#2120)", () => {
     expect(parsed.get("src/changed.ts")).toBe("modified");
   });
 
+  it("reassembles more than 1 MiB of chunked NUL-delimited output", () => {
+    const paths = largeListingPaths();
+    const newlinePath = "src/has\nnewline.ts";
+    const raw = `${[newlinePath, ...paths].join("\0")}\0`;
+    expect(Buffer.byteLength(raw)).toBeGreaterThan(1024 * 1024);
+
+    const assembled: string[] = [];
+    let pending = "";
+    for (const chunk of splitString(raw, 65_536)) {
+      const parsed = consumeNulFields(pending, chunk);
+      pending = parsed.pending;
+      assembled.push(...parsed.fields);
+    }
+    if (pending) assembled.push(pending);
+
+    expect(assembled).toHaveLength(paths.length + 1);
+    expect(assembled[0]).toBe(newlinePath);
+    expect(assembled.at(-1)).toBe(paths.at(-1));
+  });
+
   it("lists more than 1 MiB of NUL-delimited ls-files and status output", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-tree-git-large-"));
     try {
+      const paths = largeListingPaths();
+      const lsFilesPayload = Buffer.from(`${paths.join("\0")}\0`);
+      const statusPayload = Buffer.from(
+        `${paths.map((path) => `?? ${path}`).join("\0")}\0`,
+      );
+      const branchPayload = Buffer.from(
+        [
+          "# branch.oid abcdef0123456789",
+          "# branch.head main",
+          ...paths.map((path) => `? ${path}`),
+          "",
+        ].join("\n"),
+      );
+      expect(lsFilesPayload.length).toBeGreaterThan(1024 * 1024);
+      expect(statusPayload.length).toBeGreaterThan(1024 * 1024);
+
+      await writeFile(join(dir, "ls-files.bin"), lsFilesPayload);
+      await writeFile(join(dir, "status.bin"), statusPayload);
+      await writeFile(join(dir, "branch.bin"), branchPayload);
       const git = await writeFakeGit(
         dir,
         `
+const fs = require("fs");
+const path = require("path");
+const root = ${JSON.stringify(dir)};
 const args = process.argv.slice(2);
-const count = ${LARGE_PATH_COUNT};
-const paths = [];
-for (let i = 0; i < count; i++) {
-  paths.push("${LARGE_PATH_PREFIX}" + String(i).padStart(5, "0") + ".txt");
-}
-const payload = paths.join("\\0") + "\\0";
-if (args.includes("ls-files")) {
-  process.stdout.write(payload);
+const file = args.includes("ls-files")
+  ? "ls-files.bin"
+  : args.includes("--porcelain=v1")
+    ? "status.bin"
+    : args.includes("--porcelain=v2")
+      ? "branch.bin"
+      : null;
+if (!file) process.exit(1);
+process.stdout.write(fs.readFileSync(path.join(root, file)), () => {
   process.exit(0);
-}
-if (args.includes("--porcelain=v1")) {
-  process.stdout.write(paths.map((path) => "?? " + path).join("\\0") + "\\0");
-  process.exit(0);
-}
-if (args.includes("--porcelain=v2")) {
-  process.stdout.write(
-    [
-      "# branch.oid abcdef0123456789",
-      "# branch.head main",
-      ...paths.map((path) => "? " + path),
-    ].join("\\n") + "\\n",
-  );
-  process.exit(0);
-}
-process.exit(1);
+});
 `,
       );
 
@@ -89,6 +117,7 @@ process.exit(1);
       const branch = await collectGitBranch(dir, { git });
       const listedBytes = Buffer.byteLength(`${files.paths.join("\0")}\0`);
 
+      expect(files.kind).toBe("ok");
       expect(listedBytes).toBeGreaterThan(1024 * 1024);
       expect(listedBytes).toBeLessThan(GIT_LISTING_MAX_BYTES);
       expect(files).toMatchObject({
@@ -97,14 +126,12 @@ process.exit(1);
         message: null,
       });
       expect(files.paths).toHaveLength(LARGE_PATH_COUNT);
-      expect(files.paths[0]).toBe(`${LARGE_PATH_PREFIX}00000.txt`);
-      expect(files.paths.at(-1)).toBe(`${LARGE_PATH_PREFIX}11999.txt`);
+      expect(files.paths[0]).toBe(paths[0]);
+      expect(files.paths.at(-1)).toBe(paths.at(-1));
 
       expect(status.kind).toBe("ok");
       expect(status.status.size).toBe(LARGE_PATH_COUNT);
-      expect(status.status.get(`${LARGE_PATH_PREFIX}00000.txt`)).toBe(
-        "untracked",
-      );
+      expect(status.status.get(paths[0]!)).toBe("untracked");
 
       expect(branch.kind).toBe("ok");
       expect(branch.branch).toMatchObject({
@@ -283,7 +310,7 @@ process.exit(0);
       expect(scanned.paths).toContain("src/app.ts");
       expect(emptyIndex.source).toBe("scan");
       expect(emptyIndex.kind).toBe("ok");
-      expect(emptyIndex.paths).toContain("src/empty");
+      expect(emptyIndex.paths).toContain("src/empty/");
       expect(emptyIndex.warning).toBeNull();
     } finally {
       await rm(workspace, { recursive: true, force: true });
@@ -356,6 +383,25 @@ process.exit(0);
     }
   });
 });
+
+function largeListingPaths(): string[] {
+  const pad = "x".repeat(80);
+  const paths: string[] = [];
+  for (let index = 0; index < LARGE_PATH_COUNT; index += 1) {
+    paths.push(
+      `${LARGE_PATH_PREFIX}${String(index).padStart(5, "0")}-${pad}.txt`,
+    );
+  }
+  return paths;
+}
+
+function splitString(value: string, chunkSize: number): string[] {
+  const chunks: string[] = [];
+  for (let offset = 0; offset < value.length; offset += chunkSize) {
+    chunks.push(value.slice(offset, offset + chunkSize));
+  }
+  return chunks;
+}
 
 function paddedIndexPath(index: number): string {
   const stem = `tracked/dir/file-${String(index).padStart(5, "0")}-`;

@@ -226,7 +226,7 @@ export class ProjectTreeStore {
       ]);
       if (version !== this.#refreshVersion) return;
       const warning =
-        listingWarning(pathListing) ??
+        pathListing.warning ??
         listingWarning(gitStatus) ??
         listingWarning(gitBranch);
       if (pathListing.paths.length === 0 && warning) {
