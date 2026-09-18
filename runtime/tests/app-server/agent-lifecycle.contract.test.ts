@@ -123,6 +123,54 @@ function openRollout(
   return rollout;
 }
 
+type LifecycleRunner = NonNullable<
+  ConstructorParameters<typeof AgenCDaemonAgentManager>[0]["runner"]
+>;
+
+/** A runner whose live-agent transcript methods all say the agent is not running. */
+function noLiveAgentRunner(agentId: string): LifecycleRunner {
+  return {
+    startAgent: async () => ({
+      agentId: "unused",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      status: "running",
+    }),
+    getAgentSessionTranscript: async () => {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    },
+    getAgentSessionTranscriptV2: async () => {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    },
+  };
+}
+
+/** Persist one user/assistant exchange as sequenced daemon events. */
+function appendSequencedExchange(
+  rollout: ReturnType<typeof openRollout>,
+  user: string,
+  assistant: string,
+  startSeq = 1,
+): void {
+  rollout.appendRollout({
+    type: "event_msg",
+    payload: {
+      id: `user-event-${startSeq}`,
+      eventId: `user-event-${startSeq}`,
+      seq: startSeq,
+      msg: { type: "user_message", payload: { message: user, displayText: user } },
+    },
+  });
+  rollout.appendRollout({
+    type: "event_msg",
+    payload: {
+      id: `agent-event-${startSeq + 1}`,
+      eventId: `agent-event-${startSeq + 1}`,
+      seq: startSeq + 1,
+      msg: { type: "agent_message", payload: { message: assistant } },
+    },
+  });
+}
+
 const resumeFixtureCleanups: Array<() => void> = [];
 
 function createResumeFixture(
@@ -684,16 +732,7 @@ describe("AgenC background agent lifecycle", () => {
       const liveCapableRunner = new AgenCDaemonAgentManager({
         threadStore,
         sessionManager: sessions,
-        runner: {
-          startAgent: async () => ({
-            agentId: "unused",
-            startedAt: "2026-05-01T12:00:00.000Z",
-            status: "running",
-          }),
-          getAgentSessionTranscript: async () => {
-            throw new Error("AgenC daemon agent not running: agent_default");
-          },
-        },
+        runner: noLiveAgentRunner("agent_default"),
       });
       await expect(
         liveCapableRunner.getSessionTranscript({
@@ -733,27 +772,7 @@ describe("AgenC background agent lifecycle", () => {
       });
       // Sequenced events, as a daemon session writes them: the v2 snapshot
       // reconstruction keys its messages on eventId and seq.
-      rollout.appendRollout({
-        type: "event_msg",
-        payload: {
-          id: "user-event",
-          eventId: "user-event",
-          seq: 1,
-          msg: {
-            type: "user_message",
-            payload: { message: "sleep for a while", displayText: "sleep for a while" },
-          },
-        },
-      });
-      rollout.appendRollout({
-        type: "event_msg",
-        payload: {
-          id: "agent-event",
-          eventId: "agent-event",
-          seq: 2,
-          msg: { type: "agent_message", payload: { message: "starting" } },
-        },
-      });
+      appendSequencedExchange(rollout, "sleep for a while", "starting");
       threadStore.shutdownThread("conv-desktop-thread");
 
       const sessions = new AgenCDaemonSessionManager({ threadStore });
@@ -766,19 +785,7 @@ describe("AgenC background agent lifecycle", () => {
       const manager = new AgenCDaemonAgentManager({
         threadStore,
         sessionManager: sessions,
-        runner: {
-          startAgent: async () => ({
-            agentId: "unused",
-            startedAt: "2026-05-01T12:00:00.000Z",
-            status: "running",
-          }),
-          getAgentSessionTranscript: async () => {
-            throw new Error("AgenC daemon agent not running: conv-desktop-thread");
-          },
-          getAgentSessionTranscriptV2: async () => {
-            throw new Error("AgenC daemon agent not running: conv-desktop-thread");
-          },
-        },
+        runner: noLiveAgentRunner("conv-desktop-thread"),
       });
       await expect(
         manager.getSessionTranscriptV2({ sessionId: created.sessionId }),
