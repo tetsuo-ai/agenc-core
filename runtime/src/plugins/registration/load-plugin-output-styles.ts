@@ -41,7 +41,7 @@ async function loadStyleFile(
 ): Promise<PluginOutputStyle | null> {
   if (loadedPaths.has(filePath)) return null;
   loadedPaths.add(filePath);
-  const file = await readMarkdownFile(filePath, baseDir);
+  const file = await readMarkdownFile(filePath, baseDir, plugin.root);
   if (!file) return null;
   const baseName = coerceString(file.frontmatter.name) ?? markdownStem(filePath);
   const name = pluginScopedIdentifier(
@@ -72,7 +72,7 @@ async function loadStylesFromPath(
   loadedPaths: Set<string>,
 ): Promise<readonly PluginOutputStyle[]> {
   if (await pathIsDirectory(path)) {
-    const files = await collectMarkdownFiles(path);
+    const files = await collectMarkdownFiles(plugin.root, path);
     const styles = await Promise.all(
       files.map((filePath) => loadStyleFile(plugin, filePath, path, loadedPaths)),
     );
