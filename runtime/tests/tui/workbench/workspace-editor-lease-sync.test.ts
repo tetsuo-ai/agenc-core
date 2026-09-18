@@ -35,6 +35,7 @@ import {
   type BufferWorkspaceWriteAuthorityHandler,
   type BufferWorkspaceWriteDecision,
 } from "../../../src/tui/workbench/buffer/providers/types.js";
+import { WorkspaceEditorSnapshotBudgetError } from "../../../src/workspace/editor-sync-frame.js";
 import { TuiTeardownBarrier } from "../../../src/tui/teardownBarrier.js";
 import { WorkspaceMutationCoordinator } from "../../../src/workspace/mutation-coordinator.js";
 
@@ -437,6 +438,47 @@ describe("workspace editor lease synchronization", () => {
       dirty: true,
       content: "unsaved\n",
     });
+  });
+
+  test("blocks locally when dirty buffers fit raw limits but not the serialized frame", async () => {
+    vi.useFakeTimers();
+    const fourMiB = "x".repeat(4 * 1024 * 1024);
+    const source = new OversizedDirtyBufferSource(fourMiB);
+    const client = new FakeLeaseClient();
+    const authority = vi.fn();
+    const onError = vi.fn();
+    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+      workspaceRoot: WORKSPACE,
+      editorInstanceId: EDITOR_ID,
+      client,
+      buffers: source,
+      onAuthorityChange: authority,
+      onError,
+      syncDebounceMs: 0,
+      retryMs: 20,
+      heartbeatMs: 100,
+    });
+
+    synchronizer.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.acquireWorkspaceEditor).toHaveBeenCalledTimes(1);
+    expect(client.syncWorkspaceEditor).not.toHaveBeenCalled();
+    expect(authority).toHaveBeenLastCalledWith({
+      status: "blocked",
+      reason: expect.stringMatching(/including the trailing newline/u),
+    });
+    expect(onError).toHaveBeenCalledWith(
+      expect.any(WorkspaceEditorSnapshotBudgetError),
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.heartbeatWorkspaceEditor).toHaveBeenCalled();
+    expect(client.syncWorkspaceEditor).not.toHaveBeenCalled();
+
+    await synchronizer.stop();
+    expect(client.syncWorkspaceEditor).not.toHaveBeenCalled();
+    expect(client.releaseWorkspaceEditor).toHaveBeenCalledTimes(1);
   });
 
   test("acquires once, syncs monotonic revisions, heartbeats, and releases conservatively", async () => {
@@ -2550,6 +2592,64 @@ describe("workspace editor lease synchronization", () => {
     }
   });
 });
+
+class OversizedDirtyBufferSource implements WorkspaceEditorBufferSource {
+  readonly #content: string;
+
+  constructor(content: string) {
+    this.#content = content;
+  }
+
+  subscribe(): () => void {
+    return () => {};
+  }
+
+  getSnapshot(): BufferProviderSnapshot {
+    const base = emptyProviderSnapshot({
+      kind: "neovim",
+      label: "embedded Neovim",
+      fallbackReason: null,
+      capabilities: NEOVIM_BUFFER_CAPABILITIES,
+    });
+    return {
+      ...base,
+      providerStatus: "ready",
+      workspaceAuthorityRequired: true,
+      buffers: [0, 1, 2, 3].map((index) => ({
+        handle: index + 1,
+        changedtick: 1,
+        endOfLine: true,
+        name: `/workspace/dirty-${index}.ts`,
+        filePath: `dirty-${index}.ts`,
+        absolutePath: `/workspace/dirty-${index}.ts`,
+        listed: true,
+        loaded: true,
+        modified: true,
+        current: index === 0,
+        bufferType: "",
+        modifiable: true,
+        readOnly: false,
+        saveable: true,
+      })),
+      activeBufferHandle: 1,
+      dirtyBufferCount: 4,
+      dirty: true,
+    };
+  }
+
+  captureWorkspaceBuffers(): Promise<readonly BufferWorkspaceBufferCapture[]> {
+    return Promise.resolve(
+      [0, 1, 2, 3].map((index) => ({
+        path: `/workspace/dirty-${index}.ts`,
+        bufferHandle: index + 1,
+        changedtick: 1,
+        endOfLine: true,
+        dirty: true,
+        content: this.#content,
+      })),
+    );
+  }
+}
 
 class FakeBufferSource implements WorkspaceEditorBufferSource {
   readonly #listeners = new Set<() => void>();

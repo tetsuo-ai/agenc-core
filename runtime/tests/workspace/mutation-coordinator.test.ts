@@ -35,6 +35,7 @@ import {
   workspaceMutationCoordinators,
   workspaceMutationProposalToolResult,
 } from "../../src/workspace/mutation-coordinator.js";
+import { workspaceEditorRpcFrameBytes } from "../../src/workspace/editor-sync-frame.js";
 
 const temporaryPaths: string[] = [];
 const originalAgencHome = process.env.AGENC_HOME;
@@ -8497,6 +8498,56 @@ describe("filesystem-tool editor coherence", () => {
       ),
     ) as { readonly proposalCommitments?: readonly unknown[] };
     expect(quarantine.proposalCommitments).toEqual([]);
+  });
+
+  it("rejects a multi-buffer sync whose raw content fits but the serialized frame does not", async () => {
+    const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
+    const agencHome = await tempDirectory("agenc-coherence-home-");
+    const fourMiB = "x".repeat(4 * 1024 * 1024);
+    const buffers = [0, 1, 2, 3].map((index) => ({
+      path: join(workspaceRoot, `dirty-${index}.ts`),
+      bufferHandle: index + 1,
+      changedtick: 1,
+      contentSha256: sha256(fourMiB),
+      contentBytes: Buffer.byteLength(fourMiB, "utf8"),
+      dirty: true as const,
+      content: fourMiB,
+    }));
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-sync-frame-limit",
+    });
+    const input = {
+      workspaceRoot,
+      editorInstanceId: "editor-sync-frame-limit",
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 0,
+      buffers,
+    };
+
+    expect(
+      buffers.reduce((total, buffer) => total + buffer.contentBytes, 0),
+    ).toBe(16 * 1024 * 1024);
+    expect(
+      workspaceEditorRpcFrameBytes("workspace.editor.sync", input),
+    ).toBeGreaterThan(16 * 1024 * 1024);
+
+    expect(() => coordinator.sync(input)).toThrow(
+      /serialized bytes, exceeding the 16777216-byte daemon transport frame/u,
+    );
+    expect(
+      coordinator.listChanges({
+        workspaceRoot,
+        editorInstanceId: "editor-sync-frame-limit",
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      }).changes,
+    ).toEqual([]);
   });
 
   it("holds a topology reservation against newly loaded descendant buffers", async () => {

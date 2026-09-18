@@ -81,13 +81,13 @@ describe("AgenC stdio transport", () => {
       "utf8",
     );
     const workspaceRoot = `/${"x".repeat(
-      AGENC_STDIO_DEFAULT_MAX_LINE_BYTES - minimallyRootedFrameBytes,
+      AGENC_STDIO_DEFAULT_MAX_LINE_BYTES - 1 - minimallyRootedFrameBytes,
     )}`;
     const boundaryLine = encodeBoundedJsonLine(
       requestFor(escapedContent, workspaceRoot),
     );
 
-    expect(Buffer.byteLength(boundaryLine, "utf8") - 1).toBe(
+    expect(Buffer.byteLength(boundaryLine, "utf8")).toBe(
       AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
     );
     expect(() =>

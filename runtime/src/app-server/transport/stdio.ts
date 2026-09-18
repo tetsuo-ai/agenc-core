@@ -22,8 +22,9 @@ import {
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 import { BoundedJsonLineReader } from "../../utils/bounded-json-lines.js";
+import { AGENC_JSON_LINE_MAX_FRAME_BYTES } from "../../utils/json-line-frame.js";
 
-export const AGENC_STDIO_DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024;
+export const AGENC_STDIO_DEFAULT_MAX_LINE_BYTES = AGENC_JSON_LINE_MAX_FRAME_BYTES;
 
 export interface AgenCStdioTransportOptions {
   readonly input: Readable;
@@ -189,19 +190,20 @@ export function encodeJsonLine(message: JsonValue): string {
 
 /**
  * Encode an outbound frame only when the peer can accept the complete
- * serialized JSON line. The budget applies after JSON escaping and UTF-8
- * encoding; measuring source strings is insufficient because a single
- * control byte can expand to a six-byte `\u0000` escape.
+ * serialized JSON line, including the trailing newline. The budget applies
+ * after JSON escaping and UTF-8 encoding; measuring source strings is
+ * insufficient because a single control byte can expand to a six-byte
+ * `\u0000` escape.
  */
 export function encodeBoundedJsonLine(
   message: JsonValue,
   maxLineBytes = AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
 ): string {
   const line = encodeJsonLine(message);
-  const lineBytes = Buffer.byteLength(line, "utf8") - 1;
-  if (lineBytes > maxLineBytes) {
+  const frameBytes = Buffer.byteLength(line, "utf8");
+  if (frameBytes > maxLineBytes) {
     throw new RangeError(
-      `AgenC stdio transport JSON line is ${lineBytes} bytes, exceeding the ${maxLineBytes}-byte limit`,
+      `AgenC stdio transport JSON line is ${frameBytes} bytes, exceeding the ${maxLineBytes}-byte limit`,
     );
   }
   return line;

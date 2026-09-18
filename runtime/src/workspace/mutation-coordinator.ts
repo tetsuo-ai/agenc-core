@@ -36,13 +36,22 @@ import {
 import { createInterface as createReadlineInterface } from "node:readline";
 
 import { getCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { jsonLineFrameBytes } from "../utils/json-line-frame.js";
+import {
+  WORKSPACE_EDITOR_MAX_BUFFER_BYTES,
+  WORKSPACE_EDITOR_MAX_SYNC_CONTENT_BYTES,
+  WORKSPACE_EDITOR_MAX_SYNCED_BUFFERS,
+  WORKSPACE_EDITOR_PROPOSAL_MAX_FRAME_BYTES as SHARED_WORKSPACE_EDITOR_PROPOSAL_MAX_FRAME_BYTES,
+  WorkspaceEditorSnapshotBudgetError,
+  assertWorkspaceEditorRpcFitsFrame,
+} from "./editor-sync-frame.js";
 
 const DEFAULT_LEASE_TTL_MS = 10_000;
-const MAX_SYNCED_BUFFERS = 512;
+const MAX_SYNCED_BUFFERS = WORKSPACE_EDITOR_MAX_SYNCED_BUFFERS;
 // Keep this aligned with the Editor buffer provider's 5 MiB file ceiling.
 // Unloaded files may still use the larger tool-specific write limits.
-const MAX_BUFFER_BYTES = 5 * 1024 * 1024;
-const MAX_SYNC_BYTES = 16 * 1024 * 1024;
+const MAX_BUFFER_BYTES = WORKSPACE_EDITOR_MAX_BUFFER_BYTES;
+const MAX_SYNC_BYTES = WORKSPACE_EDITOR_MAX_SYNC_CONTENT_BYTES;
 const MAX_CHANGE_EVENTS = 64;
 // Every unresolved commitment must retain one discoverable proposed event.
 // Keep the admission ceiling within both the durable delivery queue and the
@@ -55,10 +64,11 @@ const MAX_PERSISTED_QUARANTINE_DIRECTORIES = 4_096;
 const MAX_QUARANTINE_ROOT_PREFIX_BYTES = 64 * 1024;
 const MAX_PERSISTED_WORKSPACE_ROOT_BYTES = 4_096;
 const MAX_PERSISTED_WORKSPACE_ROOT_SEGMENTS = 1_024;
-// The persistent daemon client rejects an unterminated JSON frame once its
-// receive buffer exceeds 16 MiB. Count the trailing newline as part of that
-// budget because the client observes it before splitting the complete frame.
-export const WORKSPACE_EDITOR_PROPOSAL_MAX_FRAME_BYTES = 16 * 1024 * 1024;
+// Shared with the stdio JSON-line transport and Editor client. Count the
+// trailing newline: the persistent daemon client rejects an unterminated
+// receive buffer once it exceeds this budget.
+export const WORKSPACE_EDITOR_PROPOSAL_MAX_FRAME_BYTES =
+  SHARED_WORKSPACE_EDITOR_PROPOSAL_MAX_FRAME_BYTES;
 
 export type WorkspacePathAuthority =
   "disk_authoritative" | "editor_dirty" | "stale_dirty";
@@ -532,7 +542,7 @@ export function workspaceEditorProposalResponseFrameBytes(
     id: requestId,
     result: proposal,
   };
-  return Buffer.byteLength(`${JSON.stringify(response)}\n`, "utf8");
+  return jsonLineFrameBytes(response);
 }
 
 export function assertWorkspaceEditorProposalResponseFitsFrame(
@@ -555,14 +565,11 @@ export function assertWorkspaceEditorProposalStatusResponseFitsFrame(
   status: WorkspaceEditorProposalStatus,
   requestId: string | number = Number.MAX_SAFE_INTEGER,
 ): void {
-  const frameBytes = Buffer.byteLength(
-    `${JSON.stringify({
-      jsonrpc: "2.0",
-      id: requestId,
-      result: status,
-    })}\n`,
-    "utf8",
-  );
+  const frameBytes = jsonLineFrameBytes({
+    jsonrpc: "2.0",
+    id: requestId,
+    result: status,
+  });
   if (frameBytes > WORKSPACE_EDITOR_PROPOSAL_MAX_FRAME_BYTES) {
     const proposalId =
       status.status === "reviewable"
@@ -1238,6 +1245,28 @@ export class WorkspaceMutationCoordinator {
         crossInstanceRecoveryAllowed: false,
         version: ++this.#authorityVersion,
       });
+    }
+
+    try {
+      assertWorkspaceEditorRpcFitsFrame("workspace.editor.sync", {
+        workspaceRoot: input.workspaceRoot,
+        editorInstanceId: input.editorInstanceId,
+        leaseToken: input.leaseToken,
+        epoch: input.epoch,
+        sequence: input.sequence,
+        buffers: input.buffers,
+        ...(input.abandonStaleAuthority !== undefined
+          ? { abandonStaleAuthority: input.abandonStaleAuthority }
+          : {}),
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceEditorSnapshotBudgetError) {
+        throw new WorkspaceMutationCoordinatorError(
+          "INVALID_EDITOR_SYNC",
+          error.message,
+        );
+      }
+      throw error;
     }
 
     // Omitted clean paths stop being tracked. Omitted dirty paths become

@@ -51,6 +51,7 @@ import {
   type RequestId,
 } from "./protocol/index.js";
 import { encodeBoundedJsonLine } from "./transport/stdio.js";
+import { AGENC_JSON_LINE_MAX_FRAME_BYTES } from "../utils/json-line-frame.js";
 import { isRecord } from "../utils/record.js";
 import {
   resolveAgentRuntimeOptions,
@@ -184,7 +185,7 @@ const overflowedBufferedSessionEventMaps = new WeakSet<
 // the socket) that streams bytes without ever emitting a newline cannot grow
 // client memory unbounded. Mirrors the daemon transport's max-line / max
 // payload bound (16 MiB).
-const MAX_DAEMON_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
+const MAX_DAEMON_CLIENT_BUFFER_BYTES = AGENC_JSON_LINE_MAX_FRAME_BYTES;
 // Agent turns and model-backed conversation maintenance have no wall-clock
 // deadline. They may legitimately remain live for hours while providers,
 // tools, approvals, or collaboration workers make progress. Explicit aborts,

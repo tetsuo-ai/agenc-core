@@ -78,6 +78,7 @@ import type {
   BufferWorkspaceWriteDecision,
   BufferWorkspaceWriteRequest,
 } from "../types.js";
+import { readWorkspaceCaptureContents } from "../../workspace-capture-budget.js";
 import {
   BufferWorkspaceCaptureUnstableError,
   emptyProviderSnapshot,
@@ -457,8 +458,13 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       const before = await this.#inspectSessionBuffers(session);
       if (!this.#ownsOperation(ownership)) return [];
       const candidates = this.#workspaceCaptureCandidates(before.buffers);
-      const contents = await Promise.all(
-        candidates.map((candidate) => session.readBufferText(candidate.handle)),
+      const contents = await readWorkspaceCaptureContents(
+        candidates.map((candidate) => ({
+          handle: candidate.handle,
+          dirty: candidate.modified,
+          path: candidate.path,
+        })),
+        (handle) => session.readBufferText(handle),
       );
       if (!this.#ownsOperation(ownership)) return [];
       const after = await this.#inspectSessionBuffers(session);
