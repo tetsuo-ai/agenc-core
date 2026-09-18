@@ -1,9 +1,14 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-// Voice service: audio recording for push-to-talk voice input.
+// Voice service: audio recording for push-to-talk voice input, plus
+// realtime playback capability probes.
 //
 // Recording uses native audio capture (cpal) on macOS, Linux, and Windows
 // for in-process mic access. Falls back to SoX `rec` or arecord (ALSA)
 // on Linux if the native module is unavailable.
+//
+// Native audio-capture-napi is capture-only: isNativeAudioAvailable() never
+// implies a playback backend. Realtime assistant audio still needs SoX
+// `play` or, on Linux, ALSA `aplay`.
 
 import { type ChildProcess, spawn, spawnSync } from 'child_process'
 import { readFile } from 'fs/promises'
@@ -260,14 +265,80 @@ export async function requestMicrophonePermission(): Promise<boolean> {
   return false
 }
 
-export async function checkRecordingAvailability(): Promise<RecordingAvailability> {
-  // Remote environments have no local microphone
+function isRemoteAudioEnvironment(): boolean {
   const environment = getSelectedProviderEnvironment()
-  if (
+  return (
     isRunningOnHomespace(environment) ||
     isSessionRemoteMode() ||
     getIsRemoteMode()
-  ) {
+  )
+}
+
+export type RealtimePlaybackBackend = 'play' | 'aplay'
+
+export type PlaybackAvailabilityDeps = {
+  readonly hasCommand?: (command: string) => boolean
+  readonly platform?: NodeJS.Platform
+  readonly isRemote?: boolean
+  readonly checkRecordingAvailability?: () => Promise<RecordingAvailability>
+}
+
+const REMOTE_PLAYBACK_REASON =
+  'Realtime voice playback requires a local speaker, but no audio device is available in this environment.\n\nTo use voice mode, run AgenC locally instead.'
+
+export function resolveRealtimePlaybackBackend(
+  deps: Pick<PlaybackAvailabilityDeps, 'hasCommand' | 'platform'> = {},
+): RealtimePlaybackBackend | null {
+  const commandExists = deps.hasCommand ?? hasCommand
+  const platform = deps.platform ?? process.platform
+  if (commandExists('play')) return 'play'
+  if (platform === 'linux' && commandExists('aplay')) return 'aplay'
+  return null
+}
+
+function missingPlaybackReason(platform: NodeJS.Platform): string {
+  if (platform === 'darwin') {
+    return 'Realtime voice playback requires SoX `play`. Native audio capture cannot play assistant audio. Install it with: brew install sox'
+  }
+  if (platform === 'win32') {
+    return 'Realtime voice playback requires SoX `play` on PATH. The native audio module can record but cannot play assistant audio. Install SoX and ensure the `play` command is available.'
+  }
+  if (platform === 'linux') {
+    const pm = detectPackageManager()
+    const soxHint = pm?.displayCommand ?? 'sudo apt-get install sox'
+    return `Realtime voice playback requires SoX \`play\` or ALSA \`aplay\`. Native audio capture cannot play assistant audio. Install SoX with: ${soxHint}  (or install alsa-utils for aplay)`
+  }
+  return 'Realtime voice playback requires a local `play` (SoX) or `aplay` (ALSA) command. Native audio capture cannot play assistant audio.'
+}
+
+export async function checkPlaybackAvailability(
+  deps: PlaybackAvailabilityDeps = {},
+): Promise<RecordingAvailability> {
+  // Native capture never satisfies this check. audio-capture-napi exposes
+  // recording only; assistant playback is an external-process dependency.
+  if (deps.isRemote ?? isRemoteAudioEnvironment()) {
+    return { available: false, reason: REMOTE_PLAYBACK_REASON }
+  }
+  const platform = deps.platform ?? process.platform
+  if (resolveRealtimePlaybackBackend(deps) !== null) {
+    return { available: true, reason: null }
+  }
+  return { available: false, reason: missingPlaybackReason(platform) }
+}
+
+export async function checkRealtimeAudioAvailability(
+  deps: PlaybackAvailabilityDeps = {},
+): Promise<RecordingAvailability> {
+  const recording = await (
+    deps.checkRecordingAvailability ?? checkRecordingAvailability
+  )()
+  if (!recording.available) return recording
+  return checkPlaybackAvailability(deps)
+}
+
+export async function checkRecordingAvailability(): Promise<RecordingAvailability> {
+  // Remote environments have no local microphone
+  if (isRemoteAudioEnvironment()) {
     return {
       available: false,
       reason:

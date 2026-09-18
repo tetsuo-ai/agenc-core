@@ -21,6 +21,7 @@ import {
   type RealtimeAudioPlayer,
   type StartRealtimeAudioCapture,
 } from "./audio.js";
+import { resolveRealtimePlaybackBackend } from "../../services/voice.js";
 import { logError } from "../../utils/log.js";
 import { isRecord } from "../../utils/record.js";
 import {
@@ -97,7 +98,14 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       options.startWebrtcSession ?? (() => RealtimeWebrtcSession.start());
     this.#startAudioCapture =
       options.startAudioCapture ?? startDefaultRealtimeAudioCapture;
-    this.#audioPlayer = options.audioPlayer ?? createProcessRealtimeAudioPlayer();
+    this.#audioPlayer =
+      options.audioPlayer ??
+      createProcessRealtimeAudioPlayer(undefined, {
+        onError: (message) => {
+          void this.#handlePlaybackFailure(message);
+        },
+        resolveBackend: () => resolveRealtimePlaybackBackend(),
+      });
   }
 
   async start(options: RealtimeStartOptions = {}): Promise<void> {
@@ -282,7 +290,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         if (!this.#canApplyRealtimeSessionEvent()) return;
         if (isJsonObject(payload.audio)) {
           const audio = toRealtimeAudioChunk(payload.audio);
-          if (audio !== null) this.#audioPlayer.enqueue(audio);
+          if (audio !== null) this.#enqueueOutputAudio(audio);
         }
         break;
       case "realtime_transcript_delta":
@@ -436,6 +444,25 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     this.#closeActiveWebrtc();
     this.#closeAudioPlayerBestEffort();
     this.#surfaceRealtimeError(error, fallback);
+    await this.#requestDaemonStop();
+  }
+
+  #enqueueOutputAudio(audio: ThreadRealtimeAudioChunk): void {
+    try {
+      this.#audioPlayer.enqueue(audio);
+    } catch (error) {
+      void this.#handlePlaybackFailure(
+        error instanceof Error ? error.message : "Realtime audio playback failed",
+      );
+    }
+  }
+
+  async #handlePlaybackFailure(message: string): Promise<void> {
+    if (this.#state.requestedClose || this.#state.phase === "inactive") return;
+    await this.#stopAudioCapture().catch(logError);
+    this.#closeActiveWebrtc();
+    this.#closeAudioPlayerBestEffort();
+    this.#surfaceRealtimeError(message, "Realtime audio playback failed");
     await this.#requestDaemonStop();
   }
 
