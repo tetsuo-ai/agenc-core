@@ -24,6 +24,7 @@ export {
 } from "./socket.js";
 export {
   promptViaSubprocess,
+  DEFAULT_POST_EXIT_DRAIN_TIMEOUT_MS,
   type AgencSubprocessOptions,
   type AgencSubprocessRun,
   type AgencSubprocessChild,
