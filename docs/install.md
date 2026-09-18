@@ -192,6 +192,18 @@ installs an `agenc.cmd` shim under `%LOCALAPPDATA%\agenc\bin`. Running the
 daemon as a Windows service uses WinSW with `packaging/windows/agenc-daemon.xml`
 (manual step; `agenc daemon start` works without it).
 
+Windows needs Git for Windows. Sessions run their shell through `bash.exe`,
+which AgenC looks for under `C:\Program Files\Git\bin`,
+`C:\Program Files (x86)\Git\bin` and `%LOCALAPPDATA%\Programs\Git\bin`;
+set `AGENC_SHELL` to the absolute path of another bash or zsh. When no shell is
+found the error lists every path it checked and why each was rejected.
+
+There is no Windows sandbox yet. The sandboxed permission modes refuse to
+start a session on Windows (`sandbox_required_unavailable`); use
+`--dangerously-bypass-approvals-and-sandbox`, WSL2 with bubblewrap, or an
+external sandbox. Credentials are kept in a DPAPI-protected file under the
+AgenC home and decrypted through PowerShell once per process.
+
 ## Supported hosts
 
 The public runtime matrix is deliberately explicit:
