@@ -765,7 +765,7 @@ describe("plugin source resolution", () => {
       expect(first.pluginRoot).toBe(pluginSourceCacheRoot(agencHome, "git@github.com:tetsuo-ai/plugin.git"));
       expect(second.pluginRoot).toBe(first.pluginRoot);
       expect(runs).toBe(1);
-      expect(calls[0]).toMatch(/^git clone --depth 1 -- git@github.com:tetsuo-ai\/plugin.git /u);
+      expect(calls[0]).toMatch(/^git -c core\.hooksPath=\/dev\/null -c core\.autocrlf=false -c core\.eol=lf clone --depth 1 -- git@github.com:tetsuo-ai\/plugin.git /u);
       await second.cleanup();
     });
   });
@@ -1984,8 +1984,10 @@ describe("plugin source resolution", () => {
           "known-host-tarball",
           "known-host-bundle",
         );
+        const gitCloneArgs: string[][] = [];
         const runProcess: PluginProcessRunner = async (command, args) => {
-          if (command === "git" && args[0] === "clone") {
+          if (command === "git" && args.includes("clone")) {
+            gitCloneArgs.push([...args]);
             const separator = args.indexOf("--");
             forwardedSources.push({
               seam: "clone",
@@ -2011,6 +2013,14 @@ describe("plugin source resolution", () => {
 
         expect(resolved.kind).toBe(expectedKind);
         expect(forwardedSources).toEqual([{ seam: downstream, source }]);
+        // Repository bytes must reach the signature check verbatim: Git for
+        // Windows converts LF to CRLF by default, which broke every signed
+        // marketplace install there.
+        for (const args of gitCloneArgs) {
+          expect(args).toEqual(
+            expect.arrayContaining(["core.hooksPath=/dev/null", "core.autocrlf=false", "core.eol=lf"]),
+          );
+        }
         await resolved.cleanup();
       });
     },

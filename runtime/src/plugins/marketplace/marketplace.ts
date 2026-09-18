@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { GIT_CHECKOUT_BYTES_ARGS } from "../gitAcquisitionArgs.js";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -226,6 +227,8 @@ const DEFAULT_GIT_TIMEOUT_MS = 120_000;
 const DEFAULT_GIT_MAX_OUTPUT_BYTES = 1_048_576;
 const MARKETPLACE_URL_MANIFEST_MAX_BYTES = 1 * 1024 * 1024;
 const GIT_NO_HOOKS_ARGS = ["-c", "core.hooksPath=/dev/null"] as const;
+/** Hooks off and repository bytes verbatim: see gitAcquisitionArgs.ts. */
+const GIT_ACQUISITION_ARGS = [...GIT_NO_HOOKS_ARGS, ...GIT_CHECKOUT_BYTES_ARGS] as const;
 
 export function marketplaceStoreRoot(options: MarketplaceOperationOptions): string {
   return pluginMarketplaceRootPath({
@@ -859,7 +862,7 @@ async function stageMarketplaceSource(
         if (sparse !== undefined) {
           const sparsePath = normalizeSparsePath(sparse);
           await run("git", [
-            ...GIT_NO_HOOKS_ARGS,
+            ...GIT_ACQUISITION_ARGS,
             "clone",
             "--depth",
             "1",
@@ -870,7 +873,7 @@ async function stageMarketplaceSource(
             root,
           ], processOptions);
           await run("git", [
-            ...GIT_NO_HOOKS_ARGS,
+            ...GIT_ACQUISITION_ARGS,
             "sparse-checkout",
             "set",
             "--cone",
@@ -878,18 +881,18 @@ async function stageMarketplaceSource(
             sparsePath,
           ], { ...processOptions, cwd: root });
           await run("git", [
-            ...GIT_NO_HOOKS_ARGS,
+            ...GIT_ACQUISITION_ARGS,
             "checkout",
             ref ?? "HEAD",
           ], { ...processOptions, cwd: root });
         } else {
-          const args = [...GIT_NO_HOOKS_ARGS, "clone", "--depth", "1"];
+          const args = [...GIT_ACQUISITION_ARGS, "clone", "--depth", "1"];
           if (ref !== undefined) args.push("--branch", ref);
           args.push("--", gitUrl, root);
           await run("git", args, processOptions);
         }
         const revision = (await run("git", [
-          ...GIT_NO_HOOKS_ARGS,
+          ...GIT_ACQUISITION_ARGS,
           "rev-parse",
           "HEAD",
         ], { ...processOptions, cwd: root })).stdout.trim();

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { GIT_CHECKOUT_BYTES_ARGS } from "./gitAcquisitionArgs.js";
 import {
   access,
   cp,
@@ -881,6 +882,9 @@ async function materializeNpmPackage(
   return extractTarball(tarballPath, join(tempRoot, "npm-extract"), options);
 }
 
+/** Hooks off and repository bytes verbatim for plugin git sources: see gitAcquisitionArgs.ts. */
+const GIT_ACQUISITION_ARGS = ["-c", "core.hooksPath=/dev/null", ...GIT_CHECKOUT_BYTES_ARGS] as const;
+
 async function materializeGitSource(
   source: string | StructuredGitPluginSource,
   tempRoot: string,
@@ -890,6 +894,7 @@ async function materializeGitSource(
   if (typeof source === "string") {
     assertSafeGitSource(source);
     await runProcess(options, "git", [
+      ...GIT_ACQUISITION_ARGS,
       "clone",
       "--depth",
       "1",
@@ -904,6 +909,7 @@ async function materializeGitSource(
   const revision = source.ref ?? source.sha;
   if (revision === undefined) {
     await runProcess(options, "git", [
+      ...GIT_ACQUISITION_ARGS,
       "clone",
       "--depth",
       "1",
@@ -913,6 +919,7 @@ async function materializeGitSource(
     ]);
   } else {
     await runProcess(options, "git", [
+      ...GIT_ACQUISITION_ARGS,
       "clone",
       "--depth",
       "1",
@@ -922,6 +929,7 @@ async function materializeGitSource(
       target,
     ]);
     await runProcess(options, "git", [
+      ...GIT_ACQUISITION_ARGS,
       "-C",
       target,
       "fetch",
@@ -931,6 +939,7 @@ async function materializeGitSource(
       revision,
     ]);
     await runProcess(options, "git", [
+      ...GIT_ACQUISITION_ARGS,
       "-C",
       target,
       "checkout",
@@ -941,6 +950,7 @@ async function materializeGitSource(
 
   if (source.sha !== undefined) {
     const actualSha = (await runProcess(options, "git", [
+      ...GIT_ACQUISITION_ARGS,
       "-C",
       target,
       "rev-parse",
