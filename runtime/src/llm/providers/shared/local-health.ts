@@ -29,17 +29,13 @@ function isConnectionRefusedError(error: unknown): boolean {
 }
 
 function throwCallerCancellation(signal: AbortSignal): never {
-  const reason = signal.reason;
-  if (reason instanceof Error) {
-    throw reason;
-  }
-  const error = new Error(
-    typeof reason === "string" && reason.length > 0
-      ? reason
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new DOMException(
+    typeof signal.reason === "string" && signal.reason.length > 0
+      ? signal.reason
       : "This operation was aborted",
+    "AbortError",
   );
-  error.name = "AbortError";
-  throw error;
 }
 
 export async function runLocalProviderHealthSidecar<T>(params: {
