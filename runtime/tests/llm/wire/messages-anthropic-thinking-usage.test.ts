@@ -43,60 +43,64 @@ function modelUsageFromParsed(
   };
 }
 
+const BASE_USAGE = { input_tokens: 120, output_tokens: 348 } as const;
+
 describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
-  test("maps nested thinking_tokens as a subset of inclusive output", () => {
-    const usage = parseUsage({
-      input_tokens: 120,
-      output_tokens: 348,
-      output_tokens_details: { thinking_tokens: 312 },
-    });
-
-    expect(usage.promptTokens).toBe(120);
-    expect(usage.completionTokens).toBe(348);
-    expect(usage.reasoningOutputTokens).toBe(312);
-    expect(usage.totalTokens).toBe(468);
-  });
-
-  test("falls back to legacy reasoning_output_tokens when details are absent", () => {
-    const usage = parseUsage({
-      input_tokens: 120,
-      output_tokens: 348,
-      reasoning_output_tokens: 312,
-    });
-
-    expect(usage.completionTokens).toBe(348);
-    expect(usage.reasoningOutputTokens).toBe(312);
-  });
-
-  test("prefers nested thinking_tokens over the legacy flat field", () => {
-    const usage = parseUsage({
-      input_tokens: 120,
-      output_tokens: 348,
-      reasoning_output_tokens: 99,
-      output_tokens_details: { thinking_tokens: 312 },
-    });
-
-    expect(usage.reasoningOutputTokens).toBe(312);
-    expect(usage.completionTokens).toBe(348);
-  });
-
-  test("keeps a reported zero thinking count", () => {
-    const usage = parseUsage({
-      input_tokens: 120,
-      output_tokens: 348,
-      output_tokens_details: { thinking_tokens: 0 },
-    });
-
-    expect(usage.completionTokens).toBe(348);
-    expect(usage.reasoningOutputTokens).toBe(0);
+  test.each([
+    {
+      name: "maps nested thinking_tokens as a subset of inclusive output",
+      usage: {
+        ...BASE_USAGE,
+        output_tokens_details: { thinking_tokens: 312 },
+      },
+      expected: {
+        promptTokens: 120,
+        completionTokens: 348,
+        reasoningOutputTokens: 312,
+        totalTokens: 468,
+      },
+    },
+    {
+      name: "falls back to legacy reasoning_output_tokens when details are absent",
+      usage: { ...BASE_USAGE, reasoning_output_tokens: 312 },
+      expected: { completionTokens: 348, reasoningOutputTokens: 312 },
+    },
+    {
+      name: "prefers nested thinking_tokens over the legacy flat field",
+      usage: {
+        ...BASE_USAGE,
+        reasoning_output_tokens: 99,
+        output_tokens_details: { thinking_tokens: 312 },
+      },
+      expected: { reasoningOutputTokens: 312, completionTokens: 348 },
+    },
+    {
+      name: "keeps a reported zero thinking count",
+      usage: {
+        ...BASE_USAGE,
+        output_tokens_details: { thinking_tokens: 0 },
+      },
+      expected: { completionTokens: 348, reasoningOutputTokens: 0 },
+    },
+    {
+      name: "clamps a thinking count above inclusive output",
+      usage: {
+        ...BASE_USAGE,
+        output_tokens_details: { thinking_tokens: 400 },
+      },
+      expected: { completionTokens: 348, reasoningOutputTokens: 348 },
+    },
+    {
+      name: "clamps a legacy reasoning count above inclusive output",
+      usage: { ...BASE_USAGE, reasoning_output_tokens: 400 },
+      expected: { completionTokens: 348, reasoningOutputTokens: 348 },
+    },
+  ] as const)("$name", ({ usage, expected }) => {
+    expect(parseUsage(usage)).toMatchObject(expected);
   });
 
   test("omits reasoning when output details are missing", () => {
-    const usage = parseUsage({
-      input_tokens: 120,
-      output_tokens: 348,
-    });
-
+    const usage = parseUsage({ ...BASE_USAGE });
     expect(usage.completionTokens).toBe(348);
     expect(usage.reasoningOutputTokens).toBeUndefined();
   });
@@ -113,47 +117,24 @@ describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
     "rejects malformed thinking_tokens (%s)",
     (_label, thinkingTokens) => {
       const usage = parseUsage({
-        input_tokens: 120,
-        output_tokens: 348,
+        ...BASE_USAGE,
         output_tokens_details: { thinking_tokens: thinkingTokens },
         reasoning_output_tokens: 99,
       });
-
       expect(usage.completionTokens).toBe(348);
       expect(usage.reasoningOutputTokens).toBeUndefined();
     },
   );
 
-  test("clamps a thinking count above inclusive output", () => {
-    const usage = parseUsage({
-      input_tokens: 120,
-      output_tokens: 348,
-      output_tokens_details: { thinking_tokens: 400 },
-    });
-
-    expect(usage.completionTokens).toBe(348);
-    expect(usage.reasoningOutputTokens).toBe(348);
-  });
-
-  test("clamps a legacy reasoning count above inclusive output", () => {
-    const usage = parseUsage({
-      input_tokens: 120,
-      output_tokens: 348,
-      reasoning_output_tokens: 400,
-    });
-
-    expect(usage.completionTokens).toBe(348);
-    expect(usage.reasoningOutputTokens).toBe(348);
-  });
-
   test("does not double-count the thinking subset in cost accounting", () => {
     const usage = parseUsage({
-      input_tokens: 120,
-      output_tokens: 348,
+      ...BASE_USAGE,
       output_tokens_details: { thinking_tokens: 312 },
     });
-    expect(usage.completionTokens).toBe(348);
-    expect(usage.reasoningOutputTokens).toBe(312);
+    expect(usage).toMatchObject({
+      completionTokens: 348,
+      reasoningOutputTokens: 312,
+    });
     const cost = computeUsdCost(
       modelUsageFromParsed(usage),
       DEFAULT_MODEL_COSTS,

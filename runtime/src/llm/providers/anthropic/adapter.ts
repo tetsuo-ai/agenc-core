@@ -34,6 +34,7 @@ import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
   readAnthropicReasoningOutputTokens,
+  readAnthropicThinkingTokenDetails,
 } from "../../wire/messages-anthropic.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { coerceUsage } from "../../wire/shared.js";
@@ -129,18 +130,7 @@ function mergeAnthropicUsage(
       Number.isFinite(record.input_tokens)) ||
     (typeof record.output_tokens === "number" &&
       Number.isFinite(record.output_tokens));
-  const outputDetails =
-    record.output_tokens_details &&
-      typeof record.output_tokens_details === "object" &&
-      !Array.isArray(record.output_tokens_details)
-      ? (record.output_tokens_details as Record<string, unknown>)
-      : undefined;
-  const thinkingTokens =
-    typeof outputDetails?.thinking_tokens === "number" &&
-      Number.isFinite(outputDetails.thinking_tokens) &&
-      outputDetails.thinking_tokens >= 0
-      ? outputDetails.thinking_tokens
-      : undefined;
+  const thinkingDetails = readAnthropicThinkingTokenDetails(record);
   return {
     reported,
     ...(typeof record.speed === "string"
@@ -173,8 +163,8 @@ function mergeAnthropicUsage(
       : usage.reasoning_output_tokens !== undefined
         ? { reasoning_output_tokens: usage.reasoning_output_tokens }
         : {}),
-    ...(typeof thinkingTokens === "number"
-      ? { output_tokens_details: { thinking_tokens: thinkingTokens } }
+    ...(thinkingDetails !== undefined
+      ? { output_tokens_details: thinkingDetails }
       : usage.output_tokens_details !== undefined
         ? { output_tokens_details: usage.output_tokens_details }
         : {}),
