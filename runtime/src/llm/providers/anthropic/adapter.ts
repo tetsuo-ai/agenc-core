@@ -191,20 +191,38 @@ interface AnthropicCompletedThinkingBlock {
   redacted: boolean;
 }
 
-function hasEmittedAnthropicStreamOutput(state: {
-  readonly content: string;
-  readonly completedToolCalls: { readonly length: number };
-  readonly toolBlocks: { readonly size: number };
-  readonly thinkingBlocks: { readonly size: number };
-  readonly completedThinkingBlocks: { readonly length: number };
-}): boolean {
+function hasEmittedAnthropicStreamOutput(
+  content: string,
+  completedToolCalls: { readonly length: number },
+  toolBlocks: { readonly size: number },
+  thinkingBlocks: { readonly size: number },
+  completedThinkingBlocks: { readonly length: number },
+): boolean {
   return (
-    state.content.length > 0 ||
-    state.completedToolCalls.length > 0 ||
-    state.toolBlocks.size > 0 ||
-    state.thinkingBlocks.size > 0 ||
-    state.completedThinkingBlocks.length > 0
+    content.length > 0 ||
+    completedToolCalls.length > 0 ||
+    toolBlocks.size > 0 ||
+    thinkingBlocks.size > 0 ||
+    completedThinkingBlocks.length > 0
   );
+}
+
+function completeThinkingBlock(
+  index: number,
+  block: AnthropicThinkingBlockState,
+  completedThinkingBlocks: AnthropicCompletedThinkingBlock[],
+  onChunk: StreamProgressCallback,
+): void {
+  completedThinkingBlocks.push({
+    text: block.text,
+    ...(block.signature.length > 0 ? { signature: block.signature } : {}),
+    redacted: block.redacted,
+  });
+  onChunk({
+    content: "",
+    done: false,
+    thinkingBlockStop: { index },
+  });
 }
 
 function finalizeOpenThinkingBlocks(
@@ -213,16 +231,7 @@ function finalizeOpenThinkingBlocks(
   onChunk: StreamProgressCallback,
 ): void {
   for (const [index, block] of thinkingBlocks) {
-    completedThinkingBlocks.push({
-      text: block.text,
-      ...(block.signature.length > 0 ? { signature: block.signature } : {}),
-      redacted: block.redacted,
-    });
-    onChunk({
-      content: "",
-      done: false,
-      thinkingBlockStop: { index },
-    });
+    completeThinkingBlock(index, block, completedThinkingBlocks, onChunk);
   }
   thinkingBlocks.clear();
 }
@@ -604,6 +613,14 @@ export class AnthropicProvider implements LLMProvider {
         signature?: string;
         redacted: boolean;
       }> = [];
+      const streamHasEmittedOutput = () =>
+        hasEmittedAnthropicStreamOutput(
+          content,
+          completedToolCalls,
+          toolBlocks,
+          thinkingBlocks,
+          completedThinkingBlocks,
+        );
     try {
       const response = await session.requestStream({
         api: "messages",
@@ -817,18 +834,12 @@ export class AnthropicProvider implements LLMProvider {
           }
           const thinkingBlock = thinkingBlocks.get(index);
           if (thinkingBlock) {
-            completedThinkingBlocks.push({
-              text: thinkingBlock.text,
-              ...(thinkingBlock.signature.length > 0
-                ? { signature: thinkingBlock.signature }
-                : {}),
-              redacted: thinkingBlock.redacted,
-            });
-            onChunk({
-              content: "",
-              done: false,
-              thinkingBlockStop: { index },
-            });
+            completeThinkingBlock(
+              index,
+              thinkingBlock,
+              completedThinkingBlocks,
+              onChunk,
+            );
             thinkingBlocks.delete(index);
           }
           continue;
@@ -860,15 +871,7 @@ export class AnthropicProvider implements LLMProvider {
             typeof errorRecord.message === "string"
               ? errorRecord.message
               : "Provider stream failed";
-          if (
-            !hasEmittedAnthropicStreamOutput({
-              content,
-              completedToolCalls,
-              toolBlocks,
-              thinkingBlocks,
-              completedThinkingBlocks,
-            })
-          ) {
+          if (!streamHasEmittedOutput()) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               anthropicStreamFallbackCandidate(errorRecord, message),
               consecutiveFallbackFailures,
@@ -971,14 +974,7 @@ export class AnthropicProvider implements LLMProvider {
       // branch and the grok adapter). Thinking is model-visible: a
       // transparent retry after a thinking start/delta is the same class of
       // bug as retrying after text (#2107).
-      const hasEmittedOutput = hasEmittedAnthropicStreamOutput({
-        content,
-        completedToolCalls,
-        toolBlocks,
-        thinkingBlocks,
-        completedThinkingBlocks,
-      });
-      if (!hasEmittedOutput) {
+      if (!streamHasEmittedOutput()) {
         const fallbackDecision = this.evaluateConfiguredFallback(
           error,
           consecutiveFallbackFailures,
