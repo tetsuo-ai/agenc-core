@@ -70,8 +70,9 @@ describe("AnthropicProvider streaming usage (cache tokens + stale merge)", () =>
     async () => {
       // message_start reports cache + reasoning + web-search usage. After a text
       // delta is forwarded, the transport errors -> a partial response surfaces.
+      // reasoning_output_tokens stays a subset of output_tokens (#2112 clamp).
       const MESSAGE_START =
-        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-7-sonnet","content":[],"usage":{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":5,"reasoning_output_tokens":4,"server_tool_use":{"web_search_requests":2}}}}\n\n';
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-7-sonnet","content":[],"usage":{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":5,"reasoning_output_tokens":2,"server_tool_use":{"web_search_requests":2}}}}\n\n';
 
       const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
         Promise.resolve(
@@ -103,7 +104,7 @@ describe("AnthropicProvider streaming usage (cache tokens + stale merge)", () =>
       // Cache / reasoning / web-search telemetry must survive the partial path.
       expect(response.usage.cachedInputTokens).toBe(7);
       expect(response.usage.cacheCreationInputTokens).toBe(5);
-      expect(response.usage.reasoningOutputTokens).toBe(4);
+      expect(response.usage.reasoningOutputTokens).toBe(2);
       expect(response.usage.webSearchRequests).toBe(2);
     },
   );
