@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { LLMProviderError, LLMTimeoutError } from "../../../../src/llm/errors.js";
 import { OllamaProvider } from "../../../../src/llm/providers/ollama/adapter.js";
+import { hangingStreamAfterFirstChunk } from "./ollama-test-helpers.js";
 
 function setClient(
   provider: OllamaProvider,
@@ -263,38 +264,7 @@ describe("Ollama non-streaming physical timeout and cancellation", () => {
 
   test("streaming chat remains abortable through the existing client.abort path", async () => {
     vi.useFakeTimers();
-    let settlePendingNext: (() => void) | undefined;
-    const abortSpy = vi.fn(() => settlePendingNext?.());
-    const returnSpy = vi.fn(async () => {
-      settlePendingNext?.();
-      return { done: true, value: undefined };
-    });
-    const stream: AsyncIterable<unknown> & { abort: () => void } = {
-      abort: abortSpy,
-      [Symbol.asyncIterator]() {
-        let calls = 0;
-        return {
-          next: async () => {
-            calls += 1;
-            if (calls === 1) {
-              return {
-                done: false,
-                value: {
-                  model: "llama3.3",
-                  message: { role: "assistant", content: "hel" },
-                  prompt_eval_count: 5,
-                  eval_count: 1,
-                },
-              };
-            }
-            return await new Promise<IteratorResult<unknown>>((resolve) => {
-              settlePendingNext = () => resolve({ done: true, value: undefined });
-            });
-          },
-          return: returnSpy,
-        };
-      },
-    };
+    const { stream, abortSpy } = hangingStreamAfterFirstChunk();
     const chat = vi.fn(async () => stream);
     const provider = new OllamaProvider({ model: "llama3.3" });
     setClient(provider, {
