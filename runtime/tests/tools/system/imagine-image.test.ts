@@ -148,6 +148,13 @@ function minimaxImagineTool(root: string, fetchImpl?: typeof fetch) {
 }
 
 describe("ImagineImage tool", () => {
+  it("declares its fixed output directory so the runtime sandbox can verify the write", () => {
+    const tool = createQwenImagineTool("qwen", vi.fn(), "/work/space");
+    expect(tool.metadata?.mutating).toBe(true);
+    expect(tool.metadata?.virtualNoFsWrites).toBeUndefined();
+    expect(tool.metadata?.fixedWriteTargets?.()).toEqual([join("/work/space", ".agenc", "imagine")]);
+  });
+
   it("is catalog-registered for non-Grok sessions with an independent xAI credential", () => {
     expect(isModelFacingToolRegistered("ImagineImage", {
       workspaceRoot: process.cwd(),

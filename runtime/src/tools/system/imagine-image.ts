@@ -1122,6 +1122,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       hiddenByDefault: false,
       mutating: true,
       deferred: deferredUntilDiscovered,
+      // The only write is the generated media file under this fixed
+      // directory; no argument names a path, so the sandbox must be told
+      // where the output lands or it denies the call as unverifiable.
+      fixedWriteTargets: () => [join(opts.workspaceRoot, ".agenc", "imagine")],
       keywords: ["image", "generate", "media"],
       preferredProfiles: ["coding", "operator", "general"],
     },

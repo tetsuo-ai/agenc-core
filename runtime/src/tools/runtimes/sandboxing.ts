@@ -4,6 +4,7 @@ import {
   externalFileSystemPolicy,
   canReadPathWithCwd,
   canWritePathWithCwd,
+  canWriteRuntimeOwnedPathWithCwd,
   permissionProfileFromRuntimePermissions,
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
@@ -54,6 +55,8 @@ interface WriteAnalysis {
   readonly targets: readonly string[];
   readonly indeterminate: boolean;
   readonly knownSafeWhenTargetless: boolean;
+  /** Targets the tool declared through ToolMetadata.fixedWriteTargets. */
+  readonly declared?: readonly string[];
 }
 
 export interface RuntimePlatformSandboxStatus {
@@ -455,7 +458,10 @@ export function enforceRuntimeSandboxAttempt(
       !(shellAccess === null &&
         (isActiveSessionPlanFile(input.context, target) ||
           isDurableMemoryWritePath(target)) &&
-        agencHomeCarveOutAllowsWrite(profile.fileSystem, target, cwd, sessionTempRoot))
+        agencHomeCarveOutAllowsWrite(profile.fileSystem, target, cwd, sessionTempRoot)) &&
+      !(shellAccess === null &&
+        (writes.declared ?? []).includes(target) &&
+        canWriteRuntimeOwnedPathWithCwd(profile.fileSystem, target, cwd, sessionTempRoot))
     ) {
       throw new SandboxDeniedError(
         `sandbox workspace_write blocked write outside workspace: ${target}`,
@@ -584,11 +590,15 @@ function analyzeWrites(
       knownSafeWhenTargetless: false,
     };
   }
-  const targets = writeTargets(args, cwd);
+  const declared = (tool.metadata?.fixedWriteTargets?.() ?? []).map(
+    (target) => resolveRuntimePathTarget(target, cwd),
+  );
+  const targets = [...new Set([...writeTargets(args, cwd), ...declared])];
   return {
     targets,
     indeterminate: targets.length === 0,
     knownSafeWhenTargetless: false,
+    declared,
   };
 }
 

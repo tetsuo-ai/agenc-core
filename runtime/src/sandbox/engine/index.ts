@@ -487,6 +487,27 @@ export function canWritePathWithCwd(
   return !isMetadataWriteDenied(policy, target, cwd, sessionTempRoot);
 }
 
+/**
+ * Write check for a location the runtime itself chose and declared through
+ * `ToolMetadata.fixedWriteTargets`. The model cannot steer such a path, so
+ * the protected-metadata rule (which keeps model-directed writes out of
+ * `.git`, `.agenc` and `.agents`) does not apply to it; containment in the
+ * writable roots and the reserved read-only paths still do.
+ */
+export function canWriteRuntimeOwnedPathWithCwd(
+  policy: FileSystemSandboxPolicy,
+  target: string,
+  cwd: string,
+  sessionTempRoot: string,
+): boolean {
+  if ((policy.reservedReadOnlyPaths ?? []).some((root) =>
+    isWithinAuthorityPath(canonicalAuthorityPath(path.resolve(cwd, target)), root)
+  )) return false;
+  return canWriteAccess(
+    resolveAccessWithCwd(policy, target, cwd, sessionTempRoot),
+  );
+}
+
 export function hasFullDiskWriteAccess(policy: FileSystemSandboxPolicy): boolean {
   if ((policy.reservedReadOnlyPaths?.length ?? 0) > 0) return false;
   switch (policy.kind) {
