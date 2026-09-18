@@ -6,6 +6,20 @@ import type { Routine, RoutineCapabilities, RoutineConfig, RoutineRun, RoutineRu
 
 export const MAX_ROUTINES = 100;
 export const MAX_ROUTINE_RUNS = 50;
+const GENERIC_RUN_FAILURE = "Routine could not run. Check its workspace, provider configuration, and session details.";
+/** Raised by Core when the agent's provider has no usable credential. */
+const CREDENTIALS_MISSING = /requires credentials/u;
+
+/** Diagnostic for the daemon log; the persisted run record never carries cause text. */
+export interface RoutineRunFailure { readonly routineId: string; readonly runId: string; readonly cause: unknown }
+
+/** Fixed strings only: a cause may quote secrets or provider responses, and run.error is client-visible. */
+function describeRunFailure(cause: unknown, routine: Routine): string {
+  const message = cause instanceof Error ? cause.message : "";
+  if (message === "workspace changed") return "Routine could not run: its workspace changed since it was approved.";
+  if (CREDENTIALS_MISSING.test(message)) return `Routine could not run: the daemon has no credentials for the ${routine.provider ?? "configured"} provider.`;
+  return GENERIC_RUN_FAILURE;
+}
 const MAX_STORE_BYTES = 8 * 1024 * 1024;
 const ACTIVE = new Set<RoutineRunStatus>(["starting", "running", "waiting_permission"]);
 const CREATE_KEYS = ["name", "description", "instructions", "cwd", "schedule", "provider", "model", "permissionMode", "enabled", "notifyOnCompletion"];
@@ -171,6 +185,7 @@ export class RoutineService {
   readonly #store: RoutineStore;
   readonly #executor: RoutineExecutor;
   readonly #now: () => Date;
+  readonly #onRunFailure: ((failure: RoutineRunFailure) => void) | undefined;
   #entries: Entry[];
   #active = new Map<string, Active>();
   #held = new Set<string>();
@@ -179,8 +194,9 @@ export class RoutineService {
   #closed = false;
   #started = false;
   #healthy = true;
-  constructor(options: { home: string; executor: RoutineExecutor; now?: () => Date }) {
+  constructor(options: { home: string; executor: RoutineExecutor; now?: () => Date; onRunFailure?: (failure: RoutineRunFailure) => void }) {
     this.#store = new RoutineStore(options.home); this.#executor = options.executor; this.#now = options.now ?? (() => new Date());
+    this.#onRunFailure = options.onRunFailure;
     this.#entries = this.#store.read().entries;
     try {
       const ids = new Set<string>();
@@ -330,7 +346,11 @@ export class RoutineService {
         if (cause instanceof RoutineExecutionUnsettledError) {
           this.#held.add(entry.routine.id); status = "running";
           error = "Core could not confirm this run stopped. Further invocations are blocked until the daemon restarts.";
-        } else error = "Routine could not run. Check its workspace, provider configuration, and session details.";
+        } else {
+          error = describeRunFailure(cause, snapshot);
+          try { this.#onRunFailure?.({ routineId: entry.routine.id, runId: run.id, cause }); }
+          catch { /* A diagnostic sink never owns run state. */ }
+        }
       }
       if (this.#closed) { status = "interrupted"; error = "Daemon stopped before this run finished. It was not restarted automatically."; }
       try { this.#replaceRun(entry, run.id, { status, finishedAt: ACTIVE.has(status) ? null : this.#now().toISOString(), error }); }

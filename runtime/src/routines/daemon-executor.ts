@@ -1,12 +1,34 @@
 import { randomUUID } from "node:crypto";
 import type { AgenCDaemonAgentManager } from "../app-server/agent-lifecycle.js";
+import { canonicalSessionEnvironmentKeys } from "../session/environment.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import { RoutineExecutionUnsettledError, type RoutineExecutor } from "./service.js";
+
+/** The routine configuration owns provider and model; the daemon env never overrides them. */
+const ROUTINE_ENV_EXCLUDED = new Set(["AGENC_PROVIDER", "AGENC_MODEL"]);
+
+/**
+ * Client-owned session environment for a routine agent, taken from the daemon's
+ * own process environment. A daemon-created agent inherits nothing on its own
+ * (the daemon materializes exactly `envOverrides`), so without this snapshot a
+ * routine on any keyed provider dies at agent creation with
+ * "<provider> provider requires credentials" even when the daemon holds the key.
+ */
+export function routineSessionEnvironment(env: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string>> {
+  const overrides: Record<string, string> = {};
+  for (const key of canonicalSessionEnvironmentKeys(env)) {
+    const value = env[key];
+    if (typeof value === "string" && value.length > 0 && !ROUTINE_ENV_EXCLUDED.has(key)) overrides[key] = value;
+  }
+  return Object.freeze(overrides);
+}
 
 /** Fresh canonical Core agent/session per invocation; permission decisions stay in Core. */
 export function createDaemonRoutineExecutor(options: {
   agentManager: Pick<AgenCDaemonAgentManager, "createAgent" | "streamAgentMessage" | "cancelRunTree" | "stopAgent" | "finishRoutineRun">;
   runtimeOptions: AgentRuntimeOptions;
+  /** Daemon process environment, frozen at construction; only canonical client keys are forwarded. */
+  environment?: Readonly<Record<string, string | undefined>>;
 }): RoutineExecutor {
   const authority = Object.freeze({
     ...options.runtimeOptions,
@@ -15,6 +37,7 @@ export function createDaemonRoutineExecutor(options: {
     stdinDataMode: false,
     remoteMode: false,
   });
+  const envOverrides = routineSessionEnvironment(options.environment ?? {});
   return {
     async execute(routine, run, context) {
       if (context.signal.aborted) return "cancelled";
@@ -44,6 +67,7 @@ export function createDaemonRoutineExecutor(options: {
           objective: routine.name, cwd: routine.cwd, deferInitialTurn: true,
           ...(routine.provider ? { provider: routine.provider } : {}),
           ...(routine.model ? { model: routine.model } : {}),
+          ...(Object.keys(envOverrides).length > 0 ? { envOverrides } : {}),
           permissionMode: routine.permissionMode, runtimeOptions: authority,
           metadata: { routineId: routine.id, routineRunId: run.id },
         });

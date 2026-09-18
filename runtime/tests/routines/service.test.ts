@@ -11,10 +11,10 @@ afterEach(async () => {
   vi.useRealTimers();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-function setup(executor: RoutineExecutor = { execute: vi.fn(async () => "completed" as const) }) {
+function setup(executor: RoutineExecutor = { execute: vi.fn(async () => "completed" as const) }, extra: { onRunFailure?: (failure: { routineId: string; runId: string; cause: unknown }) => void } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "agenc-routines-test-"))); roots.push(home);
   const cwd = join(home, "project"); mkdirSync(cwd);
-  const service = new RoutineService({ home, executor }); services.push(service); service.start();
+  const service = new RoutineService({ home, executor, ...extra }); services.push(service); service.start();
   const params = { name: "Daily check", instructions: "Inspect the workspace.", cwd, schedule: { kind: "manual" as const } };
   return { home, cwd, service, executor, params, path: join(home, "routines", "routines-v1.json") };
 }
@@ -253,6 +253,23 @@ describe("daemon-owned local routines", () => {
     f.service.run({ id: routine.id }); await vi.waitFor(() => expect(snapshots).toEqual([f.params.instructions, "Updated for future runs"])); finish("completed"); await terminal(f.service, routine.id);
   });
 
+  it("hands the cause to the daemon diagnostic and stores a fixed reason for missing credentials", async () => {
+    const onRunFailure = vi.fn();
+    const cause = new Error("deepseek provider requires credentials. Set DEEPSEEK_API_KEY.");
+    const f = setup({ execute: async () => { throw cause; } }, { onRunFailure });
+    const { routine } = f.service.create({ ...f.params, provider: "deepseek" }); const { run } = f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Routine could not run: the daemon has no credentials for the deepseek provider." });
+    expect(JSON.stringify(f.service.runs({ id: routine.id }))).not.toContain("DEEPSEEK_API_KEY");
+    expect(onRunFailure).toHaveBeenCalledWith({ routineId: routine.id, runId: run.id, cause });
+  });
+  it("names a changed workspace and survives a throwing diagnostic sink", async () => {
+    const f = setup({ execute: vi.fn(async () => "completed" as const) }, { onRunFailure: () => { throw new Error("sink down"); } });
+    const { routine } = f.service.create(f.params);
+    rmSync(f.cwd, { recursive: true }); mkdirSync(f.cwd);
+    f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Routine could not run: its workspace changed since it was approved." });
+    expect(f.executor.execute).not.toHaveBeenCalled();
+  });
   it("bounds run history and preserves failure/cancellation records without sensitive error text", async () => {
     let count = 0;
     const f = setup({ execute: async () => { count++; if (count === 1) throw new Error("sk-live-private-password"); return count === 2 ? "cancelled" : "completed"; } });

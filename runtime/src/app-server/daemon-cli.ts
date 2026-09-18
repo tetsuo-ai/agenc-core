@@ -3850,11 +3850,15 @@ async function runAgenCDaemonForegroundLocked(
         home: authStartup.daemonHome,
         executor: createDaemonRoutineExecutor({
           agentManager,
+          environment: host.env,
           runtimeOptions: resolveAgentRuntimeOptions(
             { ...host.env, AGENC_HOME: authStartup.daemonHome },
             { dangerouslyBypassApprovalsAndSandbox: false, allowUntrustedHooks: false, remoteMode: false, stdinDataMode: false },
           ),
         }),
+        onRunFailure: ({ routineId, runId, cause }) => {
+          io.stderr.write(`agenc: routine ${routineId} run ${runId} could not run: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+        },
       });
       routines.start();
       cleanup.register("daemon-routines", () => routines?.close());
