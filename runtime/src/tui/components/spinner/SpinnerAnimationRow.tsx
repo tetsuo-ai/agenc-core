@@ -11,6 +11,10 @@ import { Byline } from '../design-system/Byline.js';
 import FullWidthRow from '../design-system/FullWidthRow.js';
 import { AgenCActivityMark } from './AgenCActivityMark.js';
 import type { SpinnerMode } from './types.js';
+import {
+  formatStreamQuietWarning,
+  STREAM_QUIET_WARNING_MS,
+} from '../../../llm/stream-watchdog.js';
 import { computeSpinnerMessageMaxWidth, truncateSpinnerText } from './utils.js';
 
 const SEP_WIDTH = stringWidth(' · ');
@@ -294,10 +298,16 @@ export function SpinnerAnimationRow({
     loadingStartTimeRef.current,
     !toolsRunning,
   );
-  // Show the heartbeat once the turn has been waiting on a token long enough to
-  // look stuck — but not while "thinking" is already explaining the silence.
-  const stallNoteText =
+  const quietWarningText =
     trackLiveness &&
+    !hasRunningTeammates &&
+    !toolsRunning &&
+    msSinceLastToken >= STREAM_QUIET_WARNING_MS
+      ? formatStreamQuietWarning(msSinceLastToken)
+      : null;
+  const stallNoteText =
+    quietWarningText ??
+    (trackLiveness &&
     !hasRunningTeammates &&
     thinkingStatus !== 'thinking' &&
     elapsedTimeMs > STALL_NOTE_AFTER_MS
@@ -307,7 +317,7 @@ export function SpinnerAnimationRow({
           ratePerSec,
           toolsRunning,
         })
-      : null;
+      : null);
   const showStallNote = stallNoteText !== null;
   const stallNoteWidth = stallNoteText ? stringWidth(stallNoteText) : 0;
   const rateText = ratePerSec > 0 ? formatRate(ratePerSec) : null;
