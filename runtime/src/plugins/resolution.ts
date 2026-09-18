@@ -25,6 +25,7 @@ import { redactSecrets } from "../secrets/index.js";
 import { isRecord } from "../utils/record.js";
 import { findPluginManifestPath, loadPluginManifest } from "./manifest.js";
 import { pluginCacheDirPath, sanitizePluginId } from "./directories.js";
+import { withPluginCacheLock } from "./plugin-cache-lock.js";
 import { builtInPluginPublisherPublicKeys } from "./publisher-trust.js";
 import {
   buildPluginIdentifier,
@@ -158,7 +159,6 @@ export const PLUGIN_ARCHIVE_FETCH_POLICY = Object.freeze({
 const DEFAULT_MAX_EXTRACTED_BYTES = 200 * 1024 * 1024;
 const DEFAULT_MAX_EXTRACTED_FILES = 4096;
 const DEFAULT_MAX_EXTRACT_DEPTH = 32;
-const DEFAULT_CACHE_LOCK_TIMEOUT_MS = 60_000;
 const PLUGIN_INSTALL_METADATA_RELATIVE_PATH = ".agenc-plugin/agenc-install.json";
 const KNOWN_GIT_HOSTS = new Set([
   "github.com",
@@ -1246,49 +1246,6 @@ async function cachedPluginRootHasManifest(cacheRoot: string): Promise<boolean> 
   } catch {
     return false;
   }
-}
-
-async function withPluginCacheLock<T>(
-  cacheRoot: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const lockDir = `${cacheRoot}.lock`;
-  const startedAt = Date.now();
-  await mkdir(dirname(lockDir), { recursive: true, mode: 0o700 });
-  for (;;) {
-    try {
-      await mkdir(lockDir, { recursive: false, mode: 0o700 });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (await removeStaleCacheLock(lockDir)) continue;
-      if (Date.now() - startedAt > DEFAULT_CACHE_LOCK_TIMEOUT_MS) {
-        throw new Error(`timed out waiting for plugin cache lock: ${cacheRoot}`);
-      }
-      await sleep(100);
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    await rm(lockDir, { recursive: true, force: true });
-  }
-}
-
-async function removeStaleCacheLock(lockDir: string): Promise<boolean> {
-  let lockStat;
-  try {
-    lockStat = await stat(lockDir);
-  } catch {
-    return true;
-  }
-  if (Date.now() - lockStat.mtimeMs <= DEFAULT_CACHE_LOCK_TIMEOUT_MS) return false;
-  await rm(lockDir, { recursive: true, force: true });
-  return true;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
 function isPathInside(path: string, root: string): boolean {
