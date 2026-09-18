@@ -6,6 +6,10 @@
 
 export * from "./protocol.js";
 export * from "./events.js";
+export {
+  MAX_BUFFERED_PROMPT_EVENTS,
+  type AgencLocalOverflowGapEvent,
+} from "./prompt-event-queue.js";
 export * from "./client.js";
 export * from "./csv-jobs.js";
 export * from "./workflow-handoff.generated.js";
