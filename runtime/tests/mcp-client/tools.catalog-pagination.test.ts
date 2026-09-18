@@ -90,12 +90,13 @@ describe("createToolBridge catalog pagination", () => {
   });
 
   test("hashes the complete collected catalog, not the first page alone", async () => {
+    const defaultSchema = { type: "object", properties: {} };
     const completePin = computeMCPToolCatalogSha256([
-      { name: "alpha", description: "first page" },
-      { name: "beta", description: "second page" },
+      { name: "alpha", description: "first page", inputSchema: defaultSchema },
+      { name: "beta", description: "second page", inputSchema: defaultSchema },
     ]).sha256;
     const firstPagePin = computeMCPToolCatalogSha256([
-      { name: "alpha", description: "first page" },
+      { name: "alpha", description: "first page", inputSchema: defaultSchema },
     ]).sha256;
 
     const pagedClient = {
@@ -142,7 +143,11 @@ describe("createToolBridge catalog pagination", () => {
 
   test("filters and hashes only after every page is collected", async () => {
     const filteredPin = computeMCPToolCatalogSha256([
-      { name: "keep", description: "kept" },
+      {
+        name: "keep",
+        description: "kept",
+        inputSchema: { type: "object", properties: {} },
+      },
     ]).sha256;
     const listTools = vi
       .fn()
