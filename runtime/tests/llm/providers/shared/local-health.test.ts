@@ -1,6 +1,34 @@
+import { getEventListeners } from "node:events";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { runLocalProviderHealthSidecar } from "./local-health.js";
+
+function signalThatAbortsBeforeListenerAttaches(
+  controller: AbortController,
+  reason: unknown,
+): AbortSignal {
+  return new Proxy(controller.signal, {
+    get(target, prop, receiver) {
+      if (prop === "addEventListener") {
+        return (
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: boolean | AddEventListenerOptions,
+        ) => {
+          if (type === "abort" && !target.aborted) {
+            controller.abort(reason);
+          }
+          return target.addEventListener(type, listener, options);
+        };
+      }
+      if (prop === "removeEventListener") {
+        return target.removeEventListener.bind(target);
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 describe("runLocalProviderHealthSidecar", () => {
   beforeEach(() => {
@@ -174,5 +202,144 @@ describe("runLocalProviderHealthSidecar", () => {
       intervalMs: 50,
     });
     expect(result).toBe("ok");
+  });
+
+  test("rejects a pre-aborted signal without starting provider work or a health timer", async () => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled before health sidecar");
+    controller.abort(reason);
+
+    const healthCheck = vi.fn(async () => true);
+    const operation = vi.fn(async () => "should-not-run");
+    const intervalSpy = vi.spyOn(globalThis, "setInterval");
+
+    await expect(
+      runLocalProviderHealthSidecar({
+        providerLabel: "test",
+        operation,
+        healthCheck,
+        signal: controller.signal,
+        intervalMs: 50,
+      }),
+    ).rejects.toBe(reason);
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(healthCheck).not.toHaveBeenCalled();
+    expect(intervalSpy).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    intervalSpy.mockRestore();
+  });
+
+  test("does not lose an abort that arrives between setup and operation start", async () => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled during sidecar setup");
+    const healthCheck = vi.fn(async () => true);
+    const operation = vi.fn(async () => "should-not-run");
+    const intervalSpy = vi.spyOn(globalThis, "setInterval");
+    const signal = signalThatAbortsBeforeListenerAttaches(controller, reason);
+
+    await expect(
+      runLocalProviderHealthSidecar({
+        providerLabel: "test",
+        operation,
+        healthCheck,
+        signal,
+        intervalMs: 50,
+      }),
+    ).rejects.toBe(reason);
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(healthCheck).not.toHaveBeenCalled();
+    expect(intervalSpy).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    intervalSpy.mockRestore();
+  });
+
+  test("does not lose an abort that fires after the listener is attached and before the operation runs", async () => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled after listen, before operation");
+    const healthCheck = vi.fn(async () => true);
+    const started = vi.fn();
+
+    await expect(
+      runLocalProviderHealthSidecar({
+        providerLabel: "test",
+        healthCheck,
+        signal: controller.signal,
+        intervalMs: 50,
+        get operation() {
+          controller.abort(reason);
+          return async () => {
+            started();
+            return "should-not-run";
+          };
+        },
+      }),
+    ).rejects.toBe(reason);
+
+    expect(started).not.toHaveBeenCalled();
+    expect(healthCheck).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+  });
+
+  test("propagates an in-flight caller abort through the derived signal and its reason", async () => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled mid-operation");
+    const healthCheck = vi.fn(async () => true);
+    let receivedSignal: AbortSignal | undefined;
+
+    const operation = vi.fn(async (signal: AbortSignal) => {
+      receivedSignal = signal;
+      return await new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+        controller.abort(reason);
+      });
+    });
+
+    await expect(
+      runLocalProviderHealthSidecar({
+        providerLabel: "test",
+        operation,
+        healthCheck,
+        signal: controller.signal,
+        intervalMs: 10_000,
+      }),
+    ).rejects.toBe(reason);
+
+    expect(operation).toHaveBeenCalledOnce();
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(receivedSignal?.reason).toBe(reason);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+  });
+
+  test("completes normally and removes the abort listener when the caller signal stays live", async () => {
+    const controller = new AbortController();
+    const healthCheck = vi.fn(async () => true);
+    const operation = vi.fn(async (signal: AbortSignal) => {
+      expect(signal.aborted).toBe(false);
+      return "ok";
+    });
+
+    await expect(
+      runLocalProviderHealthSidecar({
+        providerLabel: "test",
+        operation,
+        healthCheck,
+        signal: controller.signal,
+        intervalMs: 50,
+      }),
+    ).resolves.toBe("ok");
+
+    expect(operation).toHaveBeenCalledOnce();
+    expect(healthCheck).not.toHaveBeenCalled();
+    expect(controller.signal.aborted).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
   });
 });
