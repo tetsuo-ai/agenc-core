@@ -53,6 +53,7 @@ import {
 } from "../../wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import { parseProviderJson } from "../../wire/parse-json.js";
 import {
   coerceUsage,
   normalizeFinishReason,
@@ -117,17 +118,14 @@ function decodeOpenAISseEvent(
   providerName: string,
 ): OpenAISseEvent | undefined {
   if (!frame.data) return undefined;
-  try {
-    return {
-      event: frame.event,
-      data: JSON.parse(frame.data) as Record<string, unknown>,
-    };
-  } catch (error) {
-    throw new LLMInvalidResponseError(
+  return {
+    event: frame.event,
+    data: parseProviderJson(
       providerName,
-      `Malformed JSON in ${strictSseProviderLabel(providerName)} SSE event: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+      frame.data,
+      `${strictSseProviderLabel(providerName)} SSE event`,
+    ) as Record<string, unknown>,
+  };
 }
 
 function decodeOpenAISseEventBatch(
@@ -262,6 +260,20 @@ function strictSseProviderLabel(providerName: string): string {
   if (providerName === "openai-compatible") return "OpenAI-compatible";
   if (providerName === "openai") return "OpenAI";
   return providerName;
+}
+
+function missingCompatibleTerminalMessage(
+  providerName: string,
+  endedWithUnterminatedEvent: boolean,
+  requireDoneMarker: boolean,
+): string {
+  const label = strictSseProviderLabel(providerName);
+  const terminal = requireDoneMarker
+    ? "a finish_reason or [DONE]"
+    : "any finish_reason";
+  return endedWithUnterminatedEvent
+    ? `${label} SSE stream ended with an unterminated event before ${terminal}`
+    : `${label} SSE stream closed before ${terminal}`;
 }
 
 /**
@@ -1893,38 +1905,36 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
 
-      if (
+      const missingStrictTerminal =
         requiresStrictChatCompletionsSse(this.name) &&
         !sawFinishReason &&
         !sawDone &&
         toolCallAccumulator.size === 0 &&
-        !unterminatedFragmentNamesToolCalls
-      ) {
-        // The connection ended before either terminal signal and before any
-        // tool call fragment, parsed or cut off, reached us. Nothing can have
-        // been dispatched: this is a cut stream the turn may sample again, not
-        // a malformed response.
-        throw new LLMStreamTruncatedError(
-          this.name,
-          endedWithUnterminatedEvent
-            ? `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event before any finish_reason`
-            : `${strictSseProviderLabel(this.name)} SSE stream closed before any finish_reason`,
-        );
-      }
-      if (
+        !unterminatedFragmentNamesToolCalls;
+      const missingCompatibleTerminal =
         !requiresStrictChatCompletionsSse(this.name) &&
         streamCapabilityHints.acceptsCleanEofAsTerminal !== true &&
         !sawFinishReason &&
-        !sawDone
-      ) {
+        !sawDone &&
+        !unterminatedFragmentNamesToolCalls;
+      if (missingStrictTerminal || missingCompatibleTerminal) {
+        // Strict providers: the connection ended before either terminal
+        // signal and before any tool call fragment. Compatible providers:
+        // EOF without finish_reason or [DONE] is the same cut-stream case.
         throw new LLMStreamTruncatedError(
           this.name,
-          endedWithUnterminatedEvent
-            ? `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event before a finish_reason or [DONE]`
-            : `${strictSseProviderLabel(this.name)} SSE stream closed before a finish_reason or [DONE]`,
+          missingCompatibleTerminalMessage(
+            this.name,
+            endedWithUnterminatedEvent,
+            missingCompatibleTerminal,
+          ),
         );
       }
-      if (endedWithUnterminatedEvent) {
+      if (
+        endedWithUnterminatedEvent &&
+        (requiresStrictChatCompletionsSse(this.name) ||
+          unterminatedFragmentNamesToolCalls)
+      ) {
         throw new LLMInvalidResponseError(
           this.name,
           `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
@@ -2118,9 +2128,14 @@ export class OpenAIProvider implements LLMProvider {
       onDone?.();
       return;
     }
-    if (parsed.remaining.trim().length > 0) {
-      // A caller that tracks the stream's terminal signals decides whether
-      // this is a cut connection or a malformed stream.
+    if (
+      parsed.remaining.trim().length > 0 &&
+      (requiresStrictChatCompletionsSse(this.name) ||
+        parsed.remaining.includes('"tool_calls"'))
+    ) {
+      // Non-strict providers ignore a trailing `[DONE]` or keep-alive line
+      // that never received its blank-line terminator. A cut `tool_calls`
+      // fragment is still a malformed stream.
       if (onUnterminatedEnd !== undefined) {
         onUnterminatedEnd(parsed.remaining);
         return;

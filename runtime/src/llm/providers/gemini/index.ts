@@ -32,8 +32,9 @@ import type {
   StreamProgressCallback,
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
-import { coerceUsage, messageTextContent } from "../../wire/shared.js";
 import { encodeMcpToolNameForWire } from "../../wire/mcp-tool-naming.js";
+import { parseProviderJson } from "../../wire/parse-json.js";
+import { coerceUsage, messageTextContent } from "../../wire/shared.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
   geminiCredentialHeaders,
@@ -2957,15 +2958,7 @@ interface GeminiSseEvent {
 }
 
 function parseGeminiSseData(raw: string): Record<string, unknown> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch (error) {
-    throw new LLMInvalidResponseError(
-      "gemini",
-      `Malformed JSON in Gemini SSE event: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  const parsed = parseProviderJson("gemini", raw, "Gemini SSE event");
   if (!isRecord(parsed)) {
     throw new LLMInvalidResponseError(
       "gemini",
