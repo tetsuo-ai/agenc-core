@@ -11,7 +11,11 @@ import {
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
-import { LLMProviderError } from "../../errors.js";
+import {
+  LLMInvalidResponseError,
+  LLMProviderError,
+  LLMStreamTruncatedError,
+} from "../../errors.js";
 import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
 import type {
   LLMChatOptions,
@@ -27,6 +31,7 @@ import type {
   StreamProgressCallback,
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
+import { parseProviderJson } from "../../wire/parse-json.js";
 import { coerceUsage } from "../../wire/shared.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
@@ -2630,6 +2635,17 @@ function readFirstCandidate(
   return isRecord(candidates[0]) ? candidates[0] : {};
 }
 
+function readGeminiPromptBlockReason(
+  response: Record<string, unknown>,
+): string | undefined {
+  const feedback = isRecord(response.promptFeedback)
+    ? response.promptFeedback
+    : undefined;
+  return feedback === undefined
+    ? undefined
+    : nonEmptyString(feedback.blockReason);
+}
+
 function parseGeminiResponse(
   model: string,
   response: Record<string, unknown>,
@@ -2750,6 +2766,28 @@ interface GeminiSseEvent {
   readonly data: Record<string, unknown>;
 }
 
+function parseGeminiSseData(raw: string): Record<string, unknown> {
+  const parsed = parseProviderJson("gemini", raw, "Gemini SSE event");
+  if (!isRecord(parsed)) {
+    throw new LLMInvalidResponseError(
+      "gemini",
+      "Malformed JSON in Gemini SSE event: expected an object",
+    );
+  }
+  return parsed;
+}
+
+function* geminiSseEventsFromFrames(
+  frames: readonly { readonly data?: string }[],
+): Generator<GeminiSseEvent> {
+  for (const frame of frames) {
+    if (!frame.data || frame.data === "[DONE]") {
+      continue;
+    }
+    yield { data: parseGeminiSseData(frame.data) };
+  }
+}
+
 async function* readGeminiSseEvents(
   response: ProviderHttpStreamResponse,
 ): AsyncGenerator<GeminiSseEvent> {
@@ -2759,32 +2797,16 @@ async function* readGeminiSseEvents(
     buffer += decoder.decode(chunk.value, { stream: true });
     const parsed = parseSSEFrames(buffer, "gemini");
     buffer = parsed.remaining;
-    for (const frame of parsed.frames) {
-      if (!frame.data || frame.data === "[DONE]") {
-        if (frame.data === "[DONE]") return;
-        continue;
-      }
-      try {
-        const data = JSON.parse(frame.data) as unknown;
-        if (isRecord(data)) yield { data };
-      } catch {
-        continue;
-      }
-    }
+    yield* geminiSseEventsFromFrames(parsed.frames);
   }
   buffer += decoder.decode();
   const parsed = parseSSEFrames(buffer, "gemini");
-  for (const frame of parsed.frames) {
-    if (!frame.data || frame.data === "[DONE]") {
-      if (frame.data === "[DONE]") return;
-      continue;
-    }
-    try {
-      const data = JSON.parse(frame.data) as unknown;
-      if (isRecord(data)) yield { data };
-    } catch {
-      continue;
-    }
+  yield* geminiSseEventsFromFrames(parsed.frames);
+  if (parsed.remaining.trim().length > 0) {
+    throw new LLMStreamTruncatedError(
+      "gemini",
+      "Gemini SSE stream ended with an unterminated event",
+    );
   }
 }
 
@@ -2792,7 +2814,8 @@ class GeminiStreamState {
   content = "";
   usage: LLMUsage = coerceUsage({});
   model: string;
-  finishReason: LLMResponse["finishReason"] = "stop";
+  finishReason: LLMResponse["finishReason"] | undefined;
+  sawTerminal = false;
   readonly toolCalls: LLMToolCall[] = [];
   readonly thinking: GeminiThinkingBlock[] = [];
   private thinkingOpen = new Set<number>();
@@ -2808,21 +2831,37 @@ class GeminiStreamState {
     if (response.usageMetadata) {
       this.usage = requestUsageFromGemini(response.usageMetadata);
     }
+    const promptBlockReason = readGeminiPromptBlockReason(response);
+    if (promptBlockReason !== undefined) {
+      this.sawTerminal = true;
+    }
     const candidate = readFirstCandidate(response);
     const parts = readCandidateParts(response);
     for (const [index, part] of parts.entries()) {
       this.consumePart(part, index, onChunk);
     }
-    this.finishReason = geminiFinishReason(
-      candidate.finishReason,
-      this.toolCalls,
-    );
+    const rawFinishReason = nonEmptyString(candidate.finishReason);
+    if (rawFinishReason !== undefined) {
+      this.sawTerminal = true;
+    }
+    if (this.sawTerminal) {
+      this.finishReason = geminiFinishReason(
+        rawFinishReason ?? promptBlockReason,
+        this.toolCalls,
+      );
+    }
   }
 
   finalize(onChunk: StreamProgressCallback): LLMResponse {
     for (const index of Array.from(this.thinkingOpen)) {
       onChunk({ content: "", done: false, thinkingBlockStop: { index } });
       this.thinkingOpen.delete(index);
+    }
+    if (!this.sawTerminal) {
+      throw new LLMStreamTruncatedError(
+        "gemini",
+        "Gemini SSE stream closed before a candidate finishReason",
+      );
     }
     onChunk({
       content: "",
@@ -2835,7 +2874,7 @@ class GeminiStreamState {
       usage: this.usage,
       model: this.model,
       ...(this.thinking.length > 0 ? { thinking: this.thinking } : {}),
-      finishReason: this.finishReason,
+      finishReason: this.finishReason ?? "stop",
     };
   }
 
