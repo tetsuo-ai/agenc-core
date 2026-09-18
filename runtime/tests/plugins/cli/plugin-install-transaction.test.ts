@@ -7,12 +7,14 @@ import { parseToml } from "../../../src/config/loader.js";
 import {
   PluginInstallTransactionSimulatedCrash,
   recoverPluginInstallTransactions,
+  type PluginInstallTransactionHooks,
   type PluginInstallTransactionPhase,
 } from "../../../src/plugins/cli/plugin-install-transaction.js";
 import {
   installPluginOp,
   listInstalledPlugins,
   updatePluginOp,
+  type PluginOperationOptions,
 } from "../../../src/plugins/cli/pluginOperations.js";
 import { loadPlugins } from "../../../src/plugins/loader.js";
 
@@ -23,12 +25,63 @@ interface ParsedPluginsConfig {
   };
 }
 
-async function tempRuntime(): Promise<{
+interface TxnWorld {
   readonly root: string;
   readonly agencHome: string;
   readonly workspaceRoot: string;
   readonly pluginStorageRoot: string;
-}> {
+  readonly authority: PluginOperationOptions;
+}
+
+interface InstalledDemo extends TxnWorld {
+  readonly destination: string;
+}
+
+type UpdateFailureKind = "no-stage" | "id-version" | "config-enabled";
+
+function throwBefore(
+  hook: "beforeWriteMetadata" | "beforeValidate" | "beforePublishConfig",
+  message: string,
+): PluginInstallTransactionHooks {
+  return { [hook]: async () => { throw new Error(message); } };
+}
+
+const UPDATE_PRECOMMIT_FAILURES: readonly {
+  readonly title: string;
+  readonly error: RegExp;
+  readonly hooks: PluginInstallTransactionHooks;
+  readonly assertExtra: UpdateFailureKind;
+}[] = [
+  {
+    title: "keeps version 1 installed when metadata writing fails during update",
+    error: /metadata write failed/u,
+    hooks: throwBefore("beforeWriteMetadata", "metadata write failed"),
+    assertExtra: "no-stage",
+  },
+  {
+    title: "keeps version 1 installed when staged-copy validation fails during update",
+    error: /installed plugin failed validation/u,
+    hooks: throwBefore("beforeValidate", "installed plugin failed validation"),
+    assertExtra: "id-version",
+  },
+  {
+    title: "keeps version 1 installed when plugin-config persistence fails during update",
+    error: /plugin config write failed/u,
+    hooks: throwBefore("beforePublishConfig", "plugin config write failed"),
+    assertExtra: "config-enabled",
+  },
+];
+
+const FIRST_INSTALL_PRECOMMIT_FAILURES: readonly {
+  readonly hookName: string;
+  readonly hooks: PluginInstallTransactionHooks;
+}[] = [
+  { hookName: "metadata", hooks: throwBefore("beforeWriteMetadata", "metadata write failed") },
+  { hookName: "validation", hooks: throwBefore("beforeValidate", "installed plugin failed validation") },
+  { hookName: "config", hooks: throwBefore("beforePublishConfig", "plugin config write failed") },
+];
+
+async function createWorld(): Promise<TxnWorld> {
   const root = await mkdtemp(join(tmpdir(), "agenc-plugin-install-txn-"));
   const agencHome = join(root, "home");
   const workspaceRoot = join(root, "workspace");
@@ -36,7 +89,37 @@ async function tempRuntime(): Promise<{
   await mkdir(agencHome, { recursive: true });
   await mkdir(workspaceRoot, { recursive: true });
   await mkdir(pluginStorageRoot, { recursive: true });
-  return { root, agencHome, workspaceRoot, pluginStorageRoot };
+  return {
+    root,
+    agencHome,
+    workspaceRoot,
+    pluginStorageRoot,
+    authority: {
+      agencHome,
+      pluginStorageRoot,
+      sessionTempRoot: join(agencHome, "tmp"),
+      workspaceRoot,
+      env: Object.freeze({}) as NodeJS.ProcessEnv,
+    },
+  };
+}
+
+async function writeManifest(
+  pluginRoot: string,
+  name: string,
+  version: string,
+  description?: string,
+): Promise<void> {
+  await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+  await writeFile(
+    join(pluginRoot, ".agenc-plugin", "plugin.json"),
+    `${JSON.stringify({
+      name,
+      version,
+      ...(description === undefined ? {} : { description }),
+      commands: "./commands",
+    }, null, 2)}\n`,
+  );
 }
 
 async function writePlugin(
@@ -45,33 +128,79 @@ async function writePlugin(
   version: string,
 ): Promise<string> {
   const pluginRoot = join(root, `${name}-${version}`);
-  await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
-  await writeFile(
-    join(pluginRoot, ".agenc-plugin", "plugin.json"),
-    JSON.stringify({
-      name,
-      version,
-      description: `${name} ${version}`,
-      commands: "./commands",
-    }, null, 2),
-  );
+  await writeManifest(pluginRoot, name, version, `${name} ${version}`);
   await mkdir(join(pluginRoot, "commands"), { recursive: true });
   await writeFile(join(pluginRoot, "commands", "hello.md"), `# Hello ${version}\n`);
   return pluginRoot;
 }
 
-function pluginAuthority(
-  agencHome: string,
-  workspaceRoot: string,
-  pluginStorageRoot: string,
+async function installDemoV1(): Promise<InstalledDemo> {
+  const world = await createWorld();
+  const first = await installPluginOp({
+    ...world.authority,
+    source: await writePlugin(world.root, "demo", "1.0.0"),
+  });
+  return { ...world, destination: first.destination };
+}
+
+async function updateDemo(
+  world: TxnWorld,
+  hooks?: PluginInstallTransactionHooks,
 ) {
+  return updatePluginOp({
+    ...world.authority,
+    pluginId: "demo",
+    source: await writePlugin(world.root, "demo", "2.0.0"),
+    ...(hooks === undefined ? {} : { installTransactionHooks: hooks }),
+  });
+}
+
+async function installFresh(
+  world: TxnWorld,
+  name: string,
+  hooks: PluginInstallTransactionHooks,
+) {
+  return installPluginOp({
+    ...world.authority,
+    source: await writePlugin(world.root, "fresh", "1.0.0"),
+    name,
+    installTransactionHooks: hooks,
+  });
+}
+
+function crashAfter(
+  phase: PluginInstallTransactionPhase,
+): PluginInstallTransactionHooks {
   return {
-    agencHome,
-    pluginStorageRoot,
-    sessionTempRoot: join(agencHome, "tmp"),
-    workspaceRoot,
-    env: Object.freeze({}) as NodeJS.ProcessEnv,
+    afterPhase: async (current) => {
+      if (current === phase) {
+        throw new PluginInstallTransactionSimulatedCrash(phase);
+      }
+    },
   };
+}
+
+async function crashDemoUpdate(
+  installed: InstalledDemo,
+  phase: PluginInstallTransactionPhase,
+): Promise<InstalledDemo> {
+  await expect(updateDemo(installed, crashAfter(phase)))
+    .rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+  return installed;
+}
+
+async function expectIdentityChangeRejected(
+  installed: InstalledDemo,
+  path: string,
+  destinationVersion: string,
+  tamperedVersion: string,
+): Promise<void> {
+  const recovery = await recoverLocal(installed);
+  expect(recovery.recovered).toBe(0);
+  expect(recovery.issues.some((issue) => /identity changed/u.test(issue.message))).toBe(true);
+  expect(await readPluginVersion(installed.destination)).toBe(destinationVersion);
+  expect(await readPluginVersion(path)).toBe(tamperedVersion);
+  expect(await pathExists(path)).toBe(true);
 }
 
 async function readPluginVersion(pluginRoot: string): Promise<string | undefined> {
@@ -90,159 +219,108 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function listChildNames(dir: string): Promise<string[]> {
+async function storageNames(world: TxnWorld): Promise<string[]> {
   try {
-    return (await readdir(dir)).sort((a, b) => a.localeCompare(b));
+    return (await readdir(world.pluginStorageRoot)).sort((a, b) => a.localeCompare(b));
   } catch {
     return [];
   }
 }
 
-function crashAfter(
-  phase: PluginInstallTransactionPhase,
-): {
-  afterPhase: (
-    current: PluginInstallTransactionPhase,
-  ) => Promise<void>;
-} {
-  return {
-    afterPhase: async (current) => {
-      if (current === phase) {
-        throw new PluginInstallTransactionSimulatedCrash(phase);
-      }
-    },
-  };
+function namesInclude(names: readonly string[], ...tokens: readonly string[]): boolean {
+  return names.some((name) => tokens.some((token) => name.includes(token)));
+}
+
+async function listedVersions(world: TxnWorld): Promise<string[]> {
+  const listed = await listInstalledPlugins(world.authority);
+  return listed.plugins.map((plugin) => plugin.version).filter((version): version is string =>
+    version !== undefined
+  );
+}
+
+async function demoEnabledInConfig(world: TxnWorld): Promise<boolean> {
+  const parsed = parseToml(
+    await readFile(join(world.agencHome, "config.toml"), "utf8"),
+  ) as ParsedPluginsConfig;
+  return parsed.plugins?.plugins?.demo?.enabled === true;
+}
+
+async function requireStorageChild(world: TxnWorld, token: string): Promise<string> {
+  const name = (await storageNames(world)).find((child) => child.includes(token));
+  expect(name).toBeDefined();
+  return join(world.pluginStorageRoot, name!);
+}
+
+async function tamperManifest(pluginRoot: string, version: string): Promise<void> {
+  await writeManifest(pluginRoot, "demo", version);
+}
+
+async function recoverLocal(world: TxnWorld) {
+  return recoverPluginInstallTransactions({
+    installRoots: [world.pluginStorageRoot],
+  });
+}
+
+async function assertUpdateFailureExtra(
+  installed: InstalledDemo,
+  kind: UpdateFailureKind,
+): Promise<void> {
+  switch (kind) {
+    case "no-stage":
+      expect(namesInclude(await storageNames(installed), ".stage-")).toBe(false);
+      return;
+    case "id-version": {
+      const listed = await listInstalledPlugins(installed.authority);
+      expect(listed.plugins.map((plugin) => `${plugin.id}@${plugin.version}`)).toEqual([
+        "demo@1.0.0",
+      ]);
+      return;
+    }
+    case "config-enabled":
+      expect(await demoEnabledInConfig(installed)).toBe(true);
+      return;
+    default: {
+      const exhaustive: never = kind;
+      throw new Error(`unhandled update failure assertion: ${String(exhaustive)}`);
+    }
+  }
 }
 
 describe("plugin install transaction", () => {
-  it("keeps version 1 installed when metadata writing fails during update", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
+  for (const failure of UPDATE_PRECOMMIT_FAILURES) {
+    it(failure.title, async () => {
+      const installed = await installDemoV1();
+      await expect(updateDemo(installed, failure.hooks)).rejects.toThrow(failure.error);
+      expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+      expect(await listedVersions(installed)).toEqual(["1.0.0"]);
+      await assertUpdateFailureExtra(installed, failure.assertExtra);
     });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: {
-        beforeWriteMetadata: async () => {
-          throw new Error("metadata write failed");
-        },
-      },
-    })).rejects.toThrow(/metadata write failed/u);
-
-    expect(await readPluginVersion(first.destination)).toBe("1.0.0");
-    const listed = await listInstalledPlugins(authority);
-    expect(listed.plugins.map((plugin) => plugin.version)).toEqual(["1.0.0"]);
-    expect(listed.plugins.map((plugin) => plugin.id)).toEqual(["demo"]);
-    expect((await listChildNames(pluginStorageRoot)).some((name) => name.includes(".stage-")))
-      .toBe(false);
-  });
-
-  it("keeps version 1 installed when staged-copy validation fails during update", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
-    });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: {
-        beforeValidate: async () => {
-          throw new Error("installed plugin failed validation");
-        },
-      },
-    })).rejects.toThrow(/installed plugin failed validation/u);
-
-    expect(await readPluginVersion(first.destination)).toBe("1.0.0");
-    const listed = await listInstalledPlugins(authority);
-    expect(listed.plugins.map((plugin) => `${plugin.id}@${plugin.version}`)).toEqual([
-      "demo@1.0.0",
-    ]);
-  });
-
-  it("keeps version 1 installed when plugin-config persistence fails during update", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
-    });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: {
-        beforePublishConfig: async () => {
-          throw new Error("plugin config write failed");
-        },
-      },
-    })).rejects.toThrow(/plugin config write failed/u);
-
-    expect(await readPluginVersion(first.destination)).toBe("1.0.0");
-    const listed = await listInstalledPlugins(authority);
-    expect(listed.plugins.map((plugin) => plugin.version)).toEqual(["1.0.0"]);
-    const parsed = parseToml(await readFile(join(agencHome, "config.toml"), "utf8")) as ParsedPluginsConfig;
-    expect(parsed.plugins?.plugins?.demo?.enabled).toBe(true);
-  });
+  }
 
   it("leaves no discoverable directory when first-install metadata, validation, or config writes fail", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const source = await writePlugin(root, "fresh", "1.0.0");
-
-    for (const [hookName, hooks] of [
-      ["metadata", { beforeWriteMetadata: async () => { throw new Error("metadata write failed"); } }],
-      ["validation", { beforeValidate: async () => { throw new Error("installed plugin failed validation"); } }],
-      ["config", { beforePublishConfig: async () => { throw new Error("plugin config write failed"); } }],
-    ] as const) {
-      await expect(installPluginOp({
-        ...authority,
-        source,
-        name: `fresh-${hookName}`,
-        installTransactionHooks: hooks,
-      })).rejects.toThrow();
-
-      const listed = await listInstalledPlugins(authority);
-      expect(listed.plugins.map((plugin) => plugin.id), hookName).not.toContain(`fresh-${hookName}`);
+    const world = await createWorld();
+    for (const failure of FIRST_INSTALL_PRECOMMIT_FAILURES) {
+      await expect(installFresh(world, `fresh-${failure.hookName}`, failure.hooks)).rejects.toThrow();
+      const listed = await listInstalledPlugins(world.authority);
+      expect(listed.plugins.map((plugin) => plugin.id), failure.hookName)
+        .not.toContain(`fresh-${failure.hookName}`);
       expect(
-        (await listChildNames(pluginStorageRoot)).some((name) =>
-          name.includes(`fresh-${hookName}`) || name.includes(".stage-") || name.includes(".bak-")
-        ),
-        hookName,
+        namesInclude(await storageNames(world), `fresh-${failure.hookName}`, ".stage-", ".bak-"),
+        failure.hookName,
       ).toBe(false);
     }
   });
 
   it("removes the update backup only after the new directory and configuration are durable", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
-    });
-
+    const installed = await installDemoV1();
     let backupAtConfigPublished: string | undefined;
     let backupExistedAtConfigPublished = false;
-    const updated = await updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: {
-        afterPhase: async (phase, context) => {
-          if (phase !== "config-published") return;
-          backupAtConfigPublished = context.backupPath;
-          backupExistedAtConfigPublished = context.backupPath !== undefined &&
-            await pathExists(context.backupPath);
-        },
+    const updated = await updateDemo(installed, {
+      afterPhase: async (phase, context) => {
+        if (phase !== "config-published") return;
+        backupAtConfigPublished = context.backupPath;
+        backupExistedAtConfigPublished = context.backupPath !== undefined &&
+          await pathExists(context.backupPath);
       },
     });
 
@@ -251,230 +329,84 @@ describe("plugin install transaction", () => {
     expect(backupAtConfigPublished !== undefined && await pathExists(backupAtConfigPublished))
       .toBe(false);
     expect(await readPluginVersion(updated.destination)).toBe("2.0.0");
-    const parsed = parseToml(await readFile(join(agencHome, "config.toml"), "utf8")) as ParsedPluginsConfig;
-    expect(parsed.plugins?.plugins?.demo?.enabled).toBe(true);
-    expect((await listChildNames(pluginStorageRoot)).some((name) => name.includes(".bak-")))
-      .toBe(false);
+    expect(await demoEnabledInConfig(installed)).toBe(true);
+    expect(namesInclude(await storageNames(installed), ".bak-")).toBe(false);
   });
 
   it("recovers version 1 after a crash between destination backup and replacement", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
-    });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: crashAfter("destination-backed-up"),
-    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-
-    expect(await pathExists(first.destination)).toBe(false);
-    expect((await listChildNames(pluginStorageRoot)).some((name) => name.includes(".bak-")))
-      .toBe(true);
-
-    const listed = await listInstalledPlugins(authority);
-    expect(await readPluginVersion(first.destination)).toBe("1.0.0");
-    expect(listed.plugins.map((plugin) => plugin.version)).toEqual(["1.0.0"]);
-    expect((await listChildNames(pluginStorageRoot)).some((name) =>
-      name.includes(".bak-") || name.includes(".stage-")
-    )).toBe(false);
+    const installed = await crashDemoUpdate(await installDemoV1(), "destination-backed-up");
+    expect(await pathExists(installed.destination)).toBe(false);
+    expect(namesInclude(await storageNames(installed), ".bak-")).toBe(true);
+    expect(await listedVersions(installed)).toEqual(["1.0.0"]);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(namesInclude(await storageNames(installed), ".bak-", ".stage-")).toBe(false);
   });
 
   it("recovers version 1 after a crash between destination replacement and config publication", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
-    });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: crashAfter("destination-replaced"),
-    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-
-    expect(await readPluginVersion(first.destination)).toBe("2.0.0");
-
-    const listed = await listInstalledPlugins(authority);
-    expect(await readPluginVersion(first.destination)).toBe("1.0.0");
-    expect(listed.plugins.map((plugin) => plugin.version)).toEqual(["1.0.0"]);
-    const parsed = parseToml(await readFile(join(agencHome, "config.toml"), "utf8")) as ParsedPluginsConfig;
-    expect(parsed.plugins?.plugins?.demo?.enabled).toBe(true);
+    const installed = await crashDemoUpdate(await installDemoV1(), "destination-replaced");
+    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+    expect(await listedVersions(installed)).toEqual(["1.0.0"]);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(await demoEnabledInConfig(installed)).toBe(true);
   });
 
   it("rolls the published update forward after a crash before backup removal", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
+    const installed = await crashDemoUpdate(await installDemoV1(), "config-published");
+    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+    expect(namesInclude(await storageNames(installed), ".bak-")).toBe(true);
+    expect(await listedVersions(installed)).toEqual(["2.0.0"]);
+    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+    expect(namesInclude(await storageNames(installed), ".bak-")).toBe(false);
+  });
+
+  for (
+    const crash of [
+      {
+        title: "recovers a first install that crashed after destination replacement by removing it",
+        phase: "destination-replaced" as const,
+        leftoverBefore: "fresh",
+        leftoverAfter: [".stage-", ".bak-", "fresh"] as const,
+      },
+      {
+        title: "recovers a first install that crashed after staging by removing the stage",
+        phase: "stage-ready" as const,
+        leftoverBefore: ".stage-",
+        leftoverAfter: [".stage-", "fresh"] as const,
+      },
+    ]
+  ) {
+    it(crash.title, async () => {
+      const world = await createWorld();
+      await expect(installFresh(world, "fresh", crashAfter(crash.phase)))
+        .rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+      expect(namesInclude(await storageNames(world), crash.leftoverBefore)).toBe(true);
+      expect((await listInstalledPlugins(world.authority)).plugins).toEqual([]);
+      expect(namesInclude(await storageNames(world), ...crash.leftoverAfter)).toBe(false);
     });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: crashAfter("config-published"),
-    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-
-    expect(await readPluginVersion(first.destination)).toBe("2.0.0");
-    expect((await listChildNames(pluginStorageRoot)).some((name) => name.includes(".bak-")))
-      .toBe(true);
-
-    const listed = await listInstalledPlugins(authority);
-    expect(await readPluginVersion(first.destination)).toBe("2.0.0");
-    expect(listed.plugins.map((plugin) => plugin.version)).toEqual(["2.0.0"]);
-    expect((await listChildNames(pluginStorageRoot)).some((name) => name.includes(".bak-")))
-      .toBe(false);
-  });
-
-  it("recovers a first install that crashed after destination replacement by removing it", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-
-    await expect(installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "fresh", "1.0.0"),
-      installTransactionHooks: crashAfter("destination-replaced"),
-    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-
-    expect((await listChildNames(pluginStorageRoot)).some((name) => name.includes("fresh")))
-      .toBe(true);
-
-    const listed = await listInstalledPlugins(authority);
-    expect(listed.plugins).toEqual([]);
-    expect((await listChildNames(pluginStorageRoot)).some((name) =>
-      name.includes("fresh") || name.includes(".stage-") || name.includes(".bak-")
-    )).toBe(false);
-  });
-
-  it("recovers a first install that crashed after staging by removing the stage", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-
-    await expect(installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "fresh", "1.0.0"),
-      installTransactionHooks: crashAfter("stage-ready"),
-    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-
-    expect((await listChildNames(pluginStorageRoot)).some((name) => name.includes(".stage-")))
-      .toBe(true);
-
-    const listed = await listInstalledPlugins(authority);
-    expect(listed.plugins).toEqual([]);
-    expect((await listChildNames(pluginStorageRoot)).some((name) =>
-      name.includes("fresh") || name.includes(".stage-")
-    )).toBe(false);
-  });
+  }
 
   it("rejects a changed backup instead of restoring or deleting it", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
-    });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: crashAfter("destination-replaced"),
-    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-
-    const backupName = (await listChildNames(pluginStorageRoot)).find((name) =>
-      name.includes(".bak-")
-    );
-    expect(backupName).toBeDefined();
-    const backupPath = join(pluginStorageRoot, backupName!);
-    await writeFile(
-      join(backupPath, ".agenc-plugin", "plugin.json"),
-      JSON.stringify({
-        name: "demo",
-        version: "1.0.0-tampered",
-        commands: "./commands",
-      }, null, 2),
-    );
-
-    const recovery = await recoverPluginInstallTransactions({
-      installRoots: [pluginStorageRoot],
-    });
-    expect(recovery.recovered).toBe(0);
-    expect(recovery.issues.some((issue) => /identity changed/u.test(issue.message))).toBe(true);
-    expect(await readPluginVersion(first.destination)).toBe("2.0.0");
-    expect(await readPluginVersion(backupPath)).toBe("1.0.0-tampered");
-    expect(await pathExists(backupPath)).toBe(true);
+    const installed = await crashDemoUpdate(await installDemoV1(), "destination-replaced");
+    const backupPath = await requireStorageChild(installed, ".bak-");
+    await tamperManifest(backupPath, "1.0.0-tampered");
+    await expectIdentityChangeRejected(installed, backupPath, "2.0.0", "1.0.0-tampered");
   });
 
   it("rejects a changed stage instead of deleting it", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
-    });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: crashAfter("stage-ready"),
-    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-
-    const stageName = (await listChildNames(pluginStorageRoot)).find((name) =>
-      name.includes(".stage-")
-    );
-    expect(stageName).toBeDefined();
-    const stagePath = join(pluginStorageRoot, stageName!);
+    const installed = await crashDemoUpdate(await installDemoV1(), "stage-ready");
+    const stagePath = await requireStorageChild(installed, ".stage-");
     await writeFile(join(stagePath, "commands", "hello.md"), "# tampered\n");
-    await writeFile(
-      join(stagePath, ".agenc-plugin", "plugin.json"),
-      JSON.stringify({
-        name: "demo",
-        version: "2.0.0-tampered",
-        commands: "./commands",
-      }, null, 2),
-    );
-
-    const recovery = await recoverPluginInstallTransactions({
-      installRoots: [pluginStorageRoot],
-    });
-    expect(recovery.recovered).toBe(0);
-    expect(recovery.issues.some((issue) => /identity changed/u.test(issue.message))).toBe(true);
-    expect(await readPluginVersion(first.destination)).toBe("1.0.0");
-    expect(await pathExists(stagePath)).toBe(true);
-    expect(await readPluginVersion(stagePath)).toBe("2.0.0-tampered");
+    await tamperManifest(stagePath, "2.0.0-tampered");
+    await expectIdentityChangeRejected(installed, stagePath, "1.0.0", "2.0.0-tampered");
   });
 
   it("does not discover stage or backup directories as installed plugins", async () => {
-    const { root, agencHome, workspaceRoot, pluginStorageRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot, pluginStorageRoot);
-    const first = await installPluginOp({
-      ...authority,
-      source: await writePlugin(root, "demo", "1.0.0"),
-    });
-
-    await expect(updatePluginOp({
-      ...authority,
-      pluginId: "demo",
-      source: await writePlugin(root, "demo", "2.0.0"),
-      installTransactionHooks: crashAfter("destination-replaced"),
-    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-
-    const children = await listChildNames(pluginStorageRoot);
-    expect(children.some((name) => name.includes(".bak-"))).toBe(true);
-    expect(await readPluginVersion(first.destination)).toBe("2.0.0");
-
+    const installed = await crashDemoUpdate(await installDemoV1(), "destination-replaced");
+    expect(namesInclude(await storageNames(installed), ".bak-")).toBe(true);
+    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
     const loaded = await loadPlugins({
-      pluginStorageRoot,
-      workspaceRoot,
+      pluginStorageRoot: installed.pluginStorageRoot,
+      workspaceRoot: installed.workspaceRoot,
       config: { plugins: { enabled: true } },
       readOnly: true,
     });
