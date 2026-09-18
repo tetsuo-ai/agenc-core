@@ -430,6 +430,27 @@ function readClientInstructions(client: unknown): string | undefined {
   }
 }
 
+type InitializedConnectionSnapshot = {
+  readonly capabilities: ConnectedMCPServer["capabilities"];
+  readonly serverInfo: ConnectedMCPServer["serverInfo"];
+  readonly instructions: string | undefined;
+};
+
+function readInitializedConnectionSnapshot(
+  client: unknown,
+  sensitiveHeaders?: Readonly<Record<string, string>>,
+): InitializedConnectionSnapshot {
+  const rawInstructions = readClientInstructions(client);
+  return {
+    capabilities: readClientCapabilities(client),
+    serverInfo: readClientServerInfo(client),
+    instructions:
+      rawInstructions === undefined
+        ? undefined
+        : redactMcpAttachmentText(rawInstructions, sensitiveHeaders),
+  };
+}
+
 /**
  * Manages multiple external MCP server connections.
  *
@@ -1674,13 +1695,14 @@ export class MCPManager {
     let companions: RefreshedCompanionBridges | undefined;
     try {
       assertRefreshOpen(config.name, startupGate, isCurrent);
-      // Capture the server's `InitializeResult.instructions` blob if any.
-      // The MCP SDK stores it after `client.connect()` completes; the
-      // value is immutable for the lifetime of the connection.
-      const capabilities = readClientCapabilities(client);
-      const serverInfo = readClientServerInfo(client);
-      const rawInstructions = readClientInstructions(client);
-      const instructions = rawInstructions === undefined ? undefined : redactMcpAttachmentText(rawInstructions, sensitiveHeaders);
+      // Capture the server's initialize snapshot. The MCP SDK stores
+      // capabilities, server information, and instructions after
+      // `client.connect()` completes; they are immutable for this
+      // connection generation and are replaced on automatic reconnect.
+      const snapshot = readInitializedConnectionSnapshot(
+        client,
+        sensitiveHeaders,
+      );
       const rawBridge = await createToolBridge(
         client,
         config.name,
@@ -1732,27 +1754,45 @@ export class MCPManager {
         },
         // On automatic reconnect the resilient bridge rebuilds only the
         // tool surface and spawns a fresh client. Rebuild the resource +
-        // prompt bridges against that new client too — otherwise they keep
-        // pointing at the OLD, closed client and `readResource` /
-        // `renderPrompt` would talk to a dead connection.
+        // prompt bridges against that new client and republish the live
+        // connection snapshot (raw client, capabilities, server info,
+        // instructions) under the same generation guard. Otherwise TUI
+        // and per-turn instruction surfaces keep the closed first
+        // connection while tools already talk to the replacement.
         onReconnect: async (newClient: unknown) => {
           const reconnectIsCurrent = (): boolean =>
             isCurrent() && this.bridges.get(config.name) === bridge;
-          if (!reconnectIsCurrent()) return;
-          const companionIsCurrent = this.beginCompanionRefresh(
-            config.name,
-            reconnectIsCurrent,
-          );
-          await this.refreshResourceAndPromptBridges(
-            config,
-            newClient,
-            undefined,
-            companionIsCurrent,
-          );
-          if (reconnectIsCurrent()) {
-            // The resilient tool bridge and its optional companions now expose
-            // one coherent replacement surface.
-            this.notifySurfaceChanged();
+          let published = false;
+          try {
+            if (!reconnectIsCurrent()) return;
+            const snapshot = readInitializedConnectionSnapshot(
+              newClient,
+              sensitiveHeaders,
+            );
+            const companionIsCurrent = this.beginCompanionRefresh(
+              config.name,
+              reconnectIsCurrent,
+            );
+            await this.refreshResourceAndPromptBridges(
+              config,
+              newClient,
+              undefined,
+              companionIsCurrent,
+            );
+            this.commitSurfaceMutation(() => {
+              if (!companionIsCurrent() || !reconnectIsCurrent()) return;
+              this.publishConnectedServer(
+                config,
+                newClient,
+                snapshot,
+                sensitiveHeaders,
+              );
+              published = true;
+            });
+          } finally {
+            if (!published) {
+              await Promise.allSettled([invokeClientClose(newClient)]);
+            }
           }
         },
       });
@@ -1774,25 +1814,12 @@ export class MCPManager {
       );
       assertRefreshOpen(config.name, startupGate, isCurrent);
 
-      if (instructions !== undefined) {
-        this.serverInstructions.set(config.name, instructions);
-      }
-
-      this.connectedConnections.set(config.name, {
-        type: "connected",
-        name: config.name,
-        client: client as never,
-        capabilities,
-        ...(serverInfo !== undefined ? { serverInfo } : {}),
-        ...(instructions !== undefined ? { instructions } : {}),
-        config: toScopedMcpServerConfig(sensitiveHeaders === undefined ? config : { ...config, headers: undefined }),
-        cleanup: async () => {
-          await this.disconnectServer(
-            config.name,
-            "via connected connection cleanup",
-          );
-        },
-      });
+      this.publishConnectedServer(
+        config,
+        client,
+        snapshot,
+        sensitiveHeaders,
+      );
       this.connectionStates.set(config.name, { type: "connected" });
       return bridge;
     } catch (error) {
@@ -1884,6 +1911,42 @@ export class MCPManager {
     };
     void promise.then(remove, remove);
     return attempt;
+  }
+
+  private publishConnectedServer(
+    config: MCPServerConfig,
+    client: unknown,
+    snapshot: InitializedConnectionSnapshot,
+    sensitiveHeaders?: Readonly<Record<string, string>>,
+  ): void {
+    if (snapshot.instructions !== undefined) {
+      this.serverInstructions.set(config.name, snapshot.instructions);
+    } else {
+      this.serverInstructions.delete(config.name);
+    }
+    this.connectedConnections.set(config.name, {
+      type: "connected",
+      name: config.name,
+      client: client as never,
+      capabilities: snapshot.capabilities,
+      ...(snapshot.serverInfo !== undefined
+        ? { serverInfo: snapshot.serverInfo }
+        : {}),
+      ...(snapshot.instructions !== undefined
+        ? { instructions: snapshot.instructions }
+        : {}),
+      config: toScopedMcpServerConfig(
+        sensitiveHeaders === undefined
+          ? config
+          : { ...config, headers: undefined },
+      ),
+      cleanup: async () => {
+        await this.disconnectServer(
+          config.name,
+          "via connected connection cleanup",
+        );
+      },
+    });
   }
 
   private beginCompanionRefresh(
