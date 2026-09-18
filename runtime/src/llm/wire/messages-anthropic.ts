@@ -469,6 +469,58 @@ export function buildAnthropicMessagesRequest(
   return body;
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function readOutputTokenDetails(
+  usageRecord: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  return usageRecord.output_tokens_details &&
+      typeof usageRecord.output_tokens_details === "object" &&
+      !Array.isArray(usageRecord.output_tokens_details)
+    ? (usageRecord.output_tokens_details as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Anthropic reports thinking as a subset of inclusive `output_tokens` at
+ * `usage.output_tokens_details.thinking_tokens`. Older payloads may still
+ * emit a flat `reasoning_output_tokens` field.
+ *
+ * A malformed nested count is dropped rather than replaced by the legacy
+ * field. A count above `output_tokens` is clamped to that inclusive total.
+ */
+export function readAnthropicReasoningOutputTokens(
+  usageRecord: Record<string, unknown>,
+): number | undefined {
+  const details = readOutputTokenDetails(usageRecord);
+  let raw: number | undefined;
+  if (
+    details &&
+    Object.prototype.hasOwnProperty.call(details, "thinking_tokens")
+  ) {
+    const nested = details.thinking_tokens;
+    if (!isFiniteNumber(nested) || nested < 0) {
+      return undefined;
+    }
+    raw = nested;
+  } else if (isFiniteNumber(usageRecord.reasoning_output_tokens)) {
+    if (usageRecord.reasoning_output_tokens < 0) {
+      return undefined;
+    }
+    raw = usageRecord.reasoning_output_tokens;
+  } else {
+    return undefined;
+  }
+
+  const outputTokens = usageRecord.output_tokens;
+  if (isFiniteNumber(outputTokens) && outputTokens >= 0 && raw > outputTokens) {
+    return outputTokens;
+  }
+  return raw;
+}
+
 export function parseAnthropicMessagesResponse(
   model: string,
   response: Record<string, unknown>,
@@ -579,7 +631,7 @@ export function parseAnthropicMessagesResponse(
         totalTokens: undefined,
         cachedInputTokens: usageRecord.cache_read_input_tokens,
         cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-        reasoningOutputTokens: usageRecord.reasoning_output_tokens,
+        reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
         webSearchRequests: serverToolUse.web_search_requests,
       }),
       ...(servedSpeed !== undefined ? { speed: servedSpeed } : {}),
