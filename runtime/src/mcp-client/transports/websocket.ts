@@ -24,10 +24,13 @@ import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
 import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 import {
-  buildMcpHostClientCapabilities,
   configureMcpHostRequestHandlers,
   type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
+import {
+  buildMcpRuntimeClientOptions,
+  type MCPListChangedHandlers,
+} from "../list-changed.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 import { getWebSocketTLSOptions } from "../../utils/mtls.js";
 import { getWebSocketProxyAgent } from "../../utils/proxy.js";
@@ -198,6 +201,7 @@ export async function createWebSocketMCPConnection(
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
   environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -205,11 +209,10 @@ export async function createWebSocketMCPConnection(
   const transport = createWebSocketMCPTransport(config, environment);
   const client = new Client(
     { name: "agenc-runtime", version: VERSION },
-    {
-      capabilities: buildMcpHostClientCapabilities(
-        elicitationHandlers === undefined ? "none" : "form-url",
-      ),
-    },
+    buildMcpRuntimeClientOptions(
+      elicitationHandlers === undefined ? "none" : "form-url",
+      listChangedHandlers,
+    ),
   );
   configureMcpHostRequestHandlers(
     client,

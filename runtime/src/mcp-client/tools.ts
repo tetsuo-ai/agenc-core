@@ -248,6 +248,13 @@ interface ToolBridgeOptions {
   serverOrigin?: string;
   transport?: "stdio" | "sse" | "http" | "streamable_http";
   environment: ProviderEnvironment;
+  /**
+   * When false, `dispose()` marks the bridge unusable but does not close
+   * the shared live client. Catalog refresh replacements use this so a
+   * failed or superseded list_changed rebuild cannot tear down the
+   * connection that still owns the prior known-good surface.
+   */
+  ownClient?: boolean;
 }
 
 interface MCPToolDescriptor {
@@ -1201,6 +1208,10 @@ export async function createToolBridge(
     dispose(): Promise<void> {
       if (disposal !== undefined) return disposal;
       disposed = true;
+      if (options.ownClient === false) {
+        disposal = Promise.resolve();
+        return disposal;
+      }
       const task = Promise.resolve()
         .then(() => client.close())
         .then(

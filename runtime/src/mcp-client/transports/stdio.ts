@@ -43,10 +43,13 @@ import type { PluginMcpSandboxMetadata } from "../types.js";
 import { pluginMcpPermissionProfile } from "../../tools/runtimes/sandboxing.js";
 import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 import {
-  buildMcpHostClientCapabilities,
   configureMcpHostRequestHandlers,
   type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
+import {
+  buildMcpRuntimeClientOptions,
+  type MCPListChangedHandlers,
+} from "../list-changed.js";
 import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
@@ -656,6 +659,7 @@ export async function createStdioMCPConnection(
   samplingHandlers?: McpSamplingHandlers,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
   parentEnvironment: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -668,11 +672,10 @@ export async function createStdioMCPConnection(
   );
   const client = new Client(
     { name: "agenc-runtime", version: VERSION },
-    {
-      capabilities: buildMcpHostClientCapabilities(
-        elicitationHandlers === undefined ? "none" : "form-url",
-      ),
-    },
+    buildMcpRuntimeClientOptions(
+      elicitationHandlers === undefined ? "none" : "form-url",
+      listChangedHandlers,
+    ),
   );
   configureMcpHostRequestHandlers(
     client,
