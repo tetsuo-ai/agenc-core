@@ -118,6 +118,14 @@ export interface MCPResourceBridge {
   listResources(
     signal?: AbortSignal,
   ): Promise<ReadonlyArray<MCPResourceDescriptor>>;
+  /**
+   * Re-list the resource catalog, including bounded cursor pagination.
+   * Rejects on RPC, repeated-cursor, or page-bound failure so a
+   * list_changed refresh can keep the prior known-good public list.
+   */
+  refreshResources(
+    signal?: AbortSignal,
+  ): Promise<ReadonlyArray<MCPResourceDescriptor>>;
   readResource(uri: string, signal?: AbortSignal): Promise<MCPResourceContent>;
   dispose(): Promise<void>;
 }
@@ -154,6 +162,63 @@ export async function createResourceBridge(
   }
   let disposed = false;
 
+  async function refreshResources(
+    signal?: AbortSignal,
+  ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
+    if (disposed) {
+      throw new Error(
+        `MCP resource bridge for "${serverName}" has been disposed`,
+      );
+    }
+    const resources: MCPResourceDescriptor[] = [];
+    const seenCursors = new Set<string>();
+    let catalogEntries = 0;
+    let cursor: string | undefined;
+
+    for (let page = 0; page < maxListPages; page += 1) {
+      signal?.throwIfAborted();
+      const response = await withDeadline<unknown>(
+        `MCP server "${serverName}" listResources`,
+        rpcTimeoutMs,
+        (effectSignal) =>
+          client.listResources(cursor === undefined ? {} : { cursor }, {
+            signal: effectSignal,
+            timeout: rpcTimeoutMs,
+          }),
+        signal,
+      );
+      const responseRecord = asRecord(response);
+      resources.push(
+        ...normalizeResourceCatalog(
+          responseRecord,
+          serverName,
+          MAX_RESOURCE_DESCRIPTORS - catalogEntries,
+          logger,
+        ),
+      );
+      catalogEntries += arrayField(responseRecord, "resources").length;
+
+      const nextCursor = nonEmptyString(responseRecord?.nextCursor);
+      if (nextCursor === undefined) return resources;
+      if (!fitsUtf8(nextCursor, MAX_RESOURCE_CURSOR_BYTES)) {
+        throw new Error(
+          `MCP server "${serverName}" resources/list cursor exceeded ${MAX_RESOURCE_CURSOR_BYTES} UTF-8 bytes`,
+        );
+      }
+      if (seenCursors.has(nextCursor)) {
+        throw new Error(
+          `MCP server "${serverName}" repeated a resources/list cursor`,
+        );
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    throw new Error(
+      `MCP server "${serverName}" resources/list exceeded ${maxListPages} pages`,
+    );
+  }
+
   return {
     serverName,
     async listResources(
@@ -161,59 +226,14 @@ export async function createResourceBridge(
     ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
       if (disposed) return [];
       try {
-        const resources: MCPResourceDescriptor[] = [];
-        const seenCursors = new Set<string>();
-        let catalogEntries = 0;
-        let cursor: string | undefined;
-
-        for (let page = 0; page < maxListPages; page += 1) {
-          signal?.throwIfAborted();
-          const response = await withDeadline<unknown>(
-            `MCP server "${serverName}" listResources`,
-            rpcTimeoutMs,
-            (effectSignal) =>
-              client.listResources(cursor === undefined ? {} : { cursor }, {
-                signal: effectSignal,
-                timeout: rpcTimeoutMs,
-              }),
-            signal,
-          );
-          const responseRecord = asRecord(response);
-          resources.push(
-            ...normalizeResourceCatalog(
-              responseRecord,
-              serverName,
-              MAX_RESOURCE_DESCRIPTORS - catalogEntries,
-              logger,
-            ),
-          );
-          catalogEntries += arrayField(responseRecord, "resources").length;
-
-          const nextCursor = nonEmptyString(responseRecord?.nextCursor);
-          if (nextCursor === undefined) return resources;
-          if (!fitsUtf8(nextCursor, MAX_RESOURCE_CURSOR_BYTES)) {
-            throw new Error(
-              `MCP server "${serverName}" resources/list cursor exceeded ${MAX_RESOURCE_CURSOR_BYTES} UTF-8 bytes`,
-            );
-          }
-          if (seenCursors.has(nextCursor)) {
-            throw new Error(
-              `MCP server "${serverName}" repeated a resources/list cursor`,
-            );
-          }
-          seenCursors.add(nextCursor);
-          cursor = nextCursor;
-        }
-
-        throw new Error(
-          `MCP server "${serverName}" resources/list exceeded ${maxListPages} pages`,
-        );
+        return await refreshResources(signal);
       } catch (err) {
         signal?.throwIfAborted();
         logger.warn?.(`MCP server "${serverName}" listResources failed:`, err);
         return [];
       }
     },
+    refreshResources,
     async readResource(
       uri: string,
       signal?: AbortSignal,

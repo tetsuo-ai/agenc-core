@@ -13,6 +13,7 @@ import type {
   MCPServerConfig,
   MCPToolBridge,
 } from "./types.js";
+import type { MCPListChangedHandlers } from "./list-changed.js";
 import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type {
@@ -186,6 +187,11 @@ interface ResilientMCPBridgeOptions {
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   /** Immutable transport authority reused by every automatic reconnect. */
   readonly environment?: ProviderEnvironment;
+  /**
+   * Re-registers SDK listChanged handlers on the fresh client spawned
+   * during automatic reconnect so catalog notifications survive a drop.
+   */
+  readonly listChangedHandlers?: MCPListChangedHandlers;
 }
 
 /**
@@ -199,6 +205,11 @@ export class ResilientMCPBridge implements MCPToolBridge {
   readonly tools: Tool[];
 
   private inner: MCPToolBridge;
+  /**
+   * The bridge whose `dispose()` closes the live client. Catalog refresh
+   * replacements swap `inner` without taking client ownership.
+   */
+  private clientOwner: MCPToolBridge;
   private readonly config: MCPServerConfig;
   /**
    * Catalog policy (allow/deny filter, I-74 SHA-256 pin, approval modes)
@@ -235,6 +246,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
     this.config = config;
     this.catalogPolicy = toToolCatalogPolicyConfig(config);
     this.inner = initialBridge;
+    this.clientOwner = initialBridge;
     this.logger = logger;
     this.options = {
       ...options,
@@ -260,7 +272,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    const inner = this.inner;
+    const inner = this.clientOwner;
     const reconnectTask = this.reconnectTask;
     const task = Promise.allSettled([
       this.disposeInnerBridge(inner),
@@ -286,6 +298,20 @@ export class ResilientMCPBridge implements MCPToolBridge {
       if (this.disposal === task) this.disposal = undefined;
     });
     return task;
+  }
+
+  /**
+   * Replace the published tool proxies from a refresh-built catalog
+   * without closing the live client. The replacement bridge must not
+   * own client disposal.
+   */
+  replacePublishedCatalog(next: MCPToolBridge): void {
+    if (this.disposed) return;
+    this.inner = next;
+    const replacements = next.tools.map((tool) =>
+      this.createProxyTool(tool.name, tool),
+    );
+    this.tools.splice(0, this.tools.length, ...replacements);
   }
 
   // --------------------------------------------------------------------------
@@ -379,7 +405,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
       // Do not spawn a replacement until the old connection has actually
       // closed. A failed close is a fail-closed reconnect, not a reason to run
       // two server process trees concurrently.
-      const previousBridge = this.inner;
+      const previousBridge = this.clientOwner;
       try {
         await this.disposeInnerBridge(previousBridge);
       } catch (error) {
@@ -410,6 +436,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.options.samplingHandlers,
         this.options.sandboxExecutionBroker,
         this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
+        this.options.listChangedHandlers,
       );
       if (!this.isReconnectCurrent(epoch)) {
         await closeClientForAbandonedReconnect(client, this.serverName);
@@ -455,6 +482,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
       }
 
       this.inner = newBridge;
+      this.clientOwner = newBridge;
       this.reconnecting = false;
       this.backoffMs = 0;
 

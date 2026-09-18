@@ -52,6 +52,11 @@ export interface MCPPromptRendered {
 export interface MCPPromptBridge {
   readonly serverName: string;
   listPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>>;
+  /**
+   * Re-list the prompt catalog and reject on RPC or validation failure
+   * so a list_changed refresh can keep the prior known-good public list.
+   */
+  refreshPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>>;
   renderPrompt(
     name: string,
     args?: Record<string, unknown>,
@@ -79,21 +84,30 @@ export async function createPromptBridge(
   const rpcTimeoutMs = opts.rpcTimeoutMs ?? DEFAULT_PROMPT_RPC_TIMEOUT_MS;
   let disposed = false;
 
+  async function refreshPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>> {
+    if (disposed) {
+      throw new Error(
+        `MCP prompt bridge for "${serverName}" has been disposed`,
+      );
+    }
+    const response = await withDeadline<unknown>(
+      `MCP server "${serverName}" listPrompts`,
+      rpcTimeoutMs,
+      (effectSignal) =>
+        client.listPrompts(
+          {},
+          { signal: effectSignal, timeout: rpcTimeoutMs },
+        ),
+    );
+    return normalizePromptCatalog(response, serverName);
+  }
+
   return {
     serverName,
     async listPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>> {
       if (disposed) return [];
       try {
-        const response = await withDeadline<unknown>(
-          `MCP server "${serverName}" listPrompts`,
-          rpcTimeoutMs,
-          (effectSignal) =>
-            client.listPrompts(
-              {},
-              { signal: effectSignal, timeout: rpcTimeoutMs },
-            ),
-        );
-        return normalizePromptCatalog(response, serverName);
+        return await refreshPrompts();
       } catch (err) {
         logger.warn?.(
           `MCP server "${serverName}" listPrompts failed:`,
@@ -102,6 +116,7 @@ export async function createPromptBridge(
         return [];
       }
     },
+    refreshPrompts,
     async renderPrompt(
       name: string,
       args?: Record<string, unknown>,

@@ -118,6 +118,7 @@ describe("ResilientMCPBridge gaphunt3 fixes", () => {
       undefined,
       undefined,
       {},
+      undefined,
     );
     expect(registered).toBe(elicitationHandlers);
 
@@ -162,6 +163,7 @@ describe("ResilientMCPBridge gaphunt3 fixes", () => {
       undefined,
       undefined,
       {},
+      undefined,
     );
 
     await bridge.dispose();

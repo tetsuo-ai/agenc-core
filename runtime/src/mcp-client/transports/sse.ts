@@ -17,16 +17,14 @@
  * @module
  */
 
-import { VERSION } from "../../version.js";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  buildMcpHostClientCapabilities,
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
+  createConfiguredMcpRuntimeClient,
+  type MCPListChangedHandlers,
+} from "../list-changed.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 import { getProxyFetchOptions } from "../../utils/proxy.js";
 import type { ProviderEnvironment } from "../../llm/provider-options.js";
@@ -54,6 +52,7 @@ export async function createSseMCPConnection(
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
   environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -84,23 +83,12 @@ export async function createSseMCPConnection(
     },
   });
 
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    {
-      capabilities: buildMcpHostClientCapabilities(
-        elicitationHandlers === undefined ? "none" : "form-url",
-      ),
-    },
-  );
-  configureMcpHostRequestHandlers(
-    client,
-    config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
-  );
-  await configureMcpElicitationClient(
-    client,
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
     config.name,
     elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
 
   logger.info(`Connecting to MCP SSE server "${config.name}"...`, {
