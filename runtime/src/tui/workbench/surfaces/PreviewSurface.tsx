@@ -136,7 +136,7 @@ export function PreviewSurface({
     return () => {
       cancelled = true;
     };
-  }, [activePath, content]);
+  }, [activePath, content, startLine]);
 
   useEffect(() => {
     setPreviewState(createPreviewState(activePath, initialStartLine));
