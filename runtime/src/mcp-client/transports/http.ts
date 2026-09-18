@@ -9,18 +9,13 @@
  * @module
  */
 
-import { VERSION } from "../../version.js";
 import { Agent as UndiciAgent } from "undici";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
-import {
-  buildMcpRuntimeClientOptions,
+  createConfiguredMcpRuntimeClient,
   type MCPListChangedHandlers,
 } from "../list-changed.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
@@ -107,12 +102,12 @@ export async function createHttpMCPConnection(
     },
   });
 
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    buildMcpRuntimeClientOptions(
-      elicitationHandlers === undefined ? "none" : "form-url",
-      listChangedHandlers,
-    ),
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
+    config.name,
+    elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
   if (socketAgent) {
     const closeClient = client.close.bind(client);
@@ -121,16 +116,6 @@ export async function createHttpMCPConnection(
       try { await closeClient(); } finally { await socketAgent.close(); }
     })();
   }
-  configureMcpHostRequestHandlers(
-    client,
-    config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
-  );
-  await configureMcpElicitationClient(
-    client,
-    config.name,
-    elicitationHandlers,
-  );
 
   logger.info(`Connecting to MCP HTTP server "${config.name}"...`, {
     endpoint: config.endpoint,

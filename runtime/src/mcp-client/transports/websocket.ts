@@ -11,7 +11,6 @@
  *     JSON-RPC over a caller-provided WebSocket endpoint.
  */
 
-import { VERSION } from "../../version.js";
 import WebSocket, { type RawData } from "ws";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
@@ -22,13 +21,9 @@ import {
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
-import {
-  buildMcpRuntimeClientOptions,
+  createConfiguredMcpRuntimeClient,
   type MCPListChangedHandlers,
 } from "../list-changed.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
@@ -207,19 +202,13 @@ export async function createWebSocketMCPConnection(
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const timeout = config.timeout ?? 30_000;
   const transport = createWebSocketMCPTransport(config, environment);
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    buildMcpRuntimeClientOptions(
-      elicitationHandlers === undefined ? "none" : "form-url",
-      listChangedHandlers,
-    ),
-  );
-  configureMcpHostRequestHandlers(
-    client,
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
     config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
+    elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
-  await configureMcpElicitationClient(client, config.name, elicitationHandlers);
 
   logger.info(`Connecting to MCP WebSocket server "${config.name}"...`, {
     endpoint: config.endpoint,

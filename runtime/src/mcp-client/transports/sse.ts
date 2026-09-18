@@ -17,17 +17,12 @@
  * @module
  */
 
-import { VERSION } from "../../version.js";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
-import {
-  buildMcpRuntimeClientOptions,
+  createConfiguredMcpRuntimeClient,
   type MCPListChangedHandlers,
 } from "../list-changed.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
@@ -88,22 +83,12 @@ export async function createSseMCPConnection(
     },
   });
 
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    buildMcpRuntimeClientOptions(
-      elicitationHandlers === undefined ? "none" : "form-url",
-      listChangedHandlers,
-    ),
-  );
-  configureMcpHostRequestHandlers(
-    client,
-    config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
-  );
-  await configureMcpElicitationClient(
-    client,
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
     config.name,
     elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
 
   logger.info(`Connecting to MCP SSE server "${config.name}"...`, {

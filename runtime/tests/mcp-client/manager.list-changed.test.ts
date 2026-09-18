@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MCPManager } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
+import {
+  installEmptyCompanionBridgeDefaults,
+  makeConfig,
+  makeMockBridge,
+  makeMockPromptBridge,
+  makeMockResourceBridge,
+} from "./manager-test-fixtures.js";
 
 interface MCPListChangedHandlers {
   readonly onToolsListChanged: () => void;
@@ -8,22 +15,13 @@ interface MCPListChangedHandlers {
   readonly onResourcesListChanged: () => void;
 }
 
-vi.mock("./connection.js", () => ({
-  createMCPConnection: vi.fn(),
+vi.mock("./connection.js", () => ({ createMCPConnection: vi.fn() }));
+vi.mock("./tools.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./tools.js")>()),
+  createToolBridge: vi.fn(),
 }));
-vi.mock("./tools.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./tools.js")>();
-  return {
-    ...actual,
-    createToolBridge: vi.fn(),
-  };
-});
-vi.mock("./resources.js", () => ({
-  createResourceBridge: vi.fn(),
-}));
-vi.mock("./prompts.js", () => ({
-  createPromptBridge: vi.fn(),
-}));
+vi.mock("./resources.js", () => ({ createResourceBridge: vi.fn() }));
+vi.mock("./prompts.js", () => ({ createPromptBridge: vi.fn() }));
 
 import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tools.js";
@@ -35,95 +33,8 @@ const mockCreateToolBridge = vi.mocked(createToolBridge);
 const mockCreateResourceBridge = vi.mocked(createResourceBridge);
 const mockCreatePromptBridge = vi.mocked(createPromptBridge);
 
-function makeConfig(
-  name: string,
-  overrides?: Partial<MCPServerConfig>,
-): MCPServerConfig {
-  return { name, command: "npx", args: ["-y", `@test/${name}`], ...overrides };
-}
-
-function makeMockBridge(serverName: string, toolNames: string[]) {
-  return {
-    serverName,
-    tools: toolNames.map((n) => ({
-      name: `mcp.${serverName}.${n}`,
-      description: `Tool ${n}`,
-      inputSchema: { type: "object" as const, properties: {} },
-      execute: vi.fn().mockResolvedValue({ content: "ok" }),
-    })),
-    dispose: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
-function makeMockResourceBridge(
-  serverName: string,
-  resources: Array<{ uri: string; name?: string }> = [],
-) {
-  let current = resources;
-  return {
-    serverName,
-    listResources: vi.fn().mockImplementation(async () =>
-      current.map((r) => ({
-        serverName,
-        uri: r.uri,
-        namespacedName: `mcp.${serverName}.${r.uri}`,
-        ...(r.name !== undefined ? { name: r.name } : {}),
-      })),
-    ),
-    refreshResources: vi.fn().mockImplementation(async () =>
-      current.map((r) => ({
-        serverName,
-        uri: r.uri,
-        namespacedName: `mcp.${serverName}.${r.uri}`,
-        ...(r.name !== undefined ? { name: r.name } : {}),
-      })),
-    ),
-    readResource: vi.fn().mockResolvedValue({
-      uri: "",
-      truncated: false,
-      bytesReturned: 0,
-    }),
-    dispose: vi.fn().mockResolvedValue(undefined),
-    setResources(next: Array<{ uri: string; name?: string }>) {
-      current = next;
-    },
-  };
-}
-
-function makeMockPromptBridge(
-  serverName: string,
-  prompts: Array<{ name: string }> = [],
-) {
-  let current = prompts;
-  return {
-    serverName,
-    listPrompts: vi.fn().mockImplementation(async () =>
-      current.map((p) => ({
-        serverName,
-        name: p.name,
-        namespacedName: `mcp.${serverName}.${p.name}`,
-      })),
-    ),
-    refreshPrompts: vi.fn().mockImplementation(async () =>
-      current.map((p) => ({
-        serverName,
-        name: p.name,
-        namespacedName: `mcp.${serverName}.${p.name}`,
-      })),
-    ),
-    renderPrompt: vi.fn().mockResolvedValue({
-      promptName: "",
-      messages: [],
-    }),
-    dispose: vi.fn().mockResolvedValue(undefined),
-    setPrompts(next: Array<{ name: string }>) {
-      current = next;
-    },
-  };
-}
-
-function listChangedHandlersFromLastConnect(): MCPListChangedHandlers {
-  const call = mockCreateMCPConnection.mock.calls.at(-1);
+function listChangedHandlersFromConnect(index = -1): MCPListChangedHandlers {
+  const call = mockCreateMCPConnection.mock.calls.at(index);
   const handlers = call?.[6] as MCPListChangedHandlers | undefined;
   if (handlers === undefined) {
     throw new Error("createMCPConnection was not given listChanged handlers");
@@ -146,23 +57,41 @@ async function waitForTools(manager: MCPManager, names: readonly string[]) {
   });
 }
 
+async function startManager(
+  configs: MCPServerConfig[],
+  logger?: ReturnType<typeof testLogger>,
+): Promise<MCPManager> {
+  const manager =
+    logger === undefined ? new MCPManager(configs) : new MCPManager(configs, logger);
+  await manager.start();
+  return manager;
+}
+
+function holdNextToolBridge(): (bridge: ReturnType<typeof makeMockBridge>) => void {
+  let release: ((bridge: ReturnType<typeof makeMockBridge>) => void) | undefined;
+  mockCreateToolBridge.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  return (bridge) => release?.(bridge);
+}
+
 describe("MCPManager list_changed catalog refresh", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mockCreateResourceBridge.mockImplementation((_client, serverName) =>
-      Promise.resolve(makeMockResourceBridge(serverName)),
-    );
-    mockCreatePromptBridge.mockImplementation((_client, serverName) =>
-      Promise.resolve(makeMockPromptBridge(serverName)),
+    installEmptyCompanionBridgeDefaults(
+      mockCreateResourceBridge,
+      mockCreatePromptBridge,
     );
   });
 
   it("registers listChanged handlers on the connection used at start", async () => {
     mockCreateMCPConnection.mockResolvedValueOnce({ close: vi.fn() });
     mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]));
-    const manager = new MCPManager([makeConfig("srv1")]);
-    await manager.start();
-    const handlers = listChangedHandlersFromLastConnect();
+    const manager = await startManager([makeConfig("srv1")]);
+    const handlers = listChangedHandlersFromConnect();
     expect(typeof handlers.onToolsListChanged).toBe("function");
     expect(typeof handlers.onPromptsListChanged).toBe("function");
     expect(typeof handlers.onResourcesListChanged).toBe("function");
@@ -188,7 +117,7 @@ describe("MCPManager list_changed catalog refresh", () => {
         "mcp.srv1.toolA",
       ]);
 
-      listChangedHandlersFromLastConnect().onToolsListChanged();
+      listChangedHandlersFromConnect().onToolsListChanged();
       await waitForTools(manager, ["mcp.srv1.toolB"]);
       expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
       expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
@@ -210,17 +139,15 @@ describe("MCPManager list_changed catalog refresh", () => {
   });
 
   it("refreshes public prompt and resource lists after their notifications", async () => {
-    const tools = makeMockBridge("srv1", ["toolA"]);
     const resources = makeMockResourceBridge("srv1", [{ uri: "file:///a" }]);
     const prompts = makeMockPromptBridge("srv1", [{ name: "promptA" }]);
     mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
-    mockCreateToolBridge.mockResolvedValue(tools);
+    mockCreateToolBridge.mockResolvedValue(makeMockBridge("srv1", ["toolA"]));
     mockCreateResourceBridge.mockResolvedValue(resources);
     mockCreatePromptBridge.mockResolvedValue(prompts);
 
-    const manager = new MCPManager([makeConfig("srv1")]);
+    const manager = await startManager([makeConfig("srv1")]);
     try {
-      await manager.start();
       expect((await manager.getResources()).map((item) => item.uri)).toEqual([
         "file:///a",
       ]);
@@ -230,7 +157,7 @@ describe("MCPManager list_changed catalog refresh", () => {
 
       resources.setResources([{ uri: "file:///b" }]);
       prompts.setPrompts([{ name: "promptB" }]);
-      const handlers = listChangedHandlersFromLastConnect();
+      const handlers = listChangedHandlersFromConnect();
       handlers.onResourcesListChanged();
       handlers.onPromptsListChanged();
 
@@ -265,7 +192,7 @@ describe("MCPManager list_changed catalog refresh", () => {
     try {
       await manager.start();
       const before = observations.length;
-      listChangedHandlersFromLastConnect().onToolsListChanged();
+      listChangedHandlersFromConnect().onToolsListChanged();
       await vi.waitFor(() => {
         expect(logger.warn).toHaveBeenCalledWith(
           expect.stringContaining("catalog refresh failed"),
@@ -297,17 +224,12 @@ describe("MCPManager list_changed catalog refresh", () => {
       .mockResolvedValueOnce(srv2Initial)
       .mockResolvedValueOnce(srv2Collision);
 
-    const manager = new MCPManager(
+    const manager = await startManager(
       [makeConfig("srv1"), makeConfig("srv2")],
       logger,
     );
     try {
-      await manager.start();
-      const srv2Handlers = mockCreateMCPConnection.mock.calls[1]?.[6] as
-        | MCPListChangedHandlers
-        | undefined;
-      expect(srv2Handlers).toBeDefined();
-      srv2Handlers!.onToolsListChanged();
+      listChangedHandlersFromConnect(1).onToolsListChanged();
       await vi.waitFor(() => {
         expect(logger.warn).toHaveBeenCalledWith(
           expect.stringContaining("catalog refresh failed"),
@@ -325,7 +247,6 @@ describe("MCPManager list_changed catalog refresh", () => {
 
   it("keeps prior prompt and resource lists when a strict refresh fails", async () => {
     const logger = testLogger();
-    const tools = makeMockBridge("srv1", ["toolA"]);
     const resources = makeMockResourceBridge("srv1", [{ uri: "file:///a" }]);
     const prompts = makeMockPromptBridge("srv1", [{ name: "promptA" }]);
     resources.refreshResources.mockImplementation(() =>
@@ -337,7 +258,7 @@ describe("MCPManager list_changed catalog refresh", () => {
       Promise.reject(new Error("prompts/list failed")),
     );
     mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
-    mockCreateToolBridge.mockResolvedValue(tools);
+    mockCreateToolBridge.mockResolvedValue(makeMockBridge("srv1", ["toolA"]));
     mockCreateResourceBridge.mockResolvedValue(resources);
     mockCreatePromptBridge.mockResolvedValue(prompts);
 
@@ -349,7 +270,7 @@ describe("MCPManager list_changed catalog refresh", () => {
     try {
       await manager.start();
       const before = observations.length;
-      const handlers = listChangedHandlersFromLastConnect();
+      const handlers = listChangedHandlersFromConnect();
       handlers.onResourcesListChanged();
       handlers.onPromptsListChanged();
       await vi.waitFor(() => {
@@ -372,30 +293,21 @@ describe("MCPManager list_changed catalog refresh", () => {
     const initial = makeMockBridge("srv1", ["toolA"]);
     const firstRefresh = makeMockBridge("srv1", ["toolB"]);
     const secondRefresh = makeMockBridge("srv1", ["toolC"]);
-    let releaseFirst: ((bridge: ReturnType<typeof makeMockBridge>) => void)
-      | undefined;
     mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
-    mockCreateToolBridge
-      .mockResolvedValueOnce(initial)
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            releaseFirst = resolve;
-          }),
-      )
-      .mockResolvedValueOnce(secondRefresh);
+    mockCreateToolBridge.mockResolvedValueOnce(initial);
+    const releaseFirst = holdNextToolBridge();
+    mockCreateToolBridge.mockResolvedValueOnce(secondRefresh);
 
-    const manager = new MCPManager([makeConfig("srv1")]);
+    const manager = await startManager([makeConfig("srv1")]);
     try {
-      await manager.start();
-      const handlers = listChangedHandlersFromLastConnect();
+      const handlers = listChangedHandlersFromConnect();
       handlers.onToolsListChanged();
       await vi.waitFor(() => {
         expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
       });
       handlers.onToolsListChanged();
       handlers.onToolsListChanged();
-      releaseFirst?.(firstRefresh);
+      releaseFirst(firstRefresh);
       await waitForTools(manager, ["mcp.srv1.toolC"]);
       expect(mockCreateToolBridge).toHaveBeenCalledTimes(3);
       expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
@@ -407,26 +319,17 @@ describe("MCPManager list_changed catalog refresh", () => {
   it("does not publish a stale refresh after stop", async () => {
     const initial = makeMockBridge("srv1", ["toolA"]);
     const stale = makeMockBridge("srv1", ["toolZ"]);
-    let releaseRefresh: ((bridge: ReturnType<typeof makeMockBridge>) => void)
-      | undefined;
     mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
-    mockCreateToolBridge
-      .mockResolvedValueOnce(initial)
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            releaseRefresh = resolve;
-          }),
-      );
+    mockCreateToolBridge.mockResolvedValueOnce(initial);
+    const releaseRefresh = holdNextToolBridge();
 
-    const manager = new MCPManager([makeConfig("srv1")]);
-    await manager.start();
-    listChangedHandlersFromLastConnect().onToolsListChanged();
+    const manager = await startManager([makeConfig("srv1")]);
+    listChangedHandlersFromConnect().onToolsListChanged();
     await vi.waitFor(() => {
       expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
     });
     await manager.stop();
-    releaseRefresh?.(stale);
+    releaseRefresh(stale);
     await Promise.resolve();
     await Promise.resolve();
     expect(manager.getTools()).toEqual([]);
@@ -441,23 +344,14 @@ describe("MCPManager list_changed catalog refresh", () => {
     });
     const stale = makeMockBridge("srv1", ["toolZ"]);
     const reconnected = makeMockBridge("srv1", ["toolA"]);
-    let releaseRefresh: ((bridge: ReturnType<typeof makeMockBridge>) => void)
-      | undefined;
     mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
-    mockCreateToolBridge
-      .mockResolvedValueOnce(initial)
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            releaseRefresh = resolve;
-          }),
-      )
-      .mockResolvedValueOnce(reconnected);
+    mockCreateToolBridge.mockResolvedValueOnce(initial);
+    const releaseRefresh = holdNextToolBridge();
+    mockCreateToolBridge.mockResolvedValueOnce(reconnected);
 
-    const manager = new MCPManager([makeConfig("srv1")]);
+    const manager = await startManager([makeConfig("srv1")]);
     try {
-      await manager.start();
-      listChangedHandlersFromLastConnect().onToolsListChanged();
+      listChangedHandlersFromConnect().onToolsListChanged();
       await vi.waitFor(() => {
         expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
       });
@@ -466,7 +360,7 @@ describe("MCPManager list_changed catalog refresh", () => {
       await vi.waitFor(() => {
         expect(mockCreateToolBridge).toHaveBeenCalledTimes(3);
       });
-      releaseRefresh?.(stale);
+      releaseRefresh(stale);
       await Promise.resolve();
       await Promise.resolve();
       expect(manager.getTools().map((tool) => tool.name)).toEqual([

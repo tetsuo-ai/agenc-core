@@ -11,7 +11,6 @@
  *     surface in this subsystem yet.
  */
 
-import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
@@ -41,13 +40,9 @@ import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
 import type { PluginMcpSandboxMetadata } from "../types.js";
 import { pluginMcpPermissionProfile } from "../../tools/runtimes/sandboxing.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
-import {
-  buildMcpRuntimeClientOptions,
+  createConfiguredMcpRuntimeClient,
   type MCPListChangedHandlers,
 } from "../list-changed.js";
 import {
@@ -670,19 +665,13 @@ export async function createStdioMCPConnection(
     sandboxExecutionBroker,
     parentEnvironment,
   );
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    buildMcpRuntimeClientOptions(
-      elicitationHandlers === undefined ? "none" : "form-url",
-      listChangedHandlers,
-    ),
-  );
-  configureMcpHostRequestHandlers(
-    client,
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
     config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
+    elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
-  await configureMcpElicitationClient(client, config.name, elicitationHandlers);
 
   logger.info(`Connecting to MCP stdio server "${config.name}"...`, {
     command: config.command,

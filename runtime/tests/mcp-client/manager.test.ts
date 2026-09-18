@@ -34,75 +34,18 @@ import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tools.js";
 import { createResourceBridge } from "./resources.js";
 import { createPromptBridge } from "./prompts.js";
+import {
+  installEmptyCompanionBridgeDefaults,
+  makeConfig,
+  makeMockBridge,
+  makeMockPromptBridge,
+  makeMockResourceBridge,
+} from "./manager-test-fixtures.js";
 
 const mockCreateMCPConnection = vi.mocked(createMCPConnection);
 const mockCreateToolBridge = vi.mocked(createToolBridge);
 const mockCreateResourceBridge = vi.mocked(createResourceBridge);
 const mockCreatePromptBridge = vi.mocked(createPromptBridge);
-
-function makeMockResourceBridge(
-  serverName: string,
-  resources: Array<{ uri: string; name?: string }> = [],
-) {
-  return {
-    serverName,
-    listResources: vi.fn().mockResolvedValue(
-      resources.map((r) => ({
-        serverName,
-        uri: r.uri,
-        namespacedName: `mcp.${serverName}.${r.uri}`,
-        ...(r.name !== undefined ? { name: r.name } : {}),
-      })),
-    ),
-    readResource: vi.fn().mockResolvedValue({
-      uri: "",
-      truncated: false,
-      bytesReturned: 0,
-    }),
-    dispose: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
-function makeMockPromptBridge(
-  serverName: string,
-  prompts: Array<{ name: string }> = [],
-) {
-  return {
-    serverName,
-    listPrompts: vi.fn().mockResolvedValue(
-      prompts.map((p) => ({
-        serverName,
-        name: p.name,
-        namespacedName: `mcp.${serverName}.${p.name}`,
-      })),
-    ),
-    renderPrompt: vi.fn().mockResolvedValue({
-      promptName: "",
-      messages: [],
-    }),
-    dispose: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
-function makeConfig(
-  name: string,
-  overrides?: Partial<MCPServerConfig>,
-): MCPServerConfig {
-  return { name, command: "npx", args: ["-y", `@test/${name}`], ...overrides };
-}
-
-function makeMockBridge(serverName: string, toolNames: string[]) {
-  return {
-    serverName,
-    tools: toolNames.map((n) => ({
-      name: `mcp.${serverName}.${n}`,
-      description: `Tool ${n}`,
-      inputSchema: { type: "object" as const, properties: {} },
-      execute: vi.fn().mockResolvedValue({ content: "ok" }),
-    })),
-    dispose: vi.fn().mockResolvedValue(undefined),
-  };
-}
 
 function deferred<T = void>(): {
   readonly promise: Promise<T>;
@@ -159,11 +102,9 @@ describe("MCPManager", () => {
     vi.resetAllMocks();
     // By default, resource + prompt bridges succeed with empty lists so
     // existing tool-focused tests don't need to know about them.
-    mockCreateResourceBridge.mockImplementation((_client, serverName) =>
-      Promise.resolve(makeMockResourceBridge(serverName)),
-    );
-    mockCreatePromptBridge.mockImplementation((_client, serverName) =>
-      Promise.resolve(makeMockPromptBridge(serverName)),
+    installEmptyCompanionBridgeDefaults(
+      mockCreateResourceBridge,
+      mockCreatePromptBridge,
     );
   });
 
