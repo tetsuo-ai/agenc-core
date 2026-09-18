@@ -86,6 +86,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   #state = initialRealtimeTuiState();
   #webRtc: StartedRealtimeWebrtcSession | null = null;
   #audioCapture: RealtimeAudioCaptureSession | null = null;
+  #captureGeneration = 0;
   #eventSequence = 0;
   #lifecycleOperation: Promise<void> = Promise.resolve();
 
@@ -448,11 +449,18 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     }
   }
 
+  #isCurrentCaptureGeneration(generation: number): boolean {
+    return generation === this.#captureGeneration;
+  }
+
   async #startWebsocketAudioCapture(): Promise<void> {
     await this.#stopAudioCapture();
-    this.#audioCapture = await this.#startAudioCapture({
+    const generation = this.#captureGeneration;
+    const capture = await this.#startAudioCapture({
       onAudio: (audio) => {
+        if (!this.#isCurrentCaptureGeneration(generation)) return;
         void this.appendAudio(audio).catch((error) => {
+          if (!this.#isCurrentCaptureGeneration(generation)) return;
           void this.#handleRealtimeInputFailure(
             error,
             "Realtime audio append failed",
@@ -460,6 +468,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         });
       },
       onLevel: (peak) => {
+        if (!this.#isCurrentCaptureGeneration(generation)) return;
         this.#dispatch({ type: "local_audio_level", peak });
         this.#emitLocal("realtime_local_audio_level", {
           threadId: this.#threadId,
@@ -467,12 +476,19 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         });
       },
       onError: (message) => {
+        if (!this.#isCurrentCaptureGeneration(generation)) return;
         void this.#handleCaptureTerminal("error", message);
       },
       onClosed: () => {
+        if (!this.#isCurrentCaptureGeneration(generation)) return;
         void this.#handleCaptureTerminal("closed", "audio_capture_closed");
       },
     });
+    if (!this.#isCurrentCaptureGeneration(generation)) {
+      await Promise.resolve(capture.stop()).catch(logError);
+      return;
+    }
+    this.#audioCapture = capture;
   }
 
   async #handleCaptureTerminal(
@@ -495,6 +511,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   }
 
   async #stopAudioCapture(): Promise<void> {
+    this.#captureGeneration += 1;
     const capture = this.#audioCapture;
     if (capture === null) return;
     this.#audioCapture = null;
