@@ -550,6 +550,18 @@ describe("session.transcript.v2 durable projection", () => {
     expect(snapshot.turnResults).toBeUndefined();
   });
 
+  it.each(["partial_compact", "rewind"] as const)("keeps earlier settings across %s transcript epochs", (reason) => {
+    const snapshot = sessionTranscriptV2FromRollout([
+      settingsEvent(3, "plan"),
+      { type: "compacted", payload: { message: "replacement", replacementHistory: [{ role: "user", content: "kept" }] } },
+      event(20, "new-epoch", { type: "transcript_epoch", payload: { reason } }),
+    ], "session-1", "run-1");
+    expect(snapshot.historyEpoch).toBe("history:run-1:new-epoch");
+    expect(snapshot.asOfSequence).toBe(20);
+    expect(snapshot.planModeActive).toBe(true);
+    expect(snapshot.planModeSequence).toBe(3);
+  });
+
   it("reports plan-mode state from the latest runtime-settings event by sequence", () => {
     // The desktop used to replay the whole run journal on every transcript
     // open to learn this one boolean. It now comes from the same pass that
