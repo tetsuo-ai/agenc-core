@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import { encodeMcpToolNameForWire } from "../../wire/mcp-tool-naming.js";
+import { eventStreamResponse } from "../shared/stream-terminal.js";
 import { BedrockProvider } from "./index.js";
 import {
   createCsvAgentInvocationEnvelope,
@@ -26,40 +27,6 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
-  });
-}
-
-function concatBytes(...chunks: readonly Uint8Array[]): Uint8Array {
-  const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
-  const out = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
-function eventStreamFrame(payload: Record<string, unknown>): Uint8Array {
-  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
-  const totalLength = 16 + payloadBytes.length;
-  const frame = new Uint8Array(totalLength);
-  const view = new DataView(frame.buffer);
-  view.setUint32(0, totalLength, false);
-  view.setUint32(4, 0, false);
-  view.setUint32(8, 0, false);
-  frame.set(payloadBytes, 12);
-  view.setUint32(totalLength - 4, 0, false);
-  return frame;
-}
-
-function eventStreamResponse(
-  events: readonly Record<string, unknown>[],
-  status = 200,
-): Response {
-  return new Response(concatBytes(...events.map(eventStreamFrame)), {
-    status,
-    headers: { "content-type": "application/vnd.amazon.eventstream" },
   });
 }
 
