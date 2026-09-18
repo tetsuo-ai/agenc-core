@@ -70,7 +70,7 @@ describe("previewTaskEpoch", () => {
     expect(after).toBe(before);
   });
 
-  it("orders referencing tasks with a locale-stable key", () => {
+  it("orders referencing tasks independently of insertion order", () => {
     const zetaFirst = epochFor(
       "target.ts",
       previewAgentTask({ id: "zeta", status: "running" }),

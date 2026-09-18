@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { useEffect, useSyncExternalStore } from "react";
 
 import type { TaskState } from "../../tasks/types.js";
+import { compareCodeUnits } from "../../utils/stringUtils.js";
 import { taskMayReferencePath } from "./agents/activity.js";
 import { getProjectTreeStore } from "./project-tree/ProjectTreeStore.js";
 
@@ -24,7 +25,7 @@ export function previewTaskEpoch(
   return Object.values(tasks)
     .filter((task) => taskMayReferencePath(task, path))
     .map((task) => `${task.id}:${task.status}:${task.endTime ?? ""}`)
-    .sort((left, right) => left.localeCompare(right))
+    .sort(compareCodeUnits)
     .join("\n");
 }
 
