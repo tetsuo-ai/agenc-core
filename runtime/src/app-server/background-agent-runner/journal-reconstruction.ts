@@ -287,6 +287,13 @@ export function sessionTranscriptV2FromRollout(
   const boundaryIndex = boundary?.index ?? -1;
   const boundaryId = boundary?.id ?? "initial";
   let asOfSequence = 0;
+  // The latest runtime-settings event decides plan mode. Reporting it from
+  // this pass spares clients a second walk over the same history: the desktop
+  // used to page the whole run journal through run.replay on every transcript
+  // open just to recover this one boolean, ~45 s on a 22k-event session.
+  let planMode:
+    | { readonly active: boolean; readonly sequence: number }
+    | undefined;
   for (const item of items) {
     if (item.type !== "event_msg") continue;
     const event = item.payload;
@@ -296,6 +303,18 @@ export function sessionTranscriptV2FromRollout(
       event.seq > asOfSequence
     ) {
       asOfSequence = event.seq;
+    }
+    if (
+      event.msg.type === "run_runtime_settings_changed" &&
+      event.seq !== undefined &&
+      Number.isSafeInteger(event.seq) &&
+      typeof event.msg.payload.permissionMode === "string" &&
+      (planMode === undefined || event.seq > planMode.sequence)
+    ) {
+      planMode = {
+        active: event.msg.payload.permissionMode === "plan",
+        sequence: event.seq,
+      };
     }
   }
 
@@ -493,6 +512,12 @@ export function sessionTranscriptV2FromRollout(
     events: transcriptNoticesFromRollout(items, boundaryIndex, runId),
     ...(activeTurn !== undefined ? { activeTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
+    ...(planMode !== undefined
+      ? {
+          planModeActive: planMode.active,
+          planModeSequence: planMode.sequence,
+        }
+      : {}),
   };
 }
 

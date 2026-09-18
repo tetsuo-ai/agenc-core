@@ -3,10 +3,43 @@ import { describe, expect, it } from "vitest";
 import { sessionTranscriptV2FromRollout } from "../../src/app-server/background-agent-runner.js";
 import type { Event, EventMsg } from "../../src/session/event-log.js";
 import type { RolloutItem } from "../../src/session/rollout-item.js";
+import type { RunRuntimePermissionMode } from "../../src/contracts/run-contracts.js";
 
 function event(seq: number, eventId: string, msg: EventMsg): RolloutItem {
   const payload: Event = { id: eventId, eventId, seq, msg };
   return { type: "event_msg", payload };
+}
+
+
+function settingsEvent(
+  seq: number,
+  permissionMode: RunRuntimePermissionMode,
+): RolloutItem {
+  return event(seq, `settings-${seq}`, {
+    type: "run_runtime_settings_changed",
+    payload: {
+      runId: "run-1",
+      epoch: 1,
+      previousSettingsEventId: null,
+      rollbackOfSettingsEventId: null,
+      reason: "permission_mode_changed",
+      changedAt: "2026-09-18T07:00:00.000Z",
+      permissionMode,
+      prePlanMode: null,
+      autoModeActive: false,
+      autoModeAvailable: false,
+      bypassPermissionsModeAvailable: false,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
+      model: "model",
+      provider: "provider",
+      profile: null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: false,
+    },
+  });
 }
 
 describe("session.transcript.v2 durable projection", () => {
@@ -515,5 +548,31 @@ describe("session.transcript.v2 durable projection", () => {
       "run-1",
     );
     expect(snapshot.turnResults).toBeUndefined();
+  });
+
+  it("reports plan-mode state from the latest runtime-settings event by sequence", () => {
+    // The desktop used to replay the whole run journal on every transcript
+    // open to learn this one boolean. It now comes from the same pass that
+    // builds the transcript, chosen by sequence, not by array position.
+    const toggled = sessionTranscriptV2FromRollout(
+      [settingsEvent(9, "default"), settingsEvent(3, "plan")],
+      "session-1",
+      "run-1",
+    );
+    expect(toggled.planModeActive).toBe(false);
+    expect(toggled.planModeSequence).toBe(9);
+    expect(toggled.asOfSequence).toBe(9);
+
+    const planOnly = sessionTranscriptV2FromRollout(
+      [settingsEvent(3, "plan")],
+      "session-1",
+      "run-1",
+    );
+    expect(planOnly.planModeActive).toBe(true);
+    expect(planOnly.planModeSequence).toBe(3);
+
+    const none = sessionTranscriptV2FromRollout([], "session-1", "run-1");
+    expect(none.planModeActive).toBeUndefined();
+    expect(none.planModeSequence).toBeUndefined();
   });
 });

@@ -100,4 +100,12 @@ export interface SessionTranscriptV2Result extends TranscriptV2JsonObject {
   readonly activeTurn?: SessionTranscriptV2ActiveTurn;
   readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
   readonly events?: readonly SessionTranscriptV2Event[];
+  /**
+   * Plan-mode state at `asOfSequence`, taken from the latest
+   * run_runtime_settings_changed event in the same history the transcript was
+   * rebuilt from. Absent when that history holds no settings event. A client
+   * that receives it needs no run-journal replay to learn it.
+   */
+  readonly planModeActive?: boolean;
+  readonly planModeSequence?: number;
 }
