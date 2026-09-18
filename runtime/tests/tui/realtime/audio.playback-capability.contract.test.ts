@@ -24,18 +24,12 @@ const voice = vi.hoisted(() => ({
 
 vi.mock("../../services/voice.js", () => voice);
 
-import type { JsonObject } from "../../../src/app-server/protocol/index.js";
 import {
   createProcessRealtimeAudioPlayer,
   startDefaultRealtimeAudioCapture,
   type RealtimeAudioCaptureCallbacks,
   type RealtimeAudioPlayerSpawn,
 } from "./audio.js";
-import { createRealtimeTuiControls } from "./controller.js";
-import type {
-  AgenCDaemonMethod,
-  AgenCDaemonResultByMethod,
-} from "../../../src/app-server/protocol/index.js";
 
 function captureCallbacks(): RealtimeAudioCaptureCallbacks {
   return {
@@ -46,16 +40,8 @@ function captureCallbacks(): RealtimeAudioCaptureCallbacks {
   };
 }
 
-function outputAudio(chunk: Buffer): {
-  readonly data: string;
-  readonly sampleRate: number;
-  readonly numChannels: number;
-} {
-  return {
-    data: chunk.toString("base64"),
-    sampleRate: 24_000,
-    numChannels: 1,
-  };
+function outputAudio(chunk: Buffer) {
+  return { data: chunk.toString("base64"), sampleRate: 24_000, numChannels: 1 };
 }
 
 function createChild(): ChildProcess & { stdin: PassThrough } {
@@ -63,41 +49,6 @@ function createChild(): ChildProcess & { stdin: PassThrough } {
   child.stdin = new PassThrough();
   child.kill = vi.fn(() => true) as never;
   return child;
-}
-
-function createClient(): {
-  readonly requests: Array<{
-    readonly method: AgenCDaemonMethod;
-    readonly params?: JsonObject;
-  }>;
-  request<Method extends AgenCDaemonMethod>(
-    method: Method,
-    params?: JsonObject,
-  ): Promise<AgenCDaemonResultByMethod[Method]>;
-} {
-  const requests: Array<{
-    readonly method: AgenCDaemonMethod;
-    readonly params?: JsonObject;
-  }> = [];
-  return {
-    requests,
-    async request(method, params) {
-      requests.push({ method, params });
-      return {} as AgenCDaemonResultByMethod[typeof method];
-    },
-  };
-}
-
-async function waitFor(
-  predicate: () => boolean,
-  message: string,
-): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (Date.now() <= deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error(`timed out waiting for ${message}`);
 }
 
 describe("realtime playback readiness and failure reporting", () => {
@@ -168,59 +119,5 @@ describe("realtime playback readiness and failure reporting", () => {
       ["-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1", "-"],
       { stdio: ["pipe", "ignore", "ignore"] },
     );
-  });
-
-  test("surfaces runtime playback failures through controller state", async () => {
-    const client = createClient();
-    const emitted: JsonObject[] = [];
-    const stop = vi.fn();
-    const audioPlayer = {
-      enqueue: vi.fn(() => {
-        throw new Error("play: command not found");
-      }),
-      close: vi.fn(),
-    };
-    const controls = createRealtimeTuiControls({
-      threadId: "agent_1",
-      client,
-      emitEvent: (event) => emitted.push(event),
-      startAudioCapture: async () => ({ stop }),
-      audioPlayer,
-    });
-
-    await controls.start({ transport: "websocket" });
-    controls.handleTranscriptEvent({
-      type: "realtime_started",
-      payload: { realtimeSessionId: "rt_1" },
-    });
-    controls.handleTranscriptEvent({
-      type: "realtime_output_audio_delta",
-      payload: {
-        audio: {
-          data: "AAAA",
-          sampleRate: 24000,
-          numChannels: 1,
-        },
-      },
-    });
-
-    await waitFor(
-      () =>
-        controls.getState().errorBanner === "play: command not found" &&
-        client.requests.some(
-          (request) => request.method === "thread/realtime/stop",
-        ),
-      "playback failure surfaced on controller",
-    );
-
-    expect(stop).toHaveBeenCalledTimes(1);
-    expect(audioPlayer.close).toHaveBeenCalledTimes(1);
-    expect(emitted.at(-1)).toMatchObject({
-      type: "realtime_error",
-      payload: {
-        threadId: "agent_1",
-        message: "play: command not found",
-      },
-    });
   });
 });

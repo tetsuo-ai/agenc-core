@@ -675,6 +675,60 @@ describe("AgenC realtime TUI controller", () => {
     ]);
   });
 
+  test("surfaces runtime playback failures through controller state", async () => {
+    const client = createClient();
+    const emitted: JsonObject[] = [];
+    const stop = vi.fn();
+    const audioPlayer = {
+      enqueue: vi.fn(() => {
+        throw new Error("play: command not found");
+      }),
+      close: vi.fn(),
+    };
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startAudioCapture: async () => ({ stop }),
+      audioPlayer,
+    });
+
+    await controls.start({ transport: "websocket" });
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "rt_1" },
+    });
+    controls.handleTranscriptEvent({
+      type: "realtime_output_audio_delta",
+      payload: {
+        audio: {
+          data: "AAAA",
+          sampleRate: 24000,
+          numChannels: 1,
+        },
+      },
+    });
+
+    await waitFor(
+      () =>
+        controls.getState().errorBanner === "play: command not found" &&
+        client.requests.some(
+          (request) => request.method === "thread/realtime/stop",
+        ),
+      "playback failure surfaced on controller",
+    );
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(audioPlayer.close).toHaveBeenCalledTimes(1);
+    expect(emitted.at(-1)).toMatchObject({
+      type: "realtime_error",
+      payload: {
+        threadId: "agent_1",
+        message: "play: command not found",
+      },
+    });
+  });
+
   test("ignores stale media and transcript notifications after stop", async () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
