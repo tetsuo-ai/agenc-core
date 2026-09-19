@@ -180,6 +180,7 @@ import {
   type WorkspaceEditorTopologyReserveParams,
   type WorkspaceEditorTopologyTarget,
   type SessionSnapshotParams,
+  type SessionGoalParams,
   type SessionProcessesListParams,
   type SessionProcessesStopParams,
   type SessionTranscriptParams,
@@ -288,6 +289,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "session.statusLine.execute": 11,
   "session.processes.list": 13,
   "session.processes.stop": 13,
+  "session.goal": 14,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -489,6 +491,7 @@ function buildServerCapabilities(
       agentManager,
       "setSessionHooksDisabled",
     ),
+    "session.goal": hasMethod(agentManager, "updateSessionGoal"),
     "session.applyConfig": hasMethod(agentManager, "applyConfigToSession"),
     "session.mcp.reconnectServer": hasMethod(
       agentManager,
@@ -580,6 +583,7 @@ export interface AgenCDaemonDispatcherOptions {
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
+    readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
   };
   readonly initializeAuthenticator?: (
     params: InitializeParams,
@@ -703,6 +707,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
+    readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
   };
   readonly #initializeAuthenticator:
     | ((
@@ -1598,6 +1603,16 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.setSessionHooksDisabled(
             validateSessionHooksSetDisabledParams(params),
+          ),
+        );
+      case "session.goal":
+        if (this.#agentManager.updateSessionGoal === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.updateSessionGoal(
+            validateSessionGoalParams(params),
           ),
         );
       case "session.applyConfig":
@@ -3963,6 +3978,82 @@ function validateSessionHooksSetDisabledParams(
     );
   }
   return validated as SessionHooksSetDisabledParams;
+}
+
+const SESSION_GOAL_ACTIONS = ["get", "set", "clear", "pause", "resume"] as const;
+
+function validateSessionGoalParams(params: JsonObject): SessionGoalParams {
+  const methodName = "session.goal";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "action"],
+    valueFields: ["request"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  const action = validated.action;
+  if (
+    typeof action !== "string" ||
+    !(SESSION_GOAL_ACTIONS as readonly string[]).includes(action)
+  ) {
+    throw invalidParams(
+      `${methodName} param 'action' must be one of ${SESSION_GOAL_ACTIONS.join(", ")}`,
+    );
+  }
+  const request = validated.request;
+  if (action !== "set") {
+    if (request !== undefined) {
+      throw invalidParams(`${methodName} param 'request' is only valid with action 'set'`);
+    }
+    return validated as SessionGoalParams;
+  }
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    throw invalidParams(`${methodName} action 'set' requires an object param 'request'`);
+  }
+  const record = request as Record<string, unknown>;
+  if (typeof record.objective !== "string" || record.objective.trim().length === 0) {
+    throw invalidParams(`${methodName} request.objective must be a non-empty string`);
+  }
+  if (record.objective.length > 4_000) {
+    throw invalidParams(`${methodName} request.objective exceeds 4000 characters`);
+  }
+  if (typeof record.noVerify !== "boolean") {
+    throw invalidParams(`${methodName} request.noVerify must be a boolean`);
+  }
+  const verify = record.verify;
+  if (
+    !Array.isArray(verify) ||
+    verify.length > 8 ||
+    !verify.every(
+      (entry) =>
+        entry !== null &&
+        typeof entry === "object" &&
+        typeof (entry as Record<string, unknown>).label === "string" &&
+        typeof (entry as Record<string, unknown>).script === "string" &&
+        ((entry as Record<string, unknown>).script as string).trim().length > 0 &&
+        ((entry as Record<string, unknown>).script as string).length <= 2_000,
+    )
+  ) {
+    throw invalidParams(
+      `${methodName} request.verify must be at most 8 {label, script} commands`,
+    );
+  }
+  if (
+    record.maxRounds !== undefined &&
+    (!Number.isInteger(record.maxRounds) ||
+      (record.maxRounds as number) < 1 ||
+      (record.maxRounds as number) > 100)
+  ) {
+    throw invalidParams(`${methodName} request.maxRounds must be an integer from 1 to 100`);
+  }
+  if (
+    record.maxCostUsd !== undefined &&
+    (typeof record.maxCostUsd !== "number" ||
+      !Number.isFinite(record.maxCostUsd) ||
+      record.maxCostUsd <= 0)
+  ) {
+    throw invalidParams(`${methodName} request.maxCostUsd must be a positive number`);
+  }
+  return validated as SessionGoalParams;
 }
 
 function validateSessionApplyConfigParams(

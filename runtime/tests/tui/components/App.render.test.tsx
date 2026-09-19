@@ -6864,6 +6864,55 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("a slash command that provisions the session and then queues a prompt still gets its prompt submitted", async () => {
+    // A deferred daemon session reports a placeholder conversation id until it
+    // is provisioned, then the live `conv-*` id. The queue owner used to be
+    // memoized on that id: provisioning rebuilt the owner, its cleanup deleted
+    // the prompt queued under the old one, and `/goal <objective>` on a cold
+    // TUI set the goal but never started working.
+    const { AgenCTuiApp } = await import("./App.js");
+    const { goalCommand } = await import("../../commands/goal.js");
+    const {
+      getCommandQueueSnapshot,
+      getSoleActiveCommandQueueOwnerForTesting,
+      resetCommandQueueForTesting,
+    } = await import("../../utils/messageQueueManager.js");
+    let conversationId = "agenc-tui-idle-4242";
+    const execute = vi.spyOn(goalCommand, "execute").mockImplementation(async () => {
+      conversationId = "conv-live-session";
+      return { kind: "prompt", content: "Work toward this goal until the runtime confirms it is met" };
+    });
+    const submit = vi.fn(async () => {});
+    const session = {
+      ...createSession(),
+      submit,
+      get conversationId() {
+        return conversationId;
+      },
+    } as AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    resetShellSurfaceProbe();
+    resetCommandQueueForTesting();
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async () => {
+          const ownerBefore = getSoleActiveCommandQueueOwnerForTesting();
+          await providerProbe.promptSubmits.at(-1)!("/goal npm test passes", helpers);
+          await vi.waitFor(() => expect(submit).toHaveBeenCalledOnce());
+          expect(String(submit.mock.calls[0]?.[0])).toContain("Work toward this goal");
+          expect(getCommandQueueSnapshot()).toEqual([]);
+          // Same mount, same owner: the id change did not rebuild it.
+          expect(getSoleActiveCommandQueueOwnerForTesting()?.mountId).toBe(ownerBefore?.mountId);
+          expect(session.conversationId).toBe("conv-live-session");
+        },
+      );
+    } finally {
+      execute.mockRestore();
+      resetCommandQueueForTesting();
+    }
+  });
+
   test("clears a persistent sign-in error on the next prompt submission", async () => {
     // A timed-out /grok-login is shown persistently (no 3s timer). The next
     // submission must clear it; before the fix the clear path returned early

@@ -53,6 +53,7 @@ const DAEMON_PRIORITY_METHODS = new Set<string>([
   "session.list",
   "session.snapshot",
   "session.processes.list",
+  "session.goal",
   "session.hooks.status",
   "health.ping",
   "health.ready",

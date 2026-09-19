@@ -99,7 +99,8 @@ describe("runTurn with an active goal", () => {
 
     expect(requests).toHaveLength(4);
     expect(deps.runVerification).toHaveBeenCalledTimes(2);
-    expect(deps.judge).toHaveBeenCalledTimes(1);
+    // Asked both rounds; its "met" beside the failing first check did not count.
+    expect(deps.judge).toHaveBeenCalledTimes(2);
     expect(getSessionGoal(session)).toMatchObject({ status: "met", rounds: 1 });
     expect(goalEvents(events).map((payload) => [payload.cause, payload.goal.status])).toEqual([["round", "active"], ["settled", "met"]]);
     for (const payload of goalEvents(events)) expect(isCanonicalEventPayload("goal_changed", payload)).toBe(true);
@@ -110,7 +111,8 @@ describe("runTurn with an active goal", () => {
     deps.runVerification.mockResolvedValue([fail]);
     const { session, events, requests } = await run([work("w1"), say("Done."), work("w2"), say("Done again."), work("w3"), say("Done for real.")], goal({ budget: { maxRounds: 2 } }));
     expect(getSessionGoal(session)).toMatchObject({ status: "budget_exhausted", rounds: 2 });
-    expect(deps.judge).not.toHaveBeenCalled();
+    // Consulted on each failing round, but its default "met" never counts against failing checks.
+    expect(deps.judge).toHaveBeenCalledTimes(2);
     expect(requests).toHaveLength(6);
     expect(events.some((event) => event.msg.type === "warning" && event.msg.payload.cause === "goal_budget_exhausted")).toBe(true);
     expectCompletedTurn(events);

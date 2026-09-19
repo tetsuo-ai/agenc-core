@@ -2555,6 +2555,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       props.session.sessionConfiguration?.cwd ??
       props.roleWorkspaceCwd,
   );
+  // The owner follows the session OBJECT, not its conversation id. A deferred
+  // daemon session reports a placeholder id until its first turn and the live
+  // `conv-*` id afterwards; keying the owner on that id rebuilt it mid-mount,
+  // and the old owner's cleanup deleted whatever was queued under it. That is
+  // how a slash command that provisions the session and then queues a prompt
+  // (`/goal <objective>` on a cold TUI) lost its prompt. The id read here is
+  // the mount's identity for the queue, fixed for the life of the session
+  // object; `/status` reads the live id from the session itself.
   const commandQueueOwner = useMemo<QueuedCommandOwner>(
     () => ({
       kind: "tui_mount",
@@ -2562,7 +2570,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       conversationId: props.session.conversationId,
       workspaceRoot: queueWorkspaceRoot,
     }),
-    [props.session.conversationId, queueWorkspaceRoot],
+    [props.session, queueWorkspaceRoot],
   );
   useEffect(() => {
     const unregister = registerCommandQueueOwner(commandQueueOwner);

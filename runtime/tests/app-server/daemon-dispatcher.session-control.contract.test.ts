@@ -306,6 +306,67 @@ describe("daemon session-control internal method dispatch", () => {
     expect(setSessionModel).not.toHaveBeenCalled();
   });
 
+  it("routes session.goal to the agent manager and rejects malformed goals before it", async () => {
+    const updateSessionGoal = vi.fn(async () => ({ ok: true }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { updateSessionGoal } as never,
+    });
+    const connection = dispatcher.createConnection();
+    // session.goal is a protocol 1.14 method.
+    await initialize(connection, AGENC_DAEMON_PROTOCOL_VERSION);
+    const send = (id: string, params: Record<string, unknown>) =>
+      connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id, method: "session.goal", params });
+    const request = {
+      objective: "npm test passes",
+      verify: [{ label: "tests", script: "npm test" }],
+      noVerify: false,
+      maxRounds: 5,
+    };
+
+    await expect(send("set", { sessionId: "s1", action: "set", request })).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION, id: "set", result: { ok: true },
+    });
+    await expect(send("get", { sessionId: "s1", action: "get" })).resolves.toMatchObject({ result: { ok: true } });
+    expect(updateSessionGoal.mock.calls.map(([params]) => params)).toEqual([
+      { sessionId: "s1", action: "set", request },
+      { sessionId: "s1", action: "get" },
+    ]);
+
+    updateSessionGoal.mockClear();
+    const malformed: Array<Record<string, unknown>> = [
+      { action: "get" },
+      { sessionId: "s1", action: "achieve" },
+      { sessionId: "s1", action: "set" },
+      { sessionId: "s1", action: "pause", request },
+      { sessionId: "s1", action: "set", request: { ...request, objective: "  " } },
+      { sessionId: "s1", action: "set", request: { ...request, objective: "x".repeat(4_001) } },
+      { sessionId: "s1", action: "set", request: { ...request, noVerify: "no" } },
+      { sessionId: "s1", action: "set", request: { ...request, verify: [{ label: "t", script: "" }] } },
+      { sessionId: "s1", action: "set", request: { ...request, verify: Array.from({ length: 9 }, () => ({ label: "t", script: "true" })) } },
+      { sessionId: "s1", action: "set", request: { ...request, maxRounds: 101 } },
+      { sessionId: "s1", action: "set", request: { ...request, maxCostUsd: 0 } },
+    ];
+    for (const [index, params] of malformed.entries()) {
+      await expect(send(`bad-${index}`, params), JSON.stringify(params).slice(0, 80)).resolves.toMatchObject({
+        id: `bad-${index}`, error: { code: -32602 },
+      });
+    }
+    expect(updateSessionGoal).not.toHaveBeenCalled();
+  });
+
+  it("does not offer session.goal to a client that negotiated an older protocol", async () => {
+    const updateSessionGoal = vi.fn(async () => ({ ok: true }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { updateSessionGoal } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection, "1.13.0");
+    await expect(
+      connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "old", method: "session.goal", params: { sessionId: "s1", action: "get" } }),
+    ).resolves.toMatchObject({ id: "old", error: expect.anything() });
+    expect(updateSessionGoal).not.toHaveBeenCalled();
+  });
+
   it("routes session.setPermissionMode to the agent manager", async () => {
     const setSessionPermissionMode = vi.fn(
       async (params: SessionSetPermissionModeParams) => ({

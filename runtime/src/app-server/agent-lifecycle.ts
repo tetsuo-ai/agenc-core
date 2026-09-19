@@ -110,6 +110,8 @@ import type {
   SessionMcpServerMutationResult,
   SessionSnapshotParams,
   SessionSnapshotResult,
+  SessionGoalParams,
+  SessionGoalResult,
   SessionProcessesListParams,
   SessionProcessesListResult,
   SessionProcessesStopParams,
@@ -2950,6 +2952,20 @@ export class AgenCDaemonAgentManager {
     return { requestId: params.requestId, decision: "cancelled" };
   }
 
+  async updateSessionGoal(params: SessionGoalParams): Promise<SessionGoalResult> {
+    if (this.#runner?.updateAgentSessionGoal === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.goal requires a live daemon runtime",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowSessionGoal: true },
+    );
+    return this.#runner.updateAgentSessionGoal(agentId, params);
+  }
+
   async executeSessionStatusLine(
     params: SessionStatusLineExecuteParams,
     signal?: AbortSignal,
@@ -4081,6 +4097,7 @@ export class AgenCDaemonAgentManager {
       readonly allowCodePrediction?: boolean;
       readonly allowExecuteShell?: boolean;
       readonly allowExecuteStatusLine?: boolean;
+      readonly allowSessionGoal?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -4161,7 +4178,11 @@ export class AgenCDaemonAgentManager {
     const hasExecuteStatusLineRunner =
       options.allowExecuteStatusLine === true &&
       this.#runner?.executeAgentStatusLine !== undefined;
+    const hasSessionGoalRunner =
+      options.allowSessionGoal === true &&
+      this.#runner?.updateAgentSessionGoal !== undefined;
     if (
+      !hasSessionGoalRunner &&
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
       !hasElicitationRunner &&

@@ -20,6 +20,7 @@ Order matches `buildDefaultRegistry`.
 | `/help` | | Show help and available commands |
 | `/hello` | | Print a greeting card with the current model and workspace |
 | `/status` | | Show current session and runtime status |
+| `/goal` | | Set an end condition the agent works toward until verified checks and an independent reviewer agree it is met; `/goal` alone shows status. See [goal.md](goal.md) |
 | `/login` | | Sign in with your AgenC account |
 | `/logout` | | Sign out of your AgenC account |
 | `/whoami` | `account` | Show the signed-in AgenC account |

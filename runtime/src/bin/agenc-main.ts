@@ -3328,7 +3328,7 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
 
 type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & Pick<
   AgenCTuiBridgeSession,
-  "listDaemonSessionProcesses" | "stopDaemonSessionProcess"
+  "listDaemonSessionProcesses" | "stopDaemonSessionProcess" | "updateDaemonSessionGoal"
 > & {
   readonly workflowApprovalControls?: WorkflowApprovalControls;
   executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
@@ -4379,6 +4379,22 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // agent or consume the first model-turn slot in an idle deferred TUI.
     listDaemonSessionProcesses: async () =>
       deferredSessionClosed ? undefined : liveSession?.listDaemonSessionProcesses?.(),
+    // `/goal`: reading or dropping a goal never provisions a session (a cold
+    // TUI simply has none). Setting one does, turn-deferred like a composer
+    // shell command, because the goal must exist before its first turn runs.
+    updateDaemonSessionGoal: async (goalParams) => {
+      if (deferredSessionClosed) throw new Error("Deferred TUI session is already closed.");
+      const live =
+        liveSession ??
+        (goalParams.action === "set"
+          ? await ensureLiveSession("", undefined, true)
+          : null);
+      if (live === null) return { ok: false, message: "No goal is set." };
+      if (typeof live.updateDaemonSessionGoal !== "function") {
+        throw new Error("This daemon session does not support /goal.");
+      }
+      return live.updateDaemonSessionGoal(goalParams);
+    },
     stopDaemonSessionProcess: async (taskId) => {
       const live = liveSession;
       if (deferredSessionClosed || typeof live?.stopDaemonSessionProcess !== "function") {

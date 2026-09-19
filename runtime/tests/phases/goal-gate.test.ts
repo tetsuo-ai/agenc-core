@@ -76,17 +76,19 @@ describe("goalGate", () => {
     }
   });
 
-  test("a failing command re-enters the loop with the real output; the judge is never asked", async () => {
+  test("a failing command re-enters the loop with the real output; a judge's `met` cannot override it", async () => {
     deps.runVerification.mockResolvedValueOnce([fail]);
     const f = fixture(goal());
     expect(await goalGate(f.state, f.ctx, f.session)).toBe(true);
-    expect(deps.judge).not.toHaveBeenCalled();
+    // The default scripted judge says "met"; failing checks outrank it.
+    expect(deps.judge).toHaveBeenCalledTimes(1);
     expect(f.state.transition).toEqual({ reason: "goal_gate" });
     const injected = f.state.messages.at(-1);
     expect(injected?.role).toBe("user");
     expect(String(injected?.content)).toContain("clear() is not a function");
     expect(String(injected?.content)).toContain("npm test passes after adding clear()");
     expect(getSessionGoal(f.session)).toMatchObject({ status: "active", rounds: 1, lastVerdict: { verdict: "verification_failed" } });
+    expect(f.causes()).toEqual(["goal_round"]);
     expect(f.state.goalGateToolLedgerMark).toBe(1);
   });
 
@@ -95,6 +97,7 @@ describe("goalGate", () => {
     expect(await goalGate(f.state, f.ctx, f.session)).toBe(true);
     expect(f.state.transition).toBeUndefined();
     expect(getSessionGoal(f.session)).toMatchObject({ status: "met", lastVerdict: { verdict: "met" } });
+    expect(f.causes()).toEqual(["goal_met"]);
     const judgeInput = deps.judge.mock.calls[0]?.[0] as { userMessage: string };
     expect(judgeInput.userMessage).toContain("+clear() {}");
     // The worker's own claim is not evidence and is not shown to the judge.
@@ -136,6 +139,20 @@ describe("goalGate", () => {
     expect(f.state.transition).toBeUndefined();
     expect(getSessionGoal(f.session)?.status).toBe(verdict);
     expect(f.causes()).toContain(`goal_${verdict}`);
+  });
+
+  test("with failing checks the worker can argue the goal is impossible, and the judge can agree and stop the loop", async () => {
+    deps.runVerification.mockResolvedValueOnce([fail]);
+    deps.judge.mockResolvedValueOnce(JSON.stringify({ verdict: "impossible", reason: "the two tests require different defaults", unmet: [] }));
+    const f = fixture(goal(), "This cannot pass honestly: the tests contradict each other.");
+    await goalGate(f.state, f.ctx, f.session);
+    const judgeInput = deps.judge.mock.calls[0]?.[0] as { userMessage: string };
+    expect(judgeInput.userMessage).toContain("The worker's final message (a claim, not evidence)");
+    expect(judgeInput.userMessage).toContain("the tests contradict each other");
+    expect(judgeInput.userMessage).toContain("clear() is not a function");
+    expect(f.state.transition).toBeUndefined();
+    expect(getSessionGoal(f.session)).toMatchObject({ status: "impossible", lastVerdict: { verdict: "impossible" } });
+    expect(f.causes()).toContain("goal_impossible");
   });
 
   test("the round budget stops the goal as budget_exhausted, not met, before running anything", async () => {

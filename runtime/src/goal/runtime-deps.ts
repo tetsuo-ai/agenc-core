@@ -184,6 +184,9 @@ export const defaultGoalGateDeps: GoalGateDeps = {
         reviewerModel,
         systemPrompt,
         timeoutMs: GOAL_JUDGE_TIMEOUT_MS,
+        // The judge runs inside the worker's live turn. Registering a
+        // Session task here would abort that turn as "replaced".
+        registerTask: false,
         reuseKey: false,
         ...(signal !== undefined ? { signal } : {}),
       },

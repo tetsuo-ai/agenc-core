@@ -316,6 +316,15 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "max_output_tokens_exhausted",
   "prompt_too_long_exhausted",
   "stop_hook_loop",
+  // `/goal`: the runtime, not the agent, decides when a goal is met. Each
+  // round's verdict and every stop explain why the turn kept going or ended.
+  "goal_round",
+  "goal_met",
+  "goal_budget_exhausted",
+  "goal_stalled",
+  "goal_blocked",
+  "goal_impossible",
+  "goal_judge_unavailable",
   // Provider / mode change the user just observed
   "provider_switched",
   "provider_switch_rejected",

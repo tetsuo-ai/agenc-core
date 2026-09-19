@@ -51,6 +51,8 @@ import type {
   SessionPreviewFileRewindResult,
   SessionRewindFilesToMessageResult,
   SessionSnapshotResult,
+  SessionGoalParams,
+  SessionGoalResult,
   SessionProcessesListResult,
   SessionProcessesStopResult,
   SessionTranscriptResult,
@@ -519,6 +521,10 @@ export interface AgenCBackgroundAgentRunner {
     params: SessionShellExecuteParams,
     signal?: AbortSignal,
   ): Promise<SessionShellExecuteResult>;
+  updateAgentSessionGoal?(
+    agentId: string,
+    params: SessionGoalParams,
+  ): Promise<SessionGoalResult>;
   executeAgentStatusLine?(
     agentId: string,
     params: SessionStatusLineExecuteParams,

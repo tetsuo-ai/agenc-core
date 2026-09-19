@@ -60,6 +60,8 @@ import type {
   SessionTranscriptV2Result,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionGoalParams,
+  SessionGoalResult,
   SessionProcessesListResult,
   SessionProcessesStopResult,
   SessionResolveToolCallResult,
@@ -290,6 +292,10 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   }): Promise<SessionResolveToolCallResult>;
   getDaemonSessionSnapshot?(): Promise<SessionSnapshotResult>;
   listDaemonSessionProcesses?(): Promise<SessionProcessesListResult | undefined>;
+  /** `/goal`: set, inspect, pause, resume or clear the daemon session's goal. */
+  updateDaemonSessionGoal?(
+    params: Omit<SessionGoalParams, "sessionId">,
+  ): Promise<SessionGoalResult>;
   stopDaemonSessionProcess?(taskId: string): Promise<SessionProcessesStopResult>;
   partialCompactFromMessage?(params: {
     readonly messageOrdinal: number;
@@ -1582,6 +1588,14 @@ export function createDaemonTuiSession<
         throw new Error("Daemon snapshot belongs to a different session");
       }
       return snapshot;
+    },
+    updateDaemonSessionGoal: async (goalParams) => {
+      if (client.supportsMethod?.("session.goal") !== true) {
+        throw new Error(
+          "This daemon does not support /goal. Restart it with `agenc daemon restart` to pick up the current runtime.",
+        );
+      }
+      return client.request("session.goal", { ...goalParams, sessionId });
     },
     listDaemonSessionProcesses: async () => {
       if (client.supportsMethod?.("session.processes.list") !== true) return undefined;

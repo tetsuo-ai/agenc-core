@@ -4235,6 +4235,47 @@ describe("AgenC delegate background-agent runner", () => {
     expect(emitted).toHaveLength(emittedAfterRetirement);
   });
 
+  it("session.goal sets, reports, pauses, resumes and clears the session goal, journaling each change", async () => {
+    const emptyWorkspace = mkdtempSync(join(tmpdir(), "agenc-goal-runner-"));
+    const { runner, session } = makeTopLevelRunner({ conversationId: "session-goal", workspaceRoot: emptyWorkspace });
+    const started = await runner.startAgent({ objective: "goal host", unattendedAllow: [], unattendedDeny: [] });
+    const call = (params: Record<string, unknown>) =>
+      runner.updateAgentSessionGoal!(started.agentId, { sessionId: "session-goal", ...params } as never);
+    const request = { objective: "npm test passes", verify: [{ label: "tests", script: "npm test" }], noVerify: false };
+    try {
+      expect(await call({ action: "get" })).toMatchObject({ ok: true });
+      expect((await call({ action: "get" })).goal).toBeUndefined();
+      expect(await call({ action: "pause" })).toMatchObject({ ok: false, message: "No goal is set." });
+
+      // Nothing can check this one: the workspace has no test entry point.
+      const refused = await call({ action: "set", request: { objective: "make it nicer", verify: [], noVerify: false } });
+      expect(refused).toMatchObject({ ok: false, message: expect.stringContaining("--verify") });
+
+      const set = await call({ action: "set", request });
+      expect(set).toMatchObject({
+        ok: true, detectedVerification: false,
+        goal: { objective: "npm test passes", status: "active", rounds: 0, verification: [{ script: "npm test" }] },
+      });
+      expect(await call({ action: "resume" })).toMatchObject({ ok: false, message: "The goal is already active." });
+      expect(await call({ action: "pause" })).toMatchObject({ ok: true, goal: { status: "paused", pauseReason: "paused by the user" } });
+      const resumed = await call({ action: "resume" });
+      expect(resumed).toMatchObject({ ok: true, goal: { status: "active" } });
+      expect(resumed.goal?.pauseReason).toBeUndefined();
+
+      expect(await call({ action: "clear" })).toMatchObject({ ok: true, message: "Goal cleared: npm test passes" });
+      expect((await call({ action: "get" })).goal).toBeUndefined();
+
+      const causes = session.emit.mock.calls
+        .map(([event]) => event as { msg?: { type?: string; payload?: { cause?: string } } })
+        .filter((event) => event.msg?.type === "goal_changed")
+        .map((event) => event.msg!.payload!.cause);
+      expect(causes).toEqual(["set", "paused", "resumed", "cleared"]);
+    } finally {
+      await runner.stopAgent(started.agentId).catch(() => undefined);
+      rmSync(emptyWorkspace, { recursive: true, force: true });
+    }
+  });
+
   it("binds the owning session while a partial compaction runs in a multi-session daemon", async () => {
     // Compaction samples the provider through the ambient "current session"
     // the way a turn does. With two sessions live the unscoped fallback

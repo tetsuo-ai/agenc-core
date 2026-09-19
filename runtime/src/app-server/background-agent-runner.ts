@@ -41,7 +41,15 @@ import type { AuthBackend } from "../auth/backend.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { routerFromRegistry } from "../tools/router.js";
 import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
-import { goalFromRolloutItems, restoreSessionGoal } from "../goal/session-goal.js";
+import { isGoalRestorable, type SessionGoal } from "../goal/goal.js";
+import { buildSessionGoal } from "../goal/intake.js";
+import { defaultGoalGateDeps, resolveGoalBaseCommit } from "../goal/runtime-deps.js";
+import {
+  commitSessionGoal,
+  getSessionGoal,
+  goalFromRolloutItems,
+  restoreSessionGoal,
+} from "../goal/session-goal.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import { logForDebugging } from "../utils/debug.js";
 import {
@@ -140,6 +148,8 @@ import type {
   SessionPermissionRuleMutationParams,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionGoalParams,
+  SessionGoalResult,
   SessionStatusLineExecuteParams,
   SessionStatusLineExecuteResult,
 } from "./protocol/index.js";
@@ -2149,6 +2159,105 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return promise;
   }
 
+  /**
+   * `session.goal`: the one place a goal is set, paused, resumed or cleared.
+   * The goal is session state journaled outside the conversation; this only
+   * changes that state. Work starts when the client submits the next turn.
+   */
+  async updateAgentSessionGoal(
+    agentId: string,
+    params: SessionGoalParams,
+  ): Promise<SessionGoalResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const session = active.bootstrap.session;
+    return runWithCurrentRuntimeSession(session, async () => {
+      const sessionCostUsd = defaultGoalGateDeps.sessionCostUsd(session);
+      const current = getSessionGoal(session);
+      const reply = (
+        goal: SessionGoal | undefined,
+        extra: Partial<SessionGoalResult> = {},
+      ): SessionGoalResult => ({
+        ok: true,
+        ...(goal !== undefined && goal.status !== "cleared"
+          ? { goal: structuredClone(goal) as unknown as SessionGoalResult["goal"] }
+          : {}),
+        sessionCostUsd,
+        ...extra,
+      });
+      const refuse = (message: string): SessionGoalResult => ({
+        ok: false,
+        message,
+        ...(current !== undefined
+          ? { goal: structuredClone(current) as unknown as SessionGoalResult["goal"] }
+          : {}),
+        sessionCostUsd,
+      });
+      switch (params.action) {
+        case "get":
+          return reply(current);
+        case "set": {
+          const cwd = runtimeWorkspaceRoot(active.bootstrap);
+          const built = buildSessionGoal({
+            request: params.request!,
+            cwd,
+            id: `goal-${randomUUID()}`,
+            now: defaultGoalGateDeps.now(),
+            sessionCostUsd,
+            baseCommit: await resolveGoalBaseCommit(cwd),
+            defaultMaxRounds: active.bootstrap.configStore.current().goal?.max_rounds,
+          });
+          if (!built.ok) return refuse(built.message);
+          return reply(commitSessionGoal(session, built.goal, "set"), {
+            detectedVerification: built.detected,
+          });
+        }
+        case "clear":
+          if (current === undefined) return refuse("No goal is set.");
+          commitSessionGoal(session, { ...current, status: "cleared" }, "cleared");
+          return reply(undefined, { message: `Goal cleared: ${current.objective}` });
+        case "pause":
+          if (current === undefined) return refuse("No goal is set.");
+          if (current.status !== "active") {
+            return refuse(`The goal is ${current.status}, not active.`);
+          }
+          return reply(
+            commitSessionGoal(
+              session,
+              { ...current, status: "paused", pauseReason: "paused by the user" },
+              "paused",
+            ),
+          );
+        case "resume": {
+          if (current === undefined) return refuse("No goal is set.");
+          if (current.status === "active") return refuse("The goal is already active.");
+          if (!isGoalRestorable(current.status)) {
+            return refuse(`The goal is ${current.status}; set a new one with /goal <objective>.`);
+          }
+          const { pauseReason: _pauseReason, ...rest } = current;
+          void _pauseReason;
+          // A goal that ran out of budget resumes with a fresh one: otherwise
+          // resume would stop again at the first evaluation.
+          const renewed = current.status === "budget_exhausted";
+          return reply(
+            commitSessionGoal(
+              session,
+              {
+                ...rest,
+                status: "active",
+                stalledRounds: 0,
+                ...(renewed ? { rounds: 0, startCostUsd: sessionCostUsd } : {}),
+              },
+              "resumed",
+            ),
+          );
+        }
+      }
+    });
+  }
+
   async executeAgentStatusLine(
     agentId: string,
     params: SessionStatusLineExecuteParams,
@@ -2600,6 +2709,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     await clearSession(active.bootstrap.session);
     await active.control.clearConversationHistory(agentId);
+    // A new conversation does not inherit the old one's goal.
+    const clearedGoal = getSessionGoal(active.bootstrap.session);
+    if (clearedGoal !== undefined) {
+      commitSessionGoal(
+        active.bootstrap.session,
+        { ...clearedGoal, status: "cleared" },
+        "cleared",
+      );
+    }
     active.activeToolCallIds.clear();
     this.#assistantTextByAgent.delete(agentId);
     active.lastActiveAt = params.clearedAt;

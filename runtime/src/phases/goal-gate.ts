@@ -99,6 +99,7 @@ async function askJudge(input: {
   readonly goal: SessionGoal;
   readonly verification: readonly GoalVerificationResult[];
   readonly tamperedPaths: readonly string[];
+  readonly workerFinalMessage: string;
   readonly ctx: TurnContext;
   readonly session: Session;
   readonly signal?: AbortSignal;
@@ -111,6 +112,10 @@ async function askJudge(input: {
     tamperedPaths: input.tamperedPaths,
     diffStat: stat,
     diff,
+    // Only a failing round can hear the worker out, and only to stop.
+    ...(verificationPassed(input.verification)
+      ? {}
+      : { workerFinalMessage: input.workerFinalMessage }),
   });
   const model = ctx.config.goal?.judge_model;
   const ask = (message: string): Promise<string> =>
@@ -206,16 +211,15 @@ export async function goalGate(
     await activeDeps.changedPaths(ctx.cwd, goal.baseCommit),
     goal.verification,
   );
-  const judge = verificationPassed(verification)
-    ? await askJudge({
-        goal,
-        verification,
-        tamperedPaths,
-        ctx,
-        session,
-        ...(signal !== undefined ? { signal } : {}),
-      })
-    : undefined;
+  const judge = await askJudge({
+    goal,
+    verification,
+    tamperedPaths,
+    workerFinalMessage: last.text ?? "",
+    ctx,
+    session,
+    ...(signal !== undefined ? { signal } : {}),
+  });
   const decision = decideGoalRound({ goal, now, verification, tamperedPaths, judge });
 
   if (decision.kind === "settle") {
@@ -230,14 +234,14 @@ export async function goalGate(
       "settled",
       ctx.subId,
     );
-    if (decision.status !== "met") {
-      warn(
-        session,
-        ctx,
-        `goal_${decision.status}`,
-        `goal ${decision.status}: ${decision.verdict.reason}`,
-      );
-    }
+    warn(
+      session,
+      ctx,
+      `goal_${decision.status}`,
+      decision.status === "met"
+        ? `goal met ${goal.rounds === 0 ? "on the first check" : `after ${goal.rounds} ${goal.rounds === 1 ? "round" : "rounds"}`}: ${decision.verdict.reason}`
+        : `goal ${decision.status}: ${decision.verdict.reason}`,
+    );
     return true;
   }
 
@@ -251,6 +255,12 @@ export async function goalGate(
     },
     "round",
     ctx.subId,
+  );
+  warn(
+    session,
+    ctx,
+    "goal_round",
+    `goal round ${goal.rounds + 1} of ${goal.budget.maxRounds}: ${decision.verdict.reason}. Continuing.`,
   );
   state.goalGateToolLedgerMark = state.completedToolResults.length;
   // Durable, like the completion gate's request: a resumed turn must see it.

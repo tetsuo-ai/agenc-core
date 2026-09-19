@@ -32,10 +32,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * internal clients.
  * 1.10 adds daemon-owned local routines and opt-in routine invalidations.
  * 1.13 adds session-owned background process inspection and acknowledged stop.
+ * 1.14 adds the session goal (`/goal`): set, inspect, pause, resume, clear.
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.13.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.14.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -127,6 +128,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
+  "session.goal",
   "session.transcript",
   "session.transcript.v2",
   "session.cancelTurn",
@@ -757,6 +759,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Stop a session-owned background process by opaque task ID and await its exit.",
+  },
+  "session.goal": {
+    method: "session.goal",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Set, inspect, pause, resume, or clear the session goal that keeps the agent working until runtime verification and an independent reviewer agree it is met.",
   },
   "session.transcript": {
     method: "session.transcript",
@@ -2144,6 +2154,76 @@ export interface SessionStatusLineExecuteResult extends JsonObject {
   readonly reason?: string;
 }
 
+export interface SessionGoalVerificationCommand extends JsonObject {
+  readonly label: string;
+  readonly script: string;
+}
+
+export interface SessionGoalBudget extends JsonObject {
+  readonly maxRounds: number;
+  readonly maxCostUsd?: number;
+  readonly deadlineAt?: string;
+}
+
+export interface SessionGoalVerdict extends JsonObject {
+  readonly verdict: "met" | "not_met" | "impossible" | "blocked" | "verification_failed";
+  readonly reason: string;
+  readonly at: string;
+}
+
+/** Wire mirror of the runtime's session goal; see docs/reference/goal.md. */
+export interface SessionGoalSnapshot extends JsonObject {
+  readonly id: string;
+  readonly objective: string;
+  readonly verification: SessionGoalVerificationCommand[];
+  readonly criteria: string[];
+  readonly constraints: string[];
+  readonly budget: SessionGoalBudget;
+  readonly status:
+    | "active"
+    | "paused"
+    | "met"
+    | "impossible"
+    | "blocked"
+    | "budget_exhausted"
+    | "stalled"
+    | "cleared";
+  readonly rounds: number;
+  readonly stalledRounds: number;
+  readonly startedAt: string;
+  readonly startCostUsd: number;
+  readonly baseCommit?: string;
+  readonly lastVerdict?: SessionGoalVerdict;
+  readonly pauseReason?: string;
+}
+
+export interface SessionGoalSetRequest extends JsonObject {
+  readonly objective: string;
+  readonly verify: SessionGoalVerificationCommand[];
+  readonly noVerify: boolean;
+  readonly maxRounds?: number;
+  readonly maxCostUsd?: number;
+}
+
+export interface SessionGoalParams extends JsonObject {
+  readonly sessionId: string;
+  readonly action: "get" | "set" | "clear" | "pause" | "resume";
+  /** Required for `set`, rejected otherwise. */
+  readonly request?: SessionGoalSetRequest;
+}
+
+export interface SessionGoalResult extends JsonObject {
+  /** False when the action was refused; `message` says why and what to do. */
+  readonly ok: boolean;
+  /** The goal after the action; absent when the session has none. */
+  readonly goal?: SessionGoalSnapshot;
+  readonly message?: string;
+  /** `set` only: true when the verification commands were auto-detected. */
+  readonly detectedVerification?: boolean;
+  /** Current session cost, so a client can show spend since the goal was set. */
+  readonly sessionCostUsd?: number;
+}
+
 /**
  * JSON-serializable mirror of a single configured hook for the wire.
  * Kept independent of `hooks/` internals so protocol stays decoupled
@@ -2734,6 +2814,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.processes.list", SessionProcessesListParams>
   | AgenCDaemonRequestWithParams<"session.processes.stop", SessionProcessesStopParams>
+  | AgenCDaemonRequestWithParams<"session.goal", SessionGoalParams>
   | AgenCDaemonRequestWithParams<"session.transcript", SessionTranscriptParams>
   | AgenCDaemonRequestWithParams<
       "session.transcript.v2",
@@ -4317,6 +4398,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.processes.list": SessionProcessesListResult;
   readonly "session.processes.stop": SessionProcessesStopResult;
+  readonly "session.goal": SessionGoalResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.transcript.v2": SessionTranscriptV2Result;
   readonly "session.cancelTurn": SessionCancelTurnResult;

@@ -22,7 +22,7 @@ export type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.13.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.14.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
@@ -111,6 +111,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
+  "session.goal",
   "session.transcript",
   "session.transcript.v2",
   "session.cancelTurn",
@@ -243,6 +244,9 @@ export type SessionClearParams = Wire.SessionClearParams;
 export type SessionSnapshotParams = Wire.SessionSnapshotParams;
 export type SessionProcessesListParams = Wire.SessionProcessesListParams;
 export type SessionProcessesStopParams = Wire.SessionProcessesStopParams;
+export type SessionGoalParams = Wire.SessionGoalParams;
+export type SessionGoalSetRequest = Wire.SessionGoalSetRequest;
+export type SessionGoalSnapshot = Wire.SessionGoalSnapshot;
 export type SessionProcessSnapshot = Wire.SessionProcessSnapshot;
 
 export type SessionTranscriptParams = Wire.SessionTranscriptParams;
@@ -522,6 +526,7 @@ export interface TokenUsage extends JsonObject {
 export type SessionSnapshotResult = Wire.SessionSnapshotResult;
 export type SessionProcessesListResult = Wire.SessionProcessesListResult;
 export type SessionProcessesStopResult = Wire.SessionProcessesStopResult;
+export type SessionGoalResult = Wire.SessionGoalResult;
 
 export type SessionTranscriptMessage = Wire.SessionTranscriptMessage;
 
