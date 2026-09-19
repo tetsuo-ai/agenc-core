@@ -1769,6 +1769,15 @@ function createAuthoritativeSelectionMapper(
     const positions = preparedByKey.get(key(message)) ?? [];
     const positionIndex = lastIndexLessThan(positions, nextPreparedIndex);
     if (positionIndex < 0) {
+      if (isTransientContextMessage(message)) {
+        // A per-request context message (a skill listing, a permission
+        // reminder) is rendered for the model and never written to the
+        // rollout, so it cannot have a canonical record. It carries nothing
+        // to summarize or keep: leave it out rather than refuse the whole
+        // compaction over it.
+        callerToPrepared[callerIndex] = -1;
+        continue;
+      }
       // Name the message that broke the projection. Without this the
       // sentence alone could not distinguish a rewritten tool result from a
       // message the canonical rollout never saw, so a live failure could not
@@ -1828,7 +1837,9 @@ function createAuthoritativeSelectionMapper(
       used.add(callerIndex);
       return callerIndex;
     });
-    const preparedIndexes = callerIndexes.map((index) => callerToPrepared[index]!);
+    const preparedIndexes = callerIndexes
+      .map((index) => callerToPrepared[index]!)
+      .filter((index) => index >= 0);
     return {
       messages: preparedIndexes.map((index) => prepared.messages[index]!),
       sourceRefs: preparedIndexes.map(
@@ -1837,6 +1848,22 @@ function createAuthoritativeSelectionMapper(
       preparedIndexes,
     };
   };
+}
+
+/**
+ * A user-channel context message the runtime renders for one request (a
+ * skill listing, a permission reminder, hook context). It is never history:
+ * `isAttachmentMessage` in session/attachment-retention.ts names the same
+ * shape. An agent-invocation channel also carries the user_context boundary
+ * but is durable, so it is excluded here.
+ */
+function isTransientContextMessage(message: RuntimeMessage): boolean {
+  const role = message.originalRole ?? message.role ?? message.message?.role ?? "user";
+  return (
+    role === "user" &&
+    message.runtimeOnly?.mergeBoundary === "user_context" &&
+    message.runtimeOnly?.agentInvocation === undefined
+  );
 }
 
 function lastIndexLessThan(values: readonly number[], threshold: number): number {

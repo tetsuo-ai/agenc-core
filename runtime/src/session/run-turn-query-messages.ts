@@ -70,6 +70,7 @@ async function prepareAgenCTurnContext(
       ctx.modelInfo.contextWindow,
     );
     state.snipTokensFreed = 0;
+    state.messagesAtSampleStart = state.messages.length;
     return;
   }
   const toolUseContext = buildAgenCToolUseContext(session, ctx, {
@@ -91,6 +92,9 @@ async function prepareAgenCTurnContext(
     state.messagesForQuery = messages.map(cloneLLMMessage);
     state.snipTokensFreed = 0;
   }
+  // Everything below this index is the sampled batch; a retry that must drop
+  // it truncates here (see removeTruncatedAssistantForRetry).
+  state.messagesAtSampleStart = state.messages.length;
 }
 
 function getAgenCPreparedTerminal(

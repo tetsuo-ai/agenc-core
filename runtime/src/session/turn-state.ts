@@ -282,6 +282,13 @@ export interface TurnState {
    *  compaction pipeline. AgenC query.ts:369. */
   messagesForQuery: LLMMessage[];
 
+  /** `messages.length` when the current sampling request was prepared. A
+   *  recovery that must drop the sampled batch truncates back to it rather
+   *  than copying `messagesForQuery`, whose per-request attachments,
+   *  pointer-swapped tool bodies and microcompacted history the rollout never
+   *  stores. */
+  messagesAtSampleStart?: number;
+
   /**
    * Set once the turn's first sampling request has placed its attachments
    * before the prompt; later requests of the same turn append theirs after
