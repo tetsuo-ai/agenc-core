@@ -179,6 +179,77 @@ function parseToolInputObject(
   }
 }
 
+interface AnthropicThinkingBlockState {
+  text: string;
+  signature: string;
+  redacted: boolean;
+}
+
+interface AnthropicCompletedThinkingBlock {
+  text: string;
+  signature?: string;
+  redacted: boolean;
+}
+
+function hasEmittedAnthropicStreamOutput(
+  content: string,
+  completedToolCalls: { readonly length: number },
+  toolBlocks: { readonly size: number },
+  thinkingBlocks: { readonly size: number },
+  completedThinkingBlocks: { readonly length: number },
+): boolean {
+  return (
+    content.length > 0 ||
+    completedToolCalls.length > 0 ||
+    toolBlocks.size > 0 ||
+    thinkingBlocks.size > 0 ||
+    completedThinkingBlocks.length > 0
+  );
+}
+
+function completeThinkingBlock(
+  index: number,
+  block: AnthropicThinkingBlockState,
+  completedThinkingBlocks: AnthropicCompletedThinkingBlock[],
+  onChunk: StreamProgressCallback,
+): void {
+  completedThinkingBlocks.push({
+    text: block.text,
+    ...(block.signature.length > 0 ? { signature: block.signature } : {}),
+    redacted: block.redacted,
+  });
+  onChunk({
+    content: "",
+    done: false,
+    thinkingBlockStop: { index },
+  });
+}
+
+function finalizeOpenThinkingBlocks(
+  thinkingBlocks: Map<number, AnthropicThinkingBlockState>,
+  completedThinkingBlocks: AnthropicCompletedThinkingBlock[],
+  onChunk: StreamProgressCallback,
+): void {
+  for (const [index, block] of thinkingBlocks) {
+    completeThinkingBlock(index, block, completedThinkingBlocks, onChunk);
+  }
+  thinkingBlocks.clear();
+}
+
+function thinkingFromCompletedBlocks(
+  completedThinkingBlocks: readonly AnthropicCompletedThinkingBlock[],
+): LLMResponse["thinking"] {
+  if (completedThinkingBlocks.length === 0) {
+    return undefined;
+  }
+  return completedThinkingBlocks.map((block) => ({
+    text: block.text,
+    ...(block.signature !== undefined ? { signature: block.signature } : {}),
+    redacted: block.redacted,
+    kind: "thinking" as const,
+  }));
+}
+
 function anthropicStreamFallbackCandidate(
   errorRecord: Record<string, unknown>,
   fallbackMessage: string,
@@ -542,6 +613,14 @@ export class AnthropicProvider implements LLMProvider {
         signature?: string;
         redacted: boolean;
       }> = [];
+      const streamHasEmittedOutput = () =>
+        hasEmittedAnthropicStreamOutput(
+          content,
+          completedToolCalls,
+          toolBlocks,
+          thinkingBlocks,
+          completedThinkingBlocks,
+        );
     try {
       const response = await session.requestStream({
         api: "messages",
@@ -755,18 +834,12 @@ export class AnthropicProvider implements LLMProvider {
           }
           const thinkingBlock = thinkingBlocks.get(index);
           if (thinkingBlock) {
-            completedThinkingBlocks.push({
-              text: thinkingBlock.text,
-              ...(thinkingBlock.signature.length > 0
-                ? { signature: thinkingBlock.signature }
-                : {}),
-              redacted: thinkingBlock.redacted,
-            });
-            onChunk({
-              content: "",
-              done: false,
-              thinkingBlockStop: { index },
-            });
+            completeThinkingBlock(
+              index,
+              thinkingBlock,
+              completedThinkingBlocks,
+              onChunk,
+            );
             thinkingBlocks.delete(index);
           }
           continue;
@@ -798,11 +871,7 @@ export class AnthropicProvider implements LLMProvider {
             typeof errorRecord.message === "string"
               ? errorRecord.message
               : "Provider stream failed";
-          if (
-            content.length === 0 &&
-            completedToolCalls.length === 0 &&
-            toolBlocks.size === 0
-          ) {
+          if (!streamHasEmittedOutput()) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               anthropicStreamFallbackCandidate(errorRecord, message),
               consecutiveFallbackFailures,
@@ -897,16 +966,15 @@ export class AnthropicProvider implements LLMProvider {
         throw error;
       }
       // Only retry the stream from scratch when nothing has been emitted to the
-      // consumer yet. Once partial text or tool calls have been forwarded via
-      // onChunk, re-running the attempt would replay (and thus duplicate) the
-      // already-rendered output and inflate mid-stream token estimates, so we
+      // consumer yet. Once partial text, tool calls, or thinking events have
+      // been forwarded via onChunk, re-running the attempt would replay (and
+      // thus duplicate) the already-rendered output, leave thinking
+      // start/stop unbalanced, and inflate mid-stream token estimates, so we
       // surface a partial response instead (mirrors the in-stream `error`
-      // branch and the grok adapter).
-      const hasEmittedOutput =
-        content.length > 0 ||
-        completedToolCalls.length > 0 ||
-        toolBlocks.size > 0;
-      if (!hasEmittedOutput) {
+      // branch and the grok adapter). Thinking is model-visible: a
+      // transparent retry after a thinking start/delta is the same class of
+      // bug as retrying after text (#2107).
+      if (!streamHasEmittedOutput()) {
         const fallbackDecision = this.evaluateConfiguredFallback(
           error,
           consecutiveFallbackFailures,
@@ -925,20 +993,29 @@ export class AnthropicProvider implements LLMProvider {
         }
       }
       consecutiveFallbackFailures = 0;
+      // Close any thinking block the consumer already opened so failure
+      // paths stay start/stop balanced even when we rethrow.
+      finalizeOpenThinkingBlocks(
+        thinkingBlocks,
+        completedThinkingBlocks,
+        onChunk,
+      );
       if (error instanceof ProviderHttpError && error.status === 401) {
         throw new LLMAuthenticationError(this.name, error.status);
       }
       const mappedError = mapLLMError(this.name, error, timeoutMs ?? 0);
+      const streamedToolCount = toolBlocks.size + completedToolCalls.length;
+      const thinking = thinkingFromCompletedBlocks(completedThinkingBlocks);
       // A transport fault before any tool block streamed is re-sampled by the
-      // turn's reconnect ladder; a partial response is surfaced only when the
-      // fault is not transient or a tool call may already have dispatched.
-      if (
-        content.length > 0 &&
-        !isResampleableStreamInterruption(
-          mappedError,
-          toolBlocks.size + completedToolCalls.length,
-        )
-      ) {
+      // turn's reconnect ladder; a partial response is surfaced when the
+      // fault is not transient, a tool call may already have dispatched, or
+      // thinking events were already forwarded (#2107). Protocol errors such
+      // as invalid tool_use JSON still rethrow.
+      const shouldSurfacePartial =
+        thinking !== undefined ||
+        (content.length > 0 &&
+          !isResampleableStreamInterruption(mappedError, streamedToolCount));
+      if (shouldSurfacePartial) {
         const partialToolCalls: LLMToolCall[] = completedToolCalls.flatMap(
           (toolCall) => {
             if (!parseToolInputObject(toolCall.arguments)) return [];
@@ -970,6 +1047,7 @@ export class AnthropicProvider implements LLMProvider {
             provenance: "synthetic",
           }),
           model,
+          ...(thinking !== undefined ? { thinking } : {}),
           finishReason: "error",
           error: mappedError,
           partial: true,
