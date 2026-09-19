@@ -22,6 +22,13 @@ import type {
 } from "../../types.js";
 import { validateToolCall } from "../../types.js";
 import type { OllamaProviderConfig } from "./types.js";
+import {
+  normalizeOllamaDoneReason,
+  ollamaAcceptsToolCalls,
+  ollamaDoneReasonTrace,
+  ollamaFinishReason,
+  ollamaUnknownDoneReasonError,
+} from "./done-reason.js";
 import { salvageTextToolCalls, streamableLength } from "./salvage-tool-calls.js";
 import { diagnoseRejectedTextToolCall } from "./text-tool-call-recovery.js";
 import { projectOllamaTextTools } from "./text-tools.js";
@@ -575,17 +582,22 @@ export class OllamaProvider implements LLMProvider {
         this.name,
         signal,
       );
+      const parsed = this.parseResponse(response, options);
       emitProviderTraceEvent(options, {
         kind: "response",
         transport: "chat",
         provider: this.name,
         model: String(response?.model ?? params.model ?? this.config.model),
-        payload:
-          cloneProviderTracePayload(response) ??
-          { error: "provider_response_trace_unavailable" },
+        payload: {
+          ...(cloneProviderTracePayload(response) ??
+            { error: "provider_response_trace_unavailable" }),
+          ...ollamaDoneReasonTrace(
+            normalizeOllamaDoneReason(isRecord(response) ? response.done_reason : undefined),
+          ),
+        },
       });
       return {
-        ...this.parseResponse(response, options),
+        ...parsed,
         requestMetrics,
       };
     } catch (err: unknown) {
@@ -630,7 +642,7 @@ export class OllamaProvider implements LLMProvider {
     let promptTokens = 0;
     let completionTokens = 0;
     let sawProviderUsage = false;
-    let doneReason: string | undefined;
+    let doneReason: unknown;
     let toolCallRecovery: LLMResponse["toolCallRecovery"];
     const execution = this.requireExecution(options);
 
@@ -699,8 +711,9 @@ export class OllamaProvider implements LLMProvider {
 
               const chunkModel = readString(chunk.model);
               if (chunkModel) model = chunkModel;
-              const chunkDoneReason = readString(chunk.done_reason);
-              if (chunkDoneReason) doneReason = chunkDoneReason;
+              if (chunk.done === true) {
+                doneReason = chunk.done_reason;
+              }
               const reportedPromptTokens = readNonNegativeNumber(
                 chunk.prompt_eval_count,
               );
@@ -725,7 +738,9 @@ export class OllamaProvider implements LLMProvider {
       // The model may have written its call into the reply instead of
       // returning it. Only once the stream is done is there a whole value to
       // read, so the recovery happens here rather than per chunk.
-      if (toolCalls.length === 0 && doneReason !== "length") {
+      const normalizedDoneReason = normalizeOllamaDoneReason(doneReason);
+      const acceptToolCalls = ollamaAcceptsToolCalls(normalizedDoneReason);
+      if (toolCalls.length === 0 && acceptToolCalls) {
         const salvaged = salvageTextToolCalls(content, execution.names.salvageTools);
         if (salvaged.toolCalls.length > 0) {
           toolCalls = [...salvaged.toolCalls];
@@ -735,7 +750,7 @@ export class OllamaProvider implements LLMProvider {
           if (toolCallRecovery) content = "";
         }
       }
-      toolCalls = doneReason === "length" ? [] : this.canonicalizeCalls(toolCalls, execution);
+      toolCalls = acceptToolCalls ? this.canonicalizeCalls(toolCalls, execution) : [];
       if (toolCallRecovery) toolCallRecovery = {
         ...toolCallRecovery,
         toolName: execution.names.toCanonicalName(toolCallRecovery.toolName) ?? toolCallRecovery.toolName,
@@ -748,11 +763,11 @@ export class OllamaProvider implements LLMProvider {
         emittedLength = content.length;
       }
 
-      const finishReason: LLMResponse["finishReason"] =
-        doneReason === "length"
-          ? "length"
-          : toolCalls.length > 0 ? "tool_calls" : "stop";
-      const completedToolCalls = finishReason === "length" ? [] : toolCalls;
+      const finishReason = ollamaFinishReason(normalizedDoneReason, toolCalls.length);
+      const completedToolCalls = finishReason === "tool_calls" ? toolCalls : [];
+      const unknownDoneReasonError = finishReason === "error" && normalizedDoneReason.rawReason !== undefined
+        ? ollamaUnknownDoneReasonError(this.name, normalizedDoneReason.rawReason)
+        : undefined;
       onChunk({ content: "", done: true, toolCalls: completedToolCalls });
       emitProviderTraceEvent(options, {
         kind: "response",
@@ -775,7 +790,7 @@ export class OllamaProvider implements LLMProvider {
               : {}),
           },
           model,
-          ...(doneReason !== undefined ? { done_reason: doneReason } : {}),
+          ...ollamaDoneReasonTrace(normalizedDoneReason),
           prompt_eval_count: promptTokens,
           eval_count: completionTokens,
         },
@@ -795,6 +810,7 @@ export class OllamaProvider implements LLMProvider {
         model,
         requestMetrics,
         finishReason,
+        ...(unknownDoneReasonError !== undefined ? { error: unknownDoneReasonError } : {}),
         ...this.buildUnsupportedDiagnostics(options),
       };
     } catch (err: unknown) {
@@ -1169,18 +1185,23 @@ export class OllamaProvider implements LLMProvider {
     const message = isRecord(record.message) ? record.message : {};
     const rawContent = readString(message.content);
     const execution = this.requireExecution(options ?? {});
-    const truncated = record.done_reason === "length";
-    const reported = truncated ? [] : normalizeOllamaToolCalls(message.tool_calls);
+    const normalizedDoneReason = normalizeOllamaDoneReason(record.done_reason);
+    const acceptToolCalls = ollamaAcceptsToolCalls(normalizedDoneReason);
+    const reported = acceptToolCalls ? normalizeOllamaToolCalls(message.tool_calls) : [];
     // Same recovery as the streaming path: a reply that IS a call becomes one.
     const salvaged =
-      reported.length === 0 && !truncated
+      reported.length === 0 && acceptToolCalls
         ? salvageTextToolCalls(rawContent, execution.names.salvageTools)
         : { toolCalls: [], content: rawContent };
     const toolCalls = this.canonicalizeCalls(salvaged.toolCalls.length > 0 ? salvaged.toolCalls : reported, execution);
-    const toolCallRecovery = toolCalls.length === 0 && !truncated
+    const toolCallRecovery = toolCalls.length === 0 && acceptToolCalls
       ? diagnoseRejectedTextToolCall(rawContent, execution.names.salvageTools)
       : undefined;
     const content = toolCallRecovery ? "" : salvaged.toolCalls.length > 0 ? salvaged.content : rawContent;
+    const finishReason = ollamaFinishReason(normalizedDoneReason, toolCalls.length);
+    const unknownDoneReasonError = finishReason === "error" && normalizedDoneReason.rawReason !== undefined
+      ? ollamaUnknownDoneReasonError(this.name, normalizedDoneReason.rawReason)
+      : undefined;
 
     const promptTokens = readNonNegativeNumber(record.prompt_eval_count);
     const completionTokens = readNonNegativeNumber(record.eval_count);
@@ -1205,7 +1226,8 @@ export class OllamaProvider implements LLMProvider {
         readString(record.model) ||
         options?.model?.trim() ||
         this.config.model,
-      finishReason: truncated ? "length" : toolCalls.length > 0 ? "tool_calls" : "stop",
+      finishReason,
+      ...(unknownDoneReasonError !== undefined ? { error: unknownDoneReasonError } : {}),
       ...this.buildUnsupportedDiagnostics(options),
     };
   }
