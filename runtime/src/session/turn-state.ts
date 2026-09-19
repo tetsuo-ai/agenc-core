@@ -70,7 +70,8 @@ export type ContinueReason =
   | "plan_tool_required"
   | "text_tool_call_correction"
   | "continuation_nudge"
-  | "completion_gate";
+  | "completion_gate"
+  | "goal_gate";
 
 export interface Continue {
   readonly reason: ContinueReason;
@@ -430,6 +431,14 @@ export interface TurnState {
    */
   completionGateUnavailablePrompted: boolean;
 
+  // ── Phase 4c — goal gate (`/goal`) — turn-scoped ──
+  /**
+   * `completedToolResults.length` when the goal gate last injected. The goal
+   * itself (rounds, verdicts) is session state; only the stall window is
+   * turn-scoped, and a resumed turn restarting it is harmless.
+   */
+  goalGateToolLedgerMark: number;
+
   // ── Phase 5 — execute tools (AgenC query.ts:572, 1467-1635) ──
   /** Streaming tool executor instance (T7). Kept loop-local so the
    *  next iteration can await pending executor completion before
@@ -592,6 +601,7 @@ export function buildInitialTurnState(
     completionGateToolLedgerMark: 0,
     completionGateSettled: false,
     completionGateUnavailablePrompted: false,
+    goalGateToolLedgerMark: 0,
     // Phase 5
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
@@ -738,6 +748,7 @@ const CONTINUE_REASONS: ReadonlySet<string> = new Set<ContinueReason>([
   "text_tool_call_correction",
   "continuation_nudge",
   "completion_gate",
+  "goal_gate",
 ]);
 
 /**

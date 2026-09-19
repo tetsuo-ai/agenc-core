@@ -91,6 +91,9 @@ import {
   completionGate,
   planCompletionGateForTurn,
 } from "../phases/completion-gate.js";
+import { goalGate, goalGateApplies } from "../phases/goal-gate.js";
+import { buildGoalKickoffMessage } from "../goal/goal.js";
+import { getSessionGoal } from "../goal/session-goal.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
@@ -1057,7 +1060,12 @@ async function tryRunSamplingRequest(
     // Phase 4b: the non-interactive completion gate judges a tool-free final
     // answer only when the nudge left the sample alone.
     if (state.transition === undefined) {
-      await completionGate(state, ctx, session, signal);
+      // Phase 4c: an active `/goal` governs the answer instead. The two
+      // never both act, so the model gets one request, not two.
+      const governedByGoal = await goalGate(state, ctx, session, signal);
+      if (!governedByGoal) {
+        await completionGate(state, ctx, session, signal);
+      }
     }
   }
 
@@ -2127,6 +2135,17 @@ async function* runTurnKernelInner(
     isRootHumanTurn: commons.rootHumanTurnText !== undefined,
     taskText: commons.rootHumanTurnText,
   });
+  // Phase 4c: restate an active goal at the top of every root human turn. The
+  // goal is session state, not conversation, so a compacted history or a
+  // fresh user prompt still starts from the objective verbatim (goal drift
+  // grows with context length, arXiv:2505.02709).
+  if (commons.rootHumanTurnText !== undefined) {
+    const liveGoal = getSessionGoal(session);
+    if (goalGateApplies(ctx, session, liveGoal)) {
+      const tracking = getAttachmentTrackingState(session);
+      tracking.pendingCriticalReminder ??= buildGoalKickoffMessage(liveGoal);
+    }
+  }
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
   const rolloutPersistenceActive = (): boolean =>

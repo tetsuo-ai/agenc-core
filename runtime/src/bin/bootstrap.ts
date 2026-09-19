@@ -545,6 +545,7 @@ function buildDeferredConfig(
     ...(config.completion_gate !== undefined
       ? { completionGate: config.completion_gate }
       : {}),
+    ...(config.goal !== undefined ? { goal: config.goal } : {}),
     ...(config.compaction !== undefined ? { compaction: config.compaction } : {}),
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }

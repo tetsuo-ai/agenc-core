@@ -41,6 +41,7 @@ import type { AuthBackend } from "../auth/backend.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { routerFromRegistry } from "../tools/router.js";
 import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
+import { goalFromRolloutItems, restoreSessionGoal } from "../goal/session-goal.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import { logForDebugging } from "../utils/debug.js";
 import {
@@ -1110,6 +1111,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           metadataStringList(params.metadata, "unattendedDeny"),
           isRoutineRun(params.metadata),
         );
+        // `/goal` is session state journaled outside the conversation. A
+        // reopened session gets its open goal back, paused: continuing is the
+        // user's decision (`/goal resume`), not a side effect of reattaching.
+        const restoredGoal = goalFromRolloutItems(bootstrap.rolloutStore.readAll());
+        if (restoredGoal !== undefined) {
+          restoreSessionGoal(bootstrap.session, restoredGoal);
+        }
         const canonicalRuntimeState = currentCanonicalRuntimeStateFromRollout(
           bootstrap,
           params.agentId,

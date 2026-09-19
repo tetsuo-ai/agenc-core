@@ -34,7 +34,7 @@ import type {
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
 import type { SessionEditorInteraction } from "./autonomous-mode.js";
-import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig } from "../config/schema.js";
+import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig, GoalConfig } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep structural types. Keep these narrow so TurnContext can carry
@@ -509,6 +509,8 @@ export interface Config {
   readonly durableTurns?: DurableTurnsConfig;
   /** Completion gate policy for non-interactive verification rounds. */
   readonly completionGate?: CompletionGateConfig;
+  /** `/goal` policy: rounds, stall window, reviewer model, verification timeout. */
+  readonly goal?: GoalConfig;
   /** Degraded compaction ladder policy (#2497). */
   readonly compaction?: CompactionConfig;
   readonly experimental_realtime_start_instructions?: string;

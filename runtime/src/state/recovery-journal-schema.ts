@@ -982,6 +982,56 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     },
     { haltedSideEffectingTools: isStringArray },
   ),
+  goal_changed: objectShape(
+    {
+      goal: objectShape(
+        {
+          id: isNonEmptyString,
+          objective: isNonEmptyString,
+          verification: arrayOf(
+            objectShape({ label: isString, script: isNonEmptyString }),
+          ),
+          criteria: isStringArray,
+          constraints: isStringArray,
+          budget: objectShape(
+            { maxRounds: isPositiveInteger },
+            { maxCostUsd: isNumber, deadlineAt: isString },
+          ),
+          status: oneOf(
+            "active",
+            "paused",
+            "met",
+            "impossible",
+            "blocked",
+            "budget_exhausted",
+            "stalled",
+            "cleared",
+          ),
+          rounds: isNonNegativeInteger,
+          stalledRounds: isNonNegativeInteger,
+          startedAt: isString,
+          startCostUsd: isNumber,
+        },
+        {
+          baseCommit: isString,
+          pauseReason: isString,
+          lastVerdict: objectShape({
+            verdict: oneOf(
+              "met",
+              "not_met",
+              "impossible",
+              "blocked",
+              "verification_failed",
+            ),
+            reason: isString,
+            at: isString,
+          }),
+        },
+      ),
+      cause: oneOf("set", "round", "settled", "paused", "resumed", "cleared"),
+    },
+    { turnId: isString },
+  ),
   completion_gate: objectShape(
     {
       turnId: isString,

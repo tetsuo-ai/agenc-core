@@ -18,6 +18,7 @@
  * @module
  */
 
+import type { SessionGoal } from "../goal/goal.js";
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import type { AgentStatus, NativeWorkerTiming } from "../agents/status.js";
 import type { AdmissionJournalEvent, AdmissionUsageSummary } from "../budget/admission-types.js";
@@ -301,6 +302,24 @@ export interface TurnResumedEvent {
  * accepted because the rounds ran out, or the turn was not gated.
  * `verified` is structural compliance, not a benchmark pass.
  */
+/**
+ * The session goal changed (`/goal`, or a goal-gate round). The payload is
+ * the full snapshot so a resumed session restores the goal from the last
+ * event alone; the goal lives outside the conversation on purpose, so
+ * compaction cannot lose or paraphrase it.
+ */
+export interface GoalChangedEvent {
+  readonly goal: SessionGoal;
+  readonly cause:
+    | "set"
+    | "round"
+    | "settled"
+    | "paused"
+    | "resumed"
+    | "cleared";
+  readonly turnId?: string;
+}
+
 export interface CompletionGateEvent {
   readonly turnId: string;
   /** Gate prompts injected so far in this turn, after this decision. */
@@ -1222,6 +1241,7 @@ export type EventMsg =
     }
   | { readonly type: "turn_resumed"; readonly payload: TurnResumedEvent }
   | { readonly type: "completion_gate"; readonly payload: CompletionGateEvent }
+  | { readonly type: "goal_changed"; readonly payload: GoalChangedEvent }
   | {
       readonly type: "thread_rolled_back";
       readonly payload: ThreadRolledBackEvent;
@@ -1483,6 +1503,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "turn_checkpoint",
     "turn_resumed",
     "completion_gate",
+    "goal_changed",
     "thread_rolled_back",
     "error",
     "stream_error",

@@ -259,6 +259,21 @@ export interface CompletionGateConfig {
 }
 
 /**
+ * `/goal`: the session keeps working until the runtime's own verification and
+ * an independent reviewer agree the goal is met. See docs/reference/goal.md.
+ */
+export interface GoalConfig {
+  /** Continuations a goal may use before it stops as budget_exhausted; default 20, at most 100. */
+  readonly max_rounds?: number;
+  /** Consecutive rounds without a successful tool call before the goal stalls; default 3. */
+  readonly stall_rounds?: number;
+  /** Model for the independent goal reviewer; defaults to the session model. */
+  readonly judge_model?: string;
+  /** Per-command verification timeout in milliseconds; default 600000. */
+  readonly verify_timeout_ms?: number;
+}
+
+/**
  * Degraded compaction ladder (#2497). When the standard auto-compaction
  * declines to shrink the context, the runtime retries with a more
  * aggressive summary and finally a model-free emergency compaction.
@@ -932,6 +947,7 @@ export interface AgenCConfig {
   readonly agent?: AgentConfig;
   readonly durableTurns?: DurableTurnsConfig;
   readonly completion_gate?: CompletionGateConfig;
+  readonly goal?: GoalConfig;
   readonly compaction?: CompactionConfig;
   readonly stream_watchdog_timeout_ms?: number;
   readonly provider_outage_wait_ms?: number;
@@ -1088,6 +1104,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "heartbeat",
   "durableTurns",
   "completion_gate",
+  "goal",
   "compaction",
   "_unknown",
 ]);
