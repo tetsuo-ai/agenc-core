@@ -174,6 +174,13 @@ export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
 export const AGENC_DAEMON_LOST_TURN_REASON =
   "the daemon stopped responding; the turn cannot continue here";
+/**
+ * How long a daemon may stay silent mid-turn before the TUI ends the turn.
+ * The client's own reconnect window is the 30 s RPC timeout, which is too
+ * long to sit in front of a frozen composer; a daemon that has not answered
+ * in 10 s is treated as gone, and a later reconnect resumes its events.
+ */
+export const AGENC_DAEMON_LOST_TURN_PROBE_MS = 10_000;
 
 const MAX_DAEMON_QUEUED_INPUTS = 512;
 const MAX_DAEMON_QUEUED_INPUT_BYTES = 16 * 1_024 * 1_024;
@@ -698,6 +705,8 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly realtimeAudioCaptureFactory?: StartRealtimeAudioCapture;
   readonly realtimeAudioPlayer?: RealtimeAudioPlayer;
   readonly transcriptSnapshot?: SessionTranscriptV2Result;
+  /** Test seam: how long a silent daemon keeps a turn alive mid-turn. */
+  readonly lostTurnProbeMs?: number;
   /** Snapshot cursor captured only after this socket's session route exists. */
   readonly runtimeSettingsCursor: {
     readonly eventId: string;
@@ -1161,6 +1170,7 @@ export function createDaemonTuiSession<
         : activeTurnSnapshot?.turnId ?? lastObservedTurnId,
       options.transcriptSnapshot,
       () => activeTurnSnapshot !== null || pendingSubmissions.size > 0,
+      options.lostTurnProbeMs,
     );
     const currentConnectionState = client.getConnectionState?.();
     if (
@@ -2778,6 +2788,7 @@ function subscribeToDaemonEvents(
   activeTurnId?: () => string | undefined,
   transcriptSnapshot?: SessionTranscriptV2Result,
   turnInFlight?: () => boolean,
+  probeDeadlineMs: number = AGENC_DAEMON_LOST_TURN_PROBE_MS,
 ): () => void {
   let replayingInitialEvents = true;
   let closed = false;
@@ -2850,12 +2861,21 @@ function subscribeToDaemonEvents(
   // event never arrives: the TUI stays busy forever, Esc cancels nothing, and
   // /exit and Ctrl-C are refused as "finish or cancel the turn first". A
   // dropped socket alone proves nothing, the daemon owns the turn and may
-  // still be running it, so ask: the request runs the client's whole
-  // reconnect window, and only its failure ends the turn locally.
+  // still be running it, so ask, and end the turn locally only when the
+  // daemon fails to answer or stays silent past the probe deadline.
   const settleTurnIfDaemonLostIt = (): void => {
     if (lostTurnProbe !== null || turnInFlight?.() !== true) return;
-    lostTurnProbe = client
-      .request("session.snapshot", { sessionId })
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const silent = new Promise<never>((_, reject) => {
+      deadline = setTimeout(
+        () => reject(new Error("daemon silent past the probe deadline")),
+        probeDeadlineMs,
+      );
+    });
+    lostTurnProbe = Promise.race([
+      client.request("session.snapshot", { sessionId }),
+      silent,
+    ])
       .then(
         () => undefined,
         () => {
@@ -2872,6 +2892,7 @@ function subscribeToDaemonEvents(
         },
       )
       .finally(() => {
+        clearTimeout(deadline);
         lostTurnProbe = null;
       });
   };

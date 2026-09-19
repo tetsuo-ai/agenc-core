@@ -4102,7 +4102,7 @@ describe("AgenC TUI daemon session adapter", () => {
   });
 
   describe("a turn whose daemon is gone", () => {
-    function sessionWithActiveTurn(request: (method: string) => Promise<unknown>) {
+    function sessionWithActiveTurn(request: (method: string) => Promise<unknown>, lostTurnProbeMs?: number) {
       const client = createClient();
       client.request = ((method: string) => request(method)) as typeof client.request;
       const received: JsonObject[] = [];
@@ -4111,6 +4111,7 @@ describe("AgenC TUI daemon session adapter", () => {
         client,
         sessionId: "session_1",
         clientId: "tui_1",
+        ...(lostTurnProbeMs !== undefined ? { lostTurnProbeMs } : {}),
       });
       const unsubscribe = session.subscribeToEvents((event) => {
         received.push(event as JsonObject);
@@ -4153,6 +4154,17 @@ describe("AgenC TUI daemon session adapter", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect(aborted(received)).toHaveLength(0);
       expect(session.activeTurn.unsafePeek()).toEqual({ turnId: "turn_1" });
+      unsubscribe();
+    });
+
+    it("ends the turn when the daemon stays silent past the probe deadline, not the 30 s RPC window", async () => {
+      const { client, received, unsubscribe } = sessionWithActiveTurn(
+        () => new Promise(() => {}),
+        25,
+      );
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      await vi.waitFor(() => expect(aborted(received)).toHaveLength(1), { timeout: 2_000 });
+      expect(aborted(received)[0]).toMatchObject({ payload: { reason: AGENC_DAEMON_LOST_TURN_REASON } });
       unsubscribe();
     });
 
