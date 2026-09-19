@@ -862,7 +862,13 @@ describe("daemon-owned scheduled turns", () => {
       registry.tools[0]!.execute = tool;
       const { session, events } = create("cron-owner", provider, registry);
       __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
-      const submit = vi.spyOn(session, "submit");
+      const submitted = Promise.withResolvers<void>();
+      const submitTurn = session.submit.bind(session);
+      const submit = vi.spyOn(session, "submit").mockImplementation((...args) => {
+        const completion = submitTurn(...args);
+        submitted.resolve();
+        return completion;
+      });
       const cronCreate = createModelFacingTools({ workspaceRoot, getSession: () => session })
         .find((candidate) => candidate.name === "CronCreate")!;
       const created = await cronCreate.execute({
@@ -874,6 +880,9 @@ describe("daemon-owned scheduled turns", () => {
       else await expect(readCronTasks(workspaceRoot)).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
       expect(calls()).toBe(0);
       await advance();
+      // Timer advancement does not await the wake's real filesystem reads.
+      // Observe dispatch itself before asserting how many turns it submitted.
+      await submitted.promise;
       expect(submit).toHaveBeenCalledTimes(1);
       await submit.mock.results[0]!.value;
       const scheduler = await start(session);
