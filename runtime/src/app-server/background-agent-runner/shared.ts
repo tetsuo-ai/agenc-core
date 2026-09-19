@@ -503,7 +503,7 @@ export interface AgenCBackgroundAgentRunner {
   ): Promise<AgenCBackgroundAgentCancellationPreparation>;
   stopAgent?(agentId: string, reason?: string): Promise<void>;
   /** Daemon-owned one-shot invocation: derive its final outcome from a settled message. */
-  finishAgentRun?(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | undefined>;
+  finishAgentRun?(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | "permission_denied" | undefined>;
   /** Daemon-only shutdown disposition; caller prose cannot select suspension. */
   suspendIdleAgentForDaemonShutdown?(
     agentId: string,

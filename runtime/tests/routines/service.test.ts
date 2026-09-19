@@ -253,6 +253,26 @@ describe("daemon-owned local routines", () => {
     f.service.run({ id: routine.id }); await vi.waitFor(() => expect(snapshots).toEqual([f.params.instructions, "Updated for future runs"])); finish("completed"); await terminal(f.service, routine.id);
   });
 
+  it("persists a permission denial as failed with an actionable explanation after restart", async () => {
+    const f = setup({ execute: async () => "permission_denied" });
+    const { routine } = f.service.create(f.params);
+    f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    const run = f.service.runs({ id: routine.id }).runs[0]!;
+    expect(run).toMatchObject({ status: "failed", error: "A tool action was blocked by this routine's read-only permissions. Update its instructions to use only read-only actions, then run it again. Open its session for details." });
+    expect(run.finishedAt).not.toBeNull();
+    expect(f.service.get({ id: routine.id }).routine.lastRun).toEqual(run);
+    await f.service.close();
+    const restarted = new RoutineService({ home: f.home, executor: f.executor }); services.push(restarted);
+    expect(restarted.runs({ id: routine.id }).runs[0]).toEqual(run);
+  });
+
+  it("retains the generic explanation for failures without a permission denial", async () => {
+    const f = setup({ execute: async () => "failed" });
+    const { routine } = f.service.create(f.params);
+    f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Core could not complete this run. Open its session for details." });
+  });
+
   it("hands the cause to the daemon diagnostic and stores a fixed reason for missing credentials", async () => {
     const onRunFailure = vi.fn();
     const cause = new Error("deepseek provider requires credentials. Set DEEPSEEK_API_KEY.");

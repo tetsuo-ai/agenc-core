@@ -1830,7 +1830,7 @@ export class AgenCDaemonAgentManager {
   }
 
   /** Internal routine owner seam; this is deliberately not a standalone RPC. */
-  async finishRoutineRun(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | undefined> {
+  async finishRoutineRun(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | "permission_denied" | undefined> {
     if (this.#runner?.finishAgentRun === undefined) {
       throw new AgenCDaemonAgentLifecycleError("BACKGROUND_RUNNER_UNAVAILABLE", "Routine finalization requires the owning Core runner.");
     }

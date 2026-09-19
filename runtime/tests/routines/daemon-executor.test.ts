@@ -66,6 +66,13 @@ describe("routine agent environment", () => {
 });
 
 describe("routine execution finalization", () => {
+  it("preserves the canonical permission denial even when the model finishes its answer", async () => {
+    const f = fixture();
+    f.manager.streamAgentMessage.mockImplementation(async () => ({ terminal: { code: 0 } }) as never);
+    f.manager.finishRoutineRun.mockImplementation(async () => "permission_denied" as never);
+    await expect(f.executor.execute(f.routine, f.run, { signal: f.controller.signal, bind: vi.fn() })).resolves.toBe("permission_denied");
+    expect(f.manager.stopAgent).not.toHaveBeenCalled();
+  });
   it("records canonical completion through the settled-message seam", async () => {
     const f = fixture(); f.manager.streamAgentMessage.mockImplementation(async () => ({ terminal: { code: 0 } }) as never);
     await expect(f.executor.execute(f.routine, f.run, { signal: f.controller.signal, bind: vi.fn() })).resolves.toBe("completed");

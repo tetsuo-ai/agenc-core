@@ -196,7 +196,8 @@ export interface RoutineExecutionContext {
   bind(ids: { agentId: string; sessionId: string; coreRunId: string }): void;
 }
 export interface RoutineExecutor {
-  execute(routine: Routine, run: RoutineRun, context: RoutineExecutionContext): Promise<"completed" | "failed" | "cancelled">;
+  /** A permission denial is a failed run with a fixed, actionable public explanation. */
+  execute(routine: Routine, run: RoutineRun, context: RoutineExecutionContext): Promise<"completed" | "failed" | "cancelled" | "permission_denied">;
 }
 type Active = { controller: AbortController; done: Promise<void>; runId: string };
 
@@ -358,9 +359,11 @@ export class RoutineService {
         if (controller.signal.aborted) status = "cancelled";
         else {
           if (realpathSync(snapshot.cwd) !== snapshot.cwd || !sameIdentity(identity(snapshot.cwd), cwdIdentity)) throw new Error("workspace changed");
-          status = await this.#executor.execute(snapshot, run, { signal: controller.signal, bind: (ids) => { this.#replaceRun(entry, run.id, { ...ids, status: "running" }); } });
+          const outcome = await this.#executor.execute(snapshot, run, { signal: controller.signal, bind: (ids) => { this.#replaceRun(entry, run.id, { ...ids, status: "running" }); } });
+          status = outcome === "permission_denied" ? "failed" : outcome;
+          if (outcome === "permission_denied") error = "A tool action was blocked by this routine's read-only permissions. Update its instructions to use only read-only actions, then run it again. Open its session for details.";
         }
-        if (status === "failed") error = "Core could not complete this run. Open its session for details.";
+        if (status === "failed" && error === null) error = "Core could not complete this run. Open its session for details.";
       } catch (cause) {
         if (cause instanceof RoutineExecutionUnsettledError) {
           this.#held.add(entry.routine.id); status = "running";

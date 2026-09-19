@@ -5053,7 +5053,7 @@ describe("AgenC delegate background-agent runner", () => {
     });
     await runner.submitAgentMessage(agentId, { sessionId: agentId, content: "inspect", originalContent: "inspect", messageId: "routine-message", streamId: "routine-stream", acceptedAt: "2026-05-09T00:00:00.000Z" });
     const status = stopReason === "cancelled" ? "cancelled" : "failed";
-    expect(await runner.finishAgentRun(agentId, "routine-message")).toBe(status);
+    expect(await runner.finishAgentRun(agentId, "routine-message")).toBe(status === "cancelled" ? "cancelled" : "permission_denied");
     const terminals = rolloutItems.flatMap(item => {
       const event = (item as { payload?: { msg?: { type?: string; payload?: unknown } } }).payload?.msg;
       return event?.type === "run_terminal" ? [event.payload] : [];

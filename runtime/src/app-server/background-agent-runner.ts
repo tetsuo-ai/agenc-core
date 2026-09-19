@@ -1602,7 +1602,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
-  async finishAgentRun(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | undefined> {
+  async finishAgentRun(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | "permission_denied" | undefined> {
     const active = this.#active.get(agentId);
     if (active === undefined) return;
     const submission = active.messageSubmissionsById.get(messageId);
@@ -1629,7 +1629,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       usage: terminalUsageForActiveAgent(active), lastSequence: null, finishedAt: this.#now(),
     };
     await this.stopAgent(agentId, "Routine invocation finished");
-    return code === 0 ? "completed" : code === 130 ? "cancelled" : "failed";
+    return code === 0 ? "completed" : code === 130 ? "cancelled"
+      : submission.permissionDenied === true ? "permission_denied" : "failed";
   }
 
   async stopAgent(
