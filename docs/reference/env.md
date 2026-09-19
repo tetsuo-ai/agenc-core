@@ -256,25 +256,19 @@ These have their own pages. Short map:
 | Provider trace bodies | `AGENC_PROVIDER_TRACE_BODIES` (truthy, only with `AGENC_PROVIDER_TRACE`). Also writes each full request as `agent-logs/<conversationId>/llm-<seq>.request.json` (secrets redacted, mode 0600). The whole prompt lands on disk, so use it in an isolated home for cache-prefix diagnosis and delete the files afterwards. `node scripts/eval/prefix-diff.mjs <that directory>` reports where consecutive requests first diverge. |
 | Trajectories | `AGENC_TRAJECTORY_EXPORT_DIR`, `AGENC_TRAJECTORY_EXPORT_PATH` | [trajectory-training-data.md](../trajectory-training-data.md) |
 
-## TUI and BUFFER
+## TUI
 
 | Var | Effect |
 | --- | --- |
-| `AGENC_TEST_NEOVIM_INPUT_TRACE` | Test-only JSONL output path for embedded Neovim input acknowledgements. Records session identity, BUFFER focus, sequence, RPC phase, and mode without input text. Enables bounded read-only mode probes; unset in ordinary runs. See [embedded Neovim testing](../embedded-neovim-buffer.md). |
 | `AGENC_ONBOARDING` | First-run wizard control captured for the owning TUI session. `force` shows the wizard even after completion; `0`, `false`, or `off` suppress it. Unset follows persisted `onboarding.json` state |
-| `AGENC_TUI_WORKBENCH` | `0` uses classic fullscreen instead of workbench |
 | `AGENC_NO_FLICKER` | `0` disables fullscreen; `1` forces it on, including under tmux `-CC`. When unset, tmux `-CC` disables fullscreen; otherwise `tui.flickerFreeMode` is authoritative and defaults to on |
 | `AGENC_DISABLE_MOUSE` | Disables mouse tracking |
 | `AGENC_DISABLE_MOUSE_CLICKS` | Disables click handling |
 | `AGENC_DISABLE_TERMINAL_TITLE` | Leaves the terminal title alone |
 | `AGENC_SCROLL_SPEED` | Scroll multiplier |
-| `AGENC_BUFFER_PROVIDER` | BUFFER provider override |
-| `AGENC_BUFFER_NVIM` | nvim executable / enablement (see BUFFER doc) |
 | `AGENC_REVIEWER_ID` | Reviewer identity for `agenc state resolve-tool-call` |
 | `COLORFGBG` | Seeds the `auto` theme from terminal foreground/background indexes before the OSC 11 background query can respond |
 
-[tui-workbench.md](tui-workbench.md),
-[embedded-neovim-buffer.md](../embedded-neovim-buffer.md).
 
 ## Gateway and remote
 
@@ -349,7 +343,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_B*
 
-`AGENC_BACKEND_URL`, `AGENC_BASE_REF`, `AGENC_BASH_MAINTAIN_PROJECT_WORKING_DIR`, `AGENC_BASH_SANDBOX_SHOW_INDICATOR`, `AGENC_BLOCKING_LIMIT_OVERRIDE`, `AGENC_BRIEF`, `AGENC_BUBBLEWRAP`, `AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS`, `AGENC_BUFFER_NVIM_OPERATION_TIMEOUT_MS`, `AGENC_BUFFER_NVIM_SESSION`, `AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS`, `AGENC_BUFFER_NVIM_TIMEOUT_MS`, `AGENC_BUFFER_NVIM_USE_INIT`, `AGENC_BUILD_COMMIT`, `AGENC_BUILD_ID`.
+`AGENC_BACKEND_URL`, `AGENC_BASE_REF`, `AGENC_BASH_MAINTAIN_PROJECT_WORKING_DIR`, `AGENC_BASH_SANDBOX_SHOW_INDICATOR`, `AGENC_BLOCKING_LIMIT_OVERRIDE`, `AGENC_BRIEF`, `AGENC_BUBBLEWRAP`, `AGENC_BUILD_COMMIT`, `AGENC_BUILD_ID`.
 
 ### AGENC_C*
 

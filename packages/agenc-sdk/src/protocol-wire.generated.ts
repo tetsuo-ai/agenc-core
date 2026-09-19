@@ -517,33 +517,6 @@ export type MessageContentBlock = (JsonObject & {
 
 export type MessageContent = string | readonly MessageContentBlock[];
 
-export interface EditorInteractionPositionParams extends JsonObject {
-    readonly line: number;
-    readonly column: number;
-}
-
-export interface EditorInteractionRangeParams extends JsonObject {
-    readonly start: EditorInteractionPositionParams;
-    readonly end: EditorInteractionPositionParams;
-}
-
-/**
- * JSON-wire mirror of SessionEditorInteraction. Keep this protocol-owned shape
- * structurally aligned without importing runtime session internals.
- */
-export interface EditorInteractionParams extends JsonObject {
-    readonly interactionId: string;
-    readonly kind: "ask" | "explain" | "fix" | "edit" | "refactor";
-    readonly policy: "read_only" | "proposal_only";
-    readonly editorInstanceId: string;
-    readonly bufferHandle: number;
-    readonly changedtick: number;
-    readonly contentSha256: string;
-    readonly path?: string;
-    readonly range: EditorInteractionRangeParams;
-    readonly selectionMode?: "character" | "line" | "block";
-}
-
 export interface AgentRuntimeOptionsParams extends JsonObject {
     readonly simpleMode: boolean;
     /** Omission by an older client is normalized to false. */
@@ -618,12 +591,6 @@ export interface AgentCreateParams extends JsonObject {
      * the daemon must validate it before the first model turn is admitted.
      */
     readonly initialDisplayUserMessage?: string | null;
-    /**
-     * Trusted policy and immutable buffer identity for an Editor-originated
-     * atomic first turn. The daemon validates this before starting the agent and
-     * carries it into the first runTurn exactly as message.stream does later.
-     */
-    readonly initialEditorInteraction?: EditorInteractionParams;
     readonly unattendedAllow?: readonly string[];
     readonly unattendedDeny?: readonly string[];
     readonly metadata?: JsonObject;
@@ -1076,24 +1043,6 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
     "audio.whisper.status",
     "audio.whisper.install",
     "audio.whisper.transcribe",
-    "workspace.editor.acquire",
-    "workspace.editor.sync",
-    "workspace.editor.staleAuthority.refresh",
-    "workspace.editor.heartbeat",
-    "workspace.editor.release",
-    "workspace.editor.topology.reserve",
-    "workspace.editor.topology.complete",
-    "workspace.editor.topology.release",
-    "workspace.editor.topology.recovered.list",
-    "workspace.editor.topology.recovered.resolve",
-    "workspace.editor.proposal.get",
-    "workspace.editor.proposal.status",
-    "workspace.editor.proposal.apply",
-    "workspace.editor.proposal.discard",
-    "workspace.editor.changes.list",
-    "workspace.editor.predict",
-    "workspace.editor.cancelPrediction",
-    "workspace.editor.predictionFeedback",
     "session.partialCompactFromMessage",
     "session.rollbackCompaction",
     "session.extendCompactionRollbackRetention",

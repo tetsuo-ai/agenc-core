@@ -65,43 +65,6 @@ import type {
   SessionProcessesListResult,
   SessionProcessesStopResult,
   SessionResolveToolCallResult,
-  WorkspaceEditorAcquireParams,
-  WorkspaceEditorCancelPredictionParams,
-  WorkspaceEditorCancelPredictionSessionParams,
-  WorkspaceEditorCancelPredictionResult,
-  WorkspaceEditorChangesListParams,
-  WorkspaceEditorChangesListResult,
-  WorkspaceEditorPredictParams,
-  WorkspaceEditorPredictSessionParams,
-  WorkspaceEditorPredictionFeedbackParams,
-  WorkspaceEditorPredictionFeedbackSessionParams,
-  WorkspaceEditorPredictionFeedbackResult,
-  WorkspaceEditorPredictionResult,
-  WorkspaceEditorHeartbeatParams,
-  WorkspaceEditorLeaseResult,
-  WorkspaceEditorProposalApplyParams,
-  WorkspaceEditorProposalApplyResult,
-  WorkspaceEditorProposalDiscardResult,
-  WorkspaceEditorProposalParams,
-  WorkspaceEditorProposalResult,
-  WorkspaceEditorProposalStatusParams,
-  WorkspaceEditorProposalStatusResult,
-  WorkspaceEditorReleaseParams,
-  WorkspaceEditorReleaseResult,
-  WorkspaceEditorRecoveredTopologyListParams,
-  WorkspaceEditorRecoveredTopologyListResult,
-  WorkspaceEditorRecoveredTopologyResolveParams,
-  WorkspaceEditorRecoveredTopologyResolveResult,
-  WorkspaceEditorStaleAuthorityRefreshParams,
-  WorkspaceEditorStaleAuthorityRefreshResult,
-  WorkspaceEditorSyncParams,
-  WorkspaceEditorSyncResult,
-  WorkspaceEditorTopologyCompleteParams,
-  WorkspaceEditorTopologyCompleteResult,
-  WorkspaceEditorTopologyFinalizeParams,
-  WorkspaceEditorTopologyReleaseResult,
-  WorkspaceEditorTopologyReserveParams,
-  WorkspaceEditorTopologyReserveResult,
 } from "../app-server/protocol/index.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import {
@@ -356,60 +319,6 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     profile?: string;
     reload?: boolean;
   }): Promise<SessionApplyConfigResult>;
-  acquireWorkspaceEditor?(
-    params: WorkspaceEditorAcquireParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  syncWorkspaceEditor?(
-    params: WorkspaceEditorSyncParams,
-  ): Promise<WorkspaceEditorSyncResult>;
-  refreshWorkspaceEditorStaleAuthority?(
-    params: WorkspaceEditorStaleAuthorityRefreshParams,
-  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
-  heartbeatWorkspaceEditor?(
-    params: WorkspaceEditorHeartbeatParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  releaseWorkspaceEditor?(
-    params: WorkspaceEditorReleaseParams,
-  ): Promise<WorkspaceEditorReleaseResult>;
-  reserveWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyReserveParams,
-  ): Promise<WorkspaceEditorTopologyReserveResult>;
-  completeWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyCompleteParams,
-  ): Promise<WorkspaceEditorTopologyCompleteResult>;
-  releaseWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyFinalizeParams,
-  ): Promise<WorkspaceEditorTopologyReleaseResult>;
-  listRecoveredWorkspaceEditorTopologies?(
-    params: WorkspaceEditorRecoveredTopologyListParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyListResult>;
-  resolveRecoveredWorkspaceEditorTopology?(
-    params: WorkspaceEditorRecoveredTopologyResolveParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyResolveResult>;
-  getWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalResult>;
-  getWorkspaceEditorProposalStatus?(
-    params: WorkspaceEditorProposalStatusParams,
-  ): Promise<WorkspaceEditorProposalStatusResult>;
-  applyWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalApplyParams,
-  ): Promise<WorkspaceEditorProposalApplyResult>;
-  discardWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalDiscardResult>;
-  listWorkspaceEditorChanges?(
-    params: WorkspaceEditorChangesListParams,
-  ): Promise<WorkspaceEditorChangesListResult>;
-  predictEditorCode?(
-    params: WorkspaceEditorPredictSessionParams,
-  ): Promise<WorkspaceEditorPredictionResult>;
-  cancelEditorPrediction?(
-    params: WorkspaceEditorCancelPredictionSessionParams,
-  ): Promise<WorkspaceEditorCancelPredictionResult>;
-  reportEditorPredictionFeedback?(
-    params: WorkspaceEditorPredictionFeedbackSessionParams,
-  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   executeShellCommand?(
     params: AgenCShellExecuteParams,
@@ -614,84 +523,6 @@ export interface AgenCDaemonTuiClient {
   ): () => void;
 }
 
-interface AgenCDaemonEditorPredictionClient {
-  request(
-    method: "workspace.editor.predict",
-    params: WorkspaceEditorPredictParams,
-  ): Promise<WorkspaceEditorPredictionResult>;
-  request(
-    method: "workspace.editor.cancelPrediction",
-    params: WorkspaceEditorCancelPredictionParams,
-  ): Promise<WorkspaceEditorCancelPredictionResult>;
-  request(
-    method: "workspace.editor.predictionFeedback",
-    params: WorkspaceEditorPredictionFeedbackParams,
-  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
-}
-
-interface AgenCDaemonEditorCoherenceClient {
-  request(
-    method: "workspace.editor.acquire",
-    params: WorkspaceEditorAcquireParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  request(
-    method: "workspace.editor.sync",
-    params: WorkspaceEditorSyncParams,
-  ): Promise<WorkspaceEditorSyncResult>;
-  request(
-    method: "workspace.editor.staleAuthority.refresh",
-    params: WorkspaceEditorStaleAuthorityRefreshParams,
-  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
-  request(
-    method: "workspace.editor.heartbeat",
-    params: WorkspaceEditorHeartbeatParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  request(
-    method: "workspace.editor.release",
-    params: WorkspaceEditorReleaseParams,
-  ): Promise<WorkspaceEditorReleaseResult>;
-  request(
-    method: "workspace.editor.topology.reserve",
-    params: WorkspaceEditorTopologyReserveParams,
-  ): Promise<WorkspaceEditorTopologyReserveResult>;
-  request(
-    method: "workspace.editor.topology.complete",
-    params: WorkspaceEditorTopologyCompleteParams,
-  ): Promise<WorkspaceEditorTopologyCompleteResult>;
-  request(
-    method: "workspace.editor.topology.release",
-    params: WorkspaceEditorTopologyFinalizeParams,
-  ): Promise<WorkspaceEditorTopologyReleaseResult>;
-  request(
-    method: "workspace.editor.topology.recovered.list",
-    params: WorkspaceEditorRecoveredTopologyListParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyListResult>;
-  request(
-    method: "workspace.editor.topology.recovered.resolve",
-    params: WorkspaceEditorRecoveredTopologyResolveParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyResolveResult>;
-  request(
-    method: "workspace.editor.proposal.get",
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalResult>;
-  request(
-    method: "workspace.editor.proposal.status",
-    params: WorkspaceEditorProposalStatusParams,
-  ): Promise<WorkspaceEditorProposalStatusResult>;
-  request(
-    method: "workspace.editor.proposal.apply",
-    params: WorkspaceEditorProposalApplyParams,
-  ): Promise<WorkspaceEditorProposalApplyResult>;
-  request(
-    method: "workspace.editor.proposal.discard",
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalDiscardResult>;
-  request(
-    method: "workspace.editor.changes.list",
-    params: WorkspaceEditorChangesListParams,
-  ): Promise<WorkspaceEditorChangesListResult>;
-}
-
 export interface AgenCDaemonTuiSessionOptions<
   Session extends AgenCTuiBridgeSession = AgenCTuiBridgeSession,
 > {
@@ -795,13 +626,6 @@ export function createDaemonTuiSession<
   const restoredTranscriptEvents = options.transcriptSnapshot === undefined
     ? undefined
     : daemonTranscriptSnapshotEvents(options.transcriptSnapshot, sessionId);
-  // These authenticated TUI-only methods are intentionally absent from the
-  // public daemon method union. The transport accepts known internal methods;
-  // keep the widening narrow so ordinary TUI calls remain contract-checked.
-  const editorPredictionClient =
-    client as unknown as AgenCDaemonEditorPredictionClient;
-  const editorCoherenceClient =
-    client as unknown as AgenCDaemonEditorCoherenceClient;
   const conversationId = options.conversationId ?? sessionId;
   // Share the task board with the daemon turn: TodoWrite persists the board
   // under the conversation id (getTaskListId prefers the ambient session's
@@ -1212,14 +1036,7 @@ export function createDaemonTuiSession<
         bytes: queuedInputBlocksBytes(blocks),
         ...(ownership !== undefined
           ? {
-              ownership: {
-                workspaceView: ownership.workspaceView,
-                ...(ownership.editorInteractionId !== undefined
-                  ? {
-                      editorInteractionId: ownership.editorInteractionId,
-                    }
-                  : {}),
-              },
+              ownership: { workspaceView: ownership.workspaceView },
             }
           : {}),
       }));
@@ -1330,17 +1147,7 @@ export function createDaemonTuiSession<
       const queuedEntries: DaemonQueuedInput[] = [];
       const retained: DaemonQueuedInput[] = [];
       for (const entry of queuedInputs) {
-        const selected =
-          opts?.editorInteraction !== undefined
-            ? entry.ownership?.workspaceView === "editor" &&
-              entry.ownership.editorInteractionId ===
-                opts.editorInteraction.interactionId
-            : entry.ownership?.workspaceView !== "editor";
-        if (selected) {
-          queuedEntries.push(entry);
-        } else {
-          retained.push(entry);
-        }
+        queuedEntries.push(entry);
       }
       queuedInputs.splice(0, queuedInputs.length, ...retained);
       const queued = queuedEntries.flatMap((entry) => entry.blocks);
@@ -1379,37 +1186,6 @@ export function createDaemonTuiSession<
         const metadata: JsonObject = {
           ...(opts?.displayUserMessage !== undefined
             ? { displayUserMessage: opts.displayUserMessage }
-            : {}),
-          ...(opts?.editorInteraction !== undefined
-            ? {
-                editorInteraction: {
-                  interactionId: opts.editorInteraction.interactionId,
-                  kind: opts.editorInteraction.kind,
-                  policy: opts.editorInteraction.policy,
-                  editorInstanceId: opts.editorInteraction.editorInstanceId,
-                  bufferHandle: opts.editorInteraction.bufferHandle,
-                  changedtick: opts.editorInteraction.changedtick,
-                  contentSha256: opts.editorInteraction.contentSha256,
-                  ...(opts.editorInteraction.path !== undefined
-                    ? { path: opts.editorInteraction.path }
-                    : {}),
-                  range: {
-                    start: {
-                      line: opts.editorInteraction.range.start.line,
-                      column: opts.editorInteraction.range.start.column,
-                    },
-                    end: {
-                      line: opts.editorInteraction.range.end.line,
-                      column: opts.editorInteraction.range.end.column,
-                    },
-                  },
-                  ...(opts.editorInteraction.selectionMode !== undefined
-                    ? {
-                        selectionMode: opts.editorInteraction.selectionMode,
-                      }
-                    : {}),
-                },
-              }
             : {}),
         };
         submission.dispatched = true;
@@ -1853,16 +1629,12 @@ export function createDaemonTuiSession<
           );
         }
       }),
-    executeDaemonStatusLine: async (presentation, signal) => {
+    executeDaemonStatusLine: async (_presentation, signal) => {
       signal?.throwIfAborted();
       try {
         return await client.request("session.statusLine.execute", {
           sessionId,
-          presentation: {
-            ...(presentation.vimMode !== undefined
-              ? { vimMode: presentation.vimMode }
-              : {}),
-          },
+          presentation: {},
         } satisfies SessionStatusLineExecuteParams, { signal });
       } catch (error) {
         signal?.throwIfAborted();
@@ -1886,8 +1658,7 @@ export function createDaemonTuiSession<
         try {
           if (p.reload === true) {
             // session.applyConfig refreshes only this agent's live config
-            // store. Predictions are daemon-owned, so reload the daemon-global
-            // snapshot first.
+            // store; reload the daemon-global snapshot first.
             await client.request("daemon.reload", {});
           }
           const result = await client.request("session.applyConfig", {
@@ -1929,72 +1700,6 @@ export function createDaemonTuiSession<
           );
         }
       }),
-    acquireWorkspaceEditor: async (params) =>
-      editorCoherenceClient.request("workspace.editor.acquire", params),
-    syncWorkspaceEditor: async (params) =>
-      editorCoherenceClient.request("workspace.editor.sync", params),
-    refreshWorkspaceEditorStaleAuthority: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.staleAuthority.refresh",
-        params,
-      ),
-    heartbeatWorkspaceEditor: async (params) =>
-      editorCoherenceClient.request("workspace.editor.heartbeat", params),
-    releaseWorkspaceEditor: async (params) =>
-      editorCoherenceClient.request("workspace.editor.release", params),
-    reserveWorkspaceEditorTopology: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.reserve",
-        params,
-      ),
-    completeWorkspaceEditorTopology: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.complete",
-        params,
-      ),
-    releaseWorkspaceEditorTopology: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.release",
-        params,
-      ),
-    listRecoveredWorkspaceEditorTopologies: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.recovered.list",
-        params,
-      ),
-    resolveRecoveredWorkspaceEditorTopology: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.recovered.resolve",
-        params,
-      ),
-    getWorkspaceEditorProposal: async (params) =>
-      editorCoherenceClient.request("workspace.editor.proposal.get", params),
-    getWorkspaceEditorProposalStatus: async (params) =>
-      editorCoherenceClient.request("workspace.editor.proposal.status", params),
-    applyWorkspaceEditorProposal: async (params) =>
-      editorCoherenceClient.request("workspace.editor.proposal.apply", params),
-    discardWorkspaceEditorProposal: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.proposal.discard",
-        params,
-      ),
-    listWorkspaceEditorChanges: async (params) =>
-      editorCoherenceClient.request("workspace.editor.changes.list", params),
-    predictEditorCode: async (params) =>
-      editorPredictionClient.request("workspace.editor.predict", {
-        ...params,
-        sessionId,
-      } satisfies WorkspaceEditorPredictParams),
-    cancelEditorPrediction: async (params) =>
-      editorPredictionClient.request("workspace.editor.cancelPrediction", {
-        ...params,
-        sessionId,
-      } satisfies WorkspaceEditorCancelPredictionParams),
-    reportEditorPredictionFeedback: async (params) =>
-      editorPredictionClient.request("workspace.editor.predictionFeedback", {
-        ...params,
-        sessionId,
-      } satisfies WorkspaceEditorPredictionFeedbackParams),
     subscribeToEvents: (cb) => {
       const unsubscribe = eventReplay.subscribe(cb);
       try {

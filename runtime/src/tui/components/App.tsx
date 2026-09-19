@@ -35,79 +35,7 @@ import { LedgerVerificationOverlay } from "./LedgerVerificationOverlay.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
 import { SessionUsageContext } from "../context/sessionUsageContext.js";
 import { StatusLineExecutionContext } from "../context/statusLineExecutionContext.js";
-import { WorkbenchLayout } from "../workbench/WorkbenchLayout.js";
-import { PredictionConsentOverlay } from "../workbench/PredictionConsentOverlay.js";
-import { ApprovalSurfaceBridge } from "../workbench/approvals/ApprovalSurfaceBridge.js";
-import { getWorkbenchBufferProviderController } from "../workbench/buffer/providers/BufferProviderController.js";
-import type {
-  BufferCodePrediction,
-  BufferCodePredictionContext,
-  BufferCodePredictionFeedback,
-  BufferEditorProposalResolution,
-  BufferIntegrationIntent,
-} from "../workbench/buffer/providers/types.js";
-import type {
-  WorkspaceEditorProposalResult,
-  WorkspaceEditorProposalStatusResult,
-  WorkspaceEditorStaleAuthorityEntry,
-} from "../../app-server/protocol/index.js";
-import type {
-  BufferCodePredictionUi,
-  BufferStaleAuthorityRecoveryUi,
-} from "../workbench/surfaces/BufferSurface.js";
-import { installPrivateNeovimRecovery } from "../workbench/buffer/neovim/NeovimRecovery.js";
-import {
-  applyWorkbenchCommand,
-  getWorkbenchStateFromAppState,
-  isWorkbenchEnabled,
-} from "../workbench/state.js";
-import {
-  activeEditorProposalId,
-  clearEditorProposalRecords,
-  proposalId as editorProposalId,
-  resolveEditorProposalRecord,
-  stageContentFreeEditorProposalRecoveryRecord,
-  stageEditorProposalRecord,
-  stageUnavailableEditorProposalRecord,
-  subscribeEditorProposalStore,
-} from "../workbench/editorProposalStore.js";
-import type { WorkbenchAttachment, WorkspaceView } from "../workbench/types.js";
-import { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
-import {
-  loadWorkbenchUiState,
-  saveWorkbenchUiState,
-} from "../workbench/uiStatePersistence.js";
-import {
-  bufferSnapshotRequiresWorkspaceEditorAuthority,
-  abandonWorkspaceEditorStaleAuthority,
-  createOrderedWorkspaceEditorTeardown,
-  isValidAcceptedEditorProposalResolution,
-  isValidRejectedEditorProposalResolution,
-  refreshWorkspaceEditorStaleAuthority,
-  resolveWorkspaceEditorRecoveredTopologyMutation,
-  settleWorkspaceEditorTeardown,
-  WorkspaceEditorLeaseSynchronizer,
-  type WorkspaceEditorAuthorityState,
-} from "../workbench/workspaceEditorLeaseSync.js";
-import {
-  createWorkspaceOperationLifetime,
-  runWithWorkspaceOperationLifetime,
-  type WorkspaceOperationLifetime,
-} from "../../workspace/tool-operation-lifetime.js";
 import { runWithCwdOverride } from "../../utils/cwd.js";
-import {
-  adoptWorkspaceMutationProposalLocalOutcome,
-  editorProposalFromWorkspaceMutation,
-  workspaceMutationProposalFromChange,
-  workspaceMutationProposalFromTuiEvent,
-  workspaceMutationReferenceMatchesCommitment,
-  workspaceMutationReferenceMatchesProposal,
-  workspaceMutationReferenceMatchesTerminalStatus,
-  workspaceMutationTerminalResolutionAction,
-  workspaceMutationTerminalStatusMatchesLocalOutcome,
-  type WorkspaceMutationProposalLocalOutcome,
-  type WorkspaceMutationProposalReference,
-} from "../workbench/workspaceMutationProposal.js";
 import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { AlternateScreen } from "../ink/components/AlternateScreen.js";
@@ -190,7 +118,6 @@ import type {
   RequestUserInputResponse,
 } from "../../elicitation/types.js";
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
-import { EDITOR_PROPOSAL_TOOL_NAME } from "../../tools/system/editor-proposal.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import { createTuiTools } from "../tool-rendering.js";
@@ -241,16 +168,8 @@ import type { Command } from "../../commands.js";
 import type {
   QueuedCommand,
   QueuedCommandOwner,
-  VimMode,
 } from "../../types/textInputTypes.js";
-import type {
-  SessionEditorInteraction,
-  SessionSubmitOptions,
-} from "../../session/autonomous-mode.js";
-import {
-  validateEditorProposalPayload,
-  type EditorProposalPayload,
-} from "../../tools/system/editor-proposal.js";
+import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
 import {
   installCompactProgressControls,
   type AgenCBridgeSession,
@@ -304,7 +223,6 @@ import {
   type CompletionPipelineState,
 } from "../completion-pipeline.js";
 import { watchCompletionPipelineEventLog } from "../completion-pipeline-watcher.js";
-export { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
 export type McpFieldValue = string | number | boolean | readonly string[];
 const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
 const EMPTY_MCP_TOOLS: readonly unknown[] = [];
@@ -324,8 +242,6 @@ const BUSY_BLOCKED_SLASH_COMMANDS = new Set([
   "rewind",
   "sessions",
 ]);
-const EDITOR_PROPOSAL_REVIEW_REQUIRED =
-  "Accept or reject the current Editor proposal before submitting another Editor request.";
 const mcpSurfaceObjectIds = new WeakMap<object, number>();
 let nextMcpSurfaceObjectId = 1;
 export type McpFieldParseResult =
@@ -341,20 +257,12 @@ export type McpFieldParseResult =
 type LiveSubmitOptions = {
   readonly automatic?: boolean;
   readonly fromQueue?: boolean;
-  readonly workspaceViewOverride?: WorkspaceView;
   readonly pastedContentsOverride?: Record<number, any>;
-  readonly onWorkbenchAttachmentsAdmitted?: () => void;
   readonly rethrowSubmitError?: boolean;
   readonly requireModelSubmission?: boolean;
-  readonly editorInteraction?: SessionEditorInteraction;
   readonly displayUserMessage?: string;
   /** Human-authored text to restore if an internal model envelope is rejected. */
   readonly draftRestoreValue?: string;
-};
-
-type PendingWorkbenchAttachmentAdmission = {
-  readonly clientMessageId: string;
-  readonly acknowledge: () => void;
 };
 
 type ComposerSubmission = {
@@ -425,190 +333,6 @@ function sessionEventStartsTurn(
   );
 }
 
-type TuiWorkspaceEditorAuthorityState =
-  WorkspaceEditorAuthorityState | { readonly status: "unknown" };
-
-type WorkspaceMutationProposalResolutionRequest = {
-  readonly proposal: WorkspaceEditorProposalResult;
-  readonly editorProposalId: string;
-  readonly action: "accept" | "reject";
-  readonly shadowAlreadyCleared?: boolean;
-};
-
-export function workspaceEditorBlockReasons(
-  authority: TuiWorkspaceEditorAuthorityState,
-  editorWorkspaceRequested: boolean,
-): {
-  readonly agent: string | null;
-  readonly editor: string | null;
-} {
-  if (authority.status === "blocked") {
-    const reason = `Editor safety is paused: ${authority.reason}`;
-    return { agent: reason, editor: reason };
-  }
-  if (authority.status === "securing") {
-    const reason =
-      "Securing authoritative Editor ownership with the daemon. Wait for the initial workspace sync.";
-    return { agent: reason, editor: reason };
-  }
-  if (authority.status === "syncing") {
-    return {
-      agent:
-        "Editor changes are still synchronizing with the daemon. Wait before starting another Agent action.",
-      editor: null,
-    };
-  }
-  if (authority.status === "unknown" && editorWorkspaceRequested) {
-    const reason =
-      "Securing authoritative Editor ownership with the daemon. Wait for the initial workspace sync.";
-    return { agent: reason, editor: reason };
-  }
-  return { agent: null, editor: null };
-}
-
-export function workspaceEditorBlockReasonForView(
-  blockers: ReturnType<typeof workspaceEditorBlockReasons>,
-  workspaceView: WorkspaceView,
-): string | null {
-  return workspaceView === "editor" ? blockers.editor : blockers.agent;
-}
-
-export function sessionEditorInteractionFromIntent(
-  intent: BufferIntegrationIntent,
-  editorInstanceId: string,
-  interactionId = randomUUID(),
-): SessionEditorInteraction | null {
-  if (intent.kind === "attach") return null;
-  const kind = intent.kind === "review" ? "refactor" : intent.kind;
-  return {
-    interactionId,
-    kind,
-    policy:
-      kind === "ask" || kind === "explain" ? "read_only" : "proposal_only",
-    editorInstanceId,
-    bufferHandle: intent.context.bufferHandle,
-    changedtick: intent.context.changedtick,
-    contentSha256: editorContextSha256(intent.context.content),
-    ...(intent.context.path.length > 0 ? { path: intent.context.path } : {}),
-    range: intent.context.range,
-    ...(intent.context.selectionMode !== undefined
-      ? { selectionMode: intent.context.selectionMode }
-      : {}),
-  };
-}
-
-export function editorInteractionPrompt(
-  intent: BufferIntegrationIntent,
-): string {
-  const context = intent.context;
-  const request =
-    intent.prompt?.trim() ||
-    (intent.kind === "explain"
-      ? "Explain this editor context."
-      : intent.kind === "fix"
-        ? "Fix this editor context."
-        : intent.kind === "refactor" || intent.kind === "review"
-          ? "Refactor this editor context."
-          : intent.kind === "edit"
-            ? "Edit this editor context."
-            : "Answer the question about this editor context.");
-  const metadata = JSON.stringify({
-    path: context.path,
-    buffer_handle: context.bufferHandle,
-    changedtick: context.changedtick,
-    range: context.range,
-    ...(context.selectionMode !== undefined
-      ? { selection_mode: context.selectionMode }
-      : {}),
-    dirty: context.dirty,
-    kind: context.kind,
-    ...(context.diagnostic !== undefined
-      ? { diagnostic: context.diagnostic }
-      : {}),
-  });
-  const workspaceData = renderUntrustedWorkspaceData(
-    `embedded editor ${intent.kind}: ${
-      context.path.length > 0 ? context.path : "(unnamed buffer)"
-    }`,
-    [`Editor context metadata: ${metadata}`, context.content ?? ""].join("\n"),
-  );
-  return [request, "", workspaceData].join("\n");
-}
-
-export function editorProposalFromTuiEvent(
-  event: unknown,
-): EditorProposalPayload | null {
-  if (typeof event !== "object" || event === null) return null;
-  const typed = event as {
-    readonly type?: unknown;
-    readonly payload?: {
-      readonly isError?: unknown;
-      readonly toolName?: unknown;
-      readonly editorInteractionId?: unknown;
-      readonly metadata?: {
-        readonly editorProposal?: unknown;
-      };
-    };
-  };
-  if (
-    typed.type !== "tool_call_completed" ||
-    typed.payload?.isError === true ||
-    typed.payload?.toolName !== EDITOR_PROPOSAL_TOOL_NAME ||
-    typeof typed.payload.editorInteractionId !== "string"
-  ) {
-    return null;
-  }
-  const proposal = typed.payload?.metadata?.editorProposal;
-  if (
-    typeof proposal !== "object" ||
-    proposal === null ||
-    Array.isArray(proposal)
-  ) {
-    return null;
-  }
-  if (
-    (proposal as { readonly interaction_id?: unknown }).interaction_id !==
-    typed.payload.editorInteractionId
-  ) {
-    return null;
-  }
-  return validateEditorProposalPayload(proposal as Record<string, unknown>) ===
-    null
-    ? (proposal as unknown as EditorProposalPayload)
-    : null;
-}
-
-function sessionEditorInteractionFromAttachment(
-  attachment: WorkbenchAttachment,
-  editorInstanceId: string,
-): SessionEditorInteraction | null {
-  const interaction = attachment.editorInteraction;
-  if (!interaction) return null;
-  return {
-    interactionId: randomUUID(),
-    kind: interaction.kind,
-    policy:
-      interaction.kind === "ask" || interaction.kind === "explain"
-        ? "read_only"
-        : "proposal_only",
-    editorInstanceId,
-    bufferHandle: interaction.bufferHandle,
-    changedtick: interaction.changedtick,
-    contentSha256: editorContextSha256(attachment.content),
-    ...(interaction.path.length > 0 ? { path: interaction.path } : {}),
-    range: interaction.range,
-    ...(attachment.selectionMode !== undefined
-      ? { selectionMode: attachment.selectionMode }
-      : {}),
-  };
-}
-
-function editorContextSha256(content: string | undefined): string {
-  return createHash("sha256")
-    .update(content ?? "", "utf8")
-    .digest("hex");
-}
-
 function isMainThreadRunnableCommand(
   command: QueuedCommand,
   owner: QueuedCommandOwner,
@@ -650,18 +374,6 @@ function queuedCommandInputText(command: QueuedCommand): string {
     })
     .filter(Boolean)
     .join("\n");
-}
-
-function snapshotQueuedEditorInteraction(
-  interaction: SessionEditorInteraction,
-): SessionEditorInteraction {
-  return {
-    ...interaction,
-    range: {
-      start: { ...interaction.range.start },
-      end: { ...interaction.range.end },
-    },
-  };
 }
 
 function snapshotQueuedPastedContents(
@@ -730,8 +442,6 @@ export function enqueueSlashPromptResult(
   content: string,
   scheduleQueueDrain: () => void,
   options?: {
-    readonly workspaceView?: WorkspaceView;
-    readonly editorInteraction?: SessionEditorInteraction;
     readonly queueOwner?: QueuedCommandOwner;
   },
 ): boolean {
@@ -742,16 +452,6 @@ export function enqueueSlashPromptResult(
     mode: "prompt",
     ...(options?.queueOwner !== undefined
       ? { queueOwner: options.queueOwner }
-      : {}),
-    ...(options?.workspaceView !== undefined
-      ? { workspaceView: options.workspaceView }
-      : {}),
-    ...(options?.editorInteraction !== undefined
-      ? {
-          editorInteraction: snapshotQueuedEditorInteraction(
-            options.editorInteraction,
-          ),
-        }
       : {}),
   });
   scheduleQueueDrain();
@@ -1724,7 +1424,6 @@ export function shouldShowPromptInputState(options: {
   readonly permissionRequestCount: number;
   readonly hasElicitationPrompt: boolean;
   readonly completionPipelineOwnsPrompt: boolean;
-  readonly hasPredictionConsentPrompt?: boolean;
   readonly toolShouldHidePromptInput?: boolean;
 }): boolean {
   return (
@@ -1732,7 +1431,6 @@ export function shouldShowPromptInputState(options: {
     options.permissionRequestCount === 0 &&
     !options.hasElicitationPrompt &&
     !options.completionPipelineOwnsPrompt &&
-    options.hasPredictionConsentPrompt !== true &&
     options.toolShouldHidePromptInput !== true
   );
 }
@@ -1847,10 +1545,6 @@ function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
   );
   return {
     ...defaults,
-    workbench:
-      process.env.NODE_ENV === "test"
-        ? defaults.workbench
-        : loadWorkbenchUiState(props.session.conversationId, roleWorkspaceCwd),
     mainLoopModel: startupModel(props),
     mainLoopModelForSession: startupModel(props),
     toolPermissionContext: initialPermissionContext(props),
@@ -2542,14 +2236,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     completionPipelineState,
   );
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
-  const editorPanelScrollRef = useRef<ScrollBoxHandle | null>(null);
   const modalScrollRef = useRef<ScrollBoxHandle | null>(null);
-  const pendingWorkbenchAttachmentAdmissionRef =
-    useRef<PendingWorkbenchAttachmentAdmission | null>(null);
-  // This is deliberately unique per mount. Crash recovery adopts only an
-  // exact workspace-scoped persisted revision; reusing a live lease identity
-  // across TUI processes would weaken active-owner fencing.
-  const editorInstanceIdRef = useRef(`tui-editor-${randomUUID()}`);
   const queueWorkspaceRoot = resolve(
     props.session.cwd ??
       props.session.sessionConfiguration?.cwd ??
@@ -2583,147 +2270,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       );
     };
   }, [commandQueueOwner]);
-  const activeEditorProposalTurnIdsRef = useRef(new Set<string>());
-  const stagedEditorProposalIdsRef = useRef(new Set<string>());
-  const inFlightEditorProposalStageIdsRef = useRef(new Set<string>());
-  const activeEditorProposalReviewId = useSyncExternalStore(
-    subscribeEditorProposalStore,
-    activeEditorProposalId,
-    activeEditorProposalId,
-  );
-  const [
-    inFlightEditorProposalStageCount,
-    setInFlightEditorProposalStageCount,
-  ] = useState(0);
-  const hasPendingEditorProposalReview = useCallback(
-    () =>
-      activeEditorProposalId() !== null ||
-      activeEditorProposalTurnIdsRef.current.size > 0 ||
-      inFlightEditorProposalStageIdsRef.current.size > 0,
-    [],
-  );
-  const representedWorkspaceMutationProposalIdsRef = useRef(new Set<string>());
-  const workspaceMutationProposalLocalOutcomesRef = useRef(
-    new Map<string, WorkspaceMutationProposalLocalOutcome>(),
-  );
-  const workspaceMutationProposalEditorRecordIdsRef = useRef(
-    new Map<string, string>(),
-  );
-  const workspaceMutationProposalResolverRef = useRef<
-    (
-      request: WorkspaceMutationProposalResolutionRequest,
-    ) => Promise<BufferEditorProposalResolution>
-  >(async (request) => ({
-    ok: false,
-    proposalId: request.editorProposalId,
-    reason:
-      "Editor proposal acknowledgement is reconnecting. Retry when Editor safety is ready.",
-  }));
-  const workspaceMutationProposalDiscardRef = useRef<
-    (proposalId: string, expectedPath: string) => Promise<void>
-  >(async () => {
-    throw new Error(
-      "Editor proposal acknowledgement is reconnecting. Retry when Editor safety is ready.",
-    );
-  });
-  const pendingWorkspaceMutationProposalsRef = useRef(
-    new Map<string, WorkspaceMutationProposalReference>(),
-  );
-  const workspaceMutationProposalStagingRef = useRef(
-    new Map<string, Promise<void>>(),
-  );
-  const workspaceMutationProposalAttemptsRef = useRef(
-    new Map<string, number>(),
-  );
-  const workspaceMutationProposalHandlerRef = useRef<
-    (reference: WorkspaceMutationProposalReference) => Promise<void>
-  >((reference) => {
-    pendingWorkspaceMutationProposalsRef.current.set(
-      reference.proposalId,
-      reference,
-    );
-    return Promise.reject(
-      new Error(
-        "Editor proposal staging is not ready; the durable reference was retained.",
-      ),
-    );
-  });
-  useEffect(() => {
-    return () => {
-      clearEditorProposalRecords();
-      activeEditorProposalTurnIdsRef.current.clear();
-      stagedEditorProposalIdsRef.current.clear();
-      inFlightEditorProposalStageIdsRef.current.clear();
-      representedWorkspaceMutationProposalIdsRef.current.clear();
-      workspaceMutationProposalLocalOutcomesRef.current.clear();
-      workspaceMutationProposalEditorRecordIdsRef.current.clear();
-      pendingWorkspaceMutationProposalsRef.current.clear();
-      workspaceMutationProposalStagingRef.current.clear();
-      workspaceMutationProposalAttemptsRef.current.clear();
-      pendingWorkbenchAttachmentAdmissionRef.current = null;
-    };
-  }, [props.session.conversationId]);
-  const activePredictionRequestIdRef = useRef<string | null>(null);
-  const [predictionConsentPromptVisible, setPredictionConsentPromptVisible] =
-    useState(false);
   const fullscreen = isFullscreenEnabledForCurrentTerminal(
     settings.tui?.flickerFreeMode,
   );
-  const workbenchEnabled = fullscreen && isWorkbenchEnabled();
-  const workbenchState = useAppState(getWorkbenchStateFromAppState);
-  const [workspaceEditorAuthority, setWorkspaceEditorAuthority] =
-    useState<TuiWorkspaceEditorAuthorityState>(() => {
-      const snapshot = getWorkbenchBufferProviderController().getSnapshot();
-      return bufferSnapshotRequiresWorkspaceEditorAuthority(snapshot)
-        ? { status: "securing" }
-        : { status: "unknown" };
-    });
-  const editorWorkspaceRequested =
-    workbenchEnabled &&
-    workbenchState.activeWorkspaceView === "editor" &&
-    workbenchState.activeSurfaceMode === "buffer";
-  const workspaceEditorBlockers = workspaceEditorBlockReasons(
-    workspaceEditorAuthority,
-    editorWorkspaceRequested,
-  );
-  const promptSubmissionBlockedReason =
-    workspaceEditorBlockReasonForView(
-      workspaceEditorBlockers,
-      workbenchState.activeWorkspaceView,
-    ) ??
-    (workbenchState.activeWorkspaceView === "editor" &&
-    (activeEditorProposalReviewId !== null ||
-      inFlightEditorProposalStageCount > 0)
-      ? EDITOR_PROPOSAL_REVIEW_REQUIRED
-      : null);
-  const latestWorkbenchStateRef = useRef(workbenchState);
-  latestWorkbenchStateRef.current = workbenchState;
-  useEffect(() => {
-    if (!workbenchEnabled || process.env.NODE_ENV === "test") return;
-    const timer = setTimeout(() => {
-      void saveWorkbenchUiState(
-        props.session.conversationId,
-        props.roleWorkspaceCwd,
-        latestWorkbenchStateRef.current,
-      ).catch(logError);
-    }, 120);
-    return () => clearTimeout(timer);
-  }, [
-    props.roleWorkspaceCwd,
-    props.session.conversationId,
-    workbenchEnabled,
-    workbenchState,
-  ]);
-  useEffect(() => {
-    if (!workbenchEnabled || process.env.NODE_ENV === "test") return;
-    return () => {
-      void saveWorkbenchUiState(
-        props.session.conversationId,
-        props.roleWorkspaceCwd,
-        latestWorkbenchStateRef.current,
-      ).catch(logError);
-    };
-  }, [props.roleWorkspaceCwd, props.session.conversationId, workbenchEnabled]);
   // Submission handlers are intentionally stable and are created before the
   // exit flow UI. Route their /exit and /resume requests through a live ref so
   // every path participates in the dirty-buffer transaction.
@@ -2763,9 +2312,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // immediate command errors don't flash a model-request spinner.
   const [pendingSubmission, setPendingSubmission] = useState(false);
   const pendingSubmissionIdRef = useRef<string | null>(null);
-  const latestSubmissionIdsRef = useRef<
-    Record<"agent" | "editor", string | null>
-  >({ agent: null, editor: null });
+  const latestSubmissionIdRef = useRef<string | null>(null);
   const activeModelSubmissionTokensRef = useRef(new Set<symbol>());
   // `pendingSubmission` can clear as soon as the daemon acknowledges the
   // request. Keep a separate count for the actual submit promises so the
@@ -2783,150 +2330,61 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [],
   );
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
-  const retrySubmissionsRef = useRef<
-    Record<"agent" | "editor", ComposerSubmission | null>
-  >({ agent: null, editor: null });
+  const retrySubmissionRef = useRef<ComposerSubmission | null>(null);
   const changeComposerInput = useCallback((nextInput: string) => {
-    retrySubmissionsRef.current[latestWorkbenchStateRef.current.activeWorkspaceView] = null;
+    retrySubmissionRef.current = null;
     setInput(nextInput);
   }, []);
   const changeComposerPastedContents = useCallback<
     React.Dispatch<React.SetStateAction<Record<number, any>>>
   >((nextContents) => {
-    retrySubmissionsRef.current[latestWorkbenchStateRef.current.activeWorkspaceView] = null;
+    retrySubmissionRef.current = null;
     setPastedContents(nextContents);
   }, []);
-  const [vimMode, setVimMode] = useState<VimMode>("INSERT");
-  const workspaceComposerDraftsRef = useRef<
-    Record<
-      "agent" | "editor",
-      {
-        input: string;
-        mode: any;
-        stashedPrompt: any;
-        pastedContents: Record<number, any>;
-        vimMode: VimMode;
-      }
-    >
-  >({
-    agent: {
-      input: props.initialComposerText ?? "",
-      mode: "prompt",
-      stashedPrompt: undefined,
-      pastedContents: {},
-      vimMode: "INSERT",
-    },
-    editor: {
-      input: "",
-      mode: "prompt",
-      stashedPrompt: undefined,
-      pastedContents: {},
-      vimMode: "INSERT",
-    },
-  });
-  const previousWorkspaceViewRef = useRef(workbenchState.activeWorkspaceView);
-  const liveComposerDraftRef = useRef({
-    input,
-    mode,
-    stashedPrompt,
-    pastedContents,
-    vimMode,
-  });
-  liveComposerDraftRef.current = {
-    input,
-    mode,
-    stashedPrompt,
-    pastedContents,
-    vimMode,
-  };
-  useEffect(() => {
-    const nextView = workbenchState.activeWorkspaceView;
-    const previousView = previousWorkspaceViewRef.current;
-    if (previousView === nextView) return;
-    workspaceComposerDraftsRef.current[previousView] =
-      liveComposerDraftRef.current;
-    const nextDraft = workspaceComposerDraftsRef.current[nextView];
-    previousWorkspaceViewRef.current = nextView;
-    setInput(nextDraft.input);
-    setMode(nextDraft.mode);
-    setStashedPrompt(nextDraft.stashedPrompt);
-    setPastedContents(nextDraft.pastedContents);
-    setVimMode(nextDraft.vimMode);
-  }, [workbenchState.activeWorkspaceView]);
-  const setComposerInputForView = useCallback(
-    (view: "agent" | "editor", nextInput: string): void => {
-      const activeView = latestWorkbenchStateRef.current.activeWorkspaceView;
-      const currentDraft =
-        activeView === view
-          ? liveComposerDraftRef.current
-          : workspaceComposerDraftsRef.current[view];
-      const nextDraft = { ...currentDraft, input: nextInput };
-      workspaceComposerDraftsRef.current[view] = nextDraft;
-      if (activeView !== view) return;
-      liveComposerDraftRef.current = nextDraft;
-      setInput(nextInput);
-    },
-    [],
-  );
-  const setComposerPastedContentsForView = useCallback(
-    (
-      view: "agent" | "editor",
-      nextPastedContents: Record<number, any>,
-    ): void => {
-      const activeView = latestWorkbenchStateRef.current.activeWorkspaceView;
-      const currentDraft =
-        activeView === view
-          ? liveComposerDraftRef.current
-          : workspaceComposerDraftsRef.current[view];
-      const nextDraft = {
-        ...currentDraft,
+  const liveComposerDraftRef = useRef({ input, pastedContents });
+  liveComposerDraftRef.current = { input, pastedContents };
+  const setComposerInput = useCallback((nextInput: string): void => {
+    liveComposerDraftRef.current = { ...liveComposerDraftRef.current, input: nextInput };
+    setInput(nextInput);
+  }, []);
+  const setComposerPastedContents = useCallback(
+    (nextPastedContents: Record<number, any>): void => {
+      liveComposerDraftRef.current = {
+        ...liveComposerDraftRef.current,
         pastedContents: nextPastedContents,
       };
-      workspaceComposerDraftsRef.current[view] = nextDraft;
-      if (activeView !== view) return;
-      liveComposerDraftRef.current = nextDraft;
       setPastedContents(nextPastedContents);
     },
     [],
   );
-  const restoreComposerDraftForView = useCallback(
-    (
-      view: "agent" | "editor",
-      failedDraft: {
-        readonly input: string;
-        readonly pastedContents?: Record<number, any>;
-        readonly submission?: ComposerSubmission;
-      },
-    ): void => {
-      const activeView = latestWorkbenchStateRef.current.activeWorkspaceView;
-      const currentDraft =
-        activeView === view
-          ? liveComposerDraftRef.current
-          : workspaceComposerDraftsRef.current[view];
-      // A failed submission may settle after the user has returned to the
-      // originating tab and started another draft. Rollback is atomic: once
-      // either field contains newer content, preserve the whole newer draft
-      // rather than splicing an old prompt and attachment into it.
+  const restoreComposerDraft = useCallback(
+    (failedDraft: {
+      readonly input: string;
+      readonly pastedContents?: Record<number, any>;
+      readonly submission?: ComposerSubmission;
+    }): void => {
+      const currentDraft = liveComposerDraftRef.current;
+      // A failed submission may settle after the user has started another
+      // draft. Rollback is atomic: once either field contains newer content,
+      // preserve the whole newer draft rather than splicing an old prompt and
+      // attachment into it.
       if (
         (failedDraft.submission?.ready === true &&
-          latestSubmissionIdsRef.current[view] !== failedDraft.submission.clientMessageId) ||
+          latestSubmissionIdRef.current !== failedDraft.submission.clientMessageId) ||
         currentDraft.input.length > 0 ||
         Object.keys(currentDraft.pastedContents).length > 0
       ) {
         return;
       }
       const restoredDraft = {
-        ...currentDraft,
         input: failedDraft.input,
         pastedContents:
           failedDraft.pastedContents !== undefined
             ? failedDraft.pastedContents
             : currentDraft.pastedContents,
       };
-      workspaceComposerDraftsRef.current[view] = restoredDraft;
-      retrySubmissionsRef.current[view] =
+      retrySubmissionRef.current =
         failedDraft.submission?.ready === true ? failedDraft.submission : null;
-      if (activeView !== view) return;
       liveComposerDraftRef.current = restoredDraft;
       setInput(restoredDraft.input);
       setPastedContents(restoredDraft.pastedContents);
@@ -3038,123 +2496,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   useEffect(() => {
     const subscribe = props.session.subscribeToEvents;
     if (typeof subscribe !== "function") return;
-    let disposed = false;
     const unsubscribe = subscribe((event: unknown) => {
-      // This callback runs synchronously at the session event boundary, before
-      // React commits useSessionTranscript's state update. Consume attachments
-      // here so a same-tick message.stream rejection cannot erase evidence that
-      // the daemon already started the turn.
-      const pendingAdmission = pendingWorkbenchAttachmentAdmissionRef.current;
-      if (sessionEventStartsTurn(
-        event,
-        pendingAdmission?.clientMessageId,
-        typeof props.session.getDaemonSessionSnapshot === "function",
-      )) {
-        const admittedAttachments =
-          pendingWorkbenchAttachmentAdmissionRef.current;
-        if (admittedAttachments !== null) {
-          pendingWorkbenchAttachmentAdmissionRef.current = null;
-          admittedAttachments.acknowledge();
-        }
-      }
       const recovered = submissionRecoveryNotification(event);
       if (recovered !== null) {
         if (recovered.clientMessageId === pendingSubmissionIdRef.current) setPendingSubmission(false);
         addNotification(recovered.notification);
       }
       syncCollabAgentEventToAppState(event, setAppState);
-      const workspaceMutation = workspaceMutationProposalFromTuiEvent(event);
-      if (workspaceMutation !== null) {
-        void workspaceMutationProposalHandlerRef
-          .current(workspaceMutation)
-          .catch(logError);
-        return;
-      }
-      const proposal = editorProposalFromTuiEvent(event);
-      if (proposal === null) return;
-      const proposalId = editorProposalId(proposal);
-      if (stagedEditorProposalIdsRef.current.has(proposalId)) return;
-      stagedEditorProposalIdsRef.current.add(proposalId);
-      inFlightEditorProposalStageIdsRef.current.add(proposalId);
-      setInFlightEditorProposalStageCount(
-        inFlightEditorProposalStageIdsRef.current.size,
-      );
-      const controller = getWorkbenchBufferProviderController();
-      const finishStaging = (): void => {
-        if (!inFlightEditorProposalStageIdsRef.current.delete(proposalId)) {
-          return;
-        }
-        if (!disposed) {
-          setInFlightEditorProposalStageCount(
-            inFlightEditorProposalStageIdsRef.current.size,
-          );
-        }
-      };
-      void controller
-        .stageProposal(proposal)
-        .then(async (result) => {
-          finishStaging();
-          if (disposed) {
-            if (result.ok) {
-              try {
-                const rejected = await controller.rejectProposal(
-                  result.proposalId,
-                );
-                if (!rejected.ok) {
-                  logError(
-                    new Error(
-                      `Editor proposal cleanup failed: ${rejected.reason}`,
-                    ),
-                  );
-                }
-              } catch (error) {
-                logError(error);
-              }
-            }
-            return;
-          }
-          if (!result.ok) {
-            stagedEditorProposalIdsRef.current.delete(proposalId);
-            addNotification({
-              key: `editor-proposal-stage:${proposalId}`,
-              text: `Editor proposal rejected: ${result.reason}`,
-              color: "error",
-              priority: "high",
-            });
-            return;
-          }
-          stageEditorProposalRecord(proposal);
-          setAppState((state) => {
-            const editorState = applyWorkbenchCommand(state, {
-              type: "switchWorkspaceView",
-              view: "editor",
-            });
-            const withProposal = applyWorkbenchCommand(editorState, {
-              type: "setRail",
-              rail: { kind: "editor-proposal", proposalId },
-            });
-            return applyWorkbenchCommand(withProposal, {
-              type: "focus",
-              pane: "rail",
-            });
-          });
-        })
-        .catch((error) => {
-          finishStaging();
-          if (disposed) return;
-          stagedEditorProposalIdsRef.current.delete(proposalId);
-          addNotification({
-            key: `editor-proposal-stage:${proposalId}`,
-            text: `Editor proposal failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            color: "error",
-            priority: "high",
-          });
-        });
     });
     return () => {
-      disposed = true;
       unsubscribe();
     };
   }, [
@@ -3163,21 +2513,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.session.conversationId,
     setAppState,
   ]);
-  useEffect(
-    () =>
-      subscribeEditorProposalStore(() => {
-        if (activeEditorProposalId() !== null) return;
-        const next = pendingWorkspaceMutationProposalsRef.current
-          .values()
-          .next().value;
-        if (next !== undefined) {
-          void workspaceMutationProposalHandlerRef
-            .current(next)
-            .catch(logError);
-        }
-      }),
-    [],
-  );
   const [toolPermissionContext, setToolPermissionContext] =
     useSyncedPermissionContext(props.session);
   const [config, setConfig] = useState<AgenCConfig>(
@@ -3191,1368 +2526,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     return unsubscribe;
   }, [configStore]);
   const agencHome = configStore.homeContext.path;
-  const persistPredictionConsent = useCallback(
-    async (enabled: "on" | "off"): Promise<void> => {
-      const nextBuffer = {
-        ...config.buffer,
-        prediction: {
-          ...config.buffer?.prediction,
-          enabled,
-        },
-      };
-      await new AgenCConfigEditsBuilder(agencHome)
-        .setBufferEditorConfig(nextBuffer)
-        .apply();
-      await props.session.applyDaemonConfig?.({ reload: true });
-      const reloaded = await configStore.reload();
-      setConfig(reloaded);
-      setPredictionConsentPromptVisible(false);
-    },
-    [agencHome, config, configStore, props.session],
-  );
-  const completeCodePrediction = useCallback(
-    async (
-      context: BufferCodePredictionContext,
-      generation: number,
-    ): Promise<BufferCodePrediction | null> => {
-      const predictionMode = config.buffer?.prediction?.enabled ?? "ask";
-      if (
-        predictionMode === "off" ||
-        props.session.predictEditorCode === undefined
-      ) {
-        return null;
-      }
-      if (predictionMode === "ask") {
-        setPredictionConsentPromptVisible(true);
-        return null;
-      }
-      const requestId = randomUUID();
-      activePredictionRequestIdRef.current = requestId;
-      try {
-        const result = await props.session.predictEditorCode({
-          requestId,
-          editorInstanceId: editorInstanceIdRef.current,
-          bufferHandle: context.bufferHandle,
-          generation,
-          changedtick: context.changedtick,
-          path: context.path,
-          fileBytes: context.fileBytes,
-          ...(context.language !== undefined
-            ? { language: context.language }
-            : {}),
-          cursor: context.cursor,
-          prefix: context.prefix,
-          suffix: context.suffix,
-        });
-        if (activePredictionRequestIdRef.current !== requestId) return null;
-        if (result.status !== "completed") {
-          if (result.reason === "consent_required") {
-            setPredictionConsentPromptVisible(true);
-          }
-          return null;
-        }
-        return {
-          requestId: result.requestId,
-          generation: result.generation,
-          bufferHandle: context.bufferHandle,
-          changedtick: result.changedtick,
-          cursor: context.cursor,
-          text: result.text,
-          latencyMs: result.latencyMs,
-        };
-      } finally {
-        if (activePredictionRequestIdRef.current === requestId) {
-          activePredictionRequestIdRef.current = null;
-        }
-      }
-    },
-    [config.buffer?.prediction?.enabled, props.session],
-  );
-  const cancelCodePrediction = useCallback((): void => {
-    const requestId = activePredictionRequestIdRef.current;
-    if (requestId === null) return;
-    activePredictionRequestIdRef.current = null;
-    void props.session
-      .cancelEditorPrediction?.({
-        editorInstanceId: editorInstanceIdRef.current,
-        requestId,
-      })
-      .catch(logError);
-  }, [props.session]);
-  const reportCodePredictionFeedback = useCallback(
-    (
-      feedback:
-        | BufferCodePredictionFeedback
-        | (Pick<BufferCodePrediction, "requestId" | "latencyMs"> & {
-            readonly kind: "displayed";
-          }),
-    ): void => {
-      void props.session
-        .reportEditorPredictionFeedback?.({
-          editorInstanceId: editorInstanceIdRef.current,
-          requestId: feedback.requestId,
-          kind: feedback.kind,
-          ...("acceptedCharacters" in feedback &&
-          feedback.acceptedCharacters !== undefined
-            ? { acceptedCharacters: feedback.acceptedCharacters }
-            : {}),
-          ...(feedback.latencyMs !== undefined
-            ? { latencyMs: feedback.latencyMs }
-            : {}),
-        })
-        .catch(logError);
-    },
-    [props.session],
-  );
-  const codePrediction = useMemo<BufferCodePredictionUi>(
-    () => ({
-      enabled:
-        (config.buffer?.prediction?.enabled ?? "ask") !== "off" &&
-        props.session.predictEditorCode !== undefined,
-      debounceMs: config.buffer?.prediction?.debounce_ms ?? 160,
-      complete: completeCodePrediction,
-      cancel: cancelCodePrediction,
-      onDisplayed: (prediction) => {
-        reportCodePredictionFeedback({
-          requestId: prediction.requestId,
-          latencyMs: prediction.latencyMs,
-          kind: "displayed",
-        });
-      },
-      onFeedback: reportCodePredictionFeedback,
-    }),
-    [
-      cancelCodePrediction,
-      completeCodePrediction,
-      config.buffer?.prediction?.debounce_ms,
-      config.buffer?.prediction?.enabled,
-      props.session.predictEditorCode,
-      reportCodePredictionFeedback,
-    ],
-  );
   const bufferWorkspaceRoot =
     props.session.cwd ??
     props.session.sessionConfiguration?.cwd ??
     props.roleWorkspaceCwd;
-  const editorTopologyRecovery = useMemo(() => {
-    const mutation =
-      workspaceEditorAuthority.status === "blocked"
-        ? workspaceEditorAuthority.recoveredTopologyMutations?.[0]
-        : undefined;
-    if (mutation === undefined) return undefined;
-    return {
-      mutation,
-      onResolveUnknown: async (): Promise<void> => {
-        try {
-          await resolveWorkspaceEditorRecoveredTopologyMutation(
-            bufferWorkspaceRoot,
-            mutation.tokenId,
-          );
-          addNotification({
-            key: `workspace-editor-topology-recovered:${mutation.tokenId}`,
-            text: "Interrupted Editor path operation recorded as an unknown outcome. Editor authority was resynchronized.",
-            color: "warning",
-            priority: "high",
-          });
-        } catch (cause) {
-          const error =
-            cause instanceof Error ? cause : new Error(String(cause));
-          addNotification({
-            key: `workspace-editor-topology-recovery-failed:${mutation.tokenId}`,
-            text: `Could not reconcile the interrupted Editor path operation: ${error.message}`,
-            color: "error",
-            priority: "high",
-          });
-          throw error;
-        }
-      },
-    };
-  }, [addNotification, bufferWorkspaceRoot, workspaceEditorAuthority]);
-  const editorStaleAuthorityRecovery = useMemo<
-    BufferStaleAuthorityRecoveryUi | undefined
-  >(() => {
-    const entries: readonly WorkspaceEditorStaleAuthorityEntry[] | undefined =
-      workspaceEditorAuthority.status === "blocked"
-        ? workspaceEditorAuthority.staleAuthority
-        : undefined;
-    if (entries === undefined || entries.length === 0) return undefined;
-    return {
-      entries,
-      onRefresh: async (): Promise<void> => {
-        try {
-          await refreshWorkspaceEditorStaleAuthority(bufferWorkspaceRoot);
-        } catch (cause) {
-          const error =
-            cause instanceof Error ? cause : new Error(String(cause));
-          addNotification({
-            key: "workspace-editor-stale-authority-refresh-failed",
-            text: `Could not refresh disk evidence for the orphaned Editor revision: ${error.message}`,
-            color: "error",
-            priority: "high",
-          });
-          throw error;
-        }
-      },
-      onUseDisk: async (
-        reviewedEntries: readonly WorkspaceEditorStaleAuthorityEntry[],
-      ): Promise<void> => {
-        try {
-          await abandonWorkspaceEditorStaleAuthority(
-            bufferWorkspaceRoot,
-            reviewedEntries,
-          );
-          addNotification({
-            key: `workspace-editor-stale-authority-abandoned:${reviewedEntries
-              .map((entry) => entry.editorContentSha256)
-              .join(":")}`,
-            text: `${reviewedEntries.length} orphaned Editor revision${reviewedEntries.length === 1 ? "" : "s"} abandoned after exact disk-state confirmation. Editor authority was resynchronized.`,
-            color: "warning",
-            priority: "high",
-          });
-        } catch (cause) {
-          const error =
-            cause instanceof Error ? cause : new Error(String(cause));
-          addNotification({
-            key: "workspace-editor-stale-authority-abandon-failed",
-            text: `Could not use disk for the orphaned Editor revision: ${error.message}`,
-            color: "error",
-            priority: "high",
-          });
-          throw error;
-        }
-      },
-    };
-  }, [addNotification, bufferWorkspaceRoot, workspaceEditorAuthority]);
-  const workspaceEditorAuthoritySupported =
-    workbenchEnabled &&
-    props.session.acquireWorkspaceEditor !== undefined &&
-    props.session.syncWorkspaceEditor !== undefined &&
-    props.session.refreshWorkspaceEditorStaleAuthority !== undefined &&
-    props.session.heartbeatWorkspaceEditor !== undefined &&
-    props.session.releaseWorkspaceEditor !== undefined &&
-    props.session.reserveWorkspaceEditorTopology !== undefined &&
-    props.session.completeWorkspaceEditorTopology !== undefined &&
-    props.session.releaseWorkspaceEditorTopology !== undefined;
-  const bufferRuntimeContext = useMemo(
-    () => ({
-      workspaceRoot: bufferWorkspaceRoot,
-      ...(agencHome ? { agencHome } : {}),
-      requireWorkspaceWriteAuthority: workspaceEditorAuthoritySupported,
-      beforeOpenFile: async (
-        context: Parameters<typeof installPrivateNeovimRecovery>[0],
-      ) => {
-        const prepared = await installPrivateNeovimRecovery(context);
-        if (!prepared) return;
-        return {
-          recovery: {
-            ...prepared.paths,
-            swapFiles: prepared.swapFiles,
-          },
-        };
-      },
-    }),
-    [agencHome, bufferWorkspaceRoot, workspaceEditorAuthoritySupported],
-  );
-  // Configuration must be cached before child BUFFER effects can acquire a
-  // provider. Keeping this synchronous is safe (configure only updates the
-  // controller's next-acquisition inputs) and avoids a first-render race that
-  // could start Neovim without the selected init/recovery policy.
-  getWorkbenchBufferProviderController().configure(
-    config.buffer,
-    process.env,
-    bufferRuntimeContext,
-  );
-  useEffect(() => {
-    const controller = getWorkbenchBufferProviderController();
-    if (!workbenchEnabled) {
-      setWorkspaceEditorAuthority({ status: "not_required" });
-    }
-    if (!workbenchEnabled || !workspaceEditorAuthoritySupported) {
-      const publishUnsupportedAuthority = (): void => {
-        if (!workbenchEnabled) return;
-        const snapshot = controller.getSnapshot();
-        const liveNeovim =
-          bufferSnapshotRequiresWorkspaceEditorAuthority(snapshot);
-        setWorkspaceEditorAuthority(
-          liveNeovim
-            ? {
-                status: "blocked",
-                reason:
-                  "The connected daemon does not support authoritative Editor workspace synchronization. Restart the daemon with this AgenC version.",
-              }
-            : { status: "not_required" },
-        );
-      };
-      publishUnsupportedAuthority();
-      const unsubscribeAuthority = controller.subscribe(
-        publishUnsupportedAuthority,
-      );
-      const teardown = createOrderedWorkspaceEditorTeardown(null, () =>
-        controller.cleanup({
-          preserveRecovery:
-            props.shouldPreserveEditorRecoveryOnTeardown?.() === true,
-        }),
-      );
-      const unregister = registerCleanup(teardown);
-      const unregisterTui = props.registerTuiTeardown?.(teardown);
-      return () => {
-        unsubscribeAuthority();
-        void settleWorkspaceEditorTeardown(teardown, () => {
-          unregister();
-          unregisterTui?.();
-        });
-      };
-    }
-    const acquireWorkspaceEditor = props.session.acquireWorkspaceEditor;
-    const syncWorkspaceEditor = props.session.syncWorkspaceEditor;
-    const refreshWorkspaceEditorStaleAuthority =
-      props.session.refreshWorkspaceEditorStaleAuthority;
-    const heartbeatWorkspaceEditor = props.session.heartbeatWorkspaceEditor;
-    const releaseWorkspaceEditor = props.session.releaseWorkspaceEditor;
-    const reserveWorkspaceEditorTopology =
-      props.session.reserveWorkspaceEditorTopology;
-    const completeWorkspaceEditorTopology =
-      props.session.completeWorkspaceEditorTopology;
-    const releaseWorkspaceEditorTopology =
-      props.session.releaseWorkspaceEditorTopology;
-    const listRecoveredWorkspaceEditorTopologies =
-      props.session.listRecoveredWorkspaceEditorTopologies;
-    const resolveRecoveredWorkspaceEditorTopology =
-      props.session.resolveRecoveredWorkspaceEditorTopology;
-    const getWorkspaceEditorProposal = props.session.getWorkspaceEditorProposal;
-    const getWorkspaceEditorProposalStatus =
-      props.session.getWorkspaceEditorProposalStatus;
-    const applyWorkspaceEditorProposal =
-      props.session.applyWorkspaceEditorProposal;
-    const discardWorkspaceEditorProposal =
-      props.session.discardWorkspaceEditorProposal;
-    const listWorkspaceEditorChanges = props.session.listWorkspaceEditorChanges;
-    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
-      workspaceRoot: resolve(bufferWorkspaceRoot),
-      editorInstanceId: editorInstanceIdRef.current,
-      buffers: controller,
-      client: {
-        acquireWorkspaceEditor: (params) => acquireWorkspaceEditor(params),
-        syncWorkspaceEditor: (params) => syncWorkspaceEditor(params),
-        refreshWorkspaceEditorStaleAuthority: (params) =>
-          refreshWorkspaceEditorStaleAuthority(params),
-        heartbeatWorkspaceEditor: (params) => heartbeatWorkspaceEditor(params),
-        releaseWorkspaceEditor: (params) => releaseWorkspaceEditor(params),
-        reserveWorkspaceEditorTopology: (params) =>
-          reserveWorkspaceEditorTopology(params),
-        completeWorkspaceEditorTopology: (params) =>
-          completeWorkspaceEditorTopology(params),
-        releaseWorkspaceEditorTopology: (params) =>
-          releaseWorkspaceEditorTopology(params),
-        ...(listRecoveredWorkspaceEditorTopologies !== undefined
-          ? {
-              listRecoveredWorkspaceEditorTopologies: (params) =>
-                listRecoveredWorkspaceEditorTopologies(params),
-            }
-          : {}),
-        ...(resolveRecoveredWorkspaceEditorTopology !== undefined
-          ? {
-              resolveRecoveredWorkspaceEditorTopology: (params) =>
-                resolveRecoveredWorkspaceEditorTopology(params),
-            }
-          : {}),
-        ...(getWorkspaceEditorProposal !== undefined
-          ? {
-              getWorkspaceEditorProposal: (params) =>
-                getWorkspaceEditorProposal(params),
-            }
-          : {}),
-        ...(getWorkspaceEditorProposalStatus !== undefined
-          ? {
-              getWorkspaceEditorProposalStatus: (params) =>
-                getWorkspaceEditorProposalStatus(params),
-            }
-          : {}),
-        ...(applyWorkspaceEditorProposal !== undefined
-          ? {
-              applyWorkspaceEditorProposal: (params) =>
-                applyWorkspaceEditorProposal(params),
-            }
-          : {}),
-        ...(discardWorkspaceEditorProposal !== undefined
-          ? {
-              discardWorkspaceEditorProposal: (params) =>
-                discardWorkspaceEditorProposal(params),
-            }
-          : {}),
-        ...(listWorkspaceEditorChanges !== undefined
-          ? {
-              listWorkspaceEditorChanges: (params) =>
-                listWorkspaceEditorChanges(params),
-            }
-          : {}),
-      },
-      onWorkspaceChange: async (change) => {
-        // Target-scoped topology invalidations are reconciled under the
-        // synchronizer's provider lock before this callback is acknowledged.
-        if (change.kind === "topology") return;
-        if (change.status === "proposed") {
-          const reference = workspaceMutationProposalFromChange(change);
-          if (reference === null) {
-            throw new Error(
-              `The durable Editor proposal record at sequence ${change.sequence} is malformed.`,
-            );
-          }
-          // The synchronizer advances its durable cursor only after this
-          // promise resolves. A proposal must therefore be represented by a
-          // review rail (including an explicit-discard recovery rail) before
-          // the event can be acknowledged.
-          await workspaceMutationProposalHandlerRef.current(reference);
-          return;
-        }
-        if (
-          (change.status !== "applied" &&
-            change.status !== "unknown_outcome") ||
-          change.proposalId !== undefined
-        ) {
-          return;
-        }
-        const reloaded =
-          await getWorkbenchBufferProviderController().reloadCleanPath(
-            change.path,
-          );
-        if (!reloaded.ok) {
-          addNotification({
-            key: `workspace-editor-external-change:${change.path}`,
-            text:
-              (change.status === "unknown_outcome"
-                ? `A disk mutation reached ${change.path}, but its audit outcome is unknown and Editor could not reload it: `
-                : `Agent changed ${change.path}, but Editor could not reload it: `) +
-              `${reloaded.reason}`,
-            color: reloaded.dirty === true ? "error" : "warning",
-            priority: "high",
-          });
-          // Leave the change unacknowledged. The synchronizer advances its
-          // durable cursor only after this callback succeeds, so a transient
-          // reload failure is retried rather than silently forgotten.
-          throw new Error(
-            `Editor could not reload ${change.path}: ${reloaded.reason}`,
-          );
-        } else if (change.status === "unknown_outcome") {
-          addNotification({
-            key: `workspace-editor-unknown-outcome:${change.path}`,
-            text:
-              `A disk mutation reached ${change.path}, but AgenC could not ` +
-              "confirm its audit record. Editor reloaded the disk bytes; re-read before editing.",
-            color: "warning",
-            priority: "high",
-          });
-        }
-      },
-      onError: (error) => {
-        addNotification({
-          key: "workspace-editor-coherence",
-          text: `Editor safety sync paused: ${error.message}`,
-          color: "warning",
-          priority: "high",
-        });
-      },
-      onAuthorityChange: (state) => {
-        if (!disposed) setWorkspaceEditorAuthority(state);
-      },
-    });
-    let disposed = false;
-    const resolveWorkspaceMutationProposal = async (
-      request: WorkspaceMutationProposalResolutionRequest,
-    ): Promise<BufferEditorProposalResolution> => {
-      const proposalId = request.proposal.proposalId;
-      const currentOutcome =
-        workspaceMutationProposalLocalOutcomesRef.current.get(proposalId);
-      if (
-        currentOutcome !== undefined &&
-        currentOutcome.action !== request.action
-      ) {
-        return {
-          ok: false,
-          proposalId: request.editorProposalId,
-          reason:
-            currentOutcome.action === "accept"
-              ? "This proposal is already accepted in Editor. Reject is no longer safe; retry accept to finish daemon acknowledgement."
-              : "This proposal is already rejected in Editor. Accept is no longer safe; retry reject to finish daemon acknowledgement.",
-          acknowledgementPending: true,
-          acknowledgementAction: currentOutcome.action,
-        };
-      }
-      try {
-        const result =
-          request.action === "accept"
-            ? await synchronizer.acceptWorkspaceMutationProposal({
-                proposal: request.proposal,
-                editorProposalId: request.editorProposalId,
-                acceptEditor: async () => {
-                  const adopted =
-                    workspaceMutationProposalLocalOutcomesRef.current.get(
-                      proposalId,
-                    );
-                  if (adopted?.action === "accept") return adopted.result;
-                  const accepted = await controller.acceptProposal(
-                    request.editorProposalId,
-                  );
-                  if (
-                    isValidAcceptedEditorProposalResolution(
-                      accepted,
-                      request.editorProposalId,
-                      request.proposal.baseChangedtick,
-                      request.proposal.acceptedChangedtick,
-                    )
-                  ) {
-                    adoptWorkspaceMutationProposalLocalOutcome(
-                      workspaceMutationProposalLocalOutcomesRef.current,
-                      proposalId,
-                      {
-                        action: "accept",
-                        result: {
-                          ok: true,
-                          action: "accepted",
-                          proposalId: accepted.proposalId,
-                          changedtick: accepted.changedtick,
-                        },
-                        proposal: request.proposal,
-                      },
-                    );
-                  }
-                  return accepted;
-                },
-              })
-            : await synchronizer.rejectWorkspaceMutationProposal({
-                proposal: request.proposal,
-                editorProposalId: request.editorProposalId,
-                rejectEditor: async () => {
-                  const adopted =
-                    workspaceMutationProposalLocalOutcomesRef.current.get(
-                      proposalId,
-                    );
-                  if (adopted?.action === "reject") return adopted.result;
-                  const rejected =
-                    request.shadowAlreadyCleared === true
-                      ? {
-                          ok: true as const,
-                          action: "rejected" as const,
-                          proposalId: request.editorProposalId,
-                        }
-                      : await controller.rejectProposal(
-                          request.editorProposalId,
-                        );
-                  if (
-                    isValidRejectedEditorProposalResolution(
-                      rejected,
-                      request.editorProposalId,
-                    )
-                  ) {
-                    adoptWorkspaceMutationProposalLocalOutcome(
-                      workspaceMutationProposalLocalOutcomesRef.current,
-                      proposalId,
-                      {
-                        action: "reject",
-                        result: {
-                          ok: true,
-                          action: "rejected",
-                          proposalId: rejected.proposalId,
-                        },
-                      },
-                    );
-                  }
-                  return rejected;
-                },
-              });
-        if (result.ok) {
-          workspaceMutationProposalLocalOutcomesRef.current.delete(proposalId);
-          workspaceMutationProposalEditorRecordIdsRef.current.delete(
-            proposalId,
-          );
-        }
-        return result;
-      } catch (cause) {
-        const retained =
-          workspaceMutationProposalLocalOutcomesRef.current.get(proposalId);
-        return {
-          ok: false,
-          proposalId: request.editorProposalId,
-          reason:
-            retained === undefined
-              ? cause instanceof Error
-                ? cause.message
-                : String(cause)
-              : `${
-                  retained.action === "accept"
-                    ? "The edit is already accepted"
-                    : "The proposal is already rejected"
-                } in Editor, but daemon acknowledgement did not complete: ${
-                  cause instanceof Error ? cause.message : String(cause)
-                }`,
-          ...(retained !== undefined
-            ? {
-                acknowledgementPending: true,
-                acknowledgementAction: retained.action,
-              }
-            : {}),
-        };
-      }
-    };
-    workspaceMutationProposalResolverRef.current =
-      resolveWorkspaceMutationProposal;
-    const discardWorkspaceMutationProposal = (
-      proposalId: string,
-      expectedPath: string,
-    ) =>
-      synchronizer.discardWorkspaceMutationProposal(proposalId, expectedPath);
-    workspaceMutationProposalDiscardRef.current =
-      discardWorkspaceMutationProposal;
-    type ProposalRepresentation = {
-      readonly promise: Promise<void>;
-      readonly resolve: () => void;
-      readonly reject: (error: Error) => void;
-      settled: boolean;
-    };
-    const proposalRepresentations = new Map<string, ProposalRepresentation>();
-    const processingWorkspaceMutationProposalIds = new Set<string>();
-    const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    const representationFor = (proposalId: string): ProposalRepresentation => {
-      const existing = proposalRepresentations.get(proposalId);
-      if (existing !== undefined) return existing;
-      let resolveRepresentation: () => void = () => {};
-      let rejectRepresentation: (error: Error) => void = () => {};
-      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-        resolveRepresentation = resolvePromise;
-        rejectRepresentation = rejectPromise;
-      });
-      const representation: ProposalRepresentation = {
-        promise,
-        settled: false,
-        resolve: () => {
-          if (representation.settled) return;
-          representation.settled = true;
-          resolveRepresentation();
-        },
-        reject: (error) => {
-          if (representation.settled) return;
-          representation.settled = true;
-          rejectRepresentation(error);
-        },
-      };
-      proposalRepresentations.set(proposalId, representation);
-      return representation;
-    };
-    const openWorkspaceMutationProposalRail = (proposalId: string): void => {
-      setAppState((state) => {
-        const editorState = applyWorkbenchCommand(state, {
-          type: "switchWorkspaceView",
-          view: "editor",
-        });
-        const withProposalRail = applyWorkbenchCommand(editorState, {
-          type: "setRail",
-          rail: { kind: "editor-proposal", proposalId },
-        });
-        return applyWorkbenchCommand(withProposalRail, {
-          type: "focus",
-          pane: "rail",
-        });
-      });
-    };
-    const settleWorkspaceMutationProposalRepresentation = (
-      reference: WorkspaceMutationProposalReference,
-    ): void => {
-      const stagedKey = `workspace-mutation:${reference.proposalId}`;
-      pendingWorkspaceMutationProposalsRef.current.delete(reference.proposalId);
-      workspaceMutationProposalAttemptsRef.current.delete(reference.proposalId);
-      processingWorkspaceMutationProposalIds.delete(reference.proposalId);
-      representedWorkspaceMutationProposalIdsRef.current.add(
-        reference.proposalId,
-      );
-      if (
-        inFlightEditorProposalStageIdsRef.current.delete(stagedKey) &&
-        !disposed
-      ) {
-        setInFlightEditorProposalStageCount(
-          inFlightEditorProposalStageIdsRef.current.size,
-        );
-      }
-      representationFor(reference.proposalId).resolve();
-    };
-    const markWorkspaceMutationProposalRepresented = (
-      reference: WorkspaceMutationProposalReference,
-      proposalId: string,
-    ): void => {
-      workspaceMutationProposalEditorRecordIdsRef.current.set(
-        reference.proposalId,
-        proposalId,
-      );
-      openWorkspaceMutationProposalRail(proposalId);
-      settleWorkspaceMutationProposalRepresentation(reference);
-    };
-    const stageUnavailableWorkspaceMutationProposal = (
-      reference: WorkspaceMutationProposalReference,
-      cause: unknown,
-    ): void => {
-      const railProposalId = `workspace-mutation-recovery:${reference.proposalId}`;
-      const reason = cause instanceof Error ? cause.message : String(cause);
-      stageUnavailableEditorProposalRecord({
-        id: railProposalId,
-        path: reference.path,
-        sourceLabel: reference.source.replaceAll("_", " "),
-        baseContentSha256: reference.baseContentSha256,
-        message:
-          "AgenC recovered this proposal's content-free commitment, but " +
-          `its review source is unavailable (${reason}).`,
-        discard: async () => {
-          try {
-            await workspaceMutationProposalDiscardRef.current(
-              reference.proposalId,
-              reference.path,
-            );
-            workspaceMutationProposalLocalOutcomesRef.current.delete(
-              reference.proposalId,
-            );
-            workspaceMutationProposalEditorRecordIdsRef.current.delete(
-              reference.proposalId,
-            );
-            return {
-              ok: true,
-              action: "rejected",
-              proposalId: railProposalId,
-            };
-          } catch (error) {
-            return {
-              ok: false,
-              proposalId: railProposalId,
-              reason:
-                "The durable proposal is still quarantined because it could " +
-                `not be discarded: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-            };
-          }
-        },
-      });
-      stagedEditorProposalIdsRef.current.add(
-        `workspace-mutation:${reference.proposalId}`,
-      );
-      addNotification({
-        key: `workspace-mutation-proposal-recovery:${reference.proposalId}`,
-        text:
-          "An Editor proposal survived a daemon restart without source " +
-          "content. Review its recovery rail and explicitly discard it.",
-        color: "warning",
-        priority: "high",
-      });
-      markWorkspaceMutationProposalRepresented(reference, railProposalId);
-    };
-    const stageCommittedWorkspaceMutationProposal = async (
-      reference: WorkspaceMutationProposalReference,
-      commitment: Extract<
-        WorkspaceEditorProposalStatusResult,
-        { readonly status: "committed" }
-      >,
-      cause: unknown,
-    ): Promise<void> => {
-      const captures = await controller.captureWorkspaceBuffers();
-      const capture = captures.find(
-        (candidate) =>
-          candidate.path === commitment.path &&
-          candidate.bufferHandle === commitment.bufferHandle,
-      );
-      const liveContentSha256 =
-        capture === undefined
-          ? editorContextSha256(
-              `missing recovery buffer:${commitment.proposalId}`,
-            )
-          : editorContextSha256(capture.content);
-      const acceptanceRecoverable =
-        capture !== undefined &&
-        (capture.changedtick > commitment.baseChangedtick ||
-          capture.changedtick === commitment.acceptedChangedtick) &&
-        liveContentSha256 === commitment.afterContentSha256;
-      const railProposalId = `workspace-mutation-recovery:${commitment.proposalId}`;
-      const recoveryProposal = (
-        afterText: string,
-      ): WorkspaceEditorProposalResult => ({
-        proposalId: commitment.proposalId,
-        workspaceRoot: resolve(bufferWorkspaceRoot),
-        path: commitment.path,
-        beforeText: "",
-        afterText,
-        baseContentSha256: commitment.baseContentSha256,
-        baseChangedtick: commitment.baseChangedtick,
-        bufferHandle: commitment.bufferHandle,
-        ...(commitment.acceptedChangedtick !== undefined
-          ? { acceptedChangedtick: commitment.acceptedChangedtick }
-          : {}),
-        source: commitment.source,
-      });
-      const rememberLocalOutcome = (
-        action: "accept" | "reject",
-        acceptedChangedtick?: number,
-        acceptedProposal?: WorkspaceEditorProposalResult,
-      ): BufferEditorProposalResolution | null => {
-        const existing = workspaceMutationProposalLocalOutcomesRef.current.get(
-          commitment.proposalId,
-        );
-        if (existing !== undefined) {
-          if (existing.action === action) return null;
-          return {
-            ok: false,
-            proposalId: railProposalId,
-            reason:
-              existing.action === "accept"
-                ? "This proposal is already accepted in Editor. Reject is no longer safe; retry accept to finish daemon acknowledgement."
-                : "This proposal is already rejected in Editor. Accept is no longer safe; retry reject to finish daemon acknowledgement.",
-            acknowledgementPending: true,
-            acknowledgementAction: existing.action,
-          };
-        }
-        if (
-          action === "accept" &&
-          (acceptedChangedtick === undefined || acceptedProposal === undefined)
-        ) {
-          throw new Error(
-            "Acceptance recovery is missing its exact accepted revision.",
-          );
-        }
-        adoptWorkspaceMutationProposalLocalOutcome(
-          workspaceMutationProposalLocalOutcomesRef.current,
-          commitment.proposalId,
-          action === "accept"
-            ? {
-                action,
-                result: {
-                  ok: true,
-                  action: "accepted",
-                  proposalId: railProposalId,
-                  changedtick: acceptedChangedtick!,
-                },
-                proposal: acceptedProposal!,
-              }
-            : {
-                action,
-                result: {
-                  ok: true,
-                  action: "rejected",
-                  proposalId: railProposalId,
-                },
-              },
-        );
-        return null;
-      };
-      stageContentFreeEditorProposalRecoveryRecord({
-        id: railProposalId,
-        path: commitment.path,
-        sourceLabel: commitment.source.replaceAll("_", " "),
-        baseContentSha256: commitment.baseContentSha256,
-        afterContentSha256: commitment.afterContentSha256,
-        baseChangedtick: commitment.baseChangedtick,
-        bufferHandle: commitment.bufferHandle,
-        liveContentSha256,
-        message: acceptanceRecoverable
-          ? "The proposal source was not persisted, but this live buffer exactly matches the committed replacement. Accept finishes daemon acknowledgement; discard removes only the commitment."
-          : "The proposal source was not persisted and the live buffer does not exactly match its committed replacement. Only explicit discard is safe.",
-        acknowledge: async () => {
-          const retained =
-            workspaceMutationProposalLocalOutcomesRef.current.get(
-              commitment.proposalId,
-            );
-          if (retained?.action === "reject") {
-            return rememberLocalOutcome("accept")!;
-          }
-          if (retained?.action === "accept") {
-            return workspaceMutationProposalResolverRef.current({
-              proposal: retained.proposal,
-              editorProposalId: railProposalId,
-              action: "accept",
-            });
-          }
-          if (!acceptanceRecoverable) {
-            return {
-              ok: false,
-              proposalId: railProposalId,
-              reason:
-                "The live buffer no longer matches the committed replacement; acceptance recovery is unsafe.",
-              stale: true,
-            };
-          }
-          const clickCaptures = await controller.captureWorkspaceBuffers();
-          const clickCapture = clickCaptures.find(
-            (candidate) =>
-              candidate.path === commitment.path &&
-              candidate.bufferHandle === commitment.bufferHandle,
-          );
-          const clickContentSha256 =
-            clickCapture === undefined
-              ? null
-              : editorContextSha256(clickCapture.content);
-          if (
-            clickCapture === undefined ||
-            (clickCapture.changedtick <= commitment.baseChangedtick &&
-              clickCapture.changedtick !== commitment.acceptedChangedtick) ||
-            clickContentSha256 !== commitment.afterContentSha256
-          ) {
-            return {
-              ok: false,
-              proposalId: railProposalId,
-              reason:
-                "The live buffer changed while this recovery was under review. Restore the exact committed replacement to retry acceptance, or discard the commitment.",
-              stale: true,
-            };
-          }
-          // Reconstruct source only after the click-time hash/tick check. The
-          // exact accepted bytes and authoritative revision then survive an
-          // acknowledgement retry without depending on another live capture.
-          const proposal = recoveryProposal(clickCapture.content);
-          const conflict = rememberLocalOutcome(
-            "accept",
-            clickCapture.changedtick,
-            proposal,
-          );
-          if (conflict !== null) return conflict;
-          return workspaceMutationProposalResolverRef.current({
-            proposal,
-            editorProposalId: railProposalId,
-            action: "accept",
-          });
-        },
-        discard: async () => {
-          const conflict = rememberLocalOutcome("reject");
-          if (conflict !== null) return conflict;
-          return workspaceMutationProposalResolverRef.current({
-            proposal: recoveryProposal(""),
-            editorProposalId: railProposalId,
-            action: "reject",
-          });
-        },
-      });
-      stagedEditorProposalIdsRef.current.add(
-        `workspace-mutation:${reference.proposalId}`,
-      );
-      addNotification({
-        key: `workspace-mutation-proposal-recovery:${reference.proposalId}`,
-        text: acceptanceRecoverable
-          ? "Recovered an Editor proposal acknowledgement from the exact live accepted bytes. Review the recovery rail to finish or discard it."
-          : `An Editor proposal survived without source content (${
-              cause instanceof Error ? cause.message : String(cause)
-            }). Review its recovery rail and explicitly discard it.`,
-        color: "warning",
-        priority: "high",
-      });
-      markWorkspaceMutationProposalRepresented(reference, railProposalId);
-    };
-    const scheduleWorkspaceMutationProposalRetry = (
-      reference: WorkspaceMutationProposalReference,
-      delayMs: number,
-    ): void => {
-      if (disposed || retryTimers.has(reference.proposalId)) return;
-      const timer = setTimeout(() => {
-        retryTimers.delete(reference.proposalId);
-        void workspaceMutationProposalHandlerRef
-          .current(reference)
-          .catch(logError);
-      }, delayMs);
-      retryTimers.set(reference.proposalId, timer);
-    };
-    const handleWorkspaceMutationProposal = (
-      reference: WorkspaceMutationProposalReference,
-    ): Promise<void> => {
-      const stagedKey = `workspace-mutation:${reference.proposalId}`;
-      const representation = representationFor(reference.proposalId);
-      const currentReference = pendingWorkspaceMutationProposalsRef.current.get(
-        reference.proposalId,
-      );
-      const mergedReference: WorkspaceMutationProposalReference = {
-        ...reference,
-        ...(reference.baseChangedtick === undefined &&
-        currentReference?.baseChangedtick !== undefined
-          ? { baseChangedtick: currentReference.baseChangedtick }
-          : {}),
-        ...(reference.bufferHandle === undefined &&
-        currentReference?.bufferHandle !== undefined
-          ? { bufferHandle: currentReference.bufferHandle }
-          : {}),
-      };
-      if (representation.settled) return representation.promise;
-      if (
-        representedWorkspaceMutationProposalIdsRef.current.has(
-          reference.proposalId,
-        )
-      ) {
-        settleWorkspaceMutationProposalRepresentation(mergedReference);
-        return representation.promise;
-      }
-      const existingStaging = workspaceMutationProposalStagingRef.current.get(
-        reference.proposalId,
-      );
-      if (
-        existingStaging !== undefined &&
-        !processingWorkspaceMutationProposalIds.has(reference.proposalId)
-      ) {
-        processingWorkspaceMutationProposalIds.add(reference.proposalId);
-        void existingStaging.then(
-          async () => {
-            processingWorkspaceMutationProposalIds.delete(reference.proposalId);
-            if (disposed) {
-              representation.reject(
-                new Error(
-                  "The editor workspace closed before the proposal could be represented.",
-                ),
-              );
-              return;
-            }
-            try {
-              await workspaceMutationProposalHandlerRef.current(
-                mergedReference,
-              );
-              representation.resolve();
-            } catch (cause) {
-              representation.reject(
-                cause instanceof Error ? cause : new Error(String(cause)),
-              );
-            }
-          },
-          (cause) => {
-            processingWorkspaceMutationProposalIds.delete(reference.proposalId);
-            representation.reject(
-              cause instanceof Error ? cause : new Error(String(cause)),
-            );
-          },
-        );
-        return representation.promise;
-      }
-      if (
-        stagedEditorProposalIdsRef.current.has(stagedKey) ||
-        processingWorkspaceMutationProposalIds.has(reference.proposalId)
-      ) {
-        return representation.promise;
-      }
-      pendingWorkspaceMutationProposalsRef.current.set(
-        reference.proposalId,
-        mergedReference,
-      );
-      if (!inFlightEditorProposalStageIdsRef.current.has(stagedKey)) {
-        inFlightEditorProposalStageIdsRef.current.add(stagedKey);
-        setInFlightEditorProposalStageCount(
-          inFlightEditorProposalStageIdsRef.current.size,
-        );
-      }
-      if (activeEditorProposalId() !== null) return representation.promise;
-      workspaceMutationProposalAttemptsRef.current.set(
-        reference.proposalId,
-        (workspaceMutationProposalAttemptsRef.current.get(
-          reference.proposalId,
-        ) ?? 0) + 1,
-      );
-      processingWorkspaceMutationProposalIds.add(reference.proposalId);
-      stagedEditorProposalIdsRef.current.add(stagedKey);
-      const stagingOperation = synchronizer
-        .inspectWorkspaceMutationProposal(reference.proposalId)
-        .then(async (proposal) => {
-          if (
-            disposed ||
-            !workspaceMutationReferenceMatchesProposal(
-              mergedReference,
-              proposal,
-            )
-          ) {
-            throw new Error(
-              "The daemon returned a different editor proposal than the Agent tool announced.",
-            );
-          }
-          const editorProposal = editorProposalFromWorkspaceMutation(proposal);
-          const proposalId = editorProposalId(editorProposal);
-          const controller = getWorkbenchBufferProviderController();
-          const staged = await controller.stageProposal(editorProposal);
-          if (!staged.ok) {
-            throw new Error(staged.reason);
-          }
-          if (disposed) {
-            if (staged.ok) {
-              await controller.rejectProposal(proposalId).catch(logError);
-            }
-            throw new Error(
-              "The editor workspace closed while staging the proposal.",
-            );
-          }
-          stageEditorProposalRecord(
-            editorProposal,
-            (action) =>
-              workspaceMutationProposalResolverRef.current({
-                proposal,
-                editorProposalId: proposalId,
-                action,
-              }),
-            async () => {
-              return workspaceMutationProposalResolverRef.current({
-                proposal,
-                editorProposalId: proposalId,
-                action: "reject",
-                shadowAlreadyCleared: true,
-              });
-            },
-          );
-          markWorkspaceMutationProposalRepresented(mergedReference, proposalId);
-        })
-        .catch(async (error) => {
-          stagedEditorProposalIdsRef.current.delete(stagedKey);
-          processingWorkspaceMutationProposalIds.delete(reference.proposalId);
-          if (disposed) {
-            representation.reject(
-              new Error(
-                "The editor workspace closed before the proposal could be represented.",
-              ),
-            );
-            return;
-          }
-          try {
-            const status =
-              await synchronizer.inspectWorkspaceMutationProposalStatus(
-                reference.proposalId,
-              );
-            if (disposed) {
-              representation.reject(
-                new Error(
-                  "The editor workspace closed before the proposal could be represented.",
-                ),
-              );
-              return;
-            }
-            if (
-              status.proposalId !== undefined &&
-              status.proposalId !== reference.proposalId
-            ) {
-              throw new Error(
-                "The daemon returned status for a different editor proposal.",
-              );
-            }
-            if (
-              status.status === "applied" ||
-              status.status === "discarded" ||
-              status.status === "missing"
-            ) {
-              if (
-                status.status !== "missing" &&
-                !workspaceMutationReferenceMatchesTerminalStatus(
-                  mergedReference,
-                  status,
-                )
-              ) {
-                throw new Error(
-                  "The durable Editor proposal receipt does not match the announced proposal.",
-                );
-              }
-              const localOutcome =
-                workspaceMutationProposalLocalOutcomesRef.current.get(
-                  reference.proposalId,
-                );
-              if (
-                !workspaceMutationTerminalStatusMatchesLocalOutcome(
-                  status.status,
-                  localOutcome?.action,
-                )
-              ) {
-                throw new Error(
-                  "The durable Editor proposal receipt contradicts the local review outcome.",
-                );
-              }
-              const editorRecordId =
-                workspaceMutationProposalEditorRecordIdsRef.current.get(
-                  reference.proposalId,
-                );
-              workspaceMutationProposalLocalOutcomesRef.current.delete(
-                reference.proposalId,
-              );
-              workspaceMutationProposalEditorRecordIdsRef.current.delete(
-                reference.proposalId,
-              );
-              if (editorRecordId !== undefined) {
-                const action = workspaceMutationTerminalResolutionAction(
-                  status.status,
-                  localOutcome?.action,
-                );
-                resolveEditorProposalRecord({
-                  ok: true,
-                  action,
-                  proposalId: editorRecordId,
-                  ...(action === "accepted" && status.status === "applied"
-                    ? { changedtick: status.changedtick }
-                    : {}),
-                });
-              }
-              if (status.status === "missing") {
-                addNotification({
-                  key: `workspace-mutation-proposal-missing:${reference.proposalId}`,
-                  text: "A previously announced Editor proposal no longer has a durable commitment or receipt. No workspace mutation was performed.",
-                  color: "warning",
-                  priority: "high",
-                });
-              }
-              settleWorkspaceMutationProposalRepresentation(mergedReference);
-              return;
-            }
-            if (status.status === "committed") {
-              if (
-                !workspaceMutationReferenceMatchesCommitment(
-                  mergedReference,
-                  status,
-                )
-              ) {
-                throw new Error(
-                  "The durable Editor proposal commitment does not match the announced proposal.",
-                );
-              }
-              const committedReference: WorkspaceMutationProposalReference = {
-                ...mergedReference,
-                path: status.path,
-                source: status.source,
-                baseContentSha256: status.baseContentSha256,
-                afterContentSha256: status.afterContentSha256,
-                baseChangedtick: status.baseChangedtick,
-                bufferHandle: status.bufferHandle,
-              };
-              pendingWorkspaceMutationProposalsRef.current.set(
-                reference.proposalId,
-                committedReference,
-              );
-              await stageCommittedWorkspaceMutationProposal(
-                committedReference,
-                status,
-                error,
-              );
-              return;
-            }
-            // A source-bearing proposal still exists. Treat the failed get as
-            // transient and retry the ordinary exact staging path below.
-          } catch (statusError) {
-            error = new AggregateError(
-              [error, statusError],
-              "Editor proposal source and durable status inspection both failed.",
-            );
-          }
-          addNotification({
-            key: `workspace-mutation-proposal:${reference.proposalId}`,
-            text: `Editor proposal failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            color: "error",
-            priority: "high",
-          });
-          if (activeEditorProposalId() !== null) return;
-          const attempts =
-            workspaceMutationProposalAttemptsRef.current.get(
-              reference.proposalId,
-            ) ?? 1;
-          if (attempts < 3) {
-            scheduleWorkspaceMutationProposalRetry(mergedReference, 250);
-            return;
-          }
-          // Proposal source is deliberately memory-only. After daemon restart
-          // the durable commitment remains discardable, but it cannot be
-          // reconstructed for review. Keep it visible and review-gated until
-          // the operator explicitly discards it.
-          stageUnavailableWorkspaceMutationProposal(mergedReference, error);
-        });
-      workspaceMutationProposalStagingRef.current.set(
-        reference.proposalId,
-        stagingOperation,
-      );
-      void stagingOperation
-        .finally(() => {
-          if (
-            workspaceMutationProposalStagingRef.current.get(
-              reference.proposalId,
-            ) === stagingOperation
-          ) {
-            workspaceMutationProposalStagingRef.current.delete(
-              reference.proposalId,
-            );
-          }
-        })
-        .catch(logError);
-      return representation.promise;
-    };
-    workspaceMutationProposalHandlerRef.current =
-      handleWorkspaceMutationProposal;
-    synchronizer.start();
-    for (const reference of pendingWorkspaceMutationProposalsRef.current.values()) {
-      void handleWorkspaceMutationProposal(reference).catch(logError);
-    }
-    const teardown = createOrderedWorkspaceEditorTeardown(synchronizer, () =>
-      controller.cleanup({
-        preserveRecovery:
-          props.shouldPreserveEditorRecoveryOnTeardown?.() === true,
-      }),
-    );
-    const unregister = registerCleanup(teardown);
-    const unregisterTui = props.registerTuiTeardown?.(teardown);
-    return () => {
-      disposed = true;
-      for (const timer of retryTimers.values()) clearTimeout(timer);
-      retryTimers.clear();
-      processingWorkspaceMutationProposalIds.clear();
-      for (const representation of proposalRepresentations.values()) {
-        representation.reject(
-          new Error(
-            "The editor workspace closed before the proposal could be represented.",
-          ),
-        );
-      }
-      workspaceMutationProposalHandlerRef.current = (reference) => {
-        pendingWorkspaceMutationProposalsRef.current.set(
-          reference.proposalId,
-          reference,
-        );
-        return Promise.reject(
-          new Error(
-            "Editor proposal staging is stopping; the durable reference was retained.",
-          ),
-        );
-      };
-      if (
-        workspaceMutationProposalResolverRef.current ===
-        resolveWorkspaceMutationProposal
-      ) {
-        workspaceMutationProposalResolverRef.current = async (request) => {
-          const retained =
-            workspaceMutationProposalLocalOutcomesRef.current.get(
-              request.proposal.proposalId,
-            );
-          return {
-            ok: false,
-            proposalId: request.editorProposalId,
-            reason:
-              "Editor proposal acknowledgement is reconnecting. Retry when Editor safety is ready.",
-            ...(retained !== undefined
-              ? {
-                  acknowledgementPending: true,
-                  acknowledgementAction: retained.action,
-                }
-              : {}),
-          };
-        };
-      }
-      if (
-        workspaceMutationProposalDiscardRef.current ===
-        discardWorkspaceMutationProposal
-      ) {
-        workspaceMutationProposalDiscardRef.current = async () => {
-          throw new Error(
-            "Editor proposal acknowledgement is reconnecting. Retry when Editor safety is ready.",
-          );
-        };
-      }
-      void settleWorkspaceEditorTeardown(teardown, () => {
-        unregister();
-        unregisterTui?.();
-      });
-    };
-  }, [
-    addNotification,
-    bufferWorkspaceRoot,
-    props.session,
-    props.registerTuiTeardown,
-    props.shouldPreserveEditorRecoveryOnTeardown,
-    workbenchEnabled,
-  ]);
   const onboardingContext = useMemo(
     () => ({
       agencHome,
@@ -4656,7 +2633,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     }
     return null;
   }, [transcript.messages]);
-  // The workbench and /context share the daemon's resident estimate. Custom
+  // The status line and /context share the daemon's resident estimate. Custom
   // StatusLine scripts retain their separate provider-reported usage contract.
   const resolvedMainLoopModel = useMainLoopModel();
   const contextPctLabel = useMemo(() => {
@@ -5285,81 +3262,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         ).executionAdmission !== undefined;
       const usesDaemonShellBridge = typeof executeShellCommand === "function";
       const commandId = randomUUID();
-      const shellEditorInstanceId = `tui-shell-${randomUUID()}`;
-      let shellLease: Awaited<
-        ReturnType<NonNullable<typeof props.session.acquireWorkspaceEditor>>
-      > | null = null;
-      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-      let heartbeatPromise: Promise<void> | null = null;
-      let workspaceLifetime: WorkspaceOperationLifetime | null = null;
-      const acquireWorkspaceEditor = props.session.acquireWorkspaceEditor;
-      const heartbeatWorkspaceEditor = props.session.heartbeatWorkspaceEditor;
-      const releaseWorkspaceEditor = props.session.releaseWorkspaceEditor;
       activeShellAbortControllerRef.current = bashAbortController;
       setShellAbortController(bashAbortController);
       try {
-        if (workbenchEnabled && !usesDaemonShellBridge) {
-          if (
-            acquireWorkspaceEditor === undefined ||
-            heartbeatWorkspaceEditor === undefined ||
-            releaseWorkspaceEditor === undefined
-          ) {
-            throw new Error(
-              "Bash is blocked because the connected daemon cannot fence it from the Editor workspace. Restart the daemon with this AgenC version.",
-            );
-          }
-          shellLease = await acquireWorkspaceEditor({
-            workspaceRoot,
-            editorInstanceId: shellEditorInstanceId,
-            requireUnprotectedWorkspace: true,
-          });
-          let heartbeatRunning = false;
-          heartbeatTimer = setInterval(() => {
-            if (heartbeatRunning || shellLease === null) return;
-            heartbeatRunning = true;
-            heartbeatPromise = heartbeatWorkspaceEditor({
-              workspaceRoot,
-              editorInstanceId: shellEditorInstanceId,
-              leaseToken: shellLease.leaseToken,
-              epoch: shellLease.epoch,
-            })
-              .then((nextLease) => {
-                shellLease = nextLease;
-              })
-              .catch((error) => {
-                bashAbortController.abort(
-                  `Bash workspace fence failed: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`,
-                );
-              })
-              .finally(() => {
-                heartbeatRunning = false;
-              });
-          }, 3_000);
-          workspaceLifetime = createWorkspaceOperationLifetime(async () => {
-            if (heartbeatTimer !== null) {
-              clearInterval(heartbeatTimer);
-              heartbeatTimer = null;
-            }
-            await heartbeatPromise?.catch(() => {});
-            if (shellLease === null) return;
-            await releaseWorkspaceEditor({
-              workspaceRoot,
-              editorInstanceId: shellEditorInstanceId,
-              leaseToken: shellLease.leaseToken,
-              epoch: shellLease.epoch,
-            }).catch((error) => {
-              emitTranscriptText(
-                `<bash-stderr>${escapeXml(
-                  `Bash finished, but its Editor workspace fence could not be released cleanly: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`,
-                )}</bash-stderr>`,
-              );
-            });
-          });
-        }
         const executeBash = async (): Promise<void> => {
           if (usesDaemonShellBridge) {
             await executeShellCommand.call(props.session, {
@@ -5400,14 +3305,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             emitTranscriptText(text);
           }
         };
-        const execution =
-          workspaceLifetime === null
-            ? executeBash()
-            : runWithWorkspaceOperationLifetime(
-                workspaceLifetime,
-                executeBash,
-              );
-        await execution;
+        await executeBash();
       } catch (err_1) {
         const message_1 =
           err_1 instanceof Error ? err_1.message : String(err_1);
@@ -5415,27 +3313,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           `<bash-stderr>${escapeXml(message_1)}</bash-stderr>`,
         );
       } finally {
-        if (workspaceLifetime !== null) {
-          await workspaceLifetime.release();
-        } else {
-          if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
-          await heartbeatPromise?.catch(() => {});
-          if (shellLease !== null && releaseWorkspaceEditor !== undefined) {
-            await releaseWorkspaceEditor({
-              workspaceRoot,
-              editorInstanceId: shellEditorInstanceId,
-              leaseToken: shellLease.leaseToken,
-              epoch: shellLease.epoch,
-            }).catch(() => {});
-          }
-        }
         if (activeShellAbortControllerRef.current === bashAbortController) {
           activeShellAbortControllerRef.current = null;
           setShellAbortController(null);
         }
       }
     },
-    [bufferWorkspaceRoot, getToolUseContext, props.session, workbenchEnabled],
+    [bufferWorkspaceRoot, getToolUseContext, props.session],
   );
   const submitToSession = useCallback(
     async (
@@ -5460,95 +3344,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const submit = useCallback(
     async (value: string, options?: LiveSubmitOptions) => {
-      // AppStateStore mutations are synchronous, while React may not have
-      // committed the matching render yet. Freeze one live workbench snapshot
-      // for the whole submission so a same-tick Editor handoff/tab switch
-      // cannot mix a stale render's attachment policy with the new tab's draft
-      // ownership.
-      const submissionWorkbenchState = getWorkbenchStateFromAppState(
-        appStateStore.getState(),
-      );
-      const submissionWorkspaceView =
-        options?.workspaceViewOverride ??
-        submissionWorkbenchState.activeWorkspaceView;
       const text_0 = value.trim();
       const historyDisplay = (options?.displayUserMessage ?? text_0).trim();
       const draftRestoreValue = options?.draftRestoreValue ?? value;
-      const submissionAttachmentIds =
-        submissionWorkspaceView === submissionWorkbenchState.activeWorkspaceView
-          ? submissionWorkbenchState.composerAttachmentIds
-          : submissionWorkspaceView === "editor"
-            ? submissionWorkbenchState.editorComposerAttachmentIds
-            : submissionWorkbenchState.agentComposerAttachmentIds;
-      const candidateRetry = retrySubmissionsRef.current[submissionWorkspaceView];
+      const candidateRetry = retrySubmissionRef.current;
       const retry =
         !options?.fromQueue &&
         candidateRetry?.draftRestoreValue === draftRestoreValue &&
-        candidateRetry.conversationId === props.session.conversationId &&
-        (options?.editorInteraction === undefined ||
-          candidateRetry.options.editorInteraction?.interactionId === options.editorInteraction.interactionId) &&
-        submissionAttachmentIds.every(id => candidateRetry.attachmentIds.includes(id))
+        candidateRetry.conversationId === props.session.conversationId
           ? candidateRetry
           : null;
       const clientMessageId = retry?.clientMessageId ?? randomUUID();
-      let workbenchAttachmentsAcknowledged = false;
-      const acknowledgeWorkbenchAttachments = (): void => {
-        if (workbenchAttachmentsAcknowledged) return;
-        workbenchAttachmentsAcknowledged = true;
-        if (retry !== null) retry.acknowledge();
-        else options?.onWorkbenchAttachmentsAdmitted?.();
-      };
-      const armWorkbenchAttachmentAdmission =
-        (): PendingWorkbenchAttachmentAdmission | null => {
-          if (options?.onWorkbenchAttachmentsAdmitted === undefined && retry === null)
-            return null;
-          const pending = {
-            clientMessageId,
-            acknowledge: acknowledgeWorkbenchAttachments,
-          };
-          // Model submissions are serialized by effectiveInputBusyRef. Keep the
-          // identity check below anyway so an unexpected concurrent caller can
-          // only fall back to promise settlement, never steal another turn's ack.
-          if (pendingWorkbenchAttachmentAdmissionRef.current === null) {
-            pendingWorkbenchAttachmentAdmissionRef.current = pending;
-          }
-          return pending;
-        };
-      const settleWorkbenchAttachmentAdmission = (
-        pending: PendingWorkbenchAttachmentAdmission | null,
-        admitted: boolean,
-      ): void => {
-        if (pending === null) return;
-        if (pendingWorkbenchAttachmentAdmissionRef.current === pending) {
-          pendingWorkbenchAttachmentAdmissionRef.current = null;
-        }
-        if (admitted) pending.acknowledge();
-      };
       const activePastedContents =
         retry?.pastedContents ?? options?.pastedContentsOverride ?? pastedContents;
       const hasAttachments = Object.keys(activePastedContents).length > 0;
-      const attachmentInteraction = submissionAttachmentIds
-        .map((id) =>
-          submissionWorkbenchState.attachments.find(
-            (attachment) => attachment.id === id,
-          ),
-        )
-        .filter(
-          (attachment): attachment is WorkbenchAttachment =>
-            attachment !== undefined &&
-            attachment.editorInteraction !== undefined,
-        )
-        .at(-1);
-      const editorInteraction =
-        retry?.options.editorInteraction ?? options?.editorInteraction ??
-        (!options?.fromQueue &&
-        submissionWorkspaceView === "editor" &&
-        attachmentInteraction !== undefined
-          ? sessionEditorInteractionFromAttachment(
-              attachmentInteraction,
-              editorInstanceIdRef.current,
-            )
-          : undefined);
       if (text_0.length === 0 && !hasAttachments) return;
       const rejectNonModelSubmission = (): void => {
         if (options?.requireModelSubmission) {
@@ -5557,49 +3366,23 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           );
         }
       };
-      const workspaceSubmissionBlocker = workspaceEditorBlockReasonForView(
-        workspaceEditorBlockers,
-        submissionWorkspaceView,
-      );
       const localControl = parseLocalControlCommand(text_0);
       if (
         localControl !== null &&
         retry === null &&
         !options?.fromQueue &&
         !options?.requireModelSubmission &&
-        options?.editorInteraction === undefined &&
-        (workspaceSubmissionBlocker !== null ||
-          effectiveInputBusyRef.current ||
-          (submissionWorkspaceView === "editor" && hasPendingEditorProposalReview()))
+        effectiveInputBusyRef.current
       ) {
-        // Inspection and owned-task controls need no model admission or Editor
-        // lease. Keep this turn's state and the composer's attachments intact.
-        setComposerInputForView(submissionWorkspaceView, "");
+        // Inspection and owned-task controls need no model admission. Keep
+        // this turn's state and the composer's attachments intact.
+        setComposerInput("");
         await runLocalControlCommand(localControl);
-        return;
-      }
-      if (workspaceSubmissionBlocker !== null) {
-        showTransientResult(workspaceSubmissionBlocker, {
-          display: "error",
-        });
-        rejectNonModelSubmission();
-        return;
-      }
-      if (
-        submissionWorkspaceView === "editor" &&
-        hasPendingEditorProposalReview()
-      ) {
-        showTransientResult(EDITOR_PROPOSAL_REVIEW_REQUIRED, {
-          display: "error",
-        });
-        rejectNonModelSubmission();
         return;
       }
       // On-demand Ledger status read: mentioning "ledger" refreshes the bottom
       // connection indicator (no background polling — this is the only read).
-      // Never scan an Editor model envelope: it contains untrusted live-buffer
-      // bytes and Editor requests cannot initiate helper processes.
-      if (editorInteraction === undefined && /\bledger\b/i.test(text_0)) {
+      if (/\bledger\b/i.test(text_0)) {
         void refreshLedgerStatus();
         if (isLedgerAuthenticityRequest(text_0)) {
           beginLedgerVerification({
@@ -5611,87 +3394,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           });
         }
       }
-      // A submitted prompt means "back to the conversation": if a center
-      // surface (preview/buffer/diff/etc.) is open, close it so the chat owns
-      // the center pane again. A dirty BUFFER blocks the switch through the
-      // normal approval overlay instead of being silently abandoned. The
-      // right-hand review rail (ctrl+r) intentionally stays open — reviewing
-      // while chatting is its whole point.
-      if (
-        !options?.fromQueue &&
-        workbenchEnabled &&
-        submissionWorkspaceView === "agent" &&
-        submissionWorkbenchState.activeWorkspaceView === "agent" &&
-        submissionWorkbenchState.activeSurfaceMode !== "transcript"
-      ) {
-        setAppState((prev) =>
-          applyWorkbenchCommand(prev, { type: "closeSurface" }),
-        );
-      } else if (
-        !options?.fromQueue &&
-        workbenchEnabled &&
-        submissionWorkspaceView === "editor"
-      ) {
-        // Editor prompts share the canonical conversation, but their response
-        // belongs beside the buffer. Focus the panel when the turn starts so
-        // compact layouts render it immediately and Page Up/Page Down work
-        // without an undiscoverable extra chord.
-        setAppState((prev) => {
-          const activeView =
-            getWorkbenchStateFromAppState(prev).activeWorkspaceView;
-          const editorState =
-            activeView === "editor"
-              ? prev
-              : applyWorkbenchCommand(prev, {
-                  type: "switchWorkspaceView",
-                  view: "editor",
-                });
-          // The AI response owns Editor's side panel for this handoff. Replace
-          // a stale file/review rail as well as an absent/legacy `undefined`
-          // rail so the answer cannot complete invisibly behind another panel.
-          const withTranscript = applyWorkbenchCommand(editorState, {
-            type: "setRail",
-            rail: { kind: "transcript" },
-          });
-          const focusedEditor = applyWorkbenchCommand(withTranscript, {
-            type: "focus",
-            pane: "rail",
-          });
-          // A native Editor intent can settle after the user has already
-          // returned to Agent. Stage the response rail in Editor without
-          // replacing Agent's active surface, focus, rail, or draft.
-          return activeView === "editor"
-            ? focusedEditor
-            : applyWorkbenchCommand(focusedEditor, {
-                type: "switchWorkspaceView",
-                view: activeView,
-              });
-        });
-      }
       const parsedSlashCommand =
-        retry === null && editorInteraction === undefined &&
-        text_0.startsWith("/") &&
-        text_0.length > 1
+        retry === null && text_0.startsWith("/") && text_0.length > 1
           ? parseSlashCommand(text_0)
           : null;
       const parsedDollarSkill =
-        retry === null && editorInteraction === undefined &&
-        text_0.startsWith("$") &&
-        text_0.length > 1
+        retry === null && text_0.startsWith("$") && text_0.length > 1
           ? parseDollarSkillCommand(text_0)
           : null;
-      if (
-        !options?.fromQueue &&
-        editorInteraction !== undefined &&
-        effectiveInputBusyRef.current
-      ) {
-        showTransientResult(
-          "Finish or cancel the active turn before starting another editor interaction.",
-          { display: "error" },
-        );
-        rejectNonModelSubmission();
-        return;
-      }
       if (
         !options?.fromQueue &&
         parsedSlashCommand !== null &&
@@ -5701,8 +3411,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         showTransientResult(busySlashCommandMessage(parsedSlashCommand.name), {
           display: "error",
         });
-        setComposerInputForView(submissionWorkspaceView, "");
-        setComposerPastedContentsForView(submissionWorkspaceView, {});
+        setComposerInput("");
+        setComposerPastedContents({});
         rejectNonModelSubmission();
         return;
       }
@@ -5716,13 +3426,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           preExpansionValue: text_0,
           mode: "prompt",
           queueOwner: commandQueueOwner,
-          workspaceView: submissionWorkspaceView,
-          ...(editorInteraction !== undefined
-            ? {
-                editorInteraction:
-                  snapshotQueuedEditorInteraction(editorInteraction),
-              }
-            : {}),
           ...(hasAttachments
             ? {
                 pastedContents:
@@ -5730,9 +3433,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               }
             : {}),
         });
-        acknowledgeWorkbenchAttachments();
-        setComposerInputForView(submissionWorkspaceView, "");
-        setComposerPastedContentsForView(submissionWorkspaceView, {});
+        setComposerInput("");
+        setComposerPastedContents({});
         if (historyDisplay.length > 0) {
           try {
             addToHistory({
@@ -5749,7 +3451,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // The 3s auto-clear timer is a safety net; this is the immediate
       // user-input clear path.
       cancelTransientResult(true);
-      latestSubmissionIdsRef.current[submissionWorkspaceView] = clientMessageId;
+      latestSubmissionIdRef.current = clientMessageId;
       pendingSubmissionIdRef.current = clientMessageId;
       const startPendingSubmission = () => {
         setPendingSubmission(true);
@@ -5765,14 +3467,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // scrollToBottom shows the submission immediately and re-engages
         // sticky follow so the streaming reply stays visible. Fires only on
         // user action, so it never fights a deliberate scroll-up mid-turn.
-        const submissionScrollRef =
-          submissionWorkspaceView === "editor"
-            ? editorPanelScrollRef
-            : scrollRef;
-        submissionScrollRef.current?.scrollToBottom();
+        scrollRef.current?.scrollToBottom();
       }
-      setComposerInputForView(submissionWorkspaceView, "");
-      retrySubmissionsRef.current[submissionWorkspaceView] = null;
+      setComposerInput("");
+      retrySubmissionRef.current = null;
       // Persist the submitted prompt so Up-arrow / Ctrl+R history recall
       // can find it. The daemon-backed AgenCTuiApp dispatch path used to
       // skip this, so the picker said "No history yet" right after a
@@ -5797,14 +3495,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         clientMessageId,
         draftRestoreValue,
         pastedContents: activePastedContents,
-        attachmentIds: [...submissionAttachmentIds],
-        acknowledge: acknowledgeWorkbenchAttachments,
         value,
         options: {
           ...(options?.automatic === true ? {} : { source: "user" as const }),
           clientMessageId,
           displayUserMessage: options?.displayUserMessage ?? value,
-          ...(editorInteraction === undefined ? {} : { editorInteraction }),
         },
         inputs: attachmentsMessage === null ? [] : [attachmentsMessage],
         ready: false,
@@ -5813,18 +3508,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         inputs: readonly LLMMessage[],
       ): string | null => {
         if (inputs.length === 0) return null;
-        // Mailbox ownership follows the trusted turn identity, not whichever
-        // workspace tab happens to be visible. Every downstream drain requires
-        // an exact interaction id for Editor-owned input; labeling an ordinary
-        // composer turn as Editor-owned would therefore strand its attachments
-        // and prompt/skill expansion blocks.
-        const ownership =
-          editorInteraction === undefined
-            ? ({ workspaceView: "agent" } as const)
-            : ({
-                workspaceView: "editor",
-                editorInteractionId: editorInteraction.interactionId,
-              } as const);
+        const ownership = { workspaceView: "agent" } as const;
         if (typeof props.session.enqueueIdleInputBatchOwned === "function") {
           return props.session.enqueueIdleInputBatchOwned(inputs, ownership)
             .token;
@@ -5861,12 +3545,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           commit(): void;
           rollback(): boolean;
         } | null = null;
-        let workbenchLease: { settle(admitted: boolean): void } | null = null;
         let submitted = false;
         try {
           try {
             startPendingSubmission();
-            setComposerPastedContentsForView(submissionWorkspaceView, {});
+            setComposerPastedContents({});
             const loaded = await loadDollarSkillCommandForTurn(
               parsedCommand,
               command,
@@ -5899,27 +3582,18 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                 props.session.rollbackIdleInputAdmission?.(admissionToken) ===
                   true,
             };
-            const workbenchAdmission = armWorkbenchAttachmentAdmission();
-            workbenchLease = {
-              settle: (admitted) =>
-                settleWorkbenchAttachmentAdmission(workbenchAdmission, admitted),
-            };
             submission.ready = true;
             await submitToSession(submission.value, submission.options);
             submitted = true;
           } finally {
-            try {
-              if (submitted) {
-                admissionLease?.commit();
-              } else if (admissionLease === null || admissionLease.rollback()) {
-                restoreComposerDraftForView(submissionWorkspaceView, {
-                  input: draftRestoreValue,
-                  pastedContents: activePastedContents,
-                  submission,
-                });
-              }
-            } finally {
-              workbenchLease?.settle(submitted);
+            if (submitted) {
+              admissionLease?.commit();
+            } else if (admissionLease === null || admissionLease.rollback()) {
+              restoreComposerDraft({
+                input: draftRestoreValue,
+                pastedContents: activePastedContents,
+                submission,
+              });
             }
           }
         } catch (error) {
@@ -6040,13 +3714,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                 () => {
                   setQueueDrainTick((tick) => tick + 1);
                 },
-                {
-                  queueOwner: commandQueueOwner,
-                  workspaceView: submissionWorkspaceView,
-                  ...(editorInteraction !== undefined
-                    ? { editorInteraction }
-                    : {}),
-                },
+                { queueOwner: commandQueueOwner },
               );
               return {
                 forwardedToModel: false,
@@ -6143,13 +3811,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       }
       let attachmentAdmitted = attachmentsMessage === null;
       let attachmentAdmissionToken: string | null = null;
-      let workbenchAdmission: PendingWorkbenchAttachmentAdmission | null = null;
       try {
         if (submission.inputs.length > 0) {
           attachmentAdmissionToken = admitPendingInputs(submission.inputs);
           attachmentAdmitted = true;
         }
-        setComposerPastedContentsForView(submissionWorkspaceView, {});
+        setComposerPastedContents({});
         // Pass `value` as displayUserMessage so the daemon emits the
         // user-message transcript event with the user's raw typed text,
         // not the model-facing expanded payload. Without this the
@@ -6157,29 +3824,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // the original input. Pairs with the daemon-hook change in
         // background-agent-runner.installDaemonTurnDriverHooks that
         // suppresses the run-turn duplicate emit.
-        workbenchAdmission = armWorkbenchAttachmentAdmission();
-        const proposalTurnId =
-          editorInteraction?.policy === "proposal_only"
-            ? editorInteraction.interactionId
-            : null;
-        if (proposalTurnId !== null) {
-          activeEditorProposalTurnIdsRef.current.add(proposalTurnId);
-        }
-        try {
-          submission.ready = true;
-          await submitToSession(submission.value, submission.options);
-        } finally {
-          if (proposalTurnId !== null) {
-            activeEditorProposalTurnIdsRef.current.delete(proposalTurnId);
-          }
-        }
+        submission.ready = true;
+        await submitToSession(submission.value, submission.options);
         if (attachmentAdmissionToken !== null) {
           props.session.commitIdleInputAdmission?.(attachmentAdmissionToken);
         }
-        settleWorkbenchAttachmentAdmission(workbenchAdmission, true);
         if (retry !== null && pendingSubmissionIdRef.current === clientMessageId) setPendingSubmission(false);
       } catch (err_1) {
-        settleWorkbenchAttachmentAdmission(workbenchAdmission, false);
         // Same defense as submitPromptToModel above: a daemon JSON-RPC
         // error response (e.g. "AgenC daemon agent not running:
         // <agentId>") rejects the pending request, which turns into an
@@ -6213,7 +3864,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           props.session.rollbackIdleInputAdmission?.(
             attachmentAdmissionToken,
           ) === true;
-        restoreComposerDraftForView(submissionWorkspaceView, {
+        restoreComposerDraft({
           input: draftRestoreValue,
           submission,
           ...(!attachmentAdmitted || rolledBack
@@ -6236,67 +3887,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       commands,
       runLocalControlCommand,
       submitToSession,
-      workbenchEnabled,
-      workspaceEditorBlockers.agent,
-      workspaceEditorBlockers.editor,
-      workbenchState.activeWorkspaceView,
-      workbenchState.activeSurfaceMode,
-      workbenchState.rail?.kind,
-      workbenchState.attachments,
-      workbenchState.composerAttachmentIds,
-      workbenchState.agentComposerAttachmentIds,
-      workbenchState.editorComposerAttachmentIds,
-      setAppState,
-      setComposerInputForView,
-      setComposerPastedContentsForView,
-      restoreComposerDraftForView,
-      hasPendingEditorProposalReview,
+      setComposerInput,
+      setComposerPastedContents,
+      restoreComposerDraft,
       commandQueueOwner,
     ],
-  );
-  const handleEditorInteraction = useCallback(
-    (intent: BufferIntegrationIntent): void => {
-      const editorInteraction = sessionEditorInteractionFromIntent(
-        intent,
-        editorInstanceIdRef.current,
-      );
-      if (editorInteraction === null) return;
-      if (hasPendingEditorProposalReview()) {
-        addNotification({
-          key: "editor-proposal-review-required",
-          text: EDITOR_PROPOSAL_REVIEW_REQUIRED,
-          color: "warning",
-          priority: "high",
-        });
-        return;
-      }
-      const displayKind =
-        intent.kind === "review"
-          ? "Refactor"
-          : `${intent.kind[0]?.toUpperCase() ?? ""}${intent.kind.slice(1)}`;
-      const displayUserMessage =
-        intent.prompt?.trim() ||
-        `${displayKind} ${intent.context.path || "[No Name]"}:${
-          intent.context.range.start.line
-        }`;
-      void submit(editorInteractionPrompt(intent), {
-        editorInteraction,
-        workspaceViewOverride: "editor",
-        pastedContentsOverride: {},
-        displayUserMessage,
-        draftRestoreValue: intent.prompt?.trim() ?? "",
-        rethrowSubmitError: true,
-        requireModelSubmission: true,
-      }).catch((error) => {
-        addNotification({
-          key: `editor-interaction:${editorInteraction.interactionId}`,
-          text: error instanceof Error ? error.message : String(error),
-          color: "error",
-          priority: "high",
-        });
-      });
-    },
-    [addNotification, hasPendingEditorProposalReview, submit],
   );
   // When the daemon shows any sign of activity, drop the optimistic
   // pending-submission flag. We don't gate this only on isStreaming
@@ -6397,19 +3992,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     )
       return;
     if (queuedCommands.length === 0) return;
-    const nextCommand = peekNextMainThreadRunnableCommand(commandQueueOwner);
-    const nextWorkspaceView = nextCommand?.workspaceView ?? "agent";
-    if (
-      workspaceEditorBlockReasonForView(
-        workspaceEditorBlockers,
-        nextWorkspaceView,
-      ) !== null
-    ) {
-      return;
-    }
-    if (nextWorkspaceView === "editor" && hasPendingEditorProposalReview()) {
-      return;
-    }
     const command = dequeueNextMainThreadRunnableCommand(commandQueueOwner);
     if (command === undefined) return;
     queueDrainActiveRef.current = true;
@@ -6426,10 +4008,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           : runQueuedBashCommand(queuedText, command.executionCwd)
         : submit(queuedText, {
             fromQueue: true,
-            workspaceViewOverride: command.workspaceView ?? "agent",
-            ...(command.editorInteraction !== undefined
-              ? { editorInteraction: command.editorInteraction }
-              : {}),
             ...(command.pastedContents !== undefined
               ? { pastedContentsOverride: command.pastedContents }
               : {}),
@@ -6440,8 +4018,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     });
   }, [
     effectiveInputBusy,
-    workspaceEditorBlockers.agent,
-    workspaceEditorBlockers.editor,
     permissionRequests.length,
     elicitation.prompt,
     isMessageSelectorVisible,
@@ -6449,9 +4025,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     queuedCommands,
     submit,
     runQueuedBashCommand,
-    workbenchState.rail?.kind,
-    inFlightEditorProposalStageCount,
-    hasPendingEditorProposalReview,
     commandQueueOwner,
   ]);
   // Start the cron scheduler on session mount so durable scheduled tasks
@@ -6844,115 +4417,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     },
     [],
   );
-  const focusPendingEditorProposalForReview = useCallback((): boolean => {
-    if (!workbenchEnabled || !hasPendingEditorProposalReview()) return false;
-    const proposalId = activeEditorProposalId();
-    setAppState((state) => {
-      const editorState = applyWorkbenchCommand(state, {
-        type: "switchWorkspaceView",
-        view: "editor",
-      });
-      if (proposalId === null) return editorState;
-      const withProposal = applyWorkbenchCommand(editorState, {
-        type: "setRail",
-        rail: { kind: "editor-proposal", proposalId },
-      });
-      return applyWorkbenchCommand(withProposal, {
-        type: "focus",
-        pane: "rail",
-      });
-    });
-    addNotification({
-      key: "editor-proposal-exit-required",
-      text:
-        proposalId === null
-          ? "Exit cancelled: wait for the active Editor edit request to finish, then accept or reject its proposal."
-          : "Exit cancelled: accept or reject the current Editor proposal before exiting or switching sessions.",
-      color: "warning",
-      priority: "high",
-    });
-    return true;
-  }, [
-    addNotification,
-    hasPendingEditorProposalReview,
-    setAppState,
-    workbenchEnabled,
-  ]);
-  const appExitPreparationRef = useRef<Promise<boolean> | null>(null);
-  const prepareBufferForAppExit = useCallback((): Promise<boolean> => {
-    if (appExitPreparationRef.current) return appExitPreparationRef.current;
-    const preparation = (async () => {
-      // Re-check at the actual close boundary. A proposal-only model turn or
-      // its event→Neovim staging can begin after the original shortcut, and a
-      // clean buffer alone does not make that unresolved shadow safe to lose.
-      if (focusPendingEditorProposalForReview()) return false;
-      if (workbenchEnabled) {
-        const controller = getWorkbenchBufferProviderController();
-        let safelyClosed = false;
-        try {
-          safelyClosed = await controller.shutdown({ mode: "safe" });
-        } catch (error) {
-          addNotification({
-            key: "buffer-safe-exit-failed",
-            text: `Exit cancelled: BUFFER could not confirm a safe shutdown (${error instanceof Error ? error.message : String(error)}).`,
-            color: "error",
-            priority: "high",
-          });
-          return false;
-        }
-        if (!safelyClosed) {
-          const snapshot = controller.getSnapshot();
-          if (snapshot.dirty) {
-            const intent = appExitIntentRef.current;
-            setAppState((state) =>
-              applyWorkbenchCommand(state, {
-                type: "requestAppExit",
-                ...(intent.resumeSessionId !== null
-                  ? { resumeSessionId: intent.resumeSessionId }
-                  : {}),
-              }),
-            );
-          } else {
-            addNotification({
-              key: "buffer-safe-exit-refused",
-              text: `Exit cancelled: ${snapshot.error ?? snapshot.providerMessage ?? "BUFFER could not verify that every editor buffer is safe to close."}`,
-              color: "error",
-              priority: "high",
-            });
-          }
-          return false;
-        }
-      }
-      return true;
-    })();
-    appExitPreparationRef.current = preparation;
-    void preparation.finally(() => {
-      if (appExitPreparationRef.current === preparation) {
-        appExitPreparationRef.current = null;
-      }
-    });
-    return preparation;
-  }, [
-    addNotification,
-    focusPendingEditorProposalForReview,
-    setAppState,
-    workbenchEnabled,
-  ]);
   const performAppExit = useCallback(
     (intent: AppExitIntent) => {
       if (getCurrentWorktreeSession() !== null) {
         setExitFlow(
           <ExitFlow
             showWorktree={true}
-            beforeWorktreeMutation={async () => {
-              if (appExitIntentRef.current.version !== intent.version)
-                return false;
-              const safelyClosed = await prepareBufferForAppExit();
-              return (
-                safelyClosed &&
-                appExitIntentRef.current.version === intent.version
-              );
-            }}
+            beforeWorktreeMutation={async () =>
+              appExitIntentRef.current.version === intent.version
+            }
             onDone={() => {
               if (appExitIntentRef.current.version !== intent.version)
                 return false;
@@ -6974,59 +4447,17 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         );
         return;
       }
-      void prepareBufferForAppExit().then((safelyClosed) => {
-        if (!safelyClosed) return;
-        if (appExitIntentRef.current.version !== intent.version) return;
-        stagePendingResumeForExit(intent);
-        exit();
-      });
+      if (appExitIntentRef.current.version !== intent.version) return;
+      stagePendingResumeForExit(intent);
+      exit();
     },
-    [exit, prepareBufferForAppExit, stagePendingResumeForExit],
+    [exit, stagePendingResumeForExit],
   );
-  const handledAppExitRequestRef = useRef(workbenchState.appExitRequestId);
-  useEffect(() => {
-    if (!workbenchEnabled) {
-      handledAppExitRequestRef.current = workbenchState.appExitRequestId;
-      return;
-    }
-    if (handledAppExitRequestRef.current === workbenchState.appExitRequestId)
-      return;
-    handledAppExitRequestRef.current = workbenchState.appExitRequestId;
-    performAppExit(appExitIntentRef.current);
-  }, [
-    performAppExit,
-    workbenchEnabled,
-    workbenchState.appExitRequestId,
-    workbenchState.appExitResumeSessionId,
-  ]);
   const requestSafeAppExit = useCallback(
     (resumeSessionId?: string) => {
-      // A visible dirty-buffer transaction owns the exact deferred action. New
-      // shortcuts are ignored by applyWorkbenchCommand, so they must not mutate
-      // the intent ref behind that transaction either.
-      if (workbenchEnabled && workbenchState.pendingBlockedOverlay !== null)
-        return;
-      if (focusPendingEditorProposalForReview()) return;
-      const intent = recordAppExitIntent(resumeSessionId);
-      if (!workbenchEnabled) {
-        performAppExit(intent);
-        return;
-      }
-      setAppState((state) =>
-        applyWorkbenchCommand(state, {
-          type: "requestAppExit",
-          ...(resumeSessionId ? { resumeSessionId } : {}),
-        }),
-      );
+      performAppExit(recordAppExitIntent(resumeSessionId));
     },
-    [
-      performAppExit,
-      focusPendingEditorProposalForReview,
-      recordAppExitIntent,
-      setAppState,
-      workbenchEnabled,
-      workbenchState.pendingBlockedOverlay,
-    ],
+    [performAppExit, recordAppExitIntent],
   );
   requestAppExitRef.current = requestSafeAppExit;
   const handleExit = useCallback(() => {
@@ -7157,8 +4588,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             mcpClients={mcpClients as never}
             pastedContents={pastedContents}
             setPastedContents={changeComposerPastedContents}
-            vimMode={vimMode}
-            setVimMode={setVimMode}
             showBashesDialog={showBashesDialog}
             setShowBashesDialog={setShowBashesDialog}
             onExit={handleExit}
@@ -7166,7 +4595,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             onBashSubmit={runQueuedBashCommand}
             queueOwner={commandQueueOwner}
             queueExecutionCwd={queueWorkspaceRoot}
-            restoreComposerDraftForView={restoreComposerDraftForView}
+            restoreComposerDraft={restoreComposerDraft}
             onboardingInput={onboardingInput}
             onSubmit={async (value_0, helpers) => {
               if (isExitSlashCommand(value_0)) {
@@ -7292,9 +4721,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const overlayContent =
     permissionRequests.length > 0 ? (
       <>
-        {workbenchEnabled ? (
-          <ApprovalSurfaceBridge request={permissionRequests[0]} />
-        ) : null}
         {permissionRequests.length > 1 ? (
           <Text
             color="warning"
@@ -7318,12 +4744,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       ) : (
         <ElicitationOverlay prompt={elicitation.prompt} />
       )
-    ) : predictionConsentPromptVisible ? (
-      <PredictionConsentOverlay
-        onAllow={() => persistPredictionConsent("on")}
-        onDecline={() => persistPredictionConsent("off")}
-        onDismiss={() => setPredictionConsentPromptVisible(false)}
-      />
     ) : null;
 
   // Phase 5 #53: hide PromptInput while a permission overlay or
@@ -7333,7 +4753,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     permissionRequestCount: permissionRequests.length,
     hasElicitationPrompt: elicitation.prompt !== null,
     completionPipelineOwnsPrompt: completionPipelineActive,
-    hasPredictionConsentPrompt: predictionConsentPromptVisible,
     toolShouldHidePromptInput: toolJSX?.shouldHidePromptInput === true,
   });
   const promptInputElement = showPromptInput ? (
@@ -7366,8 +4785,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       mcpClients={mcpClients as never}
       pastedContents={pastedContents}
       setPastedContents={changeComposerPastedContents}
-      vimMode={vimMode}
-      setVimMode={setVimMode}
       showBashesDialog={showBashesDialog}
       setShowBashesDialog={setShowBashesDialog}
       onExit={handleExit}
@@ -7375,9 +4792,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       onBashSubmit={runQueuedBashCommand}
       queueOwner={commandQueueOwner}
       queueExecutionCwd={queueWorkspaceRoot}
-      restoreComposerDraftForView={restoreComposerDraftForView}
+      restoreComposerDraft={restoreComposerDraft}
       isLocalJSXCommandActive={isLocalJSXCommandActive}
-      submissionBlockedReason={promptSubmissionBlockedReason}
       onSubmissionBlocked={(reason) => {
         showTransientResult(reason, { display: "error" });
       }}
@@ -7406,12 +4822,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                   ? {
                       pastedContentsOverride:
                         submitOptions.pastedContentsOverride,
-                    }
-                  : {}),
-                ...(submitOptions.onWorkbenchAttachmentsAdmitted !== undefined
-                  ? {
-                      onWorkbenchAttachmentsAdmitted:
-                        submitOptions.onWorkbenchAttachmentsAdmitted,
                     }
                   : {}),
               },
@@ -7467,23 +4877,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         messageCount={transcript.messages.length}
       />
       <ScrollKeybindingHandler
-        scrollRef={
-          modalToolJSX !== null
-            ? modalScrollRef
-            : workbenchState.activeWorkspaceView === "editor"
-              ? editorPanelScrollRef
-              : scrollRef
-        }
-        isActive={shouldEnableTranscriptScrollKeybindings({
-          fullscreen,
-          workbenchEnabled,
-          permissionRequestCount: permissionRequests.length,
-          modalVisible: modalToolJSX !== null,
-          activeSurfaceMode: workbenchState.activeSurfaceMode,
-          activeWorkspaceView: workbenchState.activeWorkspaceView,
-          focusedPane: workbenchState.focusedPane,
-          rail: workbenchState.rail,
-        })}
+        scrollRef={modalToolJSX !== null ? modalScrollRef : scrollRef}
+        isActive={fullscreen && permissionRequests.length === 0}
         isModal={modalToolJSX !== null}
       />
       <CancelRequestHandler
@@ -7511,52 +4906,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         canCancelActiveTurn={isLoading || shellAbortController !== null}
         queueOwner={commandQueueOwner}
       />
-      {workbenchEnabled ? (
-        <WorkbenchLayout
-          transcript={scrollableContent}
-          composer={bottomContent}
-          overlay={overlayContent ?? undefined}
-          modal={
-            modalToolJSX !== null ? (
-              <Box flexDirection="column" width="100%">
-                {modalToolJSX}
-              </Box>
-            ) : undefined
-          }
-          modalScrollRef={modalScrollRef}
-          pendingApproval={permissionRequests[0] ?? null}
-          scrollRef={scrollRef}
-          panelScrollRef={editorPanelScrollRef}
-          atWelcome={
-            transcript.messages.length === 0 && !transcript.streamingText
-          }
-          activityMode={showSpinner ? streamMode : null}
-          contextPctLabel={contextPctLabel}
-          modelDisplayContext={remoteAuthSessionContext}
-          sessionCostUsd={transcript.sessionCostUsd}
-          sessionCostUnknown={transcript.sessionUsage?.hasUnknownCost}
-          onEditorInteraction={handleEditorInteraction}
-          codePrediction={codePrediction}
-          editorMutationBlockedReason={workspaceEditorBlockers.editor}
-          editorTopologyRecovery={editorTopologyRecovery}
-          editorStaleAuthorityRecovery={editorStaleAuthorityRecovery}
-        />
-      ) : (
-        <FullscreenLayout
-          scrollRef={scrollRef}
-          scrollable={scrollableContent}
-          bottom={bottomContent}
-          overlay={overlayContent ?? undefined}
-          modal={
-            modalToolJSX !== null ? (
-              <Box flexDirection="column" width="100%">
-                {modalToolJSX}
-              </Box>
-            ) : undefined
-          }
-          modalScrollRef={modalScrollRef}
-        />
-      )}
+      <FullscreenLayout
+        scrollRef={scrollRef}
+        scrollable={scrollableContent}
+        bottom={bottomContent}
+        overlay={overlayContent ?? undefined}
+        modal={
+          modalToolJSX !== null ? (
+            <Box flexDirection="column" width="100%">
+              {modalToolJSX}
+            </Box>
+          ) : undefined
+        }
+        modalScrollRef={modalScrollRef}
+      />
       {showCostDialog ? (
         <CostThresholdDialog onDone={handleCostThresholdDone} />
       ) : null}

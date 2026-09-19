@@ -1958,39 +1958,6 @@ describe("Session turn-driver hooks", () => {
     expect(started).toEqual(["first", "second"]);
   });
 
-  it("defers Agent startup work across Editor turns and flushes it before an ordinary submit", async () => {
-    const session = buildSession();
-    const sequence: string[] = [];
-    session.appendDeferredOrdinarySubmitHook(async () => {
-      sequence.push("agent-startup");
-    });
-    session.installTurnDriverHooks({
-      submit: vi.fn(async (message: string) => {
-        sequence.push(`turn:${message}`);
-      }),
-    });
-    const editorInteraction = {
-      interactionId: "interaction-deferred-startup-ask",
-      kind: "ask" as const,
-      policy: "read_only" as const,
-      editorInstanceId: "editor-deferred-startup",
-      bufferHandle: 12,
-      changedtick: 5,
-      contentSha256: "e".repeat(64),
-      path: "/tmp/example.ts",
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 1, column: 1 },
-      },
-    };
-
-    await session.submit("editor", { editorInteraction });
-    expect(sequence).toEqual(["turn:editor"]);
-
-    await session.submit("agent");
-    expect(sequence).toEqual(["turn:editor", "agent-startup", "turn:agent"]);
-  });
-
   it("discards never-started deferred work when shutdown wins", async () => {
     const cancel = vi.fn();
     const session = buildSession({
@@ -2957,29 +2924,6 @@ describe("Session.shutdown dispatches SessionEnd hooks", () => {
       const session = buildSession();
       await session.shutdown();
       expect(seen).toEqual([{ reason: "exit", session_id: "conv-test" }]);
-    } finally {
-      resetLifecycleHookRegistry();
-    }
-  });
-
-  it("does not run unmatched lifecycle hooks for an Editor-only deferred session", async () => {
-    const { registerSessionEndHook, resetLifecycleHookRegistry } =
-      await import("../llm/hooks/registry.js");
-    const sessionStart = vi.fn(async () => {});
-    const sessionEnd = vi.fn(async () => ({
-      succeeded: true,
-      output: "",
-    }));
-    resetLifecycleHookRegistry();
-    registerSessionEndHook(sessionEnd);
-    try {
-      const session = buildSession();
-      session.installDeferredSessionStartHook(sessionStart);
-
-      await session.shutdown();
-
-      expect(sessionStart).not.toHaveBeenCalled();
-      expect(sessionEnd).not.toHaveBeenCalled();
     } finally {
       resetLifecycleHookRegistry();
     }

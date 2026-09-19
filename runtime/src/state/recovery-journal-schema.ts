@@ -853,7 +853,6 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     { callId: isString, result: isString, isError: isBoolean },
     {
       toolName: isString,
-      editorInteractionId: isString,
       metadata: isRecord,
       durationMs: isNumber,
     },

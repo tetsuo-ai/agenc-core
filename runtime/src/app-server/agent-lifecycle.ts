@@ -160,7 +160,6 @@ import {
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import {
   getAgencHomeDir,
   createResumeRolloutDescriptorLease,
@@ -219,7 +218,6 @@ import type { Event } from "../session/event-log.js";
 import type { ResponseItem } from "../session/rollout-item.js";
 import type { AgenCStateAgentRunRecord } from "../state/agent-runs.js";
 import type { CancelAgentRunTreeReport } from "../state/run-cancellation.js";
-import type { CodePredictionSource } from "../services/code-prediction/types.js";
 
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
@@ -716,7 +714,6 @@ export class AgenCDaemonAgentManager {
           params.initialContent !== undefined ||
           params.deferInitialTurn !== undefined ||
           params.initialDisplayUserMessage !== undefined ||
-          params.initialEditorInteraction !== undefined ||
           params.metadata !== undefined ||
           params.unattendedAllow !== undefined ||
           params.unattendedDeny !== undefined)
@@ -998,11 +995,6 @@ export class AgenCDaemonAgentManager {
               ...(params.initialDisplayUserMessage !== undefined
                 ? {
                     initialDisplayUserMessage: params.initialDisplayUserMessage,
-                  }
-                : {}),
-              ...(params.initialEditorInteraction !== undefined
-                ? {
-                    initialEditorInteraction: params.initialEditorInteraction,
                   }
                 : {}),
               metadata,
@@ -3850,22 +3842,6 @@ export class AgenCDaemonAgentManager {
     };
   }
 
-  async resolveCodePredictionSource(
-    sessionId: string,
-  ): Promise<CodePredictionSource> {
-    const agentId = await this.#resolveActiveAgentIdForSession(sessionId, {
-      allowCodePrediction: true,
-    });
-    const resolveSource = this.#runner?.resolveCodePredictionSource;
-    if (resolveSource === undefined) {
-      throw new AgenCDaemonAgentLifecycleError(
-        "BACKGROUND_RUNNER_UNAVAILABLE",
-        "editor prediction requires a live daemon runtime",
-      );
-    }
-    return await resolveSource.call(this.#runner, agentId);
-  }
-
   async streamAgentMessage(params: {
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -3874,7 +3850,6 @@ export class AgenCDaemonAgentManager {
     readonly acceptedAt: string;
     readonly ifBusy?: "reject";
     readonly displayUserMessage?: string | null;
-    readonly editorInteraction?: SessionEditorInteraction;
     readonly methodName?: "message.send" | "message.stream";
     /** Set only by authenticated daemon ingress, never by RPC payload metadata. */
     readonly localMcpAccess?: boolean;
@@ -3943,9 +3918,6 @@ export class AgenCDaemonAgentManager {
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }
-          : {}),
-        ...(params.editorInteraction !== undefined
-          ? { editorInteraction: params.editorInteraction }
           : {}),
         ...(params.ifBusy !== undefined ? { ifBusy: params.ifBusy } : {}),
         messageId: params.messageId,
@@ -4094,7 +4066,6 @@ export class AgenCDaemonAgentManager {
       readonly allowHooksStatus?: boolean;
       readonly allowSetHooksDisabled?: boolean;
       readonly allowApplyConfig?: boolean;
-      readonly allowCodePrediction?: boolean;
       readonly allowExecuteShell?: boolean;
       readonly allowExecuteStatusLine?: boolean;
       readonly allowSessionGoal?: boolean;
@@ -4169,9 +4140,6 @@ export class AgenCDaemonAgentManager {
     const hasApplyConfigRunner =
       options.allowApplyConfig === true &&
       this.#runner?.applyAgentConfig !== undefined;
-    const hasCodePredictionRunner =
-      options.allowCodePrediction === true &&
-      this.#runner?.resolveCodePredictionSource !== undefined;
     const hasExecuteShellRunner =
       options.allowExecuteShell === true &&
       this.#runner?.executeAgentShell !== undefined;
@@ -4204,7 +4172,6 @@ export class AgenCDaemonAgentManager {
       !hasHooksStatusRunner &&
       !hasSetHooksDisabledRunner &&
       !hasApplyConfigRunner &&
-      !hasCodePredictionRunner &&
       !hasExecuteShellRunner &&
       !hasExecuteStatusLineRunner
     ) {

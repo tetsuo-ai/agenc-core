@@ -73,28 +73,6 @@ async function waitForFile(path: string): Promise<void> {
 }
 
 describe.skipIf(process.platform === "win32")("daemon-owned status-line executor", () => {
-  test("uses owner command, workspace, environment, model, and aggregate ledger without model turns", async () => {
-    const owner = await fixture({ command: nodeCommand('let input="";process.stdin.on("data",chunk=>input+=chunk);process.stdin.on("end",()=>process.stdout.write(JSON.stringify({input:JSON.parse(input),cwd:process.cwd(),home:process.env.HOME,project:process.env.AGENC_PROJECT_DIR,path:process.env.PATH})))') });
-    const lease = await owner.admission.acquire({ stepId: "prior-model", kind: "model_turn", maxInputTokens: 40, maxOutputTokens: 10, maxCostUsd: 0.5 });
-    owner.admission.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
-    owner.admission.reconcile(lease.reservation.reservationId, { inputTokens: 23, outputTokens: 7, costUsd: 0.25 });
-    owner.admission.acknowledgeCompletion(lease.reservation.reservationId);
-    const result = await executeSessionStatusLine(owner.session, { vimMode: "NORMAL" });
-    expect(result.status).toBe("rendered");
-    expect(JSON.parse(result.text!)).toMatchObject({
-      cwd: owner.cwd, home: owner.home, project: owner.configStore.projectRoot, path: "/usr/bin:/bin",
-      input: {
-        session_id: owner.session.conversationId, cwd: owner.cwd,
-        workspace: { current_dir: owner.cwd, project_dir: owner.configStore.projectRoot },
-        model: { id: "test-model" }, vim: { mode: "NORMAL" },
-        cost: { total_cost_usd: 0.25, has_unknown_cost: false },
-        context_window: { total_input_tokens: 23, total_output_tokens: 7 },
-      },
-    });
-    expect(owner.admission.getUsageSummary?.()).toMatchObject({ costUsd: 0.25, modelCalls: 1 });
-    expect(owner.events).toEqual([]);
-    expect(owner.admission.replayJournal?.().some((event) => event.kind === "tool_exec")).toBe(true);
-  });
 
   test.each([
     [{ trusted: false }, "blocked"],

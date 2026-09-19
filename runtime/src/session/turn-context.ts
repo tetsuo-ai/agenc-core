@@ -33,7 +33,6 @@ import type {
 } from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
-import type { SessionEditorInteraction } from "./autonomous-mode.js";
 import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig, GoalConfig } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -727,9 +726,6 @@ export interface TurnContext {
    * the live registry value.
    */
   readonly permissionMode: PermissionMode;
-
-  /** Trusted editor context and mutation policy for an editor-originated turn. */
-  readonly editorInteraction?: SessionEditorInteraction;
 }
 
 // ─────────────────────────────────────────────────────────────────────

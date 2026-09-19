@@ -622,7 +622,6 @@ const ROOT_FIELD_VALIDATORS = {
   statusLine: delegatedObjectValidator("statusLine"),
   outputStyle: fieldValidator("outputStyle", optionalString),
   attachments: validateAttachments,
-  buffer: delegatedObjectValidator("buffer"),
   tui: delegatedObjectValidator("tui"),
   autoFix: delegatedObjectValidator("autoFix"),
   fileSuggestion: delegatedObjectValidator("fileSuggestion"),

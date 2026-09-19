@@ -30,7 +30,6 @@ import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
 import { createDaemonTuiSessionFixture } from "../helpers/daemon-tui-session.js";
 import { getDefaultAppState } from "../../src/tui/state/AppStateStore.js";
 import { startDaemonWorkerTaskPolling } from "../../src/tui/state/daemonWorkerTasks.js";
-import { formatTaskElapsed } from "../../src/tui/workbench/agents/activity.js";
 import type { NativeWorkerSnapshot } from "../../src/agents/control.js";
 import type { AgenCDaemonTuiClient } from "../../src/tui/daemon-session.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
@@ -1760,77 +1759,6 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ]);
     expect(shell.bashExecute).not.toHaveBeenCalled();
-  });
-
-  it("[managed-thread] denies direct shell while Editor owns the workspace", async () => {
-    const workspaceRoot = mkdtempSync(
-      join(tmpdir(), "agenc-direct-shell-editor-owned-workspace-"),
-    );
-    const settingsHome = mkdtempSync(
-      join(tmpdir(), "agenc-direct-shell-editor-owned-home-"),
-    );
-    try {
-      const harness = makeTopLevelRunner({
-        conversationId: "session-direct-shell-editor-owned",
-        threadInitialStatus: { status: "pending_init" } as AgentStatus,
-        workspaceRoot,
-      });
-      const shell = configureSessionShellHarness(harness, { settingsHome });
-      const settingsAuthority =
-        harness.configStore as unknown as CanonicalSettingsAuthority;
-      await harness.runner.startAgent({
-        objective: "deferred direct shell",
-        deferInitialTurn: true,
-        unattendedAllow: [],
-        unattendedDeny: [],
-      });
-      harness.forcePermissionContextForTesting(
-        createEmptyToolPermissionContext({
-          mode: "bypassPermissions",
-          isBypassPermissionsModeAvailable: true,
-        }),
-      );
-      const lease = runWithCanonicalSettingsAuthority(settingsAuthority, () =>
-        workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
-          workspaceRoot,
-          editorInstanceId: "editor-before-direct-shell",
-        }),
-      );
-
-      const result = await harness.runner.executeAgentShell(
-        "session-direct-shell-editor-owned",
-        {
-          sessionId: "session-direct-shell-editor-owned",
-          commandId: "shell-editor-owned-1",
-          command: "printf blocked-by-editor",
-        },
-      );
-
-      expect(result).toMatchObject({
-        commandId: "shell-editor-owned-1",
-        isError: true,
-        stdout: "",
-        exitCode: null,
-      });
-      expect(`${result.content}\n${result.stderr}`).toMatch(
-        /Tool 'system\.bash' is blocked while this workspace has protected Editor authority/u,
-      );
-      expect(shell.bashExecute).not.toHaveBeenCalled();
-      expect(shell.acquire).not.toHaveBeenCalled();
-
-      await runWithCanonicalSettingsAuthority(settingsAuthority, () =>
-        workspaceMutationCoordinators.getOrCreate(workspaceRoot).release({
-          workspaceRoot,
-          editorInstanceId: lease.editorInstanceId,
-          leaseToken: lease.leaseToken,
-          epoch: lease.epoch,
-        }),
-      );
-    } finally {
-      workspaceMutationCoordinators.clearForTests();
-      rmSync(workspaceRoot, { recursive: true, force: true });
-      rmSync(settingsHome, { recursive: true, force: true });
-    }
   });
 
   it("[managed-thread] keeps Editor acquisition fenced until direct shell cleanup", async () => {
@@ -8649,61 +8577,6 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
-  it("[managed-thread] carries validated Editor policy into the atomic first turn", async () => {
-    const { runner, stub, session, bootstrap } = makeTopLevelRunner({
-      conversationId: "session-editor-first-turn",
-    });
-    const initialEditorInteraction = {
-      interactionId: "interaction-first-fix",
-      kind: "fix" as const,
-      policy: "proposal_only" as const,
-      editorInstanceId: "editor-first-turn",
-      bufferHandle: 7,
-      changedtick: 12,
-      contentSha256: "a".repeat(64),
-      path: "/workspace/src/main.ts",
-      range: {
-        start: { line: 2, column: 3 },
-        end: { line: 4, column: 0 },
-      },
-      selectionMode: "character" as const,
-    };
-
-    await runner.startAgent({
-      objective: "internal editor prompt",
-      initialContent: "internal editor prompt",
-      initialDisplayUserMessage: "Fix the selected code",
-      initialEditorInteraction,
-      unattendedAllow: [],
-      unattendedDeny: [],
-    });
-
-    expect(stub.thread.submit).toHaveBeenCalledWith({
-      type: "user_input",
-      input: [{ type: "text", text: "internal editor prompt" }],
-      submitOptions: {
-        displayUserMessage: "Fix the selected code",
-        editorInteraction: initialEditorInteraction,
-      },
-    });
-    expect(bootstrap).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deferSessionStartHooks: true,
-        deferAgentStartupSideEffects: true,
-      }),
-    );
-    expect(session.emit).toHaveBeenCalledWith({
-      id: "user-initial-session-editor-first-turn",
-      msg: {
-        type: "user_message",
-        payload: {
-          message: "internal editor prompt",
-          displayText: "Fix the selected code",
-        },
-      },
-    });
-  });
-
   it("[managed-thread] empty initialContent provisions a passive agent with no turn-1 submit", async () => {
     // The channel gateway (task 34) relies on this contract: agent.create
     // with `initialContent: []` bootstraps a live, runnable agent WITHOUT
@@ -11297,12 +11170,10 @@ describe("AgenC delegate background-agent runner", () => {
       closeProjection = startDaemonWorkerTaskPolling(bridge, update => { state = update(state); }, message => errors.push(message));
       await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(3));
       expect(Object.values(state.tasks).map(task => task.status)).toEqual(["completed", "completed", "completed"]);
-      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 300_000)).toBe("1m00s");
       closeProjection();
       vi.setSystemTime(Date.now() + 600_000);
       closeProjection = startDaemonWorkerTaskPolling(bridge, update => { state = update(state); }, message => errors.push(message));
       await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(3));
-      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 900_000)).toBe("1m00s");
       expect(nativeSnapshot).toHaveBeenCalledWith(agentId);
       workers = [{ ...workers[0]!, status: "running", timing: { turnId: "backend-next", startedAt: 500_000 } },
         { ...workers[1]!, status: "errored", error: "failed" }];
@@ -11310,12 +11181,10 @@ describe("AgenC delegate background-agent runner", () => {
       await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(2));
       expect(state.tasks["worker-backend"]?.status).toBe("running");
       expect(state.tasks["worker-backend"]?.endTime).toBeUndefined();
-      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 515_000)).toBe("0m15s");
       expect(state.tasks["worker-frontend"]?.status).toBe("failed");
       workers = [{ ...workers[0]!, status: "idle", timing: { turnId: "backend-next", startedAt: 500_000, endedAt: 520_000 } }];
       await vi.advanceTimersByTimeAsync(5_000);
       await vi.waitFor(() => expect(state.tasks["worker-backend"]?.status).toBe("completed"));
-      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 900_000)).toBe("0m20s");
       expect(errors).toEqual([]);
     } finally {
       closeProjection?.();

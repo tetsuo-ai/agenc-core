@@ -361,8 +361,7 @@ export type UserInput = unknown;
  * the same immutable interaction id.
  */
 export interface IdleInputOwnership {
-  readonly workspaceView: "agent" | "editor";
-  readonly editorInteractionId?: string;
+  readonly workspaceView: "agent";
 }
 
 /**
@@ -430,39 +429,20 @@ function idleInputOwnershipFromMessage(
   ) {
     return undefined;
   }
-  const record = candidate as {
-    readonly workspaceView?: unknown;
-    readonly editorInteractionId?: unknown;
-  };
-  if (record.workspaceView !== "agent" && record.workspaceView !== "editor") {
-    return undefined;
-  }
-  return {
-    workspaceView: record.workspaceView,
-    ...(typeof record.editorInteractionId === "string"
-      ? { editorInteractionId: record.editorInteractionId }
-      : {}),
-  };
+  const record = candidate as { readonly workspaceView?: unknown };
+  // Historical envelopes may carry the retired "editor" view; they belong to
+  // no live surface and are never drained.
+  return record.workspaceView === "agent" ? { workspaceView: "agent" } : undefined;
 }
 
 function mailboxMessageEligibleForOwnership(
   message: InterAgentCommunication,
-  ownership?: IdleInputOwnership,
 ): boolean {
   const isIdle = message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT;
-  if (ownership?.workspaceView === "editor") {
-    if (!isIdle) return false;
-    const interactionId = ownership.editorInteractionId;
-    const candidate = idleInputOwnershipFromMessage(message);
-    return (
-      typeof interactionId === "string" &&
-      interactionId.length > 0 &&
-      candidate?.workspaceView === "editor" &&
-      candidate.editorInteractionId === interactionId
-    );
-  }
   if (!isIdle) return true;
-  return idleInputOwnershipFromMessage(message)?.workspaceView !== "editor";
+  // Idle input written by a retired surface is never drained into a turn.
+  const ownership = idleInputOwnershipFromMessage(message);
+  return ownership === undefined || ownership.workspaceView === "agent";
 }
 
 export interface Mailbox<T = InterAgentCommunication> {
@@ -3799,16 +3779,12 @@ export class Session {
       if (this.pendingCompactionCleanups.size > 0) {
         await this.repairPendingCompactionCleanups();
       }
-      if (
-        opts.editorInteraction === undefined &&
-        this.deferredSessionStartHook !== null
-      ) {
+      if (this.deferredSessionStartHook !== null) {
         await this.flushDeferredSessionStartHook();
       }
       if (
-        opts.editorInteraction === undefined &&
-        (this.deferredOrdinarySubmitHooks.length > 0 ||
-          this.deferredOrdinarySubmitHookPromise !== null)
+        this.deferredOrdinarySubmitHooks.length > 0 ||
+        this.deferredOrdinarySubmitHookPromise !== null
       ) {
         await this.flushDeferredOrdinarySubmitHooks();
       }
@@ -4893,9 +4869,9 @@ export class Session {
    * the next turn. This is the only state `run-turn.ts` needs to decide
    * whether an empty submission is a no-op or should continue.
    */
-  hasPendingInput(ownership?: IdleInputOwnership): boolean {
+  hasPendingInput(_ownership?: IdleInputOwnership): boolean {
     return this.sessionMailbox.some((message) =>
-      mailboxMessageEligibleForOwnership(message, ownership),
+      mailboxMessageEligibleForOwnership(message),
     );
   }
 
@@ -5001,11 +4977,6 @@ export class Session {
             ? {
                 idleInputOwnership: {
                   workspaceView: ownership.workspaceView,
-                  ...(ownership.editorInteractionId !== undefined
-                    ? {
-                        editorInteractionId: ownership.editorInteractionId,
-                      }
-                    : {}),
                 },
               }
             : {}),
@@ -5057,38 +5028,17 @@ export class Session {
    * Returns the original `UserInput` payloads in FIFO order — the
    * session-local `InterAgentCommunication` envelope is stripped.
    */
-  drainIdleInput(ownership?: IdleInputOwnership): UserInput[] {
+  drainIdleInput(_ownership?: IdleInputOwnership): UserInput[] {
     return this.sessionMailbox
       .extractWhere(
         (message) =>
           message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT &&
-          mailboxMessageEligibleForOwnership(message, ownership),
+          mailboxMessageEligibleForOwnership(message),
       )
       .map((message) => message.metadata?.payload);
   }
 
-  drainPendingInputMessages(ownership?: IdleInputOwnership): LLMMessage[] {
-    if (ownership?.workspaceView === "editor") {
-      return this.sessionMailbox
-        .extractWhere((message) =>
-          mailboxMessageEligibleForOwnership(message, ownership),
-        )
-        .flatMap((message): LLMMessage[] => {
-          const payload = message.metadata?.payload;
-          if (
-            payload !== null &&
-            typeof payload === "object" &&
-            "role" in payload &&
-            "content" in payload
-          ) {
-            return [payload as LLMMessage];
-          }
-          return typeof payload === "string" && payload.trim().length > 0
-            ? [{ role: "user", content: payload }]
-            : [];
-        });
-    }
-
+  drainPendingInputMessages(_ownership?: IdleInputOwnership): LLMMessage[] {
     const projectedEntries: Array<{
       readonly seq: number;
       readonly message: LLMMessage;
@@ -5132,14 +5082,14 @@ export class Session {
       snapshot.find(
         (candidate) =>
           candidate.seq > seq &&
-          mailboxMessageEligibleForOwnership(candidate, ownership) &&
+          mailboxMessageEligibleForOwnership(candidate) &&
           (candidate.triggerTurn ||
             candidate.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT),
       );
 
     const processed = this.sessionMailbox.processPrefix((msg) => {
       if (msg.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT) {
-        if (!mailboxMessageEligibleForOwnership(msg, ownership)) {
+        if (!mailboxMessageEligibleForOwnership(msg)) {
           return "retain";
         }
         const payload = msg.metadata?.payload;

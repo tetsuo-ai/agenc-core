@@ -1642,23 +1642,8 @@ function convertV1Config(
     }
   }
   if (Object.hasOwn(converted, "editorMode")) {
-    const editorMode = converted.editorMode;
     delete converted.editorMode;
-    if (mergeLegacyEditorMode(
-      converted,
-      editorMode,
-      scope,
-      sourcePath,
-      conflicts,
-    )) {
-      notices.push(Object.freeze({
-        scope,
-        sourcePath,
-        field: "editorMode",
-        action: "migrate",
-        target: "tui.vimMode",
-      }));
-    }
+    notices.push(Object.freeze({ scope, sourcePath, field: "editorMode", action: "drop" }));
   }
   if (Object.hasOwn(converted, "enabledPlugins")) {
     const enabledPlugins = converted.enabledPlugins;
@@ -2181,54 +2166,6 @@ function mergeRecord(
   for (const [key, value] of Object.entries(incoming)) {
     mergeValue(target, key, value, { scope, sourcePath, conflicts });
   }
-}
-
-function legacyEditorModeValue(value: unknown): boolean | null {
-  if (value === "vim") return true;
-  if (value === "default" || value === "normal" || value === "emacs") {
-    return false;
-  }
-  return null;
-}
-
-function mergeLegacyEditorMode(
-  config: JsonRecord,
-  value: unknown,
-  scope: ConfigMigrationScope,
-  sourcePath: string,
-  conflicts: ConfigMigrationConflict[],
-): boolean {
-  const vimMode = legacyEditorModeValue(value);
-  if (vimMode === null) {
-    pushConflict(
-      conflicts,
-      scope,
-      sourcePath,
-      'legacy editorMode must be "vim", "default", "normal", or "emacs"',
-      "editorMode",
-    );
-    return false;
-  }
-  if (config.tui !== undefined && !isPlainRecord(config.tui)) {
-    pushConflict(
-      conflicts,
-      scope,
-      sourcePath,
-      "editorMode cannot merge with a non-object tui value",
-      "tui",
-    );
-    return false;
-  }
-  const tui = isPlainRecord(config.tui)
-    ? config.tui
-    : (config.tui = {} as JsonRecord);
-  mergeValue(tui, "vimMode", vimMode, {
-    scope,
-    sourcePath,
-    conflicts,
-    prefix: "tui",
-  });
-  return true;
 }
 
 function mergeLegacyEnabledPlugins(
@@ -3525,15 +3462,7 @@ function consumeGlobalState(
   for (const [field, value] of Object.entries(raw)) {
     const classification = classifyRetiredField("global-state", field);
     if (classification.authority === "config" && classification.target) {
-      if (field === "editorMode") {
-        if (!mergeLegacyEditorMode(
-          userConfig,
-          value,
-          "user",
-          sourcePath,
-          conflicts,
-        )) continue;
-      } else if (field === "env") {
+      if (field === "env") {
         const mapped = mapSettingsConfigValue(field, value);
         if (!mapped) {
           pushConflict(

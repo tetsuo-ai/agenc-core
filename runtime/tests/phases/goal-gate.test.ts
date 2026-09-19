@@ -63,10 +63,9 @@ describe("goalGate", () => {
     }
   });
 
-  test("does not govern subagent, editor, plan-mode, or nested turns", async () => {
+  test("does not govern subagent, plan-mode, or nested turns", async () => {
     const variants: Array<(f: ReturnType<typeof fixture>) => void> = [
       (f) => { (f.ctx as { depth: number }).depth = 1; },
-      (f) => { (f.ctx as { editorInteraction?: unknown }).editorInteraction = {}; },
       (f) => { (f.ctx as { permissionMode: string }).permissionMode = "plan"; },
       (f) => { (f.session.sessionConfiguration as { sessionSource: unknown }).sessionSource = "cli_subagent"; },
     ];

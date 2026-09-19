@@ -12,7 +12,6 @@ import {
   editorForEnv,
 } from "./config.js";
 import {
-  effectiveBufferEditorConfig,
   readConfigMenuSnapshot,
 } from "./config-menu.js";
 import { ConfigStore } from "../config/store.js";
@@ -258,52 +257,6 @@ describe("config menu snapshot", () => {
         detail: expect.stringContaining("grok"),
       }),
     ]);
-  });
-});
-
-describe("config menu — effective buffer editor settings", () => {
-  it("shows the persisted editor settings when no process override is active", () => {
-    expect(effectiveBufferEditorConfig({
-      provider: "inline",
-      neovim: {
-        executable: "/opt/nvim/bin/nvim",
-        init: "clean",
-        discovery_timeout_ms: 900,
-      },
-    }, {})).toEqual({
-      provider: "inline",
-      init: "clean",
-      executable: "/opt/nvim/bin/nvim",
-      discoveryTimeoutMs: 900,
-      environmentOverrides: [],
-    });
-  });
-
-  it("reports the exact process settings that override the editor config", () => {
-    expect(effectiveBufferEditorConfig({
-      provider: "inline",
-      neovim: {
-        executable: "/persisted/nvim",
-        init: "clean",
-        discovery_timeout_ms: 900,
-      },
-    }, {
-      AGENC_BUFFER_PROVIDER: "neovim",
-      AGENC_BUFFER_NVIM: "/environment/nvim",
-      AGENC_BUFFER_NVIM_USE_INIT: "true",
-      AGENC_BUFFER_NVIM_TIMEOUT_MS: "2750",
-    })).toEqual({
-      provider: "neovim",
-      init: "user",
-      executable: "/environment/nvim",
-      discoveryTimeoutMs: 2750,
-      environmentOverrides: [
-        "AGENC_BUFFER_PROVIDER",
-        "AGENC_BUFFER_NVIM",
-        "AGENC_BUFFER_NVIM_USE_INIT",
-        "AGENC_BUFFER_NVIM_TIMEOUT_MS",
-      ],
-    });
   });
 });
 

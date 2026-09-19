@@ -118,7 +118,6 @@ import {
   createStructuredOutputTool,
   createStructuredOutputToolForSchema,
 } from "./structured-output-tool.js";
-import { createEditorProposalTool } from "../tools/system/editor-proposal.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
@@ -5123,7 +5122,6 @@ export function createModelFacingTools(
     ...createTaskTools(scopedOpts),
     ...createCronAndWorkflowTools(scopedOpts),
     ...createPowerShellTool(scopedOpts),
-    createEditorProposalTool(),
     createSessionStructuredOutputTool(scopedOpts),
   ];
 }

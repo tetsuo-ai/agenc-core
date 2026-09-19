@@ -70,14 +70,6 @@ import {
 import { createGlobTool, GLOB_TOOL_NAME } from "./tools/system/glob.js";
 import { createGrepTool, GREP_TOOL_NAME } from "./tools/system/grep.js";
 import { createOrientTool, ORIENT_TOOL_NAME } from "./tools/system/orient.js";
-import {
-  createEditorProposalTool,
-  EDITOR_PROPOSAL_TOOL_NAME,
-} from "./tools/system/editor-proposal.js";
-import {
-  isEditorInteractionToolName,
-  type EditorInteractionToolName,
-} from "./tools/system/editor-interaction-surface.js";
 import { createBrowserTool } from "./tools/BrowserTool/tool.js";
 import type { BashExecObserver } from "./tools/system/types.js";
 import type { WorkflowToolController } from "./tools/system/planning.js";
@@ -149,12 +141,6 @@ export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall, options?: ToolRegistryDispatchOptions): Promise<ToolDispatchResult>;
-  /**
-   * Returns the exact runtime-owned built-in authorized for an Editor
-   * interaction. Callers must compare object identity; tool metadata is
-   * declarative and cannot establish provenance.
-   */
-  getTrustedEditorInteractionTool?(toolName: string): Tool | undefined;
   dispatchCodeModeNestedTool?(
     toolCall: CodeModeNestedToolDispatch,
   ): Promise<ToolDispatchResult>;
@@ -793,19 +779,7 @@ export function buildToolRegistry(
     }),
   ] as const;
   const requestedModelFacingTools = readToolList(options.modelFacingTools);
-  const registryModelFacingTools = [
-    ...requestedModelFacingTools.filter(
-      (tool) => !isEditorInteractionToolName(tool.name),
-    ),
-    // EditorProposal is a security terminal, not an extension point. Build it
-    // inside the registry so a caller-supplied model-facing spec cannot become
-    // the object later authenticated by an Editor turn.
-    ...(requestedModelFacingTools.some(
-      (tool) => tool.name === EDITOR_PROPOSAL_TOOL_NAME,
-    )
-      ? [createEditorProposalTool()]
-      : []),
-  ];
+  const registryModelFacingTools = requestedModelFacingTools;
   const modelFacingProviderNativeSurface = {
     webFetch: "web_fetch",
     webSearch: "WebSearch",
@@ -967,11 +941,6 @@ export function buildToolRegistry(
     },
   ]);
   function applyConfiguredTool(tool: Tool): Tool | null {
-    // EditorProposal is a protocol terminal for proposal-only Editor turns,
-    // not an optional Agent capability. Once the internally constructed
-    // canonical tool is present, per-tool visibility configuration must not
-    // make the Editor contract impossible to complete.
-    if (tool.name === EDITOR_PROPOSAL_TOOL_NAME) return tool;
     if (!toolConfigAllowsTool(options.toolsConfig, tool.name)) return null;
     const config = resolvePerToolConfig(options.toolsConfig, tool.name);
     if (config.defaultPermissionMode === undefined) return tool;
@@ -994,19 +963,12 @@ export function buildToolRegistry(
       ),
     ),
   );
-  const trustedEditorInteractionTools = new Map<
-    EditorInteractionToolName,
-    Tool
-  >();
   // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
   // names even when the canonical tool is disabled or unavailable so an
   // extension cannot become the physical execution target by collision.
   const reservedDirectShellToolNames = new Set(["system.bash", "PowerShell"]);
   const trustedDirectShellTools = new Map<string, Tool>();
   for (const tool of defaultBuiltinTools) {
-    if (isEditorInteractionToolName(tool.name)) {
-      trustedEditorInteractionTools.set(tool.name, tool);
-    }
     if (reservedDirectShellToolNames.has(tool.name)) {
       trustedDirectShellTools.set(tool.name, tool);
     }
@@ -1016,9 +978,6 @@ export function buildToolRegistry(
     tools: readonly Tool[],
   ): Tool[] =>
     tools.filter((tool) => {
-      if (isEditorInteractionToolName(tool.name)) {
-        return trustedEditorInteractionTools.get(tool.name) === tool;
-      }
       if (reservedDirectShellToolNames.has(tool.name)) {
         return trustedDirectShellTools.get(tool.name) === tool;
       }
@@ -1212,11 +1171,6 @@ export function buildToolRegistry(
   return {
     get tools(): readonly Tool[] {
       return allSpecs().map((spec) => spec.tool);
-    },
-    getTrustedEditorInteractionTool(toolName: string): Tool | undefined {
-      return isEditorInteractionToolName(toolName)
-        ? trustedEditorInteractionTools.get(toolName)
-        : undefined;
     },
     toLLMTools(): LLMTool[] {
       return visibleSpecs().map((spec) => toolToLLMTool(spec.tool));

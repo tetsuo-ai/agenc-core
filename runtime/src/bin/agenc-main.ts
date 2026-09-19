@@ -77,7 +77,6 @@ import {
 } from "../session/runtime-options.js";
 import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import { runTurn } from "../session/run-turn.js";
-import { editorInteractionSystemPrompt } from "../session/editor-interaction.js";
 import type { Terminal } from "../session/turn-state.js";
 import {
   hasSupportedFileIdentity,
@@ -1082,14 +1081,8 @@ export async function* runSingleTurn(
     deferPermissionInstructions: opts.ctx.permissionInstructionsDeferred === true,
   });
 
-  const editorPolicyPrompt =
-    opts.ctx.editorInteraction === undefined
-      ? ""
-      : editorInteractionSystemPrompt(opts.ctx.editorInteraction);
   const iter = drive(opts.session, opts.ctx, opts.input, {
-    systemPrompt: [assembled.text, editorPolicyPrompt]
-      .filter((part) => part.length > 0)
-      .join("\n\n"),
+    systemPrompt: assembled.text,
     systemPromptReplacesBase: true,
     displayUserMessage: opts.displayInput,
     userStopGenerationToRelease: opts.userStopGenerationToRelease,
@@ -1269,31 +1262,15 @@ function installTuiSessionContract(params: {
         prompt: string | readonly LLMContentPart[],
         opts: {
           readonly displayInput?: string | null;
-          readonly editorInteraction?: SessionSubmitOptions["editorInteraction"];
         } = {},
       ): Promise<void> => {
-        const preparedPrompt =
-          opts.editorInteraction === undefined
-            ? await prepareUserPromptForTurn({
-                session: params.session,
-                configStore: params.configStore,
-                input: prompt,
-              })
-            : {
-                blocked: false as const,
-                input: prompt,
-                displayInput:
-                  typeof prompt === "string" ? prompt : opts.displayInput,
-              };
+        const preparedPrompt = await prepareUserPromptForTurn({
+          session: params.session,
+          configStore: params.configStore,
+          input: prompt,
+        });
         if (preparedPrompt.blocked) return;
-        const baseCtx = params.session.newDefaultTurn();
-        const ctx =
-          opts.editorInteraction === undefined
-            ? baseCtx
-            : {
-                ...baseCtx,
-                editorInteraction: opts.editorInteraction,
-              };
+        const ctx = params.session.newDefaultTurn();
         // The task-dispatch subsystem (see session/tasks.ts) owns the
         // activeTurn lifecycle now. `runTurnKernel` calls
         // `session.spawnTask` at entry (which aborts any prior turn
@@ -1332,8 +1309,7 @@ function installTuiSessionContract(params: {
         completedPromptTurn = true;
         autonomousKeepalive.setContextBlocked(
           lastTurnStopReason === "error" ||
-            lastTurnStopReason === "compact_failed" ||
-            lastTurnStopReason === "editor_request_failed",
+            lastTurnStopReason === "compact_failed",
         );
       };
 
@@ -1439,9 +1415,6 @@ function installTuiSessionContract(params: {
             : isAutonomousTick
               ? null
               : undefined,
-        ...(submitOpts?.editorInteraction !== undefined
-          ? { editorInteraction: submitOpts.editorInteraction }
-          : {}),
       });
       if (shouldScheduleNextAutonomousTick()) {
         autonomousKeepalive.scheduleNext();
@@ -3436,27 +3409,7 @@ function messageContentBlocksFromUnknown(
   });
 }
 
-type DeferredWorkspaceEditorSessionSurface = Pick<
-  AgenCTuiBridgeSession,
-  | "acquireWorkspaceEditor"
-  | "syncWorkspaceEditor"
-  | "refreshWorkspaceEditorStaleAuthority"
-  | "heartbeatWorkspaceEditor"
-  | "releaseWorkspaceEditor"
-  | "reserveWorkspaceEditorTopology"
-  | "completeWorkspaceEditorTopology"
-  | "releaseWorkspaceEditorTopology"
-  | "getWorkspaceEditorProposal"
-  | "getWorkspaceEditorProposalStatus"
-  | "applyWorkspaceEditorProposal"
-  | "discardWorkspaceEditorProposal"
-  | "listWorkspaceEditorChanges"
-  | "predictEditorCode"
-  | "cancelEditorPrediction"
-  | "reportEditorPredictionFeedback"
->;
-
-type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & Pick<
+type TuiSessionShape = Pick<
   AgenCTuiBridgeSession,
   "listDaemonSessionProcesses" | "stopDaemonSessionProcess" | "updateDaemonSessionGoal"
 > & {
@@ -3638,7 +3591,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
   type ConnectedDaemonTuiClient = Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   >;
-  type WorkspaceEditorControlClient = Omit<
+  type DaemonControlClient = Omit<
     ConnectedDaemonTuiClient,
     "request"
   > & {
@@ -3648,8 +3601,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
       options?: { readonly signal?: AbortSignal },
     ): Promise<AgenCDaemonKnownResultByMethod[Method]>;
   };
-  let workspaceEditorControlClient: WorkspaceEditorControlClient | null = null;
-  let workspaceEditorControlClientPromise: Promise<WorkspaceEditorControlClient> | null =
+  let daemonControlClient: DaemonControlClient | null = null;
+  let daemonControlClientPromise: Promise<DaemonControlClient> | null =
     null;
   let deferredSessionClosed = false;
   const MAX_DEFERRED_QUEUED_INPUTS = 512;
@@ -3953,14 +3906,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         bytes: queuedBlocksBytes(blocks),
         ...(ownership !== undefined
           ? {
-              ownership: {
-                workspaceView: ownership.workspaceView,
-                ...(ownership.editorInteractionId !== undefined
-                  ? {
-                      editorInteractionId: ownership.editorInteractionId,
-                    }
-                  : {}),
-              },
+              ownership: { workspaceView: ownership.workspaceView },
             }
           : {}),
       }));
@@ -4045,52 +3991,40 @@ async function createDeferredDaemonPromptTuiSession(params: {
     return true;
   };
 
-  const queuedInputsForSubmission = (
-    submitOptions?: SessionSubmitOptions,
-  ): DeferredQueuedInput[] => {
-    const interaction = submitOptions?.editorInteraction;
-    if (interaction === undefined) {
-      return queuedInputs.filter(
-        (entry) => entry.ownership?.workspaceView !== "editor",
-      );
-    }
-    return queuedInputs.filter(
-      (entry) =>
-        entry.ownership?.workspaceView === "editor" &&
-        entry.ownership.editorInteractionId === interaction.interactionId,
-    );
-  };
+  const queuedInputsForSubmission = (): DeferredQueuedInput[] => [
+    ...queuedInputs,
+  ];
 
-  const ensureWorkspaceEditorControlClient =
-    (): Promise<WorkspaceEditorControlClient> => {
+  const ensureDaemonControlClient =
+    (): Promise<DaemonControlClient> => {
       if (deferredSessionClosed) {
         return Promise.reject(
           new Error("Deferred TUI session is already closed."),
         );
       }
-      if (workspaceEditorControlClient !== null) {
-        return Promise.resolve(workspaceEditorControlClient);
+      if (daemonControlClient !== null) {
+        return Promise.resolve(daemonControlClient);
       }
-      if (workspaceEditorControlClientPromise !== null) {
-        return workspaceEditorControlClientPromise;
+      if (daemonControlClientPromise !== null) {
+        return daemonControlClientPromise;
       }
       const pending = (async () => {
         const client = (await params.deps.createConnectedTuiClient({
           env: params.env,
-        })) as unknown as WorkspaceEditorControlClient;
+        })) as unknown as DaemonControlClient;
         if (deferredSessionClosed) {
           await client.close().catch(() => {
             /* best effort */
           });
           throw new Error("Deferred TUI session is already closed.");
         }
-        workspaceEditorControlClient = client;
+        daemonControlClient = client;
         return client;
       })();
-      workspaceEditorControlClientPromise = pending;
+      daemonControlClientPromise = pending;
       void pending.catch(() => {
-        if (workspaceEditorControlClientPromise === pending) {
-          workspaceEditorControlClientPromise = null;
+        if (daemonControlClientPromise === pending) {
+          daemonControlClientPromise = null;
         }
       });
       return pending;
@@ -4134,7 +4068,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     const startupPromise = (async () => {
       const submittedQueuedInputs = deferInitialTurn
         ? []
-        : queuedInputsForSubmission(firstSubmitOptions);
+        : queuedInputsForSubmission();
       const submittedInputCount = submittedQueuedInputs.length;
       const submittedInputBytes = submittedQueuedInputs.reduce(
         (sum, entry) => sum + entry.bytes,
@@ -4149,9 +4083,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         preparedFirstMessage = deferInitialTurn
           ? ""
           : firstMessage.length > 0
-            ? firstSubmitOptions?.editorInteraction !== undefined
-              ? firstMessage
-              : await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
+            ? await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
                   message: firstMessage,
                   configStore,
                   agencHome: params.agencHome,
@@ -4226,11 +4158,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
                   firstSubmitOptions.displayUserMessage,
               }
             : {}),
-          ...(firstSubmitOptions?.editorInteraction !== undefined
-            ? {
-                initialEditorInteraction: firstSubmitOptions.editorInteraction,
-              }
-            : {}),
           // Pre-first-turn `/permissions mode` / `/plan` stage their choice in
           // `pendingPermissionMode`; an explicit `--dangerously-bypass-approvals-and-sandbox` argv still wins so the
           // bootTUI-parity bypass behavior is preserved.
@@ -4296,9 +4223,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         );
         liveAgentId = started.agentId;
         liveSessionAwaitingFirstTurn = deferInitialTurn;
-        liveSessionStartupDeferred =
-          deferInitialTurn ||
-          firstSubmitOptions?.editorInteraction !== undefined;
+        liveSessionStartupDeferred = deferInitialTurn;
         if (deferredSessionClosed) {
           throw new Error("Deferred TUI session is already closed.");
         }
@@ -4375,7 +4300,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
       throw new Error("Deferred daemon session is not ready for submission.");
     }
     const completesDeferredFirstTurn = liveSessionAwaitingFirstTurn;
-    const submittedQueuedInputs = queuedInputsForSubmission(opts);
+    const submittedQueuedInputs = queuedInputsForSubmission();
     const submittedInputCount = submittedQueuedInputs.length;
     const submittedInputBytes = submittedQueuedInputs.reduce(
       (sum, entry) => sum + entry.bytes,
@@ -4493,7 +4418,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     workflowApprovalControls: createWorkflowApprovalControls({
       async request(method, requestParams, options) {
         options.signal.throwIfAborted();
-        const client = await ensureWorkspaceEditorControlClient();
+        const client = await ensureDaemonControlClient();
         options.signal.throwIfAborted();
         if (deferredSessionClosed) throw new Error("Deferred TUI session is already closed.");
         return client.request(method, requestParams, options);
@@ -4549,75 +4474,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
         liveMcpSurfaceUnsubscribers.delete(cb);
       };
     },
-    // Editor coherence and proposal recovery are workspace-scoped, not
-    // conversation-scoped. Keep them on one auxiliary daemon connection so
-    // authoritative Neovim fencing works before the first Agent turn and
-    // survives live agent replacement without releasing the workspace lease.
-    acquireWorkspaceEditor: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.acquire",
-        editorParams,
-      ),
-    syncWorkspaceEditor: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.sync",
-        editorParams,
-      ),
-    refreshWorkspaceEditorStaleAuthority: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.staleAuthority.refresh",
-        editorParams,
-      ),
-    heartbeatWorkspaceEditor: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.heartbeat",
-        editorParams,
-      ),
-    releaseWorkspaceEditor: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.release",
-        editorParams,
-      ),
-    reserveWorkspaceEditorTopology: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.topology.reserve",
-        editorParams,
-      ),
-    completeWorkspaceEditorTopology: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.topology.complete",
-        editorParams,
-      ),
-    releaseWorkspaceEditorTopology: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.topology.release",
-        editorParams,
-      ),
-    getWorkspaceEditorProposal: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.proposal.get",
-        editorParams,
-      ),
-    getWorkspaceEditorProposalStatus: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.proposal.status",
-        editorParams,
-      ),
-    applyWorkspaceEditorProposal: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.proposal.apply",
-        editorParams,
-      ),
-    discardWorkspaceEditorProposal: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.proposal.discard",
-        editorParams,
-      ),
-    listWorkspaceEditorChanges: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.changes.list",
-        editorParams,
-      ),
+    // Workspace-scoped controls (workflow approvals, daemon reload) use one
+    // auxiliary daemon connection that survives live agent replacement.
     // Direct composer shell commands are session-scoped side effects. A cold
     // TUI provisions one turn-deferred live session, then forwards exactly
     // once. The command does not consume the first model-turn slot, and an
@@ -4633,77 +4491,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
         );
       }
       return execute.call(live, shellParams);
-    },
-    // Prediction routing is conversation-scoped because it borrows the live
-    // session's provider/model. The first cold prediction provisions a
-    // deferred, turn-free daemon session; no model turn, hook, MCP process,
-    // or Agent startup work runs. The same attached session then owns the
-    // first real Editor/Agent turn and every later prediction.
-    predictEditorCode: async (predictionParams) => {
-      const live =
-        liveSession ?? (await ensureLiveSession("", undefined, true));
-      const predict = live?.predictEditorCode;
-      if (live === null || typeof predict !== "function") {
-        return {
-          status: "suppressed",
-          requestId: predictionParams.requestId,
-          generation: predictionParams.generation,
-          changedtick: predictionParams.changedtick,
-          reason: "disabled",
-        };
-      }
-      const predictionUsesStartupDeferredSession =
-        liveSession === live && liveSessionStartupDeferred;
-      try {
-        return await predict.call(live, predictionParams);
-      } catch (error) {
-        if (
-          !predictionUsesStartupDeferredSession ||
-          !isDaemonSessionGoneError(error)
-        ) {
-          throw error;
-        }
-        if (liveSession === live) {
-          // An ordinary Agent turn may have activated this same session while
-          // the prediction RPC was in flight. Preserve ordinary live-session
-          // failure semantics in that case; submit owns its replacement path.
-          if (!liveSessionStartupDeferred) throw error;
-          await detachLiveSession();
-        }
-        // Concurrent failures from the same dead deferred session converge on
-        // one detach. The next prediction single-flights through
-        // ensureLiveSession, so Editor recovery cannot double-provision agents.
-        return {
-          status: "suppressed",
-          requestId: predictionParams.requestId,
-          generation: predictionParams.generation,
-          changedtick: predictionParams.changedtick,
-          reason: "stale",
-        };
-      }
-    },
-    cancelEditorPrediction: async (predictionParams) => {
-      const live = liveSession;
-      const cancel = live?.cancelEditorPrediction;
-      if (live === null || typeof cancel !== "function") {
-        return {
-          ...(predictionParams.requestId !== undefined
-            ? { requestId: predictionParams.requestId }
-            : {}),
-          cancelled: false,
-        };
-      }
-      return cancel.call(live, predictionParams);
-    },
-    reportEditorPredictionFeedback: async (predictionParams) => {
-      const live = liveSession;
-      const report = live?.reportEditorPredictionFeedback;
-      if (live === null || typeof report !== "function") {
-        throw new Error(
-          "Prediction feedback is unavailable until a conversation starts.",
-        );
-      }
-      return report.call(live, predictionParams);
     },
     // The Ink TUI's slash dispatcher in `App.tsx` calls `dispatchSlashCommand`
     // directly against `props.session` (this outer deferred wrapper) instead
@@ -4932,11 +4719,10 @@ async function createDeferredDaemonPromptTuiSession(params: {
           pendingProfile = configParams.profile;
         }
         if (configParams.reload === true) {
-          // Predictions are daemon-global and may be enabled from Editor
-          // before a conversation exists. Reload that global snapshot without
-          // manufacturing a session.applyConfig call or starting an agent.
+          // Reload the daemon-global config snapshot without manufacturing a
+          // session.applyConfig call or starting an agent.
           await (
-            await ensureWorkspaceEditorControlClient()
+            await ensureDaemonControlClient()
           ).request("daemon.reload", {});
         }
         const staged = [
@@ -4980,7 +4766,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
         throw new Error("Deferred TUI session is already closed.");
       }
       const activatesAgentStartup =
-        opts?.editorInteraction === undefined &&
         opts?.source !== AUTONOMOUS_SUBMIT_SOURCE &&
         !isLocalSlashCommandInput(message);
       // User-message rendering is driven entirely by daemon events:
@@ -4996,7 +4781,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
       // because the transcript reducer's dedup keys on `event.id`.
       if (liveSession !== null && liveSessionAwaitingFirstTurn) {
         const firstMessage =
-          opts?.editorInteraction === undefined &&
           isLocalSlashCommandInput(message)
             ? await handleLocalTuiSlashCommand({
                 message,
@@ -5101,7 +4885,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
         }
       }
       const firstMessage =
-        opts?.editorInteraction === undefined &&
         isLocalSlashCommandInput(message)
           ? await handleLocalTuiSlashCommand({
               message,
@@ -5325,15 +5108,15 @@ async function createDeferredDaemonPromptTuiSession(params: {
         });
       }
       await detachLiveSession();
-      const pendingControlClient = workspaceEditorControlClientPromise;
+      const pendingControlClient = daemonControlClientPromise;
       if (pendingControlClient !== null) {
         await pendingControlClient.catch(() => {
           /* connection failure or close-during-connect */
         });
       }
-      const controlClient = workspaceEditorControlClient;
-      workspaceEditorControlClient = null;
-      workspaceEditorControlClientPromise = null;
+      const controlClient = daemonControlClient;
+      daemonControlClient = null;
+      daemonControlClientPromise = null;
       await controlClient?.close().catch(() => {
         /* best effort */
       });
@@ -5407,16 +5190,6 @@ function wrapDaemonTuiSessionWithPromptPreparation<
   wrapped = {
     ...session,
     submit: async (message, opts) => {
-      // Editor-native prompts already contain the exact live-buffer snapshot
-      // wrapped as untrusted data. Most importantly, their read_only /
-      // proposal_only policy begins at daemon admission. Running local slash
-      // commands, @ expansion, or UserPromptSubmit hooks here would create a
-      // mutating pre-policy side channel (especially under --dangerously-bypass-approvals-and-sandbox), so submit
-      // the exact prompt directly and let the daemon validate the interaction.
-      if (opts?.editorInteraction !== undefined) {
-        await originalSubmit(message, opts);
-        return;
-      }
       const nextMessage = isLocalSlashCommandInput(message)
         ? await handleLocalTuiSlashCommand({
             message,

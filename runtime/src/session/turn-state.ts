@@ -486,13 +486,6 @@ export interface TurnState {
    *  resetIterationFields. */
   lastResponseUsage: LLMUsage | undefined;
 
-  /** Request-scoped Editor tools admitted before executor dispatch. */
-  editorToolCallsAdmitted: number;
-  /** IDs denied by the fixed Editor tool-call quota in this iteration. */
-  editorToolCallLimitDeniedIds: Set<string>;
-  /** Turn-scoped latch forcing a structured limit terminal after pairing. */
-  editorToolCallLimitExceeded: boolean;
-
   // ── Phase 6 — commit (AgenC query.ts:1192-1465) ──────────────
   /** Number of model turns consumed this session. Compared against
    *  `ctx.configSnapshot.maxTurns` for I-7 terminal abort.
@@ -615,9 +608,6 @@ export function buildInitialTurnState(
     preventContinuation: false,
     pendingBudgetDecision: undefined,
     lastResponseUsage: undefined,
-    editorToolCallsAdmitted: 0,
-    editorToolCallLimitDeniedIds: new Set(),
-    editorToolCallLimitExceeded: false,
     // Phase 6
     turnCount: 1,
     // Recovery transition
@@ -671,7 +661,6 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
     completionGateRound?: number;
-    editorToolCallsAdmitted?: number;
     pendingAdmissionFallback?: PendingAdmissionFallback;
     modelSampleOrdinal?: number;
     modelSampleResumePrompt?: ModelSampleResumePrompt;
@@ -694,9 +683,6 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   };
   if (state.completionGateRound > 0) {
     slice.completionGateRound = state.completionGateRound;
-  }
-  if (state.editorToolCallsAdmitted > 0) {
-    slice.editorToolCallsAdmitted = state.editorToolCallsAdmitted;
   }
   if (state.pendingAdmissionFallback !== undefined) {
     const fallback = validatePendingAdmissionFallbackSlice(
@@ -811,13 +797,6 @@ export function restoreFromCheckpoint(
     state.planToolRequiredRetryCount = slice.planToolRequiredRetryCount;
   }
   if (
-    slice.editorToolCallsAdmitted !== undefined &&
-    Number.isFinite(slice.editorToolCallsAdmitted) &&
-    slice.editorToolCallsAdmitted >= 0
-  ) {
-    state.editorToolCallsAdmitted = slice.editorToolCallsAdmitted;
-  }
-  if (
     slice.completionGateRound !== undefined &&
     Number.isSafeInteger(slice.completionGateRound) &&
     slice.completionGateRound >= 0
@@ -911,7 +890,6 @@ export function resetIterationFields(state: TurnState): void {
   state.snipTokensFreed = 0;
   state.pendingBudgetDecision = undefined;
   state.lastResponseUsage = undefined;
-  state.editorToolCallLimitDeniedIds.clear();
   // pendingToolUseSummary + streamingToolExecutor intentionally NOT
   // cleared here — they are awaited in executeTools and cleared by
   // commit phase after their resolution.

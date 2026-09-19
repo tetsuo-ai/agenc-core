@@ -51,7 +51,6 @@ import {
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
-import { readToolRuntimeContext } from "../runtimes/context.js";
 import { addLineNumbers } from "./_deps/line-numbers.js";
 import {
   recordSessionRead,
@@ -1619,14 +1618,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             "PDF extraction is unavailable under delegated read authority because the external PDF helper cannot use a held file descriptor portably.",
           );
         }
-        const trustedEditorInteraction =
-          readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
-          undefined;
         const editorRead = workspaceAuthoritativeRead(resolved.canonical);
         const protectedByEditor =
-          guardedRead ||
-          trustedEditorInteraction ||
-          workspaceHasProtectedEditorPaths(resolved.canonical);
+          guardedRead || workspaceHasProtectedEditorPaths(resolved.canonical);
         const needsDiskCapability = isImage || isPdf || editorRead === null;
         if (protectedByEditor && needsDiskCapability) {
           boundRead = await bindWorkspaceFileReadCapability(resolved.canonical);
@@ -1698,7 +1692,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             sessionId,
             editorRead,
             boundRead,
-            !trustedEditorInteraction,
+            true,
           ),
         );
       } catch (err) {

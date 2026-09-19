@@ -326,16 +326,6 @@ otherwise.
 | `providers.grok.enable_image_search` | `true` |
 | `providers.grok.enable_image_understanding` | `true` |
 | `providers.grok.enable_video_understanding` | `true` |
-| `buffer.provider` | `auto` |
-| `buffer.show_tabs` | `auto` |
-| `buffer.neovim.init` | `auto` |
-| `buffer.neovim.startup_timeout_ms` | `10000` |
-| `buffer.neovim.operation_timeout_ms` | `10000` |
-| `buffer.neovim.cleanup_timeout_ms` | `1000` |
-| `buffer.prediction.enabled` | `ask` |
-| `buffer.prediction.debounce_ms` | `160` |
-| `buffer.prediction.timeout_ms` | `2500` |
-| `buffer.prediction.max_output_tokens` | `256` |
 | `tui.theme` | `dark` |
 | `tui.showTurnDuration` | `true` |
 | `tui.terminalProgressBarEnabled` | `true` |
@@ -765,28 +755,19 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `lsp_servers.<server>.startupTimeout`, `lsp_servers.<server>.maxRestarts` | Startup/restart limits. |
 | `attachments`, `attachments.allowedRoots` | Extra roots allowed for `@file` attachment reads. |
 
-### TUI, editor, commands, and presentation
+### TUI, commands, and presentation
 
 | Paths | Type / meaning |
 | --- | --- |
-| `tui`, `tui.vimMode` | TUI block and vim-keybinding switch. |
+| `tui` | TUI block. |
 | `tui.theme` | `auto`, `dark`, `light`, one of the daltonized palettes, or one of the ANSI palettes. |
 | `tui.showTurnDuration`, `tui.terminalProgressBarEnabled`, `tui.copyOnSelect` | Turn-duration display, terminal progress, and selection-copy switches. |
 | `tui.flickerFreeMode`, `tui.prStatusFooterEnabled` | Flicker reduction and pull-request footer switches. |
 | `tui.keybindings`, `tui.keybindings[]` | Ordered canonical keybinding override blocks. This is operator-only: user config may set it and the final managed layer may replace and lock the complete array; plugin/project/local layers are ignored with diagnostics. |
-| `tui.keybindings[].context` | Required registered TUI context such as `Chat`, `Global`, `Buffer`, or `BufferHost`. |
+| `tui.keybindings[].context` | Required registered TUI context such as `Chat` or `Global`. |
 | `tui.keybindings[].bindings` | Chord-to-action map. `command:<name>` is accepted only in `Chat`. |
 | `tui.keybindings[].bindings.<name>` | Operator-chosen chord mapped to a registered action or a `command:<name>` binding. |
 | `tui.keybindings[].unbind` | Chords to unbind explicitly. A chord cannot also occur in `bindings`, including through aliases. |
-| `buffer` | Embedded editor block. |
-| `buffer.provider` | `auto`, `neovim`, `inline`, or `external`. |
-| `buffer.show_tabs` | `auto`, `always`, or `never`. |
-| `buffer.neovim` | Neovim process block. |
-| `buffer.neovim.executable`, `buffer.neovim.init`, `buffer.neovim.discovery_timeout_ms` | Executable, `auto`/`user`/`clean` init, and discovery timeout. |
-| `buffer.neovim.startup_timeout_ms`, `buffer.neovim.operation_timeout_ms`, `buffer.neovim.cleanup_timeout_ms` | Process timeouts. |
-| `buffer.prediction` | Code prediction block. |
-| `buffer.prediction.enabled`, `buffer.prediction.debounce_ms`, `buffer.prediction.timeout_ms`, `buffer.prediction.max_output_tokens` | `ask`/`on`/`off` and limits. |
-| `buffer.prediction.provider`, `buffer.prediction.model` | Optional independent route. |
 | `statusLine`, `statusLine.type`, `statusLine.command`, `statusLine.padding` | Operator-owned status command; `type` is literal `command`. Project/local layers cannot install it. Execution follows session command-hook policy and `--bare` suppression. |
 | `fileSuggestion`, `fileSuggestion.type`, `fileSuggestion.command` | Operator-owned file suggestion command; `type` is literal `command`. Project/local layers cannot install it. Execution follows session command-hook policy and `--bare` suppression. |
 | `attribution`, `attribution.commit`, `attribution.pr` | Commit and pull-request attribution strings. |

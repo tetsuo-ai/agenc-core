@@ -485,18 +485,7 @@ Heartbeat: **disabled by default**, interval **1800s**, env
 The TUI is a **custom `react-reconciler` Ink fork** under
 `runtime/src/tui/ink` (own renderer, double-buffered frame diffing, event
 dispatch, bidi/ANSI) — not the upstream `ink` package. On top: app shell,
-prompt input, transcript, and the **workbench** (project explorer, preview,
-and editable `BUFFER`).
-
-BUFFER prefers a supervised `nvim --embed` workspace session. Neovim owns
-editing, modes, command-line UI, messages, popups, buffers, and plugins; AgenC
-attaches a line-grid UI, renders that native grid into the measured center
-pane, routes terminal input, and owns process and file-safety boundaries.
-Loaded and hidden Neovim buffers form one safety unit: navigation reuses the
-session, dirty state is aggregated across the buffer manifest, and a workbench
-transition cannot abandon edits in a non-active buffer. Request-scoped
-Editor turns cap sampling, tool calls, and query tokens; see
-[editor request bounds](embedded-neovim-buffer.md#editor-request-bounds).
+prompt input, and transcript.
 
 A throwing frame is contained; the next frame full-repaints rather than
 crashing the process.
@@ -522,7 +511,7 @@ crashing the process.
   [ci-required-gates.md](ci-required-gates.md#fast-testfast-checks).
 - Releases use the complete local suite and the manual hosted matrix from
   exact current `main`. The matrix covers Linux kernel
-  sandboxing, PowerShell, Neovim, macOS, and Windows. The optional GitHub App
+  sandboxing, PowerShell, macOS, and Windows. The optional GitHub App
   and ruleset design remains inactive. See
   [`ci-required-gates.md`](ci-required-gates.md).
 

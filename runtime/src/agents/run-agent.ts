@@ -4082,12 +4082,7 @@ export async function* runAgent(
 
         if (event.type === "turn_complete") {
           turnAssistantText = event.content;
-          // Child-agent turns do not carry an Editor interaction. Fail closed
-          // if that invariant is ever violated instead of making a worker
-          // session silently recoverable on a root-only stop reason.
-          stopReason = event.stopReason === "editor_request_failed"
-            ? "error"
-            : event.stopReason;
+          stopReason = event.stopReason;
           turnUsage = event.usage;
         }
       }

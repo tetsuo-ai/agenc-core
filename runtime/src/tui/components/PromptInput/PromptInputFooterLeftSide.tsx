@@ -6,9 +6,8 @@ import { Box, Text, Link } from '../../ink.js';
 import * as React from 'react';
 import figures from 'figures';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import type { VimMode, PromptInputMode } from '../../../types/textInputTypes.js';
+import type { PromptInputMode } from '../../../types/textInputTypes.js';
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
-import { formatVimModeIndicator, isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { isDefaultMode, getModeColor } from '../../../utils/permissions/PermissionMode.js';
 import { permissionModeFooterChrome } from './permissionModeChrome.js';
@@ -47,7 +46,6 @@ type Props = {
     show: boolean;
     key?: string;
   };
-  vimMode: VimMode | undefined;
   mode: PromptInputMode;
   toolPermissionContext: ToolPermissionContext;
   suppressHint: boolean;
@@ -128,7 +126,6 @@ export function PromptInputFooterLeftSide(t0) {
   const $ = _c(27);
   const {
     exitMessage,
-    vimMode,
     mode,
     toolPermissionContext,
     suppressHint,
@@ -167,16 +164,6 @@ export function PromptInputFooterLeftSide(t0) {
     }
     return t1;
   }
-  let t1;
-  if ($[3] !== isSearching || $[4] !== vimMode) {
-    t1 = isVimModeEnabled() && vimMode !== undefined && !isSearching;
-    $[3] = isSearching;
-    $[4] = vimMode;
-    $[5] = t1;
-  } else {
-    t1 = $[5];
-  }
-  const showVim = t1;
   let t2;
   if ($[6] !== historyFailedMatch || $[7] !== historyQuery || $[8] !== isSearching || $[9] !== setHistoryQuery) {
     t2 = isSearching && <HistorySearchInput value={historyQuery} onChange={setHistoryQuery} historyFailedMatch={historyFailedMatch} />;
@@ -188,9 +175,8 @@ export function PromptInputFooterLeftSide(t0) {
   } else {
     t2 = $[10];
   }
-  const vimModeIndicator = formatVimModeIndicator(vimMode);
-  const t3 = showVim && vimModeIndicator ? <Text dimColor={true} key="vim-mode">{vimModeIndicator}</Text> : null;
-  const t4 = !suppressHint && !showVim;
+  const t3 = null;
+  const t4 = !suppressHint;
   let t5;
   if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== toolPermissionContext) {
     t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} exitPending={exitMessage.show} onOpenTasksDialog={onOpenTasksDialog} />;

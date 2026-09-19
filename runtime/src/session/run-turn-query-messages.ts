@@ -9,7 +9,6 @@
  */
 
 import type { LLMMessage } from "../llm/types.js";
-import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
 import { isAuthenticatedCompactionBoundary } from "./compaction-history-marker.js";
 import {
   fromAgenCRuntimeMessages,
@@ -34,8 +33,6 @@ import {
 } from "./agenc-tool-use-context.js";
 import { cloneLLMMessage, finitePositive } from "./run-turn-messages.js";
 
-export const EDITOR_INTERACTION_MAX_QUERY_TOKENS = 128_000;
-
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 
 interface AgenCPreparedTerminal {
@@ -58,21 +55,6 @@ async function prepareAgenCTurnContext(
   if (signal?.aborted) return;
   toAgenCModelContext(ctx);
   const messages = messagesAfterAgenCBoundary(state.messages);
-  if (ctx.editorInteraction !== undefined) {
-    // Editor query preparation is a pure projection over a deep-cloned
-    // snapshot. Ordinary preparation may persist oversized tool results,
-    // mutate the shared ContentReplacementState, and run history
-    // microcompaction. Those session-wide side effects cannot be inherited by
-    // a request scoped to one immutable editor revision. Retain only the
-    // non-persisting truncate-to-fit backstop so provider limits still hold.
-    state.messagesForQuery = projectEditorQueryMessagesToFit(
-      messages.map(cloneLlmMessageSnapshot),
-      ctx.modelInfo.contextWindow,
-    );
-    state.snipTokensFreed = 0;
-    state.messagesAtSampleStart = state.messages.length;
-    return;
-  }
   const toolUseContext = buildAgenCToolUseContext(session, ctx, {
     querySource,
   });
@@ -164,80 +146,6 @@ async function prepareAgenCQueryMessages(params: {
   }
 }
 
-function editorQueryFitTokenLimit(
-  contextWindowTokens: number | undefined,
-): number {
-  const window = finitePositive(contextWindowTokens);
-  if (window === undefined) return EDITOR_INTERACTION_MAX_QUERY_TOKENS;
-  const outputReserve = Math.min(
-    16_000,
-    Math.max(1_024, Math.floor(window / 4)),
-  );
-  return Math.min(
-    EDITOR_INTERACTION_MAX_QUERY_TOKENS,
-    Math.max(1_024, window - outputReserve),
-  );
-}
-
-/**
- * Pure, request-local Editor history projection. Tool results are first
- * shrunk on the cloned snapshot, then complete oldest user-turn segments are
- * omitted until the provider payload fits. The active (latest) user segment
- * is never partially rewritten: if it alone exceeds the fixed request bound,
- * fail closed before contacting the provider.
- */
-function projectEditorQueryMessagesToFit(
-  messages: LLMMessage[],
-  contextWindowTokens: number | undefined,
-): LLMMessage[] {
-  const fitTokens = editorQueryFitTokenLimit(contextWindowTokens);
-  const truncated = truncateToolResultsToFit(
-    messages,
-    contextWindowTokens ?? EDITOR_INTERACTION_MAX_QUERY_TOKENS + 16_000,
-  );
-  if (roughTokenCountEstimationForMessages(truncated) <= fitTokens) {
-    return truncated;
-  }
-
-  // System/developer framing precedes the first root-user turn and is not
-  // disposable history. Keep it outside the turn segments so dropping an old
-  // user turn can never also drop the provider's instruction boundary.
-  const firstUserIndex = truncated.findIndex(
-    (message) => message.role === "user",
-  );
-  const prefix = firstUserIndex > 0 ? truncated.slice(0, firstUserIndex) : [];
-  const segmentable =
-    firstUserIndex > 0 ? truncated.slice(firstUserIndex) : truncated;
-  const segments: LLMMessage[][] = [];
-  let current: LLMMessage[] = [];
-  for (const message of segmentable) {
-    if (message.role === "user" && current.length > 0) {
-      segments.push(current);
-      current = [];
-    }
-    current.push(message);
-  }
-  if (current.length > 0) segments.push(current);
-  const latest = segments.at(-1) ?? [];
-  const required = [...prefix, ...latest];
-  const latestTokens = roughTokenCountEstimationForMessages(required);
-  if (latestTokens > fitTokens) {
-    throw new Error(
-      "editor_interaction_context_limit: active Editor request " +
-        `requires approximately ${latestTokens} tokens; limit ${fitTokens}`,
-    );
-  }
-
-  let projected = [...latest];
-  for (let index = segments.length - 2; index >= 0; index -= 1) {
-    const candidate = [...prefix, ...(segments[index] ?? []), ...projected];
-    if (roughTokenCountEstimationForMessages(candidate) > fitTokens) {
-      continue;
-    }
-    projected = [...(segments[index] ?? []), ...projected];
-  }
-  return [...prefix, ...projected];
-}
 
 /**
  * Pre-send truncate-to-fit backstop. The mid-turn compact gate anchors

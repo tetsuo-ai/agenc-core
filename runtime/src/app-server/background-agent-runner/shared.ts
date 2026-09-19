@@ -26,13 +26,7 @@ import type {
   McpSurfaceSnapshot,
 } from "../../session/session.js";
 import type { Event } from "../../session/event-log.js";
-import type {
-  SessionEditorInteraction,
-  SessionSubmitOptions,
-} from "../../session/autonomous-mode.js";
-import type {
-  CodePredictionSource,
-} from "../../services/code-prediction/types.js";
+import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
 import type {
   SessionElicitationResponseParams,
 } from "../../elicitation/respond.js";
@@ -102,7 +96,6 @@ export interface AgenCBackgroundAgentStartParams {
   readonly initialContent?: MessageContent;
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
-  readonly initialEditorInteraction?: SessionEditorInteraction;
   readonly metadata?: JsonObject;
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
@@ -289,7 +282,6 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly content: MessageContent;
   readonly originalContent: MessageContent;
   readonly displayUserMessage?: string | null;
-  readonly editorInteraction?: SessionEditorInteraction;
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
@@ -530,10 +522,6 @@ export interface AgenCBackgroundAgentRunner {
     params: SessionStatusLineExecuteParams,
     signal?: AbortSignal,
   ): Promise<SessionStatusLineExecuteResult>;
-  /** Resolve the live route without exposing the primary provider to callers. */
-  resolveCodePredictionSource?(
-    agentId: string,
-  ): Promise<CodePredictionSource> | CodePredictionSource;
   clearAgentSession?(
     agentId: string,
     params: AgenCBackgroundAgentClearSessionParams,

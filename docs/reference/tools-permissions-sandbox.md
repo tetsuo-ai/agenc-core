@@ -287,7 +287,6 @@ its server-side native search through a separately authenticated Grok backend.
 | `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
 | `ledger_wallet_cli_status` | Read-only Ledger Wallet CLI / device status |
 | `install_ledger_wallet_cli` | Prompted install of the official wallet CLI under `AGENC_HOME` |
-| `EditorProposal` | Editor-turn reviewable edit proposal (workbench BUFFER). Request-scoped; [editor request bounds](../embedded-neovim-buffer.md#editor-request-bounds) |
 | `SendUserMessage` | Short progress message to the user |
 | `Sleep` | Sleep / yield; **deferred** by default |
 | `Monitor` | Canonical unified-exec background process monitor; **deferred** by default |

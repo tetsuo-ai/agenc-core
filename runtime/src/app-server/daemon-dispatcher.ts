@@ -89,13 +89,6 @@ import {
   WorkspaceCwdError,
 } from "./workspace-cwd.js";
 import {
-  assertWorkspaceEditorProposalResponseFitsFrame,
-  assertWorkspaceEditorProposalStatusResponseFitsFrame,
-  canonicalWorkspaceRoot,
-  type WorkspaceMutationCoordinator,
-  type WorkspaceMutationCoordinatorRegistry,
-} from "../workspace/mutation-coordinator.js";
-import {
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_DAEMON_METHODS,
@@ -158,27 +151,6 @@ import {
   type SessionMcpAddServerParams,
   type SessionMcpServerConfig,
   type SessionMcpServerByNameParams,
-  type WorkspaceEditorAcquireParams,
-  type WorkspaceEditorBufferSync,
-  type WorkspaceEditorChangesListParams,
-  type WorkspaceEditorHeartbeatParams,
-  type WorkspaceEditorCancelPredictionParams,
-  type WorkspaceEditorPredictParams,
-  type WorkspaceEditorPredictionDiagnostic,
-  type WorkspaceEditorPredictionFeedbackParams,
-  type WorkspaceEditorPredictionRelatedBuffer,
-  type WorkspaceEditorProposalApplyParams,
-  type WorkspaceEditorProposalParams,
-  type WorkspaceEditorProposalStatusParams,
-  type WorkspaceEditorReleaseParams,
-  type WorkspaceEditorRecoveredTopologyListParams,
-  type WorkspaceEditorRecoveredTopologyResolveParams,
-  type WorkspaceEditorStaleAuthorityEntry,
-  type WorkspaceEditorSyncParams,
-  type WorkspaceEditorTopologyCompleteParams,
-  type WorkspaceEditorTopologyFinalizeParams,
-  type WorkspaceEditorTopologyReserveParams,
-  type WorkspaceEditorTopologyTarget,
   type SessionSnapshotParams,
   type SessionGoalParams,
   type SessionProcessesListParams,
@@ -215,8 +187,6 @@ import {
 import { isRecord } from "../utils/record.js";
 import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
-import type { CodePredictionService } from "../services/code-prediction/service.js";
 
 /**
  * Narrow daemon seam for the M5 verified-change workflow `run.start` method.
@@ -281,7 +251,6 @@ const THREAD_REALTIME_VOICES = [
 const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   Partial<Record<AgenCDaemonKnownMethod, number>>
 > = Object.freeze({
-  "workspace.editor.topology.recovered.resolve": 1,
   "session.transcript.v2": 2,
   "session.mcp.status": 3,
   "session.permissions.mutateRule": 7,
@@ -329,8 +298,6 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly remote: RemoteService | undefined;
   readonly ownerTelegram: OwnerTelegramService | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
-  readonly codePrediction: AgenCDaemonDispatcherOptions["codePrediction"];
-  readonly workspaceMutations: WorkspaceMutationCoordinatorRegistry | undefined;
 }
 
 function buildServerCapabilities(
@@ -421,39 +388,6 @@ function buildServerCapabilities(
     "auth.login": inputs.authHandlers !== undefined,
     "auth.whoami": inputs.authHandlers !== undefined,
     "auth.logout": inputs.authHandlers !== undefined,
-    "workspace.editor.acquire": inputs.workspaceMutations !== undefined,
-    "workspace.editor.sync": inputs.workspaceMutations !== undefined,
-    "workspace.editor.staleAuthority.refresh":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.heartbeat": inputs.workspaceMutations !== undefined,
-    "workspace.editor.release": inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.reserve":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.complete":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.release":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.recovered.list":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.recovered.resolve":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.proposal.get": inputs.workspaceMutations !== undefined,
-    "workspace.editor.proposal.status":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.proposal.apply":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.proposal.discard":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.changes.list": inputs.workspaceMutations !== undefined,
-    "workspace.editor.predict": hasMethod(inputs.codePrediction, "complete"),
-    "workspace.editor.cancelPrediction": hasMethod(
-      inputs.codePrediction,
-      "cancel",
-    ),
-    "workspace.editor.predictionFeedback": hasMethod(
-      inputs.codePrediction,
-      "feedback",
-    ),
     "session.partialCompactFromMessage": hasMethod(
       agentManager,
       "partialCompactFromMessage",
@@ -528,15 +462,6 @@ function hasMethod(target: object | undefined, key: PropertyKey): boolean {
   return (
     target !== undefined &&
     typeof (target as Record<PropertyKey, unknown>)[key] === "function"
-  );
-}
-
-function requiresWorkspaceMutationRegistry(method: string): boolean {
-  return (
-    method.startsWith("workspace.editor.") &&
-    method !== "workspace.editor.predict" &&
-    method !== "workspace.editor.cancelPrediction" &&
-    method !== "workspace.editor.predictionFeedback"
   );
 }
 
@@ -641,12 +566,6 @@ export interface AgenCDaemonDispatcherOptions {
   readonly ownerTelegram?: OwnerTelegramService;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
-  readonly codePrediction?: Pick<
-    CodePredictionService,
-    "complete" | "cancel" | "feedback"
-  >;
-  /** Home-bound mutation registry captured by daemon startup. */
-  readonly workspaceMutations?: WorkspaceMutationCoordinatorRegistry;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -774,9 +693,6 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #ownerTelegram: OwnerTelegramService | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
-  readonly #codePrediction:
-    Pick<CodePredictionService, "complete" | "cancel" | "feedback"> | undefined;
-  readonly #workspaceMutations: WorkspaceMutationCoordinatorRegistry | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -811,8 +727,6 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#remote = options.remote;
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
-    this.#codePrediction = options.codePrediction;
-    this.#workspaceMutations = options.workspaceMutations;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -837,8 +751,6 @@ export class AgenCDaemonJsonRpcDispatcher {
       remote: this.#remote,
       ownerTelegram: this.#ownerTelegram,
       csvJobReview: this.#csvJobReview,
-      codePrediction: this.#codePrediction,
-      workspaceMutations: this.#workspaceMutations,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -1006,13 +918,6 @@ export class AgenCDaemonJsonRpcDispatcher {
         connection.initializeState?.serverCapabilities[
           AGENC_DAEMON_METHOD_CAPABILITIES_KEY
         ][method] !== true
-      ) {
-        return methodNotImplementedResponse(id, method);
-      }
-
-      if (
-        requiresWorkspaceMutationRegistry(method) &&
-        this.#workspaceMutations === undefined
       ) {
         return methodNotImplementedResponse(id, method);
       }
@@ -1320,176 +1225,6 @@ export class AgenCDaemonJsonRpcDispatcher {
             ),
           ),
         );
-      case "workspace.editor.acquire":
-        return internalSuccessResponse(
-          id,
-          await acquireWorkspaceEditor(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorAcquireParams(params),
-          ),
-        );
-      case "workspace.editor.sync":
-        return internalSuccessResponse(
-          id,
-          await syncWorkspaceEditor(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorSyncParams(params),
-          ),
-        );
-      case "workspace.editor.staleAuthority.refresh":
-        return internalSuccessResponse(
-          id,
-          await refreshWorkspaceEditorStaleAuthority(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorHeartbeatParams(
-              params,
-              "workspace.editor.staleAuthority.refresh",
-            ),
-          ),
-        );
-      case "workspace.editor.heartbeat":
-        return internalSuccessResponse(
-          id,
-          await heartbeatWorkspaceEditor(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorHeartbeatParams(
-              params,
-              "workspace.editor.heartbeat",
-            ),
-          ),
-        );
-      case "workspace.editor.release":
-        return internalSuccessResponse(
-          id,
-          await releaseWorkspaceEditor(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorReleaseParams(params),
-          ),
-        );
-      case "workspace.editor.topology.reserve":
-        return internalSuccessResponse(
-          id,
-          await reserveWorkspaceEditorTopology(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorTopologyReserveParams(params),
-          ),
-        );
-      case "workspace.editor.topology.complete":
-        return internalSuccessResponse(
-          id,
-          await completeWorkspaceEditorTopology(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorTopologyCompleteParams(params),
-          ),
-        );
-      case "workspace.editor.topology.release":
-        return internalSuccessResponse(
-          id,
-          await releaseWorkspaceEditorTopology(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorTopologyFinalizeParams(
-              params,
-              "workspace.editor.topology.release",
-            ),
-          ),
-        );
-      case "workspace.editor.topology.recovered.list":
-        return internalSuccessResponse(
-          id,
-          await listRecoveredWorkspaceEditorTopologies(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorHeartbeatParams(
-              params,
-              "workspace.editor.topology.recovered.list",
-            ),
-          ),
-        );
-      case "workspace.editor.topology.recovered.resolve":
-        return internalSuccessResponse(
-          id,
-          await resolveRecoveredWorkspaceEditorTopology(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorRecoveredTopologyResolveParams(params),
-          ),
-        );
-      case "workspace.editor.proposal.get": {
-        const proposal = await inspectWorkspaceEditorProposal(
-          this.#workspaceMutations!,
-          validateWorkspaceEditorProposalParams(
-            params,
-            "workspace.editor.proposal.get",
-          ),
-          id,
-        );
-        return internalSuccessResponse(id, proposal);
-      }
-      case "workspace.editor.proposal.status":
-        return internalSuccessResponse(
-          id,
-          await statusWorkspaceEditorProposal(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorProposalStatusParams(params),
-            id,
-          ),
-        );
-      case "workspace.editor.proposal.apply":
-        return internalSuccessResponse(
-          id,
-          await applyWorkspaceEditorProposal(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorProposalApplyParams(params),
-          ),
-        );
-      case "workspace.editor.proposal.discard":
-        return internalSuccessResponse(
-          id,
-          await discardWorkspaceEditorProposal(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorProposalParams(
-              params,
-              "workspace.editor.proposal.discard",
-            ),
-          ),
-        );
-      case "workspace.editor.changes.list":
-        return internalSuccessResponse(
-          id,
-          await listWorkspaceEditorChanges(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorChangesListParams(params),
-          ),
-        );
-      case "workspace.editor.predict":
-        if (this.#codePrediction === undefined) {
-          return methodNotImplementedResponse(id, method);
-        }
-        return internalSuccessResponse(
-          id,
-          await this.#codePrediction.complete(
-            validateWorkspaceEditorPredictParams(params),
-            signal,
-          ),
-        );
-      case "workspace.editor.cancelPrediction": {
-        if (this.#codePrediction === undefined) {
-          return methodNotImplementedResponse(id, method);
-        }
-        const validated = validateWorkspaceEditorCancelPredictionParams(params);
-        return internalSuccessResponse(id, {
-          ...(validated.requestId !== undefined
-            ? { requestId: validated.requestId }
-            : {}),
-          cancelled: this.#codePrediction.cancel(validated),
-        });
-      }
-      case "workspace.editor.predictionFeedback":
-        if (this.#codePrediction === undefined) {
-          return methodNotImplementedResponse(id, method);
-        }
-        this.#codePrediction.feedback(
-          validateWorkspaceEditorPredictionFeedbackParams(params),
-        );
-        return internalSuccessResponse(id, { recorded: true });
       case "session.partialCompactFromMessage":
         return successResponse(
           id,
@@ -2559,7 +2294,6 @@ function methodSupportsRequestCancellation(
     method === "session.rewindConversationToMessage" ||
     method === "session.shell.execute" ||
     method === "session.statusLine.execute" ||
-    method === "workspace.editor.predict" ||
     method === "message.stream" ||
     method === "message.send"
   );
@@ -2743,7 +2477,6 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "metadata",
       "envOverrides",
       "runtimeOptions",
-      "initialEditorInteraction",
       "resumeSourceProof",
     ],
     valueFields: [
@@ -2862,8 +2595,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     validated.resumeSessionId !== undefined &&
     (validated.initialContent !== undefined ||
       validated.deferInitialTurn !== undefined ||
-      validated.initialDisplayUserMessage !== undefined ||
-      validated.initialEditorInteraction !== undefined)
+      validated.initialDisplayUserMessage !== undefined)
   ) {
     throw invalidParams(
       "agent.create param 'resumeSessionId' cannot be combined with initial turn content or metadata",
@@ -2880,8 +2612,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
   if (
     validated.deferInitialTurn === true &&
     (validated.initialContent !== undefined ||
-      validated.initialDisplayUserMessage !== undefined ||
-      validated.initialEditorInteraction !== undefined)
+      validated.initialDisplayUserMessage !== undefined)
   ) {
     throw invalidParams(
       "agent.create param 'deferInitialTurn' cannot be combined with initial turn content or metadata",
@@ -2896,14 +2627,6 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "agent.create param 'initialDisplayUserMessage' must be a string or null",
     );
   }
-  const initialEditorInteraction =
-    validated.initialEditorInteraction === undefined
-      ? undefined
-      : validateEditorInteractionMetadata(
-          "agent.create",
-          validated.initialEditorInteraction,
-          "param 'initialEditorInteraction'",
-        );
   if (validated.permissionMode !== undefined) {
     const value = validated.permissionMode;
     if (
@@ -2954,9 +2677,6 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     envOverrides,
     runtimeOptions,
     ...(addDirs !== undefined ? { addDirs } : {}),
-    ...(initialEditorInteraction !== undefined
-      ? { initialEditorInteraction }
-      : {}),
   } as AgentCreateParams;
 }
 
@@ -3721,22 +3441,13 @@ function validateSessionStatusLineExecuteParams(
   validateRequiredString(validated, methodName, "sessionId");
   validateMaximumUtf8Bytes(validated.sessionId, methodName, "sessionId", 1_024);
   if (validated.presentation !== undefined) {
-    const presentation = validateObjectShape(
+    validateObjectShape(
       validated.presentation as JsonObject,
       {
         methodName: `${methodName}.presentation`,
-        stringFields: ["vimMode"],
+        stringFields: [],
       },
     );
-    if (
-      presentation.vimMode !== undefined &&
-      presentation.vimMode !== "NORMAL" &&
-      presentation.vimMode !== "INSERT"
-    ) {
-      throw invalidParams(
-        `${methodName}.presentation vimMode must be NORMAL or INSERT`,
-      );
-    }
   }
   return validated as SessionStatusLineExecuteParams;
 }
@@ -4399,12 +4110,10 @@ function displayUserMessageFromMetadata(
   metadata: JsonObject | undefined,
 ): {
   readonly displayUserMessage?: string | null;
-  readonly editorInteraction?: SessionEditorInteraction;
 } {
   if (metadata === undefined) return {};
   const result: {
     displayUserMessage?: string | null;
-    editorInteraction?: SessionEditorInteraction;
   } = {};
   if ("displayUserMessage" in metadata) {
     const value = metadata.displayUserMessage;
@@ -4415,160 +4124,7 @@ function displayUserMessageFromMetadata(
     }
     result.displayUserMessage = value;
   }
-  if ("editorInteraction" in metadata) {
-    result.editorInteraction = validateEditorInteractionMetadata(
-      methodName,
-      metadata.editorInteraction,
-    );
-  }
   return result;
-}
-
-function validateEditorInteractionMetadata(
-  methodName: "agent.create" | "message.send" | "message.stream",
-  value: JsonValue | undefined,
-  field = "metadata 'editorInteraction'",
-): SessionEditorInteraction {
-  const prefix = `${methodName} ${field}`;
-  if (!isPlainJsonObject(value)) {
-    throw invalidParams(`${prefix} must be an object`);
-  }
-  const interactionId = requiredBoundedMetadataString(
-    value.interactionId,
-    `${prefix}.interactionId`,
-  );
-  const editorInstanceId = requiredBoundedMetadataString(
-    value.editorInstanceId,
-    `${prefix}.editorInstanceId`,
-  );
-  const kind = value.kind;
-  if (
-    kind !== "ask" &&
-    kind !== "explain" &&
-    kind !== "fix" &&
-    kind !== "edit" &&
-    kind !== "refactor"
-  ) {
-    throw invalidParams(
-      `${prefix}.kind must be ask, explain, fix, edit, or refactor`,
-    );
-  }
-  const policy = value.policy;
-  if (policy !== "read_only" && policy !== "proposal_only") {
-    throw invalidParams(`${prefix}.policy must be read_only or proposal_only`);
-  }
-  const expectedPolicy =
-    kind === "ask" || kind === "explain" ? "read_only" : "proposal_only";
-  if (policy !== expectedPolicy) {
-    throw invalidParams(
-      `${prefix}.policy must be ${expectedPolicy} for ${kind}`,
-    );
-  }
-  const bufferHandle = positiveSafeIntegerMetadata(
-    value.bufferHandle,
-    `${prefix}.bufferHandle`,
-  );
-  const changedtick = nonNegativeSafeIntegerMetadata(
-    value.changedtick,
-    `${prefix}.changedtick`,
-  );
-  if (
-    typeof value.contentSha256 !== "string" ||
-    !/^[a-f0-9]{64}$/u.test(value.contentSha256)
-  ) {
-    throw invalidParams(
-      `${prefix}.contentSha256 must be a lowercase SHA-256 hex digest`,
-    );
-  }
-  if (value.path !== undefined && typeof value.path !== "string") {
-    throw invalidParams(`${prefix}.path must be a string when provided`);
-  }
-  if (!isPlainJsonObject(value.range)) {
-    throw invalidParams(`${prefix}.range must be an object`);
-  }
-  const start = editorInteractionPosition(
-    value.range.start,
-    `${prefix}.range.start`,
-  );
-  const end = editorInteractionPosition(value.range.end, `${prefix}.range.end`);
-  if (
-    end.line < start.line ||
-    (end.line === start.line && end.column < start.column)
-  ) {
-    throw invalidParams(`${prefix}.range must not be inverted`);
-  }
-  const selectionMode = value.selectionMode;
-  if (
-    selectionMode !== undefined &&
-    selectionMode !== "character" &&
-    selectionMode !== "line" &&
-    selectionMode !== "block"
-  ) {
-    throw invalidParams(
-      `${prefix}.selectionMode must be character, line, or block when provided`,
-    );
-  }
-  return {
-    interactionId,
-    kind,
-    policy,
-    editorInstanceId,
-    bufferHandle,
-    changedtick,
-    contentSha256: value.contentSha256,
-    ...(value.path !== undefined ? { path: value.path } : {}),
-    range: { start, end },
-    ...(selectionMode !== undefined ? { selectionMode } : {}),
-  };
-}
-
-function requiredBoundedMetadataString(
-  value: JsonValue | undefined,
-  field: string,
-): string {
-  if (
-    typeof value !== "string" ||
-    value.trim().length === 0 ||
-    value.length > 256
-  ) {
-    throw invalidParams(
-      `${field} must be a non-empty string of at most 256 characters`,
-    );
-  }
-  return value;
-}
-
-function positiveSafeIntegerMetadata(
-  value: JsonValue | undefined,
-  field: string,
-): number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
-    throw invalidParams(`${field} must be a positive safe integer`);
-  }
-  return value as number;
-}
-
-function nonNegativeSafeIntegerMetadata(
-  value: JsonValue | undefined,
-  field: string,
-): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw invalidParams(`${field} must be a non-negative safe integer`);
-  }
-  return value as number;
-}
-
-function editorInteractionPosition(
-  value: JsonValue | undefined,
-  field: string,
-): { readonly line: number; readonly column: number } {
-  if (!isPlainJsonObject(value)) {
-    throw invalidParams(`${field} must be an object`);
-  }
-  return {
-    line: positiveSafeIntegerMetadata(value.line, `${field}.line`),
-    column: nonNegativeSafeIntegerMetadata(value.column, `${field}.column`),
-  };
 }
 
 function isValidMessageContentBlock(block: unknown): boolean {
@@ -4622,1074 +4178,6 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
     validateExitPlanApprovalPayload(validated.exitPlan as JsonObject);
   }
   return validated as ToolApproveParams;
-}
-
-function validateWorkspaceEditorAcquireParams(
-  params: JsonObject,
-): WorkspaceEditorAcquireParams {
-  const validated = validateObjectShape(params, {
-    methodName: "workspace.editor.acquire",
-    stringFields: ["workspaceRoot", "editorInstanceId"],
-    valueFields: ["takeover", "requireUnprotectedWorkspace"],
-  });
-  validateRequiredString(
-    validated,
-    "workspace.editor.acquire",
-    "workspaceRoot",
-  );
-  validateRequiredString(
-    validated,
-    "workspace.editor.acquire",
-    "editorInstanceId",
-  );
-  if (
-    validated.takeover !== undefined &&
-    typeof validated.takeover !== "boolean"
-  ) {
-    throw invalidParams(
-      "workspace.editor.acquire param 'takeover' must be a boolean",
-    );
-  }
-  if (
-    validated.requireUnprotectedWorkspace !== undefined &&
-    typeof validated.requireUnprotectedWorkspace !== "boolean"
-  ) {
-    throw invalidParams(
-      "workspace.editor.acquire param 'requireUnprotectedWorkspace' must be a boolean",
-    );
-  }
-  return validated as WorkspaceEditorAcquireParams;
-}
-
-function validateWorkspaceEditorSyncParams(
-  params: JsonObject,
-): WorkspaceEditorSyncParams {
-  const validated = validateObjectShape(params, {
-    methodName: "workspace.editor.sync",
-    stringFields: ["workspaceRoot", "editorInstanceId", "leaseToken"],
-    numberFields: ["epoch", "sequence"],
-    valueFields: ["buffers", "abandonStaleAuthority"],
-  });
-  for (const field of [
-    "workspaceRoot",
-    "editorInstanceId",
-    "leaseToken",
-  ] as const) {
-    validateRequiredString(validated, "workspace.editor.sync", field);
-  }
-  for (const field of ["epoch", "sequence"] as const) {
-    if (
-      !Number.isSafeInteger(validated[field]) ||
-      (validated[field] as number) < 0
-    ) {
-      throw invalidParams(
-        `workspace.editor.sync param '${field}' must be a non-negative safe integer`,
-      );
-    }
-  }
-  if (!Array.isArray(validated.buffers)) {
-    throw invalidParams(
-      "workspace.editor.sync param 'buffers' must be an array",
-    );
-  }
-  const buffers = validated.buffers.map((value, index) =>
-    validateWorkspaceEditorBuffer(value, index),
-  );
-  const abandonStaleAuthority =
-    validated.abandonStaleAuthority === undefined
-      ? undefined
-      : validateWorkspaceEditorStaleAuthorityEntries(
-          validated.abandonStaleAuthority,
-        );
-  return {
-    ...validated,
-    buffers,
-    ...(abandonStaleAuthority !== undefined ? { abandonStaleAuthority } : {}),
-  } as unknown as WorkspaceEditorSyncParams;
-}
-
-function validateWorkspaceEditorStaleAuthorityEntries(
-  value: unknown,
-): readonly WorkspaceEditorStaleAuthorityEntry[] {
-  const field = "workspace.editor.sync param 'abandonStaleAuthority'";
-  if (!Array.isArray(value) || value.length === 0 || value.length > 512) {
-    throw invalidParams(`${field} must contain between 1 and 512 entries`);
-  }
-  return value.map((candidate, index) => {
-    const methodName = `workspace.editor.sync.abandonStaleAuthority[${index}]`;
-    if (!isPlainJsonObject(candidate)) {
-      throw invalidParams(`${methodName} must be an object`);
-    }
-    const validated = validateObjectShape(candidate, {
-      methodName,
-      stringFields: [
-        "path",
-        "editorContentSha256",
-        "editorInstanceId",
-        "editorState",
-        "diskState",
-        "diskContentSha256",
-      ],
-      numberFields: [
-        "editorContentBytes",
-        "changedtick",
-        "epoch",
-        "diskContentBytes",
-      ],
-    });
-    for (const required of [
-      "path",
-      "editorContentSha256",
-      "editorInstanceId",
-      "editorState",
-      "diskState",
-    ] as const) {
-      validateRequiredString(validated, methodName, required);
-    }
-    if (!/^[a-f0-9]{64}$/u.test(validated.editorContentSha256 as string)) {
-      throw invalidParams(
-        `${methodName} param 'editorContentSha256' must be a SHA-256 digest`,
-      );
-    }
-    if (
-      validated.editorState !== "dirty" &&
-      validated.editorState !== "clean"
-    ) {
-      throw invalidParams(
-        `${methodName} param 'editorState' must be dirty or clean`,
-      );
-    }
-    for (const numberField of [
-      "editorContentBytes",
-      "changedtick",
-      "epoch",
-    ] as const) {
-      if (
-        !Number.isSafeInteger(validated[numberField]) ||
-        (validated[numberField] as number) < (numberField === "epoch" ? 1 : 0)
-      ) {
-        throw invalidParams(
-          `${methodName} param '${numberField}' must be a ${numberField === "epoch" ? "positive" : "non-negative"} safe integer`,
-        );
-      }
-    }
-    if (validated.diskState === "content") {
-      if (
-        typeof validated.diskContentSha256 !== "string" ||
-        !/^[a-f0-9]{64}$/u.test(validated.diskContentSha256) ||
-        !Number.isSafeInteger(validated.diskContentBytes) ||
-        (validated.diskContentBytes as number) < 0
-      ) {
-        throw invalidParams(
-          `${methodName} content disk state requires a SHA-256 digest and non-negative byte length`,
-        );
-      }
-    } else if (
-      validated.diskState !== "missing" &&
-      validated.diskState !== "unavailable"
-    ) {
-      throw invalidParams(
-        `${methodName} param 'diskState' must be content, missing, or unavailable`,
-      );
-    } else if (
-      validated.diskContentSha256 !== undefined ||
-      validated.diskContentBytes !== undefined
-    ) {
-      throw invalidParams(
-        `${methodName} non-content disk state must not include disk content evidence`,
-      );
-    }
-    return validated as WorkspaceEditorStaleAuthorityEntry;
-  });
-}
-
-function validateWorkspaceEditorBuffer(
-  value: unknown,
-  index: number,
-): WorkspaceEditorBufferSync {
-  if (!isPlainJsonObject(value)) {
-    throw invalidParams(
-      `workspace.editor.sync param 'buffers[${index}]' must be an object`,
-    );
-  }
-  const methodName = `workspace.editor.sync.buffers[${index}]`;
-  const validated = validateObjectShape(value, {
-    methodName,
-    stringFields: ["path", "contentSha256", "content"],
-    numberFields: ["bufferHandle", "changedtick", "contentBytes"],
-    valueFields: ["dirty"],
-  });
-  validateRequiredString(validated, methodName, "path");
-  validateRequiredString(validated, methodName, "contentSha256");
-  for (const field of [
-    "bufferHandle",
-    "changedtick",
-    "contentBytes",
-  ] as const) {
-    if (
-      !Number.isSafeInteger(validated[field]) ||
-      (validated[field] as number) < 0
-    ) {
-      throw invalidParams(
-        `${methodName} param '${field}' must be a non-negative safe integer`,
-      );
-    }
-  }
-  if (typeof validated.dirty !== "boolean") {
-    throw invalidParams(`${methodName} param 'dirty' must be a boolean`);
-  }
-  return validated as WorkspaceEditorBufferSync;
-}
-
-function validateWorkspaceEditorHeartbeatParams(
-  params: JsonObject,
-  methodName:
-    | "workspace.editor.staleAuthority.refresh"
-    | "workspace.editor.heartbeat"
-    | "workspace.editor.release"
-    | "workspace.editor.proposal.get"
-    | "workspace.editor.proposal.status"
-    | "workspace.editor.proposal.apply"
-    | "workspace.editor.proposal.discard"
-    | "workspace.editor.changes.list"
-    | "workspace.editor.topology.reserve"
-    | "workspace.editor.topology.complete"
-    | "workspace.editor.topology.release"
-    | "workspace.editor.topology.recovered.list"
-    | "workspace.editor.topology.recovered.resolve",
-  extraStringFields: readonly string[] = [],
-  extraNumberFields: readonly string[] = [],
-  extraValueFields: readonly string[] = [],
-): WorkspaceEditorHeartbeatParams {
-  const validated = validateObjectShape(params, {
-    methodName,
-    stringFields: [
-      "workspaceRoot",
-      "editorInstanceId",
-      "leaseToken",
-      ...extraStringFields,
-    ],
-    numberFields: ["epoch", ...extraNumberFields],
-    valueFields: [
-      ...(methodName === "workspace.editor.release" ? ["abandonDirty"] : []),
-      ...extraValueFields,
-    ],
-  });
-  for (const field of [
-    "workspaceRoot",
-    "editorInstanceId",
-    "leaseToken",
-  ] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  if (
-    !Number.isSafeInteger(validated.epoch) ||
-    (validated.epoch as number) < 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'epoch' must be a non-negative safe integer`,
-    );
-  }
-  return validated as unknown as WorkspaceEditorHeartbeatParams;
-}
-
-function validateWorkspaceEditorTopologyReserveParams(
-  params: JsonObject,
-): WorkspaceEditorTopologyReserveParams {
-  const methodName = "workspace.editor.topology.reserve";
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    methodName,
-    [],
-    [],
-    ["targets"],
-  );
-  if (!Array.isArray(validated.targets) || validated.targets.length === 0) {
-    throw invalidParams(
-      `${methodName} param 'targets' must be a non-empty array`,
-    );
-  }
-  if (validated.targets.length > 4) {
-    throw invalidParams(
-      `${methodName} param 'targets' must contain at most 4 paths`,
-    );
-  }
-  const targets = validated.targets.map((target, index) =>
-    validateWorkspaceEditorTopologyTarget(target, index),
-  );
-  return {
-    ...validated,
-    targets,
-  } as unknown as WorkspaceEditorTopologyReserveParams;
-}
-
-function validateWorkspaceEditorTopologyTarget(
-  value: unknown,
-  index: number,
-): WorkspaceEditorTopologyTarget {
-  if (!isPlainJsonObject(value)) {
-    throw invalidParams(
-      `workspace.editor.topology.reserve param 'targets[${index}]' must be an object`,
-    );
-  }
-  const methodName = `workspace.editor.topology.reserve.targets[${index}]`;
-  const validated = validateObjectShape(value, {
-    methodName,
-    stringFields: ["path"],
-    valueFields: ["includeDescendants", "allowOwnedClean"],
-  });
-  validateRequiredString(validated, methodName, "path");
-  for (const field of ["includeDescendants", "allowOwnedClean"] as const) {
-    if (
-      validated[field] !== undefined &&
-      typeof validated[field] !== "boolean"
-    ) {
-      throw invalidParams(`${methodName} param '${field}' must be a boolean`);
-    }
-  }
-  return validated as WorkspaceEditorTopologyTarget;
-}
-
-function validateWorkspaceEditorTopologyFinalizeParams(
-  params: JsonObject,
-  methodName:
-    | "workspace.editor.topology.complete"
-    | "workspace.editor.topology.release"
-    | "workspace.editor.topology.recovered.resolve",
-  extraStringFields: readonly string[] = [],
-): WorkspaceEditorTopologyFinalizeParams {
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    methodName,
-    ["tokenId", ...extraStringFields],
-    ["sequence"],
-    ["buffers"],
-  );
-  validateRequiredString(validated, methodName, "tokenId");
-  if (
-    !Number.isSafeInteger(validated.sequence) ||
-    (validated.sequence as number) < 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'sequence' must be a non-negative safe integer`,
-    );
-  }
-  if (!Array.isArray(validated.buffers)) {
-    throw invalidParams(`${methodName} param 'buffers' must be an array`);
-  }
-  const buffers = validated.buffers.map((buffer, index) =>
-    validateWorkspaceEditorBuffer(buffer, index),
-  );
-  return {
-    ...validated,
-    buffers,
-  } as unknown as WorkspaceEditorTopologyFinalizeParams;
-}
-
-function validateWorkspaceEditorTopologyCompleteParams(
-  params: JsonObject,
-): WorkspaceEditorTopologyCompleteParams {
-  const methodName = "workspace.editor.topology.complete";
-  const validated = validateWorkspaceEditorTopologyFinalizeParams(
-    params,
-    methodName,
-    ["status"],
-  );
-  if (
-    validated.status !== "applied" &&
-    validated.status !== "unknown_outcome"
-  ) {
-    throw invalidParams(
-      `${methodName} param 'status' must be applied or unknown_outcome`,
-    );
-  }
-  return validated as WorkspaceEditorTopologyCompleteParams;
-}
-
-function validateWorkspaceEditorRecoveredTopologyResolveParams(
-  params: JsonObject,
-): WorkspaceEditorRecoveredTopologyResolveParams {
-  return validateWorkspaceEditorTopologyFinalizeParams(
-    params,
-    "workspace.editor.topology.recovered.resolve",
-  );
-}
-
-function validateWorkspaceEditorReleaseParams(
-  params: JsonObject,
-): WorkspaceEditorReleaseParams {
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    "workspace.editor.release",
-  ) as WorkspaceEditorReleaseParams;
-  if (
-    validated.abandonDirty !== undefined &&
-    typeof validated.abandonDirty !== "boolean"
-  ) {
-    throw invalidParams(
-      "workspace.editor.release param 'abandonDirty' must be a boolean",
-    );
-  }
-  return validated;
-}
-
-function validateWorkspaceEditorProposalParams(
-  params: JsonObject,
-  methodName:
-    | "workspace.editor.proposal.get"
-    | "workspace.editor.proposal.status"
-    | "workspace.editor.proposal.discard",
-): WorkspaceEditorProposalParams {
-  const validated = validateWorkspaceEditorHeartbeatParams(params, methodName, [
-    "proposalId",
-  ]);
-  validateRequiredString(validated, methodName, "proposalId");
-  return validated as unknown as WorkspaceEditorProposalParams;
-}
-
-function validateWorkspaceEditorProposalStatusParams(
-  params: JsonObject,
-): WorkspaceEditorProposalStatusParams {
-  return validateWorkspaceEditorProposalParams(
-    params,
-    "workspace.editor.proposal.status",
-  );
-}
-
-function validateWorkspaceEditorProposalApplyParams(
-  params: JsonObject,
-): WorkspaceEditorProposalApplyParams {
-  const methodName = "workspace.editor.proposal.apply";
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    methodName,
-    ["proposalId", "contentSha256", "content"],
-    ["changedtick"],
-  );
-  for (const field of ["proposalId", "contentSha256"] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  if (typeof validated.content !== "string") {
-    throw invalidParams(`${methodName} param 'content' must be a string`);
-  }
-  if (
-    !Number.isSafeInteger(validated.changedtick) ||
-    (validated.changedtick as number) < 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'changedtick' must be a non-negative safe integer`,
-    );
-  }
-  return validated as unknown as WorkspaceEditorProposalApplyParams;
-}
-
-function validateWorkspaceEditorChangesListParams(
-  params: JsonObject,
-): WorkspaceEditorChangesListParams {
-  const methodName = "workspace.editor.changes.list";
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    methodName,
-    [],
-    ["afterSequence"],
-  );
-  if (
-    validated.afterSequence !== undefined &&
-    (!Number.isSafeInteger(validated.afterSequence) ||
-      (validated.afterSequence as number) < 0)
-  ) {
-    throw invalidParams(
-      `${methodName} param 'afterSequence' must be a non-negative safe integer`,
-    );
-  }
-  return validated as unknown as WorkspaceEditorChangesListParams;
-}
-
-function validateWorkspaceEditorPredictParams(
-  params: JsonObject,
-): WorkspaceEditorPredictParams {
-  const methodName = "workspace.editor.predict";
-  const validated = validateObjectShape(params, {
-    methodName,
-    stringFields: [
-      "requestId",
-      "sessionId",
-      "editorInstanceId",
-      "path",
-      "language",
-      "prefix",
-      "suffix",
-      "header",
-      "latestIntent",
-    ],
-    numberFields: ["bufferHandle", "generation", "changedtick", "fileBytes"],
-    objectFields: ["cursor"],
-    valueFields: ["diagnostics", "relatedBuffers"],
-  });
-  for (const field of [
-    "requestId",
-    "sessionId",
-    "editorInstanceId",
-    "path",
-  ] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  for (const field of ["prefix", "suffix"] as const) {
-    if (typeof validated[field] !== "string") {
-      throw invalidParams(`${methodName} param '${field}' must be a string`);
-    }
-  }
-  for (const field of ["language"] as const) {
-    const value = validated[field];
-    if (typeof value === "string" && value.trim().length === 0) {
-      throw invalidParams(
-        `${methodName} param '${field}' must be non-empty when provided`,
-      );
-    }
-  }
-  if (
-    !Number.isSafeInteger(validated.bufferHandle) ||
-    (validated.bufferHandle as number) <= 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'bufferHandle' must be a positive safe integer`,
-    );
-  }
-  for (const field of ["generation", "changedtick"] as const) {
-    validatePredictionNonNegativeInteger(validated[field], methodName, field);
-  }
-  if (validated.fileBytes === undefined) {
-    throw invalidParams(`${methodName} param 'fileBytes' is required`);
-  }
-  validatePredictionNonNegativeInteger(
-    validated.fileBytes,
-    methodName,
-    "fileBytes",
-  );
-  const transmittedContextBytes =
-    Buffer.byteLength(validated.prefix as string, "utf8") +
-    Buffer.byteLength(validated.suffix as string, "utf8");
-  if ((validated.fileBytes as number) < transmittedContextBytes) {
-    throw invalidParams(
-      `${methodName} param 'fileBytes' must cover the transmitted prefix and suffix`,
-    );
-  }
-  const cursor = validated.cursor as JsonObject;
-  validatePredictionNonNegativeInteger(cursor.line, methodName, "cursor.line");
-  validatePredictionNonNegativeInteger(
-    cursor.byteColumn,
-    methodName,
-    "cursor.byteColumn",
-  );
-  const diagnostics = validateWorkspaceEditorPredictionDiagnostics(
-    validated.diagnostics,
-    methodName,
-  );
-  const relatedBuffers = validateWorkspaceEditorPredictionRelatedBuffers(
-    validated.relatedBuffers,
-    methodName,
-  );
-  return {
-    ...validated,
-    cursor: {
-      line: cursor.line as number,
-      byteColumn: cursor.byteColumn as number,
-    },
-    ...(diagnostics !== undefined ? { diagnostics } : {}),
-    ...(relatedBuffers !== undefined ? { relatedBuffers } : {}),
-  } as WorkspaceEditorPredictParams;
-}
-
-function validatePredictionNonNegativeInteger(
-  value: JsonValue | undefined,
-  methodName: string,
-  field: string,
-): void {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw invalidParams(
-      `${methodName} param '${field}' must be a non-negative safe integer`,
-    );
-  }
-}
-
-function validateWorkspaceEditorPredictionDiagnostics(
-  value: JsonValue | undefined,
-  methodName: string,
-): readonly WorkspaceEditorPredictionDiagnostic[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > 8) {
-    throw invalidParams(
-      `${methodName} param 'diagnostics' must be an array of at most 8 entries`,
-    );
-  }
-  return value.map((entry, index) => {
-    if (!isPlainJsonObject(entry)) {
-      throw invalidParams(
-        `${methodName} param 'diagnostics[${index}]' must be an object`,
-      );
-    }
-    const item = validateObjectShape(entry, {
-      methodName: `${methodName}.diagnostics[${index}]`,
-      stringFields: ["message", "severity"],
-    });
-    validateRequiredString(item, methodName, "message");
-    if (
-      item.severity !== undefined &&
-      item.severity !== "error" &&
-      item.severity !== "warning" &&
-      item.severity !== "information" &&
-      item.severity !== "hint"
-    ) {
-      throw invalidParams(
-        `${methodName} param 'diagnostics[${index}].severity' is invalid`,
-      );
-    }
-    return item as WorkspaceEditorPredictionDiagnostic;
-  });
-}
-
-function validateWorkspaceEditorPredictionRelatedBuffers(
-  value: JsonValue | undefined,
-  methodName: string,
-): readonly WorkspaceEditorPredictionRelatedBuffer[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > 2) {
-    throw invalidParams(
-      `${methodName} param 'relatedBuffers' must be an array of at most 2 entries`,
-    );
-  }
-  return value.map((entry, index) => {
-    if (!isPlainJsonObject(entry)) {
-      throw invalidParams(
-        `${methodName} param 'relatedBuffers[${index}]' must be an object`,
-      );
-    }
-    const item = validateObjectShape(entry, {
-      methodName: `${methodName}.relatedBuffers[${index}]`,
-      stringFields: ["path", "language", "content"],
-    });
-    validateRequiredString(item, methodName, "path");
-    if (typeof item.content !== "string") {
-      throw invalidParams(
-        `${methodName} param 'relatedBuffers[${index}].content' must be a string`,
-      );
-    }
-    return item as WorkspaceEditorPredictionRelatedBuffer;
-  });
-}
-
-function validateWorkspaceEditorCancelPredictionParams(
-  params: JsonObject,
-): WorkspaceEditorCancelPredictionParams {
-  const methodName = "workspace.editor.cancelPrediction";
-  const validated = validateObjectShape(params, {
-    methodName,
-    stringFields: ["sessionId", "editorInstanceId", "requestId"],
-  });
-  for (const field of ["sessionId", "editorInstanceId"] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  if (
-    typeof validated.requestId === "string" &&
-    validated.requestId.trim().length === 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'requestId' must be non-empty when provided`,
-    );
-  }
-  return validated as WorkspaceEditorCancelPredictionParams;
-}
-
-function validateWorkspaceEditorPredictionFeedbackParams(
-  params: JsonObject,
-): WorkspaceEditorPredictionFeedbackParams {
-  const methodName = "workspace.editor.predictionFeedback";
-  const validated = validateObjectShape(params, {
-    methodName,
-    stringFields: ["sessionId", "editorInstanceId", "requestId", "kind"],
-    numberFields: ["acceptedCharacters", "latencyMs"],
-  });
-  for (const field of ["sessionId", "editorInstanceId", "requestId"] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  if (
-    validated.kind !== "displayed" &&
-    validated.kind !== "accepted" &&
-    validated.kind !== "partially_accepted" &&
-    validated.kind !== "dismissed"
-  ) {
-    throw invalidParams(`${methodName} param 'kind' is invalid`);
-  }
-  for (const field of ["acceptedCharacters", "latencyMs"] as const) {
-    if (validated[field] !== undefined) {
-      validatePredictionNonNegativeInteger(validated[field], methodName, field);
-    }
-  }
-  if (
-    validated.acceptedCharacters !== undefined &&
-    validated.kind !== "accepted" &&
-    validated.kind !== "partially_accepted"
-  ) {
-    throw invalidParams(
-      `${methodName} param 'acceptedCharacters' requires accepted feedback`,
-    );
-  }
-  return validated as WorkspaceEditorPredictionFeedbackParams;
-}
-
-async function acquireWorkspaceEditor(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorAcquireParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const lease = workspaceMutations.acquireEditor(workspaceRoot, {
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      ...(params.takeover !== undefined ? { takeover: params.takeover } : {}),
-      ...(params.requireUnprotectedWorkspace !== undefined
-        ? {
-            requireUnprotectedWorkspace: params.requireUnprotectedWorkspace,
-          }
-        : {}),
-    });
-    // A stale-authority transaction commits its replacement quarantine before
-    // projecting terminal audit entries. If that append failed, acquiring the
-    // same in-process coordinator is the client's retry boundary: do not
-    // acknowledge the lease until the append-once outbox is durably drained.
-    await workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .flushPendingAuditOutbox();
-    return lease;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function syncWorkspaceEditor(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorSyncParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    const input = {
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      sequence: params.sequence,
-      buffers: params.buffers,
-      ...(params.abandonStaleAuthority !== undefined
-        ? { abandonStaleAuthority: params.abandonStaleAuthority }
-        : {}),
-    };
-    if (params.abandonStaleAuthority !== undefined) {
-      return await coordinator.syncAbandoningStaleAuthority(input);
-    }
-    const result = coordinator.sync(input);
-    await coordinator.flushQuarantinePersistence();
-    return result;
-  } catch (error) {
-    // A rejected synchronization can still have recorded a durable topology
-    // contention. Do not let the client retry after the fence disappears
-    // until that record is safely on disk.
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function refreshWorkspaceEditorStaleAuthority(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorHeartbeatParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .refreshStaleAuthority({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-      });
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function heartbeatWorkspaceEditor(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorHeartbeatParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutations.getOrCreate(workspaceRoot).heartbeat({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-    });
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function releaseWorkspaceEditor(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorReleaseParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    const result = await coordinator.release({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      ...(params.abandonDirty !== undefined
-        ? { abandonDirty: params.abandonDirty }
-        : {}),
-    });
-    await coordinator.flushQuarantinePersistence();
-    return result;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function reserveWorkspaceEditorTopology(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorTopologyReserveParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    const token = await coordinator.reserveEditorTopologyMutation({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      targets: params.targets,
-      source: "editor",
-    });
-    return {
-      tokenId: token.tokenId,
-      targets: token.targets,
-    };
-  } catch (error) {
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function completeWorkspaceEditorTopology(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorTopologyCompleteParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    return await coordinator.completeEditorTopologyMutation({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      tokenId: params.tokenId,
-      sequence: params.sequence,
-      buffers: params.buffers,
-      status: params.status,
-    });
-  } catch (error) {
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function releaseWorkspaceEditorTopology(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorTopologyFinalizeParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    return await coordinator.releaseEditorTopologyMutation({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      tokenId: params.tokenId,
-      sequence: params.sequence,
-      buffers: params.buffers,
-    });
-  } catch (error) {
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function listRecoveredWorkspaceEditorTopologies(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorRecoveredTopologyListParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    return {
-      mutations: coordinator.listRecoveredEditorTopologyMutations({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-      }),
-    };
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function resolveRecoveredWorkspaceEditorTopology(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorRecoveredTopologyResolveParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    return await coordinator.resolveRecoveredEditorTopologyMutation({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      tokenId: params.tokenId,
-      sequence: params.sequence,
-      buffers: params.buffers,
-    });
-  } catch (error) {
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function inspectWorkspaceEditorProposal(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorProposalParams,
-  requestId: RequestId,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const proposal = workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .inspectProposal({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-        proposalId: params.proposalId,
-      });
-    // Admission sizes against the daemon's numeric request IDs. Recheck with
-    // the actual caller-provided ID so a larger custom envelope cannot turn a
-    // valid proposal into an oversized success frame.
-    assertWorkspaceEditorProposalResponseFitsFrame(proposal, requestId);
-    return proposal;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function statusWorkspaceEditorProposal(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorProposalStatusParams,
-  requestId: RequestId,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const status = await workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .proposalStatus({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-        proposalId: params.proposalId,
-      });
-    assertWorkspaceEditorProposalStatusResponseFitsFrame(status, requestId);
-    return status;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function applyWorkspaceEditorProposal(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorProposalApplyParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return await workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .applyProposal({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-        proposalId: params.proposalId,
-        changedtick: params.changedtick,
-        contentSha256: params.contentSha256,
-        content: params.content,
-      });
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function discardWorkspaceEditorProposal(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorProposalParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return await workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .discardProposalForEditor({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-        proposalId: params.proposalId,
-      });
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function listWorkspaceEditorChanges(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorChangesListParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    const result = coordinator.listChanges({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      ...(params.afterSequence !== undefined
-        ? { afterSequence: params.afterSequence }
-        : {}),
-    });
-    // `afterSequence` acknowledges the prior delivery. Do not confirm that
-    // acknowledgement to the Editor until the pruned durable queue is synced.
-    await coordinator.flushQuarantinePersistence();
-    return result;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
 }
 
 function validateExitPlanApprovalPayload(exitPlan: JsonObject): void {

@@ -198,16 +198,6 @@ describe("reproducible install and release contract", () => {
           bytes: number;
         };
       };
-      neovimTestRuntime: {
-        schemaVersion: number;
-        version: string;
-        "linux-x64": {
-          file: string;
-          url: string;
-          sha256: string;
-          bytes: number;
-        };
-      };
     };
     expect(toolchain.bubblewrapTestRuntime).toEqual({
       schemaVersion: 1,
@@ -230,17 +220,6 @@ describe("reproducible install and release contract", () => {
         sha256:
           "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721",
         bytes: 77_628_778,
-      },
-    });
-    expect(toolchain.neovimTestRuntime).toEqual({
-      schemaVersion: 1,
-      version: "0.12.1",
-      "linux-x64": {
-        file: "nvim-linux-x86_64.tar.gz",
-        url: "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-linux-x86_64.tar.gz",
-        sha256:
-          "ab757a1fd9ad307d53d2df4045698906a7ca3993d92260dd8fe49108712d57d0",
-        bytes: 11_359_184,
       },
     });
 
@@ -290,7 +269,6 @@ describe("reproducible install and release contract", () => {
     expect(prWorkflow).not.toContain("check:tui-runtime-startup");
     expect(workflow).toContain("\n  linux-kernel-sandbox:");
     expect(workflow).toContain("\n  powershell:");
-    expect(workflow).toContain("\n  neovim:");
     expect(workflow).toContain("\n  macos-native:");
     expect(workflow).toContain("\n  windows-native:");
 
@@ -358,7 +336,7 @@ describe("reproducible install and release contract", () => {
 
     const powershellJob = workflow.slice(
       workflow.indexOf("\n  powershell:"),
-      workflow.indexOf("\n  neovim:"),
+      workflow.indexOf("\n  macos-native:"),
     );
     expect(powershellJob).toContain("runs-on: ubuntu-24.04");
     expect(powershellJob).toContain('["powershellTestRuntime"]["linux-x64"]');
@@ -384,57 +362,6 @@ describe("reproducible install and release contract", () => {
     expect(powershellJob).toContain(
       "git status --porcelain=v1 --untracked-files=all",
     );
-
-    const neovimJob = workflow.slice(
-      workflow.indexOf("\n  neovim:"),
-      workflow.indexOf("\n  macos-native:"),
-    );
-    expect(neovimJob).toContain("runs-on: ubuntu-24.04");
-    expect(neovimJob).toContain('["neovimTestRuntime"]["linux-x64"]');
-    expect(neovimJob).toContain("--config vitest.neovim.config.ts");
-    expect(neovimJob).toContain(
-      "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
-    );
-    expect(neovimJob).toContain(
-      "tests/tui/workbench/buffer-neovim-host-save.real-neovim.test.ts",
-    );
-    expect(neovimJob).toContain("numTotalTestSuites: 4");
-    expect(neovimJob).toContain("numTotalTests: 21");
-    expect(neovimJob).toContain(
-      "results.testResults.length !== expectedFiles.length",
-    );
-    expect(neovimJob).toContain('if test "$RUNNER_OS" = "Windows"; then');
-    expect(neovimJob).toContain(
-      '"$npm_command" rebuild better-sqlite3 esbuild',
-    );
-    expect(neovimJob).toContain(
-      '"$npm_command" rebuild better-sqlite3 esbuild node-pty',
-    );
-    expect(neovimJob).toContain("$_.ProcessId -ne $PID -and");
-    expect(neovimJob).toContain("pgrep -f --");
-
-    const neovimLifecycleSuite = readFileSync(
-      join(
-        REPO_ROOT,
-        "runtime/tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
-      ),
-      "utf8",
-    );
-    expect(neovimLifecycleSuite).toContain(
-      "startEmbeddedNeovim as startEmbeddedNeovimProcess",
-    );
-    expect(neovimLifecycleSuite).toContain(
-      "const REAL_NEOVIM_STARTUP_TIMEOUT_MS = 60_000;",
-    );
-    expect(neovimLifecycleSuite).toContain(
-      "options.startupTimeoutMs ?? REAL_NEOVIM_STARTUP_TIMEOUT_MS",
-    );
-    expect(
-      neovimLifecycleSuite.match(/startEmbeddedNeovimProcess\(\{/gu),
-    ).toHaveLength(1);
-    expect(
-      neovimLifecycleSuite.match(/startEmbeddedNeovim\(\{/gu),
-    ).toHaveLength(20);
 
     const macosJob = workflow.slice(
       workflow.indexOf("\n  macos-native:"),
@@ -569,18 +496,18 @@ describe("reproducible install and release contract", () => {
       "Windows FND/native capability lane passed 111 tests in 12 files with zero skipped",
     );
 
-    // Six lanes: default-suite plus the five hosted capability lanes.
+    // Five lanes: default-suite plus the four hosted capability lanes.
     expect(
       workflow.match(
         /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/g,
       ),
-    ).toHaveLength(6);
+    ).toHaveLength(5);
     expect(
       workflow.match(
         /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
       ),
-    ).toHaveLength(4);
-    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(10);
+    ).toHaveLength(3);
+    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(8);
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
     expect(workflow).not.toContain("--passWithNoTests");

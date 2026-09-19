@@ -1452,10 +1452,7 @@ export async function streamModel(
     state.needsFollowUp = false;
   } else {
     const mergedToolBlocks = new Map(streamedToolBlocks);
-    const admittedAssistantToolCalls = assistant.toolCalls.filter(
-      (call) => !state.editorToolCallLimitDeniedIds.has(call.id),
-    );
-    for (const block of parseToolUseBlocks(admittedAssistantToolCalls)) {
+    for (const block of parseToolUseBlocks([...assistant.toolCalls])) {
       mergedToolBlocks.set(block.id, block);
     }
     state.toolUseBlocks = [...mergedToolBlocks.values()];

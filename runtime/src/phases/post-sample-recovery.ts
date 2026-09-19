@@ -501,17 +501,6 @@ export async function postSampleRecovery(
 ): Promise<TurnState> {
   if (signal?.aborted) return state;
 
-  // Defense in depth for direct/future callers: an Editor interaction is
-  // bounded to its immutable request plus trusted read/proposal tool loop.
-  // The recovery ladder can compact/rewrite messages, inject prompts, execute
-  // hooks, or stage a model/provider switch, so no ladder transition may
-  // survive this request-scoped boundary.
-  if (ctx.editorInteraction !== undefined) {
-    state.pendingBudgetDecision = undefined;
-    state.transition = undefined;
-    return state;
-  }
-
   // Invalid text-shaped tool calls never enter the executable tool ledger.
   // This separate cap survives other recovery strategies and durable resume.
   // Any budget continuation is still honored; the outer request boundary

@@ -106,7 +106,7 @@ function executionBlock(session: Session): SessionStatusLineResult | undefined {
   return undefined;
 }
 
-function statusLineInput(session: Session, presentation: SessionStatusLinePresentation): string | undefined {
+function statusLineInput(session: Session, _presentation: SessionStatusLinePresentation): string | undefined {
   const configStore = session.services.configStore;
   const usage = session.services.executionAdmission?.getUsageSummary?.();
   const admission = session.services.executionAdmission;
@@ -159,7 +159,6 @@ function statusLineInput(session: Session, presentation: SessionStatusLinePresen
       branch: worktree.handle.branch,
       original_cwd: worktree.originalCwd,
     } }),
-    ...(presentation.vimMode !== undefined ? { vim: { mode: presentation.vimMode } } : {}),
   });
 }
 

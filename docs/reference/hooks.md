@@ -179,10 +179,7 @@ mentions expand only after the turn is allowed. Hook
 `additionalContext` is appended after that expansion so repository
 text cannot change hook input.
 
-`--bare` / `hardSuppressed` skips the hook loop. Daemon **editor**
-submissions (`editorInteraction` set) skip it too. BUFFER / Neovim
-requests do not start configured lifecycle or prompt hooks. See
-[the embedded Neovim buffer contract](../embedded-neovim-buffer.md).
+`--bare` / `hardSuppressed` skips the hook loop.
 
 #### How a command hook refuses one prompt
 

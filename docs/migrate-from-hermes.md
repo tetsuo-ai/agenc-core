@@ -33,7 +33,7 @@ agenc onboard autonomy     # budget → heartbeat → cron → hooks
 | Hermes | AgenC | Notes |
 |---|---|---|
 | `hermes gateway` | `agenc daemon` + `agenc gateway` | Daemon is loopback-only by default; channel gateway is a separate always-on client (`install-service`) |
-| Ink TUI / curses CLI | TUI (`agenc`) | Custom react-reconciler TUI + embedded Neovim workbench |
+| Ink TUI / curses CLI | TUI (`agenc`) | Custom react-reconciler TUI |
 | Model providers (~30 plugins) | 17 built-in providers | Anthropic/OpenAI/Grok/Meta/Gemini/Bedrock/OpenRouter/Groq/DeepSeek/…, local via Ollama/LM Studio/openai-compatible; managed OpenRouter + free `:free` routes; per-session `--provider`/`--model` |
 | Skills + Skills Hub | Skills + plugins | Local + bundled skills, plugin marketplaces via `agenc plugin`; no public hub until publishing is signed + attested (deliberate) |
 | Curator (self-created skills) | Roadmap — auditable by design | Planned as reviewed, git-versioned, eval-gated proposals; never silent self-modification. The eval harness that gates it already ships |

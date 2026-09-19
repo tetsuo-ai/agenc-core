@@ -169,7 +169,6 @@ import {
 import { RoutineService } from "../routines/service.js";
 import { createDaemonRoutineExecutor } from "../routines/daemon-executor.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
-import { CodePredictionService } from "../services/code-prediction/service.js";
 import { BUILT_IN_PROVIDER_BASE_URLS, resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import {
   prepareMcpSseServerReconfigurationFromConfig,
@@ -232,7 +231,6 @@ import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
 import { installAgenCDaemonErrorLogSink } from "./daemon-error-log.js";
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
-import { workspaceMutationCoordinators } from "../workspace/mutation-coordinator.js";
 
 const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
@@ -3416,12 +3414,7 @@ async function runAgenCDaemonForegroundLocked(
     cleanup.register("daemon-thread-store", async () => {
       threadStore.close();
     });
-    let codePrediction: CodePredictionService | undefined;
-    const sessionManager = new AgenCDaemonSessionManager({
-      threadStore,
-      onSessionTerminated: (sessionId) =>
-        codePrediction?.disposeSession(sessionId),
-    });
+    const sessionManager = new AgenCDaemonSessionManager({ threadStore });
     // Forward declaration: set once the connection registry below exists. Lets
     // the multiplexer ask the transport to tear down a slow consumer's socket
     // when that client's pending delivery backlog trips the per-client cap.
@@ -3726,19 +3719,6 @@ async function runAgenCDaemonForegroundLocked(
       });
     };
     const unregisterAgentsCleanup = cleanup.register("daemon-agents", stopAgents);
-    codePrediction =
-      runner.resolveCodePredictionSource === undefined
-        ? undefined
-        : new CodePredictionService({
-            resolveSource: (sessionId) =>
-              agentManager.resolveCodePredictionSource(sessionId),
-            config: activeConfig.buffer?.prediction,
-          });
-    if (codePrediction !== undefined) {
-      cleanup.register("daemon-code-prediction", () =>
-        codePrediction.dispose(),
-      );
-    }
     // Wire the runner's terminal-status hook into the lifecycle so a
     // completed/errored agent's status transitions out of `running` in
     // `agent.list` immediately, instead of being lost in the race
@@ -3895,7 +3875,6 @@ async function runAgenCDaemonForegroundLocked(
               }),
             );
             activeConfig = next.config;
-            await codePrediction?.updateConfig(next.config.buffer?.prediction);
             activeMcpServer = preparedMcpChange.adopt();
             adopted = true;
           } finally {
@@ -4028,10 +4007,6 @@ async function runAgenCDaemonForegroundLocked(
       }),
       workflow: workflowStartService,
       csvJobReview: new AgenCCsvJobReviewStateService(csvAgentJobsRepositories),
-      workspaceMutations: workspaceMutationCoordinators.forHome(
-        authStartup.daemonHome,
-      ),
-      ...(codePrediction !== undefined ? { codePrediction } : {}),
       daemonIdentity,
       initializeAuthenticator: (params) =>
         cookieAuthenticator.authenticateInitializeParams(params),

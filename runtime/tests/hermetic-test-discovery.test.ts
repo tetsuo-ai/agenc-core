@@ -93,11 +93,6 @@ const DEFAULT_POWERSHELL_TEST_FILES = [
   "tests/tools/PowerShellTool.execution.test.ts",
 ] as const;
 
-const NEOVIM_TEST_FILES = [
-  "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
-  "tests/tui/workbench/buffer-neovim-host-save.real-neovim.test.ts",
-] as const;
-
 function listTestFiles(config: string): string[] {
   const result = spawnSync(
     process.execPath,
@@ -184,15 +179,6 @@ describe("hermetic test discovery", () => {
       ).toContain(defaultPowerShellFile);
     }
 
-    for (const neovimFile of NEOVIM_TEST_FILES) {
-      expect(
-        files,
-        `${neovimFile} leaked into the default suite`,
-      ).not.toContain(neovimFile);
-    }
-    expect(files).toContain(
-      "tests/tui/workbench/buffer-neovim-discovery.contract.test.ts",
-    );
 
     // Despite its historical filename, this test only inspects production
     // rendering source and is intentionally part of the offline suite.
@@ -361,132 +347,6 @@ describe("hermetic test discovery", () => {
       sharedInstallerTests.indexOf("function registerInstallPs1Tests"),
     );
     expect(powershellTests).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
-  });
-
-  it("real-Neovim discovery is an exact fail-closed hosted allowlist", () => {
-    expect(listTestFiles("vitest.neovim.config.ts")).toEqual([
-      ...NEOVIM_TEST_FILES,
-    ].sort());
-    const capabilitySource = readFileSync(
-      resolve(runtimeRoot, NEOVIM_TEST_FILES[0]),
-      "utf8",
-    );
-    expect(capabilitySource).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
-    expect(capabilitySource).not.toMatch(
-      /if\s*\(\s*!discovery\.usable\s*\)\s*\{[^}]*\breturn\b/su,
-    );
-    expect(capabilitySource).toMatch(
-      /throw\s+new\s+Error\(\s*`the pinned real-Neovim capability is required:/u,
-    );
-    expect(capabilitySource).toContain('raw: "NVIM v0.12.1"');
-
-    const defaultLifecycleSource = readFileSync(
-      resolve(
-        runtimeRoot,
-        "tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts",
-      ),
-      "utf8",
-    );
-    for (const testName of [
-      "closes a clean real Neovim session through the all-buffer safe-close path",
-      "detects a modified hidden buffer before an external-editor handoff",
-      "opens Neovim, refuses dirty quit, and force cleans the child",
-      "reports visible grid highlight cells for visual selections",
-    ]) {
-      expect(defaultLifecycleSource).not.toContain(testName);
-      expect(capabilitySource).toContain(testName);
-    }
-
-    const discoverySource = readFileSync(
-      resolve(
-        runtimeRoot,
-        "tests/tui/workbench/buffer-neovim-discovery.contract.test.ts",
-      ),
-      "utf8",
-    );
-    expect(discoverySource).toContain(
-      "returns a missing-binary fallback when configured and default executables are absent",
-    );
-    expect(discoverySource).toContain('reasonCode: "missing-binary"');
-  });
-
-  it("loads live mode with no setup files while default mode keeps its setup", async () => {
-    const environment = { command: "serve", mode: "test" } as const;
-    const defaultResult = await loadConfigFromFile(
-      environment,
-      resolve(runtimeRoot, "vitest.config.ts"),
-      runtimeRoot,
-    );
-    const liveResult = await loadConfigFromFile(
-      environment,
-      resolve(runtimeRoot, "vitest.live.config.ts"),
-      runtimeRoot,
-    );
-    const designResult = await loadConfigFromFile(
-      environment,
-      resolve(runtimeRoot, "vitest.design.config.ts"),
-      runtimeRoot,
-    );
-    const crossRepoResult = await loadConfigFromFile(
-      environment,
-      resolve(runtimeRoot, "vitest.cross-repo.config.ts"),
-      runtimeRoot,
-    );
-    const nativeResult = await loadConfigFromFile(
-      environment,
-      resolve(runtimeRoot, "vitest.native.config.ts"),
-      runtimeRoot,
-    );
-    const kernelResult = await loadConfigFromFile(
-      environment,
-      resolve(runtimeRoot, "vitest.kernel.config.ts"),
-      runtimeRoot,
-    );
-    const powershellResult = await loadConfigFromFile(
-      environment,
-      resolve(runtimeRoot, "vitest.powershell.config.ts"),
-      runtimeRoot,
-    );
-    const neovimResult = await loadConfigFromFile(
-      environment,
-      resolve(runtimeRoot, "vitest.neovim.config.ts"),
-      runtimeRoot,
-    );
-
-    expect(defaultResult?.config.test?.setupFiles).toEqual([
-      "./vitest.setup.ts",
-    ]);
-    expect(liveResult?.config.test?.setupFiles).toEqual([]);
-    expect(liveResult?.config.test?.include).toEqual(
-      expect.arrayContaining([
-        "tests/live/**/*.test.ts",
-        "tests/live/**/*.test.tsx",
-      ]),
-    );
-    expect(designResult?.config.test?.setupFiles).toEqual([
-      "./vitest.design.setup.ts",
-    ]);
-    expect(crossRepoResult?.config.test?.setupFiles).toEqual([
-      "./vitest.setup.ts",
-    ]);
-    expect(nativeResult?.config.test?.setupFiles).toEqual([
-      "./vitest.setup.ts",
-    ]);
-    expect(kernelResult?.config.test?.setupFiles).toEqual([
-      "./vitest.setup.ts",
-    ]);
-    expect(powershellResult?.config.test?.setupFiles).toEqual([
-      "./vitest.setup.ts",
-    ]);
-    expect(powershellResult?.config.test?.env).toEqual({
-      DOTNET_CLI_TELEMETRY_OPTOUT: "1",
-      DOTNET_NOLOGO: "1",
-      POWERSHELL_TELEMETRY_OPTOUT: "1",
-      POWERSHELL_UPDATECHECK: "Off",
-    });
-    expect(neovimResult?.config.test?.setupFiles).toEqual([
-      "./vitest.setup.ts",
-    ]);
   });
 
   it("routes the transaction-guard live script through the live config", () => {

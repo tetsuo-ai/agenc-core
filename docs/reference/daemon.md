@@ -256,17 +256,13 @@ and
 
 ### Internal methods (`AGENC_DAEMON_INTERNAL_METHODS`)
 
-Not part of the public 54-method SDK surface. The TUI and workbench use them
-over the same JSON-RPC socket. Embedders should not call these unless they are
-reimplementing the workbench. Source:
+Not part of the public 54-method SDK surface. The TUI uses them over the same
+JSON-RPC socket. Embedders should not call these unless they are reimplementing
+the TUI. Source:
 `runtime/src/app-server/protocol/index.ts`.
 
 | Group | Methods |
 | --- | --- |
-| Editor lock / sync | `workspace.editor.acquire`, `sync`, `staleAuthority.refresh`, `heartbeat`, `release` |
-| Topology | `workspace.editor.topology.reserve`, `complete`, `release`, `recovered.list`, `recovered.resolve` |
-| Proposals / changes | `workspace.editor.proposal.get`, `status`, `apply`, `discard`, `changes.list` |
-| Code prediction | `workspace.editor.predict`, `cancelPrediction`, `predictionFeedback` |
 | Compaction / rewind | `session.partialCompactFromMessage`, `rollbackCompaction`, `extendCompactionRollbackRetention`, `rewindConversationToMessage`, `previewFileRewind`, `rewindFilesToMessage` |
 | Session controls | `session.setModel`, `setPermissionMode`, `applyConfig`, `session.permissions.mutateRule`, `session.shell.execute` |
 | Hooks / MCP | `session.hooks.status`, `session.hooks.setDisabled`, `session.mcp.reconnectServer`, `session.mcp.enableServer`, `session.mcp.disableServer` |
@@ -278,8 +274,6 @@ compact returns optional `attemptId` (`compact-<uuid-v4>`) and `displayText`
 forwards those fields after it emits `transcript_epoch` and `history_replaced`.
 `rollbackCompaction` and `extendCompactionRollbackRetention` take that same
 ID. Operator recovery: [CP-0006](../design/critical-path/0006-compaction-transaction.md#rollback-and-retention).
-
-Workbench BUFFER and Neovim behavior: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
 
 `session.setPermissionMode` mutates the live session permission registry.
 Switching to `bypassPermissions` requires explicit consent for the

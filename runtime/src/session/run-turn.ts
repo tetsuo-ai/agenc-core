@@ -121,10 +121,8 @@ import {
   type StreamModelRequestContract,
 } from "../phases/stream-model.js";
 import {
-  isMediaTooLargeMessage,
   isPartialProviderResponseError,
   isTransientProviderError,
-  isWithheld413Message,
   isWithheldMaxOutputTokens,
 } from "../recovery/api-errors.js";
 import { abortableSleep, reconnectWithBackoff } from "../recovery/reconnection.js";
@@ -199,11 +197,6 @@ import {
   resolveBehavioralConfig,
   type BehavioralConfig,
 } from "./behavioral-backstop.js";
-import {
-  EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
-  EDITOR_INTERACTION_MAX_TOOL_CALLS,
-} from "./editor-interaction.js";
-import { EDITOR_PROPOSAL_TOOL_NAME } from "../tools/system/editor-proposal.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import {
   buildPersonalitySpecUpdateMessage,
@@ -242,7 +235,6 @@ import {
 } from "./run-turn-query-messages.js";
 import {
   extractLastUserText,
-  insertContextMessagesBeforeCurrentUser,
   placeRetainedAttachments,
 } from "./run-turn-attachments.js";
 import {
@@ -267,9 +259,6 @@ export {
   streamRetryNoticeMessage,
   isRetryableStreamError,
 } from "./run-turn-stream-retry.js";
-export {
-  EDITOR_INTERACTION_MAX_QUERY_TOKENS,
-} from "./run-turn-query-messages.js";
 export {
   insertContextMessagesAfterLeadingSystem,
   insertContextMessagesBeforeCurrentUser,
@@ -390,11 +379,6 @@ class RegularTurnTask implements SessionTask {
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
-
-export {
-  EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
-  EDITOR_INTERACTION_MAX_TOOL_CALLS,
-} from "./editor-interaction.js";
 
 function mergeSignals(
   a: AbortSignal | undefined,
@@ -529,8 +513,7 @@ function emitTurnWarning(
   session: Session,
   cause:
     | typeof PRE_SAMPLING_COMPACT_FAILED_CAUSE
-    | typeof MID_TURN_COMPACT_FAILED_CAUSE
-    | EditorRequestFailureCause,
+    | typeof MID_TURN_COMPACT_FAILED_CAUSE,
   message: string,
 ): void {
   session.emit({
@@ -555,33 +538,6 @@ function compactFailedTurnComplete(
     content,
     usage,
     stopReason: "compact_failed",
-    error,
-  };
-}
-
-const EDITOR_INTERACTION_LIMIT_CAUSE = "editor_interaction_limit";
-const EDITOR_PROPOSAL_MISSING_CAUSE = "editor_proposal_missing";
-const EDITOR_RECOVERY_BLOCKED_CAUSE = "editor_interaction_recovery_blocked";
-
-type EditorRequestFailureCause =
-  | typeof EDITOR_INTERACTION_LIMIT_CAUSE
-  | typeof EDITOR_PROPOSAL_MISSING_CAUSE
-  | typeof EDITOR_RECOVERY_BLOCKED_CAUSE;
-
-function isEditorRecoveryBlockedError(error: Error): boolean {
-  return error.message.startsWith(`${EDITOR_RECOVERY_BLOCKED_CAUSE}:`);
-}
-
-function editorRequestFailedTurnComplete(
-  content: string,
-  usage: LLMUsage,
-  error: Error,
-): Extract<PhaseEvent, { type: "turn_complete" }> {
-  return {
-    type: "turn_complete",
-    content,
-    usage,
-    stopReason: "editor_request_failed",
     error,
   };
 }
@@ -652,10 +608,6 @@ function launchTerminalPostSampling(
   querySource: string,
   signal?: AbortSignal,
 ): void {
-  // MagicDocs and session-memory post-sampling can launch background work
-  // that writes outside the active buffer proposal. Editor turns never
-  // inherit those ordinary Agent-side effects.
-  if (ctx.editorInteraction !== undefined) return;
   launchMagicDocsPostSampling(state, session, querySource, signal);
   launchSessionMemoryPostSampling(state, session, ctx, querySource, signal);
 }
@@ -747,27 +699,15 @@ async function prepareSamplingRequestBoundary(
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
   // Retained attachments first: producers see what the model already has in
   // front of it, and the bytes sent on earlier requests keep their place.
-  // Editor interactions project one immutable revision and stay out of it.
-  const retention =
-    ctx.editorInteraction === undefined
-      ? getAttachmentTrackingState(session).retainedAttachments
-      : undefined;
-  if (retention !== undefined) {
-    state.messagesForQuery = projectRetainedAttachments(
-      state.messagesForQuery,
-      retention,
-      permissionContext.mode,
-    ).messages;
-  }
+  state.messagesForQuery = projectRetainedAttachments(
+    state.messagesForQuery,
+    getAttachmentTrackingState(session).retainedAttachments,
+    permissionContext.mode,
+  ).messages;
   const userInput = extractLastUserText(state.messagesForQuery);
   const rootHumanTurn = session.currentRootHumanTurn();
-  if (ctx.editorInteraction === undefined) {
-    discoverDirectMcpToolMentions(session, userInput);
-  }
+  discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
-    ...(ctx.editorInteraction !== undefined
-      ? { effectsPolicy: "local_read_only" as const }
-      : {}),
     sessionKey: session,
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
@@ -813,16 +753,14 @@ async function prepareSamplingRequestBoundary(
     );
     const attachmentMessages = attachmentsToMessages(attachments);
     if (attachmentMessages.length > 0) {
-      state.messagesForQuery =
-        retention === undefined
-          ? insertContextMessagesBeforeCurrentUser(
-              state.messagesForQuery,
-              attachmentMessages,
-            )
-          : placeRetainedAttachments(state, retention, attachmentMessages);
+      state.messagesForQuery = placeRetainedAttachments(
+        state,
+        getAttachmentTrackingState(session).retainedAttachments,
+        attachmentMessages,
+      );
     }
   }
-  if (retention !== undefined) state.attachmentsAnchoredForTurn = true;
+  state.attachmentsAnchoredForTurn = true;
 
   // Bound the fully assembled query, including fresh image mentions from
   // attachment producers. Durable history and retained attachments keep
@@ -990,49 +928,17 @@ async function tryRunSamplingRequest(
     events.push({ type: "assistant_text", content: assistantText });
   }
 
-  if (ctx.editorInteraction !== undefined) {
-    // Editor turns are bounded to the canonical model -> trusted read/proposal
-    // tool loop. Agent recovery strategies may compact or rewrite messages,
-    // inject continuation prompts, run hooks, or switch the shared route; none
-    // of those mutations are valid inside an immutable Editor interaction.
-    //
-    // Do retain runSamplingRequest's outer reconnect wrapper: a transient
-    // same-model transport retry replays the already-snapshotted request and
-    // therefore does not change the prompt, model, or tool surface.
-    state.pendingBudgetDecision = undefined;
-    const lastAssistant = state.assistantMessages.at(-1);
-    const blockedRecovery =
-      state.pendingTextToolCallCorrection !== undefined
-        ? "text_tool_call_correction"
-        : state.transition !== undefined
-        ? `transition:${state.transition.reason}`
-        : lastAssistant !== undefined && isWithheld413Message(lastAssistant)
-          ? "context_window"
-          : lastAssistant !== undefined && isMediaTooLargeMessage(lastAssistant)
-            ? "media_too_large"
-            : lastAssistant !== undefined &&
-                isWithheldMaxOutputTokens(lastAssistant)
-              ? "max_output_tokens"
-              : null;
-    if (blockedRecovery !== null) {
-      state.transition = undefined;
-      streamModelError ??= new StreamModelError(
-        new Error(`editor_interaction_recovery_blocked: ${blockedRecovery}`),
-      );
-    }
-  } else {
-    // Phase 3: post-sample recovery. Always runs — even on stream
-    // error — so the ladder can decide between recovery vs terminal.
-    await postSampleRecovery(state, ctx, session, signal);
+  // Phase 3: post-sample recovery. Always runs — even on stream
+  // error — so the ladder can decide between recovery vs terminal.
+  await postSampleRecovery(state, ctx, session, signal);
 
-    // If recovery applied a transition (any of I-10's triggers fired),
-    // swallow the stream error and let the outer loop re-enter
-    // PrepareContext.
-    if (state.transition !== undefined) {
-      (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
-        undefined;
-      streamModelError = null;
-    }
+  // If recovery applied a transition (any of I-10's triggers fired),
+  // swallow the stream error and let the outer loop re-enter
+  // PrepareContext.
+  if (state.transition !== undefined) {
+    (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
+      undefined;
+    streamModelError = null;
   }
 
   // Still-unrecovered stream error → bubble for runSamplingRequest's
@@ -1050,10 +956,8 @@ async function tryRunSamplingRequest(
     discardExecutorForMaxOutputTokens(session, state, { appendCompletedHistory: true });
   }
 
-  // Phase 4: continuation nudge. Editor interactions never inject an
-  // Agent-side nudge/resample; their provider response is accepted as-is or
-  // failed closed by the Editor contract.
-  if (ctx.editorInteraction === undefined && !unrecoveredMaxOutputTokens &&
+  // Phase 4: continuation nudge.
+  if (!unrecoveredMaxOutputTokens &&
       state.textToolCallCorrectionFailure === undefined &&
       state.transition?.reason !== "text_tool_call_correction") {
     await continuationNudge(state, ctx, session, signal);
@@ -1743,7 +1647,6 @@ export async function* runTurnKernel(
           "Turn stopped because compaction could not shrink the context.",
         empty_response:
           content || "The model returned no assistant output after a retry.",
-        editor_request_failed: "The editor request did not complete.",
         error: "The turn failed before completing the task.",
       };
       emitTurnFailed(
@@ -1802,7 +1705,7 @@ export async function* runTurnKernel(
   };
   session.bindProviderConversation();
 
-  const pendingInputOwnership = pendingInputOwnershipForTurn(ctx);
+  const pendingInputOwnership = pendingInputOwnershipForTurn();
   const pendingInputMessages =
     typeof session.drainPendingInputMessages === "function"
       ? session.drainPendingInputMessages(pendingInputOwnership)
@@ -2226,13 +2129,11 @@ async function* runTurnKernelInner(
     // it below — from growing ~linearly with turn count, while leaving the
     // most-recent-N tool results full and the disk rollout untouched.
     // See session-history-memory fix above.
-    if (ctx.editorInteraction === undefined) {
-      boundInMemoryToolResultContent(
-        state.messages,
-        persistedMessageCount,
-        state.messagesForQuery,
-      );
-    }
+    boundInMemoryToolResultContent(
+      state.messages,
+      persistedMessageCount,
+      state.messagesForQuery,
+    );
     const durableHistory = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message));
@@ -2531,32 +2432,6 @@ async function* runTurnKernelInner(
   let lastContent = "";
   let emptyResponseRetryCount =
     state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
-  let editorSamplingIterations = 0;
-  const finishEditorInteractionLimit = async (
-    limitKind: "sampling_iterations" | "tool_calls",
-    limit: number,
-    observed: number,
-  ): Promise<{
-    readonly terminal: Terminal;
-    readonly event: PhaseEvent;
-  }> => {
-    // Pair any model-emitted tool calls without dispatching them so the
-    // transcript remains structurally valid at the fail-closed boundary.
-    await drainInFlight(state, ctx, session);
-    const cause = EDITOR_INTERACTION_LIMIT_CAUSE;
-    const message =
-      `Editor interaction stopped at the request-scoped ${limitKind} ` +
-      `limit (${limit}; observed ${observed}). No additional tools ran and ` +
-      "no buffer changes were applied.";
-    const error = new Error(`${cause}: ${message}`);
-    emitTurnWarning(session, cause, message);
-    await syncSessionState();
-    emitTurnComplete(message, "editor_request_failed", error);
-    return {
-      terminal: { reason: "completed", error },
-      event: editorRequestFailedTurnComplete(message, usage, error),
-    };
-  };
   // The deadline stop (#2503): a bounded failure, not a cancellation, so the
   // turn reports `turn_failed deadline_reached` and the print-mode CLI exits
   // with its own code instead of the one for an operator interrupt.
@@ -2650,19 +2525,6 @@ async function* runTurnKernelInner(
       return terminal;
     }
 
-    if (
-      ctx.editorInteraction !== undefined &&
-      editorSamplingIterations >= EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS
-    ) {
-      const limited = await finishEditorInteractionLimit(
-        "sampling_iterations",
-        EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
-        editorSamplingIterations,
-      );
-      yield limited.event;
-      return limited.terminal;
-    }
-
     const maxTurns = resolveMaxTurns(ctx);
     if (state.turnCount > maxTurns) {
       await drainInFlight(state, ctx, session);
@@ -2704,8 +2566,7 @@ async function* runTurnKernelInner(
     // Run deadline (#2503): tell the model its remaining budget once per
     // turn, and once per run when the reserve begins. Runtime-only messages:
     // they never reach durable history, and a resumed turn gets fresh ones.
-    const runDeadline =
-      ctx.editorInteraction === undefined ? runDeadlineOf(session) : undefined;
+    const runDeadline = runDeadlineOf(session);
     if (runDeadline !== undefined) {
       const remainingMs = deadlineRemainingMs(runDeadline);
       if (!deadlineTurnReminderInjected) {
@@ -2736,69 +2597,67 @@ async function* runTurnKernelInner(
     // awaited). A `warn` injects a one-shot nudge and continues; a
     // `terminate` finalizes the turn with the honest `no_progress`
     // terminal — never a fabricated success.
-    if (ctx.editorInteraction === undefined) {
-      const observerTrip = state.behavioralObserverTrip;
-      const decision =
-        behavioralCfg.enabled && observerTrip !== undefined
-          ? ({ kind: "terminate", trip: observerTrip } as const)
-          : evaluateBehavioralBackstop(
-              state,
-              usage,
-              turnStartedAt,
-              behavioralCfg,
-            );
+    const observerTrip = state.behavioralObserverTrip;
+    const decision =
+      behavioralCfg.enabled && observerTrip !== undefined
+        ? ({ kind: "terminate", trip: observerTrip } as const)
+        : evaluateBehavioralBackstop(
+            state,
+            usage,
+            turnStartedAt,
+            behavioralCfg,
+          );
 
-      if (decision.kind === "warn") {
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "no_progress_warning",
-              message: decision.detail,
-            },
+    if (decision.kind === "warn") {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "no_progress_warning",
+            message: decision.detail,
           },
+        },
+      });
+      if (
+        decision.injectNudge &&
+        !state.behavioralNudgeIssued &&
+        decision.nudgeText !== undefined
+      ) {
+        state.messages.push({
+          role: "user",
+          content: `<system-reminder>${decision.nudgeText}</system-reminder>`,
         });
-        if (
-          decision.injectNudge &&
-          !state.behavioralNudgeIssued &&
-          decision.nudgeText !== undefined
-        ) {
-          state.messages.push({
-            role: "user",
-            content: `<system-reminder>${decision.nudgeText}</system-reminder>`,
-          });
-          state.behavioralNudgeIssued = true;
-        }
-        // fall through — loop continues (Wink course-correction)
-      } else if (decision.kind === "terminate") {
-        const explanation = decision.trip.userMessage; // honest, specific cause
-        state.messages.push({ role: "assistant", content: explanation });
-        lastContent = explanation;
-
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "no_progress_detected",
-              message: decision.trip.detail,
-            },
-          },
-        });
-
-        await drainInFlight(state, ctx, session); // pair orphan tool_use → tool_result
-        await syncSessionState(); // persist history + rollout
-        emitTurnComplete(lastContent, "no_progress");
-        const terminal: Terminal = { reason: "no_progress" };
-        yield {
-          type: "turn_complete",
-          content: lastContent,
-          usage,
-          stopReason: "no_progress",
-        };
-        return terminal;
+        state.behavioralNudgeIssued = true;
       }
+      // fall through — loop continues (Wink course-correction)
+    } else if (decision.kind === "terminate") {
+      const explanation = decision.trip.userMessage; // honest, specific cause
+      state.messages.push({ role: "assistant", content: explanation });
+      lastContent = explanation;
+
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "no_progress_detected",
+            message: decision.trip.detail,
+          },
+        },
+      });
+
+      await drainInFlight(state, ctx, session); // pair orphan tool_use → tool_result
+      await syncSessionState(); // persist history + rollout
+      emitTurnComplete(lastContent, "no_progress");
+      const terminal: Terminal = { reason: "no_progress" };
+      yield {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "no_progress",
+      };
+      return terminal;
     }
 
     // I-13: pending provider switch — complete this turn cleanly so
@@ -2837,9 +2696,6 @@ async function* runTurnKernelInner(
     // `token_limit_reached && needs_follow_up` check.
     let modelNeedsFollowUp = false;
     try {
-      if (ctx.editorInteraction !== undefined) {
-        editorSamplingIterations += 1;
-      }
       const consumedCorrection = currentTextToolCallCorrectionPrompt(state);
       const result = await runSamplingRequest(
         state,
@@ -2976,27 +2832,6 @@ async function* runTurnKernelInner(
         yield compactFailedTurnComplete(lastContent, usage, underlying);
         return { reason: "completed", error: underlying };
       }
-      // Editor turns refuse Agent recovery (compact / resample / route
-      // switch). A withheld 413, oversized media, or max-output-tokens
-      // result is request-scoped: the Explain/Edit ends, but mapping
-      // that to stopReason "error" latched keep-alive daemon runs.
-      if (
-        ctx.editorInteraction !== undefined &&
-        isEditorRecoveryBlockedError(underlying)
-      ) {
-        const content =
-          lastContent.length > 0 ? lastContent : underlying.message;
-        emitTurnWarning(
-          session,
-          EDITOR_RECOVERY_BLOCKED_CAUSE,
-          underlying.message,
-        );
-        await syncSessionState();
-        emitTurnComplete(content, "editor_request_failed", underlying);
-        const terminal: Terminal = { reason: "completed", error: underlying };
-        yield editorRequestFailedTurnComplete(content, usage, underlying);
-        return terminal;
-      }
       await syncSessionState();
       emitTurnFailed(
         underlying instanceof Error && underlying.message.trim().length > 0
@@ -3073,7 +2908,7 @@ async function* runTurnKernelInner(
     // carried by `before_last_user_message` through runAutoCompact →
     // autoCompactIfNeeded → compactConversation/session-memory compact.
     const hasPendingInput = session.hasPendingInput(
-      pendingInputOwnershipForTurn(ctx),
+      pendingInputOwnershipForTurn(),
     );
     const pendingAssistantToolCalls =
       state.assistantMessages.at(-1)?.toolCalls.length ?? 0;
@@ -3130,7 +2965,6 @@ async function* runTurnKernelInner(
     const tokenLimitReached = totalUsageTokens >= autoCompactLimit;
 
     if (
-      ctx.editorInteraction === undefined &&
       tokenLimitReached &&
       !deferredCompaction &&
       needsFollowUpForCompact &&
@@ -3217,29 +3051,6 @@ async function* runTurnKernelInner(
     if (assistantText.length > 0) lastContent = assistantText;
     // No tool calls + no transition → commit + terminate.
     if (!state.needsFollowUp && state.toolUseBlocks.length === 0) {
-      const hasValidatedEditorProposal = state.completedToolResults.some(
-        (result) =>
-          result.toolName === EDITOR_PROPOSAL_TOOL_NAME &&
-          result.isError !== true &&
-          typeof result.metadata?.editorProposal === "object" &&
-          result.metadata.editorProposal !== null,
-      );
-      if (
-        ctx.editorInteraction?.policy === "proposal_only" &&
-        !hasValidatedEditorProposal
-      ) {
-        const cause = EDITOR_PROPOSAL_MISSING_CAUSE;
-        lastContent =
-          "Editor edit request incomplete: the model did not return a valid " +
-          "EditorProposal. No buffer changes were made.";
-        const error = new Error(`${cause}: ${lastContent}`);
-        emitTurnWarning(session, cause, lastContent);
-        await syncSessionState();
-        emitTurnComplete(lastContent, "editor_request_failed", error);
-        const terminal: Terminal = { reason: "completed", error };
-        yield editorRequestFailedTurnComplete(lastContent, usage, error);
-        return terminal;
-      }
       // Reasoning providers can occasionally complete a response after
       // emitting only a reasoning-summary block and no assistant output. A
       // successful empty turn is indistinguishable from a hung terminal to a
@@ -3249,7 +3060,6 @@ async function* runTurnKernelInner(
       // broken provider from creating an unbounded sampling loop. The retry
       // happens before commit(), so it never consumes a maxTurns iteration.
       if (
-        ctx.editorInteraction === undefined &&
         assistantText.length === 0 &&
         emptyResponseRetryCount < emptyResponseRetryLimit(session)
       ) {
@@ -3354,14 +3164,12 @@ async function* runTurnKernelInner(
       // re-entries and compaction iterations are never recorded — a
       // structural false-positive guard for free. Synchronous mutation
       // of TurnState fields; no await, no I/O.
-      if (ctx.editorInteraction === undefined) {
-        recordBehavioralStep(
-          state,
-          lastAssistant,
-          completedByCallId,
-          behavioralCfg,
-        );
-      }
+      recordBehavioralStep(
+        state,
+        lastAssistant,
+        completedByCallId,
+        behavioralCfg,
+      );
       // Index user records by their tool-call id rather than by position:
       // results return in completion order (not toolCalls order), attachment
       // records (no toolCallId) are appended onto `toolResults` after the tool
@@ -3396,18 +3204,6 @@ async function* runTurnKernelInner(
           },
         };
       }
-    }
-    if (
-      ctx.editorInteraction !== undefined &&
-      state.editorToolCallLimitExceeded
-    ) {
-      const limited = await finishEditorInteractionLimit(
-        "tool_calls",
-        EDITOR_INTERACTION_MAX_TOOL_CALLS,
-        state.editorToolCallsAdmitted + state.editorToolCallLimitDeniedIds.size,
-      );
-      yield limited.event;
-      return limited.terminal;
     }
     const workflowApprovalFailure = isWorkflowApprovalSession(session)
       ? state.completedToolResults
@@ -3530,7 +3326,6 @@ async function* runTurnKernelInner(
         getActiveContextTokenUsage(session, ctx, state),
       ) >= postToolAutoCompactLimit;
     if (
-      ctx.editorInteraction === undefined &&
       postToolTokenLimitReached &&
       !deferredCompaction &&
       (state.needsFollowUp || state.toolResults.length > 0)
@@ -3593,11 +3388,7 @@ async function* runTurnKernelInner(
     iterationIndex += 1;
     emitTurnCheckpoint("iteration");
 
-    if (ctx.editorInteraction !== undefined) {
-      // A token-target continuation is an Agent workflow loop. The Editor
-      // request remains bounded even when the shared session owns a tracker.
-      state.pendingBudgetDecision = undefined;
-    } else if (state.pendingBudgetDecision?.kind === "stop") {
+    if (state.pendingBudgetDecision?.kind === "stop") {
       await applyPendingBudgetContinuation(state, ctx, session, signal);
       if (state.transition !== undefined) {
         state.transition = undefined;

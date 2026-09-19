@@ -749,9 +749,6 @@ Thrown by `connect()`, `AgencClient`, and `promptViaSubprocess`
 | `AgencRunReplayGapError` | Replay cursor hit an explicit `event_gap` / `cursor_ahead` / retention gap. Do not skip it |
 | `AgencRunReplayProtocolError` | Replay page would hide loss or corruption |
 
-Internal workbench RPCs (`workspace.editor.*`) are not on this client. See
-[daemon.md](reference/daemon.md) internal methods.
-
 ## Related
 
 - Package README: [`packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md)

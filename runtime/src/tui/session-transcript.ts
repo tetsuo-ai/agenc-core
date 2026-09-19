@@ -93,7 +93,7 @@ export interface AdaptedTranscript {
    * assistant-message usage-block shape the context-percentage derivation
    * consumes. Daemon-bridge transcripts synthesize assistant messages with
    * zero usage (and a synthetic model that getTokenUsage skips), so without
-   * this the workbench ctx% reads 0 forever. `null` until the first
+   * this the header ctx% reads 0 forever. `null` until the first
    * token_count of the session.
    */
   readonly latestUsage: {
@@ -107,7 +107,7 @@ export interface AdaptedTranscript {
    * `token_count` event seen by the TUI bridge. The daemon owns the canonical
    * CostSidecar, so process-local getters in the TUI client stay at zero when
    * connected over the bridge. Keeping this projection beside `latestUsage`
-   * makes workbench chrome update on the same render as the completed turn.
+   * makes the header chrome update on the same render as the completed turn.
    */
   readonly sessionCostUsd: number;
   readonly sessionUsage?: AdmissionUsageSummary | null;

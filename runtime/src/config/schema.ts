@@ -530,7 +530,6 @@ export interface TuiKeybindingConfig {
 }
 
 export interface TuiConfig {
-  readonly vimMode?: boolean;
   readonly theme?: TuiThemeSetting;
   readonly showTurnDuration?: boolean;
   readonly terminalProgressBarEnabled?: boolean;
@@ -549,45 +548,6 @@ export interface TeammatesConfig {
   /** "inherit" follows the leader model; absent uses the built-in teammate default. */
   readonly defaultModel?: string;
   readonly preferTmuxOverIterm2?: boolean;
-}
-
-export type BufferProviderMode = "auto" | "neovim" | "inline" | "external";
-export type BufferTabsMode = "auto" | "always" | "never";
-export type BufferNeovimInitMode = "auto" | "user" | "clean";
-export type BufferPredictionEnabledMode = "ask" | "on" | "off";
-
-export interface BufferNeovimConfig {
-  readonly executable?: string;
-  readonly init?: BufferNeovimInitMode;
-  readonly discovery_timeout_ms?: number;
-  readonly startup_timeout_ms?: number;
-  readonly operation_timeout_ms?: number;
-  readonly cleanup_timeout_ms?: number;
-}
-
-/**
- * Low-latency, transcript-free code prediction for the embedded editor.
- *
- * `ask` is the safe default: the TUI must obtain one-time user consent before
- * sending source context. Provider/model are optional owner-selected route
- * overrides; when omitted the prediction service independently clones the
- * active session route. RPC callers cannot override these trusted settings.
- */
-export interface BufferPredictionConfig {
-  readonly enabled?: BufferPredictionEnabledMode;
-  readonly debounce_ms?: number;
-  readonly timeout_ms?: number;
-  readonly max_output_tokens?: number;
-  readonly provider?: string;
-  readonly model?: string;
-}
-
-/** Embedded editor configuration for the TUI BUFFER workspace. */
-export interface BufferConfig {
-  readonly provider?: BufferProviderMode;
-  readonly show_tabs?: BufferTabsMode;
-  readonly neovim?: BufferNeovimConfig;
-  readonly prediction?: BufferPredictionConfig;
 }
 
 /**
@@ -887,7 +847,6 @@ export interface AgenCConfig {
   /** Named assistant response style. Terminal colors live under `[tui]`. */
   readonly outputStyle?: string;
   readonly attachments?: AttachmentsConfig;
-  readonly buffer?: BufferConfig;
   readonly tui?: TuiConfig;
   readonly autoFix?: AutoFixInputConfig;
   readonly fileSuggestion?: FileSuggestionConfig;
@@ -1037,7 +996,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "statusLine",
   "outputStyle",
   "attachments",
-  "buffer",
   "tui",
   "autoFix",
   "fileSuggestion",
@@ -1189,22 +1147,6 @@ export function defaultConfig(): AgenCConfig {
     // max_turns intentionally unset.
     // `autoUpdates` is intentionally not defaulted. An absent operator setting
     // means enabled; every consumer reads the effective ConfigStore snapshot.
-    buffer: Object.freeze({
-      provider: "auto",
-      show_tabs: "auto",
-      neovim: Object.freeze({
-        init: "auto",
-        startup_timeout_ms: 10_000,
-        operation_timeout_ms: 10_000,
-        cleanup_timeout_ms: 1_000,
-      }) as BufferNeovimConfig,
-      prediction: Object.freeze({
-        enabled: "ask",
-        debounce_ms: 160,
-        timeout_ms: 2_500,
-        max_output_tokens: 256,
-      }) as BufferPredictionConfig,
-    }) as BufferConfig,
     tui: Object.freeze({
       theme: "dark",
       showTurnDuration: true,
@@ -1409,12 +1351,6 @@ export class InvalidMcpConfigError extends InvalidNamedConfigError {
 export class InvalidProtocolConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("protocol", "InvalidProtocolConfigError", field, detail);
-  }
-}
-
-export class InvalidBufferConfigError extends InvalidNamedConfigError {
-  constructor(field: string, detail: string) {
-    super("buffer", "InvalidBufferConfigError", field, detail);
   }
 }
 
@@ -3590,10 +3526,6 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
     out.tui = validateTuiConfig(config.tui);
     changed = true;
   }
-  if (config.buffer !== undefined) {
-    out.buffer = validateBufferConfig(config.buffer);
-    changed = true;
-  }
   if (config.browser !== undefined) {
     out.browser = validateBrowserConfig(config.browser);
     changed = true;
@@ -3757,7 +3689,6 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
   rejectUnknownFields(
     raw,
     new Set([
-      "vimMode",
       "theme",
       "showTurnDuration",
       "terminalProgressBarEnabled",
@@ -3770,12 +3701,6 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
   );
 
   const out: { -readonly [K in keyof TuiConfig]: TuiConfig[K] } = {};
-  if (raw.vimMode !== undefined) {
-    if (typeof raw.vimMode !== "boolean") {
-      throw new InvalidTuiConfigError("vimMode", "expected boolean");
-    }
-    out.vimMode = raw.vimMode;
-  }
   if (raw.theme !== undefined) {
     if (!TUI_THEME_SETTINGS.includes(raw.theme as TuiThemeSetting)) {
       throw new InvalidTuiConfigError(
@@ -3802,188 +3727,6 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
   const keybindings = validateTuiKeybindings(raw.keybindings);
   if (keybindings !== undefined) out.keybindings = keybindings;
   return Object.freeze(out as TuiConfig);
-}
-
-export function validateBufferConfig(raw: unknown): BufferConfig | undefined {
-  if (raw === undefined) return undefined;
-  const makeError: InvalidConfigFactory = (field, detail) =>
-    new InvalidBufferConfigError(field, detail);
-  const record = requirePlainObject(raw, "", makeError);
-  rejectUnknownFields(
-    record,
-    new Set(["provider", "show_tabs", "neovim", "prediction"]),
-    makeError,
-  );
-  const out: { -readonly [K in keyof BufferConfig]: BufferConfig[K] } = {};
-  if (record.provider !== undefined) {
-    if (
-      record.provider !== "auto" &&
-      record.provider !== "neovim" &&
-      record.provider !== "inline" &&
-      record.provider !== "external"
-    ) {
-      throw makeError(
-        "provider",
-        'expected "auto", "neovim", "inline", or "external"',
-      );
-    }
-    out.provider = record.provider;
-  }
-  if (record.show_tabs !== undefined) {
-    if (
-      record.show_tabs !== "auto" &&
-      record.show_tabs !== "always" &&
-      record.show_tabs !== "never"
-    ) {
-      throw makeError("show_tabs", 'expected "auto", "always", or "never"');
-    }
-    out.show_tabs = record.show_tabs;
-  }
-  if (record.neovim !== undefined) {
-    const neovim = requirePlainObject(record.neovim, "neovim", makeError);
-    rejectUnknownFields(
-      neovim,
-      new Set([
-        "executable",
-        "init",
-        "discovery_timeout_ms",
-        "startup_timeout_ms",
-        "operation_timeout_ms",
-        "cleanup_timeout_ms",
-      ]),
-      makeError,
-      "neovim",
-    );
-    const validated: {
-      -readonly [K in keyof BufferNeovimConfig]: BufferNeovimConfig[K];
-    } = {};
-    const executable = optionalString(
-      neovim.executable,
-      "neovim.executable",
-      makeError,
-    );
-    if (executable !== undefined) {
-      if (executable.trim().length === 0) {
-        throw makeError("neovim.executable", "expected non-empty string");
-      }
-      validated.executable = executable;
-    }
-    if (neovim.init !== undefined) {
-      if (
-        neovim.init !== "auto" &&
-        neovim.init !== "user" &&
-        neovim.init !== "clean"
-      ) {
-        throw makeError("neovim.init", 'expected "auto", "user", or "clean"');
-      }
-      validated.init = neovim.init;
-    }
-    for (const key of [
-      "discovery_timeout_ms",
-      "startup_timeout_ms",
-      "operation_timeout_ms",
-      "cleanup_timeout_ms",
-    ] as const) {
-      const value = optionalPositiveInteger(
-        neovim[key],
-        `neovim.${key}`,
-        makeError,
-      );
-      if (value !== undefined) validated[key] = value;
-    }
-    out.neovim = Object.freeze(validated as BufferNeovimConfig);
-  }
-  if (record.prediction !== undefined) {
-    const prediction = requirePlainObject(
-      record.prediction,
-      "prediction",
-      makeError,
-    );
-    rejectUnknownFields(
-      prediction,
-      new Set([
-        "enabled",
-        "debounce_ms",
-        "timeout_ms",
-        "max_output_tokens",
-        "provider",
-        "model",
-      ]),
-      makeError,
-      "prediction",
-    );
-    const validated: {
-      -readonly [K in keyof BufferPredictionConfig]: BufferPredictionConfig[K];
-    } = {};
-    if (prediction.enabled !== undefined) {
-      if (
-        prediction.enabled !== "ask" &&
-        prediction.enabled !== "on" &&
-        prediction.enabled !== "off"
-      ) {
-        throw makeError("prediction.enabled", 'expected "ask", "on", or "off"');
-      }
-      validated.enabled = prediction.enabled;
-    }
-    const debounceMs = optionalPositiveInteger(
-      prediction.debounce_ms,
-      "prediction.debounce_ms",
-      makeError,
-    );
-    if (debounceMs !== undefined) {
-      if (debounceMs < 25 || debounceMs > 5_000) {
-        throw makeError(
-          "prediction.debounce_ms",
-          "expected integer between 25 and 5000",
-        );
-      }
-      validated.debounce_ms = debounceMs;
-    }
-    const timeoutMs = optionalPositiveInteger(
-      prediction.timeout_ms,
-      "prediction.timeout_ms",
-      makeError,
-    );
-    if (timeoutMs !== undefined) {
-      if (timeoutMs < 100 || timeoutMs > 30_000) {
-        throw makeError(
-          "prediction.timeout_ms",
-          "expected integer between 100 and 30000",
-        );
-      }
-      validated.timeout_ms = timeoutMs;
-    }
-    const maxOutputTokens = optionalPositiveInteger(
-      prediction.max_output_tokens,
-      "prediction.max_output_tokens",
-      makeError,
-    );
-    if (maxOutputTokens !== undefined) {
-      if (maxOutputTokens > 2_048) {
-        throw makeError(
-          "prediction.max_output_tokens",
-          "expected integer between 1 and 2048",
-        );
-      }
-      validated.max_output_tokens = maxOutputTokens;
-    }
-    for (const key of ["provider", "model"] as const) {
-      const value = optionalString(
-        prediction[key],
-        `prediction.${key}`,
-        makeError,
-      );
-      if (value !== undefined) {
-        const trimmed = value.trim();
-        if (trimmed.length === 0) {
-          throw makeError(`prediction.${key}`, "expected non-empty string");
-        }
-        validated[key] = trimmed;
-      }
-    }
-    out.prediction = Object.freeze(validated as BufferPredictionConfig);
-  }
-  return Object.freeze(out as BufferConfig);
 }
 
 export class InvalidBrowserConfigError extends Error {

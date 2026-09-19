@@ -240,12 +240,12 @@ describe("schema: normalizeRawConfig", () => {
 
   test("preserves runtime/TUI feature config on the typed path", () => {
     const out = normalizeRawConfig({
-      tui: { vimMode: true },
+      tui: { showTurnDuration: false },
       agent_max_threads: 12,
       agent_max_depth: 2,
       ideConnector: { autoInstallExtension: false },
     });
-    expect(out.tui).toEqual({ vimMode: true });
+    expect(out.tui).toEqual({ showTurnDuration: false });
     expect(out.agent_max_threads).toBe(12);
     expect(out.agent_max_depth).toBe(2);
     expect(out.ideConnector).toEqual({ autoInstallExtension: false });
@@ -253,8 +253,8 @@ describe("schema: normalizeRawConfig", () => {
   });
 
   test("validates tui config shape", () => {
-    expect(validateTuiConfig({ vimMode: true })).toEqual({ vimMode: true });
-    expect(() => validateTuiConfig({ vimMode: "yes" })).toThrow(
+    expect(validateTuiConfig({ showTurnDuration: true })).toEqual({ showTurnDuration: true });
+    expect(() => validateTuiConfig({ showTurnDuration: "yes" })).toThrow(
       InvalidTuiConfigError,
     );
   });

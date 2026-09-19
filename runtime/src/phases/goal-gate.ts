@@ -78,7 +78,6 @@ export function goalGateApplies(
 ): goal is SessionGoal {
   if (goal === undefined || !isGoalLive(goal.status)) return false;
   if (ctx.depth !== 0) return false;
-  if (ctx.editorInteraction !== undefined) return false;
   if (isPlanMode(ctx)) return false;
   const source = session.sessionConfiguration?.sessionSource;
   return !(source !== undefined && isSubagentSessionSource(source));

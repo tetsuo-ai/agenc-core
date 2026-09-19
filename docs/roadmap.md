@@ -17,7 +17,7 @@ shipped / open summary.
 
 ### Core coding agent
 
-- Daemon-backed CLI + fullscreen TUI (custom Ink fork, workbench default)
+- Daemon-backed CLI + fullscreen TUI (custom Ink fork)
 - Multi-provider LLM layer (default xAI / Grok; many built-ins)
 - LIVE tool registry: shell, files, patch, search, web, LSP, MCP, tasks, skills, …
 - Permissions modes + OS sandbox (Linux bubblewrap, Landlock fallback, macOS Seatbelt)
@@ -32,13 +32,6 @@ shipped / open summary.
 - Versioned competitive/trust evaluation suite protocols (`runtime/eval/suites/`)
 - Trajectory export → SFT/DPO curation (`agenc trajectories export`)
 - SLM transaction guard (Ollama court, fail closed, `agenc doctor`)
-- Unified Agent/Editor workspace with a shared daemon session, conversation,
-  project, queue, and lifecycle
-- Persistent multi-buffer embedded Neovim workspace
-  (`auto|neovim|inline|external`) with read-only Ask/Explain, reviewable
-  Fix/Edit/Refactor proposals, and consent-gated code prediction
-- Monochrome TUI workbench rails for project review, live agent progress, and
-  daemon-backed todo visibility
 - Official Ledger Wallet CLI management and strict device-authenticity flow
 - Strict, bounded run recovery with corrupt-journal quarantine, restart-safe
   checkpoints, and explicit review for operations whose outcome is unknown

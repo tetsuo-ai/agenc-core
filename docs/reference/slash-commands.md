@@ -235,4 +235,4 @@ an unclassified path, or the journal predates that attestation. Operator detail:
 | Help groups | Presentation metadata in `runtime/src/commands/help-groups.ts` |
 | Plugin-added commands | Plugins can register additional commands outside this minimal registry (see [skills-plugins.md](skills-plugins.md)) |
 
-Related: [cli.md](cli.md) (top-level `agenc` subcommands), [tui-workbench.md](tui-workbench.md).
+Related: [cli.md](cli.md) (top-level `agenc` subcommands).

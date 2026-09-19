@@ -970,24 +970,6 @@ export interface LLMProviderSessionForkOptions {
   readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }
 
-/** Provider-native fill-in-the-middle request for editor prediction. */
-export interface LLMCodePredictionRequest {
-  readonly prefix: string;
-  readonly suffix: string;
-  readonly language?: string;
-  readonly path: string;
-  readonly cursor: {
-    readonly line: number;
-    readonly byteColumn: number;
-  };
-}
-
-export interface LLMCodePredictionResponse {
-  readonly text: string;
-  readonly model?: string;
-  readonly usage?: LLMUsage;
-}
-
 /**
  * Core LLM provider interface that all adapters implement
  */
@@ -1006,14 +988,6 @@ export interface LLMProvider {
    * unconfigured streams remain unbounded.
    */
   readonly suggestedStreamIdleTimeoutMs?: number;
-  /**
-   * Optional low-latency fill-in-the-middle path. Implementations must remain
-   * tool-free and transcript-free; callers fall back to `chat` when absent.
-   */
-  predictCode?(
-    request: LLMCodePredictionRequest,
-    options?: LLMChatOptions,
-  ): Promise<LLMCodePredictionResponse>;
   chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse>;
   chatStream(
     messages: LLMMessage[],

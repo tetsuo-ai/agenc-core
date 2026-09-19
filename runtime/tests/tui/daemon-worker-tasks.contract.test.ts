@@ -4,7 +4,6 @@ import type { LocalAgentTaskState, LocalShellTaskState } from "../../src/tasks/t
 import { getDefaultAppState } from "../../src/tui/state/AppStateStore.js";
 import { startDaemonWorkerTaskPolling } from "../../src/tui/state/daemonWorkerTasks.js";
 import { syncCollabAgentEventToAppState } from "../../src/tui/state/collabAgentTaskSync.js";
-import { formatTaskElapsed } from "../../src/tui/workbench/agents/activity.js";
 import { drainMicrotasks } from "../helpers/controlled-async.js";
 
 const worker: SessionNativeWorkerSnapshot = {
@@ -39,46 +38,6 @@ function fixture(initialWorkers: readonly SessionNativeWorkerSnapshot[] = [worke
 afterEach(() => { vi.useRealTimers(); });
 
 describe("daemon native worker inventory projection", () => {
-  it("preserves canonical timing across live status patches and starts a fresh interval on reuse", async () => {
-    const first = { turnId: "first", startedAt: 100_000, endedAt: 160_000 };
-    const f = fixture([{ ...worker, timing: first }]);
-    try {
-      await drainMicrotasks(20);
-      expect(formatTaskElapsed(f.task(), 900_000)).toBe("1m00s");
-      const emitStatus = (status: string, timing?: typeof first | Omit<typeof first, "endedAt">) => {
-        const event = { type: "collab_agent_status", payload: { threadId: worker.agentId, status,
-          ...(timing !== undefined ? { timing } : {}) } };
-        f.emit(event);
-        syncCollabAgentEventToAppState(event, f.setState as never, 999_000);
-      };
-      emitStatus("idle");
-      expect(formatTaskElapsed(f.task(), 900_000)).toBe("1m00s");
-      emitStatus("running", { turnId: "next", startedAt: 500_000 });
-      expect(f.task().endTime).toBeUndefined();
-      expect(formatTaskElapsed(f.task(), 515_000)).toBe("0m15s");
-      emitStatus("running");
-      expect(f.task().startTime).toBe(500_000);
-      emitStatus("interrupted", { turnId: "next", startedAt: 500_000, endedAt: 517_000 });
-      expect(formatTaskElapsed(f.task(), 900_000)).toBe("0m17s");
-      emitStatus("running", { turnId: "next", startedAt: 500_000 });
-      expect(f.task().endTime).toBeUndefined();
-      emitStatus("idle", { turnId: "next", startedAt: 500_000, endedAt: 520_000 });
-      emitStatus("killed");
-      expect(formatTaskElapsed(f.task(), 900_000)).toBe("0m20s");
-    } finally { f.close(); }
-  });
-
-  it("does not invent elapsed time for an older daemon without lifecycle timestamps", async () => {
-    const f = fixture();
-    try {
-      await drainMicrotasks(20);
-      expect(f.task().startTime).toBe(0);
-      expect(formatTaskElapsed(f.task(), 900_000)).toBe("—");
-      f.read.mockResolvedValue(snapshot([{ ...worker, status: "running" }]));
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(formatTaskElapsed(f.task(), 900_000)).toBe("—");
-    } finally { f.close(); }
-  });
 
   it("skips unchanged projections, deduplicates offline errors, and coalesces event refreshes", async () => {
     const f = fixture();

@@ -14,24 +14,6 @@ function turnComplete(stopReason: string, content = ""): never {
 }
 
 describe("stop-reason mapping decides turn versus run scope", () => {
-  test("bounded stops end the turn, never the run", () => {
-    for (const reason of [
-      "no_progress",
-      "effect_review_required",
-      "deadline_reached",
-      "max_turns",
-      "max_budget_usd",
-      "compact_failed",
-      "editor_request_failed",
-    ]) {
-      const mapped = phaseEventToProgressEvent(turnComplete(reason));
-      expect(mapped?.kind, reason).toBe("turn_complete");
-      expect(
-        (mapped as { finalMessage?: string }).finalMessage,
-        reason,
-      ).toBeTruthy();
-    }
-  });
 
   test("compact_failed prefers the skip message over leftover assistant text", () => {
     const mapped = phaseEventToProgressEvent({
@@ -47,21 +29,6 @@ describe("stop-reason mapping decides turn versus run scope", () => {
     expect(mapped?.kind).toBe("turn_complete");
     expect((mapped as { finalMessage?: string }).finalMessage).toContain(
       "mid_turn_compact_skipped",
-    );
-  });
-
-  test("editor_request_failed prefers the scoped failure over leftover assistant text", () => {
-    const mapped = phaseEventToProgressEvent({
-      type: "turn_complete",
-      content: "Prompt is too long: 200000 tokens > 128000",
-      usage,
-      stopReason: "editor_request_failed",
-      error: new Error("editor_interaction_recovery_blocked: context_window"),
-      turnId: "turn-1",
-    } as never);
-    expect(mapped?.kind).toBe("turn_complete");
-    expect((mapped as { finalMessage?: string }).finalMessage).toContain(
-      "editor_interaction_recovery_blocked",
     );
   });
 

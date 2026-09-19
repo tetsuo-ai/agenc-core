@@ -44,7 +44,6 @@ history; the linked pages below are current product truth.
 | [eval/seed-baseline-2026-07-17.md](eval/seed-baseline-2026-07-17.md) | Dated snapshot: first contained 10-task real-agent scorecard (2026-07-17, runtime 0.6.1). Not a reproduction contract |
 | [ci-required-gates.md](ci-required-gates.md) | Fast `test:fast` classification, typecheck-only native/policy-inventory surfaces, exact-SHA release gates, and the inactive optional GitHub App/ruleset design |
 | [provider-tool-compat.md](provider-tool-compat.md) | Provider-independent tool backends plus wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini native JSON Schema, Gemini object-applicator roots that omit type, and the LM Studio/openai-compatible 8192 ceiling |
-| [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, request-scoped Editor turn bounds, configuration, troubleshooting, and hosted PTY split |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [imagine.md](imagine.md) | Provider-independent image/video tools backed by Meta Muse Image or direct xAI Imagine |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider, the generated transcript.v2 protocol slice, and marker-checked workflow-result types |
@@ -70,7 +69,6 @@ history; the linked pages below are current product truth.
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, HTTP(S) archive fetch limits, recorded-source and update-success redaction, native archive fetch error redaction, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn, daemon session survival, Stop-hook throw telemetry that does not close a turn, and PreToolUse allow that cannot skip interactive prompts |
 | [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, interactive-tool prompts that survive bypass, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
-| [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, safety prompts, and the AskUserQuestion picker that bypass cannot skip |
 
 ## Explanation
 

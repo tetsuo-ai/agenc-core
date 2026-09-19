@@ -557,7 +557,6 @@ and automation.
 | Worktree isolation | `runtime/src/agents/worktree.ts` |
 | Thread / mailbox | `runtime/src/agents/thread*.ts`, `mailbox.ts` |
 | Job orchestrator (CSV multi-spawn etc.) | `runtime/src/agents/jobs/` |
-| TUI Agents rail | `runtime/src/tui/workbench/` (Agents pane at wide widths) |
 
 ### Workspace-scoped custom roles
 

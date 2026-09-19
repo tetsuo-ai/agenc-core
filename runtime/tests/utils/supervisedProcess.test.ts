@@ -1659,13 +1659,6 @@ describe("process-tree root safety", () => {
       new URL("../../src/utils/supervisedProcess.ts", import.meta.url),
       "utf8",
     );
-    const discoverySource = readFileSync(
-      new URL(
-        "../../src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
-        import.meta.url,
-      ),
-      "utf8",
-    );
     const packageManifest = JSON.parse(
       readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
     ) as { readonly agencExecutableFiles?: readonly string[] };
@@ -1746,9 +1739,6 @@ describe("process-tree root safety", () => {
       "dist/agenc-process-job-broker.exe",
     );
     expect(entrypointCheck).toContain('"dist/agenc-process-job-broker.exe"');
-    expect(discoverySource).toContain(
-      'process.platform === "win32" ? 5_000 : 1200',
-    );
   });
 
   it("guards PID 1 inside the detached POSIX owner watchdog", () => {

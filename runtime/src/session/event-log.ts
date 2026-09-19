@@ -1176,12 +1176,6 @@ export type EventMsg =
          * compatibility with historical rollout events.
          */
         readonly toolName?: string;
-        /**
-         * Runtime-authored Editor authority identity when the tool completed
-         * inside an Editor interaction. Historical and ordinary Agent events
-         * omit it.
-         */
-        readonly editorInteractionId?: string;
         readonly result: string;
         readonly isError: boolean;
         readonly metadata?: Record<string, unknown>;

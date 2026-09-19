@@ -23,43 +23,8 @@ import type {
 import type { AgenCRealtimeTuiControls } from "./realtime/controller.js";
 import type { FpsMetrics } from "../utils/fpsTracker.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import type {
-  WorkspaceEditorAcquireParams,
-  WorkspaceEditorCancelPredictionSessionParams,
-  WorkspaceEditorCancelPredictionResult,
-  WorkspaceEditorChangesListParams,
-  WorkspaceEditorChangesListResult,
-  WorkspaceEditorHeartbeatParams,
-  WorkspaceEditorLeaseResult,
-  WorkspaceEditorProposalApplyParams,
-  WorkspaceEditorProposalApplyResult,
-  WorkspaceEditorProposalDiscardResult,
-  WorkspaceEditorProposalParams,
-  WorkspaceEditorProposalResult,
-  WorkspaceEditorProposalStatusParams,
-  WorkspaceEditorProposalStatusResult,
-  WorkspaceEditorPredictSessionParams,
-  WorkspaceEditorPredictionFeedbackSessionParams,
-  WorkspaceEditorPredictionFeedbackResult,
-  WorkspaceEditorPredictionResult,
-  WorkspaceEditorReleaseParams,
-  WorkspaceEditorReleaseResult,
-  WorkspaceEditorRecoveredTopologyListParams,
-  WorkspaceEditorRecoveredTopologyListResult,
-  WorkspaceEditorRecoveredTopologyResolveParams,
-  WorkspaceEditorRecoveredTopologyResolveResult,
-  WorkspaceEditorStaleAuthorityRefreshParams,
-  WorkspaceEditorStaleAuthorityRefreshResult,
-  WorkspaceEditorSyncParams,
-  WorkspaceEditorSyncResult,
-  WorkspaceEditorTopologyCompleteParams,
-  WorkspaceEditorTopologyCompleteResult,
-  WorkspaceEditorTopologyFinalizeParams,
-  WorkspaceEditorTopologyReleaseResult,
-  WorkspaceEditorTopologyReserveParams,
-  WorkspaceEditorTopologyReserveResult,
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
   SessionShellExecuteResult,
@@ -261,63 +226,8 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     message: string,
     opts?: {
       readonly displayUserMessage?: string | null;
-      readonly editorInteraction?: SessionEditorInteraction;
     },
   ): Promise<void>;
-  acquireWorkspaceEditor?(
-    params: WorkspaceEditorAcquireParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  syncWorkspaceEditor?(
-    params: WorkspaceEditorSyncParams,
-  ): Promise<WorkspaceEditorSyncResult>;
-  refreshWorkspaceEditorStaleAuthority?(
-    params: WorkspaceEditorStaleAuthorityRefreshParams,
-  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
-  heartbeatWorkspaceEditor?(
-    params: WorkspaceEditorHeartbeatParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  releaseWorkspaceEditor?(
-    params: WorkspaceEditorReleaseParams,
-  ): Promise<WorkspaceEditorReleaseResult>;
-  reserveWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyReserveParams,
-  ): Promise<WorkspaceEditorTopologyReserveResult>;
-  completeWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyCompleteParams,
-  ): Promise<WorkspaceEditorTopologyCompleteResult>;
-  releaseWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyFinalizeParams,
-  ): Promise<WorkspaceEditorTopologyReleaseResult>;
-  listRecoveredWorkspaceEditorTopologies?(
-    params: WorkspaceEditorRecoveredTopologyListParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyListResult>;
-  resolveRecoveredWorkspaceEditorTopology?(
-    params: WorkspaceEditorRecoveredTopologyResolveParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyResolveResult>;
-  getWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalResult>;
-  getWorkspaceEditorProposalStatus?(
-    params: WorkspaceEditorProposalStatusParams,
-  ): Promise<WorkspaceEditorProposalStatusResult>;
-  applyWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalApplyParams,
-  ): Promise<WorkspaceEditorProposalApplyResult>;
-  discardWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalDiscardResult>;
-  listWorkspaceEditorChanges?(
-    params: WorkspaceEditorChangesListParams,
-  ): Promise<WorkspaceEditorChangesListResult>;
-  predictEditorCode?(
-    params: WorkspaceEditorPredictSessionParams,
-  ): Promise<WorkspaceEditorPredictionResult>;
-  cancelEditorPrediction?(
-    params: WorkspaceEditorCancelPredictionSessionParams,
-  ): Promise<WorkspaceEditorCancelPredictionResult>;
-  reportEditorPredictionFeedback?(
-    params: WorkspaceEditorPredictionFeedbackSessionParams,
-  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
   enqueueIdleInput?(input: LLMMessage, ownership?: IdleInputOwnership): number;
   enqueueIdleInputBatch?(
     inputs: readonly LLMMessage[],
@@ -437,12 +347,6 @@ export interface AgenCTuiProps {
    * teardown.
    */
   readonly registerTuiTeardown?: (teardown: () => Promise<void>) => () => void;
-  /**
-   * Set by bootTUI before Ink unmounts on stdin/SSH loss. Providers use this
-   * to retain recovery state instead of treating transport loss as an
-   * operator-confirmed discard.
-   */
-  readonly shouldPreserveEditorRecoveryOnTeardown?: () => boolean;
   readonly isInteractive?: boolean;
   readonly model?: string;
   readonly initialPrompt?: string;

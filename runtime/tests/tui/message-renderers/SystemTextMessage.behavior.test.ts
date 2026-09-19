@@ -72,19 +72,3 @@ describe('SystemTextMessage width behavior', () => {
     expect(getSystemMessageContentWidth(1)).toBe(1)
   })
 })
-
-describe('SystemTextMessage workbench bookkeeping behavior', () => {
-  it('moves repetitive live accounting and running notices into workbench chrome', () => {
-    expect(
-      isWorkbenchChromeBookkeepingMessage(
-        'Token ledger update: 12K in · 40 out · $0.031',
-      ),
-    ).toBe(true)
-    expect(isWorkbenchChromeBookkeepingMessage('Background agent running')).toBe(true)
-    expect(
-      isWorkbenchChromeBookkeepingMessage('Background agent running: reading files'),
-    ).toBe(true)
-    expect(isWorkbenchChromeBookkeepingMessage('Context compacted')).toBe(false)
-    expect(isWorkbenchChromeBookkeepingMessage('Background agent completed')).toBe(false)
-  })
-})

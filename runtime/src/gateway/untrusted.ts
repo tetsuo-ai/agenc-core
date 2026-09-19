@@ -90,7 +90,7 @@ export const GATEWAY_EVIDENCE_GUIDANCE =
 
 export const AGENC_TELEGRAM_ANSWER_CONTEXT = [
   "Trusted AgenC public context for Telegram answers:",
-  "- AgenC Core is AgenC's own agent harness/runtime, not just marketplace tooling. It powers the agenc CLI, TUI workbench, daemon, gateway, sessions, tools, skills, providers, permissions, and sandbox.",
+  "- AgenC Core is AgenC's own agent harness/runtime, not just marketplace tooling. It powers the agenc CLI, TUI, daemon, gateway, sessions, tools, skills, providers, permissions, and sandbox.",
   "- Core can do general engineering work in a repo: inspect files, edit code, apply patches, run shell/build/test commands through the permission system, manage sessions, and use reusable skills/plugins.",
   "- The AgenC TUI supports slash commands such as /login, /logout, /whoami, /subscription, /usage, /provider, /model, /skills, /tools, /status, /diff, and /init. Exact command availability depends on the installed build.",
   "- Core supports BYOK provider keys and managed subscription-backed model access. Paid managed routing can go through the AgenC/OpenRouter gateway; BYOK still works without a subscription.",

@@ -122,13 +122,6 @@ import type {
   Session,
 } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
-import type { TurnContext } from "../session/turn-context.js";
-import {
-  editorInteractionSystemPrompt,
-} from "../session/editor-interaction.js";
-import type {
-  CodePredictionSource,
-} from "../services/code-prediction/types.js";
 import { respondToSessionElicitation } from "../elicitation/respond.js";
 import type {
   AgentStatus as DaemonAgentStatus,
@@ -544,8 +537,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // One process hosts every session: no exit hook per session and no cost
       // summary on the daemon's stdout.
       costSummaryOnExit: false,
-      ...(params.initialEditorInteraction !== undefined ||
-      params.deferInitialTurn === true
+      ...(params.deferInitialTurn === true
         ? {
             deferSessionStartHooks: true,
             deferAgentStartupSideEffects: true,
@@ -705,7 +697,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         this.#installSessionEventLogBridge(active);
 
       let preparedFirstInput = firstInput;
-      if (hasFirstInput && params.initialEditorInteraction === undefined) {
+      if (hasFirstInput) {
         const prepared = await prepareDaemonUserPrompt({
           session: bootstrap.session,
           configStore: bootstrap.configStore,
@@ -803,18 +795,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           }
         }
         const firstSubmitOptions: DaemonSessionSubmitOptions = {
-          ...(params.initialEditorInteraction === undefined
-            ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
-            : {}),
+          [DAEMON_USER_PROMPT_PREPARED]: true as const,
           displayUserMessage:
             params.initialDisplayUserMessage === undefined
               ? messageContentDisplayText(transcriptContent)
               : params.initialDisplayUserMessage,
-          ...(params.initialEditorInteraction !== undefined
-            ? {
-                editorInteraction: params.initialEditorInteraction,
-              }
-            : {}),
         };
         params.signal?.throwIfAborted();
         active.pendingMessageSubmissionCount += 1;
@@ -2592,23 +2577,21 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     userStopGenerationToRelease: number,
   ): Promise<AgenCBackgroundAgentMessageResult> {
     let input = messageContentToAgentInput(params.content);
-    if (params.editorInteraction === undefined) {
-      const prepared = await prepareDaemonUserPrompt({
-        session: active.bootstrap.session,
-        configStore: active.bootstrap.configStore,
-        input,
-        hookPrompt: userPromptDisplayText(
-          messageContentToAgentInput(params.originalContent),
-        ),
-      });
-      if (prepared.blocked) {
-        throw new AgenCBackgroundAgentMessageError(
-          "PROMPT_BLOCKED",
-          prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
-        );
-      }
-      input = prepared.input;
+    const prepared = await prepareDaemonUserPrompt({
+      session: active.bootstrap.session,
+      configStore: active.bootstrap.configStore,
+      input,
+      hookPrompt: userPromptDisplayText(
+        messageContentToAgentInput(params.originalContent),
+      ),
+    });
+    if (prepared.blocked) {
+      throw new AgenCBackgroundAgentMessageError(
+        "PROMPT_BLOCKED",
+        prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
+      );
     }
+    input = prepared.input;
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {
@@ -2652,16 +2635,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const submitOptions: DaemonHumanSessionSubmitOptions = {
       [DAEMON_USER_STOP_GENERATION]: userStopGenerationToRelease,
       [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
-      ...(params.editorInteraction === undefined
-        ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
-        : {}),
+      [DAEMON_USER_PROMPT_PREPARED]: true as const,
       displayUserMessage:
         params.displayUserMessage === undefined
           ? messageContentDisplayText(params.originalContent)
           : params.displayUserMessage,
-      ...(params.editorInteraction !== undefined
-        ? { editorInteraction: params.editorInteraction }
-        : {}),
     };
     if (typeof input === "string") {
       await active.control.sendInput(agentId, input, submitOptions);
@@ -2679,19 +2657,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       acceptedAt: submission.acceptedAt,
       ...(submission.turnId !== undefined ? { turnId: submission.turnId } : {}),
       terminal: submission.terminal ?? { code: 0 },
-    };
-  }
-
-  resolveCodePredictionSource(agentId: string): CodePredictionSource {
-    const active = this.#active.get(agentId);
-    if (active === undefined || !isRunnableActiveAgent(active)) {
-      throw new Error(`AgenC daemon agent not running: ${agentId}`);
-    }
-    return {
-      // Model/provider switches replace this session service in place. Reading
-      // it at request time prevents predictions from following a stale route.
-      provider: active.bootstrap.session.services.provider,
-      workspaceRoot: active.bootstrap.workspaceRoot,
     };
   }
 
@@ -5677,10 +5642,7 @@ function installDaemonTurnDriverHooks(
       let turnInput = message;
       let promptDisplayText =
         typeof message === "string" ? message : userPromptDisplayText(message);
-      if (
-        opts?.editorInteraction === undefined &&
-        opts?.[DAEMON_USER_PROMPT_PREPARED] !== true
-      ) {
+      if (opts?.[DAEMON_USER_PROMPT_PREPARED] !== true) {
         const prepared = await prepareDaemonUserPrompt({
           session,
           configStore,
@@ -5704,13 +5666,7 @@ function installDaemonTurnDriverHooks(
       const baseCtx = (
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
-      const ctx =
-        opts?.editorInteraction === undefined
-          ? baseCtx
-          : {
-              ...(baseCtx as TurnContext),
-              editorInteraction: opts.editorInteraction,
-            };
+      const ctx = baseCtx;
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
           ? (opts?.displayUserMessage ?? promptDisplayText)
@@ -5738,14 +5694,6 @@ function installDaemonTurnDriverHooks(
             ? { userStopGenerationToRelease: opts[DAEMON_USER_STOP_GENERATION] }
             : {}),
           ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
-          ...(opts?.editorInteraction !== undefined
-            ? {
-                systemPrompt: editorInteractionSystemPrompt(
-                  opts.editorInteraction,
-                ),
-                systemPromptTrust: "trusted_internal" as const,
-              }
-            : {}),
         },
       )) {
         (

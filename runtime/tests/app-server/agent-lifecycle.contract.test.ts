@@ -5345,21 +5345,6 @@ describe("AgenC background agent lifecycle", () => {
       runner,
       sessionManager: sessions,
     });
-    const initialEditorInteraction = {
-      interactionId: "interaction-startup-explain",
-      kind: "explain" as const,
-      policy: "read_only" as const,
-      editorInstanceId: "editor-startup",
-      bufferHandle: 4,
-      changedtick: 9,
-      contentSha256: "b".repeat(64),
-      path: "/workspace/src/main.ts",
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 2, column: 0 },
-      },
-      selectionMode: "line" as const,
-    };
 
     await expect(
       createTestAgent(agents, {
@@ -5373,7 +5358,6 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
-        initialEditorInteraction,
       }),
     ).resolves.toMatchObject({
       agentId: "agent_image",
@@ -5391,7 +5375,6 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
-        initialEditorInteraction,
       }),
     ]);
     await expect(sessions.getSession("session_image")).resolves.toMatchObject({

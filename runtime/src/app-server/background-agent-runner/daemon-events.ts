@@ -891,7 +891,7 @@ export function daemonEventFromUnboundSessionEvent(event: {
   // `phases/stream-model.ts` (T6 #119) and persisted to the rollout, but
   // never bridged live — so a daemon-attached TUI had no usage source at
   // all: its synthesized assistant messages carry zero usage and the
-  // workbench ctx% read 0 for the whole session. Forward the payload
+  // header ctx% read 0 for the whole session. Forward the payload
   // verbatim; the TUI reducer derives `latestUsage` from it.
   if (type === "token_count" && isJsonObject(payload)) {
     return {
