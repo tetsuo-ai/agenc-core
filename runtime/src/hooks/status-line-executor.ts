@@ -10,8 +10,6 @@ import type { Session } from "../session/session.js";
 import { isAdmissionUsageSummary } from "../session/usage-summary.js";
 import { VERSION } from "../version.js";
 import { asRecord } from "../utils/record.js";
-import { workspaceMutationCoordinators, WorkspaceMutationCoordinatorError } from "../workspace/mutation-coordinator.js";
-import { createWorkspaceOperationLifetime, runWithWorkspaceOperationLifetime } from "../workspace/tool-operation-lifetime.js";
 import { runHookCommand } from "./engine/command-runner.js";
 
 const activeSessions = new WeakSet<Session>();
@@ -191,12 +189,9 @@ async function runSessionStatusLine(
   const input = statusLineInput(session, presentation);
   if (input === undefined) return { status: "unavailable", reason: "session_input_unavailable" };
   if (Buffer.byteLength(input, "utf8") > MAX_INPUT_BYTES) return { status: "error", reason: "input_too_large" };
-  const workspaceRegistry = workspaceMutationCoordinators.forHome(configStore.homeContext.path);
-  const workspaceToken = workspaceRegistry.beginToolOperation(sessionConfig.cwd, "StatusLine");
-  const lifetime = createWorkspaceOperationLifetime(() => workspaceRegistry.endToolOperation(workspaceToken));
   let completedReservationId: string | undefined;
   try {
-    return await runWithWorkspaceOperationLifetime(lifetime, async () => {
+    {
       const lease = await admission.acquire({
         stepId: `hook:StatusLine:${randomUUID()}`,
         kind: "tool_exec",
@@ -258,10 +253,8 @@ async function runSessionStatusLine(
           else admission.void(reservationId, "status_line_stopped_before_dispatch");
         }
       }
-    });
+    }
   } finally {
-    await lifetime.release();
-    await lifetime.settled();
     if (completedReservationId !== undefined) admission.acknowledgeCompletion(completedReservationId);
   }
 }
@@ -287,7 +280,6 @@ export function executeSessionStatusLine(
       if (timeout.signal.aborted) return { status: "error", reason: "timeout" };
       if (combined.aborted) return { status: "unavailable", reason: "cancelled" };
       if (error instanceof AdmissionDeniedError) return { status: "blocked", reason: "admission_denied" };
-      if (error instanceof WorkspaceMutationCoordinatorError) return { status: "blocked", reason: "editor_workspace_owned" };
       if (error instanceof SandboxExecutionError) return { status: "blocked", reason: error.code };
       return { status: "error", reason: "execution_failed" };
     }).finally(() => {

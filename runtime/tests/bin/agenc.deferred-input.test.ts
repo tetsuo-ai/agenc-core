@@ -19,34 +19,6 @@ import type {
   McpSurfaceSnapshot,
 } from "../session/session.js";
 import type {
-  WorkspaceEditorAcquireParams,
-  WorkspaceEditorCancelPredictionResult,
-  WorkspaceEditorCancelPredictionSessionParams,
-  WorkspaceEditorChangesListParams,
-  WorkspaceEditorChangesListResult,
-  WorkspaceEditorHeartbeatParams,
-  WorkspaceEditorLeaseResult,
-  WorkspaceEditorPredictSessionParams,
-  WorkspaceEditorPredictionFeedbackResult,
-  WorkspaceEditorPredictionFeedbackSessionParams,
-  WorkspaceEditorPredictionResult,
-  WorkspaceEditorProposalApplyParams,
-  WorkspaceEditorProposalApplyResult,
-  WorkspaceEditorProposalDiscardResult,
-  WorkspaceEditorProposalParams,
-  WorkspaceEditorProposalResult,
-  WorkspaceEditorProposalStatusParams,
-  WorkspaceEditorProposalStatusResult,
-  WorkspaceEditorReleaseParams,
-  WorkspaceEditorReleaseResult,
-  WorkspaceEditorSyncParams,
-  WorkspaceEditorSyncResult,
-  WorkspaceEditorTopologyCompleteParams,
-  WorkspaceEditorTopologyCompleteResult,
-  WorkspaceEditorTopologyFinalizeParams,
-  WorkspaceEditorTopologyReleaseResult,
-  WorkspaceEditorTopologyReserveParams,
-  WorkspaceEditorTopologyReserveResult,
   SessionShellExecuteResult,
 } from "../app-server/protocol/index.js";
 
@@ -75,51 +47,6 @@ interface DeferredInputSession {
     readonly applied: boolean;
     readonly summary: string;
   }>;
-  acquireWorkspaceEditor(
-    params: WorkspaceEditorAcquireParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  syncWorkspaceEditor(
-    params: WorkspaceEditorSyncParams,
-  ): Promise<WorkspaceEditorSyncResult>;
-  heartbeatWorkspaceEditor(
-    params: WorkspaceEditorHeartbeatParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  releaseWorkspaceEditor(
-    params: WorkspaceEditorReleaseParams,
-  ): Promise<WorkspaceEditorReleaseResult>;
-  reserveWorkspaceEditorTopology(
-    params: WorkspaceEditorTopologyReserveParams,
-  ): Promise<WorkspaceEditorTopologyReserveResult>;
-  completeWorkspaceEditorTopology(
-    params: WorkspaceEditorTopologyCompleteParams,
-  ): Promise<WorkspaceEditorTopologyCompleteResult>;
-  releaseWorkspaceEditorTopology(
-    params: WorkspaceEditorTopologyFinalizeParams,
-  ): Promise<WorkspaceEditorTopologyReleaseResult>;
-  getWorkspaceEditorProposal(
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalResult>;
-  getWorkspaceEditorProposalStatus(
-    params: WorkspaceEditorProposalStatusParams,
-  ): Promise<WorkspaceEditorProposalStatusResult>;
-  applyWorkspaceEditorProposal(
-    params: WorkspaceEditorProposalApplyParams,
-  ): Promise<WorkspaceEditorProposalApplyResult>;
-  discardWorkspaceEditorProposal(
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalDiscardResult>;
-  listWorkspaceEditorChanges(
-    params: WorkspaceEditorChangesListParams,
-  ): Promise<WorkspaceEditorChangesListResult>;
-  predictEditorCode(
-    params: WorkspaceEditorPredictSessionParams,
-  ): Promise<WorkspaceEditorPredictionResult>;
-  cancelEditorPrediction(
-    params: WorkspaceEditorCancelPredictionSessionParams,
-  ): Promise<WorkspaceEditorCancelPredictionResult>;
-  reportEditorPredictionFeedback(
-    params: WorkspaceEditorPredictionFeedbackSessionParams,
-  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
   executeShellCommand(params: {
     readonly command: string;
     readonly commandId: string;
@@ -238,14 +165,12 @@ function daemonHarness(
   options: {
     readonly rejectFirstAttach?: boolean;
     readonly rejectMessageStream?: boolean;
-    readonly rejectFirstEditorPrediction?: boolean;
     readonly rejectShellExecute?: boolean;
     readonly withMcpSurface?: boolean;
     readonly initialSessionEvent?: unknown;
   } = {},
 ) {
   let attachAttempts = 0;
-  let predictionAttempts = 0;
   let mcpRevision = 1;
   const mcpServers: Array<{
     readonly name: string;
@@ -327,59 +252,12 @@ function daemonHarness(
           isError: false,
         };
       }
-      if (method === "workspace.editor.predict") {
-        predictionAttempts += 1;
-        if (
-          options.rejectFirstEditorPrediction === true &&
-          predictionAttempts === 1
-        ) {
-          throw Object.assign(new Error("prediction session disappeared"), {
-            code: "AGENT_NOT_FOUND",
-          });
-        }
-        return {
-          status: "completed",
-          requestId: String(params?.requestId),
-          generation: Number(params?.generation),
-          changedtick: Number(params?.changedtick),
-          text: "recovered prediction",
-          provider: "grok",
-          model: "grok-4.5",
-          latencyMs: 5,
-          cached: false,
-        };
-      }
       if (method === "agent.stop") {
         return {
           agentId:
             typeof params?.agentId === "string" ? params.agentId : "agent-1",
           stopped: true,
         };
-      }
-      if (
-        method === "workspace.editor.acquire" ||
-        method === "workspace.editor.heartbeat"
-      ) {
-        return {
-          workspaceRoot: String(params?.workspaceRoot ?? process.cwd()),
-          editorInstanceId: String(params?.editorInstanceId ?? "editor-1"),
-          leaseToken: "lease-1",
-          epoch: 1,
-          sequence: 0,
-          expiresAt: 1_000,
-        };
-      }
-      if (method === "workspace.editor.sync") {
-        return {
-          accepted: true,
-          sequence: Number(params?.sequence ?? 0),
-          expiresAt: 1_000,
-          dirtyPaths: [],
-          stalePaths: [],
-        };
-      }
-      if (method === "workspace.editor.release") {
-        return { released: true, stalePaths: [] };
       }
       if (method === "daemon.reload") {
         return { reloaded: true };

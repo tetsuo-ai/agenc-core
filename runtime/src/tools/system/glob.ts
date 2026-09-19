@@ -77,11 +77,6 @@ import {
   type RipgrepWireParser,
 } from "./ripgrep-protocol.js";
 import {
-  beginWorkspaceReadToolOperation,
-  endWorkspaceToolOperation,
-  type WorkspaceToolOperationToken,
-} from "../../workspace/mutation-coordinator.js";
-import {
   bindWorkspaceDirectoryReadCapability,
   workspaceBoundReadOnlyCwd,
   type WorkspaceBoundReadCapability,
@@ -1023,7 +1018,6 @@ export function createGlobTool(
       if (!readOnlyDelegationReadPathAllowed(rawArgs, target.searchRoot)) return errorResult("Access denied: search path is outside delegated read authority");
       let readCapability: WorkspaceBoundReadCapability | undefined;
       let enumerationCapability: WorkspaceBoundReadCapability | undefined;
-      let toolOperation: WorkspaceToolOperationToken | undefined;
       const bindReadCapabilities = async (): Promise<void> => {
         await beforeReadCapabilityBind?.();
         readCapability = await bindWorkspaceDirectoryReadCapability(
@@ -1038,21 +1032,14 @@ export function createGlobTool(
               });
       };
       try {
-        toolOperation = beginWorkspaceReadToolOperation(
-          target.displayRoot,
-          GLOB_TOOL_NAME,
-        ).token;
         await bindReadCapabilities();
       } catch (error) {
         await enumerationCapability?.dispose().catch(() => {});
         if (enumerationCapability !== readCapability) {
           await readCapability?.dispose().catch(() => {});
         }
-        if (toolOperation !== undefined) {
-          endWorkspaceToolOperation(toolOperation);
-        }
         return errorResult(
-          `Glob error: authoritative Editor workspace files cannot be read safely: ${
+          `Glob error: workspace files cannot be read safely: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -1181,16 +1168,10 @@ export function createGlobTool(
         return textResult(lines.join("\n"), metadata);
       } finally {
         try {
-          try {
-            await enumerationCapability?.dispose();
-          } finally {
-            if (enumerationCapability !== readCapability) {
-              await readCapability?.dispose();
-            }
-          }
+          await enumerationCapability?.dispose();
         } finally {
-          if (toolOperation !== undefined) {
-            endWorkspaceToolOperation(toolOperation);
+          if (enumerationCapability !== readCapability) {
+            await readCapability?.dispose();
           }
         }
       }

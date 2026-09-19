@@ -115,12 +115,6 @@ import {
 } from "../elicitation/request-ledger-transfer.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import {
-  beginWorkspaceToolOperation,
-  endWorkspaceToolOperation,
-  workspaceHasProtectedEditorPaths,
-  type WorkspaceToolOperationToken,
-} from "../workspace/mutation-coordinator.js";
-import {
   createWorkspaceOperationLifetime,
   runWithWorkspaceOperationLifetime,
 } from "../workspace/tool-operation-lifetime.js";
@@ -497,24 +491,10 @@ export class ToolRouter {
     if (spec === undefined) {
       return this.dispatchToolCallUnfenced(invocation, args, opts);
     }
-    let operation: WorkspaceToolOperationToken | null = null;
-    try {
-      operation = beginToolBarrier(invocation.turn.cwd, spec.tool);
-    } catch (error) {
-      return {
-        content: `<tool_use_error>${
-          error instanceof Error ? error.message : String(error)
-        }</tool_use_error>`,
-        isError: true,
-        metadata: { editorWorkspaceCoherenceDenied: true },
-      };
-    }
-    if (operation === null) {
+    if (!dispatchContainsDescendants(invocation.turn.cwd, spec.tool)) {
       return this.dispatchToolCallUnfenced(invocation, args, opts);
     }
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(operation);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     try {
       return await runWithWorkspaceOperationLifetime(lifetime, () =>
         this.dispatchToolCallUnfenced(invocation, args, opts),
@@ -540,18 +520,6 @@ export class ToolRouter {
           }`,
         }),
         isError: true,
-      };
-    }
-
-    const coherenceDenial = workspaceEditorToolCoherenceDenial(
-      invocation.turn.cwd,
-      spec.tool,
-    );
-    if (coherenceDenial !== null) {
-      return {
-        content: `<tool_use_error>${coherenceDenial}</tool_use_error>`,
-        isError: true,
-        metadata: { editorWorkspaceCoherenceDenied: true },
       };
     }
 
@@ -819,34 +787,10 @@ export class ToolRouter {
     if (spec === undefined) {
       return this.dispatchModelToolCallUnfenced(toolCall, opts);
     }
-    let operation: WorkspaceToolOperationToken | null = null;
-    try {
-      operation = beginToolBarrier(opts.turn.cwd, spec.tool);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await recordToolPolicyAudit(opts, {
-        decision: "denied",
-        source: "runtime-policy",
-        reasonCode: "editor_workspace_uncoordinated_tool_denied",
-        toolName: spec.tool.name,
-        callId: toolCall.id,
-      });
-      emitErrorEvent(opts.session.eventLog, toolCall.id, {
-        cause: "editor_workspace_uncoordinated_tool_denied",
-        message,
-      });
-      return {
-        content: `<tool_use_error>${message}</tool_use_error>`,
-        isError: true,
-        metadata: { editorWorkspaceCoherenceDenied: true },
-      };
-    }
-    if (operation === null) {
+    if (!dispatchContainsDescendants(opts.turn.cwd, spec.tool)) {
       return this.dispatchModelToolCallUnfenced(toolCall, opts);
     }
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(operation);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     try {
       return await runWithWorkspaceOperationLifetime(lifetime, () =>
         this.dispatchModelToolCallUnfenced(toolCall, opts),
@@ -869,33 +813,6 @@ export class ToolRouter {
       return {
         content: JSON.stringify({ error: `unknown tool: ${toolCall.name}` }),
         isError: true,
-      };
-    }
-
-    const workspacePath = opts.turn.cwd;
-    const editorCoherenceActive =
-      workspacePath !== undefined &&
-      workspaceHasProtectedEditorPaths(workspacePath);
-    const coherenceDenial = workspaceEditorToolCoherenceDenial(
-      workspacePath,
-      spec.tool,
-    );
-    if (coherenceDenial !== null) {
-      await recordToolPolicyAudit(opts, {
-        decision: "denied",
-        source: "runtime-policy",
-        reasonCode: "editor_workspace_uncoordinated_tool_denied",
-        toolName: spec.tool.name,
-        callId: toolCall.id,
-      });
-      emitErrorEvent(opts.session.eventLog, toolCall.id, {
-        cause: "editor_workspace_uncoordinated_tool_denied",
-        message: coherenceDenial,
-      });
-      return {
-        content: `<tool_use_error>${coherenceDenial}</tool_use_error>`,
-        isError: true,
-        metadata: { editorWorkspaceCoherenceDenied: true },
       };
     }
 
@@ -965,11 +882,7 @@ export class ToolRouter {
     let hookPermissionResult: HookPermissionResult | undefined;
     let prePreventContinuation: { readonly stopReason?: string } | undefined;
     let permissionAlreadyAllowed = false;
-    // Operator/plugin hooks are executable extension code and do not
-    // participate in the editor revision protocol. Suppress them while the
-    // editor owns loaded buffers, even for an otherwise coordinated builtin,
-    // so a post-write hook cannot silently mutate a live Neovim buffer.
-    const preHooks = editorCoherenceActive ? [] : (opts.preHooks ?? []);
+    const preHooks = opts.preHooks ?? [];
     if (preHooks.length > 0) {
       const preDecision = await runPreToolUseHooks(
         preHooks,
@@ -1253,10 +1166,10 @@ export class ToolRouter {
           : {}),
         approvalArgs,
         ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
-        ...(!editorCoherenceActive && opts.permissionHooks !== undefined
+        ...(opts.permissionHooks !== undefined
           ? { permissionHooks: opts.permissionHooks }
           : {}),
-        ...(!editorCoherenceActive && opts.permissionDecisionHooks !== undefined
+        ...(opts.permissionDecisionHooks !== undefined
           ? { permissionDecisionHooks: opts.permissionDecisionHooks }
           : {}),
         ...(opts.guardianApprovalReviewer !== undefined
@@ -1341,11 +1254,7 @@ export class ToolRouter {
             invoke: ({ abortController, crossEffectBoundary }) =>
               executeToolDispatch(
                 rawDispatchOptions(dispatchRawArgs, {
-                  ...withoutPermissionEvaluator(
-                    editorCoherenceActive
-                      ? withoutWorkspaceExtensionHooks(opts)
-                      : opts,
-                  ),
+                  ...withoutPermissionEvaluator(opts),
                   tool: spec.tool,
                   parsedArgs: dispatchArgs,
                   invocation: dispatchInvocation,
@@ -1404,16 +1313,6 @@ export class ToolRouter {
   }
 }
 
-const EDITOR_COHERENCE_COORDINATED_BUILTINS = new Set([
-  "Edit",
-  "MultiEdit",
-  "Write",
-  "apply_patch",
-  "NotebookEdit",
-  "system.delete",
-  "system.move",
-]);
-
 function isTrustedBuiltinReadOnly(tool: Tool): boolean {
   return (
     tool.metadata?.source === "builtin" &&
@@ -1423,50 +1322,16 @@ function isTrustedBuiltinReadOnly(tool: Tool): boolean {
   );
 }
 
-function isEditorCoordinatedBuiltin(tool: Tool): boolean {
-  return (
-    tool.metadata?.source === "builtin" &&
-    EDITOR_COHERENCE_COORDINATED_BUILTINS.has(tool.name)
-  );
-}
-
 /**
- * Fence every potentially side-effecting tool from the instant dispatch
- * begins until hooks, approval, and execution have all settled. An Editor
- * lease acquisition cannot cross an operation that started first; an
- * uncoordinated operation cannot start after Editor owns the workspace.
+ * Every potentially side-effecting tool dispatches inside a workspace
+ * operation lifetime, so shell descendants it spawns stay contained until
+ * the process that outlives the call has settled.
  */
-function beginToolBarrier(
+function dispatchContainsDescendants(
   cwd: string | undefined,
   tool: Tool,
-): WorkspaceToolOperationToken | null {
-  if (cwd === undefined || isTrustedBuiltinReadOnly(tool)) return null;
-  if (
-    isEditorCoordinatedBuiltin(tool) &&
-    workspaceHasProtectedEditorPaths(cwd)
-  ) {
-    // These built-ins enter the per-path revision transaction themselves.
-    return null;
-  }
-  return beginWorkspaceToolOperation(cwd, tool.name);
-}
-
-export function workspaceEditorToolCoherenceDenial(
-  cwd: string | undefined,
-  tool: Tool,
-): string | null {
-  if (cwd === undefined || !workspaceHasProtectedEditorPaths(cwd)) {
-    return null;
-  }
-  if (isTrustedBuiltinReadOnly(tool) || isEditorCoordinatedBuiltin(tool)) {
-    return null;
-  }
-  return (
-    `Tool '${tool.name}' is blocked while Editor owns loaded workspace ` +
-    "buffers because that tool cannot participate in AgenC's revision and " +
-    "mutation audit. Use a coordinated built-in file tool, or close the " +
-    "Editor workspace before running it."
-  );
+): boolean {
+  return cwd !== undefined && !isTrustedBuiltinReadOnly(tool);
 }
 
 function ledgerTurnBlocksTool(
@@ -1819,18 +1684,6 @@ function withoutPermissionEvaluator(
     LiveToolDispatchOptions,
     "canUseTool" | "permissionContext"
   >;
-}
-
-function withoutWorkspaceExtensionHooks(
-  opts: LiveToolDispatchOptions,
-): LiveToolDispatchOptions {
-  const clone: Record<string, unknown> = { ...opts };
-  delete clone["preHooks"];
-  delete clone["postHooks"];
-  delete clone["failureHooks"];
-  delete clone["permissionHooks"];
-  delete clone["permissionDecisionHooks"];
-  return clone as unknown as LiveToolDispatchOptions;
 }
 
 function approvalRequestFromResolver(

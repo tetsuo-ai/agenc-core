@@ -59,13 +59,7 @@ import {
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
-import {
-  prepareWorkspaceMutation,
-  WorkspaceMutationCoordinatorError,
-  workspaceAuthoritativeRead,
-  workspaceMutationAdmissionToolResult,
-  type WorkspaceMutationSource,
-} from "../../workspace/mutation-coordinator.js";
+import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
 import {
   describeWorkspaceMutationNoEffect,
   executeWorkspaceFileMutation,
@@ -415,26 +409,6 @@ function encodeForOriginalFormat(
 }
 
 async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
-  const editorRead = workspaceAuthoritativeRead(absolutePath);
-  if (editorRead !== null) {
-    const rawText = editorRead.content;
-    const text = rawText.replaceAll("\r\n", "\n");
-    let mtimeMs = 0;
-    try {
-      const fileStats = await stat(absolutePath);
-      if (Number.isFinite(fileStats.mtimeMs)) mtimeMs = fileStats.mtimeMs;
-    } catch {
-      // A dirty new buffer may not exist on disk yet.
-    }
-    return {
-      exists: true,
-      content: text,
-      mtimeMs,
-      size: Buffer.byteLength(rawText, "utf8"),
-      encoding: "utf8",
-      lineEndings: detectLineEndings(rawText),
-    };
-  }
   try {
     const fileStats = await stat(absolutePath);
     if (!fileStats.isFile()) {
@@ -477,54 +451,18 @@ async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
 async function coordinateFileWrite(
   input: {
     readonly absolutePath: string;
-    readonly source: WorkspaceMutationSource;
+    readonly source: "file_edit" | "file_multi_edit";
     readonly beforeText: string;
     readonly afterText: string;
-    readonly rawArgs: Record<string, unknown>;
     readonly observedEncoding?: BufferEncoding;
     readonly testHooks?: WorkspaceFileMutationTestHooks;
   },
   write: () => Promise<void>,
 ): Promise<ToolResult | null> {
-  const sessionId = resolveSessionId(input.rawArgs);
-  const toolCallId =
-    typeof input.rawArgs.__callId === "string"
-      ? input.rawArgs.__callId
-      : undefined;
-  const admission = await prepareWorkspaceMutation({
-    path: input.absolutePath,
-    source: input.source,
-    beforeText: input.beforeText,
-    afterText: input.afterText,
-    ...(sessionId !== undefined ? { sessionId } : {}),
-    ...(toolCallId !== undefined ? { toolCallId } : {}),
-  });
-  const rejection = workspaceMutationAdmissionToolResult(admission);
-  if (rejection !== null) {
-    // Admission refused before any byte was written.
-    return {
-      ...rejection,
-      effectDisposition: createToolEffectDispositionEvidence({
-        disposition: "confirmed_no_effect",
-        evidenceKind: "boundary_not_crossed",
-        evidenceRef: `tool:${
-          input.source === "file_multi_edit"
-            ? FILE_MULTI_EDIT_TOOL_NAME
-            : FILE_EDIT_TOOL_NAME
-        }:admission-rejected`,
-        evidenceMaterial: rejection.content,
-      }),
-    };
-  }
   await executeWorkspaceFileMutation({
-    admission,
     path: input.absolutePath,
     afterText: input.afterText,
     write,
-    metadata: {
-      ...(sessionId !== undefined ? { sessionId } : {}),
-      ...(toolCallId !== undefined ? { toolCallId } : {}),
-    },
     decodeObserved: (content) =>
       content
         .toString(input.observedEncoding ?? "utf8")
@@ -595,7 +533,7 @@ class ConcurrentFileModificationError extends Error {
  */
 function formatWriteFileError(err: unknown): string {
   if (
-    err instanceof WorkspaceMutationCoordinatorError &&
+    err instanceof WorkspaceMutationError &&
     err.code === "MUTATION_AUDIT_FAILED"
   ) {
     return err.message;
@@ -632,7 +570,7 @@ function mutationErrorResult(
 
 function formatCreateFileError(err: unknown): string {
   if (
-    err instanceof WorkspaceMutationCoordinatorError &&
+    err instanceof WorkspaceMutationError &&
     err.code === "MUTATION_AUDIT_FAILED"
   ) {
     return err.message;
@@ -990,7 +928,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
               source: "file_edit",
               beforeText: "",
               afterText: new_string,
-              rawArgs,
               testHooks: config,
             },
             () => writeFileCreatingParents(absoluteFilePath, new_string),
@@ -1102,7 +1039,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
               source: "file_edit",
               beforeText: snapshot.content,
               afterText: new_string,
-              rawArgs,
               observedEncoding: snapshot.encoding,
               testHooks: config,
             },
@@ -1152,7 +1088,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
             source: "file_edit",
             beforeText: snapshot.content,
             afterText: updated,
-            rawArgs,
             observedEncoding: snapshot.encoding,
             testHooks: config,
           },
@@ -1357,7 +1292,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
               source: "file_multi_edit",
               beforeText: "",
               afterText: firstEdit.new_string,
-              rawArgs,
               testHooks: config,
             },
             () =>
@@ -1461,7 +1395,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
               source: "file_multi_edit",
               beforeText: snapshot.content,
               afterText: firstEdit.new_string,
-              rawArgs,
               observedEncoding: snapshot.encoding,
               testHooks: config,
             },
@@ -1546,7 +1479,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
             source: "file_multi_edit",
             beforeText: snapshot.content,
             afterText: updated,
-            rawArgs,
             observedEncoding: snapshot.encoding,
             testHooks: config,
           },

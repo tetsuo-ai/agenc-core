@@ -7,7 +7,6 @@ import { createGlobTool } from "../../../src/tools/system/glob.js";
 import { createFileReadTool } from "../../../src/tools/system/file-read.js";
 import { attachReadOnlyDelegationReadGuard } from "../../../src/permissions/readonly-read-guard.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
-import { sha256, workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
 import { clearSessionReadState, getSessionReadSnapshot, signSessionId } from "../../../src/tools/system/filesystem.js";
 import { MAX_GREP_DECODED_BYTES } from "../../../src/tools/system/ripgrep-protocol.js";
 
@@ -21,7 +20,6 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   clearSessionReadState("readonly-search-session");
-  workspaceMutationCoordinators.clearForTests();
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -58,28 +56,6 @@ describe("read-only delegated search authority", () => {
     expect(denied.isError).toBe(true);
     expect(denied.content).not.toContain("needle public");
     expect(getSessionReadSnapshot("readonly-search-session", args.file_path)).toEqual(snapshot);
-  });
-
-  it("rechecks FileRead authority before exposing a captured dirty snapshot", async () => {
-    const coordinator = workspaceMutationCoordinators.getOrCreate(workspace);
-    const lease = coordinator.acquire({ workspaceRoot: workspace, editorInstanceId: "readonly-file-editor" });
-    const content = "needle unsaved public\n";
-    coordinator.sync({
-      workspaceRoot: workspace, editorInstanceId: lease.editorInstanceId, leaseToken: lease.leaseToken, epoch: lease.epoch, sequence: 0,
-      buffers: [{ path: join(workspace, "public.ts"), bufferHandle: 7, changedtick: 1, contentSha256: sha256(content), dirty: true, content }],
-    });
-    let allowed = true;
-    const tool = createFileReadTool({ allowedPaths: [workspace], __testAfterFinalPathCheck: () => { allowed = false; } });
-    const args = {
-      file_path: join(workspace, "public.ts"),
-      __agencSessionId: "readonly-search-session",
-      __agencSessionIdSig: signSessionId("readonly-search-session"),
-    };
-    attachReadOnlyDelegationReadGuard(args, () => allowed);
-    const result = await tool.execute(args);
-    expect(result.isError).toBe(true);
-    expect(result.content).not.toContain("unsaved public");
-    expect(getSessionReadSnapshot("readonly-search-session", args.file_path)).toBeUndefined();
   });
 
   it("rejects unauthorized FileRead bytes after final leaf replacement", async () => {
@@ -148,7 +124,7 @@ describe("read-only delegated search authority", () => {
     let allowed = true;
     const tool = bindExplicitDangerBoundary(createGrepTool({
       allowedPaths: [workspace],
-      beforeAuthoritativeSnapshotValidation: () => { allowed = false; },
+      __testBeforeResultFinalize: () => { allowed = false; },
     }));
     const args = { pattern: "needle", path: join(workspace, "public.ts"), output_mode: "content" };
     attachReadOnlyDelegationReadGuard(args, () => allowed);
@@ -165,29 +141,6 @@ describe("read-only delegated search authority", () => {
     const result = await tool.execute(guarded({ pattern: "needle", path: file, output_mode: "content" }));
     expect(result.isError).toBe(true);
     expect(result.content).not.toContain("needle large");
-  });
-
-  it("does not search or copy denied authoritative dirty snapshots", async () => {
-    const coordinator = workspaceMutationCoordinators.getOrCreate(workspace);
-    const lease = coordinator.acquire({ workspaceRoot: workspace, editorInstanceId: "readonly-search-editor" });
-    const content = "needle unsaved secret\n";
-    coordinator.sync({
-      workspaceRoot: workspace, editorInstanceId: lease.editorInstanceId, leaseToken: lease.leaseToken, epoch: lease.epoch, sequence: 0,
-      buffers: [{ path: join(workspace, "secret.ts"), bufferHandle: 7, changedtick: 1, contentSha256: sha256(content), dirty: true, content }],
-    });
-    await coordinator.flushQuarantinePersistence();
-    const sources: string[] = [];
-    const tool = bindExplicitDangerBoundary(createGrepTool({
-      allowedPaths: [workspace],
-      __testProtectedTaskObserver: event => { if (event.phase === "start") sources.push(event.source); },
-    }));
-    const result = await tool.execute(guarded({ pattern: "needle", path: workspace, output_mode: "content" }));
-    expect(result.isError).not.toBe(true);
-    expect(result.content).toContain("public.ts");
-    expect(result.content).not.toContain("secret");
-    expect(sources).toEqual(["disk"]);
-    const capture = coordinator.authoritativeDirtySnapshotsUnderIdentity(workspace, path => !path.endsWith("secret.ts"));
-    expect(capture).toEqual([]);
   });
 
   it.each(["cwd", "absolute-pattern"])("refuses a denied Glob root selected by %s", async selection => {

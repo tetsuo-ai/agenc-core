@@ -16,11 +16,6 @@ import {
 import { UnifiedExecError } from "./types.js";
 import { UnifiedExecProcessManager } from "./process-manager.js";
 import {
-  beginWorkspaceToolOperation,
-  endWorkspaceToolOperation,
-  workspaceMutationCoordinators,
-} from "../workspace/mutation-coordinator.js";
-import {
   createWorkspaceOperationLifetime,
   runWithWorkspaceOperationLifetime,
 } from "../workspace/tool-operation-lifetime.js";
@@ -285,16 +280,13 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
-  test("keeps Editor acquisition fenced until a yielded process exits", async () => {
+  test("keeps the operation lifetime open until a yielded process exits", async () => {
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-fence-"));
     const target = join(root, "loaded.ts");
     await writeFile(target, "before\n", "utf8");
     const manager = new UnifiedExecProcessManager({ cwd: root });
-    const token = beginWorkspaceToolOperation(root, "exec_command");
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(token);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     const script = [
       "const fs=require('node:fs');",
       `setTimeout(()=>fs.writeFileSync(${JSON.stringify(target)},'after\\n'),600);`,
@@ -310,38 +302,22 @@ describe("UnifiedExecProcessManager", () => {
       expect(result.process_id).toEqual(expect.any(Number));
       await lifetime.release();
 
-      expect(() =>
-        workspaceMutationCoordinators.acquireEditor(root, {
-          workspaceRoot: root,
-          editorInstanceId: "editor-during-yielded-process",
-        }),
-      ).toThrow(/waiting for active tool 'exec_command'/u);
 
       await lifetime.settled();
       expect(await readFile(target, "utf8")).toBe("after\n");
-      expect(() =>
-        workspaceMutationCoordinators.acquireEditor(root, {
-          workspaceRoot: root,
-          editorInstanceId: "editor-after-yielded-process",
-        }),
-      ).not.toThrow();
     } finally {
       await manager.closeAll("test cleanup");
-      workspaceMutationCoordinators.clearForTests();
     }
   });
 
-  test("contains a detached delayed descendant before Editor acquisition can cross the fence", async () => {
+  test("contains a detached delayed descendant before the operation lifetime settles", async () => {
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-descendant-"));
     const target = join(root, "loaded.ts");
     const marker = `agenc-delayed-descendant-${process.pid}-${Date.now()}`;
     await writeFile(target, "before\n", "utf8");
     const manager = new UnifiedExecProcessManager({ cwd: root });
-    const token = beginWorkspaceToolOperation(root, "exec_command");
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(token);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     const delayedWriter = [
       `process.title=${JSON.stringify(marker)};`,
       "const fs=require('node:fs');",
@@ -364,31 +340,21 @@ describe("UnifiedExecProcessManager", () => {
       await lifetime.release();
       await lifetime.settled();
 
-      expect(() =>
-        workspaceMutationCoordinators.acquireEditor(root, {
-          workspaceRoot: root,
-          editorInstanceId: "editor-after-detached-launcher",
-        }),
-      ).not.toThrow();
 
       await delay(900);
       expect(await readFile(target, "utf8")).toBe("before\n");
     } finally {
       killMarker(marker);
       await manager.closeAll("test cleanup");
-      workspaceMutationCoordinators.clearForTests();
     }
   });
 
-  test("rejects an uncontainable PTY before it can launch a delayed writer across the Editor fence", async () => {
+  test("rejects an uncontainable PTY before it can launch a delayed writer inside a contained operation", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-pty-"));
     const target = join(root, "loaded.ts");
     await writeFile(target, "before\n", "utf8");
     const manager = new UnifiedExecProcessManager({ cwd: root });
-    const token = beginWorkspaceToolOperation(root, "exec_command");
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(token);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     const delayedWriter = [
       "const fs=require('node:fs');",
       `setTimeout(()=>fs.writeFileSync(${JSON.stringify(target)},'after\\n'),500);`,
@@ -411,17 +377,10 @@ describe("UnifiedExecProcessManager", () => {
       await lifetime.release();
       await lifetime.settled();
 
-      expect(() =>
-        workspaceMutationCoordinators.acquireEditor(root, {
-          workspaceRoot: root,
-          editorInstanceId: "editor-after-rejected-pty",
-        }),
-      ).not.toThrow();
       await delay(700);
       expect(await readFile(target, "utf8")).toBe("before\n");
     } finally {
       await manager.closeAll("test cleanup");
-      workspaceMutationCoordinators.clearForTests();
     }
   });
 

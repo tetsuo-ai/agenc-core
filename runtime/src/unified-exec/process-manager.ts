@@ -662,7 +662,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     if (tty && hasCurrentWorkspaceOperationLifetime()) {
       throw new UnifiedExecError(
         "create_process",
-        "tty=true execution is blocked while an Editor workspace fence is active because PTY descendants cannot be contained safely",
+        "tty=true execution is blocked inside a contained tool operation because PTY descendants cannot be contained safely",
       );
     }
 
@@ -792,13 +792,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         "missing command line for unified exec request",
       );
     }
-    // The workspace fence (`retainCurrentWorkspaceOperation`) exists so the
-    // Editor can wait for every contained process to settle before it
-    // acquires the workspace. A detached service never settles and is, by
-    // the user's choice of the full-access sandbox, outside containment, so
-    // it neither retains the fence nor is refused by it: the dispatcher runs
-    // every tool call inside a fence, and refusing here would refuse detach
-    // everywhere (observed in the first Terminal-Bench rerun).
+    // The operation lifetime (`retainCurrentWorkspaceOperation`) keeps a
+    // tool call's process containment open until every contained process
+    // settles. A detached service never settles and is, by the user's
+    // choice of the full-access sandbox, outside containment, so it neither
+    // retains the lifetime nor is refused by it: the dispatcher runs every
+    // tool call inside one, and refusing here would refuse detach everywhere
+    // (observed in the first Terminal-Bench rerun).
     const cwd = resolve(request.workdir ?? this.cwd);
     const shell = resolveShell(request.shell, this.shellPath);
     const command = wrapCommandForShell(

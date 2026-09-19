@@ -38,14 +38,6 @@ import { collectGuardedSearchCandidates } from "./guarded-search-candidates.js";
 import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import {
-  beginWorkspaceReadToolOperation,
-  captureWorkspaceAuthoritativeDirtySnapshots,
-  endWorkspaceToolOperation,
-  workspaceAuthoritativeDirtySnapshots,
-  type WorkspaceAuthoritativeDirtySnapshot,
-  type WorkspaceToolOperationToken,
-} from "../../workspace/mutation-coordinator.js";
-import {
   runSupervisedProcess,
   type SupervisedProcessStopReason,
 } from "../../utils/supervisedProcess.js";
@@ -144,8 +136,6 @@ const MAX_SEARCH_IGNORE_FILE_BYTES = 1_048_576;
 const MAX_SEARCH_IGNORE_TOTAL_BYTES = 4_194_304;
 const MAX_SEARCH_IGNORE_DIRECTORIES = 256;
 const RIPGREP_PROBE_MAX_OUTPUT_BYTES = 262_144;
-const MAX_PROTECTED_RIPGREP_CONCURRENCY = 8;
-const CANDIDATE_SPOOL_READ_BYTES = 65_536;
 const MAX_GREP_PATH_ORACLE_ENTRIES = MAX_GREP_RESULTS;
 const MAX_GREP_PATH_ORACLE_UTF8_BYTES = MAX_GREP_DECODED_BYTES;
 const WINDOWS_RESERVED_PATH_SEGMENT =
@@ -212,8 +202,8 @@ interface GrepInput extends ToolExecutionInjectedArgs {
 export interface GrepToolConfig {
   /** Allowed path prefixes (mirrors `FilesystemToolConfig.allowedPaths`). */
   readonly allowedPaths: readonly string[];
-  /** Deterministic test seam for a revision change immediately before return. */
-  readonly beforeAuthoritativeSnapshotValidation?: () => void | Promise<void>;
+  /** Deterministic test seam immediately before the result is finalized. */
+  readonly __testBeforeResultFinalize?: () => void | Promise<void>;
   /** Deterministic test seam immediately after the final path check. */
   readonly __testAfterFinalPathCheck?: () => void | Promise<void>;
   /** Deterministic observer for protected ripgrep scheduling tests. */
@@ -232,15 +222,11 @@ function textResult(content: string): ToolResult {
   return { content };
 }
 
-function editorCoherenceError(error?: unknown): ToolResult {
-  const detail =
-    error === undefined
-      ? "an Editor buffer changed while the search was running"
-      : error instanceof Error
-        ? error.message
-        : String(error);
+function readCapabilityError(error: unknown): ToolResult {
   return errorResult(
-    `Grep error: authoritative Editor workspace contents are unavailable: ${detail}. Retry after Editor synchronization settles.`,
+    `Grep error: workspace files cannot be read safely: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
   );
 }
 
@@ -843,31 +829,7 @@ async function resolveSearchPath(params: {
     const candidateStat = await stat(candidateSafe.resolved, {
       bigint: true,
     }).catch(() => undefined);
-    if (!candidateStat) {
-      try {
-        const exactEditorSnapshot = workspaceAuthoritativeDirtySnapshots(
-          candidateSafe.resolved,
-        ).some(
-          (snapshot) =>
-            normalizedResultPath(snapshot.path, candidateSafe.resolved) ===
-            normalizedResultPath(
-              candidateSafe.resolved,
-              candidateSafe.resolved,
-            ),
-        );
-        if (!exactEditorSnapshot) continue;
-      } catch (error) {
-        return {
-          error:
-            "Authoritative Editor workspace contents are unavailable: " +
-            `${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-      safe = candidateSafe;
-      targetIsDirectory = false;
-      targetExistsOnDisk = false;
-      break;
-    }
+    if (!candidateStat) continue;
     safe = candidateSafe;
     targetIsDirectory = candidateStat.isDirectory();
     targetExistsOnDisk = true;
@@ -945,109 +907,6 @@ async function bindTargetReadCapability(
   return bindWorkspaceDirectoryReadCapability(directoryPath, {
     ...(expectedIdentity !== undefined ? { expectedIdentity } : {}),
   });
-}
-
-async function additionalReadCapabilities(
-  target: ResolvedTarget,
-  primaryCapability: WorkspaceBoundReadCapability,
-  count: number,
-): Promise<readonly WorkspaceBoundReadCapability[]> {
-  if (count <= 0) return [];
-  const directoryPath = primaryCapability.rootPath;
-  const expectedIdentity =
-    resolve(directoryPath) === resolve(target.displayRoot)
-      ? target.displayRootIdentity
-      : target.isDirectory &&
-          resolve(directoryPath) === resolve(target.absolute)
-        ? target.admittedIdentity
-        : undefined;
-  const attempts = await Promise.allSettled(
-    Array.from({ length: count }, () =>
-      bindWorkspaceDirectoryReadCapability(directoryPath, {
-        ...(expectedIdentity !== undefined ? { expectedIdentity } : {}),
-      }),
-    ),
-  );
-  const capabilities = attempts.flatMap((attempt) =>
-    attempt.status === "fulfilled" ? [attempt.value] : [],
-  );
-  if (capabilities.length === count) return capabilities;
-  await Promise.all(capabilities.map((capability) => capability.dispose()));
-  return [];
-}
-
-async function mapProtectedRipgrepTasks<T, R>(params: {
-  readonly items: readonly T[];
-  readonly primaryCapability: WorkspaceBoundReadCapability;
-  readonly target: ResolvedTarget;
-  readonly source: "disk" | "snapshot";
-  readonly observer?: GrepToolConfig["__testProtectedTaskObserver"];
-  readonly signal?: AbortSignal;
-  readonly deadline?: GrepOperationDeadline;
-  readonly shouldStop?: (result: R) => boolean;
-  readonly task: (
-    item: T,
-    capability: WorkspaceBoundReadCapability,
-    index: number,
-  ) => Promise<R>;
-}): Promise<readonly R[]> {
-  if (params.items.length === 0) return [];
-  const concurrency = Math.min(
-    MAX_PROTECTED_RIPGREP_CONCURRENCY,
-    params.items.length,
-  );
-  const additional = await additionalReadCapabilities(
-    params.target,
-    params.primaryCapability,
-    concurrency - 1,
-  );
-  const capabilities = [params.primaryCapability, ...additional];
-  const results = new Array<R>(params.items.length);
-  let nextIndex = 0;
-  let terminal = false;
-  try {
-    await Promise.all(
-      capabilities.map(async (capability) => {
-        for (;;) {
-          if (
-            terminal ||
-            params.signal?.aborted === true ||
-            (params.deadline !== undefined &&
-              remainingGrepOperationMs(params.deadline) < 1)
-          ) {
-            terminal = true;
-            return;
-          }
-          const index = nextIndex;
-          nextIndex += 1;
-          if (index >= params.items.length) return;
-          params.observer?.({
-            phase: "start",
-            source: params.source,
-            index,
-          });
-          try {
-            const result = await params.task(
-              params.items[index] as T,
-              capability,
-              index,
-            );
-            results[index] = result;
-            if (params.shouldStop?.(result) === true) terminal = true;
-          } finally {
-            params.observer?.({
-              phase: "finish",
-              source: params.source,
-              index,
-            });
-          }
-        }
-      }),
-    );
-    return results;
-  } finally {
-    await Promise.all(additional.map((capability) => capability.dispose()));
-  }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -1219,80 +1078,6 @@ class BoundedWireRecord {
 
   get byteLength(): number {
     return this.#bytes;
-  }
-}
-
-async function readNulDelimitedCandidateSpool(params: {
-  readonly path: string;
-  readonly signal?: AbortSignal;
-  readonly deadline?: GrepOperationDeadline;
-  readonly visit: (path: Buffer, index: number) => boolean | Promise<boolean>;
-}): Promise<{
-  readonly processedRecords: number;
-  readonly maximumBufferedRecordBytes: number;
-}> {
-  const handle = await open(params.path, "r");
-  const buffer = Buffer.alloc(CANDIDATE_SPOOL_READ_BYTES);
-  const record = new BoundedWireRecord();
-  let processedRecords = 0;
-  let maximumBufferedRecordBytes = 0;
-  let position = 0;
-  try {
-    for (;;) {
-      if (params.signal?.aborted) {
-        return { processedRecords, maximumBufferedRecordBytes };
-      }
-      if (
-        params.deadline !== undefined &&
-        remainingGrepOperationMs(params.deadline) < 1
-      ) {
-        return { processedRecords, maximumBufferedRecordBytes };
-      }
-      const read = await handle.read(buffer, 0, buffer.byteLength, position);
-      if (read.bytesRead === 0) break;
-      position += read.bytesRead;
-      let start = 0;
-      for (;;) {
-        const delimiter = buffer.indexOf(0, start);
-        if (delimiter < 0 || delimiter >= read.bytesRead) {
-          record.append(buffer.subarray(start, read.bytesRead));
-          maximumBufferedRecordBytes = Math.max(
-            maximumBufferedRecordBytes,
-            record.byteLength,
-          );
-          break;
-        }
-        record.append(buffer.subarray(start, delimiter));
-        maximumBufferedRecordBytes = Math.max(
-          maximumBufferedRecordBytes,
-          record.byteLength,
-        );
-        const candidate = record.take();
-        if (candidate.byteLength === 0) {
-          throw new GrepBoundaryError(
-            "INVALID_WIRE_TEXT",
-            "ripgrep emitted an empty candidate path",
-          );
-        }
-        const visitResult = params.visit(candidate, processedRecords);
-        const keepReading =
-          typeof visitResult === "boolean" ? visitResult : await visitResult;
-        processedRecords += 1;
-        if (!keepReading) {
-          return { processedRecords, maximumBufferedRecordBytes };
-        }
-        start = delimiter + 1;
-      }
-    }
-    if (record.byteLength > 0) {
-      throw new GrepBoundaryError(
-        "UNTERMINATED_RECORD",
-        "ripgrep candidate spool ended with an unterminated path",
-      );
-    }
-    return { processedRecords, maximumBufferedRecordBytes };
-  } finally {
-    await handle.close();
   }
 }
 
@@ -2293,7 +2078,7 @@ function normalizedResultPath(path: string, searchRoot: string): string {
       .toLowerCase();
   }
   // POSIX path spelling is identity. Existing APFS aliases are already
-  // coalesced by the coordinator/filesystem canonicalization boundary.
+  // coalesced by the filesystem canonicalization boundary.
   return resolve(isAbsolute(path) ? path : join(searchRoot, path));
 }
 
@@ -2309,31 +2094,6 @@ function filesystemObjectKey(value: {
   readonly ino: bigint;
 }): string {
   return `${value.dev.toString(10)}:${value.ino.toString(10)}`;
-}
-
-function normalizedResultPathBytes(path: Buffer, searchRoot: string): string {
-  const decoded = decodeRipgrepPathBytes(path);
-  return decoded === undefined
-    ? `raw-bytes:${path.toString("hex")}`
-    : normalizedResultPath(decoded, searchRoot);
-}
-
-function filterDirtyDiskRecords(
-  records: readonly RipgrepOutputRecord[],
-  target: ResolvedTarget,
-  snapshots: readonly WorkspaceAuthoritativeDirtySnapshot[],
-): RipgrepOutputRecord[] {
-  const dirtyPaths = new Set(
-    snapshots.map((snapshot) =>
-      normalizedResultPath(snapshot.path, target.displayRoot),
-    ),
-  );
-  return records.filter(
-    (record) =>
-      !dirtyPaths.has(
-        normalizedResultPathBytes(record.path, target.displayRoot),
-      ),
-  );
 }
 
 export function searchPathUsesDefaultExcludedDirectory(
@@ -2554,80 +2314,6 @@ export async function pinnedSnapshotPathEligibility(params: {
   }
 }
 
-async function eligibleAuthoritativeSnapshots(params: {
-  readonly snapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
-  readonly opts: RipgrepOptions;
-  readonly target: ResolvedTarget;
-  readonly toolArgs: Record<string, unknown>;
-  readonly signal?: AbortSignal;
-  readonly readCapability?: WorkspaceBoundReadCapability;
-  readonly ignoreReadCapability?: WorkspaceBoundReadCapability;
-  readonly deadline?: GrepOperationDeadline;
-}): Promise<
-  readonly WorkspaceAuthoritativeDirtySnapshot[] | { readonly error: string }
-> {
-  const permittedSnapshots = params.snapshots.filter(snapshot => readOnlyDelegationReadPathAllowed(params.toolArgs, snapshot.path));
-  const relativePaths = permittedSnapshots.map((snapshot) =>
-    toRelativeIfInside(snapshot.path, params.target.searchRoot),
-  );
-  const selectedPaths =
-    params.opts.globs.length === 0 && params.opts.type === undefined
-      ? new Set(relativePaths.map(normalizedRelativeResultPath))
-      : await pinnedSnapshotPathEligibility({
-          relativePaths,
-          globs: params.opts.globs,
-          ...(params.opts.type !== undefined ? { type: params.opts.type } : {}),
-          signal: params.signal,
-          ...(params.deadline !== undefined
-            ? { deadline: params.deadline }
-            : {}),
-        });
-  if ("error" in selectedPaths) return selectedPaths;
-  const isIgnored = params.opts.includeIgnored
-    ? async (): Promise<boolean> => false
-    : await createSearchIgnoreMatcher(params.target.displayRoot, {
-        toolArgs: params.toolArgs,
-        ...(params.ignoreReadCapability !== undefined
-          ? { readCapability: params.ignoreReadCapability }
-          : {}),
-        ...(params.deadline !== undefined ? { deadline: params.deadline } : {}),
-        respectVcsIgnores: params.target.respectVcsIgnores,
-      });
-
-  const eligible: WorkspaceAuthoritativeDirtySnapshot[] = [];
-  for (const snapshot of permittedSnapshots) {
-    if (
-      params.deadline !== undefined &&
-      remainingGrepOperationMs(params.deadline) < 1
-    ) {
-      return { error: "Grep error: ripgrep timed out." };
-    }
-    if (params.signal?.aborted) return { error: "Search aborted" };
-    const relativePath = toRelativeIfInside(
-      snapshot.path,
-      params.target.searchRoot,
-    );
-    if (
-      searchPathUsesDefaultExcludedDirectory(
-        relativePath,
-        params.opts.includeIgnored,
-      ) ||
-      !selectedPaths.has(normalizedRelativeResultPath(relativePath))
-    ) {
-      continue;
-    }
-    try {
-      if (await isIgnored(snapshot.path)) continue;
-    } catch (error) {
-      return {
-        error: `Grep error: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
-    eligible.push(snapshot);
-  }
-  return eligible;
-}
-
 function attributeStdinResultRecord(
   record: RipgrepOutputRecord,
   snapshotPath: string,
@@ -2637,229 +2323,10 @@ function attributeStdinResultRecord(
   return { ...record, path: Buffer.from(snapshotPath, "utf8") };
 }
 
-async function collectAuthoritativeSnapshotRecords(params: {
-  readonly snapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
-  readonly opts: RipgrepOptions;
-  readonly maximumLines?: number;
-  readonly skipLines?: number;
-  readonly target: ResolvedTarget;
-  readonly toolArgs: Record<string, unknown>;
-  readonly signal?: AbortSignal;
-  readonly readCapability?: WorkspaceBoundReadCapability;
-  readonly ignoreReadCapability?: WorkspaceBoundReadCapability;
-  readonly deadline?: GrepOperationDeadline;
-  readonly observer?: GrepToolConfig["__testProtectedTaskObserver"];
-  readonly operationBudget: GrepOperationBudget;
-}): Promise<
-  | {
-      readonly records: readonly RipgrepOutputRecord[];
-      readonly truncated: boolean;
-      readonly processedLines: number;
-    }
-  | { readonly error: string }
-> {
-  const eligible = await eligibleAuthoritativeSnapshots(params);
-  if ("error" in eligible) return eligible;
-  const maximumLines = params.maximumLines;
-  const guardedRead = hasReadOnlyDelegationReadGuard(params.toolArgs);
-  const searchSnapshot = (
-    snapshot: WorkspaceAuthoritativeDirtySnapshot,
-    skipLines: number,
-    retainedLineLimit: number | undefined,
-    readCapability?: WorkspaceBoundReadCapability,
-  ): Promise<LimitedRipgrepResult> => {
-    if (!readOnlyDelegationReadPathAllowed(params.toolArgs, snapshot.path)) return Promise.resolve(emptyLimitedRipgrepResult());
-    return runRipgrepCollectRecords({
-      outputMode: params.opts.outputMode,
-      args: buildRipgrepArgs({
-        ...params.opts,
-        absolutePath: "-",
-        type: undefined,
-        globs: [],
-      }),
-      cwd: guardedRead ? parse(params.target.absolute).root : ripgrepCwdForTarget(params.target),
-      toolArgs: params.toolArgs,
-      ...(retainedLineLimit !== undefined
-        ? { maximumLines: retainedLineLimit }
-        : {}),
-      ...(skipLines > 0 ? { skipLines } : {}),
-      stdin: snapshot.content,
-      signal: params.signal,
-      ...(readCapability !== undefined && !guardedRead ? { readCapability } : {}),
-      ...(params.deadline !== undefined ? { deadline: params.deadline } : {}),
-      operationBudget: params.operationBudget,
-    });
-  };
-  const records: RipgrepOutputRecord[] = [];
-  let collectedLines = 0;
-  let processedLines = 0;
-  let remainingSkip = params.skipLines ?? 0;
-  let truncated = false;
-
-  for (const [index, snapshot] of eligible.entries()) {
-    if (params.signal?.aborted) return { error: "Search aborted" };
-    if (maximumLines !== undefined && collectedLines >= maximumLines) {
-      truncated = true;
-      break;
-    }
-    const remainingLines =
-      maximumLines === undefined ? undefined : maximumLines - collectedLines;
-    params.observer?.({ phase: "start", source: "snapshot", index });
-    let result: LimitedRipgrepResult;
-    try {
-      result = await searchSnapshot(
-        snapshot,
-        remainingSkip,
-        remainingLines,
-        params.readCapability,
-      );
-    } finally {
-      params.observer?.({ phase: "finish", source: "snapshot", index });
-    }
-    if (params.signal?.aborted || result.aborted) {
-      return { error: "Search aborted" };
-    }
-    if (result.spawnError !== undefined) {
-      return { error: `Grep error: ${result.spawnError.message}` };
-    }
-    if (result.protocolError !== undefined) {
-      return {
-        error: `Grep error: ${formatBoundaryError(result.protocolError)}`,
-      };
-    }
-    if (result.stopReason === "timeout") {
-      return { error: "Grep error: ripgrep timed out." };
-    }
-    if (result.stopReason === "output_limit") {
-      return {
-        error: "Grep error: ripgrep exceeded the output safety limit.",
-      };
-    }
-    if (
-      result.exitCode !== 0 &&
-      result.exitCode !== 1 &&
-      !result.killedAfterLimit
-    ) {
-      const detail = result.stderr.trim() || "ripgrep failed";
-      return { error: `Grep error: ${detail}` };
-    }
-    processedLines += result.processedLines;
-    remainingSkip = Math.max(0, remainingSkip - result.processedLines);
-    if (!readOnlyDelegationReadPathAllowed(params.toolArgs, snapshot.path)) continue;
-    for (const record of result.records) {
-      const attributed = attributeStdinResultRecord(record, snapshot.path);
-      if (attributed !== null) {
-        records.push(attributed);
-        collectedLines += ripgrepRecordLineCount(attributed);
-      }
-    }
-    if (
-      result.killedAfterLimit ||
-      (maximumLines !== undefined && collectedLines >= maximumLines)
-    ) {
-      truncated = true;
-      break;
-    }
-  }
-  return { records, truncated, processedLines };
-}
-
 function totalRecordLines(records: readonly RipgrepOutputRecord[]): number {
   let total = 0;
   for (const record of records) total += ripgrepRecordLineCount(record);
   return total;
-}
-
-function appendRecordsWithinLineLimit(
-  first: readonly RipgrepOutputRecord[],
-  second: readonly RipgrepOutputRecord[],
-  maximumLines: number | undefined,
-): {
-  readonly records: readonly RipgrepOutputRecord[];
-  readonly truncated: boolean;
-} {
-  if (maximumLines === undefined) {
-    return { records: [...first, ...second], truncated: false };
-  }
-  const records: RipgrepOutputRecord[] = [];
-  let renderedLines = 0;
-  for (const source of [first, second]) {
-    for (const record of source) {
-      if (renderedLines >= maximumLines) {
-        return { records, truncated: true };
-      }
-      records.push(record);
-      renderedLines += ripgrepRecordLineCount(record);
-    }
-  }
-  return { records, truncated: false };
-}
-
-function compareResultPaths(
-  left: RipgrepOutputRecord,
-  right: RipgrepOutputRecord,
-  searchRoot: string,
-): number {
-  return Buffer.compare(
-    Buffer.from(normalizedResultPathBytes(left.path, searchRoot), "utf8"),
-    Buffer.from(normalizedResultPathBytes(right.path, searchRoot), "utf8"),
-  );
-}
-
-function mergeCountRecordsByPath(params: {
-  readonly authoritative: readonly RipgrepOutputRecord[];
-  readonly disk: readonly RipgrepOutputRecord[];
-  readonly searchRoot: string;
-  readonly maximumLines?: number;
-}): {
-  readonly records: readonly RipgrepCountRecord[];
-  readonly truncated: boolean;
-} {
-  const authoritative = params.authoritative
-    .filter((record): record is RipgrepCountRecord => record.kind === "count")
-    .toSorted((left, right) =>
-      compareResultPaths(left, right, params.searchRoot),
-    );
-  const disk = params.disk.filter(
-    (record): record is RipgrepCountRecord => record.kind === "count",
-  );
-  const records: RipgrepCountRecord[] = [];
-  let authoritativeIndex = 0;
-  let diskIndex = 0;
-  while (authoritativeIndex < authoritative.length || diskIndex < disk.length) {
-    if (
-      params.maximumLines !== undefined &&
-      records.length >= params.maximumLines
-    ) {
-      return { records, truncated: true };
-    }
-    const authoritativeRecord = authoritative[authoritativeIndex];
-    const diskRecord = disk[diskIndex];
-    if (authoritativeRecord === undefined) {
-      records.push(diskRecord!);
-      diskIndex += 1;
-      continue;
-    }
-    if (diskRecord === undefined) {
-      records.push(authoritativeRecord);
-      authoritativeIndex += 1;
-      continue;
-    }
-    const comparison = compareResultPaths(
-      authoritativeRecord,
-      diskRecord,
-      params.searchRoot,
-    );
-    if (comparison <= 0) {
-      records.push(authoritativeRecord);
-      authoritativeIndex += 1;
-      if (comparison === 0) diskIndex += 1;
-    } else {
-      records.push(diskRecord);
-      diskIndex += 1;
-    }
-  }
-  return { records, truncated: false };
 }
 
 async function runRipgrepGrep(params: {
@@ -2868,7 +2335,6 @@ async function runRipgrepGrep(params: {
   readonly offset: number;
   readonly target: ResolvedTarget;
   readonly toolArgs: Record<string, unknown>;
-  readonly authoritativeSnapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
   readonly requiresStrictCandidateReads: boolean;
   readonly signal?: AbortSignal;
   readonly readCapability?: WorkspaceBoundReadCapability;
@@ -2878,10 +2344,8 @@ async function runRipgrepGrep(params: {
   readonly observer?: GrepToolConfig["__testProtectedTaskObserver"];
   readonly operationBudgetLimits?: Partial<GrepOperationBudgetLimits>;
 }): Promise<ToolResult> {
-  const { opts, headLimit, offset, target, authoritativeSnapshots, signal } =
-    params;
+  const { opts, headLimit, offset, target, signal } = params;
   const pageLines = headLimit === 0 ? undefined : headLimit + 1;
-  const countMode = opts.outputMode === "count";
   const operationBudget = new GrepOperationBudget({
     maxRecords:
       params.operationBudgetLimits?.maxRecords ??
@@ -2892,48 +2356,8 @@ async function runRipgrepGrep(params: {
       params.operationBudgetLimits?.maxWorkUnits ??
       MAX_GREP_OPERATION_WORK_UNITS,
   });
-  let authoritativeRecords: readonly RipgrepOutputRecord[] = [];
-  let authoritativeTruncated = false;
-  let authoritativeProcessedLines = 0;
-  if (authoritativeSnapshots.length > 0) {
-    const authoritative = await collectAuthoritativeSnapshotRecords({
-      snapshots: authoritativeSnapshots,
-      opts,
-      ...(!countMode && pageLines !== undefined
-        ? { maximumLines: pageLines }
-        : {}),
-      ...(!countMode && offset > 0 ? { skipLines: offset } : {}),
-      target,
-      toolArgs: params.toolArgs,
-      signal,
-      deadline: params.deadline,
-      ...(params.observer !== undefined ? { observer: params.observer } : {}),
-      operationBudget,
-      ...(params.readCapability !== undefined
-        ? { readCapability: params.readCapability }
-        : {}),
-      ...(params.ignoreReadCapability !== undefined
-        ? { ignoreReadCapability: params.ignoreReadCapability }
-        : {}),
-    });
-    if ("error" in authoritative) {
-      return errorResult(authoritative.error);
-    }
-    authoritativeRecords = authoritative.records;
-    authoritativeTruncated = authoritative.truncated;
-    authoritativeProcessedLines = authoritative.processedLines;
-  }
-  const authoritativeLineCount = totalRecordLines(authoritativeRecords);
-  const authoritativeCount = countMode ? authoritativeRecords.length : 0;
-  const sourceSkipLines = countMode
-    ? Math.max(0, offset - authoritativeCount)
-    : Math.max(0, offset - authoritativeProcessedLines);
-  const diskMaximumLines =
-    pageLines === undefined
-      ? undefined
-      : countMode
-        ? pageLines + authoritativeCount
-        : Math.max(0, pageLines - authoritativeLineCount);
+  const sourceSkipLines = offset;
+  const diskMaximumLines = pageLines;
   const result: LimitedRipgrepResult =
     diskMaximumLines === 0
       ? emptyLimitedRipgrepResult()
@@ -2977,7 +2401,6 @@ async function runRipgrepGrep(params: {
               ...(sourceSkipLines > 0 ? { skipLines: sourceSkipLines } : {}),
               target,
               toolArgs: params.toolArgs,
-              authoritativeSnapshots,
               signal,
               readCapability: params.readCapability,
               ...(params.discoveryReadCapability !== undefined
@@ -3012,52 +2435,26 @@ async function runRipgrepGrep(params: {
   }
   if (
     result.exitCode === 1 &&
-    result.records.length === 0 &&
-    authoritativeSnapshots.length === 0
+    result.records.length === 0
   ) {
     // Ripgrep convention: exit 1 = "no matches".
     return emptyRipgrepResultForMode(opts.outputMode, headLimit, offset);
   }
   if (
     result.exitCode !== 0 &&
-    !result.killedAfterLimit &&
-    !(result.exitCode === 1 && authoritativeSnapshots.length > 0)
+    !result.killedAfterLimit
   ) {
     const detail = result.stderr.trim() || "ripgrep failed";
     return errorResult(`Grep error: ${detail}`);
   }
 
-  const diskRecords = filterDirtyDiskRecords(
-    result.records,
-    target,
-    authoritativeSnapshots,
-  );
-  const merged =
-    opts.outputMode === "count"
-      ? mergeCountRecordsByPath({
-          authoritative: authoritativeRecords,
-          disk: diskRecords,
-          searchRoot: target.displayRoot,
-          ...(pageLines !== undefined
-            ? {
-                maximumLines: pageLines + Math.min(offset, authoritativeCount),
-              }
-            : {}),
-        })
-      : appendRecordsWithinLineLimit(
-          authoritativeRecords,
-          diskRecords,
-          pageLines,
-        );
-  const rawRecords = merged.records;
-  const mergeTruncated = merged.truncated;
+  const rawRecords = result.records;
 
   if (rawRecords.length === 0) {
     return emptyRipgrepResultForMode(opts.outputMode, headLimit, offset);
   }
 
   const displayRoot = displayRootForTarget(target);
-  const retainedOffset = countMode ? offset - sourceSkipLines : 0;
 
   try {
     if (
@@ -3071,17 +2468,14 @@ async function runRipgrepGrep(params: {
       );
     }
     if (opts.outputMode === "files_with_matches") {
-      const selected = applyTruncation(rawRecords, headLimit, retainedOffset);
+      const selected = applyTruncation(rawRecords, headLimit, 0);
       const rendered = new BoundedRenderedLineCollector();
       for (const record of selected.items) {
         rendered.push(renderResultPath(record.path, displayRoot));
       }
       const formatted = formatFilesWithMatchesResult(
         rendered.lines,
-        selected.truncated ||
-          result.killedAfterLimit ||
-          authoritativeTruncated ||
-          mergeTruncated,
+        selected.truncated || result.killedAfterLimit,
         headLimit,
         offset,
       );
@@ -3093,7 +2487,7 @@ async function runRipgrepGrep(params: {
       const counts = rawRecords.filter(
         (record): record is RipgrepCountRecord => record.kind === "count",
       );
-      const selected = applyTruncation(counts, headLimit, retainedOffset);
+      const selected = applyTruncation(counts, headLimit, 0);
       const rendered = new BoundedRenderedLineCollector();
       for (const record of selected.items) {
         rendered.push(
@@ -3103,10 +2497,7 @@ async function runRipgrepGrep(params: {
       const body = rendered.lines.join("\n");
       const summary = formatCountSummary(
         selected.items,
-        selected.truncated ||
-          result.killedAfterLimit ||
-          authoritativeTruncated ||
-          mergeTruncated,
+        selected.truncated || result.killedAfterLimit,
         headLimit,
         offset,
       );
@@ -3125,10 +2516,7 @@ async function runRipgrepGrep(params: {
     });
     const body = content.items.join("\n");
     const pagination =
-      content.truncated ||
-      result.killedAfterLimit ||
-      authoritativeTruncated ||
-      mergeTruncated
+      content.truncated || result.killedAfterLimit
         ? formatTruncationNote(headLimit, offset)
         : offset > 0
           ? formatOffsetNote(offset)
@@ -3198,270 +2586,8 @@ function ripgrepFailure(
   return undefined;
 }
 
-async function collectDescriptorBoundContentFromSpool(params: {
-  readonly opts: RipgrepOptions;
-  readonly maximumLines?: number;
-  readonly skipLines?: number;
-  readonly target: ResolvedTarget;
-  readonly toolArgs: Record<string, unknown>;
-  readonly authoritativeSnapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
-  readonly signal?: AbortSignal;
-  readonly readCapability: WorkspaceBoundReadCapability;
-  readonly discoveryReadCapability?: WorkspaceBoundReadCapability;
-  readonly deadline?: GrepOperationDeadline;
-  readonly observer?: GrepToolConfig["__testProtectedTaskObserver"];
-  readonly operationBudget: GrepOperationBudget;
-}): Promise<LimitedRipgrepResult> {
-  const ripgrepPath = selectPinnedRipgrepPath();
-  if (ripgrepPath === undefined) return pinnedRipgrepUnavailableResult();
-  const temporaryRoot = await mkdtemp(
-    join(resolveSessionTempRoot(), "agenc-grep-candidate-spool-"),
-  );
-  const spoolPath = join(temporaryRoot, "candidates.bin");
-  const discoveryReadCapability =
-    params.discoveryReadCapability ?? params.readCapability;
-  try {
-    const processArgs = [
-      "--no-config",
-      "--no-follow",
-      ...buildRipgrepArgs({
-        ...params.opts,
-        outputMode: "files_with_matches",
-        contextBefore: undefined,
-        contextAfter: undefined,
-        contextBoth: undefined,
-      }),
-    ];
-    try {
-      assertGrepArgvWithinLimits(ripgrepPath, processArgs);
-    } catch (error) {
-      return {
-        ...emptyLimitedRipgrepResult(),
-        exitCode: 127,
-        protocolError:
-          error instanceof GrepBoundaryError
-            ? error
-            : new GrepBoundaryError("ARGV_UTF8_LIMIT", String(error)),
-      };
-    }
-    const timeoutMs =
-      params.deadline === undefined
-        ? MAX_GREP_WALL_MS
-        : remainingGrepOperationMs(params.deadline);
-    if (timeoutMs < 1) return operationTimedOutResult();
-    const discovery = await discoveryReadCapability.runRipgrep({
-      program: ripgrepPath,
-      args: processArgs,
-      env: scrubEnvForChildProcess(process.env),
-      timeoutMs,
-      maxOutputBytes: MAX_GREP_DIAGNOSTIC_BYTES,
-      stdoutSpoolPath: spoolPath,
-      maxSpoolBytes: MAX_GREP_DECODED_BYTES,
-      ...(params.signal !== undefined ? { signal: params.signal } : {}),
-    });
-    if (params.signal?.aborted || discovery.aborted) {
-      return {
-        ...emptyLimitedRipgrepResult(),
-        aborted: true,
-        stopReason: "aborted",
-      };
-    }
-    if (discovery.spawnError !== undefined) {
-      return {
-        ...emptyLimitedRipgrepResult(),
-        exitCode: 127,
-        spawnError: discovery.spawnError,
-      };
-    }
-    if (discovery.stopReason !== undefined) {
-      return {
-        ...emptyLimitedRipgrepResult(),
-        exitCode: discovery.exitCode,
-        stopReason: discovery.stopReason,
-      };
-    }
-    if (discovery.exitCode !== 0 && discovery.exitCode !== 1) {
-      return {
-        ...emptyLimitedRipgrepResult(),
-        exitCode: discovery.exitCode,
-        spawnError: new Error(
-          discovery.stderr.toString("utf8").trim() || "ripgrep failed",
-        ),
-      };
-    }
-
-    const dirtyDiskPaths = new Set(
-      params.authoritativeSnapshots.map((snapshot) =>
-        normalizedResultPath(snapshot.path, params.target.displayRoot),
-      ),
-    );
-    const records: RipgrepOutputRecord[] = [];
-    let decodedBytes = 0;
-    let collectedLines = 0;
-    let processedLines = 0;
-    let remainingSkip = params.skipLines ?? 0;
-    let killedAfterLimit = false;
-    let terminalResult: LimitedRipgrepResult | undefined;
-    await readNulDelimitedCandidateSpool({
-      path: spoolPath,
-      signal: params.signal,
-      ...(params.deadline !== undefined ? { deadline: params.deadline } : {}),
-      visit: async (path, index) => {
-        try {
-          params.operationBudget.consumeWork(1);
-        } catch (error) {
-          terminalResult = {
-            ...emptyLimitedRipgrepResult(),
-            exitCode: 127,
-            protocolError:
-              error instanceof GrepBoundaryError
-                ? error
-                : new GrepBoundaryError("RESULT_LIMIT", String(error)),
-          };
-          return false;
-        }
-        const decoded = decodeRipgrepPathBytes(path);
-        if (decoded === undefined) {
-          terminalResult = {
-            ...emptyLimitedRipgrepResult(),
-            exitCode: 127,
-            protocolError: new GrepBoundaryError(
-              "INVALID_WIRE_TEXT",
-              "descriptor-bound discovery cannot reopen a non-UTF-8 path",
-            ),
-          };
-          return false;
-        }
-        const candidatePath = normalizedResultPath(
-          decoded,
-          discoveryReadCapability.rootPath,
-        );
-        if (!isPathInsideRoot(candidatePath, params.target.absolute)) {
-          terminalResult = {
-            ...emptyLimitedRipgrepResult(),
-            exitCode: 127,
-            protocolError: new GrepBoundaryError(
-              "INVALID_WIRE_TEXT",
-              "descriptor-bound discovery returned a candidate outside the requested search root",
-            ),
-          };
-          return false;
-        }
-        if (dirtyDiskPaths.has(candidatePath)) return true;
-        const relativeInputFile = descriptorRelativePath(
-          candidatePath,
-          params.readCapability.rootPath,
-        );
-        if (relativeInputFile === undefined) {
-          terminalResult = {
-            ...emptyLimitedRipgrepResult(),
-            exitCode: 127,
-            spawnError: new Error(
-              "descriptor-bound ripgrep returned a candidate outside its authenticated root",
-            ),
-          };
-          return false;
-        }
-        const remainingLines =
-          params.maximumLines === undefined
-            ? undefined
-            : params.maximumLines - collectedLines;
-        params.observer?.({ phase: "start", source: "disk", index });
-        let verified: LimitedRipgrepResult;
-        try {
-          verified = await runRipgrepCollectRecords({
-            outputMode: "content",
-            args: buildRipgrepArgs({
-              ...params.opts,
-              absolutePath: "-",
-              type: undefined,
-              globs: [],
-            }),
-            cwd: params.readCapability.rootPath,
-            toolArgs: params.toolArgs,
-            ...(remainingLines !== undefined
-              ? { maximumLines: remainingLines }
-              : {}),
-            ...(remainingSkip > 0 ? { skipLines: remainingSkip } : {}),
-            relativeInputFile,
-            signal: params.signal,
-            readCapability: params.readCapability,
-            ...(params.deadline !== undefined
-              ? { deadline: params.deadline }
-              : {}),
-            operationBudget: params.operationBudget,
-          });
-        } finally {
-          params.observer?.({ phase: "finish", source: "disk", index });
-        }
-        const failure = ripgrepFailure(verified);
-        if (failure !== undefined) {
-          terminalResult = failure;
-          return false;
-        }
-        decodedBytes += verified.decodedBytes;
-        processedLines += verified.processedLines;
-        remainingSkip = Math.max(0, remainingSkip - verified.processedLines);
-        for (const record of verified.records) {
-          const attributed = attributeStdinResultRecord(record, candidatePath);
-          if (attributed === null) continue;
-          records.push(attributed);
-          collectedLines += ripgrepRecordLineCount(attributed);
-        }
-        if (
-          verified.killedAfterLimit ||
-          (params.maximumLines !== undefined &&
-            collectedLines >= params.maximumLines)
-        ) {
-          killedAfterLimit = true;
-          return false;
-        }
-        return params.signal?.aborted !== true;
-      },
-    });
-    if (terminalResult !== undefined) return terminalResult;
-    if (params.signal?.aborted) {
-      return {
-        ...emptyLimitedRipgrepResult(),
-        aborted: true,
-        stopReason: "aborted",
-      };
-    }
-    if (
-      params.deadline !== undefined &&
-      remainingGrepOperationMs(params.deadline) < 1
-    ) {
-      return operationTimedOutResult();
-    }
-    return {
-      records,
-      decodedBytes,
-      stderr: "",
-      exitCode: records.length > 0 ? 0 : 1,
-      signal: null,
-      killedAfterLimit,
-      aborted: false,
-      processedLines,
-    };
-  } catch (error) {
-    return {
-      ...emptyLimitedRipgrepResult(),
-      exitCode: 127,
-      protocolError:
-        error instanceof GrepBoundaryError
-          ? error
-          : new GrepBoundaryError(
-              "INVALID_WIRE_TEXT",
-              error instanceof Error ? error.message : String(error),
-            ),
-    };
-  } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
-  }
-}
-
 /**
- * Protected Editor searches deliberately separate discovery from rendering.
+ * Descriptor-bound searches deliberately separate discovery from rendering.
  *
  * The discovery process runs only against literal `.` under the authenticated
  * helper cwd. Its output is treated as untrusted candidate metadata: every
@@ -3470,13 +2596,18 @@ async function collectDescriptorBoundContentFromSpool(params: {
  * O_NOFOLLOW when available), then wires that fd to a second ripgrep invocation
  * via stdin. Only the second invocation's bytes can reach the tool result.
  */
+/**
+ * Delegated read-only searches never hand ripgrep a pathname: every candidate
+ * is enumerated and read through the bound directory descriptor, then piped
+ * to a one-shot ripgrep on stdin, so a path exchange after admission cannot
+ * leak bytes from outside the authenticated root.
+ */
 async function collectDescriptorBoundDiskRecords(params: {
   readonly opts: RipgrepOptions;
   readonly maximumLines?: number;
   readonly skipLines?: number;
   readonly target: ResolvedTarget;
   readonly toolArgs: Record<string, unknown>;
-  readonly authoritativeSnapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
   readonly signal?: AbortSignal;
   readonly readCapability: WorkspaceBoundReadCapability;
   readonly discoveryReadCapability?: WorkspaceBoundReadCapability;
@@ -3486,24 +2617,12 @@ async function collectDescriptorBoundDiskRecords(params: {
 }): Promise<LimitedRipgrepResult> {
   if (!params.target.existsOnDisk) return emptyLimitedRipgrepResult();
 
-  const guardedRead = hasReadOnlyDelegationReadGuard(params.toolArgs);
-  if (!guardedRead && params.target.isDirectory && params.opts.outputMode === "content") {
-    return collectDescriptorBoundContentFromSpool(params);
-  }
-
   const maximumLines = params.maximumLines;
   const discoveryReadCapability =
     params.discoveryReadCapability ?? params.readCapability;
-  const dirtyDiskPaths = new Set(
-    params.authoritativeSnapshots.map((snapshot) =>
-      normalizedResultPath(snapshot.path, params.target.searchRoot),
-    ),
-  );
   let candidatePaths: string[];
-  let discoveryTruncated = false;
-  let discoveryProcessedLines = 0;
   let remainingInputBytes = MAX_GREP_DECODED_BYTES;
-  if (params.target.isDirectory && guardedRead) {
+  if (params.target.isDirectory) {
     const ignored = params.opts.includeIgnored ? async () => false : await createSearchIgnoreMatcher(params.target.displayRoot, {
       toolArgs: params.toolArgs,
       readCapability: discoveryReadCapability,
@@ -3524,102 +2643,8 @@ async function collectDescriptorBoundDiskRecords(params: {
       deadline: params.deadline,
     });
     if ("error" in selected) return { ...emptyLimitedRipgrepResult(), exitCode: 127, spawnError: new Error(selected.error) };
-    candidatePaths = candidates.map(candidate => candidate.path).filter(path => !dirtyDiskPaths.has(path) && selected.has(normalizedRelativeResultPath(relative(params.target.searchRoot, path)))).sort();
+    candidatePaths = candidates.map(candidate => candidate.path).filter(path => selected.has(normalizedRelativeResultPath(relative(params.target.searchRoot, path)))).sort();
     params.operationBudget.consumeWork(candidatePaths.length);
-  } else if (params.target.isDirectory) {
-    const discoveryOutputMode: OutputMode =
-      params.opts.outputMode === "count" ? "count" : "files_with_matches";
-    const excludedPaths = params.authoritativeSnapshots
-      .map((snapshot) =>
-        relative(discoveryReadCapability.rootPath, snapshot.path),
-      )
-      .filter(
-        (path) =>
-          path.length > 0 &&
-          !isAbsolute(path) &&
-          !isWindowsAbsolutePath(path) &&
-          path !== ".." &&
-          !path.startsWith(`..${sep}`),
-      )
-      .map((path) =>
-        process.platform === "win32" ? path.replace(/\\/gu, "/") : path,
-      );
-    const contentMode = params.opts.outputMode === "content";
-    const requestedSkip = params.skipLines ?? 0;
-    const discoveryMaximumLines = contentMode
-      ? requestedSkip + (maximumLines ?? MAX_GREP_RESULTS)
-      : maximumLines;
-    const discovery = await runRipgrepCollectRecords({
-      outputMode: discoveryOutputMode,
-      args: buildRipgrepArgs({
-        ...params.opts,
-        absolutePath: params.opts.absolutePath,
-        outputMode: discoveryOutputMode,
-        contextBefore: undefined,
-        contextAfter: undefined,
-        contextBoth: undefined,
-      }),
-      cwd: discoveryReadCapability.rootPath,
-      toolArgs: params.toolArgs,
-      ...(discoveryMaximumLines !== undefined && discoveryMaximumLines > 0
-        ? { maximumLines: discoveryMaximumLines }
-        : {}),
-      ...(!contentMode && requestedSkip > 0
-        ? { skipLines: params.skipLines }
-        : {}),
-      ...(excludedPaths.length > 0 ? { excludedPaths } : {}),
-      signal: params.signal,
-      readCapability: discoveryReadCapability,
-      ...(params.deadline !== undefined ? { deadline: params.deadline } : {}),
-    });
-    const discoveryFailure = ripgrepFailure(discovery);
-    if (discoveryFailure !== undefined) return discoveryFailure;
-    discoveryTruncated = discovery.killedAfterLimit;
-    discoveryProcessedLines = discovery.processedLines;
-    const seen = new Set<string>();
-    candidatePaths = [];
-    for (const record of discovery.records) {
-      const decoded = decodeRipgrepPathBytes(record.path);
-      if (decoded === undefined) {
-        return {
-          ...emptyLimitedRipgrepResult(),
-          exitCode: 127,
-          protocolError: new GrepBoundaryError(
-            "INVALID_WIRE_TEXT",
-            "descriptor-bound discovery cannot reopen a non-UTF-8 path",
-          ),
-        };
-      }
-      const candidate = normalizedResultPath(
-        decoded,
-        discoveryReadCapability.rootPath,
-      );
-      if (!isPathInsideRoot(candidate, params.target.absolute)) {
-        return {
-          ...emptyLimitedRipgrepResult(),
-          exitCode: 127,
-          protocolError: new GrepBoundaryError(
-            "INVALID_WIRE_TEXT",
-            "descriptor-bound discovery returned a candidate outside the requested search root",
-          ),
-        };
-      }
-      if (dirtyDiskPaths.has(candidate) || seen.has(candidate)) continue;
-      seen.add(candidate);
-      candidatePaths.push(candidate);
-    }
-    try {
-      params.operationBudget.consumeWork(candidatePaths.length);
-    } catch (error) {
-      return {
-        ...emptyLimitedRipgrepResult(),
-        exitCode: 127,
-        protocolError:
-          error instanceof GrepBoundaryError
-            ? error
-            : new GrepBoundaryError("RESULT_LIMIT", String(error)),
-      };
-    }
   } else {
     candidatePaths = [
       normalizedResultPath(params.target.absolute, params.target.searchRoot),
@@ -3646,23 +2671,21 @@ async function collectDescriptorBoundDiskRecords(params: {
         ),
       };
     }
-    let stdin: Buffer | undefined;
-    if (guardedRead) {
-      if (params.signal?.aborted) return { ...emptyLimitedRipgrepResult(), aborted: true };
-      try {
-        const admitted = await capability.readRelativeFile(relativeInputFile, remainingInputBytes);
-        remainingInputBytes -= admitted.content.byteLength;
-        stdin = admitted.content;
-      } catch (error) {
-        return {
-          ...emptyLimitedRipgrepResult(),
-          exitCode: 127,
-          spawnError: error instanceof Error ? error : new Error(String(error)),
-        };
-      }
-      if (!readOnlyDelegationReadPathAllowed(params.toolArgs, candidatePath)) return emptyLimitedRipgrepResult();
-      if (params.signal?.aborted) return { ...emptyLimitedRipgrepResult(), aborted: true };
+    if (params.signal?.aborted) return { ...emptyLimitedRipgrepResult(), aborted: true };
+    let stdin: Buffer;
+    try {
+      const admitted = await capability.readRelativeFile(relativeInputFile, remainingInputBytes);
+      remainingInputBytes -= admitted.content.byteLength;
+      stdin = admitted.content;
+    } catch (error) {
+      return {
+        ...emptyLimitedRipgrepResult(),
+        exitCode: 127,
+        spawnError: error instanceof Error ? error : new Error(String(error)),
+      };
     }
+    if (!readOnlyDelegationReadPathAllowed(params.toolArgs, candidatePath)) return emptyLimitedRipgrepResult();
+    if (params.signal?.aborted) return { ...emptyLimitedRipgrepResult(), aborted: true };
     return runRipgrepCollectRecords({
       outputMode: params.opts.outputMode,
       args: buildRipgrepArgs({
@@ -3671,13 +2694,13 @@ async function collectDescriptorBoundDiskRecords(params: {
         type: undefined,
         globs: [],
       }),
-      cwd: guardedRead ? parse(capability.rootPath).root : capability.rootPath,
+      cwd: parse(capability.rootPath).root,
       toolArgs: params.toolArgs,
       ...(retainedLineLimit !== undefined
         ? { maximumLines: retainedLineLimit }
         : {}),
       ...(skipLines > 0 ? { skipLines } : {}),
-      ...(stdin !== undefined ? { stdin } : { relativeInputFile, readCapability: capability }),
+      stdin,
       signal: params.signal,
       ...(params.deadline !== undefined ? { deadline: params.deadline } : {}),
       operationBudget: params.operationBudget,
@@ -3688,27 +2711,8 @@ async function collectDescriptorBoundDiskRecords(params: {
   let decodedBytes = 0;
   let collectedLines = 0;
   let processedLines = 0;
-  let killedAfterLimit = discoveryTruncated;
+  let killedAfterLimit = false;
   let remainingSkip = params.skipLines ?? 0;
-  const verifiedResults =
-    guardedRead || params.opts.outputMode === "content"
-      ? undefined
-      : await mapProtectedRipgrepTasks({
-          items: candidatePaths,
-          primaryCapability: params.readCapability,
-          target: params.target,
-          source: "disk",
-          ...(params.observer !== undefined
-            ? { observer: params.observer }
-            : {}),
-          signal: params.signal,
-          ...(params.deadline !== undefined
-            ? { deadline: params.deadline }
-            : {}),
-          task: (candidatePath, capability) =>
-            verifyCandidate(candidatePath, capability, 0, maximumLines),
-          shouldStop: (result) => ripgrepFailure(result) !== undefined,
-        });
   if (
     params.deadline !== undefined &&
     remainingGrepOperationMs(params.deadline) < 1
@@ -3727,23 +2731,19 @@ async function collectDescriptorBoundDiskRecords(params: {
       killedAfterLimit = true;
       break;
     }
+    const remainingLines =
+      maximumLines === undefined ? undefined : maximumLines - collectedLines;
+    params.observer?.({ phase: "start", source: "disk", index });
     let verified: LimitedRipgrepResult;
-    if (verifiedResults === undefined) {
-      const remainingLines =
-        maximumLines === undefined ? undefined : maximumLines - collectedLines;
-      params.observer?.({ phase: "start", source: "disk", index });
-      try {
-        verified = await verifyCandidate(
-          candidatePath,
-          params.readCapability,
-          remainingSkip,
-          remainingLines,
-        );
-      } finally {
-        params.observer?.({ phase: "finish", source: "disk", index });
-      }
-    } else {
-      verified = verifiedResults[index] as LimitedRipgrepResult;
+    try {
+      verified = await verifyCandidate(
+        candidatePath,
+        params.readCapability,
+        remainingSkip,
+        remainingLines,
+      );
+    } finally {
+      params.observer?.({ phase: "finish", source: "disk", index });
     }
     const verifiedFailure = ripgrepFailure(verified);
     if (verifiedFailure !== undefined) return verifiedFailure;
@@ -3774,10 +2774,7 @@ async function collectDescriptorBoundDiskRecords(params: {
     signal: null,
     killedAfterLimit,
     aborted: false,
-    processedLines:
-      guardedRead || params.opts.outputMode === "content"
-        ? processedLines
-        : discoveryProcessedLines,
+    processedLines,
   };
 }
 
@@ -3981,8 +2978,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
     config?.allowedPaths && config.allowedPaths.length > 0
       ? config.allowedPaths
       : [process.cwd()];
-  const beforeAuthoritativeSnapshotValidation =
-    config?.beforeAuthoritativeSnapshotValidation;
+  const beforeResultFinalize = config?.__testBeforeResultFinalize;
   const afterFinalPathCheck = config?.__testAfterFinalPathCheck;
   const protectedTaskObserver = config?.__testProtectedTaskObserver;
   const operationBudgetLimits = config?.__testOperationBudgetLimits;
@@ -4147,25 +3143,16 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
       }
       if (!readOnlyDelegationReadPathAllowed(rawArgs, target.absolute)) return errorResult("Access denied: search path is outside delegated read authority");
       let readCapability: WorkspaceBoundReadCapability | undefined;
-      let toolOperation: WorkspaceToolOperationToken | undefined;
-      let requiresStrictCandidateReads = false;
+      const requiresStrictCandidateReads =
+        hasReadOnlyDelegationReadGuard(rawArgs);
       try {
-        const operation = beginWorkspaceReadToolOperation(
-          target.displayRoot,
-          GREP_TOOL_NAME,
-        );
-        toolOperation = operation.token;
-        requiresStrictCandidateReads = operation.requiresStrictCandidateReads || hasReadOnlyDelegationReadGuard(rawArgs);
         readCapability = requiresStrictCandidateReads
           ? await bindTargetReadCapability(target)
           : await bindWorkspaceDirectoryReadCapability(target.displayRoot, {
               expectedIdentity: target.displayRootIdentity,
             });
       } catch (error) {
-        if (toolOperation !== undefined) {
-          endWorkspaceToolOperation(toolOperation);
-        }
-        return editorCoherenceError(error);
+        return readCapabilityError(error);
       }
       let ownedIgnoreReadCapability: WorkspaceBoundReadCapability | undefined;
       let materializedIgnoreFiles: MaterializedRipgrepIgnoreFiles | undefined;
@@ -4183,39 +3170,18 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
               });
             ignoreReadCapability = ownedIgnoreReadCapability;
           } catch (error) {
-            return editorCoherenceError(error);
+            return readCapabilityError(error);
           }
         }
-        let authoritativeCapture: ReturnType<
-          typeof captureWorkspaceAuthoritativeDirtySnapshots
-        >;
-        try {
-          authoritativeCapture = captureWorkspaceAuthoritativeDirtySnapshots(
-            target.absolute,
-            {
-              includeDescendants: target.isDirectory,
-              ...(hasReadOnlyDelegationReadGuard(rawArgs) ? { pathAllowed: (path: string) => readOnlyDelegationReadPathAllowed(rawArgs, path) } : {}),
-            },
-          );
-        } catch (error) {
-          return editorCoherenceError(error);
-        }
-        const authoritativeSnapshots = authoritativeCapture.snapshots.filter(snapshot => readOnlyDelegationReadPathAllowed(rawArgs, snapshot.path));
         await afterFinalPathCheck?.();
-        const finalizeAuthoritativeResult = async (
+        const finalizeResult = async (
           result: ToolResult,
         ): Promise<ToolResult> => {
-          await beforeAuthoritativeSnapshotValidation?.();
-          try {
-            if (!readOnlyDelegationReadAuthorityCurrent(rawArgs)) {
-              return errorResult("Access denied: delegated read authority changed during search");
-            }
-            return authoritativeCapture.isCurrent()
-              ? result
-              : editorCoherenceError();
-          } catch (error) {
-            return editorCoherenceError(error);
+          await beforeResultFinalize?.();
+          if (!readOnlyDelegationReadAuthorityCurrent(rawArgs)) {
+            return errorResult("Access denied: delegated read authority changed during search");
           }
+          return result;
         };
 
         const signal = args.__abortSignal;
@@ -4232,14 +3198,22 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
                 deadline,
               });
         } catch (error) {
-          return finalizeAuthoritativeResult(editorCoherenceError(error));
+          return finalizeResult(
+            errorResult(
+              `Grep error: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
         }
         await afterRootIgnoreSnapshot?.();
         try {
           materializedIgnoreFiles =
             await materializeRipgrepIgnoreFiles(rootIgnoreSnapshots);
         } catch (error) {
-          return finalizeAuthoritativeResult(editorCoherenceError(error));
+          return finalizeResult(
+            errorResult(
+              `Grep error: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
         }
         const ripgrepOptions: RipgrepOptions = {
           ...prospectiveOptions,
@@ -4254,7 +3228,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
             ...buildRipgrepArgs(ripgrepOptions),
           ]);
         } catch (error) {
-          return finalizeAuthoritativeResult(
+          return finalizeResult(
             errorResult(`Grep error: ${formatBoundaryError(error)}`),
           );
         }
@@ -4271,11 +3245,11 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         );
 
         if (signal?.aborted) {
-          return finalizeAuthoritativeResult(errorResult("Search aborted"));
+          return finalizeResult(errorResult("Search aborted"));
         }
 
         if (remainingGrepOperationMs(deadline) < 1) {
-          return finalizeAuthoritativeResult(
+          return finalizeResult(
             errorResult(
               `Grep error [WALL_TIMEOUT]: pinned ripgrep exceeded ${MAX_GREP_WALL_MS}ms.`,
             ),
@@ -4283,7 +3257,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         }
 
         if (!ripgrepReady) {
-          return finalizeAuthoritativeResult(
+          return finalizeResult(
             errorResult(PINNED_RIPGREP_UNAVAILABLE_MESSAGE),
           );
         }
@@ -4292,14 +3266,13 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           readCapability !== undefined && target.isDirectory
             ? ignoreReadCapability
             : readCapability;
-        return finalizeAuthoritativeResult(
+        return finalizeResult(
           await runRipgrepGrep({
             opts: ripgrepOptions,
             headLimit: normalized.headLimit,
             offset: normalized.offset,
             target,
             toolArgs: rawArgs,
-            authoritativeSnapshots,
             requiresStrictCandidateReads,
             signal,
             deadline,
@@ -4320,18 +3293,12 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         );
       } finally {
         try {
-          try {
-            await materializedIgnoreFiles?.dispose();
-          } finally {
-            try {
-              await ownedIgnoreReadCapability?.dispose();
-            } finally {
-              await readCapability?.dispose();
-            }
-          }
+          await materializedIgnoreFiles?.dispose();
         } finally {
-          if (toolOperation !== undefined) {
-            endWorkspaceToolOperation(toolOperation);
+          try {
+            await ownedIgnoreReadCapability?.dispose();
+          } finally {
+            await readCapability?.dispose();
           }
         }
       }
@@ -4350,7 +3317,6 @@ export const __INTERNAL = {
   pushRipgrepChunkWithinLineLimit,
   renderContentRecordsWithinBudget,
   pinnedSnapshotPathEligibility,
-  readNulDelimitedCandidateSpool,
   toRelativeIfInside: (p: string, root: string): string =>
     toRelativeIfInside(p, root),
   sep,

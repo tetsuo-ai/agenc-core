@@ -43,66 +43,6 @@ import {
   getPlanFilePath,
   setPlanSlug,
 } from "../../planning/plan-files.js";
-import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
-
-function attachTrustedEditorContext(
-  args: Record<string, unknown>,
-  toolName = FILE_READ_TOOL_NAME,
-): void {
-  attachToolRuntimeContext(args, {
-    callId: `trusted-editor-${toolName}`,
-    toolName,
-    sandboxMode: "read_only",
-    invocation: {
-      turn: {
-        editorInteraction: {
-          interactionId: "trusted-editor-read",
-          policy: "read_only",
-        },
-      },
-    },
-  } as never);
-}
-
-function isWindowsExchangeDenial(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException)?.code;
-  return (
-    process.platform === "win32" &&
-    (code === "EPERM" || code === "EACCES" || code === "EBUSY")
-  );
-}
-
-async function exchangeDirectory(
-  current: string,
-  displaced: string,
-  outside: string,
-): Promise<"exchanged" | "kernel_denied"> {
-  try {
-    await rename(current, displaced);
-  } catch (error) {
-    if (isWindowsExchangeDenial(error)) return "kernel_denied";
-    throw error;
-  }
-  try {
-    await symlink(
-      outside,
-      current,
-      process.platform === "win32" ? "junction" : "dir",
-    );
-  } catch (error) {
-    await rename(displaced, current).catch(() => {});
-    if (isWindowsExchangeDenial(error)) return "kernel_denied";
-    throw error;
-  }
-  return "exchanged";
-}
-
-function expectCompletedExchangeAttempt(
-  outcome: "pending" | "exchanged" | "kernel_denied",
-): void {
-  expect(outcome).not.toBe("pending");
-  if (outcome === "kernel_denied") expect(process.platform).toBe("win32");
-}
 
 describe("FileRead tool", () => {
   let root = "";
@@ -115,13 +55,11 @@ describe("FileRead tool", () => {
     savedPath = process.env.PATH;
     savedAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = join(root, ".agenc-test-home");
-    workspaceMutationCoordinators.clearForTests();
     clearFileReadListenersForTests();
   });
 
   afterEach(async () => {
     clearFileReadListenersForTests();
-    workspaceMutationCoordinators.clearForTests();
     process.env.PATH = savedPath;
     if (savedAgencHome === undefined) {
       delete process.env.AGENC_HOME;
@@ -145,169 +83,6 @@ describe("FileRead tool", () => {
     // Trailing empty line from `\n` end-of-file is preserved by split.
     expect(result.content).toBe("1→alpha\n2→beta\n3→gamma\n4→");
     expect(tool.name).toBe(FILE_READ_TOOL_NAME);
-  });
-
-  test("never reads outside text bytes after a final ancestor exchange", async () => {
-    const workspace = join(root, "workspace");
-    const displaced = join(root, "workspace-displaced");
-    const outside = join(root, "outside");
-    await mkdir(workspace);
-    await mkdir(outside);
-    await writeFile(join(workspace, "target.txt"), "inside-text\n", "utf8");
-    await writeFile(
-      join(outside, "target.txt"),
-      "outside-text-secret\n",
-      "utf8",
-    );
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-text-editor",
-    });
-    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        exchangeOutcome = await exchangeDirectory(
-          workspace,
-          displaced,
-          outside,
-        );
-      },
-    });
-
-    const result = await tool.execute({
-      file_path: join(workspace, "target.txt"),
-    });
-
-    expectCompletedExchangeAttempt(exchangeOutcome);
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("inside-text");
-    expect(result.content).not.toContain("outside-text-secret");
-  });
-
-  test("never reads outside image bytes after a final ancestor exchange", async () => {
-    const workspace = join(root, "workspace");
-    const displaced = join(root, "workspace-displaced");
-    const outside = join(root, "outside");
-    await mkdir(workspace);
-    await mkdir(outside);
-    const insidePng = Buffer.from(
-      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082",
-      "hex",
-    );
-    const outsideBytes = Buffer.from("outside-image-secret", "utf8");
-    await writeFile(join(workspace, "target.png"), insidePng);
-    await writeFile(join(outside, "target.png"), outsideBytes);
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-image-editor",
-    });
-    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        exchangeOutcome = await exchangeDirectory(
-          workspace,
-          displaced,
-          outside,
-        );
-      },
-    });
-
-    const result = await tool.execute({
-      file_path: join(workspace, "target.png"),
-    });
-    const image = result.contentItems?.find(
-      (item) => item.type === "input_image",
-    );
-
-    expectCompletedExchangeAttempt(exchangeOutcome);
-    expect(result.isError).toBeUndefined();
-    expect(image?.type).toBe("input_image");
-    if (image?.type === "input_image") {
-      expect(image.image_url).not.toContain(outsideBytes.toString("base64"));
-    }
-  });
-
-  test("never reads outside notebook bytes after a final ancestor exchange", async () => {
-    const workspace = join(root, "workspace");
-    const displaced = join(root, "workspace-displaced");
-    const outside = join(root, "outside");
-    await mkdir(workspace);
-    await mkdir(outside);
-    const notebook = (marker: string) =>
-      JSON.stringify({
-        cells: [
-          {
-            cell_type: "code",
-            source: [`const ${marker} = true\n`],
-            outputs: [],
-          },
-        ],
-        metadata: { language_info: { name: "typescript" } },
-        nbformat: 4,
-        nbformat_minor: 5,
-      });
-    await writeFile(
-      join(workspace, "target.ipynb"),
-      notebook("insideNotebookMarker"),
-      "utf8",
-    );
-    await writeFile(
-      join(outside, "target.ipynb"),
-      notebook("outsideNotebookSecret"),
-      "utf8",
-    );
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-notebook-editor",
-    });
-    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        exchangeOutcome = await exchangeDirectory(
-          workspace,
-          displaced,
-          outside,
-        );
-      },
-    });
-
-    const result = await tool.execute({
-      file_path: join(workspace, "target.ipynb"),
-    });
-
-    expectCompletedExchangeAttempt(exchangeOutcome);
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("insideNotebookMarker");
-    expect(result.content).not.toContain("outsideNotebookSecret");
-  });
-
-  test("fails closed when the admitted leaf is replaced by an outside hardlink", async () => {
-    const workspace = join(root, "workspace");
-    const target = join(workspace, "target.txt");
-    const displaced = join(workspace, "target-inside.txt");
-    const outside = join(root, "outside.txt");
-    await mkdir(workspace);
-    await writeFile(target, "inside-leaf\n", "utf8");
-    await writeFile(outside, "outside-leaf-secret\n", "utf8");
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-leaf-editor",
-    });
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        await rename(target, displaced);
-        await link(outside, target);
-      },
-    });
-
-    const result = await tool.execute({ file_path: target });
-
-    expect(result.isError).toBe(true);
-    expect(result.content).not.toContain("outside-leaf-secret");
   });
 
   test("does not treat /root filesystem paths as an agent namespace", async () => {

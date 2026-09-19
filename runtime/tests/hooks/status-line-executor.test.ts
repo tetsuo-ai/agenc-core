@@ -8,14 +8,12 @@ import type { AgenCConfig } from "../../src/config/schema.js";
 import { createHookExecutionAuthority } from "../../src/hooks/execution-authority.js";
 import { executeSessionStatusLine } from "../../src/hooks/status-line-executor.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
-import { workspaceMutationCoordinators } from "../../src/workspace/mutation-coordinator.js";
 import { createTestConfigStore, mkSession } from "../fixtures.js";
 
 const cleanups: (() => void)[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
-  workspaceMutationCoordinators.clearForTests();
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
@@ -332,33 +330,6 @@ describe.skipIf(process.platform === "win32")("daemon-owned status-line executor
     ].map((item) => JSON.stringify(item)).join("\n"));
     Object.defineProperty(owner.session, "rolloutStore", { get: () => ({ rolloutPath: path }) });
     expect(JSON.parse((await executeSessionStatusLine(owner.session)).text!).context_window.current_usage).toBeNull();
-  });
-
-  test("blocks configured commands while Editor owns the workspace", async () => {
-    const owner = await fixture();
-    const registry = workspaceMutationCoordinators.forHome(owner.configStore.homeContext.path);
-    registry.acquireEditor(owner.cwd, { workspaceRoot: owner.cwd, editorInstanceId: "status-line-editor" });
-    const spawn = vi.spyOn(owner.broker, "prepareSpawn");
-    const acquire = vi.spyOn(owner.admission, "acquire");
-    expect(await executeSessionStatusLine(owner.session)).toEqual({ status: "blocked", reason: "editor_workspace_owned" });
-    expect(spawn).not.toHaveBeenCalled();
-    expect(acquire).not.toHaveBeenCalled();
-  });
-
-  test("holds the Editor fence until a cancelled process physically settles", async () => {
-    const owner = await fixture();
-    const marker = join(owner.home, "editor-fence.pid");
-    vi.spyOn(owner.configStore, "current").mockReturnValue({ statusLine: { type: "command", command: nodeCommand(`require("node:fs").writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`) } });
-    const registry = workspaceMutationCoordinators.forHome(owner.configStore.homeContext.path);
-    const controller = new AbortController();
-    const pending = executeSessionStatusLine(owner.session, {}, controller.signal);
-    await waitForFile(marker);
-    expect(() => registry.acquireEditor(owner.cwd, { workspaceRoot: owner.cwd, editorInstanceId: "during-status-line" })).toThrow(/active tool/u);
-    controller.abort();
-    expect(() => registry.acquireEditor(owner.cwd, { workspaceRoot: owner.cwd, editorInstanceId: "before-drain" })).toThrow(/active tool/u);
-    expect(await pending).toMatchObject({ status: "unavailable" });
-    expect(() => process.kill(Number(readFileSync(marker, "utf8")), 0)).toThrow();
-    expect(() => registry.acquireEditor(owner.cwd, { workspaceRoot: owner.cwd, editorInstanceId: "after-drain" })).not.toThrow();
   });
 
   test("auxiliary MCP sampling does not replace main conversation context", async () => {

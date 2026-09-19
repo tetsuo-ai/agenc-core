@@ -77,11 +77,6 @@ import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 import {
-  workspaceAuthoritativeRead,
-  workspaceHasProtectedEditorPaths,
-  type WorkspaceAuthoritativeRead,
-} from "../../workspace/mutation-coordinator.js";
-import {
   bindWorkspaceFileReadCapability,
   WorkspaceBoundReadFileTooLargeError,
   type WorkspaceBoundFileReadCapability,
@@ -632,14 +627,11 @@ async function readTextFile(
   resolvedPath: ResolvedPath,
   opts: TextReadOpts,
   sessionId: string | undefined,
-  editorRead: WorkspaceAuthoritativeRead | null,
   boundRead?: WorkspaceBoundFileReadCapability,
   notifyListeners = true,
 ): Promise<ToolResult> {
   const rawFileStats =
-    editorRead === null && boundRead === undefined
-      ? await stat(resolvedPath.canonical)
-      : null;
+    boundRead === undefined ? await stat(resolvedPath.canonical) : null;
   if (rawFileStats !== null && !rawFileStats.isFile()) {
     return errorResult("Path is not a regular file");
   }
@@ -652,7 +644,7 @@ async function readTextFile(
   let boundWindow:
     | Awaited<ReturnType<WorkspaceBoundFileReadCapability["readTextWindow"]>>
     | undefined;
-  if (editorRead === null && boundRead !== undefined) {
+  if (boundRead !== undefined) {
     if (explicitWindow) {
       try {
         boundWindow = await boundRead.readTextWindow(
@@ -688,12 +680,7 @@ async function readTextFile(
     }
   }
   const authoritativeBytes =
-    editorRead !== null
-      ? Buffer.byteLength(editorRead.content, "utf8")
-      : (boundWindow?.stats.size ??
-        boundFile?.stats.size ??
-        fileStats?.size ??
-        0);
+    boundWindow?.stats.size ?? boundFile?.stats.size ?? fileStats?.size ?? 0;
   opts.readGuard?.();
   if (!explicitWindow && authoritativeBytes > opts.maxTextBytes) {
     return errorResult(
@@ -703,7 +690,6 @@ async function readTextFile(
     );
   }
   const shouldStreamWindow =
-    editorRead === null &&
     boundRead === undefined &&
     explicitWindow &&
     authoritativeBytes > opts.maxTextBytes;
@@ -712,9 +698,7 @@ async function readTextFile(
     boundFile?.content ??
     (shouldStreamWindow
       ? await readInitialBytes(resolvedPath.canonical, 8192)
-      : editorRead === null
-        ? await readFile(resolvedPath.canonical)
-        : Buffer.from(editorRead.content, "utf8"));
+      : await readFile(resolvedPath.canonical));
   if (isBinaryContent(binarySample)) {
     return errorResult(
       "This tool cannot read binary files. The file contains non-text bytes. Use a different tool (e.g. a hex viewer or shell tooling) for binary file analysis.",
@@ -1027,18 +1011,15 @@ async function readNotebookFile(
   resolvedPath: ResolvedPath,
   opts: NotebookReadOpts,
   sessionId: string | undefined,
-  editorRead: WorkspaceAuthoritativeRead | null,
   boundRead?: WorkspaceBoundFileReadCapability,
 ): Promise<ToolResult> {
   const rawFileStats =
-    editorRead === null && boundRead === undefined
-      ? await stat(resolvedPath.canonical)
-      : null;
+    boundRead === undefined ? await stat(resolvedPath.canonical) : null;
   if (rawFileStats !== null && !rawFileStats.isFile()) {
     return errorResult("Path is not a regular file");
   }
   let boundFile: WorkspaceBoundReadFile | undefined;
-  if (editorRead === null && boundRead !== undefined) {
+  if (boundRead !== undefined) {
     try {
       boundFile = await boundRead.readFile(opts.maxNotebookBytes);
     } catch (error) {
@@ -1055,7 +1036,6 @@ async function readNotebookFile(
   const fileStats = boundFile?.stats ?? rawFileStats;
   opts.readGuard?.();
   const rawText =
-    editorRead?.content ??
     boundFile?.content.toString("utf8") ??
     (await readFile(resolvedPath.canonical, "utf8"));
   const rawBytes = Buffer.byteLength(rawText, "utf8");
@@ -1618,11 +1598,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             "PDF extraction is unavailable under delegated read authority because the external PDF helper cannot use a held file descriptor portably.",
           );
         }
-        const editorRead = workspaceAuthoritativeRead(resolved.canonical);
-        const protectedByEditor =
-          guardedRead || workspaceHasProtectedEditorPaths(resolved.canonical);
-        const needsDiskCapability = isImage || isPdf || editorRead === null;
-        if (protectedByEditor && needsDiskCapability) {
+        if (guardedRead) {
           boundRead = await bindWorkspaceFileReadCapability(resolved.canonical);
         }
         await config.__testAfterFinalPathCheck?.();
@@ -1639,11 +1615,6 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           );
         }
         if (isPdf) {
-          if (boundRead !== undefined) {
-            return errorResult(
-              "PDF extraction is unavailable while Editor owns this workspace because the external Poppler process cannot consume AgenC's held file descriptor portably. Close Editor or copy the PDF outside the protected workspace before reading it.",
-            );
-          }
           return await readPDFFile(
             resolved,
             {
@@ -1673,7 +1644,6 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
                 readGuard,
               },
               sessionId,
-              editorRead,
               boundRead,
             ),
           );
@@ -1690,7 +1660,6 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               readGuard,
             },
             sessionId,
-            editorRead,
             boundRead,
             true,
           ),

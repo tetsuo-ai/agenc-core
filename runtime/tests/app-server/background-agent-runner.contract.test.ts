@@ -96,7 +96,6 @@ import {
   runWithCanonicalSettingsAuthority,
   type CanonicalSettingsAuthority,
 } from "../utils/settings/canonicalAuthority.js";
-import { workspaceMutationCoordinators } from "../workspace/mutation-coordinator.js";
 import {
   COORDINATED_CONFIG_STORE_PUBLICATION,
   type CoordinatedConfigStorePublishOptions,
@@ -1759,97 +1758,6 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ]);
     expect(shell.bashExecute).not.toHaveBeenCalled();
-  });
-
-  it("[managed-thread] keeps Editor acquisition fenced until direct shell cleanup", async () => {
-    const workspaceRoot = mkdtempSync(
-      join(tmpdir(), "agenc-direct-shell-inflight-workspace-"),
-    );
-    const settingsHome = mkdtempSync(
-      join(tmpdir(), "agenc-direct-shell-inflight-home-"),
-    );
-    const resultGate = Promise.withResolvers<ToolResult>();
-    let execution: Promise<unknown> | undefined;
-    try {
-      const harness = makeTopLevelRunner({
-        conversationId: "session-direct-shell-inflight",
-        threadInitialStatus: { status: "pending_init" } as AgentStatus,
-        workspaceRoot,
-      });
-      const shell = configureSessionShellHarness(harness, {
-        settingsHome,
-        execute: async () => resultGate.promise,
-      });
-      const settingsAuthority =
-        harness.configStore as unknown as CanonicalSettingsAuthority;
-      const acquireEditor = (editorInstanceId: string) =>
-        runWithCanonicalSettingsAuthority(settingsAuthority, () =>
-          workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
-            workspaceRoot,
-            editorInstanceId,
-          }),
-        );
-      await harness.runner.startAgent({
-        objective: "deferred direct shell",
-        deferInitialTurn: true,
-        unattendedAllow: [],
-        unattendedDeny: [],
-      });
-      harness.forcePermissionContextForTesting(
-        createEmptyToolPermissionContext({
-          mode: "bypassPermissions",
-          isBypassPermissionsModeAvailable: true,
-        }),
-      );
-
-      execution = harness.runner.executeAgentShell(
-        "session-direct-shell-inflight",
-        {
-          sessionId: "session-direct-shell-inflight",
-          commandId: "shell-inflight-1",
-          command: "printf held-open",
-        },
-      );
-      await vi.waitFor(() => expect(shell.bashExecute).toHaveBeenCalledOnce());
-      expect(() => acquireEditor("editor-during-direct-shell")).toThrow(
-        /waiting for active tool 'system\.bash'/u,
-      );
-
-      resultGate.resolve({
-        content: "shell completed",
-        metadata: {
-          stdout: "shell completed",
-          stderr: "",
-          exitCode: 0,
-          timedOut: false,
-        },
-      });
-      await expect(execution).resolves.toMatchObject({
-        commandId: "shell-inflight-1",
-        isError: false,
-        stdout: "shell completed",
-      });
-
-      const lease = acquireEditor("editor-after-direct-shell");
-      expect(lease).toMatchObject({
-        workspaceRoot,
-        editorInstanceId: "editor-after-direct-shell",
-      });
-      await runWithCanonicalSettingsAuthority(settingsAuthority, () =>
-        workspaceMutationCoordinators.getOrCreate(workspaceRoot).release({
-          workspaceRoot,
-          editorInstanceId: lease.editorInstanceId,
-          leaseToken: lease.leaseToken,
-          epoch: lease.epoch,
-        }),
-      );
-    } finally {
-      resultGate.resolve({ content: "test cleanup" });
-      await execution?.catch(() => {});
-      workspaceMutationCoordinators.clearForTests();
-      rmSync(workspaceRoot, { recursive: true, force: true });
-      rmSync(settingsHome, { recursive: true, force: true });
-    }
   });
 
   it("[managed-thread] deduplicates identical shell command ids and rejects conflicting reuse", async () => {
