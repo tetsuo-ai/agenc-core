@@ -188,9 +188,15 @@ iwr -useb https://get.agenc.ag/install.ps1 | iex
 ```
 
 Source: `scripts/install/install.ps1`. Same manifest/verify/extract contract;
-installs an `agenc.cmd` shim under `%LOCALAPPDATA%\agenc\bin`. Running the
-daemon as a Windows service uses WinSW with `packaging/windows/agenc-daemon.xml`
-(manual step; `agenc daemon start` works without it).
+installs an `agenc.cmd` shim under `%LOCALAPPDATA%\agenc\bin` and writes a
+WinSW definition with those absolute paths, the installing-user account, and
+`AGENC_HOME` next to the prefix. That is not a service install.
+
+`agenc daemon start` works without a Windows service. Installing, starting,
+stopping, or restarting the supervised service is a separate elevated WinSW
+step against the generated XML (`agenc daemon install-service` regenerates
+it). Do not use `packaging/windows/agenc-daemon.xml` unchanged: it is an
+example and still needs those substitutions.
 
 Windows needs Git for Windows. Sessions run their shell through `bash.exe`,
 which AgenC looks for under `C:\Program Files\Git\bin`,

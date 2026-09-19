@@ -1395,6 +1395,15 @@ describe("AgenC daemon CLI", () => {
       kind: "error",
       message: "unknown daemon command: bogus",
     });
+    expect(parseAgenCDaemonCliArgs(["daemon", "install-service"])).toEqual({
+      kind: "install-service",
+    });
+    expect(
+      parseAgenCDaemonCliArgs(["daemon", "install-service", "--winsw"]),
+    ).toEqual({
+      kind: "error",
+      message: "unknown daemon install-service option: --winsw",
+    });
   });
 
   it("documents foreground daemon mode and ships supervisor templates", async () => {
@@ -1426,9 +1435,13 @@ describe("AgenC daemon CLI", () => {
     expect(launchd).toContain("<string>agenc</string>");
     expect(launchd).toContain("<string>--foreground</string>");
     expect(windows).toContain("<id>agenc-daemon</id>");
-    expect(windows).toContain(
-      "<arguments>daemon start --foreground</arguments>",
-    );
+    expect(windows).toContain("daemon start --foreground");
+    expect(windows).toContain("__AGENC_CMD_EXE__");
+    expect(windows).toContain("__AGENC_LAUNCHER__");
+    expect(windows).toContain("__AGENC_HOME__");
+    expect(windows).toContain("__AGENC_SERVICE_ACCOUNT__");
+    expect(windows).not.toContain("<executable>agenc</executable>");
+    expect(helpText).toContain("agenc daemon install-service");
   });
 
   it("starts once, writes daemon.pid, and reports running status", async () => {
