@@ -86,6 +86,8 @@ import {
 } from "../session/session-store.js";
 import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
+import { goalKickoffPrompt, goalSetRequestParams } from "../commands/goal.js";
+import { parseGoalCommand } from "../goal/intake.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { ConfigStore } from "../config/store.js";
 import {
@@ -169,6 +171,7 @@ import type {
   JsonObject,
   MessageContentBlock,
   MessageStreamResult,
+  SessionGoalSetRequest,
 } from "../app-server/protocol/index.js";
 import {
   ensureAgenCDaemonAutostart,
@@ -2321,6 +2324,86 @@ function oneShotCompactFailedContinuation(params: {
   };
 }
 
+/**
+ * `agenc -p "/goal <objective> [flags]"`. Print mode has no slash dispatcher,
+ * so the one goal action that makes sense without a person attached, starting
+ * a goal, is recognized here and parsed by the same intake as the TUI.
+ */
+export type PrintModeGoal =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "set";
+      readonly request: SessionGoalSetRequest;
+      readonly kickoff: string;
+    }
+  | { readonly kind: "error"; readonly message: string };
+
+export function parsePrintModeGoal(prompt: string): PrintModeGoal {
+  const match = /^\s*\/goal(?:\s+([\s\S]*))?$/u.exec(prompt);
+  if (match === null) return { kind: "none" };
+  const parsed = parseGoalCommand(match[1] ?? "");
+  if (parsed.kind === "error") return { kind: "error", message: parsed.message };
+  if (parsed.kind !== "set") {
+    return {
+      kind: "error",
+      message: `print mode can only start a goal: /goal <objective> [flags]. Use the TUI for /goal ${parsed.kind}.`,
+    };
+  }
+  return {
+    kind: "set",
+    request: goalSetRequestParams(parsed.request),
+    kickoff: goalKickoffPrompt(parsed.request),
+  };
+}
+
+type PrintModeGoalSet = Extract<PrintModeGoal, { kind: "set" }>;
+
+/** Set the goal before the first turn, so no answer can outrun it. */
+async function setPrintModeGoal(
+  daemonClient: OneShotContinueDaemonClient,
+  sessionId: string,
+  goal: PrintModeGoalSet,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const result = await daemonClient.request(
+    "session.goal",
+    { sessionId, action: "set", request: goal.request },
+    { signal },
+  );
+  if (!result.ok) {
+    process.stderr.write(`agenc: ${result.message ?? "the goal was refused"}\n`);
+  }
+  return result.ok;
+}
+
+/**
+ * A goal run succeeds only when the goal was met. Budget, stall, impossible
+ * and blocked are reported with the reviewer's reason and exit 1, so a script
+ * can tell "the agent stopped" from "the goal holds".
+ */
+async function printModeGoalExitCode(
+  daemonClient: OneShotContinueDaemonClient,
+  sessionId: string,
+  runCode: number,
+  signal: AbortSignal,
+): Promise<number> {
+  if (runCode !== 0) return runCode;
+  const { goal } = await daemonClient.request(
+    "session.goal",
+    { sessionId, action: "get" },
+    { signal },
+  );
+  if (goal === undefined) {
+    process.stderr.write("agenc: the goal's final state is unavailable\n");
+    return 1;
+  }
+  const reason = goal.pauseReason ?? goal.lastVerdict?.reason;
+  process.stderr.write(
+    `agenc: goal ${goal.status.replace("_", " ")} ${goal.rounds === 0 ? "on the first check" : `after ${goal.rounds} ${goal.rounds === 1 ? "round" : "rounds"}`}${reason !== undefined ? `: ${reason}` : ""}\n`,
+  );
+  return goal.status === "met" ? 0 : 1;
+}
+
 async function runDaemonOneShotPrompt(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly prompt: string;
@@ -2335,6 +2418,7 @@ async function runDaemonOneShotPrompt(params: {
   readonly addDirs?: readonly string[];
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly permissionMode?: AgentCreateParams["permissionMode"];
+  readonly goal?: PrintModeGoalSet;
   readonly signal: AbortSignal;
 }): Promise<number> {
   if (params.signal.aborted) {
@@ -2372,9 +2456,13 @@ async function runDaemonOneShotPrompt(params: {
       ...(params.addDirs !== undefined
         ? { addDirs: [...params.addDirs] }
         : {}),
-      ...(params.initialContent !== undefined
-        ? { initialContent: params.initialContent }
-        : {}),
+      // A goal run provisions the session first: the goal must be set before
+      // the kickoff turn can produce an answer.
+      ...(params.goal !== undefined
+        ? { deferInitialTurn: true }
+        : params.initialContent !== undefined
+          ? { initialContent: params.initialContent }
+          : {}),
       ...(params.permissionMode !== undefined
         ? { permissionMode: params.permissionMode }
         : {}),
@@ -2413,6 +2501,13 @@ async function runDaemonOneShotPrompt(params: {
         `daemon agent has no attached session: ${started.agentId}`,
       );
     }
+    const goal = params.goal;
+    if (
+      goal !== undefined &&
+      !(await setPrintModeGoal(daemonClient, sessionId, goal, params.signal))
+    ) {
+      return 1;
+    }
 
     const run = await awaitDaemonOneShotRun({
       daemonClient,
@@ -2423,6 +2518,21 @@ async function runDaemonOneShotPrompt(params: {
       ...(params.runtimeOptions.deadlineAt !== undefined
         ? { deadlineAt: params.runtimeOptions.deadlineAt }
         : {}),
+      ...(goal !== undefined
+        ? {
+            startTurn: (streamId: string) =>
+              daemonClient.request(
+                "message.stream",
+                {
+                  sessionId,
+                  content: goal.kickoff,
+                  clientMessageId: randomUUID(),
+                  streamId,
+                },
+                { signal: params.signal },
+              ),
+          }
+        : {}),
       ...oneShotCompactFailedContinuation({
         daemonClient,
         sessionId,
@@ -2432,7 +2542,9 @@ async function runDaemonOneShotPrompt(params: {
     });
     cancelled = run.cancelled;
     completed = !cancelled;
-    return run.code;
+    return goal !== undefined && !cancelled
+      ? await printModeGoalExitCode(daemonClient, sessionId, run.code, params.signal)
+      : run.code;
   } catch (error) {
     if (params.signal.aborted) cancelled = true;
     throw error;
@@ -2629,6 +2741,7 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
   readonly continueSession: OneShotContinueSession;
   readonly outputFormat?: OneShotOutputFormat;
   readonly initialContent?: string | readonly MessageContentBlock[];
+  readonly goal?: PrintModeGoalSet;
   readonly signal: AbortSignal;
 }): Promise<number> {
   if (params.signal.aborted) {
@@ -2683,7 +2796,14 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
     );
     const sessionId = attachment.sessionIds[0] ?? acquired.descriptor.sessionId;
     const client = daemonClient;
-    const content = params.initialContent ?? params.prompt;
+    const goal = params.goal;
+    if (
+      goal !== undefined &&
+      !(await setPrintModeGoal(client, sessionId, goal, params.signal))
+    ) {
+      return 1;
+    }
+    const content = goal?.kickoff ?? params.initialContent ?? params.prompt;
     const run = await awaitDaemonOneShotRun({
       daemonClient,
       sessionId,
@@ -2708,7 +2828,9 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
     });
     cancelled = run.cancelled;
     completed = !cancelled;
-    return run.code;
+    return goal !== undefined && !cancelled
+      ? await printModeGoalExitCode(client, sessionId, run.code, params.signal)
+      : run.code;
   } catch (error) {
     if (params.signal.aborted) {
       cancelled = true;
@@ -2881,6 +3003,12 @@ export async function oneShotCLI(
     // to the daemon-accepted subset (agent.create rejects dontAsk/auto); other
     // user-addressable modes fall back to the unattended default as before.
     const oneShotPermissionMode = startupPermissionMode(startupCliFlags);
+    const printGoal = parsePrintModeGoal(resolvedUserMessage);
+    if (printGoal.kind === "error") {
+      process.stderr.write(`agenc: ${printGoal.message}\n`);
+      return 2;
+    }
+    const goalOption = printGoal.kind === "set" ? { goal: printGoal } : {};
     if (continueSession !== undefined) {
       // Headless -c / --resume: the prompt is one more turn of a prior session.
       // Like the TUI resume path, only explicit startup overrides travel; the
@@ -2913,6 +3041,7 @@ export async function oneShotCLI(
         ...(oneShotPermissionMode !== undefined
           ? { permissionMode: oneShotPermissionMode }
           : {}),
+        ...goalOption,
         signal: lifecycleAbort.signal,
       });
     }
@@ -2938,6 +3067,7 @@ export async function oneShotCLI(
       ...(oneShotPermissionMode !== undefined
         ? { permissionMode: oneShotPermissionMode }
         : {}),
+      ...goalOption,
       signal: lifecycleAbort.signal,
     });
   } catch (error) {

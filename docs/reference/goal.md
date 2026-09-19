@@ -66,6 +66,29 @@ edits, and the runtime's verification command, still ask for approval. Use
 
 Configuration lives under `[goal]`; see [config.md](config.md).
 
+## Print mode
+
+```sh
+agenc --bypass-approvals -p '/goal add a rename(id, title) method with tests --verify "tests=npm test"'
+```
+
+A print prompt that starts with `/goal` starts a goal: the session is created
+without a first turn, the goal is set, and only then does the kickoff turn
+run, so no answer can land before the goal exists. `-c` / `--resume <id>`
+work the same way on a prior session. The run exits 0 only when the goal is
+**met**; any other ending (impossible, blocked, stalled, budget exhausted)
+exits 1, and stderr carries the final status with the reviewer's reason:
+
+```
+agenc: goal impossible on the first check: Two tests require ... npm test cannot pass.
+```
+
+Nobody can approve anything in print mode, so every approval request is
+denied. A goal that edits files and runs checks needs `--bypass-approvals`
+(the OS sandbox stays on) or allow rules that cover its commands. Only the
+form that starts a goal is accepted; `/goal pause`, `resume`, `clear` and
+status need the TUI.
+
 ## Why it works this way
 
 Each rule answers a documented failure of long-running agents.

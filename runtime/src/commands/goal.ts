@@ -15,6 +15,7 @@ import { parseGoalCommand, type GoalSetRequest } from "../goal/intake.js";
 import type {
   SessionGoalParams,
   SessionGoalResult,
+  SessionGoalSetRequest,
   SessionGoalSnapshot,
 } from "../app-server/protocol/index.js";
 import {
@@ -85,7 +86,19 @@ export function formatGoalStatus(
   return lines.join("\n");
 }
 
-function kickoffPrompt(request: GoalSetRequest): string {
+/** The wire form of a parsed `/goal <objective>`; shared with print mode. */
+export function goalSetRequestParams(request: GoalSetRequest): SessionGoalSetRequest {
+  return {
+    objective: request.objective,
+    verify: request.verify.map((command) => ({ ...command })),
+    noVerify: request.noVerify,
+    ...(request.maxRounds !== undefined ? { maxRounds: request.maxRounds } : {}),
+    ...(request.maxCostUsd !== undefined ? { maxCostUsd: request.maxCostUsd } : {}),
+  };
+}
+
+/** The first turn a new goal starts with; shared with print mode. */
+export function goalKickoffPrompt(request: GoalSetRequest): string {
   return [
     "Work toward this goal until the runtime confirms it is met:",
     "",
@@ -118,21 +131,12 @@ export const goalCommand: SlashCommand = {
       }
       if (parsed.kind === "set") {
         const { request } = parsed;
-        const result = await bridge({
-          action: "set",
-          request: {
-            objective: request.objective,
-            verify: request.verify.map((command) => ({ ...command })),
-            noVerify: request.noVerify,
-            ...(request.maxRounds !== undefined ? { maxRounds: request.maxRounds } : {}),
-            ...(request.maxCostUsd !== undefined ? { maxCostUsd: request.maxCostUsd } : {}),
-          },
-        });
+        const result = await bridge({ action: "set", request: goalSetRequestParams(request) });
         if (!result.ok) {
           return { kind: "error", message: result.message ?? "The goal was refused." };
         }
         // Setting a goal starts the work: the objective is the first turn.
-        return { kind: "prompt", content: kickoffPrompt(request) };
+        return { kind: "prompt", content: goalKickoffPrompt(request) };
       }
       const result = await bridge({ action: parsed.kind });
       if (!result.ok) {

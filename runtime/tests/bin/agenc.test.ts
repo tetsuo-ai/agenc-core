@@ -36,6 +36,7 @@ import {
   main,
   maybeReloadConfigBetweenTurns,
   oneShotCLI,
+  parsePrintModeGoal,
   oneShotFinalMessageRemainder,
   parseStreamJsonPrompt,
   prepareTurnRuntimeInputs,
@@ -226,6 +227,8 @@ function installDaemonCliDepsForTest(
       };
       readonly emit: (event: unknown) => void;
     }) => void;
+    /** Answers `session.goal` (print-mode `/goal`). */
+    readonly onSessionGoal?: (params: Record<string, unknown>) => unknown;
     readonly createConnectedTuiClientError?: Error;
     readonly liveAgent?: boolean;
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
@@ -427,6 +430,9 @@ function installDaemonCliDepsForTest(
           requestId,
           decision: method === "tool.deny" ? "denied" : "approved",
         };
+      }
+      if (method === "session.goal" && options.onSessionGoal !== undefined) {
+        return options.onSessionGoal(params ?? {});
       }
       if (method === "message.stream") {
         options.onMessageStream?.({
@@ -2096,6 +2102,84 @@ describe("main() smoke", () => {
     } finally {
       process.argv = previousArgv;
     }
+  });
+
+  describe("print-mode /goal", () => {
+    const agentId = "agent_goal";
+    const sessionId = "session_goal";
+    const turnEvents = (streamId: string) => [
+      { method: "event.session_event", params: { sessionId, agentId, turnId: streamId, eventId: "g-start", event: { id: "g-start", type: "turn_started", payload: { turnId: streamId } } } },
+      { method: "event.message_chunk", params: { sessionId, eventId: "g-delta", agentId, delta: "clear() added" } },
+      { method: "event.session_event", params: { sessionId, agentId, turnId: streamId, eventId: "g-done", event: { id: "g-done", type: "turn_complete", payload: { turnId: streamId, lastAgentMessage: "clear() added" } } } },
+    ];
+    const finalGoal = (status: string, reason: string) => ({
+      ok: true,
+      goal: { objective: "add clear()", status, rounds: 1, budget: { maxRounds: 20 }, verification: [], lastVerdict: { verdict: status, reason, at: "2026-09-19T00:00:00.000Z" } },
+    });
+
+    it("sets the goal before the kickoff turn exists and exits 0 only when it is met", async () => {
+      await withOneShotTestEnvironment("agenc-goal-met-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: (params) => (params.action === "set" ? { ok: true } : finalGoal("met", "clear() exists and is tested")),
+          onMessageStream: ({ params, emit }) => {
+            for (const event of turnEvents(params.streamId!)) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI('/goal add clear() --verify "tests=npm test"'), 4000)).toBe(0);
+        const create = daemon.requests.find((request) => request.method === "agent.create")?.params as Record<string, unknown>;
+        expect(create).toMatchObject({ deferInitialTurn: true });
+        expect(create).not.toHaveProperty("initialContent");
+        const methods = daemon.requests.map((request) => request.method);
+        expect(methods.indexOf("session.goal")).toBeLessThan(methods.indexOf("message.stream"));
+        expect(daemon.requests.find((request) => request.method === "session.goal")?.params).toEqual({
+          sessionId, action: "set",
+          request: { objective: "add clear()", verify: [{ label: "tests", script: "npm test" }], noVerify: false },
+        });
+        const stream = daemon.requests.find((request) => request.method === "message.stream")?.params as { content?: string };
+        expect(stream.content).toContain("Work toward this goal");
+        expect(stream.content).toContain("add clear()");
+        expect(stderr()).toContain("agenc: goal met after 1 round: clear() exists and is tested");
+      });
+    });
+
+    it("exits 1 with the reviewer's reason when the goal stops without being met", async () => {
+      await withOneShotTestEnvironment("agenc-goal-impossible-", async ({ cwd, run, stderr }) => {
+        installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: (params) => (params.action === "set" ? { ok: true } : finalGoal("impossible", "the tests contradict each other")),
+          onMessageStream: ({ params, emit }) => {
+            for (const event of turnEvents(params.streamId!)) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI("/goal make npm test pass"), 4000)).toBe(1);
+        expect(stderr()).toContain("agenc: goal impossible after 1 round: the tests contradict each other");
+      });
+    });
+
+    it("a refused goal starts no turn", async () => {
+      await withOneShotTestEnvironment("agenc-goal-refused-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: () => ({ ok: false, message: "No checks were found. Add --verify or --no-verify." }),
+        });
+        expect(await run(() => oneShotCLI("/goal make it faster"), 4000)).toBe(1);
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(stderr()).toContain("No checks were found");
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params).toMatchObject({ agentId });
+      });
+    });
+
+    it("recognizes only a leading /goal, and only the form that starts one", () => {
+      expect(parsePrintModeGoal("fix the /goal parser")).toEqual({ kind: "none" });
+      expect(parsePrintModeGoal("/goals are nice")).toEqual({ kind: "none" });
+      expect(parsePrintModeGoal("  /goal add clear() --no-verify\n")).toMatchObject({
+        kind: "set", request: { objective: "add clear()", verify: [], noVerify: true },
+      });
+      for (const prompt of ["/goal", "/goal pause", "/goal clear"]) {
+        expect(parsePrintModeGoal(prompt)).toMatchObject({ kind: "error" });
+      }
+    });
   });
 
   describe("compact_failed continuation (#2497)", () => {
