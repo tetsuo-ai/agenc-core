@@ -33,6 +33,8 @@ import {
 import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
+  readAnthropicReasoningOutputTokens,
+  readAnthropicThinkingTokenDetails,
 } from "../../wire/messages-anthropic.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { coerceUsage } from "../../wire/shared.js";
@@ -78,6 +80,9 @@ interface AnthropicUsageAccumulator {
   readonly cache_read_input_tokens?: number;
   readonly cache_creation_input_tokens?: number;
   readonly reasoning_output_tokens?: number;
+  readonly output_tokens_details?: {
+    readonly thinking_tokens: number;
+  };
   readonly server_tool_use?: {
     readonly web_search_requests?: number;
   };
@@ -125,6 +130,7 @@ function mergeAnthropicUsage(
       Number.isFinite(record.input_tokens)) ||
     (typeof record.output_tokens === "number" &&
       Number.isFinite(record.output_tokens));
+  const thinkingDetails = readAnthropicThinkingTokenDetails(record);
   return {
     reported,
     ...(typeof record.speed === "string"
@@ -156,6 +162,11 @@ function mergeAnthropicUsage(
       ? { reasoning_output_tokens: record.reasoning_output_tokens }
       : usage.reasoning_output_tokens !== undefined
         ? { reasoning_output_tokens: usage.reasoning_output_tokens }
+        : {}),
+    ...(thinkingDetails !== undefined
+      ? { output_tokens_details: thinkingDetails }
+      : usage.output_tokens_details !== undefined
+        ? { output_tokens_details: usage.output_tokens_details }
         : {}),
     ...(webSearchRequests !== undefined
       ? { server_tool_use: { web_search_requests: webSearchRequests } }
@@ -964,7 +975,9 @@ export class AnthropicProvider implements LLMProvider {
             completionTokens: usage.output_tokens,
             cachedInputTokens: usage.cache_read_input_tokens,
             cacheCreationInputTokens: usage.cache_creation_input_tokens,
-            reasoningOutputTokens: usage.reasoning_output_tokens,
+            reasoningOutputTokens: readAnthropicReasoningOutputTokens({
+              ...usage,
+            }),
             webSearchRequests: usage.server_tool_use?.web_search_requests,
             availability: "unknown",
             provenance: "synthetic",
