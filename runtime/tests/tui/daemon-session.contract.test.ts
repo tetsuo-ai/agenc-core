@@ -94,6 +94,7 @@ vi.mock("./tool-rendering.js", () => ({
 }));
 
 import {
+  AGENC_DAEMON_LOST_TURN_REASON,
   AGENC_DAEMON_RECONNECTING_MESSAGE,
   attachDaemonAgentTuiSession,
   type AgenCDaemonConnectionState,
@@ -4098,6 +4099,73 @@ describe("AgenC TUI daemon session adapter", () => {
       },
       { type: "turn_complete", id: "turn_1" },
     ]);
+  });
+
+  describe("a turn whose daemon is gone", () => {
+    function sessionWithActiveTurn(request: (method: string) => Promise<unknown>) {
+      const client = createClient();
+      client.request = ((method: string) => request(method)) as typeof client.request;
+      const received: JsonObject[] = [];
+      const session = createDaemonTuiSession({
+        baseSession: createBaseSession(),
+        client,
+        sessionId: "session_1",
+        clientId: "tui_1",
+      });
+      const unsubscribe = session.subscribeToEvents((event) => {
+        received.push(event as JsonObject);
+      });
+      client.emit("session_1", {
+        type: "daemon.event",
+        msg: { type: "turn_started", payload: { turnId: "turn_1" } },
+      });
+      expect(session.activeTurn.unsafePeek()).toEqual({ turnId: "turn_1" });
+      return { client, session, received, unsubscribe };
+    }
+    const aborted = (events: readonly JsonObject[]) =>
+      events.filter((event) => event.type === "turn_aborted");
+
+    it("ends the turn locally once the daemon is proven unreachable, so the TUI is not busy forever", async () => {
+      // No terminal event can arrive from a killed daemon. Without this the
+      // composer stays busy: Esc cancels nothing and /exit is refused.
+      const probes: string[] = [];
+      const { client, session, received, unsubscribe } = sessionWithActiveTurn(async (method) => {
+        probes.push(method);
+        throw new Error("connect ECONNREFUSED daemon.sock");
+      });
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      await vi.waitFor(() => expect(aborted(received)).toHaveLength(1));
+      expect(probes).toEqual(["session.snapshot"]);
+      expect(aborted(received)[0]).toMatchObject({
+        payload: { turnId: "turn_1", reason: AGENC_DAEMON_LOST_TURN_REASON },
+      });
+      expect(session.activeTurn.unsafePeek()).toBeNull();
+      // The failed probe reports "disconnected" again; the settled turn is not aborted twice.
+      client.emitConnection({ status: "disconnected", message: "connect ECONNREFUSED" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(aborted(received)).toHaveLength(1);
+      unsubscribe();
+    });
+
+    it("leaves the turn alone when the daemon answers: a dropped socket is not a dead turn", async () => {
+      const { client, session, received, unsubscribe } = sessionWithActiveTurn(async () => ({ sessionId: "session_1" }));
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(aborted(received)).toHaveLength(0);
+      expect(session.activeTurn.unsafePeek()).toEqual({ turnId: "turn_1" });
+      unsubscribe();
+    });
+
+    it("does not probe when no turn is in flight", async () => {
+      const client = createClient();
+      const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
+      const unsubscribe = session.subscribeToEvents(() => {});
+      const before = client.requests.length;
+      client.emitConnection({ status: "disconnected" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(client.requests.slice(before).map((request) => request.method)).not.toContain("session.snapshot");
+      unsubscribe();
+    });
   });
 
   it("preserves initial transcript state while surfacing an existing disconnect", () => {

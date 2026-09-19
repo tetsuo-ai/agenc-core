@@ -172,6 +172,8 @@ import {
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
+export const AGENC_DAEMON_LOST_TURN_REASON =
+  "the daemon stopped responding; the turn cannot continue here";
 
 const MAX_DAEMON_QUEUED_INPUTS = 512;
 const MAX_DAEMON_QUEUED_INPUT_BYTES = 16 * 1_024 * 1_024;
@@ -1158,6 +1160,7 @@ export function createDaemonTuiSession<
         ? lastObservedTurnId
         : activeTurnSnapshot?.turnId ?? lastObservedTurnId,
       options.transcriptSnapshot,
+      () => activeTurnSnapshot !== null || pendingSubmissions.size > 0,
     );
     const currentConnectionState = client.getConnectionState?.();
     if (
@@ -2774,9 +2777,11 @@ function subscribeToDaemonEvents(
   runtimeSettingsReconciler?: RuntimeSettingsReconciler,
   activeTurnId?: () => string | undefined,
   transcriptSnapshot?: SessionTranscriptV2Result,
+  turnInFlight?: () => boolean,
 ): () => void {
   let replayingInitialEvents = true;
   let closed = false;
+  let lostTurnProbe: Promise<void> | null = null;
   const pendingApprovals = new DaemonApprovalRequests(MAX_BUFFERED_SESSION_EVENTS_PER_SESSION);
   const emit = (event: unknown): void => {
     if (!closed) cb(event);
@@ -2840,6 +2845,36 @@ function subscribeToDaemonEvents(
     realtime.handleTranscriptEvent(transcriptEvent);
     emit(transcriptEvent);
   });
+  // A turn's terminal event comes from the daemon. When the daemon is gone
+  // (killed, crashed, replaced by one that does not host this session) that
+  // event never arrives: the TUI stays busy forever, Esc cancels nothing, and
+  // /exit and Ctrl-C are refused as "finish or cancel the turn first". A
+  // dropped socket alone proves nothing, the daemon owns the turn and may
+  // still be running it, so ask: the request runs the client's whole
+  // reconnect window, and only its failure ends the turn locally.
+  const settleTurnIfDaemonLostIt = (): void => {
+    if (lostTurnProbe !== null || turnInFlight?.() !== true) return;
+    lostTurnProbe = client
+      .request("session.snapshot", { sessionId })
+      .then(
+        () => undefined,
+        () => {
+          if (closed || turnInFlight?.() !== true) return;
+          const turnId = activeTurnId?.();
+          emit({
+            id: `agenc-daemon-lost-turn-${turnId ?? "unknown"}`,
+            type: "turn_aborted",
+            payload: {
+              ...(turnId !== undefined ? { turnId } : {}),
+              reason: AGENC_DAEMON_LOST_TURN_REASON,
+            },
+          });
+        },
+      )
+      .finally(() => {
+        lostTurnProbe = null;
+      });
+  };
   const unsubscribeConnection = client.subscribeToConnectionState?.((state) => {
     if (closed) return;
     runtimeSettingsReconciler?.noteConnectionState(state);
@@ -2847,6 +2882,7 @@ function subscribeToDaemonEvents(
     for (const event of connectionNoticeEvents(state)) {
       emit(event);
     }
+    if (state.status === "disconnected") settleTurnIfDaemonLostIt();
   });
   return () => {
     closed = true;
