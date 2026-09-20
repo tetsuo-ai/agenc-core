@@ -28,6 +28,14 @@ const payload = () => ({ model: "qwen-image-2.1", request_id: requestId, price_u
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 describe("managed image transport", () => {
+  it("allows the bounded server queue plus worker leg and transfer within 240 seconds", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const client = createManagedImageClient({ origin: "https://identity.example.test", getToken: async () => "token", fetchImpl: vi.fn(async () => response(payload())) });
+      await client.generate({ prompt: "test", requestId });
+      expect(timeout).toHaveBeenCalledWith(240_000);
+    } finally { timeout.mockRestore(); }
+  });
   it("uses only own-backend origin and native bearer, with exact free/idempotent shape", async () => {
     const fetchImpl = vi.fn(async (url: string) => response(url.endsWith("/image-generation") ? access : payload()));
     const client = createManagedImageClient({ origin: "https://identity.example.test/v1/auth/llm-usage", getToken: async () => "synthetic-native-token", fetchImpl: fetchImpl as typeof fetch });

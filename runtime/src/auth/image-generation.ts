@@ -1,6 +1,9 @@
 /** Managed image authority and public metadata. No upstream credential crosses this boundary. */
 export const MANAGED_IMAGE_MODEL = "qwen-image-2.1";
 export const MANAGED_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+// Server waits at most 30 seconds before admission, then bounds the worker leg to 185 seconds.
+// Leave room for network/JSON transfer without automatically retrying a POST.
+export const MANAGED_IMAGE_TIMEOUT_MS = 240_000;
 const MAX_RESPONSE_BYTES = Math.ceil(MANAGED_IMAGE_MAX_BYTES / 3) * 4 + 4096;
 
 export interface AuthImageGenerationAccess {
@@ -139,7 +142,7 @@ export function createManagedImageClient(options: {
       const data = record(await request("/v1/images/generations", {
         method: "POST", signal: input.signal, headers: { "Idempotency-Key": input.requestId },
         body: JSON.stringify({ model: MANAGED_IMAGE_MODEL, prompt: input.prompt, n: 1, size: "1024x1024", response_format: "b64_json" }),
-      }, 180_000, MAX_RESPONSE_BYTES));
+      }, MANAGED_IMAGE_TIMEOUT_MS, MAX_RESPONSE_BYTES));
       if (data.model !== MANAGED_IMAGE_MODEL || data.request_id !== input.requestId || data.price_usd !== 0 ||
           !Array.isArray(data.data) || data.data.length !== 1) throw new Error("Invalid managed image result");
       const image = record(data.data[0]);

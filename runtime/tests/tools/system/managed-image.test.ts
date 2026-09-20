@@ -35,6 +35,7 @@ it("uses explicit free media from an independent chat session and reports zero c
   expect(await readFile(output.path, "utf8")).toBe("synthetic image");
   expect(auth.generateImage).toHaveBeenCalledTimes(1); expect(fetchImpl).not.toHaveBeenCalled();
   expect(tool.requiresApproval).toBe(true); expect(tool.isReadOnly).toBe(false);
+  expect(tool.timeoutMs).toBe(300_000); // Discovery30s + generation240s + saving margin.
 });
 it.each([{ available: false }, { quota: { dailyLimit: 10, remaining: 0 } }])("refuses unavailable/free-quota access without paid fallback", async overrides => {
   const { root, tool, auth, fetchImpl } = await fixture(overrides);

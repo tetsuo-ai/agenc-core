@@ -34,7 +34,7 @@ import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
 import type { AuthBackend } from "../../auth/backend.js";
-import { MANAGED_IMAGE_MODEL } from "../../auth/image-generation.js";
+import { MANAGED_IMAGE_MODEL, MANAGED_IMAGE_TIMEOUT_MS } from "../../auth/image-generation.js";
 import { generateManagedImage } from "./managed-image.js";
 
 export interface ImagineImageToolOptions {
@@ -1225,9 +1225,9 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     isReadOnly: false,
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
-    // Wan generation commonly takes one to two minutes. The harness backstop
-    // must stay above the internal three-minute network/polling timeout.
-    timeoutMs: 210_000,
+    // Managed requests allow a bounded queue and worker window, preceded by
+    // capability discovery. Keep the tool backstop above both plus file saving.
+    timeoutMs: MANAGED_IMAGE_TIMEOUT_MS + 60_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
       if (useManagedImages(opts, args)) return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 };
