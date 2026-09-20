@@ -184,7 +184,7 @@ parsing or dispatch, including when the terminating newline arrives in the
 chunk that crosses the limit. Multiple bounded lines can share a chunk.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.12.0`**
+- Protocol version constant: **`1.15.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -210,10 +210,20 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
   wait for that event before they report success.
   Protocol 1.9 adds the internal `session.shell.execute` method for admitted
   shell commands on the live daemon-owned session.
+  Protocol 1.11 adds `session.statusLine.execute`; protocol 1.12 adds the
+  effective permission mode and pending tool approvals to run inspection;
+  protocol 1.13 adds `session.processes.list` / `session.processes.stop`;
+  protocol 1.14 adds `session.goal`.
   Protocols 1.0 through 1.2 advertise `session.mcp.status: false`,
   reject that method, and never receive `event.mcp_status_changed`. Update if
   necessary, then run `agenc daemon restart` so the daemon uses the installed
   protocol version.
+- **Protocol 1.15 is the first non-additive revision.** It removes the
+  `workspace.editor.*` methods and the status-line `vimMode` presentation field
+  along with the embedded editor. Negotiation compares versions, not method
+  sets, so a 1.0 through 1.14 client still completes `initialize` against a
+  1.15 daemon; those specific calls answer `METHOD_NOT_FOUND`. No published
+  package used them.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
@@ -238,6 +248,11 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 | `fs.fuzzy_search`                                                                                           | Workspace fuzzy file search                                                                                        |
 | `commandExec.start` / `commandExec.write` / `commandExec.resize` / `commandExec.terminate`                  | Reserved PTY/command-exec. `start` is advertised `false`                                                           |
 | `health.ping` / `health.ready` / `health.stats`                                                             | Liveness and stats                                                                                                 |
+| `session.statusLine.execute`                                                                                | Render the configured custom status line for the owning live session (protocol 1.11)                               |
+| `session.processes.list` / `session.processes.stop`                                                         | Inspect and acknowledge-stop the session's own background processes (protocol 1.13)                                |
+| `session.goal`                                                                                              | Set, inspect, pause, resume, or clear the session goal. See [goal.md](goal.md) (protocol 1.14)                      |
+| `routine.*`                                                                                                 | Daemon-owned local routines. See [autonomy.md](autonomy.md)                                                        |
+| `remote.*` / `telegram.*`                                                                                   | Remote pairing and the Telegram gateway. Not yet expanded here; see [gateway.md](../gateway.md)                     |
 | `daemon.reload`                                                                                             | Reload configuration                                                                                               |
 | `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
@@ -324,8 +339,8 @@ single-turn admission pass `ifBusy: "reject"`. That flag refuses only an
 in-flight or queued turn (`pendingMessageSubmissionCount`,
 `pendingShellExecutionCount`, or a live `session.activeTurn`). It does
 **not** treat a `pending_init` deferred session as busy. `agent.create`
-with `deferInitialTurn: true` (Editor cold-start, restored agents with no
-initial content) parks the thread in `pending_init` until the first
+with `deferInitialTurn: true` (restored agents with no initial content)
+parks the thread in `pending_init` until the first
 accepted message; refusing that message deadlocks the session. The flag
 cannot be combined with `initialContent` or other first-turn metadata
 (`runtime/src/app-server/daemon-dispatcher.ts`). Without `ifBusy`, the
@@ -706,7 +721,7 @@ current Ledger action is documented in
 A keep-alive (interactive / desktop) session must stay promptable after
 a capped turn. Bounded stops (`no_progress`, `effect_review_required`,
 `deadline_reached`, `max_turns`, `max_budget_usd`, `compact_failed`,
-`empty_response`, and `editor_request_failed`) emit canonical `turn_failed` with the stop reason
+and `empty_response`) emit canonical `turn_failed` with the stop reason
 as the code and leave the run available. Before an unattended (`agenc -p`)
 turn stops with `empty_response`, the runtime re-samples an empty model
 response up to three times with backoff (`empty_response_retry` warnings);
@@ -813,21 +828,6 @@ mapping above. A summarizer that ignores abort for 5 s becomes
 Operator contract:
 [CP-0006 wall budget](../design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget).
 
-### Editor request failure stays per-turn
-
-Editor Explain and Edit requests can stop for three request-scoped reasons.
-The request may reach its sampling or tool limit, an Edit may finish without
-a valid `EditorProposal`, or the provider may return a context, media, or
-output limit that Editor mode cannot recover from. These paths emit a
-`warning` with their specific cause and yield
-`stopReason: "editor_request_failed"`.
-
-The kernel emits canonical `turn_failed` with code `editor_request_failed`.
-The next `message.send` can start a new turn. The TUI displays the warning and blocks
-autonomous keepalive until the user sends another prompt. Child-agent turns
-cannot carry an Editor interaction. If the stop reason reaches `runAgent`
-despite that contract, `runAgent` fails the child run.
-
 ### Telemetry errors stay session-only
 
 Session `error` records are diagnostics, not lifecycle boundaries.
@@ -910,9 +910,6 @@ as every other session `error`. Throw and stop were already warnings.
 `agent.create` first-content blocks follow startup failure semantics.
 Start throws `PROMPT_BLOCKED`, shuts down the unpublished bootstrap,
 and never publishes the agent.
-
-Editor submissions skip UserPromptSubmit entirely. See the
-[UserPromptSubmit hook contract](hooks.md#userpromptsubmit).
 
 The lifecycle refresh path may briefly report `runtimeAvailable=false`
 (registration race, post-turn snapshot gap). The reaper waits

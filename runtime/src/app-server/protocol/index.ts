@@ -31,12 +31,20 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.9 adds admitted shell execution on the daemon-owned live session for
  * internal clients.
  * 1.10 adds daemon-owned local routines and opt-in routine invalidations.
+ * 1.11 adds status-line execution on the daemon-owned live session.
+ * 1.12 adds the effective permission mode and pending tool approvals to run
+ * inspection.
  * 1.13 adds session-owned background process inspection and acknowledged stop.
  * 1.14 adds the session goal (`/goal`): set, inspect, pause, resume, clear.
- * Clients that need any of these additive surfaces must not negotiate an older
- * daemon.
+ * 1.15 REMOVES the `workspace.editor.*` methods and the status-line `vimMode`
+ * presentation field with the embedded editor. This is the first non-additive
+ * revision: a 1.0 through 1.14 client still negotiates successfully, because
+ * negotiation compares versions and not method sets, but those calls now
+ * answer `METHOD_NOT_FOUND`. Nothing outside this repository used them.
+ * Clients that need any of the additive surfaces above must not negotiate an
+ * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.14.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.15.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =

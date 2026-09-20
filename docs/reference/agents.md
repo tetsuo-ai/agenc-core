@@ -515,8 +515,8 @@ session when the feature is available (`AGENC_COORDINATOR_MODE` /
 | `agent.logs` | Fetch agent logs |
 
 `agent.create` accepts `deferInitialTurn: true` to provision a live session
-without submitting a first model turn (Editor cold-start). Startup hooks
-and Agent side effects stay deferred until the first non-Editor message.
+without submitting a first model turn. Startup hooks and Agent side effects
+stay deferred until the first message.
 The flag cannot combine with `initialContent` or other first-turn fields
 (`runtime/src/app-server/daemon-dispatcher.ts`). The thread sits in
 `pending_init`; `ifBusy: "reject"` on `message.send` refuses only an

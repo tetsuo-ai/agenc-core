@@ -6267,7 +6267,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.15.0" },
+          protocol: { version: "1.16.0" },
           clientName: "contract-test",
         },
       }),
@@ -6279,8 +6279,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.15.0",
-          serverVersion: "1.14.0",
+          clientVersion: "1.16.0",
+          serverVersion: "1.15.0",
         },
       },
     });
@@ -6345,16 +6345,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.14.0",
-        protocol: { version: "1.14.0" },
+        protocolVersion: "1.15.0",
+        protocol: { version: "1.15.0" },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.14.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.15.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.14.0" },
+      protocol: { version: "1.15.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.14.0" },
+      serverProtocol: { version: "1.15.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(

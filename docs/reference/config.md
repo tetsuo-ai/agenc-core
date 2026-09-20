@@ -783,8 +783,8 @@ Commands have a five-second deadline including admission wait, accept at most
 command at a time. Cancelling a refresh or closing the session stops its process
 tree before releasing execution capacity. Before a live session exists, the
 custom status line remains unavailable; rendering never starts a model turn.
-Protected Editor workspaces block status commands. An executing command also
-blocks Editor acquisition until its process cleanup finishes.
+An executing status command holds its workspace operation open until its
+process cleanup finishes.
 
 The daemon reports current context usage from its own token records. If no
 recent record is available, `context_window.current_usage`, both context

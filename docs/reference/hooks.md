@@ -272,7 +272,7 @@ See [mid-turn error events](daemon.md#mid-turn-error-events).
 
 The recursion cap is `MAX_STOP_HOOK_BLOCKS` (3). Hitting it emits
 `error` with `cause: "stop_hook_loop"` and returns a non-blocking allow
-so the turn can terminate. Editor interactions skip the ladder.
+so the turn can terminate.
 
 This is distinct from `UserPromptSubmit` throws, which emit a
 `warning` and never flip run status.
