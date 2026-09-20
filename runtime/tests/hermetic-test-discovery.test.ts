@@ -256,9 +256,12 @@ describe("hermetic test discovery", () => {
     expect(bubblewrapSource).toContain("new SandboxExecutionBroker({");
     expect(bubblewrapSource).toContain("const status = broker.status()");
     expect(bubblewrapSource).toContain('.prepareSpawn("tool"');
+    // Three kernel scenarios drive a prepared spawn: the production boundary,
+    // the clean-worktree removal, and the descriptor-bound read-only cwd added
+    // with stable workspace prefix aliases.
     expect(
       bubblewrapSource.match(/\.run\(async \(command\) =>/gu),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(bubblewrapSource).toContain("agenc-native-userns (unconfined)");
     expect(bubblewrapSource).toContain(
       "tcpRoundTrip(address.port, baselineToken)",
