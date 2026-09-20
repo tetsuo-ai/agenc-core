@@ -965,6 +965,13 @@ describe("reproducible install and release contract", () => {
         runnerArch: "ARM64",
         imageProfiles: [
           {
+            imageVersion: "20260907.0337.1",
+            xcodeVersion: "16.4",
+            xcodeBuild: "16F6",
+            macosSdkVersion: "15.5",
+            clangVersion: "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+          },
+          {
             imageVersion: "20260727.0256.1",
             xcodeVersion: "16.4",
             xcodeBuild: "16F6",
@@ -984,6 +991,7 @@ describe("reproducible install and release contract", () => {
         runnerLabel: "macos-15-intel",
         runnerArch: "X64",
         imageProfiles: [
+          { imageVersion: "20260824.0482.1" },
           { imageVersion: "20260727.0377.1" },
           { imageVersion: "20260720.0353.1" },
         ],

@@ -267,6 +267,16 @@
       "runnerArch": "ARM64",
       "imageProfiles": [
         {
+          "imageVersion": "20260907.0337.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/9312c564c4df0b842ce00a6c202dccb519b8dfdd/images/macos/macos-15-arm64-Readme.md",
+          "inventorySha256": "a7d3d1445a726faf0ad548ff7906f6cb49df7ad29144666f9c27d79450079c03",
+          "inventoryBytes": 26202,
+          "xcodeVersion": "16.4",
+          "xcodeBuild": "16F6",
+          "macosSdkVersion": "15.5",
+          "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+        },
+        {
           "imageVersion": "20260727.0256.1",
           "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/f1f5b5c6e23728a6f5c74b69ac2eab8aa93f473d/images/macos/macos-15-arm64-Readme.md",
           "inventorySha256": "7480916d25dc7a51fa1c23addf9435dcc91d160eb2e14c7495e63e1663c4cc6a",
@@ -293,6 +303,16 @@
       "imageOS": "macos15",
       "runnerArch": "X64",
       "imageProfiles": [
+        {
+          "imageVersion": "20260824.0482.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/f10516542b8f2fef89b652a8d5f5de63aa543b77/images/macos/macos-15-Readme.md",
+          "inventorySha256": "1de4b226036b0d24fca39de51eea4c44285b336dfd3b1db2056bcf0aca639f23",
+          "inventoryBytes": 24192,
+          "xcodeVersion": "16.4",
+          "xcodeBuild": "16F6",
+          "macosSdkVersion": "15.5",
+          "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+        },
         {
           "imageVersion": "20260727.0377.1",
           "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/1d294df93a93fcb193d2c02a4ca0b79de20d5951/images/macos/macos-15-Readme.md",
