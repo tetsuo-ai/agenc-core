@@ -37,10 +37,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * `project.trust`), resolved to the project root a session there would use.
  * 1.17 adds a bounded routine session preparation handshake.
  * 1.18 adds display attachment events and chunked artifact reads by digest.
+ * 1.19 adds optional session-owned Light mode (deferred tool exposure).
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.18.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.19.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -577,6 +578,8 @@ export type MessageContent = string | readonly MessageContentBlock[];
 
 export interface AgentRuntimeOptionsParams extends JsonObject {
     readonly simpleMode: boolean;
+    /** Deferred tool exposure; omitted means false. Instructions, schemas and execution policy are unchanged. */
+    readonly lightMode?: boolean;
     /** Omission by an older client is normalized to false. */
     readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
     /**

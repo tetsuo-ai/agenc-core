@@ -57,7 +57,7 @@ import {
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
-  assembleSystemPrompt,
+  assembleSystemPromptSnapshot,
   buildAssembleSystemPromptOpts,
   resolveMemoryPromptInputs,
   type McpServerInstructionsInput,
@@ -967,7 +967,8 @@ async function buildSyntheticSystemMessage(opts: {
     // directory block are part of every turn's prompt when auto memory is
     // enabled, so /context must count them too.
     const memory = await resolveMemoryPromptInputs(opts.session, opts.ctx.cwd);
-    const assembled = await assembleSystemPrompt({
+    const assembled = await assembleSystemPromptSnapshot({
+      profile: opts.session.services.runtimeOptions?.lightMode === true ? "light" : "standard",
       ...buildAssembleSystemPromptOpts({
         session: opts.session,
         ctx: opts.ctx,

@@ -84,6 +84,8 @@ export const agentListingDeltaProducer: AttachmentProducer = async (
 ) => {
   // Subagents never see the agent listing — they cannot spawn agents.
   if (opts.subagentDepth > 0) return [];
+  if (opts.lightMode === true &&
+      !opts.loadedTools.some(tool => tool.function.name === "spawn_agent")) return [];
 
   const agents = readActiveAgents(opts.sessionKey);
   // Build a deterministic Map of agentType → rendered line.

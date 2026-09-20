@@ -241,3 +241,15 @@ describe("agentListingDeltaProducer", () => {
     _resetAttachmentTrackingStateForTest(sessionKey);
   });
 });
+
+
+test("Light defers agent types until spawn_agent is visible, retaining the initial listing", async () => {
+  const sessionKey = makeSession([{ agentType: "explore", whenToUse: "Explore code" }]);
+  const opts = { ...makeOpts(sessionKey), lightMode: true };
+  const tracking = getAttachmentTrackingState(sessionKey);
+  expect(await agentListingDeltaProducer(opts, tracking)).toEqual([]);
+  expect(tracking.lastAgentListingSet).toBeUndefined();
+  const loaded = { ...opts, loadedTools: [{ type: "function" as const, function: { name: "spawn_agent", description: "Spawn", parameters: {} } }] };
+  expect(await agentListingDeltaProducer(loaded, tracking)).toEqual([expect.objectContaining({ kind: "agent_listing_delta", isInitial: true, addedTypes: ["explore"] })]);
+  expect(await agentListingDeltaProducer(loaded, tracking)).toEqual([]);
+});

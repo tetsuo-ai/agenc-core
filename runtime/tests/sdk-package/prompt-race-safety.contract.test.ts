@@ -1031,3 +1031,24 @@ describe("agenc-sdk prompt race safety", () => {
     });
   });
 });
+
+
+it("forwards Light mode as session runtime authority and rejects older daemons before create", async () => {
+  const transport = new PromptTransport();
+  transport.attachRuntimeOptions = { ...VALID_ATTACH_RUNTIME_OPTIONS, lightMode: true };
+  const client = await initializedClient(transport);
+  await client.createSession({ cwd: VALID_ATTACH_CWD, pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot, lightMode: true, envOverrides: {} });
+  const created = transport.requests.find(request => request.method === "agent.create");
+  expect(created?.params).toMatchObject({ runtimeOptions: { lightMode: true, simpleMode: false, dangerouslyBypassApprovalsAndSandbox: false } });
+  expect(created?.params).not.toHaveProperty("lightMode");
+
+  const older = new PromptTransport();
+  older.initializeVersion = "1.18.0";
+  const oldClient = await initializedClient(older);
+  await expect(oldClient.createSession({ cwd: VALID_ATTACH_CWD, pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot, lightMode: true, envOverrides: {} })).rejects.toMatchObject({ name: "AgencCapabilityUnavailableError", capability: "Light mode" });
+  expect(older.requests.filter(request => request.method === "agent.create")).toEqual([]);
+  older.attachRuntimeOptions = VALID_ATTACH_RUNTIME_OPTIONS;
+  await oldClient.createSession({ cwd: VALID_ATTACH_CWD, pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot, lightMode: false, envOverrides: {} });
+  expect(older.requests.find(request => request.method === "agent.create")?.params).toMatchObject({ runtimeOptions: VALID_ATTACH_RUNTIME_OPTIONS });
+  expect((older.requests.find(request => request.method === "agent.create")?.params as { runtimeOptions?: object }).runtimeOptions).not.toHaveProperty("lightMode");
+});

@@ -722,7 +722,7 @@ describe("assembleSystemPrompt", () => {
     expect(desktop.sections.filter((section) => section === SYSTEM_PROMPT_DYNAMIC_BOUNDARY)).toHaveLength(1);
   });
 
-  test.each(["standard", "compact", "coordinator"] as const)("keeps Desktop guidance post-boundary in the %s profile", async (profile) => {
+  test.each(["standard", "compact", "light", "coordinator"] as const)("keeps Desktop guidance post-boundary in the %s profile", async (profile) => {
     const result = await assembleSystemPromptSnapshot({
       profile,
       session: { services: { providerEnvironment: { AGENC_AGENT_SDK_CLIENT_APP: DESKTOP_RICH_RENDERER_CLIENT } } },
@@ -793,7 +793,7 @@ describe("assembleSystemPrompt", () => {
   // coordinator/coordinatorMode.ts and is phrased for what a coordinator can
   // be steered into (spawning work, relaying content, changing the plan); the
   // shared assertions below are the floor every profile has to meet.
-  test.each(["standard", "compact", "coordinator"] as const)(
+  test.each(["standard", "compact", "light", "coordinator"] as const)(
     "the %s profile states the untrusted-tool-result policy it marks data with",
     async (profile) => {
       // The framing is emitted for every provider: a tool result that may
@@ -1330,3 +1330,50 @@ describe("assembleSystemPrompt", () => {
     expect(text).not.toContain("# Subagents");
   });
 });
+
+
+test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: explain tradeoffs." }])(
+  "Light uses unchanged standard instructions and preserves optional inputs (style=%s)",
+  async (outputStyle) => {
+    const session = { services: { runtimeOptions: { lightMode: true, simpleMode: false, nonInteractive: true, deadlineAt: 123 }, providerEnvironment: {} } } as unknown as Session;
+    const options = {
+      session, ctx: fakeCtx(),
+      projectInstructions: "USER_PROJECT_SENTINEL: preserve this instruction.",
+      memoryInstructions: "MEMORY_RULE_SENTINEL: keep scope boundaries.",
+      memoryPrompt: "MEMORY_PATH_SENTINEL: /workspace/memory",
+      permissionContext: { mode: "plan" } as never,
+      enabledToolNames: new Set(["FileRead", "Edit", "Write", "exec_command", "write_stdin", "Grep", "Glob", "system.searchTools"]),
+      outputStyle,
+      language: "French",
+      mcpServers: [{ name: "example", instructions: "MCP_INSTRUCTIONS_SENTINEL" }],
+      scratchpadDir: "/workspace/scratchpad",
+    };
+    const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
+    const standard = await assembleSystemPromptSnapshot({ ...options, profile: "standard" });
+    // Only the environment's wall-clock timestamp may differ between calls.
+    const withoutClock = (text: string) => text.replace(/Current time \(UTC\): [^\n]+/gu, "Current time (UTC): <captured>");
+    expect(light.staticPrefix).toBe(standard.staticPrefix);
+    expect(withoutClock(light.text)).toBe(withoutClock(standard.text));
+    expect(withoutClock(light.dynamicSuffix)).toBe(withoutClock(standard.dynamicSuffix));
+    for (const heading of ["# System", "# Executing actions with care", "# Using your tools", "# Tone and style", "# Output efficiency", "# Completing work without a human", "# Environment"]) {
+      expect(light.text).toContain(heading);
+    }
+    expect(light.text).toContain("system.searchTools");
+    expect(light.text).toContain(UNTRUSTED_TOOL_RESULT_BOUNDARY);
+    expect(light.text).toContain("fixed time budget");
+    expect(light.text).toContain("USER_PROJECT_SENTINEL");
+    expect(light.staticPrefix).toContain("MEMORY_RULE_SENTINEL");
+    expect(light.dynamicSuffix).toContain("MEMORY_PATH_SENTINEL");
+    expect(light.dynamicSuffix).toContain("MCP_INSTRUCTIONS_SENTINEL");
+    expect(light.dynamicSuffix).toContain("French");
+    expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
+    expect(light.text.toLowerCase()).toContain("plan");
+    if (outputStyle === undefined) {
+      expect(light.text).toContain("# Doing tasks");
+      expect(light.text).toContain("never suppress or simplify failing checks");
+    } else {
+      expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
+      expect(light.text).not.toContain("# Doing tasks");
+    }
+  },
+);

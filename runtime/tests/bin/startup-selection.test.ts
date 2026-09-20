@@ -89,6 +89,13 @@ describe("readStartupCliFlags --permission-mode validation", () => {
     );
   });
 
+  it("parses --light separately from bare mode and only before the prompt", () => {
+    expect(readStartupCliFlags(["node", "agenc", "--light", "explain"])).toMatchObject({ lightMode: true });
+    expect(readStartupCliFlags(["node", "agenc", "--light", "explain"])).not.toHaveProperty("simpleMode");
+    expect(readStartupCliFlags(["node", "agenc", "--", "--light"])).not.toHaveProperty("lightMode");
+    expect(readStartupCliFlags(["node", "agenc", "explain", "--light"])).not.toHaveProperty("lightMode");
+  });
+
   it("parses --bare only in the startup option region", () => {
     expect(
       readStartupCliFlags(["node", "agenc", "--bare", "explain"]),

@@ -20,11 +20,13 @@
 import { normalize } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
+import { createToolSearchTool } from "../tools/system/tool-search.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
   SESSION_TOOL_CATALOG_SCOPE_ARG,
 } from "../tools/system/coding-common.js";
+import type { ToolCatalogEntry } from "../tools/types.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
 import { unavailableToolResult } from "../tools/router.js";
 import {
@@ -2245,6 +2247,8 @@ export function buildFilteredRegistry(
   opts: {
     readonly allowlist?: ReadonlyArray<string>;
     readonly childConversationId: string;
+    /** Snapshot visibility and keep capability discovery owned by this child. */
+    readonly lightMode?: boolean;
     readonly executionConstraint?: ReadOnlyDelegationConstraint;
     readonly worktree?: WorktreeHandle;
     readonly disabledTools?: ReadonlySet<string>;
@@ -2277,9 +2281,59 @@ export function buildFilteredRegistry(
     (allowed === null || allowed.has(name));
   const eligibleTools = base.tools.filter((tool) => isEligible(tool.name));
   const toolCatalogScope: ReadonlySet<string> = new Set(eligibleTools.map((tool) => tool.name));
+  const discoveredToolNames = new Set<string>();
+  const initialTools = opts.lightMode === true
+    ? new Map(base.toLLMTools().filter(tool => isEligible(tool.function.name))
+        .map(tool => [tool.function.name as string, tool]))
+    : undefined;
+  if (initialTools !== undefined && !eligibleTools.some(tool => tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
+    // Explicit tool policies can remove discovery. Keep permitted tools usable
+    // without adding the forbidden search capability back into the session.
+    for (const tool of eligibleTools) initialTools.set(tool.name, {
+      type: "function",
+      function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
+    });
+  }
+  const discoverToolNames = (names: readonly string[]): void => {
+    for (const name of names) {
+      if (toolCatalogScope.has(name)) discoveredToolNames.add(name);
+    }
+  };
+  const localSearch = opts.lightMode === true ? createToolSearchTool({
+    allowedPaths: [],
+    persistenceRootDir: "",
+    getToolCatalog: () => eligibleTools.map((tool): ToolCatalogEntry => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      metadata: {
+        family: tool.metadata?.family ?? tool.name.split(".")[0] ?? "tool",
+        source: tool.metadata?.source ?? "builtin",
+        hiddenByDefault: tool.metadata?.hiddenByDefault ?? false,
+        mutating: tool.metadata?.mutating ?? tool.requiresApproval === true,
+        deferred: !initialTools?.has(tool.name),
+        ...(tool.metadata?.keywords !== undefined ? { keywords: tool.metadata.keywords } : {}),
+        ...(tool.metadata?.preferredProfiles !== undefined ? { preferredProfiles: tool.metadata.preferredProfiles } : {}),
+      },
+    })),
+    onDiscoverTools: discoverToolNames,
+  }) : undefined;
+  const searchTools = localSearch === undefined ? undefined
+    : async (args: Record<string, unknown>) => {
+      Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+        value: Object.freeze([...advertisedNames()]),
+        enumerable: false,
+        configurable: true,
+      });
+      return localSearch.execute(args);
+    };
   const wrappedTools = eligibleTools
     .map((tool) => {
-      const wrapped = wrapToolForChild(tool, { ...opts, toolCatalogScope });
+      const wrapped = wrapToolForChild(tool, {
+        ...opts,
+        toolCatalogScope,
+        ...(searchTools !== undefined ? { searchTools } : {}),
+      });
       const sessionSurface = (wrapped as Tool & {
         readonly [SESSION_BOUND_TOOL_SURFACE]?: SessionBoundToolSurface;
       })[SESSION_BOUND_TOOL_SURFACE];
@@ -2315,10 +2369,23 @@ export function buildFilteredRegistry(
         parameters: tool.inputSchema,
       },
     }));
-  const advertisedLLMTools = () => {
+  // Light children keep the parent's visible set from spawn time plus what
+  // their own search discovered; other children follow the parent's registry.
+  const visibleLLMTools = () => {
+    if (initialTools !== undefined) {
+      return fallbackAdvertisedTools().flatMap(tool => {
+        const name = tool.function.name;
+        if (discoveredToolNames.has(name)) return [tool];
+        const initial = initialTools.get(name);
+        return initial === undefined ? [] : [initial];
+      });
+    }
     const advertised = base.toLLMTools();
-    const visible = (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
+    return (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
       .filter((tool) => isEligible(tool.function.name as string));
+  };
+  const advertisedLLMTools = () => {
+    const visible = visibleLLMTools();
     const session = opts.getSession?.();
     if (session === undefined || session === null) return visible;
     return visible.map((tool) => {
@@ -2337,6 +2404,9 @@ export function buildFilteredRegistry(
 
   return {
     get tools() {
+      // Retain eligible implementations for nested discovery and execution;
+      // schemas and dispatch remain gated by this child's advertised names.
+      if (opts.lightMode === true) return wrappedTools;
       const names = advertisedNames();
       return wrappedTools.filter((tool) => names.has(tool.name));
     },
@@ -2346,6 +2416,10 @@ export function buildFilteredRegistry(
     getUnavailableToolNames() {
       return unavailable;
     },
+    ...(opts.lightMode === true ? {
+      getDiscoveredToolNames: () => discoveredToolNames,
+      discoverToolNames,
+    } : {}),
     async dispatch(toolCall): Promise<ToolDispatchResult> {
       if (unavailable.has(toolCall.name)) {
         return unavailableToolResult(toolCall.name);
@@ -2825,10 +2899,14 @@ function wrapToolForChild(
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
+    readonly searchTools?: Tool["execute"];
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
-  const source = inherited?.source ?? tool;
+  const original = inherited?.source ?? tool;
+  const source = opts.searchTools !== undefined && original.name === SYSTEM_SEARCH_TOOLS_NAME
+    ? inheritBuiltinToolProvenance(original, { ...original, execute: opts.searchTools })
+    : original;
   const parentPolicy = inherited?.policy;
   const currentPolicy = opts.childToolPolicy;
   const policy: ChildToolPolicy | undefined = parentPolicy === undefined
@@ -3358,6 +3436,7 @@ function buildChildSession(
   }
   let childSession: ChildSession | undefined;
   const registry = buildFilteredRegistry(params.parent.services.registry, {
+    lightMode: params.parent.services.runtimeOptions.lightMode === true,
     ...(params.live.metadata.executionConstraint !== undefined ? { executionConstraint: params.live.metadata.executionConstraint } : {}),
     allowlist:
       params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,

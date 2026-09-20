@@ -2874,7 +2874,9 @@ export class Session {
       permissionContext,
       profile: this.config.coordinatorMode === true
         ? "coordinator"
-        : usesLocalToolProfile(provider.binding.provider)
+        : this.services.runtimeOptions.lightMode === true
+          ? "light"
+          : usesLocalToolProfile(provider.binding.provider)
           ? "compact"
           : "standard",
     });
