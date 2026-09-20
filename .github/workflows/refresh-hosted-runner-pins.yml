@@ -17,23 +17,13 @@
 #
 # Use: dispatch, read each job's printed report, update the matching profile in
 # release-toolchain.json, then confirm locally with
-# `npm run check:hosted-runner-contract`.
+# `npm run check:hosted-runner-contract`. All three targets are measured every
+# time; the jobs are short and a full picture is what makes the pins reviewable.
 
 name: refresh-hosted-runner-pins
 
 on:
   workflow_dispatch:
-    inputs:
-      targets:
-        description: Which runner targets to measure
-        required: true
-        default: all
-        type: choice
-        options:
-          - all
-          - win-x64
-          - darwin-arm64
-          - darwin-x64
 
 permissions:
   contents: read
@@ -41,8 +31,6 @@ permissions:
 jobs:
   measure:
     name: measure (${{ matrix.runner }}, ${{ matrix.slug }})
-    if: >-
-      inputs.targets == 'all' || inputs.targets == matrix.slug
     strategy:
       fail-fast: false
       matrix:
