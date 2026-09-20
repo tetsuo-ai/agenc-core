@@ -33,12 +33,15 @@ import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
 import { redactSensitiveAPIText } from "../../errors/api.js";
+import type { AuthBackend } from "../../auth/backend.js";
+import { MANAGED_IMAGE_MODEL } from "../../auth/image-generation.js";
+import { generateManagedImage } from "./managed-image.js";
 
 export interface ImagineImageToolOptions {
   readonly workspaceRoot: string;
   readonly home: HomeContext;
   readonly getSession: () => {
-    services?: { provider?: unknown };
+    services?: { provider?: unknown; authBackend?: AuthBackend };
   } | null;
   readonly env?: NodeJS.ProcessEnv;
   readonly fetchImpl?: typeof fetch;
@@ -632,7 +635,18 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
 export function hasImagineImageBackend(
   opts: ImagineImageToolOptions,
 ): boolean {
-  return "backend" in resolveImageBackend(opts);
+  return "backend" in resolveImageBackend(opts) || opts.getSession()?.services?.authBackend?.getImageGenerationAccess !== undefined;
+}
+
+function useManagedImages(opts: ImagineImageToolOptions, args: Record<string, unknown>): boolean {
+  if (args.provider === "agenc") return true;
+  if (args.provider === "auto") return false;
+  if (args.model === MANAGED_IMAGE_MODEL) return true;
+  // An explicit native image model remains on its existing credential route.
+  if (args.model !== undefined) return false;
+  const services = opts.getSession()?.services;
+  return readProviderIdentity(services?.provider as never) === "agenc" ||
+    (services?.authBackend?.getImageGenerationAccess !== undefined && "error" in resolveImageBackend(opts));
 }
 
 /**
@@ -987,6 +1001,7 @@ function imagineImageInputSchema(
   backend: ImageBackend | undefined,
 ): Record<string, unknown> {
   const properties: Record<string, unknown> = {
+    provider: { type: "string", enum: ["auto", "agenc"], description: "Use agenc to check your signed-in account's free image capability; omit model and size controls for its single 1024×1024 image. Availability and quota come from the server. auto keeps the configured media backend." },
     prompt: {
       type: "string",
       description: "Describe the image to generate.",
@@ -1150,6 +1165,10 @@ function imagineImageInputSchema(
       });
   }
 
+  const model = properties.model as { enum?: string[]; description?: string };
+  if (model.enum) model.enum = [...model.enum, MANAGED_IMAGE_MODEL];
+  model.description = `${model.description ?? ""} Use ${MANAGED_IMAGE_MODEL} with provider=agenc for the independently available free account capability.`;
+
   return {
     type: "object",
     properties,
@@ -1189,7 +1208,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     opts.getSession() === null && !hasImagineImageBackend(opts);
   return {
     name: "ImagineImage",
-    description: imagineImageDescription(advertisedBackend),
+    description: `${imagineImageDescription(advertisedBackend)} Set provider=agenc to use free managed images when your signed-in account has server-confirmed availability; image generation does not debit chat credits.`,
     metadata: {
       family: "media",
       source: "builtin",
@@ -1211,6 +1230,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     timeoutMs: 210_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: (args) => {
+      if (useManagedImages(opts, args)) return { maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 };
       const resolution = resolveImageBackend(opts);
       const model = stringValue(args.model) ?? "glm-image";
       const maxCostUsd =
@@ -1231,6 +1251,12 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     execute: async (args) => {
       const admittedSignal = abortSignalFromArgs(args);
       admittedSignal?.throwIfAborted();
+      if (args.provider !== undefined && args.provider !== "auto" && args.provider !== "agenc") return refusal({ error: "provider must be auto or agenc" });
+      if (useManagedImages(opts, args)) return generateManagedImage({
+        authBackend: opts.getSession()?.services?.authBackend,
+        workspaceRoot: opts.workspaceRoot, args,
+        ...(admittedSignal ? { signal: admittedSignal } : {}),
+      });
       const backendResolution = resolveImageBackend(opts);
       if ("error" in backendResolution) {
         return refusal({ error: backendResolution.error });
