@@ -254,6 +254,7 @@ function isZaiProviderName(providerName: string): boolean {
 function strictSseProviderLabel(providerName: string): string {
   if (providerName === "kimi") return "Kimi";
   if (providerName === "deepseek") return "DeepSeek";
+  if (providerName === "meta") return "Meta";
   return "Z.AI";
 }
 
@@ -262,7 +263,8 @@ function strictSseProviderLabel(providerName: string): string {
  * cut. DeepSeek documents a last chunk with a non-null finish_reason and usage, then `data: [DONE]`.
  */
 function requiresStrictChatCompletionsSse(providerName: string): boolean {
-  return isZaiProviderName(providerName) || providerName === "kimi" || providerName === "deepseek";
+  return isZaiProviderName(providerName) || providerName === "kimi" ||
+    providerName === "deepseek" || providerName === "meta";
 }
 
 /**

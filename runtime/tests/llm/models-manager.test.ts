@@ -355,6 +355,39 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokensCappedDefault).toBe(false);
   });
 
+  it.each([
+    ["meta", "muse-spark-1.3", 1_048_576],
+    ["openai", "gpt-5.4-mini", 272_000],
+  ] as const)("preserves %s context when only its output cap is configured", async (
+    provider,
+    model,
+    contextWindow,
+  ) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: provider,
+        model,
+        providers: { [provider]: { max_output_tokens: 512 } },
+      }),
+      fallbackProvider: provider,
+      metadata: { fetchImpl, env: {} },
+    });
+    const expected = {
+      contextWindow,
+      maxOutputTokens: 512,
+      maxOutputTokensUpperLimit: 512,
+      maxOutputTokensExplicit: true,
+      usedFallbackModelMetadata: false,
+    };
+
+    // Picker metadata resolves synchronously; session startup resolves async.
+    expect(manager.tryListModels()?.find((entry) => entry.slug === model))
+      .toMatchObject(expected);
+    expect(await manager.getModelInfo(model)).toMatchObject(expected);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("reads live openai-compatible endpoint metadata for vLLM-style models", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe("http://127.0.0.1:8000/v1/models");

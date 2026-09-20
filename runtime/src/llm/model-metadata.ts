@@ -198,9 +198,14 @@ export class ModelMetadataResolver {
     source: ModelMetadataSource,
     usedFallbackModelMetadata: boolean,
   ): ResolvedModelMetadata {
+    // An explicit output cap overrides that field, not the model's remaining
+    // metadata. Dropping its known context window makes session admission fail.
+    const mergedMetadata = source === "explicit_config"
+      ? { ...inferBuiltInMetadata(params.provider, params.model), ...metadata }
+      : metadata;
     const effectiveMetadata = applyRegisteredModelOutputContract(
       params,
-      metadata,
+      mergedMetadata,
     );
     const output = resolveEffectiveOutputTokens({
       config: params.config,
@@ -209,8 +214,8 @@ export class ModelMetadataResolver {
       onWarn: this.warnOnce.bind(this),
     });
     return {
-      ...(metadata.contextWindow !== undefined
-        ? { contextWindow: metadata.contextWindow }
+      ...(mergedMetadata.contextWindow !== undefined
+        ? { contextWindow: mergedMetadata.contextWindow }
         : {}),
       maxOutputTokens: output.maxOutputTokens,
       maxOutputTokensUpperLimit: output.maxOutputTokensUpperLimit,

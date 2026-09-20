@@ -264,11 +264,17 @@ reasoning provider slug.
 
 Muse Spark is registered with a 1,048,576-token context window and a
 131,072-token maximum output. Its supported reasoning levels are `minimal`,
-`low`, `medium`, `high`, and `xhigh` (default `medium`); `none` and `max` are
-rejected by the API. The chat models accept image input, JSON-schema structured
+`low`, `medium`, `high`, and `xhigh` (default `medium`); standard-tier
+`muse-spark-1.3` also accepts `max`. The API rejects `none`, and `max` is not
+available on the other registered models. See Meta's
+[reasoning guide](https://dev.meta.ai/docs/reasoning). The chat models accept image input, JSON-schema structured
 output, and parallel function calls. Meta accepts only `tool_choice: "auto"`
 and rejects `stop`, so AgenC normalizes those controls before sending a
-request. Exact per-token pricing is not published in the authoritative
+request. Streams must include a terminal `finish_reason`; malformed or cut
+streams fail instead of being accepted as completed answers, and tool calls
+require `finish_reason: "tool_calls"` before dispatch. This follows Meta's
+[Chat Completions contract](https://dev.meta.ai/docs/protocols/chat-completions).
+Exact per-token pricing is not published in the authoritative
 provider documentation, so AgenC reports the cost as unknown instead of
 treating its conservative fallback estimate as authoritative.
 
