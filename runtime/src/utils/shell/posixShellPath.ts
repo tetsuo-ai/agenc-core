@@ -27,7 +27,19 @@ export type PosixShellProbe =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
 
-const PROBE_TIMEOUT_MS = 1_000;
+/**
+ * How long a shell gets to say what it is.
+ *
+ * A second is generous for a native shell and far too little for Git Bash on
+ * Windows, where starting one goes through msys2's process emulation: a plain
+ * `echo` measured 2,045 ms on an ordinary Windows 11 machine with Git for
+ * Windows installed. The probe timed out and AgenC reported no suitable shell
+ * on a machine that had one, with no way for the reader to tell the difference
+ * from not having installed Git at all. Windows therefore gets a bound wide
+ * enough for a slow start and still narrow enough to fail fast on a shell that
+ * has genuinely hung.
+ */
+const PROBE_TIMEOUT_MS = process.platform === "win32" ? 10_000 : 1_000;
 
 function describeProbeFailure(error: unknown): string {
   const failure = error as NodeJS.ErrnoException & {
