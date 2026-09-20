@@ -77,6 +77,31 @@ describe("anthropicThinkingControl", () => {
     expect(anthropicEffortLevels("claude-opus-4-6")).toEqual(["low", "medium", "high", "max"]);
   });
 
+  test("sampling parameters are gone from always-on, Opus/Sonnet 5, and Opus 4.8/4.7", () => {
+    for (const model of [
+      "claude-fable-5-1",
+      "claude-mythos-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4.8",
+      "us.anthropic.agenc-opus-4-8-v1",
+    ]) {
+      expect(anthropicAcceptsSamplingParameters(model), model).toBe(false);
+    }
+    for (const model of [
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-opus-4-5-20251101",
+      "claude-sonnet-4-5-20250929",
+      "claude-haiku-4-5",
+      "claude-3-7-sonnet-20250219",
+    ]) {
+      expect(anthropicAcceptsSamplingParameters(model), model).toBe(true);
+    }
+  });
+
   test("effort is accepted on the always-on and adaptive families and on Opus 4.5 only", () => {
     expect(anthropicAcceptsEffort("claude-fable-5-1")).toBe(true);
     expect(anthropicAcceptsEffort("claude-sonnet-5")).toBe(true);
