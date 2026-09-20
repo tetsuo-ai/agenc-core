@@ -42,6 +42,8 @@ export interface WhisperService {
 // Upstream ggml conversion repository, pinned September 8, 2026. Both models
 // are multilingual. LFS SHA256 and byte lengths verified against the revision.
 const MODEL_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1";
+/** Give up on a download only after this long with no bytes arriving. */
+const DOWNLOAD_IDLE_MS = 60 * 1000;
 export const WHISPER_MODELS = {
   base: { bytes: 147951465, sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe" },
   small: { bytes: 487601967, sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b" },
@@ -196,13 +198,25 @@ export class LocalWhisperService implements WhisperService {
     if (this.#installing || this.#transcribing) throw new WhisperError("WHISPER_BUSY", "Whisper is busy. Try again when it finishes.");
     this.#installing = true;
     let partial: string | undefined;
+    // A wall-clock deadline on the whole transfer makes a slow connection fail
+    // every time: the base model needs about 2 Mbit/s sustained to finish
+    // inside ten minutes and the small one about 6.5. What we want to catch is
+    // a connection that stopped delivering, so the clock restarts on every
+    // chunk and only silence ends the download.
+    const stalled = new AbortController();
+    let idle: NodeJS.Timeout | undefined;
+    const restartIdleClock = (): void => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => stalled.abort(), DOWNLOAD_IDLE_MS);
+      idle.unref?.();
+    };
     try {
       if (!await this.#executable()) throw new WhisperError("WHISPER_ENGINE_UNAVAILABLE", "Install whisper.cpp before downloading a model");
       if (await this.#installed(model, signal)) return await this.status({});
       await this.#directory(true);
       partial = join(this.#root, `.download-${randomUUID()}.partial`);
-      const deadline = AbortSignal.timeout(10 * 60 * 1000);
-      const combined = AbortSignal.any([signal, deadline]);
+      restartIdleClock();
+      const combined = AbortSignal.any([signal, stalled.signal]);
       const manifest = WHISPER_MODELS[model];
       const response = await fetch(`https://huggingface.co/ggerganov/whisper.cpp/resolve/${MODEL_REVISION}/ggml-${model}.bin`, { signal: combined, credentials: "omit", redirect: "follow" });
       if (!response.ok || !response.body) throw new WhisperError("WHISPER_DOWNLOAD_FAILED", "Could not download the Whisper model");
@@ -212,6 +226,7 @@ export class LocalWhisperService implements WhisperService {
       try {
         for await (const chunk of response.body) {
           cancelled(combined);
+          restartIdleClock();
           bytes += chunk.length;
           if (bytes > manifest.bytes) throw new WhisperError("WHISPER_MODEL_INTEGRITY", "Whisper model is larger than expected");
           hash.update(chunk);
@@ -227,9 +242,13 @@ export class LocalWhisperService implements WhisperService {
       return await this.status({});
     } catch (error) {
       cancelled(signal);
+      if (stalled.signal.aborted) {
+        throw new WhisperError("WHISPER_DOWNLOAD_FAILED", "The Whisper model download stopped receiving data. Check your connection and try again.");
+      }
       if (error instanceof WhisperError) throw error;
-      throw new WhisperError("WHISPER_DOWNLOAD_FAILED", "Whisper model download failed or timed out. Try again.");
+      throw new WhisperError("WHISPER_DOWNLOAD_FAILED", "Whisper model download failed. Try again.");
     } finally {
+      if (idle) clearTimeout(idle);
       try { if (partial) await rm(partial, { force: true }); }
       catch { throw new WhisperError("WHISPER_STORAGE_UNAVAILABLE", "Could not remove an incomplete Whisper download"); }
       finally { this.#installing = false; }
