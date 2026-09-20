@@ -151,6 +151,17 @@ function fakeSession(cwd = process.cwd()): Session {
     // The runtime's active-turn slot: tools read the live turn id off it,
     // and these fixtures run outside any turn.
     activeTurn: { unsafePeek: () => null },
+    // v2 spawn owns a durable-close finalizer and an agent-status
+    // subscription, and disposes both. These fixtures never shut down, so the
+    // listeners are dropped and the status stays at its initial value.
+    onBeforeDurableClose: () => () => {},
+    agentStatus: {
+      // A session executing a tool is live; the spawn path rejects a caller
+      // whose status is not, with invalid-runtime-identity.
+      value: { status: "running", turnId: "t", startedAtMs: 1 },
+      subscribe: () => () => {},
+      next: () => {},
+    },
     roleWorkspace,
     agentDefinitions: {
       agentRoleWorkspaceId: roleWorkspace.id,

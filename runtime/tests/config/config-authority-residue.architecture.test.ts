@@ -59,6 +59,9 @@ const retainedSecureStorageTerminologyPatterns = new Map<string, RegExp>([
     "secrets/sanitizer-wallet-c1.test.ts",
     /vault passphrase|vault-passphrase|AGENC_WALLET_VAULT_PASSPHRASE/iu,
   ],
+  // Same live secret name, exercised as a redaction fixture by the integer
+  // list suite. sanitizer.ts still carries a dedicated rule for it.
+  ["secrets/sanitizer-integer-lists.test.ts", /AGENC_WALLET_VAULT_PASSPHRASE/u],
   ["utils/secureStorage/platformStorage.test.ts", /PasswordVault/u],
 ]);
 
