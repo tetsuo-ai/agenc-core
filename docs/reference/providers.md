@@ -1,6 +1,6 @@
 # Providers reference
 
-Built-in model providers for AgenC **0.17.0**. Source of truth:
+Built-in model providers for AgenC **0.18.0**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
 (`BUILT_IN_PROVIDER_DEFINITIONS`). Each row owns the display name, defaults,
 ordered credential and endpoint environment ingress names, and first-run

@@ -9,7 +9,7 @@ Live help: `agenc help` and `agenc help <topic>`. Sources:
 Top-level help is a command index; `agenc help <topic>` contains each
 command's full syntax and options.
 
-Version: **0.17.0**. Default session provider **grok**, fresh-config session model
+Version: **0.18.0**. Default session provider **grok**, fresh-config session model
 **grok-4.6** (see [providers.md](providers.md)).
 
 ---
