@@ -740,7 +740,7 @@ describe("path-validation", () => {
     }
 
     async function withAuthority(run: () => void | Promise<void>) {
-      const store = new ConfigStore({ home: outside, cwd: root });
+      const store = new ConfigStore({ home: outside, cwd: root, projectRoot: root });
       await store.reload();
       await runWithCanonicalSettingsAuthority(store, run);
     }
