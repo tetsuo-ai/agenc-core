@@ -258,7 +258,11 @@ Deviation from the launcher: the runtime's internal autostart also handles
 build-skew respawn and orphan-daemon adoption. Those need runtime-internal
 state, so the SDK implements only attach-to-running + spawn-via-CLI. For full
 recovery behavior, start the daemon with the CLI first and call
-`connect({ autostart: false })`.
+`connect({ autostart: false })`. Hard-kill leftovers and a hydrating
+`daemon start` are documented on
+[daemon.md](reference/daemon.md#recovery-after-a-disappeared-daemon).
+The TUI's 10 s lost-turn probe is TUI-only; this client has no reconnect
+layer.
 
 The transport is a single persistent connection with no reconnect layer;
 call `connect()` again (or use `onDisconnect`) if the daemon restarts.

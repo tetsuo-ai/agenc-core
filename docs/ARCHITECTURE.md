@@ -6,7 +6,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, and [recovery after a disappeared daemon](reference/daemon.md#recovery-after-a-disappeared-daemon) |
 | [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, model-facing inputSchema sanitization, omitted-type object schemas, Landlock stdio failures |
@@ -49,7 +49,10 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 3. **Clients** — interactive **TUI**, one-shot **print / `--no-tui`**,
    **background agents**, the **channel gateway**, **remote control**, and
    the embedding **SDK**. Real work flows through the daemon; the TUI is a
-   view onto daemon-owned sessions.
+   view onto daemon-owned sessions. A TUI whose daemon stays silent
+   mid-turn ends that turn locally after 10 s; autostart after a
+   hard kill waits until the replacement socket accepts connections:
+   [daemon.md](reference/daemon.md#recovery-after-a-disappeared-daemon).
 
 Everything past the launcher lives in the single runtime workspace
 (`@tetsuo-ai/runtime`). The launcher is intentionally tiny.

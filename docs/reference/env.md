@@ -248,7 +248,9 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 | `AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK` | `1` allows a non-loopback bind |
 | `AGENC_DAEMON_URL` | Explicit remote daemon endpoint |
 
-Autostart retry cap and TUI fallback: [daemon.md](daemon.md).
+Autostart retry cap, hard-kill connectability readiness, hydrating
+`daemon start`, and the TUI 10 s lost-turn probe:
+[daemon.md](daemon.md#recovery-after-a-disappeared-daemon).
 
 ## Browser, budget, heartbeat, sandbox, xAI tools
 
