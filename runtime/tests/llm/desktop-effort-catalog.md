@@ -2,7 +2,7 @@
 
 `desktop-effort-catalog.json` is the evaluated `MODEL_CATALOG` export from
 `tetsuo-ai/agenc-desktop` origin/main at
-`d955d0570253e195a232c854b2446151ecf20919` (2026-09-21).
+`7849e260c0468a20e0946ad2d17bcf7396b993ad` (2026-09-21).
 The source is `src/renderer/src/modelCatalog.ts`, including its shared catalog imports.
 
 To refresh, fetch that repository, bundle the source with esbuild for Node (ESM),

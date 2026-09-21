@@ -11,6 +11,7 @@
   {"provider": "openai","model": "gpt-5.2","levels": ["low","medium","high","xhigh"]},
   {"provider": "openai","model": "gpt-5","levels": ["minimal","low","medium","high"]},
   {"provider": "grok","model": "grok-4.6","levels": ["low","medium","high","xhigh"]},
+  {"provider": "grok","model": "grok-4.7","levels": ["low","medium","high","xhigh"],"defaultLevel": "high"},
   {"provider": "grok","model": "grok-4.5","levels": ["low","medium","high"]},
   {"provider": "grok","model": "grok-composer-2.5-fast","levels": []},
   {"provider": "grok","model": "grok-build-0.1","levels": []},

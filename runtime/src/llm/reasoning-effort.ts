@@ -6,7 +6,7 @@ import { supportsXaiReasoningEffortParam } from "./structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "./registry/openai-reasoning-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "./registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel, DEEPSEEK_REASONING_LEVELS } from "./registry/deepseek-models.js";
-import { anthropicAcceptsEffort } from "../utils/model/anthropicThinkingControl.js";
+import { anthropicEffortLevels } from "../utils/model/anthropicThinkingControl.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
@@ -23,39 +23,32 @@ import type { ReasoningEffort } from "../session/turn-context.js";
 const NIM_REASONING_EFFORT_FAMILIES: readonly {
   readonly pattern: RegExp;
   readonly values: ReadonlySet<string>;
-  // Explicit session default shared with Desktop, not the API omission default.
-  readonly defaultLevel: ReasoningEffort;
 }[] = [
   {
     // moonshotai/kimi-k3: enum low|high|max, default max.
     pattern: /(?:^|\/)kimi-k3(?:$|[-.:])/i,
     values: new Set(["low", "high", "max"]),
-    defaultLevel: "high",
   },
   {
     // deepseek-ai/deepseek-v4-{pro,flash}(+dated snapshots):
     // enum none|high|max (defaults differ: pro none, flash high).
     pattern: /(?:^|\/)deepseek-v4-(?:pro|flash)(?:$|[-.:])/i,
     values: new Set(["none", "high", "max"]),
-    defaultLevel: "high",
   },
   {
     // openai/gpt-oss-20b|120b on NIM: enum low|medium|high.
     pattern: /(?:^|\/)gpt-oss-\d+b(?:$|[-.:])/i,
     values: new Set(["low", "medium", "high"]),
-    defaultLevel: "medium",
   },
   {
     // nvidia/nemotron-3-super-*: enum none|low|high.
     pattern: /(?:^|\/)nemotron-3-super(?:$|[-.:])/i,
     values: new Set(["none", "low", "high"]),
-    defaultLevel: "high",
   },
   {
     // nvidia/nemotron-3-ultra-*: enum none|medium|high.
     pattern: /(?:^|\/)nemotron-3-ultra(?:$|[-.:])/i,
     values: new Set(["none", "medium", "high"]),
-    defaultLevel: "high",
   },
 ];
 
@@ -135,9 +128,8 @@ export function resolveReasoningEffort(input: {
   const isNativeDeepSeek = slug === "deepseek" && isNativeDeepSeekModel(model);
   const isZai = slug === "zai" || slug === "zai-coding-plan";
   const isKimiK3 = slug === "kimi" && model?.trim().toLowerCase() === "kimi-k3";
-  // reasoning_effort: allow only provider/model combinations with a verified
-  // contract. Every other destination either rejects it or silently ignores
-  // it, so unrecognized combinations default to the safe "strip" behavior.
+  // Preserve the existing transport compatibility gates. OpenAI and Grok
+  // family matching permits forwarding, but does not verify a session enum.
   let acceptsReasoningEffort = false;
   let reasoningEffortAllowedValues: ReadonlySet<string> | undefined;
   if (isManagedDeepSeek) {
@@ -195,15 +187,13 @@ export function resolveReasoningEffort(input: {
   }
 
   const entry = resolveRegisteredModelCatalogEntry(input);
+  // Validation needs a catalog entry or an explicit enum. A permissive
+  // transport gate must never invent levels for an unregistered identity.
   const levels = entry?.supportedReasoningLevels ??
-    (slug === "anthropic" && model !== undefined && anthropicAcceptsEffort(model)
-      ? ["low", "medium", "high", "xhigh", "max"]
-      : [...(reasoningEffortAllowedValues ?? (acceptsReasoningEffort
-        ? ["minimal", "low", "medium", "high", "xhigh", "max"] : []))]);
-  const defaultLevel = entry?.defaultReasoningLevel ??
-    (slug === "nvidia-nim"
-      ? NIM_REASONING_EFFORT_FAMILIES.find(family => family.pattern.test(model?.trim() ?? ""))?.defaultLevel
-      : undefined);
+    (slug === "anthropic" && model !== undefined
+      ? anthropicEffortLevels(model)
+      : [...(reasoningEffortAllowedValues ?? [])]);
+  const defaultLevel = entry?.defaultReasoningLevel;
   return {
     registered: entry !== undefined,
     levels,

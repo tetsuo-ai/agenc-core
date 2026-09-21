@@ -126,6 +126,10 @@ function resolveSessionReasoningEffort(
   // Hosted providers can expose an effort contract absent from ModelInfo.
   // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
   const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
+  if (selection?.provider === "anthropic" && contract?.registered === false) {
+    if (contract.levels.includes(requested)) return requested;
+    if (requested === "max" || requested === "xhigh") return "high";
+  }
   if (contract?.registered === false && contract.levels.includes(requested)) {
     return requested;
   }

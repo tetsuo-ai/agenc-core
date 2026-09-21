@@ -7346,6 +7346,31 @@ describe("AgenC delegate background-agent runner", () => {
       expect(h.configStore.current()).toEqual(disk);
     });
 
+  it.each([
+    { provider: "anthropic", model: "claude-opus-4-6", levels: ["xhigh"] },
+    { provider: "anthropic", model: "claude-sonnet-4-6", levels: ["xhigh"] },
+    { provider: "anthropic", model: "claude-opus-4-5", levels: ["xhigh", "max"] },
+    ...["gpt-5.6-sol-unverified", "gpt-5.6-terra-unverified", "o3-unverified"].map(model => ({
+      provider: "openai", model, levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    })),
+    { provider: "grok", model: "grok-4-20-multi-agent-unverified", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+  ])("rejects unverified session efforts for $provider/$model", async row => {
+    const h = makeTopLevelRunner({ conversationId: "rejected-effort", canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = row.provider;
+    h.sessionState.sessionConfiguration.collaborationMode.model = row.model;
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = structuredClone(h.sessionState.sessionConfiguration);
+    const disk = h.configStore.current();
+    const events = recordedRuntimeSettingsEvents(h.rolloutItems);
+    for (const reasoningEffort of row.levels) {
+      await expect(h.runner.applyAgentConfig("rejected-effort", { sessionId: "session_1", reasoningEffort }))
+        .rejects.toThrow("does not support");
+    }
+    expect(h.sessionState.sessionConfiguration).toEqual(before);
+    expect(h.configStore.current()).toEqual(disk);
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(events);
+  });
+
   it("rolls back a NIM effort after a live session mutation fails", async () => {
     const h = makeTopLevelRunner({ conversationId: "nim-rollback", canonicalRuntimeSettings: true });
     h.sessionState.sessionConfiguration.provider.slug = "nvidia-nim";

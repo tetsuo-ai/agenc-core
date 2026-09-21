@@ -204,10 +204,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
     model: params.model,
   });
   const supportsLiteralMax = effort.levels.includes("max");
-  // NIM session defaults match the Desktop picker. Registered-model seeding
-  // remains unchanged, including its legacy max -> xhigh compatibility.
-  const configuredEffort = params.config.reasoning_effort ??
-    (effort.registered ? undefined : effort.defaultLevel);
+  const configuredEffort = params.config.reasoning_effort;
   const configPolicy = approvalPolicyValueFromAgenCConfig(
     params.config.approval_policy,
   );
