@@ -434,6 +434,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // ($4 / $1 / $12); this table has no prompt-size tier, so a >200k turn is
     // under-counted. Under-counting is the deliberate side to err on — the
     // alternative trips dollar_cap budgets early on every short turn.
+    // Grok 4.7 launch pricing has the same base rates and long-context caveat.
+    ...grokCostAliases("grok-4.7", COST_TIER_GROK_45),
     ...grokCostAliases("grok-4.6", COST_TIER_GROK_45),
     ...grokCostAliases("grok-4.5", COST_TIER_GROK_45),
     ...grokCostAliases("grok-4.3", COST_TIER_GROK_4X_NON_REASONING),

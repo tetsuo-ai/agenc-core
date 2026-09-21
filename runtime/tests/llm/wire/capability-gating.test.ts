@@ -85,6 +85,19 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       expect(request.reasoning_effort).toBe("xhigh");
     });
 
+    test("grok-4.7 chat completions serializes reasoning_effort=xhigh", () => {
+      const request = buildChatCompletionsRequest({
+        model: "grok-4.7",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: { reasoningEffort: "xhigh" },
+        providerCapabilityHints:
+          chatCompletionsCapabilityHintsForProvider("grok", "grok-4.7"),
+      });
+
+      expect(request.reasoning_effort).toBe("xhigh");
+    });
+
     test("undocumented grok models do not accept reasoning_effort", () => {
       expect(
         chatCompletionsCapabilityHintsForProvider("grok", "grok-4")

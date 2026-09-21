@@ -98,6 +98,7 @@ import {
 } from "../../../recovery/api-errors.js";
 import {
   buildXaiResponsesInputItems,
+  extractXaiReasoningReplay,
   resolveXaiResponsesToolChoice,
   toXaiResponsesTools,
   XAI_ENCRYPTED_REASONING_INCLUDE,
@@ -170,6 +171,7 @@ type ProviderFallbackWaitDecision = Extract<
  * client function tools on that family (built-ins + remote MCP only).
  */
 const VISION_MODELS_WITH_TOOLS = new Set([
+  "grok-4.7",
   "grok-4.6",
   "grok-4.6-latest",
   "grok-4.5",
@@ -1306,6 +1308,7 @@ export class GrokProvider implements LLMProvider {
             activePlan.params,
             options?.tools,
           ),
+          String(activePlan.params.model),
         );
         this.emitToolCallNormalizationIssues(
           parsed.normalizationIssues,
@@ -1549,6 +1552,7 @@ export class GrokProvider implements LLMProvider {
       let streamIterator: AsyncIterator<any> | null = null;
       let abortStream: ((reason?: unknown) => void) | undefined;
       let streamExhausted = false;
+      let reasoningReplay: Pick<LLMResponse, "providerReasoningContent" | "providerReasoningProvenance"> = {};
       let responseTracePayload: Record<string, unknown> | undefined;
       let streamResponseMeta: ProviderResponseTraceMeta | undefined;
       let completedResponseId: string | undefined;
@@ -1934,6 +1938,7 @@ export class GrokProvider implements LLMProvider {
             cloneProviderTracePayload(response) ??
             { error: "provider_response_trace_unavailable" };
           model = String(response.model ?? model);
+          reasoningReplay = extractXaiReasoningReplay(response.output, String(params.model));
           usage = this.parseUsage(response);
           providerEvidence = this.extractProviderEvidence(
             response as Record<string, unknown>,
@@ -2078,6 +2083,7 @@ export class GrokProvider implements LLMProvider {
               options.structuredOutput.schema.schema,
             ),
         encryptedReasoning,
+        ...reasoningReplay,
         finishReason,
         ...(thinking.length > 0 ? { thinking } : {}),
         ...(responseError ? { error: responseError } : {}),
@@ -2361,7 +2367,8 @@ export class GrokProvider implements LLMProvider {
     requestMessages: readonly LLMMessage[];
     incrementalBaseline: readonly LLMMessage[];
   } {
-    const visionModel = this.config.visionModel ?? DEFAULT_VISION_MODEL;
+    const visionModel = this.config.visionModel ??
+      (this.config.model === "grok-4.7" ? this.config.model : DEFAULT_VISION_MODEL);
     // Prefix-cache split: xAI caching is prefix-based ("never modify
     // earlier messages — only append"), so the volatile tail of the
     // system prompt (timestamp, git state, …) must not sit at the front
@@ -2384,9 +2391,10 @@ export class GrokProvider implements LLMProvider {
       providerName: this.name,
     });
 
-    const xaiInput = buildXaiResponsesInputItems(repairedMessages);
+    let xaiInput = buildXaiResponsesInputItems(repairedMessages);
     const model =
       options?.model ?? (xaiInput.hasImages ? visionModel : this.config.model);
+    xaiInput = buildXaiResponsesInputItems(repairedMessages, model);
 
     const params: Record<string, unknown> = {
       model,
@@ -2511,7 +2519,7 @@ export class GrokProvider implements LLMProvider {
           // prepend the static system prompt (already part of the stored
           // response) and re-validate a suffix that can legitimately open
           // with tool output.
-          params.input = buildXaiResponsesInputItems(decision.delta).input;
+          params.input = buildXaiResponsesInputItems(decision.delta, model).input;
         } else {
           const deltaBuilt = this.buildParams(decision.delta, {
             ...options,
@@ -2762,6 +2770,7 @@ export class GrokProvider implements LLMProvider {
     compactionDiagnostics?: LLMCompactionDiagnostics,
     structuredOutputRequest?: LLMChatOptions["structuredOutput"],
     advertisedToolNames: readonly string[] = [],
+    requestModel: string = this.config.model,
   ): LLMResponse & {
     normalizationIssues?: readonly ToolCallNormalizationIssue[];
   } {
@@ -2775,6 +2784,7 @@ export class GrokProvider implements LLMProvider {
     const parsedError = this.extractResponseError(response, finishReason);
 
     return {
+      ...extractXaiReasoningReplay(response.output, requestModel),
       content: this.extractOutputText(response) ?? "",
       toolCalls,
       usage: this.parseUsage(response),

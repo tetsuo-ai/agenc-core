@@ -531,6 +531,7 @@ export function getPublicModelDisplayNameForProvider(
       'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',
       'gemini-3-flash-preview': 'Gemini 3 Flash',
       'gemini-2.5-pro': 'Gemini 2.5 Pro',
+      'grok-4.7': 'Grok 4.7',
       'grok-4.6': 'Grok 4.6',
       'grok-4.5': 'Grok 4.5',
       'grok-composer-2.5-fast': 'Grok Composer 2.5 fast',

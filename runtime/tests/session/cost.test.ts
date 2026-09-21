@@ -448,6 +448,7 @@ describe("cost helpers", () => {
     // DEFAULT_UNKNOWN_MODEL_COST. Since DEFAULT_MODEL_COSTS feeds dollar_cap
     // enforcement, mispricing here enforces budgets at the wrong threshold.
     const nonReasoningModels = [
+      "grok-4.7",
       "grok-4.6",
       "grok-4.5",
       "grok-4.3",

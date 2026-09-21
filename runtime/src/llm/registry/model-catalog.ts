@@ -564,11 +564,11 @@ const GROK_REASONING_LEVELS = Object.freeze([
   "high",
 ] as const satisfies readonly ReasoningEffort[]);
 /**
- * Grok 4.6 adds `xhigh` on top of the levels every earlier Grok exposes.
+ * Grok 4.6 and 4.7 expose the documented `xhigh` depth tier.
  * Reusing GROK_REASONING_LEVELS would silently drop the level xAI documents,
  * leaving the highest effort tier unreachable from the picker.
  */
-const GROK_4_6_REASONING_LEVELS = Object.freeze([
+const GROK_4_6_AND_4_7_REASONING_LEVELS = Object.freeze([
   "low",
   "medium",
   "high",
@@ -1120,6 +1120,29 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "hide",
     },
     {
+      // https://docs.x.ai/developers/grok-4-7 (2026-09-21).
+      // No model output cap; native tools use provider-native-search.ts.
+      provider: "grok",
+      model: "grok-4.7",
+      displayName: "Grok 4.7",
+      contextWindow: 500_000,
+      maxContextWindow: 500_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: GROK_4_6_AND_4_7_REASONING_LEVELS,
+      defaultReasoningLevel: "high",
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: 28,
+      visibility: "list",
+    },
+    {
       provider: "grok",
       model: "grok-4.6",
       displayName: "Grok 4.6",
@@ -1134,7 +1157,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "none",
       supportsReasoningSummaries: false,
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: GROK_4_6_REASONING_LEVELS,
+      supportedReasoningLevels: GROK_4_6_AND_4_7_REASONING_LEVELS,
       defaultReasoningLevel: "high",
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 29,
