@@ -99,6 +99,7 @@ import {
   compactActiveHistoryEntries,
   createCompactionPayloadBundleV1,
 } from "./payload-manifest.js";
+import { redactDurableSecrets } from "../../session/provider-replay-redaction.js";
 import { redactSecretsInValue } from "../../secrets/sanitizer.js";
 import { durableRedactionDropsProviderReplay } from "../../session/message-history-conversion.js";
 import type { ProviderReasoningReplay } from "../../llm/types.js";
@@ -1750,7 +1751,7 @@ function createAuthoritativeSelectionMapper(
     // caller's live message the same way so a secret in a user or assistant
     // message does not read as "no canonical match" (redaction is idempotent).
     return canonicalizeJson(
-      redactSecretsInValue(
+      redactDurableSecrets(
         canonicalCompactionSourceMessages([durablyProjected(message)]),
       ),
     );

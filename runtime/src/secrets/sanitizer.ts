@@ -654,12 +654,19 @@ export function redactSecrets(input: string): string {
 }
 
 /** Redacts strings inside JSON-like artifacts without mutating the original value. */
-export function redactSecretsInValue<T>(value: T): T {
-  return redactValue(value, new WeakMap<object, unknown>()) as T;
+export function redactSecretsInValue<T>(
+  value: T,
+  preserveField?: (key: string, value: unknown) => boolean,
+): T {
+  return redactValue(value, new WeakMap<object, unknown>(), preserveField) as T;
 }
 
 
-function redactValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
+function redactValue(
+  value: unknown,
+  seen: WeakMap<object, unknown>,
+  preserveField?: (key: string, value: unknown) => boolean,
+): unknown {
   if (typeof value === "string") return redactSecrets(value);
   if (value === null || typeof value !== "object") return value;
 
@@ -670,7 +677,7 @@ function redactValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
     const output: unknown[] = [];
     seen.set(value, output);
     for (const item of value) {
-      output.push(redactValue(item, seen));
+      output.push(redactValue(item, seen, preserveField));
     }
     return output;
   }
@@ -682,7 +689,9 @@ function redactValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
       output[key] = REDACTED_SECRET;
       continue;
     }
-    output[key] = redactValue(nested, seen);
+    output[key] = preserveField?.(key, nested)
+      ? nested
+      : redactValue(nested, seen, preserveField);
   }
   return output;
 }

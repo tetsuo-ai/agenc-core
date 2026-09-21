@@ -105,7 +105,7 @@ function isEncryptedReasoningItem(item: unknown): item is Record<string, unknown
 function replayXaiReasoning(message: LLMMessage, model: string | undefined): Record<string, unknown>[] {
   if (message.role !== "assistant" || !model ||
       message.providerReasoningProvenance?.provider !== "grok" ||
-      message.providerReasoningProvenance.model !== model ||
+      message.providerReasoningProvenance.model.trim().toLowerCase() !== model.trim().toLowerCase() ||
       !message.providerReasoningContent) return [];
   try {
     const items: unknown = JSON.parse(message.providerReasoningContent);

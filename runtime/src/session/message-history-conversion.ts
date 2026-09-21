@@ -19,6 +19,8 @@ import {
   type ToolResultRepresentation,
 } from "./tool-result-integrity.js";
 
+import { isGrokEncryptedReplay, redactDurableSecrets } from "./provider-replay-redaction.js";
+
 type RolloutContentPart = Extract<
   ResponseItem["content"],
   ReadonlyArray<unknown>
@@ -281,7 +283,8 @@ function currentIntegrity(
 }
 
 /**
- * True when durable persistence drops this opaque replay because secret
+ * Grok encrypted-item JSON is exempt from text redaction.
+ * True when durable persistence drops other replay because secret
  * redaction would alter it.
  *
  * The durable record then carries no replay while the caller's live message
@@ -300,7 +303,7 @@ function currentIntegrity(
 export function durableRedactionDropsProviderReplay(
   providerReasoning: ProviderReasoningReplay | undefined,
 ): boolean {
-  if (providerReasoning === undefined) return false;
+  if (providerReasoning === undefined || isGrokEncryptedReplay(providerReasoning)) return false;
   const redacted = redactSecretsInValue(providerReasoning);
   return (
     redacted?.content !== providerReasoning.content ||
@@ -320,7 +323,7 @@ function redactResponseItemForPersistence(
   const { toolResultIntegrity: _omittedIntegrity, ...unsealedItem } = item;
   let redacted =
     unsealedItem.agentInvocation === undefined
-      ? (redactSecretsInValue(unsealedItem) as ResponseItem)
+      ? (redactDurableSecrets(unsealedItem) as ResponseItem)
       : (() => {
           const {
             content,
@@ -328,7 +331,7 @@ function redactResponseItemForPersistence(
             ...untrustedUnauthenticatedFields
           } = unsealedItem;
           return {
-            ...(redactSecretsInValue(untrustedUnauthenticatedFields) as Omit<
+            ...(redactDurableSecrets(untrustedUnauthenticatedFields) as Omit<
               ResponseItem,
               "content" | "agentInvocation"
             >),

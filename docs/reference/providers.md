@@ -106,11 +106,18 @@ catalog for Grok 4.6 exposes:
 | Reasoning effort | `low`, `medium`, `high`, `xhigh`; model default `high` |
 | Standard token rates below 200k prompt tokens | $2.00 / 1M input, $0.50 / 1M cached input, $6.00 / 1M output |
 
+| Selectable model | Context | Input | Reasoning effort | Base rates per 1M input / cached / output |
+| --- | --- | --- | --- | --- |
+| `grok-4.7` | 500,000 | text and image | `low`, `medium`, `high`, `xhigh`; default `high` | $2 / $0.50 / $6 |
+
+Grok 4.7 preserves encrypted reasoning on Responses resends and durable history.
+The session default remains `grok-4.6`.
+
 `grok-4.5` remains a selectable 500k-context catalog entry with the same input
 modalities and runtime features. Its short-context cached-input rate is
 $0.30 / 1M, versus $0.50 / 1M for Grok 4.6; it supports
 `low`/`medium`/`high` reasoning and is still the managed OpenRouter paid
-default. The xAI reasoning gate is fail-closed: Grok 4.3, Grok 4.5, Grok 4.6,
+default. The xAI reasoning gate is fail-closed: Grok 4.3, Grok 4.5, Grok 4.6, Grok 4.7,
 and the documented 4.20 multi-agent family may receive the provider parameter;
 unknown variants have it stripped instead of inheriting support from a name
 prefix. Grok 4.3's catalog default effort is `low`; Grok 4.5 and Grok 4.6

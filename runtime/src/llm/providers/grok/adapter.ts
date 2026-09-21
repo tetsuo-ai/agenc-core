@@ -2391,10 +2391,12 @@ export class GrokProvider implements LLMProvider {
       providerName: this.name,
     });
 
-    let xaiInput = buildXaiResponsesInputItems(repairedMessages);
+    const hasImages = repairedMessages.some((message) =>
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === "image_url"));
     const model =
-      options?.model ?? (xaiInput.hasImages ? visionModel : this.config.model);
-    xaiInput = buildXaiResponsesInputItems(repairedMessages, model);
+      options?.model ?? (hasImages ? visionModel : this.config.model);
+    const xaiInput = buildXaiResponsesInputItems(repairedMessages, model);
 
     const params: Record<string, unknown> = {
       model,

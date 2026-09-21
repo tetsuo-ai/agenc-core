@@ -1,3 +1,6 @@
+import { llmMessageToDurableResponseItem, responseItemToLlmMessage } from "../../src/session/message-history-conversion.js";
+import { redactSecretsInValue } from "../../src/secrets/sanitizer.js";
+import { encryptedItem, largeGrokReplay } from "../helpers/grok-encrypted-replay.js";
 import { expect, it, vi } from "vitest";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import { buildXaiResponsesRequest, extractXaiReasoningReplay } from "./wire/responses-xai.js";
@@ -58,4 +61,20 @@ it("replays whole encrypted items before their tool calls after durable serializ
     { type: "function_call", call_id: "call-1", name: "inspect", arguments: "{}" },
     { type: "function_call_output", call_id: "call-1", output: "done" },
   ]);
+});
+
+it("preserves 100KB random base64 through durable conversion and restore", () => {
+  expect(encryptedItem.encrypted_content).toHaveLength(102400);
+  expect(redactSecretsInValue(largeGrokReplay.providerReasoningContent)).not.toBe(largeGrokReplay.providerReasoningContent);
+  const durable = llmMessageToDurableResponseItem({ role: "assistant", content: "hello", ...largeGrokReplay });
+  const restored = responseItemToLlmMessage(JSON.parse(JSON.stringify(durable)));
+  expect(restored.providerReasoningContent === largeGrokReplay.providerReasoningContent).toBe(true);
+  expect(buildXaiResponsesRequest({ model: "Grok-4.7", messages: [restored] }).input).toContainEqual(encryptedItem);
+});
+it.each([[" Grok-4.7 ", "grok-4.7"], ["grok-4.7", " Grok-4.7 "]])("normalizes replay model provenance %s against %s", (provenanceModel, requestModel) => {
+  expect(buildXaiResponsesRequest({ model: requestModel, messages: [{ role: "assistant", content: "hello", ...extractXaiReasoningReplay([item], provenanceModel) }] }).input).toContainEqual(item);
+});
+it.each(["deepseek", "qwen", "openai", "grok"])("still drops secret-bearing plaintext reasoning for %s", (provider) => {
+  const durable = llmMessageToDurableResponseItem({ role: "assistant", content: "hello", providerReasoningContent: "password = super-secret-password-123", providerReasoningProvenance: { provider, model: "example" } });
+  expect(durable.providerReasoning).toBeUndefined();
 });
