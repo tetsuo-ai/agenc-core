@@ -955,6 +955,9 @@ export interface SchemaValidationError {
 export interface SchemaValidationResult {
   readonly valid: boolean;
   readonly errors: ReadonlyArray<SchemaValidationError>;
+  /** Execution-only copy; the caller must preserve the model input for replay. */
+  readonly args?: Record<string, unknown>;
+  readonly coercedPaths?: readonly string[];
 }
 
 function schemaTypeOf(value: unknown): string {
@@ -1018,7 +1021,114 @@ export function validateToolArgs(
     return { valid: true, errors: [] };
   }
   validateNode(schema, args, "", errors, schema);
-  return { valid: errors.length === 0, errors };
+  if (errors.length === 0) return { valid: true, errors, args };
+  const coercedPaths: string[] = [];
+  const candidate = normalizeContainerArgs(schema, args, "", schema, coercedPaths);
+  if (coercedPaths.length > 0 && isRecord(candidate)) {
+    const retryErrors: SchemaValidationError[] = [];
+    validateNode(schema, candidate, "", retryErrors, schema);
+    if (retryErrors.length === 0) {
+      return { valid: true, errors: [], args: candidate, coercedPaths };
+    }
+  }
+  // Failed repair must retain the original diagnostics, including their paths.
+  return { valid: false, errors };
+}
+
+/** Types admitted by the keywords our validator walks. Unknown means unrestricted. */
+function admittedTypes(schema: SchemaObj, root: SchemaObj): Set<string> | undefined {
+  const resolved = resolveRef(schema, root);
+  const type = resolved["type"];
+  let types = typeof type === "string" ? new Set([type])
+    : Array.isArray(type) ? new Set(type.filter((t): t is string => typeof t === "string"))
+    : undefined;
+  const intersect = (other: Set<string> | undefined) => {
+    if (other !== undefined) {
+      types = types === undefined ? other : new Set([...types].filter((t) => other.has(t)));
+    }
+  };
+  for (const key of ["anyOf", "oneOf"] as const) {
+    const branches = resolved[key];
+    if (!Array.isArray(branches) || branches.length === 0) continue;
+    const alternatives = branches.filter(isRecord).map((sub) => admittedTypes(sub, root));
+    if (alternatives.every((set) => set !== undefined)) {
+      intersect(new Set(alternatives.flatMap((set) => [...set!])));
+    }
+  }
+  const allOf = resolved["allOf"];
+  if (Array.isArray(allOf)) {
+    for (const sub of allOf) if (isRecord(sub)) intersect(admittedTypes(sub, root));
+  }
+  return types;
+}
+
+/** Copy on write, traversing only schema locations already handled by validateNode. */
+function normalizeContainerArgs(
+  schema: SchemaObj,
+  value: unknown,
+  path: string,
+  root: SchemaObj,
+  paths: string[],
+): unknown {
+  const originalErrors: SchemaValidationError[] = [];
+  validateNode(schema, value, path, originalErrors, root);
+  if (originalErrors.length === 0) return value;
+  const resolved = resolveRef(schema, root);
+  if (typeof value === "string") {
+    const types = admittedTypes(schema, root);
+    if (!types || types.has("string")) return value;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      const type = schemaTypeOf(parsed);
+      if ((type !== "array" && type !== "object") || !types.has(type)) return value;
+      value = parsed;
+      paths.push(path);
+    } catch {
+      return value;
+    }
+  }
+  for (const key of ["anyOf", "oneOf", "allOf"] as const) {
+    const branches = resolved[key];
+    if (!Array.isArray(branches)) continue;
+    for (const sub of branches) {
+      if (!isRecord(sub)) continue;
+      const branchPaths: string[] = [];
+      const candidate = normalizeContainerArgs(sub, value, path, root, branchPaths);
+      const errors: SchemaValidationError[] = [];
+      validateNode(sub, candidate, path, errors, root);
+      if (errors.length === 0) {
+        value = candidate;
+        paths.push(...branchPaths);
+        if (key !== "allOf") break;
+      }
+    }
+  }
+  if (Array.isArray(value) && isRecord(resolved["items"])) {
+    const items = resolved["items"];
+    const original = value;
+    const next = original.map((item, i) =>
+      normalizeContainerArgs(items, item, joinPath(path, i), root, paths),
+    );
+    return next.some((item, i) => item !== original[i]) ? next : original;
+  }
+  if (isRecord(value)) {
+    if (typeof resolved["type"] === "string" && resolved["type"] !== "object") return value;
+    const properties = isRecord(resolved["properties"]) ? resolved["properties"] : {};
+    let result = value;
+    for (const key of Object.keys(value)) {
+      const sub = Object.hasOwn(properties, key) ? properties[key] : resolved["additionalProperties"];
+      if (!isRecord(sub)) continue;
+      const next = normalizeContainerArgs(sub, value[key], joinPath(path, key), root, paths);
+      if (next !== value[key]) {
+        if (result === value) result = { ...value };
+        Object.defineProperty(result, key, {
+          value: next, enumerable: true, writable: true, configurable: true,
+        });
+      }
+    }
+    return result;
+  }
+  return value;
 }
 
 export function validateToolPreflight(
@@ -1026,6 +1136,8 @@ export function validateToolPreflight(
   args: Record<string, unknown>,
   options: {
     readonly skipArgValidation?: boolean;
+    readonly eventLog?: EventLog;
+    readonly subId?: string;
     readonly discoveredToolNames?: ReadonlySet<string>;
   } = {},
 ): ToolDispatchResult | null {
@@ -1036,6 +1148,18 @@ export function validateToolPreflight(
       tool.inputSchema as Record<string, unknown> | undefined,
       stripAgenCInternalArgsForValidation(args),
     );
+    if (validation.valid && validation.args && validation.coercedPaths?.length) {
+      // args is owned by dispatch. Nested containers in history remain untouched.
+      Object.defineProperties(args, Object.getOwnPropertyDescriptors(validation.args));
+      if (options.eventLog) {
+        emitWarningEvent(
+          options.eventLog,
+          options.subId ?? tool.name,
+          "tool_input_json_coercion",
+          JSON.stringify({ tool: tool.name, paths: validation.coercedPaths }),
+        );
+      }
+    }
     if (!validation.valid) {
       const prose = getSchemaValidationErrorOverride(tool, args) ??
         formatSchemaValidationError(tool.name, validation.errors);
@@ -1646,7 +1770,7 @@ export async function runToolUse(
   // view. They ride alongside model args via the ChildToolPolicy /
   // agent run-loop transport but are not part of the public schema.
   // See services/tools/toolExecution.ts for the parallel implementation.
-  const initialPreflight = validateToolPreflight(tool, parsedArgs, opts);
+  const initialPreflight = validateToolPreflight(tool, parsedArgs, { ...opts, subId });
   if (initialPreflight !== null) {
     if (opts.eventLog) {
       emitErrorEvent(opts.eventLog, subId, {
@@ -1773,7 +1897,7 @@ export async function runToolUse(
     }
   }
 
-  const rewrittenPreflight = validateToolPreflight(tool, args, opts);
+  const rewrittenPreflight = validateToolPreflight(tool, args, { ...opts, subId });
   if (rewrittenPreflight !== null) {
     return errorOutput({
       invocation,
@@ -1928,7 +2052,7 @@ export async function runToolUse(
     }
   }
 
-  const approvalPreflight = validateToolPreflight(tool, inputForTool, opts);
+  const approvalPreflight = validateToolPreflight(tool, inputForTool, { ...opts, subId });
   if (approvalPreflight !== null) {
     return errorOutput({
       invocation,
@@ -2047,7 +2171,7 @@ export async function runToolUse(
     }
   }
 
-  const executionPreflight = validateToolPreflight(tool, inputForTool, opts);
+  const executionPreflight = validateToolPreflight(tool, inputForTool, { ...opts, subId });
   if (executionPreflight !== null) {
     return errorOutput({
       invocation,

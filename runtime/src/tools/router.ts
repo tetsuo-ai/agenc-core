@@ -529,7 +529,7 @@ export class ToolRouter {
       // TRUSTED INTERNAL channel for runtime-injected filesystem scoping
       // and must never be supplied by the model; runtime values are
       // merged in later (execution.ts / filesystemRootsForDispatch).
-      let executionArgs = stripModelSuppliedAgenCInternalArgs(args);
+      let executionArgs = stripModelSuppliedAgenCInternalArgs({ ...args });
       const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
       if (initialPreflight !== null) return initialPreflight;
       let forcedApprovalReason: string | undefined;
@@ -1802,7 +1802,9 @@ function preflightToolCall(
       options.approvalPolicy ?? directDispatchApprovalPolicy(invocation),
     sandboxMode: options.sandboxMode ?? directDispatchSandboxMode(invocation),
   });
-  const result = validateToolPreflight(tool, args, options);
+  const result = validateToolPreflight(tool, args, {
+    ...options, eventLog: invocation.session.eventLog, subId: invocation.callId,
+  });
   if (result !== null) {
     emitErrorEvent(invocation.session.eventLog, invocation.callId, {
       cause: "schema_validation_failed",

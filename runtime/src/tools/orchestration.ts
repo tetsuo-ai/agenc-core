@@ -59,7 +59,7 @@ function toolIsConcurrencySafe(
   );
   if (!schemaResult.valid) return false;
   try {
-    return Boolean(tool.isConcurrencySafe(parsedInput));
+    return Boolean(tool.isConcurrencySafe(schemaResult.args ?? parsedInput));
   } catch {
     return false;
   }
