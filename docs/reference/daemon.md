@@ -241,7 +241,7 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 | `session.mcp.status`                                                                                        | Read the owning session's revisioned, credential-free MCP status projection                                        |
 | `session.mcp.addServer`                                                                                     | Attach MCP server to a session                                                                                     |
 | `message.send` / `message.stream`                                                                           | Prompt turns                                                                                                       |
-| `thread/realtime/start` / `appendAudio` / `appendText` / `stop` / `listVoices`                              | Realtime voice/thread. `start` is advertised `false` (fail-closed)                                                 |
+| `thread/realtime/start` / `thread/realtime/appendAudio` / `thread/realtime/appendText` / `thread/realtime/stop` / `thread/realtime/listVoices`                              | Realtime voice/thread. `start` is advertised `false` (fail-closed)                                                 |
 | `tool.approve` / `tool.deny` / `tool.cancel`                                                                | Permission settlement                                                                                              |
 | `elicitation.respond`                                                                                       | User-input / MCP elicitation reply                                                                                 |
 | `permission.list`                                                                                           | List pending / granted permissions                                                                                 |
@@ -251,8 +251,8 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 | `session.statusLine.execute`                                                                                | Render the configured custom status line for the owning live session (protocol 1.11)                               |
 | `session.processes.list` / `session.processes.stop`                                                         | Inspect and acknowledge-stop the session's own background processes (protocol 1.13)                                |
 | `session.goal`                                                                                              | Set, inspect, pause, resume, or clear the session goal. See [goal.md](goal.md) (protocol 1.14)                      |
-| `routine.*`                                                                                                 | Daemon-owned local routines. See [autonomy.md](autonomy.md)                                                        |
-| `remote.*` / `telegram.*`                                                                                   | Remote pairing and the Telegram gateway. Not yet expanded here; see [gateway.md](../gateway.md)                     |
+| `routine.capabilities` / `routine.list` / `routine.get` / `routine.create` / `routine.update` / `routine.delete` / `routine.run` / `routine.runs` / `routine.cancel`                                                                                                 | Daemon-owned local routines. See [autonomy.md](autonomy.md)                                                        |
+| `remote.*` / `telegram.*`                                                                                   | See the [remote and Telegram method contracts](#remote-and-telegram-methods) below                     |
 | `daemon.reload`                                                                                             | Reload configuration                                                                                               |
 | `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
@@ -268,6 +268,105 @@ reviews are still pending. See
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review)
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
+
+#### Remote and Telegram methods
+
+These are **local management RPCs**, not methods that a paired browser or
+Telegram chat may invoke. Complete the authenticated `initialize` handshake
+first. The dispatcher requires the corresponding service and an initialize
+authenticator, and refuses these methods on connections carrying remote-access
+authority. Check the per-method capabilities from `initialize`; registry
+membership alone does not mean a service is available.
+
+The tables below use `—` for no method-specific parameters (send `{}`). Result
+names refer to the interfaces in `runtime/src/remote/types.ts` and
+`runtime/src/gateway/owner-telegram-types.ts`; results are returned directly in
+JSON-RPC `result`, not wrapped in a field named after the type.
+
+##### Remote browser pairing
+
+Call `remote.start` before `remote.pair.begin`. Starting the local service does
+not sign in, create a pairing, or connect a device. Pair creation requires a
+signed-in AgenC account on the host and a canonical, allowed workspace. The
+explicit session IDs must belong to that workspace; control grants must also
+pass the control-session check. A view grant requires at least one session;
+a control grant may start empty. At most 64 session IDs and eight approved or
+approving devices are accepted, with only one pending pairing at a time.
+`allowFiles` and `allowApprovals` default to false; approvals are only enabled
+for a control grant.
+
+A device claiming the code is **not** approval. Poll `remote.pending` or
+`remote.status`, then approve the claimed `deviceId` locally. Pairing status
+includes the code, URL, QR data URL, expiry, grant, and (once claimed) device
+identity. Treat that pairing material as sensitive. `RemoteStatus` contains
+`enabled`, `state`, `connectedDevices`, `devices`, `pairing`, and a sanitized
+`error` code; it does not expose host secrets or relay tickets.
+
+| Method | Parameters | Result and behavior |
+| --- | --- | --- |
+| `remote.capabilities` | — | `RemoteCapabilities`: contract version 1, browser protocol, supported roles/features, and sign-in/local-approval requirements. |
+| `remote.status` | — | `RemoteStatus`: current service, pairing, and device state. |
+| `remote.start` | — | `RemoteStatus`: enable the service; idempotent when already enabled. |
+| `remote.stop` | — | `RemoteStatus`: disable service, cancel pairing, disconnect and forget all devices; backend revocation is best-effort. |
+| `remote.pair.begin` | `workspacePath`, `sessionIds: string[]`, `role: "view" \| "control"`; optional `allowFiles`, `allowApprovals` booleans | `RemoteStatus` with a new pending pairing; starts polling for a claim. |
+| `remote.pair.refresh` | — | `RemoteStatus`: cancel the pending pairing and create a new one with the same grant; fails if none is pending. |
+| `remote.pair.cancel` | — | `RemoteStatus`: cancel pending/in-flight pairing; leave approved devices alone. |
+| `remote.devices` | — | `{ devices: RemoteDevice[] }`: approved device projections, including scope and connection state. |
+| `remote.pending` | — | `{ pending: RemotePairing[] }`: the claimed pairing awaiting local approval, or an empty array (including while still unclaimed). |
+| `remote.approve` | `deviceId: string` | `RemoteStatus`: require the currently claimed device, approve with the backend, and initiate its relay connection; return does not guarantee a connected browser yet. |
+| `remote.revoke` | `deviceId: string` | `RemoteStatus`: disconnect and forget that approved device, with best-effort backend revocation; an unknown ID is a no-op. |
+
+Validation/lifecycle errors include `REMOTE_NOT_STARTED`,
+`REMOTE_GRANT_INVALID`, `REMOTE_PAIRING_EXISTS`, `REMOTE_PAIRING_MISSING`,
+`REMOTE_DEVICE_LIMIT`, and `REMOTE_DEVICE_NOT_PENDING`. See
+[remote control](../remote-control.md) for the broader remote-control flows;
+these RPC contracts come from `runtime/src/remote/service.ts` and the local
+management gates in `runtime/src/app-server/daemon-dispatcher.ts`.
+
+##### Telegram owner gateway and managed agents
+
+Telegram uses a bot token in native credential storage and private-owner chat
+binding, not the remote browser's AgenC sign-in/pairing flow. Tokens are input
+credentials, never status results. Tool approvals stay on the host; a Telegram
+message cannot approve a tool. Workspace paths are canonicalized and validated.
+
+The unscoped `telegram.status`, `telegram.start`, and `telegram.revoke` methods
+target the legacy agent when present, otherwise the first managed agent (or the
+legacy runtime when no managed agent exists). In contrast, `telegram.stop`
+stops **all** managed agents and the legacy runtime. Prefer the agent-ID methods
+when managing a specific bot.
+
+| Method | Parameters | Result and behavior |
+| --- | --- | --- |
+| `telegram.capabilities` | — | `OwnerTelegramCapabilities`: contract version 2, multi-agent/local-confirmation support, owner-only private chats, native credential storage, host-only approvals, and supported commands. |
+| `telegram.status` | — | `OwnerTelegramStatus`: configured/enabled/state, owner and workspace binding, session ID, bot username, sanitized error, and last update time. |
+| `telegram.configure` | `token`, `ownerUserId`, `workspacePath`; optional `ownerChatId` (all strings) | `OwnerTelegramStatus`: configure the legacy binding and store its token; stop its previous runtime. `ownerUserId` must be a positive numeric Telegram user ID and `ownerChatId`, if supplied, must equal it. Does not start polling. |
+| `telegram.start` | — | `OwnerTelegramStatus`: start the selected configured/linked bot, validating its stored credential and identity. |
+| `telegram.stop` | — | `OwnerTelegramStatus`: stop all bots and cancel their pairing operations, preserving configuration and credentials. |
+| `telegram.revoke` | — | `OwnerTelegramStatus`: stop and remove the selected bot's configuration/credential; returns the resulting primary status, which may describe another agent. |
+| `telegram.agents.list` | — | `{ agents: TelegramAgentStatus[] }`: managed profiles, runtime state, and pending pairing/candidate projections; no tokens. |
+| `telegram.agents.create` | `name`, `token`, `workspacePath`; optional `instructions` (all strings) | `TelegramAgentStatus`: validate the bot through Telegram `getMe`, reject duplicate bot identities, store a new unlinked, stopped agent. |
+| `telegram.agents.update` | `agentId`; optional `name`, `token`, `workspacePath`, `instructions` (all strings) | `TelegramAgentStatus`: update the profile/credential and stop the bot, cancelling pairing. Changing bot identity clears the owner link and replay cursor; relink before starting. |
+| `telegram.agents.start` | `agentId: string` | `TelegramAgentStatus`: require a linked owner and valid matching stored token; start polling. |
+| `telegram.agents.stop` | `agentId: string` | `TelegramAgentStatus`: stop this bot and cancel pairing/in-flight operations, preserving its owner link and credential. |
+| `telegram.agents.remove` | `agentId: string` | `{ removed: true, agentId }`: stop and remove the agent and stored credential. |
+| `telegram.agents.pair.begin` | `agentId: string` | `TelegramAgentPairingResult` (`agentId`, `challengeId`, `url`, `qrDataUrl`, `expiresAt`): stop the bot, validate its credential, and create a five-minute account-link challenge, replacing any previous one. |
+| `telegram.agents.pair.confirm` | `agentId`, `challengeId` (strings) | `TelegramAgentStatus`: require the matching unexpired challenge and a captured private-chat candidate; persist that owner link and clear the challenge. Does not start the bot. |
+| `telegram.agents.pair.cancel` | `agentId: string`; optional `challengeId: string` | `TelegramAgentStatus`: cancel pairing and stop this bot. If supplied, the challenge ID must match the pending challenge. |
+
+For managed agents, create → begin pairing → open the link in Telegram → inspect
+`telegram.agents.list` for `pairing.candidate` → confirm that candidate locally →
+start. Claiming the one-time link only records a candidate; it cannot bind the
+owner without local confirmation. Profiles accept a nonblank name up to 100
+characters and instructions up to 16,000 characters; the service allows up to
+100 managed agents. Errors include `TELEGRAM_CONFIG_INVALID`,
+`TELEGRAM_TOKEN_INVALID`, `TELEGRAM_AGENT_DUPLICATE`, `TELEGRAM_AGENT_NOT_FOUND`,
+`TELEGRAM_ACCOUNT_NOT_LINKED`, `TELEGRAM_PAIRING_NOT_PENDING`, and
+`TELEGRAM_CREDENTIAL_STORAGE_UNAVAILABLE`.
+
+See [gateway](../gateway.md) for product-level setup. The RPC behavior is defined
+in `runtime/src/gateway/owner-telegram.ts`; generic channel pairing is not a
+substitute for the managed-agent confirmation flow above.
 
 ### Internal methods (`AGENC_DAEMON_INTERNAL_METHODS`)
 
