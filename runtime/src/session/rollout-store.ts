@@ -471,7 +471,7 @@ function requireCompactionPayloadBundle(
   if (
     params.expectedValue !== undefined &&
     canonicalizeSourceJson(value) !==
-      canonicalizeSourceJson(redactDurableSecrets(params.expectedValue))
+      canonicalizeSourceJson(redactDurableSecrets(params.expectedValue, params.payloadKind === "replacement_history" || params.payloadKind === "source_history" ? "history" : "ordinary"))
   ) {
     throw new CompactionTransactionError(
       params.failureStage,

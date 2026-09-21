@@ -323,7 +323,7 @@ export function serializeRolloutItem(item: RolloutItem): string {
   const redacted =
     item.type === "compaction_payload_chunk"
       ? stamped
-      : (redactDurableSecrets(stamped) as typeof stamped);
+      : (redactDurableSecrets(stamped, "rollout") as typeof stamped);
   assertProviderReasoningUnchanged(stamped, redacted);
   return `${JSON.stringify(redacted)}\n`;
 }

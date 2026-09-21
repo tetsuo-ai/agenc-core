@@ -283,8 +283,8 @@ function currentIntegrity(
 }
 
 /**
- * Grok encrypted-item JSON is exempt from text redaction.
- * True when durable persistence drops other replay because secret
+ * Only canonical Grok ciphertext is exempt from text redaction.
+ * True when durable persistence drops invalid Grok replay or other replay because secret
  * redaction would alter it.
  *
  * The durable record then carries no replay while the caller's live message
@@ -303,7 +303,12 @@ function currentIntegrity(
 export function durableRedactionDropsProviderReplay(
   providerReasoning: ProviderReasoningReplay | undefined,
 ): boolean {
-  if (providerReasoning === undefined || isGrokEncryptedReplay(providerReasoning)) return false;
+  if (providerReasoning === undefined) return false;
+  if (providerReasoning.version === 2 && providerReasoning.provider === "grok") {
+    if (!isGrokEncryptedReplay(providerReasoning)) return true;
+    const metadata = redactSecretsInValue({ provider: providerReasoning.provider, model: providerReasoning.model });
+    return metadata.provider !== providerReasoning.provider || metadata.model !== providerReasoning.model;
+  }
   const redacted = redactSecretsInValue(providerReasoning);
   return (
     redacted?.content !== providerReasoning.content ||
@@ -323,7 +328,7 @@ function redactResponseItemForPersistence(
   const { toolResultIntegrity: _omittedIntegrity, ...unsealedItem } = item;
   let redacted =
     unsealedItem.agentInvocation === undefined
-      ? (redactDurableSecrets(unsealedItem) as ResponseItem)
+      ? (redactDurableSecrets(unsealedItem, "response") as ResponseItem)
       : (() => {
           const {
             content,
@@ -331,7 +336,7 @@ function redactResponseItemForPersistence(
             ...untrustedUnauthenticatedFields
           } = unsealedItem;
           return {
-            ...(redactDurableSecrets(untrustedUnauthenticatedFields) as Omit<
+            ...(redactDurableSecrets(untrustedUnauthenticatedFields, "response") as Omit<
               ResponseItem,
               "content" | "agentInvocation"
             >),

@@ -41,7 +41,7 @@ export function createCompactionPayloadBundleV1(params: {
   // a secret fail its own digest on read: the commit failed and every later
   // strict read of the session rejected the chunk (soak session, 2026-09-05).
   const canonicalJson = canonicalizePayloadJson(
-    redactDurableSecrets(params.value),
+    redactDurableSecrets(params.value, params.payloadKind === "replacement_history" || params.payloadKind === "source_history" ? "history" : "ordinary"),
   );
   const canonicalBytes = Buffer.byteLength(canonicalJson, "utf8");
   if (canonicalBytes > MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES) {

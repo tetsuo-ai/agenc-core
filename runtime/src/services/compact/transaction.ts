@@ -1753,6 +1753,7 @@ function createAuthoritativeSelectionMapper(
     return canonicalizeJson(
       redactDurableSecrets(
         canonicalCompactionSourceMessages([durablyProjected(message)]),
+        "source_history",
       ),
     );
   };
