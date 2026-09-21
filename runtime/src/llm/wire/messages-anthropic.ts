@@ -4,6 +4,7 @@
  * @module
  */
 
+import { resolveReasoningEffort } from "../reasoning-effort.js";
 import {
   anthropicFastModeRequested,
   anthropicSupportsFastMode,
@@ -37,7 +38,6 @@ import {
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import {
-  anthropicAcceptsEffort,
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
   anthropicManualBudgetTokens,
@@ -430,21 +430,28 @@ export function buildAnthropicMessagesRequest(
   // thinking, with depth steered by effort. Only Opus 4.5, Sonnet 4.5,
   // Haiku 4.5 and older still budget their thinking. Probed live
   // 2026-09-11; see anthropicThinkingControl.ts.
+  const effortLevels = resolveReasoningEffort({ provider: "anthropic", model: input.model }).levels;
+  const requestedEffort = input.options?.reasoningEffort;
+  const normalizedEffort = (requestedEffort === "max" || requestedEffort === "xhigh") &&
+    !effortLevels.includes(requestedEffort) ? "high" : requestedEffort;
   if (thinkingEnabled && !alwaysOnThinking) {
     body.thinking = thinkingControl === "adaptive"
       ? { type: "adaptive" }
       : {
           type: "enabled",
           budget_tokens: anthropicManualBudgetTokens(
-            input.options?.reasoningEffort,
+            normalizedEffort,
             maxTokens,
           ),
         };
   }
   // The effort dial only means something on the wire as output_config.effort;
   // Sonnet 4.5 and Haiku 4.5 reject the field, so it stays off for them.
-  const effort = anthropicEffort(input.options?.reasoningEffort);
-  if (effort !== undefined && anthropicAcceptsEffort(input.model)) {
+  const effort = anthropicEffort(normalizedEffort);
+  if (
+    effort !== undefined &&
+    effortLevels.includes(effort)
+  ) {
     body.output_config = { effort };
   }
   // Fast mode rides the session's "priority" service tier. It is sent only

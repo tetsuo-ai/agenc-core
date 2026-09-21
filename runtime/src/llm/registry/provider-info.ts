@@ -56,6 +56,7 @@ const GITHUB_COPILOT_CATALOG_MODELS = Object.freeze(
 );
 
 const NVIDIA_PROVIDER_MODEL_IDS = Object.freeze([
+  "openai/gpt-oss-120b",
   "nvidia/cosmos-reason2-8b",
   "microsoft/phi-4-mini-flash-reasoning",
   "qwen/qwen3-next-80b-a3b-thinking",

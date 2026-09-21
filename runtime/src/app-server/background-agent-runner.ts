@@ -89,7 +89,7 @@ import {
   PermissionRuleMutationPrecommitError,
 } from "../permissions/permission-updates.js";
 import { applyModelSwitch } from "../commands/model.js";
-import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import type {
   ProviderModelSelectionOutcome,
 } from "../contracts/provider-model-selection.js";
@@ -4065,8 +4065,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         const previousSettings = ensureInitialRuntimeSettings(active, agentId);
         const level = normalizeRuntimeSetting(params.reasoningEffort, RUN_RUNTIME_REASONING_EFFORTS, "reasoning effort");
-        const entry = resolveRegisteredModelCatalogEntry({ provider: previousSettings.provider, model: previousSettings.model });
-        if (level === null || !entry?.supportedReasoningLevels.includes(level)) {
+        const effort = resolveReasoningEffort({ provider: previousSettings.provider, model: previousSettings.model });
+        if (level === null || !effort.levels.includes(level)) {
           throw new Error("The selected model does not support this reasoning effort");
         }
         const identity = { provider: previousSettings.provider, model: previousSettings.model };

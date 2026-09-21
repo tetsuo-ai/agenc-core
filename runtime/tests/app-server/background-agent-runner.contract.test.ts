@@ -1,3 +1,7 @@
+import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
+import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
+import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
 import {
   mkdirSync,
   mkdtempSync,
@@ -7320,6 +7324,107 @@ describe("AgenC delegate background-agent runner", () => {
     });
     expect(setDisabled).toHaveBeenNthCalledWith(1, true);
     expect(setDisabled).toHaveBeenNthCalledWith(2, false);
+  });
+
+  it.each(["claude-opus-4-6", "claude-sonnet-4-6"])(
+    "forwards every accepted literal applyConfig effort on %s", async model => {
+      const h = makeTopLevelRunner({ conversationId: "older-claude-effort", canonicalRuntimeSettings: true });
+      const row = { provider: "anthropic", model };
+      h.sessionState.sessionConfiguration.provider.slug = row.provider;
+      h.sessionState.sessionConfiguration.collaborationMode.model = model;
+      // This is the historical configured max seed. applyConfig must replace it.
+      h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort = "xhigh";
+      await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+      const disk = h.configStore.current();
+      const registry = new ModelRegistry({ config: {} });
+      const info = modelRegistryEntryToModelInfo(registry.resolveSync(row));
+      for (const reasoningEffort of ["max", "low", "medium", "high"] as const) {
+        await expect(h.runner.applyAgentConfig("older-claude-effort", { sessionId: "session_1", reasoningEffort }))
+          .resolves.toMatchObject({ applied: true, ...row });
+        const sessionEffort = h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort;
+        expect(sessionEffort).toBe(reasoningEffort);
+        expect((await h.runner.getAgentSnapshot("older-claude-effort"))?.runtimeSettings?.reasoningEffort).toBe(reasoningEffort);
+        expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload?.reasoningEffort).toBe(reasoningEffort);
+        const effort = resolveSessionReasoningEffort(sessionEffort, info.supportedReasoningLevels, row);
+        const body = buildAnthropicMessagesRequest({
+          model, messages: [], tools: [], maxTokens: 4096, options: { reasoningEffort: effort },
+        });
+        expect(body.output_config).toEqual({ effort: reasoningEffort });
+      }
+      const before = structuredClone(h.sessionState.sessionConfiguration);
+      const events = recordedRuntimeSettingsEvents(h.rolloutItems);
+      for (const reasoningEffort of ["none", "minimal", "xhigh"]) {
+        await expect(h.runner.applyAgentConfig("older-claude-effort", { sessionId: "session_1", reasoningEffort }))
+          .rejects.toThrow("does not support");
+      }
+      expect(h.sessionState.sessionConfiguration).toEqual(before);
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(events);
+      expect(h.configStore.current()).toEqual(disk);
+    });
+
+  it.each(desktopEffortCatalog.filter(row => row.levels.length > 0))(
+    "accepts Desktop session efforts for $provider/$model", async row => {
+      const h = makeTopLevelRunner({ conversationId: "desktop-effort", canonicalRuntimeSettings: true });
+      h.sessionState.sessionConfiguration.provider.slug = row.provider;
+      h.sessionState.sessionConfiguration.collaborationMode.model = row.model;
+      await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+      const disk = h.configStore.current();
+      for (const reasoningEffort of row.levels) {
+        await expect(h.runner.applyAgentConfig("desktop-effort", {sessionId: "session_1", reasoningEffort}))
+          .resolves.toMatchObject({ applied: true, provider: row.provider, model: row.model });
+        expect(h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort).toBe(reasoningEffort);
+        expect((await h.runner.getAgentSnapshot("desktop-effort"))?.runtimeSettings?.reasoningEffort).toBe(reasoningEffort);
+      }
+      const events = recordedRuntimeSettingsEvents(h.rolloutItems);
+      const invalid = ["minimal", "low", "medium", "high", "xhigh", "max"].find(level => !row.levels.includes(level)) ?? "invalid";
+      await expect(h.runner.applyAgentConfig("desktop-effort", {sessionId: "session_1", reasoningEffort: invalid})).rejects.toThrow();
+      Object.assign(h.session, { activeTurn: h.activeTurn });
+      h.setActiveTurn("running-turn");
+      await expect(h.runner.applyAgentConfig("desktop-effort", {sessionId: "session_1", reasoningEffort: row.levels[0]})).rejects.toThrow("between turns");
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(events);
+      expect(h.configStore.current()).toEqual(disk);
+    });
+
+  it.each([
+    { provider: "anthropic", model: "claude-opus-4-6", levels: ["xhigh"] },
+    { provider: "anthropic", model: "claude-sonnet-4-6", levels: ["xhigh"] },
+    { provider: "anthropic", model: "claude-opus-4-5", levels: ["xhigh", "max"] },
+    ...["gpt-5.6-sol-unverified", "gpt-5.6-terra-unverified", "o3-unverified"].map(model => ({
+      provider: "openai", model, levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    })),
+    { provider: "grok", model: "grok-4-20-multi-agent-unverified", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+  ])("rejects unverified session efforts for $provider/$model", async row => {
+    const h = makeTopLevelRunner({ conversationId: "rejected-effort", canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = row.provider;
+    h.sessionState.sessionConfiguration.collaborationMode.model = row.model;
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = structuredClone(h.sessionState.sessionConfiguration);
+    const disk = h.configStore.current();
+    const events = recordedRuntimeSettingsEvents(h.rolloutItems);
+    for (const reasoningEffort of row.levels) {
+      await expect(h.runner.applyAgentConfig("rejected-effort", { sessionId: "session_1", reasoningEffort }))
+        .rejects.toThrow("does not support");
+    }
+    expect(h.sessionState.sessionConfiguration).toEqual(before);
+    expect(h.configStore.current()).toEqual(disk);
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(events);
+  });
+
+  it("rolls back a NIM effort after a live session mutation fails", async () => {
+    const h = makeTopLevelRunner({ conversationId: "nim-rollback", canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = "nvidia-nim";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "openai/gpt-oss-120b";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = h.sessionState.sessionConfiguration;
+    const settings = (await h.runner.getAgentSnapshot("nim-rollback"))?.runtimeSettings;
+    vi.mocked(h.session.state.with).mockImplementationOnce(async apply => {
+      await apply(h.sessionState);
+      throw new Error("injected effort failure");
+    });
+    await expect(h.runner.applyAgentConfig("nim-rollback", { sessionId: "session_1", reasoningEffort: "high" })).rejects.toThrow("injected effort failure");
+    expect(h.sessionState.sessionConfiguration).toEqual(before);
+    expect((await h.runner.getAgentSnapshot("nim-rollback"))?.runtimeSettings).toEqual(settings);
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload).toMatchObject({ reason: "compensating_rollback" });
   });
 
   it("applies native effort between turns without changing model, permissions, or disk config", async () => {

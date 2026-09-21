@@ -57,6 +57,22 @@ export function anthropicAcceptsSamplingParameters(model: string): boolean {
   );
 }
 
+// Verified 2026-09-21 against https://platform.claude.com/docs/en/build-with-claude/effort.
+// Field support alone does not establish which tiers a generation accepts.
+const ANTHROPIC_EFFORT_CONTRACTS: readonly {
+  pattern: RegExp;
+  levels: readonly AnthropicEffort[];
+}[] = [
+  { pattern: /(?:fable|mythos)-5(?:[.-]1)?(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "xhigh", "max"] },
+  { pattern: /(?:(?:opus|sonnet)-5|opus-4[.-][78])(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "xhigh", "max"] },
+  { pattern: /(?:(?:opus|sonnet)-4[.-]6|mythos-preview)(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "max"] },
+  { pattern: /opus-4[.-]5(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high"] },
+];
+
+export function anthropicEffortLevels(model: string): readonly AnthropicEffort[] {
+  return ANTHROPIC_EFFORT_CONTRACTS.find(row => row.pattern.test(familySpelling(model)))?.levels ?? [];
+}
+
 export function anthropicAcceptsEffort(model: string): boolean {
   if (anthropicThinkingControl(model) !== "budget") return true;
   return /opus-4[.-]5(?!\d)/.test(familySpelling(model));
