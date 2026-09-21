@@ -102,6 +102,48 @@ type TransactionRunOverrides = Pick<
   readonly messagesToSummarize?: readonly RuntimeMessage[];
 };
 
+function expectReplaySurvivedCompaction(
+  store: RolloutStore,
+  result: Awaited<ReturnType<typeof runRealTransaction>>,
+  expected: {
+    readonly version: 2;
+    readonly content: string | undefined;
+    readonly provider: string;
+    readonly model: string;
+  },
+): void {
+  expect(
+    result.transaction?.committed.replacement_history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+
+  const committedRow = store.readAll().find(
+    (item) => item.type === "compaction_committed",
+  );
+  expect(committedRow?.type).toBe("compaction_committed");
+  if (committedRow?.type !== "compaction_committed") {
+    throw new Error("missing compaction commit");
+  }
+  const parsed = readCompactionRolloutPayload(
+    committedRow.type,
+    committedRow.payload,
+  );
+  if (!("replacement_history" in parsed)) {
+    throw new Error("missing replacement history in compaction payload");
+  }
+  expect(
+    parsed.replacement_history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+  expect(
+    reduceAll(store.readAll()).state.history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+}
+
 describe("transactional compaction strict contracts", () => {
   it("never authorizes instructions embedded in transcript context", () => {
     expect(getCompactPrompt()).not.toContain(
@@ -721,36 +763,7 @@ describe("transactional compaction production path", () => {
         provider: "qwen",
         model: "qwen3.8-max",
       } as const;
-      expect(
-        result.transaction?.committed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
-
-      const committedRow = store.readAll().find(
-        (item) => item.type === "compaction_committed",
-      );
-      expect(committedRow?.type).toBe("compaction_committed");
-      if (committedRow?.type !== "compaction_committed") {
-        throw new Error("missing compaction commit");
-      }
-      const parsed = readCompactionRolloutPayload(
-        committedRow.type,
-        committedRow.payload,
-      );
-      if (!("replacement_history" in parsed)) {
-        throw new Error("missing replacement history in compaction payload");
-      }
-      expect(
-        parsed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
-      expect(
-        reduceAll(store.readAll()).state.history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
+      expectReplaySurvivedCompaction(store, result, expected);
     });
   });
 
@@ -783,38 +796,9 @@ describe("transactional compaction production path", () => {
         provider: "grok",
         model: "grok-4.7",
       } as const;
-      expect(
-        result.transaction?.committed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
-
+      expectReplaySurvivedCompaction(store, result, expected);
       const restored = result.transaction!.committed.replacement_history.map(responseItemToLlmMessage);
       expect(restored.some((message) => message.providerReasoningContent === largeGrokReplay.providerReasoningContent)).toBe(true);
-      const committedRow = store.readAll().find(
-        (item) => item.type === "compaction_committed",
-      );
-      expect(committedRow?.type).toBe("compaction_committed");
-      if (committedRow?.type !== "compaction_committed") {
-        throw new Error("missing compaction commit");
-      }
-      const parsed = readCompactionRolloutPayload(
-        committedRow.type,
-        committedRow.payload,
-      );
-      if (!("replacement_history" in parsed)) {
-        throw new Error("missing replacement history in compaction payload");
-      }
-      expect(
-        parsed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
-      expect(
-        reduceAll(store.readAll()).state.history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
     });
   });
 
@@ -847,38 +831,9 @@ describe("transactional compaction production path", () => {
         provider: "grok",
         model: "grok-4.7",
       } as const;
-      expect(
-        result.transaction?.committed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
-
+      expectReplaySurvivedCompaction(store, result, expected);
       const restored = result.transaction!.committed.replacement_history.map(responseItemToLlmMessage);
       expect(restored.some((message) => message.providerReasoningContent === replay.providerReasoningContent)).toBe(true);
-      const committedRow = store.readAll().find(
-        (item) => item.type === "compaction_committed",
-      );
-      expect(committedRow?.type).toBe("compaction_committed");
-      if (committedRow?.type !== "compaction_committed") {
-        throw new Error("missing compaction commit");
-      }
-      const parsed = readCompactionRolloutPayload(
-        committedRow.type,
-        committedRow.payload,
-      );
-      if (!("replacement_history" in parsed)) {
-        throw new Error("missing replacement history in compaction payload");
-      }
-      expect(
-        parsed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
-      expect(
-        reduceAll(store.readAll()).state.history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
     });
   });
 

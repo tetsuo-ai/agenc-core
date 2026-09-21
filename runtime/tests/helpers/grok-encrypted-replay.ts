@@ -8,8 +8,9 @@ export const largeGrokReplay = extractXaiReasoningReplay([encryptedItem], "Grok-
 
 // Synthetic only: live metadata recorded unpadded standard-base64 lengths 158 and 343.
 export const unpaddedGrokReplays = [158, 343].map((length) => {
-  const encrypted_content = bytes.subarray(0, Math.floor(length * 3 / 4))
-    .toString("base64").replace(/=+$/, "");
+  const padded = bytes.subarray(0, Math.floor(length * 3 / 4)).toString("base64");
+  const paddingStart = padded.indexOf("=");
+  const encrypted_content = paddingStart === -1 ? padded : padded.slice(0, paddingStart);
   return { length, encrypted_content, replay: extractXaiReasoningReplay([
     { type: "reasoning", id: "reasoning-synthetic", encrypted_content, summary: [] },
   ], "grok-4.7") };
