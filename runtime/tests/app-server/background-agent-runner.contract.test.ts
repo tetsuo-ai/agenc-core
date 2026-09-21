@@ -1,3 +1,6 @@
+import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
+import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
 import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
 import {
   mkdirSync,
@@ -7322,6 +7325,42 @@ describe("AgenC delegate background-agent runner", () => {
     expect(setDisabled).toHaveBeenNthCalledWith(1, true);
     expect(setDisabled).toHaveBeenNthCalledWith(2, false);
   });
+
+  it.each(["claude-opus-4-6", "claude-sonnet-4-6"])(
+    "forwards every accepted literal applyConfig effort on %s", async model => {
+      const h = makeTopLevelRunner({ conversationId: "older-claude-effort", canonicalRuntimeSettings: true });
+      const row = { provider: "anthropic", model };
+      h.sessionState.sessionConfiguration.provider.slug = row.provider;
+      h.sessionState.sessionConfiguration.collaborationMode.model = model;
+      // This is the historical configured max seed. applyConfig must replace it.
+      h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort = "xhigh";
+      await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+      const disk = h.configStore.current();
+      const registry = new ModelRegistry({ config: {} });
+      const info = modelRegistryEntryToModelInfo(registry.resolveSync(row));
+      for (const reasoningEffort of ["max", "low", "medium", "high"] as const) {
+        await expect(h.runner.applyAgentConfig("older-claude-effort", { sessionId: "session_1", reasoningEffort }))
+          .resolves.toMatchObject({ applied: true, ...row });
+        const sessionEffort = h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort;
+        expect(sessionEffort).toBe(reasoningEffort);
+        expect((await h.runner.getAgentSnapshot("older-claude-effort"))?.runtimeSettings?.reasoningEffort).toBe(reasoningEffort);
+        expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload?.reasoningEffort).toBe(reasoningEffort);
+        const effort = resolveSessionReasoningEffort(sessionEffort, info.supportedReasoningLevels, row);
+        const body = buildAnthropicMessagesRequest({
+          model, messages: [], tools: [], maxTokens: 4096, options: { reasoningEffort: effort },
+        });
+        expect(body.output_config).toEqual({ effort: reasoningEffort });
+      }
+      const before = structuredClone(h.sessionState.sessionConfiguration);
+      const events = recordedRuntimeSettingsEvents(h.rolloutItems);
+      for (const reasoningEffort of ["none", "minimal", "xhigh"]) {
+        await expect(h.runner.applyAgentConfig("older-claude-effort", { sessionId: "session_1", reasoningEffort }))
+          .rejects.toThrow("does not support");
+      }
+      expect(h.sessionState.sessionConfiguration).toEqual(before);
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(events);
+      expect(h.configStore.current()).toEqual(disk);
+    });
 
   it.each(desktopEffortCatalog.filter(row => row.levels.length > 0))(
     "accepts Desktop session efforts for $provider/$model", async row => {

@@ -127,6 +127,11 @@ function resolveSessionReasoningEffort(
   // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
   const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
   if (selection?.provider === "anthropic" && contract?.registered === false) {
+    // Settings fallback is legacy configuration, not a literal session choice.
+    // Configured max is seeded as xhigh for these older models; an explicit
+    // applyConfig max remains max and must be forwarded exactly as accepted.
+    if (turnEffort === undefined && !contract.levels.includes("xhigh") &&
+        (requested === "max" || requested === "xhigh")) return "high";
     if (contract.levels.includes(requested)) return requested;
     if (requested === "max" || requested === "xhigh") return "high";
   }
