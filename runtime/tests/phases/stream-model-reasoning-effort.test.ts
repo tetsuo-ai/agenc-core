@@ -1,3 +1,6 @@
+import { resolveRegisteredModelCatalogEntry } from "../../src/llm/registry/model-catalog.js";
+import type { ReasoningEffort } from "../../src/session/turn-context.js";
+import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
@@ -185,3 +188,13 @@ describe("sessionConfigurationFromAgenCConfig reasoning effort seeding", () => {
     expect(unset.collaborationMode).toEqual({ model: "grok-4.6" });
   });
 });
+
+
+test.each(desktopEffortCatalog.filter(row => row.levels.length > 0))(
+  "preserves every Desktop session effort on the wire for $provider/$model", row => {
+    const modelLevels = resolveRegisteredModelCatalogEntry(row)?.supportedReasoningLevels ?? [];
+    for (const effort of row.levels) {
+      // The existing session "none" sentinel omits the wire effort field.
+      expect(resolveSessionReasoningEffort(effort as ReasoningEffort, modelLevels, row)).toBe(effort === "none" ? undefined : effort);
+    }
+  });

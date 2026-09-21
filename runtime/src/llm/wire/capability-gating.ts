@@ -22,19 +22,17 @@
  * pass a recognizable slug.
  */
 
+import { resolveReasoningEffort } from "../reasoning-effort.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { BRIEF_TOOL_NAME } from "../../tools/BriefTool/prompt.js";
 import {
   resolveModelCapabilityHints,
-  resolveRegisteredModelCatalogEntry,
 } from "../registry/model-catalog.js";
 import type { ProviderReasoningProvenance } from "../types.js";
-import { supportsXaiReasoningEffortParam } from "../structured-output.js";
-import { isVerifiedOpenAiReasoningModel } from "../registry/openai-reasoning-models.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
-import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_V41_MODEL, AGENC_DEEPSEEK_REASONING_LEVELS } from "../registry/agenc-deepseek.js";
-import { DEEPSEEK_REASONING_LEVELS, isNativeDeepSeekModel } from "../registry/deepseek-models.js";
+import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_V41_MODEL } from "../registry/agenc-deepseek.js";
+import { isNativeDeepSeekModel } from "../registry/deepseek-models.js";
 
 export interface ChatCompletionsCapabilityHints {
   /**
@@ -205,41 +203,6 @@ const SERVICE_TIER_PROVIDERS = new Set([
   "cerebras",
 ]);
 
-// Conservative Muse Spark fallback. Exact registered models use their catalog
-// enum below; newly documented tiers must not leak into unknown model variants.
-const META_REASONING_EFFORT_VALUES = new Set([
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-]);
-
-// Qwen3.8 exposes these values on both QwenCloud billing routes. Older
-// families use different thinking controls, so they stay fail-closed rather
-// than inheriting a field that their endpoint may reject.
-const QWEN_38_REASONING_EFFORT_VALUES = new Set([
-  "low",
-  "medium",
-  "xhigh",
-]);
-
-const CEREBRAS_QWEN_GEMMA_REASONING_EFFORT_VALUES = new Set([
-  "none",
-  "low",
-  "medium",
-  "high",
-]);
-const CEREBRAS_GPT_OSS_REASONING_EFFORT_VALUES = new Set([
-  "low",
-  "medium",
-  "high",
-]);
-const ZAI_GLM_53_REASONING_EFFORT_VALUES = new Set([
-  "low",
-  "high",
-  "max",
-]);
 const ZAI_FINISH_REASONS = new Set([
   "stop",
   "tool_calls",
@@ -248,7 +211,7 @@ const ZAI_FINISH_REASONS = new Set([
   "model_context_window_exceeded",
   "network_error",
 ]);
-const KIMI_K3_REASONING_EFFORT_VALUES = new Set(["low", "high", "max"]);
+
 const KIMI_FINISH_REASONS = new Set(["stop", "length", "tool_calls"]);
 
 // Providers explicitly known to reject `stream_options.include_usage`.
@@ -284,70 +247,6 @@ const LOCAL_TOOL_PROFILE_PROVIDERS = new Set([
   "openai-compatible",
   "ollama",
 ]);
-
-/**
- * Lightweight test for the upstream-provider reasoning model family.
- * Mirrors the regex in `capabilities.ts:isOpenAIReasoningModel` so we
- * don't have to widen that file's exports for this single use site.
- */
-function isUpstreamReasoningModel(model: string | undefined): boolean {
-  if (model === undefined) return false;
-  if (isVerifiedOpenAiReasoningModel(model)) return true;
-  return /(?:^|[/:])(?:gpt-5|o1|o3|o4|codex|chatgpt-5)(?:$|[-_.:])/i.test(
-    model.trim(),
-  );
-}
-
-/**
- * NVIDIA NIM hosts big-player models whose hosted OpenAPI schemas
- * (docs.api.nvidia.com/nim/reference/<slug>-infer) document a
- * top-level `reasoning_effort` — but each family with its own enum,
- * and no endpoint-wide contract. Families absent here (kimi-k2.x,
- * minimax-m3, plain llama instructs) control thinking through
- * `chat_template_kwargs` or not at all, so the field stays stripped
- * for them. Verified against the hosted schemas 2026-08.
- */
-const NIM_REASONING_EFFORT_FAMILIES: readonly {
-  readonly pattern: RegExp;
-  readonly values: ReadonlySet<string>;
-}[] = [
-  {
-    // moonshotai/kimi-k3: enum low|high|max, default max.
-    pattern: /(?:^|\/)kimi-k3(?:$|[-.:])/i,
-    values: new Set(["low", "high", "max"]),
-  },
-  {
-    // deepseek-ai/deepseek-v4-{pro,flash}(+dated snapshots):
-    // enum none|high|max (defaults differ: pro none, flash high).
-    pattern: /(?:^|\/)deepseek-v4-(?:pro|flash)(?:$|[-.:])/i,
-    values: new Set(["none", "high", "max"]),
-  },
-  {
-    // openai/gpt-oss-20b|120b on NIM: enum low|medium|high.
-    pattern: /(?:^|\/)gpt-oss-\d+b(?:$|[-.:])/i,
-    values: new Set(["low", "medium", "high"]),
-  },
-  {
-    // nvidia/nemotron-3-super-*: enum none|low|high.
-    pattern: /(?:^|\/)nemotron-3-super(?:$|[-.:])/i,
-    values: new Set(["none", "low", "high"]),
-  },
-  {
-    // nvidia/nemotron-3-ultra-*: enum none|medium|high.
-    pattern: /(?:^|\/)nemotron-3-ultra(?:$|[-.:])/i,
-    values: new Set(["none", "medium", "high"]),
-  },
-];
-
-function nimReasoningEffortValues(
-  model: string | undefined,
-): ReadonlySet<string> | undefined {
-  if (model === undefined) return undefined;
-  const trimmed = model.trim();
-  return NIM_REASONING_EFFORT_FAMILIES.find((family) =>
-    family.pattern.test(trimmed),
-  )?.values;
-}
 
 /**
  * Tools a small local model can actually drive. The frontier catalog
@@ -451,64 +350,9 @@ export function chatCompletionsCapabilityHintsForProvider(
         model ?? "",
       ));
 
-  // reasoning_effort: allow only provider/model combinations with a verified
-  // contract. Every other destination either rejects it or silently ignores
-  // it, so unrecognized combinations default to the safe "strip" behavior.
-  let acceptsReasoningEffort = false;
-  let reasoningEffortAllowedValues: ReadonlySet<string> | undefined;
-  if (isManagedDeepSeek) {
-    acceptsReasoningEffort = true;
-    reasoningEffortAllowedValues = new Set(AGENC_DEEPSEEK_REASONING_LEVELS);
-  } else if (isNativeDeepSeek) {
-    acceptsReasoningEffort = true;
-    reasoningEffortAllowedValues = new Set(DEEPSEEK_REASONING_LEVELS);
-  } else if (slug === "openai") {
-    acceptsReasoningEffort = isUpstreamReasoningModel(model);
-  } else if (slug === "grok") {
-    acceptsReasoningEffort = supportsXaiReasoningEffortParam(model);
-  } else if (slug === "meta" && /(?:^|[/:])muse-spark-/i.test(model ?? "")) {
-    const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
-    reasoningEffortAllowedValues = entry !== undefined
-      ? new Set(entry.supportedReasoningLevels)
-      : META_REASONING_EFFORT_VALUES;
-    acceptsReasoningEffort = true;
-  } else if (
-    (slug === "qwen" || slug === "qwen-token-plan") &&
-    /(?:^|[/:])qwen3\.8-(?:max|flash)(?:$|[-_.:])/i.test(model ?? "")
-  ) {
-    reasoningEffortAllowedValues = QWEN_38_REASONING_EFFORT_VALUES;
-    acceptsReasoningEffort = true;
-  } else if (
-    slug === "cerebras" &&
-    /(?:^|[/:])gpt-oss-120b$/i.test(model ?? "")
-  ) {
-    reasoningEffortAllowedValues =
-      CEREBRAS_GPT_OSS_REASONING_EFFORT_VALUES;
-    acceptsReasoningEffort = true;
-  } else if (
-    isZai &&
-    /(?:^|[/:])glm-5\.3(?:-flash)?$/i.test(model ?? "")
-  ) {
-    reasoningEffortAllowedValues = ZAI_GLM_53_REASONING_EFFORT_VALUES;
-    acceptsReasoningEffort = true;
-  } else if (isKimiK3) {
-    reasoningEffortAllowedValues = KIMI_K3_REASONING_EFFORT_VALUES;
-    acceptsReasoningEffort = true;
-  } else if (
-    slug === "cerebras" &&
-    /(?:^|[/:])(?:qwen-3\.8-27b|gemma-4-31b)$/i.test(model ?? "")
-  ) {
-    reasoningEffortAllowedValues =
-      CEREBRAS_QWEN_GEMMA_REASONING_EFFORT_VALUES;
-    acceptsReasoningEffort = true;
-  } else if (slug === "ollama-cloud") {
-    const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
-    reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
-    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
-  } else if (slug === "nvidia-nim") {
-    reasoningEffortAllowedValues = nimReasoningEffortValues(model);
-    acceptsReasoningEffort = reasoningEffortAllowedValues !== undefined;
-  }
+  const effort = resolveReasoningEffort({ provider: slug, model, managedGateway: options.managedGateway });
+  const acceptsReasoningEffort = effort.acceptsChatEffort;
+  const reasoningEffortAllowedValues = effort.chatLevels;
 
   // service_tier: recognized only by documented providers. Strip
   // everywhere else — most servers ignore it silently, but at least

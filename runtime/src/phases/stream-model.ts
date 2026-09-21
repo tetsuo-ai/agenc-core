@@ -31,6 +31,7 @@
  * @module
  */
 
+import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -122,6 +123,12 @@ function resolveSessionReasoningEffort(
   }
   const requested = turnEffort ?? getInitialEffortSetting();
   if (requested === undefined || requested === "none") return undefined;
+  // Hosted providers can expose an effort contract absent from ModelInfo.
+  // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
+  const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
+  if (contract?.registered === false && contract.levels.includes(requested)) {
+    return requested;
+  }
   if (requested === "max" || requested === "xhigh") {
     if (supportedReasoningLevels === undefined) {
       return requested === "max" ? "xhigh" : requested;

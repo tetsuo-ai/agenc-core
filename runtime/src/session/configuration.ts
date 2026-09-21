@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 
 import type { AgenCConfig } from "../config/schema.js";
-import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import { resolveApprovalPolicy } from "../permissions/approval-policy.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { SandboxExecutionBrokerAuthority } from "../sandbox/execution-broker.js";
@@ -199,10 +199,15 @@ export function sessionConfigurationFromAgenCConfig(params: {
   readonly provider?: string;
   readonly projectTrust?: "trusted" | "untrusted";
 }): SessionConfiguration {
-  const supportsLiteralMax = resolveRegisteredModelCatalogEntry({
+  const effort = resolveReasoningEffort({
     provider: params.provider ?? params.config.model_provider,
     model: params.model,
-  })?.supportedReasoningLevels.includes("max") === true;
+  });
+  const supportsLiteralMax = effort.levels.includes("max");
+  // NIM session defaults match the Desktop picker. Registered-model seeding
+  // remains unchanged, including its legacy max -> xhigh compatibility.
+  const configuredEffort = params.config.reasoning_effort ??
+    (effort.registered ? undefined : effort.defaultLevel);
   const configPolicy = approvalPolicyValueFromAgenCConfig(
     params.config.approval_policy,
   );
@@ -257,12 +262,12 @@ export function sessionConfigurationFromAgenCConfig(params: {
       // the configured tier instead of `null` while the wire silently falls
       // back to a settings read. Keep legacy max -> xhigh compatibility only
       // for models that do not advertise a distinct literal max tier.
-      ...(params.config.reasoning_effort !== undefined
+      ...(configuredEffort !== undefined
         ? {
             reasoningEffort:
-              params.config.reasoning_effort === "max" && !supportsLiteralMax
+              configuredEffort === "max" && !supportsLiteralMax
                 ? "xhigh"
-                : params.config.reasoning_effort,
+                : configuredEffort,
           }
         : {}),
     },

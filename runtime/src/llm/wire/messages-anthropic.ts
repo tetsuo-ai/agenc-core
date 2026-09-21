@@ -4,6 +4,7 @@
  * @module
  */
 
+import { resolveReasoningEffort } from "../reasoning-effort.js";
 import {
   anthropicFastModeRequested,
   anthropicSupportsFastMode,
@@ -37,7 +38,6 @@ import {
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import {
-  anthropicAcceptsEffort,
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
   anthropicManualBudgetTokens,
@@ -444,7 +444,10 @@ export function buildAnthropicMessagesRequest(
   // The effort dial only means something on the wire as output_config.effort;
   // Sonnet 4.5 and Haiku 4.5 reject the field, so it stays off for them.
   const effort = anthropicEffort(input.options?.reasoningEffort);
-  if (effort !== undefined && anthropicAcceptsEffort(input.model)) {
+  if (
+    effort !== undefined &&
+    resolveReasoningEffort({ provider: "anthropic", model: input.model }).levels.includes(effort)
+  ) {
     body.output_config = { effort };
   }
   // Fast mode rides the session's "priority" service tier. It is sent only
