@@ -12,7 +12,7 @@ import {
   type StreamingToolExecutorOptions,
   type StreamingToolUpdate,
 } from "./streaming-executor.js";
-import { validateToolArgs } from "./execution.js";
+import { validateToolArgs } from "./argument-validation.js";
 import type { Tool } from "./types.js";
 
 // ─────────────────────────────────────────────────────────────────────

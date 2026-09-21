@@ -19,6 +19,9 @@
  * @module
  */
 
+import { invocationForArgs } from "./execution-invocation.js";
+import { validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
+
 import type { ToolDispatchResult } from "../tool-registry.js";
 import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
 import type { ToolInvocation } from "./context.js";
@@ -321,10 +324,22 @@ export async function runPreToolUseHooks(
     if (!hook) continue;
     let decision: PreToolUseDecision;
     const started = Date.now();
+    const validation = validateToolArgs(
+      base.tool.inputSchema as Record<string, unknown> | undefined,
+      stripAgenCInternalArgsForValidation(args),
+    );
+    if (!validation.valid) {
+      return { kind: "deny", reason: "Invalid rewritten tool arguments", args, additionalContexts };
+    }
+    if (validation.args && validation.coercedPaths?.length) {
+      args = Object.defineProperties(
+        { ...args }, Object.getOwnPropertyDescriptors(validation.args),
+      );
+    }
     const race = await raceHookWithSignal(
       () =>
         hook({
-          invocation: base.invocation,
+          invocation: invocationForArgs(base.invocation, args),
           tool: base.tool,
           args,
           ...(signal !== undefined ? { signal } : {}),
@@ -574,7 +589,7 @@ export async function runPostToolUseHooks(
     const race = await raceHookWithSignal(
       () =>
         hook({
-          invocation: base.invocation,
+          invocation: invocationForArgs(base.invocation, base.args),
           tool: base.tool,
           args: base.args,
           result,
@@ -719,7 +734,7 @@ export async function runPostToolUseFailureHooks(
     if (!hook) continue;
     const started = Date.now();
     const race = await raceHookWithSignal(
-      () => hook(base),
+      () => hook({ ...base, invocation: invocationForArgs(base.invocation, base.args) }),
       signal,
       () => onOrphaned?.(i),
     );

@@ -65,7 +65,8 @@ import {
   type LiveToolDispatchOptions,
   type ToolRouter,
 } from "./router.js";
-import { resolveTimeoutMs } from "./execution.js";
+import { resolveTimeoutMs, parseToolArgsWithBigInt } from "./execution.js";
+import { validateToolArgs } from "./argument-validation.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import type { Tool } from "./types.js";
 import {
@@ -614,8 +615,10 @@ export class StreamingToolExecutor {
     }
 
     const classifiable = this.resolveClassifiable(toolCall);
-    const parsedArgs = parseToolCallArguments(toolCall.arguments);
-    const classification = classify(classifiable, parsedArgs);
+    const parsedArgs = parseToolArgsWithBigInt(toolCall.arguments ?? "{}");
+    const validation = parsedArgs === null ? null : validateToolArgs(classifiable.inputSchema, parsedArgs);
+    const executionArgs = validation?.valid ? validation.args ?? parsedArgs : null;
+    const classification = executionArgs === null ? EXCLUSIVE : classify(classifiable, executionArgs);
     // AgenC tracks a per-call `isConcurrencySafe` boolean derived
     // from the tool's `isConcurrencySafe(args)` hook. We keep the T7
     // classification model but also cache the boolean so the
@@ -624,9 +627,11 @@ export class StreamingToolExecutor {
     const resolvedName = this.resolveModelToolName(toolCall.name);
     const tool = this.registry.tools.find((t) => t.name === resolvedName);
     let concurrencySafe = false;
-    if (tool?.isConcurrencySafe) {
+    if (executionArgs === null) {
+      concurrencySafe = false;
+    } else if (tool?.isConcurrencySafe) {
       try {
-        concurrencySafe = Boolean(tool.isConcurrencySafe(parsedArgs));
+        concurrencySafe = Boolean(tool.isConcurrencySafe(executionArgs));
       } catch {
         concurrencySafe = false;
       }
@@ -948,6 +953,7 @@ export class StreamingToolExecutor {
         : defaultConcurrencyClassFor(resolvedName));
     return {
       name: resolvedName,
+      inputSchema: tool?.inputSchema as Record<string, unknown> | undefined,
       concurrencyClass: resolvedClass,
       isConcurrencySafe: (tool as Tool | undefined)?.isConcurrencySafe,
       ...(resolvedServerId !== undefined ? { serverId: resolvedServerId } : {}),

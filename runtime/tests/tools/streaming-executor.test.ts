@@ -717,7 +717,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(peak).toBe(1);
   });
 
-  test("normalizes array-shaped parsed arguments before concurrency hooks", async () => {
+  test("fails closed on array-shaped arguments without invoking concurrency hooks", async () => {
     let observedArgs: Record<string, unknown> | undefined;
     const tool: Tool = {
       name: "FileRead",
@@ -747,8 +747,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     }
 
     expect(seenIds).toEqual(["array-args"]);
-    expect(observedArgs).toEqual({});
-    expect(Array.isArray(observedArgs)).toBe(false);
+    expect(observedArgs).toBeUndefined();
   });
 
   test("maxConcurrency caps safe tools without changing yield order", async () => {
