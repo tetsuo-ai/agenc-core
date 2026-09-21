@@ -60,7 +60,7 @@
  */
 
 import { invocationForArgs, stringifyToolArgsWithBigInt } from "./execution-invocation.js";
-import { validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
+import { normalizeModelToolArgs, validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
 export { validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
 export type { SchemaValidationError, SchemaValidationResult } from "./argument-validation.js";
 
@@ -946,6 +946,26 @@ function getErrorParts(error: Error): string[] {
 // AgenC's Zod-backed parity is observable).
 // ─────────────────────────────────────────────────────────────────────
 
+/** Repair an owned model-input copy once, before any execution gate. */
+export function prepareModelToolArgs(
+  tool: Tool,
+  args: Record<string, unknown>,
+  eventLog?: EventLog,
+  subId = tool.name,
+): void {
+  const validation = normalizeModelToolArgs(
+    tool.inputSchema as Record<string, unknown> | undefined,
+    stripAgenCInternalArgsForValidation(args),
+  );
+  if (validation.valid && validation.args && validation.coercedPaths?.length) {
+    Object.defineProperties(args, Object.getOwnPropertyDescriptors(validation.args));
+    if (eventLog) {
+      emitWarningEvent(eventLog, subId, "tool_input_json_coercion",
+        JSON.stringify({ tool: tool.name, paths: validation.coercedPaths }));
+    }
+  }
+}
+
 export function validateToolPreflight(
   tool: Tool,
   args: Record<string, unknown>,
@@ -964,18 +984,6 @@ export function validateToolPreflight(
       tool.inputSchema as Record<string, unknown> | undefined,
       stripAgenCInternalArgsForValidation(args),
     );
-    if (validation.valid && validation.args && validation.coercedPaths?.length) {
-      // args is owned by dispatch. Nested containers in history remain untouched.
-      Object.defineProperties(args, Object.getOwnPropertyDescriptors(validation.args));
-      if (options.eventLog) {
-        emitWarningEvent(
-          options.eventLog,
-          options.subId ?? tool.name,
-          "tool_input_json_coercion",
-          JSON.stringify({ tool: tool.name, paths: validation.coercedPaths }),
-        );
-      }
-    }
     if (!validation.valid) {
       const prose = getSchemaValidationErrorOverride(tool, args) ??
         formatSchemaValidationError(tool.name, validation.errors);
@@ -1038,6 +1046,7 @@ export type ToolProgressCallback = (event: ToolProgressEvent) => void;
 // ─────────────────────────────────────────────────────────────────────
 
 export interface RunToolUseOptions {
+  /** Already processed dispatch input; always validated strictly, never repaired. */
   readonly parsedArgs?: Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
   readonly currentTurnId: string;
@@ -1308,6 +1317,9 @@ export async function runToolUse(
       content: message,
       elapsedMs: performance.now() - startedAt,
     });
+  }
+  if (opts.parsedArgs === undefined) {
+    prepareModelToolArgs(tool, parsedArgs, opts.eventLog, subId);
   }
   if (opts.runtimeAttemptContext !== undefined) {
     attachToolRuntimeContext(parsedArgs, opts.runtimeAttemptContext);

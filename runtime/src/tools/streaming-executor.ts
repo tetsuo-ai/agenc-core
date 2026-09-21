@@ -66,7 +66,7 @@ import {
   type ToolRouter,
 } from "./router.js";
 import { resolveTimeoutMs, parseToolArgsWithBigInt } from "./execution.js";
-import { validateToolArgs } from "./argument-validation.js";
+import { normalizeModelToolArgs } from "./argument-validation.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import type { Tool } from "./types.js";
 import {
@@ -616,7 +616,7 @@ export class StreamingToolExecutor {
 
     const classifiable = this.resolveClassifiable(toolCall);
     const parsedArgs = parseToolArgsWithBigInt(toolCall.arguments ?? "{}");
-    const validation = parsedArgs === null ? null : validateToolArgs(classifiable.inputSchema, parsedArgs);
+    const validation = parsedArgs === null ? null : normalizeModelToolArgs(classifiable.inputSchema, parsedArgs);
     const executionArgs = validation?.valid ? validation.args ?? parsedArgs : null;
     const classification = executionArgs === null ? EXCLUSIVE : classify(classifiable, executionArgs);
     // AgenC tracks a per-call `isConcurrencySafe` boolean derived

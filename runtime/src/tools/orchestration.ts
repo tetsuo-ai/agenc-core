@@ -12,7 +12,7 @@ import {
   type StreamingToolExecutorOptions,
   type StreamingToolUpdate,
 } from "./streaming-executor.js";
-import { validateToolArgs } from "./argument-validation.js";
+import { normalizeModelToolArgs } from "./argument-validation.js";
 import type { Tool } from "./types.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ function toolIsConcurrencySafe(
 ): boolean {
   const parsedInput = inputRecord(input);
   if (!tool || !parsedInput || !tool.isConcurrencySafe) return false;
-  const schemaResult = validateToolArgs(
+  const schemaResult = normalizeModelToolArgs(
     tool.inputSchema as Record<string, unknown> | undefined,
     parsedInput,
   );

@@ -20,7 +20,6 @@
  */
 
 import { invocationForArgs } from "./execution-invocation.js";
-import { validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
 
 import type { ToolDispatchResult } from "../tool-registry.js";
 import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
@@ -324,18 +323,6 @@ export async function runPreToolUseHooks(
     if (!hook) continue;
     let decision: PreToolUseDecision;
     const started = Date.now();
-    const validation = validateToolArgs(
-      base.tool.inputSchema as Record<string, unknown> | undefined,
-      stripAgenCInternalArgsForValidation(args),
-    );
-    if (!validation.valid) {
-      return { kind: "deny", reason: "Invalid rewritten tool arguments", args, additionalContexts };
-    }
-    if (validation.args && validation.coercedPaths?.length) {
-      args = Object.defineProperties(
-        { ...args }, Object.getOwnPropertyDescriptors(validation.args),
-      );
-    }
     const race = await raceHookWithSignal(
       () =>
         hook({

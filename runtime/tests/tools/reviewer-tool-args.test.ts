@@ -1,5 +1,6 @@
+import { normalizeModelToolArgs } from "../../src/tools/argument-validation.js";
 import { test, expect, vi } from 'vitest';
-import { validateToolArgs, runToolUse } from '../../src/tools/execution.js';
+import { runToolUse } from '../../src/tools/execution.js';
 import { ToolRouter } from '../../src/tools/router.js';
 import { EventLog } from '../../src/session/event-log.js';
 import { resolveAgentRuntimeOptions } from '../../src/session/runtime-options.js';
@@ -14,7 +15,7 @@ function fixture() {
 }
 test('review: whole-object anyOf admitting string must not normalize that property', () => {
   const s = { anyOf: [schema, { type: 'object', properties: { paths: { type: 'string', minLength: 1000 } }, required: ['paths'] }] };
-  const result = validateToolArgs(s, { paths: '[]' });
+  const result = normalizeModelToolArgs(s, { paths: '[]' });
   expect(result.valid).toBe(false);
 });
 test('review: direct runToolUse approval resolver must see executed containers', async () => {
@@ -67,7 +68,7 @@ test.each(['anyOf', 'oneOf', 'allOf'])('composed %s object alternatives decline 
           ? [{ $ref: '#/$defs/array' }, { $ref: '#/$defs/other' }] : [schema, other] };
       const input = { paths: '[]' };
       // An unconstrained anyOf already accepts the original and must preserve it.
-      const result = validateToolArgs(s, input);
+      const result = normalizeModelToolArgs(s, input);
       if ('type' in alternative || composition === 'allOf') {
         expect(result.valid).toBe(false);
       }
@@ -92,7 +93,9 @@ test.each([true, false])('streaming predicate classifies normalized input as saf
   const tracked = (executor as any).tools[0];
   expect(tracked.isConcurrencySafe).toBe(safe);
   expect(tracked.classification.kind).toBe(safe ? 'shared_read' : 'exclusive');
-  expect(classify(definition, JSON.parse(raw)).kind).toBe(tracked.classification.kind);
+  expect(classify(definition, normalizeModelToolArgs(schema, JSON.parse(raw)).args!).kind).toBe(tracked.classification.kind);
+  // Classification is a gate, so it must never repair a supplied string itself.
+  expect(classify(definition, JSON.parse(raw)).kind).toBe('exclusive');
   expect(predicate.mock.calls.every(([args]) => Array.isArray(args.paths))).toBe(true);
   expect(block.input.paths).toBe(JSON.parse(raw).paths);
   predicate.mockClear();
@@ -117,7 +120,7 @@ test('rewritten hook payloads, approval, preflight context and execution agree w
   const hooks: any[] = [
     async ({ invocation: ctx, args }: any) => {
       expect(JSON.parse(ctx.payload.arguments)).toEqual(args);
-      return { kind: 'rewrite', args: { paths: '["/rewritten"]' } };
+      return { kind: 'rewrite', args: { paths: ['/rewritten'] } };
     },
     async ({ invocation: ctx, args }: any) => {
       expect(JSON.parse(ctx.payload.arguments)).toEqual(args);

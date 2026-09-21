@@ -83,6 +83,7 @@ import {
   type ModalDecision,
   parseToolArgsWithBigInt,
   validateToolPreflight,
+  prepareModelToolArgs,
   type ToolProgressCallback,
 } from "./execution.js";
 import type {
@@ -536,6 +537,7 @@ export class ToolRouter {
       // and must never be supplied by the model; runtime values are
       // merged in later (execution.ts / filesystemRootsForDispatch).
       let executionArgs = stripModelSuppliedAgenCInternalArgs({ ...args });
+      prepareModelToolArgs(spec.tool, executionArgs, invocation.session.eventLog, invocation.callId);
       const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
       if (initialPreflight !== null) return initialPreflight;
       let forcedApprovalReason: string | undefined;
@@ -881,6 +883,7 @@ export class ToolRouter {
     // the allowed roots that reach tool.execute. (The validator-only
     // strip in execution.ts left the tool body exposed.)
     let executionArgs = stripModelSuppliedAgenCInternalArgs(parsedArgs);
+    prepareModelToolArgs(spec.tool, executionArgs, invocation.session.eventLog, invocation.callId);
     const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
     if (initialPreflight !== null) return initialPreflight;
     let forcedApprovalReason: string | undefined;

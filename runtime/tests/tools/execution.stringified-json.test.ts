@@ -1,5 +1,6 @@
+import { normalizeModelToolArgs } from "../../src/tools/argument-validation.js";
 import { describe, expect, test, vi } from "vitest";
-import { runToolUse, validateToolArgs, validateToolPreflight } from "../../src/tools/execution.js";
+import { runToolUse, validateToolArgs as validateStrictToolArgs, validateToolPreflight } from "../../src/tools/execution.js";
 import { formatSchemaValidationError } from "../../src/tools/schema-errors.js";
 import { createPlanningTools } from "../../src/tools/system/planning.js";
 import { partitionToolCalls } from "../../src/tools/orchestration.js";
@@ -29,7 +30,7 @@ function invocation(raw: string, eventLog: EventLog): ToolInvocation {
 describe("schema validation of stringified JSON tool input", () => {
   test.each([["array", [1, 2]], ["object", { hello: "world" }]] as const)("accepts exactly %s", (type, value) => {
     const input = { value: JSON.stringify(value) };
-    const result = validateToolArgs(schemaFor({ type }), input);
+    const result = normalizeModelToolArgs(schemaFor({ type }), input);
     expect(result.valid).toBe(true);
     expect(result.args).toEqual({ value });
     expect(input.value).toBe(JSON.stringify(value));
@@ -45,7 +46,7 @@ describe("schema validation of stringified JSON tool input", () => {
     expect(input.todos).toBe(JSON.stringify(todos));
   });
   test("accepts the actual TodoWrite shape", () => {
-    expect(validateToolArgs(todoTool.inputSchema, { todos: JSON.stringify(todos) }).args).toEqual({ todos });
+    expect(normalizeModelToolArgs(todoTool.inputSchema, { todos: JSON.stringify(todos) }).args).toEqual({ todos });
   });
   test.each([
     { type: ["string", "array"] },
@@ -54,24 +55,24 @@ describe("schema validation of stringified JSON tool input", () => {
     { anyOf: [{ type: "string", minLength: 20 }, { type: "array" }] },
   ])("never coerces a schema admitting strings: %j", (valueSchema) => {
     const input = { value: "[]" };
-    const result = validateToolArgs(schemaFor(valueSchema), input);
+    const result = normalizeModelToolArgs(schemaFor(valueSchema), input);
     expect(result.coercedPaths).toBeUndefined();
     expect(result.args ?? input).toBe(input);
   });
   test.each(["[", "[1,]", "[] trailing", "not JSON", "{}", "null", "true", "1", '"[]"', '["bad"]'])("retains original array error for %s", (value) => {
-    const result = validateToolArgs(schemaFor({ type: "array", items: { type: "number" } }), { value });
+    const result = normalizeModelToolArgs(schemaFor({ type: "array", items: { type: "number" } }), { value });
     expect(result).toEqual({ valid: false, errors: [{ path: "value", message: "expected array, got string", category: "type", expected: "array", received: "string" }] });
     expect(formatSchemaValidationError("Example", result.errors)).toBe("Example failed due to the following issue:\nThe parameter `value` type is expected as `array` but provided as `string`");
   });
   test.each(["[]", "null", "true", "1", "hello"])("rejects wrong object input %s", (value) => {
-    expect(validateToolArgs(schemaFor({ type: "object" }), { value }).errors[0]?.message).toBe("expected object, got string");
+    expect(normalizeModelToolArgs(schemaFor({ type: "object" }), { value }).errors[0]?.message).toBe("expected object, got string");
   });
   test.each([["number", "1"], ["boolean", "true"]])("does not guess %s", (type, value) => {
-    expect(validateToolArgs(schemaFor({ type }), { value }).valid).toBe(false);
+    expect(normalizeModelToolArgs(schemaFor({ type }), { value }).valid).toBe(false);
   });
   test("preserves already valid values and nested identities", () => {
     const input = { todos };
-    expect(validateToolArgs(todoTool.inputSchema, input).args).toBe(input);
+    expect(normalizeModelToolArgs(todoTool.inputSchema, input).args).toBe(input);
     expect(input.todos).toBe(todos);
   });
   test("walks properties, items, additionalProperties and refs without mutating history", () => {
@@ -79,7 +80,7 @@ describe("schema validation of stringified JSON tool input", () => {
     const full = { ...schema, $defs: { item: { type: "object", properties: { child: { type: "array" } } } } };
     const input = { value: { key: [JSON.stringify({ child: "[]" })] } };
     const before = JSON.stringify(input);
-    expect(validateToolArgs(full, input).args).toEqual({ value: { key: [{ child: [] }] } });
+    expect(normalizeModelToolArgs(full, input).args).toEqual({ value: { key: [{ child: [] }] } });
     expect(JSON.stringify(input)).toBe(before);
   });
   test.each([
@@ -87,11 +88,18 @@ describe("schema validation of stringified JSON tool input", () => {
     { oneOf: [{ type: "array" }, { type: "object" }] },
     { allOf: [{ type: "array" }, { minItems: 1 }] },
   ])("validates composition after parsing: %j", (valueSchema) => {
-    expect(validateToolArgs(schemaFor(valueSchema), { value: "[1]" }).args).toEqual({ value: [1] });
+    expect(normalizeModelToolArgs(schemaFor(valueSchema), { value: "[1]" }).args).toEqual({ value: [1] });
+  });
+  test("strict validation and preflight never repair supplied arguments", () => {
+    const input = { todos: JSON.stringify(todos) };
+    expect(validateStrictToolArgs(todoTool.inputSchema, input).valid).toBe(false);
+    expect(validateToolPreflight(todoTool, input)?.isError).toBe(true);
+    expect(input.todos).toBe(JSON.stringify(todos));
   });
   test("does not commit a partial repair or replace the original error", () => {
     const input = { todos: JSON.stringify([{ content: "missing fields" }]) };
     expect(validateToolPreflight(todoTool, input)?.content).toBe("<tool_use_error>InputValidationError: TodoWrite failed due to the following issue:\nThe parameter `todos` type is expected as `array` but provided as `string`</tool_use_error>");
+    expect(normalizeModelToolArgs(todoTool.inputSchema, input)).toEqual(validateStrictToolArgs(todoTool.inputSchema, input));
     expect(typeof input.todos).toBe("string");
   });
   test.each([
@@ -111,7 +119,7 @@ describe("schema validation of stringified JSON tool input", () => {
     const preflight = vi.fn<NonNullable<Tool["preflight"]>>(() => null);
     const tool: Tool = { ...todoTool, execute, preflight };
     if (boundary === "execution") {
-      const result = await runToolUse(raw, { parsedArgs, tool, invocation: call, currentTurnId: "t1", eventLog });
+      const result = await runToolUse(raw, { tool, invocation: call, currentTurnId: "t1", eventLog });
       expect(result.isError).toBe(false);
     } else {
       const router = new ToolRouter([{ tool, supportsParallelToolCalls: false }]);

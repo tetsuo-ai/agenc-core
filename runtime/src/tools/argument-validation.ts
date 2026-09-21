@@ -82,6 +82,17 @@ export function validateToolArgs(
   }
   validateNode(schema, args, "", errors, schema);
   if (errors.length === 0) return { valid: true, errors, args };
+  return { valid: false, errors };
+}
+
+/** Only for original model input, before execution gates or scheduling predicates. */
+export function normalizeModelToolArgs(
+  schema: Record<string, unknown> | undefined,
+  args: Record<string, unknown>,
+): SchemaValidationResult {
+  const strict = validateToolArgs(schema, args);
+  if (strict.valid || !schema) return strict;
+  const errors = strict.errors;
   const coercedPaths: string[] = [];
   const candidate = normalizeContainerArgs(schema, args, "", schema, coercedPaths);
   if (coercedPaths.length > 0 && isRecord(candidate)) {
