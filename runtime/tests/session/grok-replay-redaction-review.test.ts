@@ -1,10 +1,10 @@
 import { expect, it } from "vitest";
 import { extractXaiReasoningReplay } from "../../src/llm/wire/responses-xai.js";
-import { llmMessageToDurableResponseItem } from "../../src/session/message-history-conversion.js";
+import { llmMessageToDurableResponseItem, responseItemToLlmMessage } from "../../src/session/message-history-conversion.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import { redactDurableSecrets } from "../../src/session/provider-replay-redaction.js";
 import { redactSecretsInValue } from "../../src/secrets/sanitizer.js";
-import { encryptedItem } from "../helpers/grok-encrypted-replay.js";
+import { encryptedItem, unpaddedGrokReplays } from "../helpers/grok-encrypted-replay.js";
 
 const secret = "hunter2-super-secret-value-2026";
 const ciphertext = Buffer.from("opaque encrypted bytes").toString("base64");
@@ -30,7 +30,7 @@ it("probe 4 redacts secrets in model provenance", () => {
   expect(JSON.stringify(persist([item], `grok-4.7 password = ${secret}`))).not.toContain(secret);
 });
 
-it.each(["", "YQ", "YR==", "YQ==\n", "----", "not ciphertext"])("drops the whole replay for noncanonical ciphertext %j", (encrypted_content) => {
+it.each(["", "A", "AAAAA", "YR", "YR==", "YQ=", "YQ===", "YQ==\n", "----", "____", "AA-_", "AA!A", "not ciphertext"])("drops the whole replay for noncanonical ciphertext %j", (encrypted_content) => {
   expect(llmMessageToDurableResponseItem({ role: "assistant", content: "ok", providerReasoningContent: JSON.stringify([item, { ...item, encrypted_content }]), providerReasoningProvenance: { provider: "grok", model: "grok-4.7" } }).providerReasoning).toBeUndefined();
 });
 
@@ -60,4 +60,13 @@ it("exempts ciphertext only in explicit assistant history positions", () => {
   const saved = redactDurableSecrets(compacted, "rollout");
   expect(saved.payload.replacementHistory).toEqual([response]);
   expect(saved.payload.input).toEqual(redactSecretsInValue(response));
+});
+
+it.each(unpaddedGrokReplays)("preserves synthetic unpadded $length-character reasoning on durable resume", ({ length, encrypted_content, replay }) => {
+  expect(encrypted_content).toHaveLength(length);
+  expect(encrypted_content).toMatch(/^[A-Za-z0-9+/]+$/);
+  expect(encrypted_content).toMatch(/[+/]/);
+  const saved = llmMessageToDurableResponseItem({ role: "assistant", content: "ok", ...replay });
+  expect(saved.providerReasoning?.content).toBe(replay.providerReasoningContent);
+  expect(responseItemToLlmMessage(saved).providerReasoningContent).toBe(replay.providerReasoningContent);
 });

@@ -6,6 +6,13 @@ function record(value: unknown): value is RecordValue {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// Base64 proves encoding, not origin; absent padding preserves the strict alphabet check at five explicit assistant positions.
+function isEncryptedBase64(body: string): boolean {
+  if (body.includes("=")) return isCanonicalBase64Body(body);
+  if (body.length % 4 === 1) return false;
+  return isCanonicalBase64Body(body.padEnd(Math.ceil(body.length / 4) * 4, "="));
+}
+
 function encryptedItems(value: unknown): RecordValue[] | undefined {
   if (!record(value) || value.version !== 2 || value.provider !== "grok" ||
       typeof value.content !== "string") return undefined;
@@ -14,7 +21,7 @@ function encryptedItems(value: unknown): RecordValue[] | undefined {
     if (Array.isArray(items) && items.length > 0 && items.every((item) =>
       record(item) && item.type === "reasoning" &&
       typeof item.encrypted_content === "string" &&
-      isCanonicalBase64Body(item.encrypted_content))) return items;
+      isEncryptedBase64(item.encrypted_content))) return items;
   } catch { /* Malformed replay is not eligible. */ }
   return undefined;
 }
