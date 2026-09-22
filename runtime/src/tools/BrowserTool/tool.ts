@@ -24,7 +24,10 @@ import type { PermissionResult, PermissionUpdate } from "../../permissions/types
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
 import { BrowserManager } from "../../browser/manager.js";
-import { readBrowserNavigationFailureReceipt } from "../../browser/page.js";
+import {
+  readBrowserNavigationFailureReceipt,
+  readBrowserNavigationPolicyRefusal,
+} from "../../browser/page.js";
 import {
   isSandboxExecutionBrokerDisposed,
   registerSandboxExecutionLifecycleParticipant,
@@ -562,6 +565,25 @@ export function createBrowserTool(
               evidenceRef: noEffect.evidenceRef,
               evidenceSha256: noEffect.evidenceSha256,
             },
+          };
+        }
+        const refusal = readBrowserNavigationPolicyRefusal(err);
+        if (
+          refusal !== undefined &&
+          (input.action === "navigate" || input.action === "new_tab") &&
+          refusal.url === str(input.url)
+        ) {
+          return {
+            ...result,
+            effectDisposition: createToolEffectDispositionEvidence({
+              // Chromium completed the navigation to the proxy's refusal page.
+              // The target host was refused; a completed command never claims
+              // no effect, so this settles as committed, like errorText below.
+              disposition: "confirmed_committed",
+              evidenceKind: "provider_receipt",
+              evidenceRef: "tool:Browser:proxy-policy-refusal",
+              evidenceMaterial: JSON.stringify(refusal),
+            }),
           };
         }
         const receipt = readBrowserNavigationFailureReceipt(err);
