@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
@@ -614,6 +614,29 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
       const detach = asBoolean(args.detach) === true;
+
+      // Checked here, not in preflight: an earlier call in the same turn may
+      // create the directory. Nothing has started, so the refusal is no effect.
+      if (workdir !== undefined && workdir.trim().length > 0) {
+        const resolvedWorkdir = resolve(config?.cwd ?? process.cwd(), workdir);
+        let isDirectory = false;
+        try {
+          isDirectory = statSync(resolvedWorkdir).isDirectory();
+        } catch {
+          isDirectory = false;
+        }
+        if (!isDirectory) {
+          const message = `workdir does not exist: ${workdir}. It must exist before the command starts; create it in an earlier command, or run from an existing directory and cd inside the command.`;
+          return {
+            content: safeStringify({ error: message }),
+            isError: true,
+            effectDisposition: confirmedNoEffectDisposition(
+              "tool:system.exec-command:workdir-missing",
+              message,
+            ),
+          };
+        }
+      }
 
       if (!(tty === true && isPlainInteractiveShellCommand(cmd))) {
         const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({

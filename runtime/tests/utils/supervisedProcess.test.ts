@@ -11,6 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1135,6 +1136,50 @@ describe("runSupervisedProcess", () => {
 });
 
 describe("process-tree root safety", () => {
+  it.skipIf(process.platform === "win32")(
+    "refuses a missing working directory before spawning anything",
+    () => {
+      const missing = join(tmpdir(), `agenc-missing-cwd-${process.pid}-${Date.now()}`, "vchk");
+      // Never call through: a real spawn here is exactly what killed the group.
+      const spawnSpy = vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+        throw new Error("spawn must not run for a missing working directory");
+      });
+      spawnSpy.mockClear();
+      try {
+        expect(() =>
+          spawnContainedProcess(process.execPath, ["-e", "0"], { cwd: missing, env: process.env }),
+        ).toThrow(`working directory does not exist: ${missing}`);
+        expect(spawnSpy).not.toHaveBeenCalled();
+      } finally {
+        spawnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "never signals a child whose spawn failed without a pid",
+    () => {
+      // Node leaves a failed spawn's handle open with no pid, and kill() on it
+      // reaches pid 0: that SIGKILLed the calling daemon and its whole group.
+      const failed = Object.assign(new EventEmitter(), {
+        pid: undefined,
+        kill: vi.fn(() => true),
+        stdio: [null, null, null, null, null],
+      });
+      const spawnSpy = vi.spyOn(childProcess, "spawn").mockReturnValue(failed as never);
+      spawnSpy.mockClear();
+      try {
+        expect(() =>
+          spawnContainedProcess(process.execPath, ["-e", "0"], { cwd: tmpdir(), env: process.env }),
+        ).toThrow();
+        expect(failed.kill).not.toHaveBeenCalled();
+        expect(failed.listenerCount("error")).toBeGreaterThan(0);
+      } finally {
+        spawnSpy.mockRestore();
+      }
+    },
+  );
+
   it.runIf(process.platform === "linux")(
     "contains Bash startup hooks behind the POSIX process gate",
     async () => {

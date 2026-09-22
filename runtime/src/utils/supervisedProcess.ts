@@ -18,6 +18,7 @@ import {
   readFileSync,
   rmSync,
   rmdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -635,6 +636,7 @@ export function spawnContainedProcess(
   args: readonly string[],
   options: ContainedProcessSpawnOptions,
 ): ChildProcessWithoutNullStreams {
+  assertSpawnableWorkingDirectory(options.cwd);
   if (process.platform === "win32") {
     return spawnWindowsJobContainedProcess(program, args, options);
   }
@@ -687,11 +689,10 @@ export function spawnContainedProcess(
     return child;
   } catch (error) {
     if (child !== undefined) {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The gated wrapper never reached the target process.
-      }
+      // A failed spawn still emits its error on the next tick; with no
+      // listener that is an uncaught exception in the daemon.
+      child.on("error", () => {});
+      safeKill(child, "SIGKILL");
     }
     if (cgroupPath !== null) removeEmptyLinuxCgroup(cgroupPath);
     throw error;
@@ -725,6 +726,7 @@ function spawnLinuxSubreaperContainedProcess(
     },
   ) as ChildProcessWithoutNullStreams;
   if (child.pid === undefined || child.pid <= 1) {
+    child.on("error", () => {});
     safeKill(child, "SIGKILL");
     throw new Error(
       "Linux process containment broker did not publish a safe pid",
@@ -2840,13 +2842,34 @@ function trustedWindowsTaskkill(): TrustedWindowsTaskkill | undefined {
 }
 
 function safeKill(
-  child: Pick<ChildProcessWithoutNullStreams, "kill">,
+  child: Pick<ChildProcessWithoutNullStreams, "kill" | "pid">,
   signal: NodeJS.Signals,
 ): void {
+  // A child whose spawn failed has no pid, but its open handle still routes
+  // kill() to pid 0, which signals this process's own group: that SIGKILLed
+  // the daemon and everything it spawned. There is nothing to signal.
+  if (child.pid === undefined || !Number.isSafeInteger(child.pid) || child.pid <= 0) return;
   try {
     child.kill(signal);
   } catch {
     // The process has already exited.
+  }
+}
+
+/**
+ * Spawning in a missing directory fails with ENOENT while the child handle
+ * stays open without a pid (see safeKill). A model asked for a `workdir` its
+ * own command was about to create; refuse that before anything is spawned.
+ */
+function assertSpawnableWorkingDirectory(cwd: string): void {
+  let isDirectory = false;
+  try {
+    isDirectory = statSync(cwd).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    throw new Error(`working directory does not exist: ${cwd}`);
   }
 }
 

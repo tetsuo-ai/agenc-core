@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1022,6 +1023,22 @@ describe("exec_command tool", () => {
     }
 
     const workdirTool = () => mockManagerTool();
+
+    test("refuses a workdir that does not exist yet as no effect, without starting anything", async () => {
+      // A DeepSeek subagent asked for workdir /tmp/vchk while its own command
+      // was about to create it. The spawn failed with ENOENT and the cleanup
+      // kill reached pid 0, which SIGKILLed the daemon's whole process group.
+      const missing = join(outsideDir, "not-yet", "vchk");
+      const { tool, execCommand } = workdirTool();
+
+      const result = await tool.execute(contextArgs({ cmd: `mkdir -p ${missing}`, workdir: missing }));
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("workdir does not exist");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(existsSync(missing)).toBe(false);
+    });
 
     test("refuses a working directory outside the workspace in a prompting session", async () => {
       const { tool, execCommand } = workdirTool();
