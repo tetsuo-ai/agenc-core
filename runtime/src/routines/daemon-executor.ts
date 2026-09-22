@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { lstatSync, mkdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, relative, isAbsolute } from "node:path";
 import type { AgenCDaemonAgentManager } from "../app-server/agent-lifecycle.js";
 import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
@@ -38,6 +40,63 @@ export function routineSessionEnvironment(env: Readonly<Record<string, string | 
   return Object.freeze(overrides);
 }
 
+/** Folder inside a routine's workspace that holds each run's scratch folder. */
+export const ROUTINE_SCRATCH_FOLDER = ".agenc-routine";
+
+function isRealDirectory(path: string): boolean {
+  try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); }
+  catch { return false; }
+}
+
+function insideWorkspace(path: string, workspace: string): boolean {
+  const rel = relative(workspace, path);
+  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * The run's scratch folder, `<workspace>/.agenc-routine/<runId>`: its shell
+ * commands get it as TMPDIR, because a routine's shell may write only inside
+ * its workspace. The parent holds a `.gitignore` of `*`, so git never sees
+ * it. Undefined when the parent is not a plain folder in the workspace (a
+ * link, a file): Core never creates anything through a link, and the run then
+ * keeps temporary files in the workspace itself.
+ */
+export function prepareRoutineScratch(workspace: string, runId: string): string | undefined {
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(runId)) return undefined;
+  try {
+    const root = realpathSync(workspace);
+    const parent = join(root, ROUTINE_SCRATCH_FOLDER);
+    try { mkdirSync(parent, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined; }
+    if (!isRealDirectory(parent) || !insideWorkspace(realpathSync(parent), root)) return undefined;
+    try { writeFileSync(join(parent, ".gitignore"), "*\n", { flag: "wx", mode: 0o600 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined; }
+    const scratch = join(parent, runId);
+    mkdirSync(scratch, { mode: 0o700 });
+    return isRealDirectory(scratch) ? scratch : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Remove a finished run's scratch folder. The run could write inside its
+ * workspace, so the folder may now be a link: only the link itself is removed
+ * then, and nothing is removed through a parent that is not a plain folder.
+ */
+export function removeRoutineScratch(scratch: string | undefined): void {
+  if (scratch === undefined) return;
+  try {
+    const parent = join(scratch, "..");
+    if (!isRealDirectory(parent)) return;
+    const stat = lstatSync(scratch);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) { unlinkSync(scratch); return; }
+    rmSync(scratch, { recursive: true, force: true });
+  } catch {
+    // Best effort: a leftover scratch folder is inside the workspace and ignored by git.
+  }
+}
+
 /**
  * Fresh canonical Core agent/session per invocation; permission decisions stay in Core.
  *
@@ -46,7 +105,8 @@ export function routineSessionEnvironment(env: Readonly<Record<string, string | 
  * gets the dangerous combined flag: a Bypass routine skips approvals but keeps
  * the OS sandbox, and the daemon runner confines its file writes to the
  * routine's workspace and refuses anything that would need an approver
- * (background-agent-runner.ts, runtime-settings.ts).
+ * (background-agent-runner.ts, runtime-settings.ts). Its shell commands get a
+ * scratch folder inside the workspace as TMPDIR, removed when the run ends.
  */
 export function createDaemonRoutineExecutor(options: {
   agentManager: Pick<AgenCDaemonAgentManager, "createAgent" | "streamAgentMessage" | "cancelRunTree" | "stopAgent" | "finishRoutineRun">;
@@ -99,6 +159,7 @@ export function createDaemonRoutineExecutor(options: {
         return outcome;
       };
       context.signal.addEventListener("abort", cancel, { once: true });
+      const scratch = prepareRoutineScratch(routine.cwd, run.id);
       try {
         const envOverrides = routineSessionEnvironment(environment, routine.provider ?? options.defaultProvider?.());
         const agent = await options.agentManager.createAgent({
@@ -106,7 +167,8 @@ export function createDaemonRoutineExecutor(options: {
           ...(routine.provider ? { provider: routine.provider } : {}),
           ...(routine.model ? { model: routine.model } : {}),
           ...(Object.keys(envOverrides).length > 0 ? { envOverrides } : {}),
-          permissionMode: routine.permissionMode, runtimeOptions: authority,
+          permissionMode: routine.permissionMode,
+          runtimeOptions: scratch === undefined ? authority : Object.freeze({ ...authority, routineScratchRoot: scratch }),
           metadata: { routineId: routine.id, routineRunId: run.id },
         });
         agentId = agent.agentId;
@@ -126,9 +188,13 @@ export function createDaemonRoutineExecutor(options: {
         return outcome ?? await stop() ?? (result.terminal?.code === 0 ? "completed" : result.terminal?.code === 130 ? "cancelled" : "failed");
       } finally {
         context.signal.removeEventListener("abort", cancel);
-        if (agentId !== undefined && !finalized) {
-          if (context.signal.aborted) { cancel(); await Promise.race([cancellation!, terminal]); }
-          else await stop();
+        try {
+          if (agentId !== undefined && !finalized) {
+            if (context.signal.aborted) { cancel(); await Promise.race([cancellation!, terminal]); }
+            else await stop();
+          }
+        } finally {
+          removeRoutineScratch(scratch);
         }
       }
     },

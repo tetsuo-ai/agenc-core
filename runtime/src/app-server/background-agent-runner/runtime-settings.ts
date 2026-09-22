@@ -1469,8 +1469,9 @@ async function installUnattendedPermissionPolicy(
  *   falls back to default. Running that read-only would fail every write
  *   with a misleading message.
  * - A routine that may write relies on the OS sandbox to keep shell writes
- *   inside its workspace. A configuration that turns the sandbox off would
- *   let them land anywhere.
+ *   inside its workspace. A configuration that turns the sandbox off, or
+ *   hands it to an external sandbox Core cannot narrow, would let them land
+ *   anywhere.
  */
 function assertRoutineRunAuthority(
   requestedMode: string | undefined,
@@ -1486,7 +1487,7 @@ function assertRoutineRunAuthority(
   }
   if (
     (context.mode === "acceptEdits" || context.mode === "bypassPermissions") &&
-    sandboxMode === "danger_full_access"
+    (sandboxMode === "danger_full_access" || sandboxMode === "external_sandbox")
   ) {
     throw new Error("routine writes need the OS sandbox, which this configuration turns off");
   }

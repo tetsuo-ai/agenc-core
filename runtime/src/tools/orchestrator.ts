@@ -95,6 +95,7 @@ import {
   defaultAvailableApprovalDecisions,
 } from "../sandbox/escalation/approvals.js";
 import { asRecord } from "../utils/record.js";
+import { routineRunOptions } from "../session/runtime-options.js";
 import { readPendingPhysicalSettlement } from "./physical-settlement.js";
 
 export { requestApproval };
@@ -469,6 +470,20 @@ function effectiveApprovalPolicyForTool(
  * without the sandbox.
  */
 export type ApprovalRejectionStage = "before_execution" | "sandbox_escalation";
+const ROUTINE_SANDBOX_ONLY_REASON =
+  "routine commands run only inside the OS sandbox";
+const ROUTINE_SANDBOX_ONLY_MESSAGE =
+  "This routine's commands run only inside the OS sandbox and write only in its workspace, " +
+  "and this one would have run outside it or with wider access. Nobody is attached to approve that. " +
+  "Do not retry; use a command the sandbox allows, or report that it could not run.";
+const ROUTINE_NO_APPROVER_REASON =
+  "routine run has no approver";
+function routineNoApproverMessage(toolName: string): string {
+  return (
+    `${toolName} needs approval in this routine's permission mode, and a scheduled run has ` +
+    "nobody attached to give it. Do not retry. Write what you found into your final answer instead."
+  );
+}
 
 export class ApprovalRejectedError extends Error {
   readonly kind = "approval_rejected" as const;
@@ -725,6 +740,14 @@ export async function orchestrateToolCall<T>(
   }).session?.permissionModeRegistry?.current?.();
   const isBypassPermissionsMode =
     asRecord(sessionMode)?.mode === "bypassPermissions";
+  // A scheduled routine run: nobody is attached, and its commands never run
+  // outside the OS sandbox, whatever an exec-policy rule, an escalation
+  // request or a sandbox denial would otherwise select.
+  const routineRun =
+    routineRunOptions(opts.approvalCtx.invocation.session) !== undefined;
+  const routineWithoutApprover =
+    routineRun &&
+    asRecord(asRecord(sessionMode)?.unattendedPolicy)?.noApprover === true;
   const toolRequirement = classifyToolApproval(opts.tool, {
     approvalPolicy: effectiveApprovalPolicy,
     sandboxMode: opts.sandboxMode,
@@ -816,6 +839,34 @@ export async function orchestrateToolCall<T>(
   const requestedAdditionalPermissions =
     runtimeAdditionalPermissionsForSandboxRequest(normalizedSandboxPermissions);
 
+  if (
+    routineRun &&
+    (
+      (sandboxOverride.kind === "bypass_sandbox" &&
+        opts.sandboxMode !== "danger_full_access") ||
+      requestedAdditionalPermissions !== undefined
+    )
+  ) {
+    await recordApprovalRequirementOutcome(
+      opts,
+      { kind: "forbidden", reason: ROUTINE_SANDBOX_ONLY_REASON },
+      effectiveApprovalPolicy,
+    );
+    throw new ApprovalRejectedError(ROUTINE_SANDBOX_ONLY_MESSAGE, { kind: "denied" });
+  }
+  if (routineWithoutApprover && requirement.kind === "needs_approval") {
+    // Nobody can answer: refuse now instead of waiting for a person.
+    await recordApprovalRequirementOutcome(
+      opts,
+      { kind: "forbidden", reason: ROUTINE_NO_APPROVER_REASON },
+      effectiveApprovalPolicy,
+    );
+    throw new ApprovalRejectedError(
+      routineNoApproverMessage(opts.approvalCtx.toolName),
+      { kind: "denied" },
+    );
+  }
+
   if (requirement.kind === "skip") {
     await recordApprovalRequirementOutcome(opts, requirement, effectiveApprovalPolicy);
   }
@@ -890,6 +941,13 @@ export async function orchestrateToolCall<T>(
     });
   } catch (err) {
     if (!isSandboxDeniedError(err)) throw err;
+
+    // A routine run never reruns a command outside the OS sandbox, and never
+    // asks anyone whether it may: the original denial stands.
+    if (routineRun) {
+      await recordSandboxPolicyOutcome(opts, "sandbox_escalation_not_allowed");
+      throw err;
+    }
 
     // Read-only or otherwise-opting-out tools bail with the original
     // sandbox denial instead of requesting approval to rerun unsandboxed.

@@ -87,7 +87,11 @@ export interface RoutineCapabilities extends JsonObject {
   readonly version: 1;
   readonly available: true;
   readonly scheduleKinds: readonly ["manual", "cron"];
-  readonly permissionModes: readonly ["default", "plan", "acceptEdits", "bypassPermissions"];
+  /**
+   * All four modes for a connection that negotiated routine.permissionModes.v2;
+   * the original two otherwise.
+   */
+  readonly permissionModes: readonly ["default", "plan", "acceptEdits", "bypassPermissions"] | readonly ["default", "plan"];
   readonly timezone: string;
   readonly executionMode: "local";
   readonly maxRoutines: number;

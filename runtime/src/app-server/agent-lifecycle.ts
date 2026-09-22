@@ -2564,26 +2564,29 @@ export class AgenCDaemonAgentManager {
 
   /**
    * Internal routine-authority seam, deliberately not a standalone RPC: the
-   * CURRENT permission mode of a live session, read by its owning runner
-   * from the session's own permission registry. A closed, unknown or
+   * canonical live session id behind `sessionId` (a session or agent id) and
+   * that session's CURRENT permission mode, read by its owning runner from the
+   * session's own permission registry. A closed, unknown or
    * recovered-without-runtime session has no mode to lend and throws.
    */
-  async getSessionPermissionMode(sessionId: string): Promise<string> {
+  async getLiveSessionPermission(
+    sessionId: string,
+  ): Promise<{ readonly sessionId: string; readonly mode: string }> {
     if (this.#runner?.getAgentPermissionMode === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
         "session permission mode requires a background runner",
       );
     }
-    const { agentId } = await this.#resolvePermissionOwner(sessionId, false, true);
-    const mode = await this.#runner.getAgentPermissionMode(agentId);
+    const owner = await this.#resolvePermissionOwner(sessionId, false, true);
+    const mode = await this.#runner.getAgentPermissionMode(owner.agentId);
     if (mode === null) {
       throw new AgenCDaemonAgentLifecycleError(
         "AGENT_NOT_FOUND",
-        `AgenC daemon agent not found: ${agentId}`,
+        `AgenC daemon agent not found: ${owner.agentId}`,
       );
     }
-    return mode;
+    return { sessionId: owner.sessionId, mode };
   }
 
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {

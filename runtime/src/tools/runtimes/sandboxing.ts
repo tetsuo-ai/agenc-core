@@ -39,6 +39,7 @@ import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
 import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { routineRunOptions } from "../../session/runtime-options.js";
 
 export interface RuntimeSandboxProfileOptions {
   readonly cwd: string;
@@ -299,10 +300,49 @@ export function permissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  return protectCronAuthority(protectDesktopAuthority(
+  const protectedProfile = protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
   ));
+  return routineRunOptions(context.invocation.session) === undefined
+    ? protectedProfile
+    : confineRoutineProfile(protectedProfile);
+}
+
+/**
+ * A scheduled routine's shell writes only inside its workspace. Every write
+ * entry except the workspace itself (the project root) is dropped: the
+ * session temp root, configured extra writable folders and granted
+ * additional permissions alike (reads stay as they were). Dropping rather
+ * than downgrading keeps a downgraded entry from reading as a read-only
+ * carve-out inside the workspace. The run's scratch folder is inside the
+ * workspace and needs no writable root of its own; a separate root there
+ * could be swapped for a link, and roots are resolved when the sandbox starts.
+ */
+export function confineRoutineProfile(profile: PermissionProfile): PermissionProfile {
+  const fileSystem = profile.fileSystem;
+  if (fileSystem.kind !== "restricted") return profile;
+  const entries = fileSystem.entries.filter((entry): boolean =>
+    entry.access !== "write" ||
+    (entry.path.kind === "special" &&
+      entry.path.value.kind === "project_roots" &&
+      entry.path.value.subpath === undefined));
+  return { ...profile, fileSystem: { ...fileSystem, entries } };
+}
+
+/**
+ * The TMPDIR a shell command in this session gets: a routine run's scratch
+ * folder inside its workspace (or the workspace itself when it has none),
+ * otherwise the session temp root.
+ */
+export function runtimeChildTempRoot(
+  context: ToolRuntimeAttemptContext,
+  sessionTempRoot: string,
+  workspaceRoot: string,
+): string {
+  const routine = routineRunOptions(context.invocation.session);
+  if (routine === undefined) return sessionTempRoot;
+  return routine.scratchRoot ?? workspaceRoot;
 }
 
 function runtimeDesktopAuthorityRoot(context: ToolRuntimeAttemptContext): string {

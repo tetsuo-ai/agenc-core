@@ -18,6 +18,11 @@ import type { OwnerTelegramService } from "../gateway/owner-telegram.js";
 import { OWNER_TELEGRAM_METHODS, type OwnerTelegramMethod } from "../gateway/owner-telegram-types.js";
 import { RoutineError, type RoutineService } from "../routines/service.js";
 import {
+  LEGACY_ROUTINE_GRANT,
+  LEGACY_ROUTINE_PERMISSION_MODES,
+  ROUTINE_OPERATOR_CAPABILITY,
+  ROUTINE_PERMISSION_MODES_CAPABILITY,
+  legacyRoutineMode,
   resolveRoutinePermissionGrant,
   takeRoutinePermissionAuthority,
   type RoutinePermissionGrant,
@@ -529,7 +534,7 @@ export interface AgenCDaemonDispatcherOptions {
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
     readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
-    readonly getSessionPermissionMode?: AgenCDaemonAgentManager["getSessionPermissionMode"];
+    readonly getLiveSessionPermission?: AgenCDaemonAgentManager["getLiveSessionPermission"];
   };
   readonly initializeAuthenticator?: (
     params: InitializeParams,
@@ -549,7 +554,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "terminateSession"
     | "removeClient"
     | "attachedClientIds"
-  >;
+  > & Partial<Pick<AgenCDaemonClientMultiplexer, "deliveryHoldsSession">>;
   readonly sessionManager?: Pick<
     AgenCDaemonSessionManager,
     | "attachSession"
@@ -654,7 +659,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
     readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
-    readonly getSessionPermissionMode?: AgenCDaemonAgentManager["getSessionPermissionMode"];
+    readonly getLiveSessionPermission?: AgenCDaemonAgentManager["getLiveSessionPermission"];
   };
   readonly #initializeAuthenticator:
     | ((
@@ -665,7 +670,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | undefined;
   readonly #daemonIdentity: DaemonInstanceIdentity | undefined;
   readonly #clientMultiplexer:
-    | Pick<
+    | (Pick<
         AgenCDaemonClientMultiplexer,
         | "attachClientToSession"
         | "broadcastSessionEvent"
@@ -677,7 +682,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         | "terminateSession"
         | "removeClient"
         | "attachedClientIds"
-      >
+      > & Partial<Pick<AgenCDaemonClientMultiplexer, "deliveryHoldsSession">>)
     | undefined;
   readonly #sessionManager:
     | Pick<
@@ -982,14 +987,68 @@ export class AgenCDaemonJsonRpcDispatcher {
   /**
    * Who vouches for a routine's permission mode. A session authority is read
    * from that live session's own permission registry through the agent
-   * manager; the request never states the mode it is granted.
+   * manager, and only a connection that holds that session may name it. The
+   * operator authority needs a local connection that declared
+   * routine.operator.v1 and holds no session. The request never states the
+   * mode it is granted.
    */
-  #routinePermissionGrant(authority: RoutinePermissionAuthority | undefined): Promise<RoutinePermissionGrant> {
+  async #routinePermissionGrant(
+    connection: AgenCDaemonJsonRpcConnection,
+    authority: RoutinePermissionAuthority | undefined,
+  ): Promise<RoutinePermissionGrant> {
+    if (authority === undefined) return LEGACY_ROUTINE_GRANT;
     const agentManager = this.#agentManager;
-    return resolveRoutinePermissionGrant(authority, async (sessionId) => {
-      if (agentManager.getSessionPermissionMode === undefined) throw new Error("live session permission modes are unavailable");
-      return agentManager.getSessionPermissionMode(sessionId);
+    const multiplexer = this.#clientMultiplexer;
+    const deliveryKey = connection.cancellationScope;
+    const declaredOperator =
+      connection.initializeState?.clientCapabilities[ROUTINE_OPERATOR_CAPABILITY] === true &&
+      connection.remoteAccess === undefined;
+    // Only multiplexed attachments exist on a connection, so a daemon without
+    // a multiplexer has no session held anywhere.
+    const operator = declaredOperator &&
+      !(await (multiplexer?.deliveryHoldsSession?.(deliveryKey) ?? Promise.resolve(false)));
+    return await resolveRoutinePermissionGrant(authority, {
+      operator,
+      async liveSession(sessionId) {
+        if (agentManager.getLiveSessionPermission === undefined) return undefined;
+        return await agentManager.getLiveSessionPermission(sessionId);
+      },
+      async holdsSession(liveSessionId) {
+        if (multiplexer?.deliveryHoldsSession === undefined) return false;
+        return await multiplexer.deliveryHoldsSession(deliveryKey, liveSessionId);
+      },
     });
+  }
+
+  /**
+   * Whether this connection negotiated the wider routine contract. Without it
+   * a connection keeps the original one exactly: two modes, no authority, and
+   * no routine it could not describe.
+   */
+  #routineV2(connection: AgenCDaemonJsonRpcConnection): boolean {
+    return connection.initializeState?.clientCapabilities[ROUTINE_PERMISSION_MODES_CAPABILITY] === true;
+  }
+
+  /**
+   * For a connection on the original contract, a routine in a mode it cannot
+   * describe does not exist: reading, running or changing it answers exactly
+   * what a missing routine answers.
+   */
+  #assertRoutineVisible(connection: AgenCDaemonJsonRpcConnection, params: JsonObject): void {
+    if (this.#routineV2(connection) || this.#routines === undefined) return;
+    if (typeof params.id !== "string") return;
+    let mode: unknown;
+    try { mode = this.#routines.get({ id: params.id }).routine.permissionMode; }
+    catch { return; }
+    if (!legacyRoutineMode(mode)) throw new RoutineError("ROUTINE_NOT_FOUND", "Routine was not found.");
+  }
+
+  /** Split the request-only authority off only where the contract has one. */
+  #routineRequest(connection: AgenCDaemonJsonRpcConnection, params: JsonObject): { readonly params: unknown; readonly authority: RoutinePermissionAuthority | undefined } {
+    // On the original contract the field is unknown, and the service refuses
+    // it the way it refuses any unsupported parameter.
+    if (!this.#routineV2(connection)) return { params, authority: undefined };
+    return takeRoutinePermissionAuthority(params);
   }
 
   async #dispatchKnownMethod(
@@ -1009,38 +1068,53 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "audio.whisper.transcribe":
         if (!this.#whisper || connection.remoteAccess) return methodNotImplementedResponse(id, method);
         return successResponse(id, await this.#whisper.transcribe(params, signal));
-      case "routine.capabilities":
+      case "routine.capabilities": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        return successResponse(id, this.#routines.capabilities(params));
-      case "routine.list":
+        const capabilities = this.#routines.capabilities(params);
+        return successResponse(id, this.#routineV2(connection)
+          ? capabilities
+          : { ...capabilities, permissionModes: [...LEGACY_ROUTINE_PERMISSION_MODES] });
+      }
+      case "routine.list": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        return successResponse(id, this.#routines.list(params));
+        const listed = this.#routines.list(params);
+        return successResponse(id, this.#routineV2(connection)
+          ? listed
+          : { routines: listed.routines.filter((routine) => legacyRoutineMode(routine.permissionMode)) });
+      }
       case "routine.get":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.get(params));
       case "routine.create": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        const request = takeRoutinePermissionAuthority(params);
-        const grant = await this.#routinePermissionGrant(request.authority);
+        const request = this.#routineRequest(connection, params);
+        const grant = await this.#routinePermissionGrant(connection, request.authority);
         return successResponse(id, this.#routines.create(request.params, grant));
       }
       case "routine.update": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        const request = takeRoutinePermissionAuthority(params);
-        const grant = await this.#routinePermissionGrant(request.authority);
+        const request = this.#routineRequest(connection, params);
+        const grant = await this.#routinePermissionGrant(connection, request.authority);
+        // Checked after the grant's await so nothing interleaves before the update.
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.update(request.params, grant));
       }
       case "routine.delete":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.delete(params));
       case "routine.run":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.run(params));
       case "routine.runs":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.runs(params));
       case "routine.cancel":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, await this.#routines.cancel(params));
       case "agent.create":
         return successResponse(
@@ -1837,6 +1911,10 @@ export class AgenCDaemonJsonRpcDispatcher {
         } catch { closed = true; pending.clear(); }
         finally { sending = false; }
       };
+      // Every client gets every invalidation: it carries only an id and a
+      // reason. A client on the original contract that re-reads a routine it
+      // cannot describe is told it does not exist, which is how a routine
+      // that became wider leaves its view.
       const unsubscribe = this.#routines.onUpdated((event) => {
         if (closed) return;
         if (!pending.has(event.id) && pending.size >= 100) pending.delete(pending.keys().next().value!);

@@ -51,9 +51,11 @@ import { parseSandboxPermissionsArgs } from "../../sandbox/escalation/sandboxing
 import { readReadOnlyInspectionInvocation } from "../../permissions/readonly-inspection.js";
 import {
   permissionProfileForRuntimeContext,
+  runtimeChildTempRoot,
   runtimePlatformSandboxStatus,
   sandboxModeRequiresPlatformIsolation,
 } from "../runtimes/sandboxing.js";
+import { routineRunOptions } from "../../session/runtime-options.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
@@ -219,16 +221,19 @@ export function runtimeSandboxForExec(
   }
   const network = networkPolicy(turn.networkSandboxPolicy);
   const networkInterfaces = networkPolicyInterfaces(turn.network);
+  const routineRun = routineRunOptions(context.invocation.session) !== undefined;
   return {
     permissionProfile: permissionProfileForRuntimeContext(context, {
       cwd: sandboxPolicyCwd,
       ...(network !== undefined ? { network } : {}),
     }),
-    ...(context.additionalPermissions !== undefined
+    // A routine run never widens its sandbox: the profile above already
+    // folded in (and confined) anything granted.
+    ...(context.additionalPermissions !== undefined && !routineRun
       ? { additionalPermissions: context.additionalPermissions }
       : {}),
     sandboxPolicyCwd,
-    sessionTempRoot,
+    sessionTempRoot: runtimeChildTempRoot(context, sessionTempRoot, sandboxPolicyCwd),
     preference: "require",
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }

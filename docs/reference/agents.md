@@ -539,20 +539,35 @@ in the permission mode its routine stores (`runtime/src/routines/`).
 
 - A routine's mode is the mode of the session that created it. On
   `routine.create` and `routine.update` a client names a
-  `permissionAuthority`: `{ kind: "session", sessionId }` makes Core read that
-  live session's current mode from its own permission registry, and the
-  request may only narrow it; `{ kind: "operator" }` is a trusted client's own
-  Routines screen. A request without one keeps the original contract, default
-  or plan only. Changing a routine's instructions, workspace, provider, model
-  or mode needs an authority at least as wide as the routine's resulting mode.
+  `permissionAuthority`. `{ kind: "session", sessionId }` makes Core read that
+  live session's current mode from its own permission registry; the session
+  must be attached to the connection that sends the request, and the request
+  may only narrow its mode. `{ kind: "operator" }` is a Routines screen: Core
+  accepts it only on a connection that declared `routine.operator.v1` at
+  initialize and has no session attached, so a connection that relays a
+  model's requests can never also speak for the person. A request without an
+  authority keeps the original contract, default or plan only. Changing a
+  routine's instructions, workspace, provider, model or mode needs an
+  authority at least as wide as the routine's resulting mode.
+- The wider contract is negotiated: a connection that declared
+  `routine.permissionModes.v2` sees four modes and may send an authority. Any
+  other connection keeps the original contract exactly: two modes, and a
+  routine in acceptEdits or bypassPermissions answers as not found.
 - `default` and `plan` runs keep the read-only grant.
 - `acceptEdits` and `bypassPermissions` runs keep their mode. Whatever would
   ask a person is refused instead of waiting (questions, plan hand-offs,
   sandbox escalations included). File tools write only inside the routine's
-  workspace, even under bypass, and the run never gets the dangerous combined
-  flag, so the OS sandbox confines shell writes.
-- A Bypass routine in a folder that is not a trusted project, or whose
-  configuration turns the OS sandbox off, fails with that reason instead of
+  workspace, even under bypass, measured where a write lands after following
+  every link.
+- Every routine run's commands stay in the OS sandbox and write only inside
+  the workspace: an escalation, an exec-policy decision or a sandbox denial
+  never reruns a command unsandboxed, the session temp root and configured
+  extra writable folders are read-only for it, and its TMPDIR is a scratch
+  folder, `<workspace>/.agenc-routine/<runId>`, removed when the run ends and
+  ignored by git. A server-initiated MCP question is declined in every mode.
+- A Bypass routine in a folder that is not a trusted project, or an
+  acceptEdits or Bypass routine whose configuration turns the OS sandbox off
+  or hands it to an external sandbox, fails with that reason instead of
   running with a different authority.
 
 The channel gateway provisions passive agents

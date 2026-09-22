@@ -1180,11 +1180,22 @@
           ]
         },
         "permissionModes": {
-          "const": [
-            "default",
-            "plan",
-            "acceptEdits",
-            "bypassPermissions"
+          "description": "All four modes for a connection that negotiated routine.permissionModes.v2; default and plan otherwise.",
+          "oneOf": [
+            {
+              "const": [
+                "default",
+                "plan",
+                "acceptEdits",
+                "bypassPermissions"
+              ]
+            },
+            {
+              "const": [
+                "default",
+                "plan"
+              ]
+            }
           ]
         },
         "timezone": {

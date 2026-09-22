@@ -180,17 +180,33 @@ describe("request-only permission authority", () => {
     }
   });
 
+  function connection(overrides: Partial<{ operator: boolean; mode: string; held: boolean }> = {}) {
+    const liveSession = vi.fn(async (sessionId: string) => ({ sessionId: `live-${sessionId}`, mode: overrides.mode ?? "bypassPermissions" }));
+    const holdsSession = vi.fn(async () => overrides.held ?? true);
+    return { operator: overrides.operator ?? false, liveSession, holdsSession };
+  }
+
   it("reads the session's mode from the daemon, not from the request", async () => {
-    const liveMode = vi.fn(async () => "bypassPermissions");
-    await expect(resolveRoutinePermissionGrant({ kind: "session", sessionId: "chat" }, liveMode)).resolves.toEqual(sessionRoutineGrant("bypassPermissions"));
-    expect(liveMode).toHaveBeenCalledExactlyOnceWith("chat");
-    await expect(resolveRoutinePermissionGrant(undefined, liveMode)).resolves.toEqual(LEGACY_ROUTINE_GRANT);
-    await expect(resolveRoutinePermissionGrant({ kind: "operator" }, liveMode)).resolves.toEqual(OPERATOR_ROUTINE_GRANT);
-    expect(liveMode).toHaveBeenCalledOnce();
+    const held = connection({ operator: true });
+    await expect(resolveRoutinePermissionGrant({ kind: "session", sessionId: "chat" }, held)).resolves.toEqual(sessionRoutineGrant("bypassPermissions"));
+    expect(held.liveSession).toHaveBeenCalledExactlyOnceWith("chat");
+    // Holding is checked against the canonical live session, not the name given.
+    expect(held.holdsSession).toHaveBeenCalledExactlyOnceWith("live-chat");
+    await expect(resolveRoutinePermissionGrant(undefined, held)).resolves.toEqual(LEGACY_ROUTINE_GRANT);
+    await expect(resolveRoutinePermissionGrant({ kind: "operator" }, held)).resolves.toEqual(OPERATOR_ROUTINE_GRANT);
+    expect(held.liveSession).toHaveBeenCalledOnce();
   });
 
   it("refuses when the session's mode cannot be read", async () => {
-    await expect(resolveRoutinePermissionGrant({ kind: "session", sessionId: "gone" }, async () => { throw new Error("session not found"); }))
+    await expect(resolveRoutinePermissionGrant({ kind: "session", sessionId: "gone" }, {
+      ...connection(), liveSession: async () => { throw new Error("session not found"); },
+    })).rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
+  });
+
+  it("grants a session's mode only to the connection that holds it, and the operator only to an operator connection", async () => {
+    await expect(resolveRoutinePermissionGrant({ kind: "session", sessionId: "chat" }, connection({ held: false })))
+      .rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED", message: expect.stringContaining("not attached to this connection") });
+    await expect(resolveRoutinePermissionGrant({ kind: "operator" }, connection({ operator: false })))
       .rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
   });
 });

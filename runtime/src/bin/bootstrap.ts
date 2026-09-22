@@ -121,6 +121,7 @@ import {
 import {
   resolveCommandExecutionAuthority,
   resolveAgentRuntimeOptions,
+  routineRunOptions,
   runWithAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
@@ -1165,11 +1166,17 @@ async function bootstrapLocalRuntimeSessionScoped(
       ),
       workspaceRoot,
     );
+  const routineRun = routineRunOptions({ services: { runtimeOptions } });
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     mode: initialSandboxExecutionAuthority.mode,
     cwd: workspaceRoot,
     env,
     sessionTempRoot,
+    // A scheduled routine run: its commands write only in the workspace and
+    // get a scratch folder there (or the workspace itself) as TMPDIR.
+    ...(routineRun !== undefined
+      ? { routineChildTempRoot: routineRun.scratchRoot ?? workspaceRoot }
+      : {}),
     ...(initialSandboxExecutionAuthority.permissionProfile !== undefined
       ? {
           permissionProfile:

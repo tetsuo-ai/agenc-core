@@ -10,15 +10,44 @@
  * - `session`: the live session behind the request (the Desktop names the
  *   session that owns a model's routine tool call). Its CURRENT mode, read
  *   from that session's permission registry, is both the default for a new
- *   routine and the widest mode the request may store.
+ *   routine and the widest mode the request may store. The session must be
+ *   attached to the connection that sends the request: a client speaks only
+ *   for the sessions it holds, never for another client's.
  * - `operator`: a trusted client's own Routines screen, where the user picks
  *   the mode as they would for a session. Anything up to bypassPermissions.
+ *   Accepted only on a connection that declared `routine.operator.v1` at
+ *   initialize and has no session attached, so a connection that relays a
+ *   model's requests can never also claim the person at the keyboard.
  * - nothing: the contract every caller had before, default or plan only.
+ *
+ * The authority itself is part of the `routine.permissionModes.v2` contract.
+ * A connection that did not negotiate it keeps the original routine contract
+ * exactly, and the field is an unsupported parameter there.
  */
 import { RoutineError } from "./errors.js";
 import type { RoutinePermissionAuthority, RoutinePermissionMode } from "./types.js";
 
 export const ROUTINE_PERMISSION_MODES = Object.freeze(["default", "plan", "acceptEdits", "bypassPermissions"] as const);
+/** The modes the original routine contract can describe. */
+export const LEGACY_ROUTINE_PERMISSION_MODES = Object.freeze(["default", "plan"] as const);
+
+/**
+ * Client capability (initialize) for the wider routine contract: four modes,
+ * routines that carry acceptEdits or bypassPermissions, and a request-only
+ * `permissionAuthority`. A connection without it sees only what the original
+ * two-mode contract can describe.
+ */
+export const ROUTINE_PERMISSION_MODES_CAPABILITY = "routine.permissionModes.v2";
+/**
+ * Client capability (initialize) for a connection that acts for the person at
+ * the keyboard (a Routines screen) and never relays a model's request.
+ */
+export const ROUTINE_OPERATOR_CAPABILITY = "routine.operator.v1";
+
+/** Whether the original two-mode contract can describe a routine in `mode`. */
+export function legacyRoutineMode(mode: unknown): boolean {
+  return mode === "default" || mode === "plan";
+}
 
 /**
  * Narrow to wide. Unattended, plan and default are both read-only; plan also
@@ -101,24 +130,49 @@ export function takeRoutinePermissionAuthority(params: unknown): { readonly para
   return { params: rest, authority: parseRoutinePermissionAuthority(permissionAuthority) };
 }
 
+/** What the daemon knows about the connection a routine request came in on. */
+export interface RoutineRequestConnection {
+  /**
+   * The named session's canonical live id and CURRENT mode, read from its
+   * own permission registry. Throws, or resolves nothing usable, when the
+   * session is closed, unknown or unreadable.
+   */
+  liveSession(sessionId: string): Promise<{ readonly sessionId: string; readonly mode: string } | undefined>;
+  /** Whether that live session is attached to this very connection. */
+  holdsSession(liveSessionId: string): Promise<boolean>;
+  /** Declared routine.operator.v1, is local, and has no session attached. */
+  readonly operator: boolean;
+}
+
 /**
- * Turn an authority into a grant. For a session, `liveSessionMode` must read
- * the session's current mode from its own permission registry; a session
- * that is closed, unknown or unreadable grants nothing.
+ * Turn an authority into a grant. A session grants its current mode only to
+ * the connection that holds it; the operator grant needs an operator
+ * connection. Anything else grants nothing.
  */
 export async function resolveRoutinePermissionGrant(
   authority: RoutinePermissionAuthority | undefined,
-  liveSessionMode: (sessionId: string) => Promise<unknown>,
+  connection: RoutineRequestConnection,
 ): Promise<RoutinePermissionGrant> {
   if (authority === undefined) return LEGACY_ROUTINE_GRANT;
-  if (authority.kind === "operator") return OPERATOR_ROUTINE_GRANT;
-  let mode: unknown;
-  try { mode = await liveSessionMode(authority.sessionId); }
-  catch { mode = undefined; }
-  if (typeof mode !== "string") {
+  if (authority.kind === "operator") {
+    if (!connection.operator) {
+      throw new RoutineError("ROUTINE_PERMISSION_DENIED", "Operator authority is accepted only from a Routines screen connection that holds no session.");
+    }
+    return OPERATOR_ROUTINE_GRANT;
+  }
+  let live: { readonly sessionId: string; readonly mode: string } | undefined;
+  try { live = await connection.liveSession(authority.sessionId); }
+  catch { live = undefined; }
+  if (live === undefined || typeof live.mode !== "string" || typeof live.sessionId !== "string") {
     throw new RoutineError("ROUTINE_PERMISSION_DENIED", "The session that asked for this routine is not active, so its permission mode cannot be confirmed.");
   }
-  return sessionRoutineGrant(mode);
+  let held = false;
+  try { held = await connection.holdsSession(live.sessionId); }
+  catch { held = false; }
+  if (!held) {
+    throw new RoutineError("ROUTINE_PERMISSION_DENIED", "The session named for this routine is not attached to this connection, so this request cannot speak for it.");
+  }
+  return sessionRoutineGrant(live.mode);
 }
 
 function allowedModes(ceiling: RoutinePermissionMode): string {

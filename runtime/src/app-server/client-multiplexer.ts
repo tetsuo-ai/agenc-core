@@ -413,6 +413,27 @@ export class AgenCDaemonClientMultiplexer {
     return registration;
   }
 
+  /**
+   * Whether a live client delivering on `deliveryKey` (one daemon connection)
+   * has `sessionId` attached. With `sessionId` omitted: any session at all.
+   * Routine authority uses this so a connection speaks only for sessions it
+   * holds.
+   */
+  async deliveryHoldsSession(
+    deliveryKey: string,
+    sessionId?: string,
+  ): Promise<boolean> {
+    return await this.#state.with((state) => {
+      for (const client of state.clients.values()) {
+        if (client.evicted || client.deliveryKey !== deliveryKey) continue;
+        if (sessionId === undefined ? client.sessionIds.size > 0 : client.sessionIds.has(sessionId)) {
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
   async attachClientToSession(
     sessionId: string,
     clientId: string,

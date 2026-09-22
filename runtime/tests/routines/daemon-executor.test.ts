@@ -1,9 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
-import { createDaemonRoutineExecutor, providerEnvironmentKeys, routineSessionEnvironment } from "../../src/routines/daemon-executor.js";
+import {
+  createDaemonRoutineExecutor, prepareRoutineScratch, providerEnvironmentKeys, removeRoutineScratch, routineSessionEnvironment,
+} from "../../src/routines/daemon-executor.js";
 import { RoutineExecutionUnsettledError, RoutineService } from "../../src/routines/service.js";
 import type { Routine, RoutineRun } from "../../src/routines/types.js";
 import type { AgentRuntimeOptions } from "../../src/session/runtime-options.js";
@@ -299,5 +301,46 @@ describe("routine execution finalization", () => {
       finishCancellation?.();
       await h.cleanup();
     }
+  });
+});
+
+describe("a routine run's scratch folder", () => {
+  function workspace() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "routine-scratch-")));
+    const ws = join(root, "ws"); mkdirSync(ws);
+    const outside = join(root, "outside"); mkdirSync(outside);
+    return { root, ws, outside, dispose: () => rmSync(root, { recursive: true, force: true }) };
+  }
+
+  it("lives inside the workspace, is ignored by git, and is removed after the run", () => {
+    const f = workspace();
+    try {
+      const scratch = prepareRoutineScratch(f.ws, "routine_run_1")!;
+      expect(scratch).toBe(join(f.ws, ".agenc-routine", "routine_run_1"));
+      expect(readFileSync(join(f.ws, ".agenc-routine", ".gitignore"), "utf8")).toBe("*\n");
+      writeFileSync(join(scratch, "temp.txt"), "x");
+      removeRoutineScratch(scratch);
+      expect(existsSync(scratch)).toBe(false);
+      expect(existsSync(join(f.ws, ".agenc-routine", ".gitignore"))).toBe(true);
+    } finally { f.dispose(); }
+  });
+
+  it("is never created through a link, and cleanup removes only a link a run swapped in", () => {
+    const f = workspace();
+    try {
+      symlinkSync(f.outside, join(f.ws, ".agenc-routine"), "dir");
+      expect(prepareRoutineScratch(f.ws, "routine_run_2")).toBeUndefined();
+      expect(existsSync(join(f.outside, "routine_run_2"))).toBe(false);
+      rmSync(join(f.ws, ".agenc-routine"));
+      const scratch = prepareRoutineScratch(f.ws, "routine_run_3")!;
+      // The run replaced its scratch folder with a link to a folder outside.
+      writeFileSync(join(f.outside, "keep.txt"), "keep");
+      rmSync(scratch, { recursive: true });
+      symlinkSync(f.outside, scratch, "dir");
+      removeRoutineScratch(scratch);
+      expect(() => lstatSync(scratch)).toThrow();
+      expect(readFileSync(join(f.outside, "keep.txt"), "utf8")).toBe("keep");
+      expect(prepareRoutineScratch(f.ws, "../escape")).toBeUndefined();
+    } finally { f.dispose(); }
   });
 });
