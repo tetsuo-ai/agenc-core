@@ -66,7 +66,6 @@ export interface ImageWithholding {
   readonly rejected: number;
 }
 
-const MAX_REJECTED_IMAGES_PER_SESSION = 512;
 const MAX_NOTE_URL_CHARS = 120;
 const MAX_NOTE_REASON_CHARS = 240;
 
@@ -106,6 +105,11 @@ export function imageContentIdentity(url: string): string {
 /**
  * Remember that the route refused these images. Returns how many were not
  * already recorded, so a caller can tell whether a retry changes anything.
+ *
+ * Nothing is ever evicted. Recovery ends only because every retry grows this
+ * set; an eviction cap let a request with more refused images than the cap
+ * restore one image for each it recorded, so the turn never recovered. An
+ * entry is a 64-character digest and a shared reason, per refused image.
  */
 export function recordRejectedImages(
   sessionKey: object,
@@ -129,10 +133,6 @@ export function recordRejectedImages(
     if (rejected.has(identity)) continue;
     rejected.set(identity, rejection);
     added += 1;
-    if (rejected.size > MAX_REJECTED_IMAGES_PER_SESSION) {
-      const oldest = rejected.keys().next();
-      if (oldest.done !== true) rejected.delete(oldest.value);
-    }
   }
   return added;
 }

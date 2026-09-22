@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { crc32 } from "node:zlib";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -46,6 +47,25 @@ async function makePng(width: number, height: number): Promise<Buffer> {
   })
     .png()
     .toBuffer();
+}
+
+/** Distinct, complete 1x1 PNGs: a numbered tEXt chunk after the header. */
+function distinctPngDataUrls(count: number): string[] {
+  const tiny = Buffer.from(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082",
+    "hex",
+  );
+  const headerEnd = 33;
+  return Array.from({ length: count }, (_, index) => {
+    const data = Buffer.from(`Comment\0shot ${index}`, "latin1");
+    const chunk = Buffer.alloc(12 + data.length);
+    chunk.writeUInt32BE(data.length, 0);
+    chunk.write("tEXt", 4, "latin1");
+    data.copy(chunk, 8);
+    chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)) >>> 0, 8 + data.length);
+    const png = Buffer.concat([tiny.subarray(0, headerEnd), chunk, tiny.subarray(headerEnd)]);
+    return `data:image/png;base64,${png.toString("base64")}`;
+  });
 }
 
 /** The production FileRead behind a minimal registry. */
@@ -145,12 +165,16 @@ function sessionFor(
   provider: LLMProvider,
   model: string,
   history: readonly LLMMessage[] = [],
+  contextWindow?: number,
 ) {
   const fixture = mkSession({
     provider,
     registry: fileReadRegistry(),
     history,
-    modelInfo: { slug: model },
+    modelInfo: {
+      slug: model,
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+    },
   });
   // The session-root config names the model the stream phase dispatches to.
   (fixture.session as { config: Config }).config = {
@@ -160,10 +184,14 @@ function sessionFor(
   return fixture;
 }
 
-function ctxFor(model: string) {
+function ctxFor(model: string, contextWindow?: number) {
   const ctx = mkCtx();
   return mkCtx({
-    modelInfo: { ...ctx.modelInfo, slug: model },
+    modelInfo: {
+      ...ctx.modelInfo,
+      slug: model,
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+    },
     sandboxPolicy: { value: "danger_full_access" },
   } as Parameters<typeof mkCtx>[0]);
 }
@@ -370,6 +398,47 @@ describe("one refused image does not brick the session", () => {
     expect(requests).toHaveLength(4);
     expect(imageUrls(requests[3]!)).toEqual([]);
     expect(turnFailures(events)).toEqual([]);
+  });
+
+  test("more refused images than the old store cap still recover with one retry", async () => {
+    // Review finding: the store evicted refusals beyond 512, so each retry
+    // put an evicted image back into the request and the turn never
+    // recovered. The provider gives up after eight calls to keep that loop
+    // short when it happens.
+    const images = distinctPngDataUrls(600);
+    const content: LLMContentPart[] = [
+      { type: "text", text: "600 screenshots" },
+      ...images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+    ];
+    const history: LLMMessage[] = [
+      { role: "user", content: "take the screenshots" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_shots", name: "screenshots", arguments: "{}" }],
+      },
+      { role: "tool", toolCallId: "call_shots", toolName: "screenshots", content },
+    ];
+    let calls = 0;
+    const { provider, requests } = scriptedProvider(
+      "deepseek",
+      [reply("recovered")],
+      (messages) => {
+        calls += 1;
+        if (calls > 8) throw new Error("scripted provider stopped after eight calls");
+        return imageUrls(messages).length > 0;
+      },
+    );
+    // 600 images are well inside DeepSeek's real 1M window.
+    const window = 1_048_576;
+    const { session, events } = sessionFor(provider, "deepseek-flash", history, window);
+
+    await drain(runTurn(session, ctxFor("deepseek-flash", window), "continue"));
+
+    expect(turnFailures(events)).toEqual([]);
+    expect(requests).toHaveLength(2);
+    expect(imageUrls(requests[0]!)).toHaveLength(600);
+    expect(imageUrls(requests[1]!)).toEqual([]);
   });
 
   test("a restarted session with the refused image in its history recovers again", async () => {
