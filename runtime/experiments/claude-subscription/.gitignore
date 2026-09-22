@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+!tsconfig.json
+!native-qualification.json
+!daemon-validation.json
+!agents-validation.json
+!image-validation.json
+!pdf-validation.json
+!file-tools-validation.json
+!mcp-validation.json
+!resume-validation.json
+!agent-stress-validation.json
+!browser-validation.json
+!workflow-validation.json
+!suite-validation.json
+!tool-coverage.json
+!api-offline-validation.json
+
+# Machine-specific Desktop launcher; keep local.
+/desktop-claude

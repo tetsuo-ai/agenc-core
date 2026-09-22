@@ -1,0 +1,567 @@
+[
+  {
+    "tool": "AskUserQuestion",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "Browser",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "browser-validation.json"
+    ],
+    "executionCoverage": "live Claude: all 12 actions succeeded; overall session failed no-progress backstop"
+  },
+  {
+    "tool": "CronCreate",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "CronDelete",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "CronList",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "Edit",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "file-tools-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "EnterPlanMode",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "EnterWorktree",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "ExitPlanMode",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "ExitWorktree",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "FileRead",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agent-stress-validation.json",
+      "agents-validation.json",
+      "daemon-validation.json",
+      "file-tools-validation.json",
+      "image-validation.json",
+      "mcp-validation.json",
+      "pdf-validation.json",
+      "resume-validation.json",
+      "workflow-validation.json",
+      "browser-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "Glob",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "file-tools-validation.json",
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "Grep",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "file-tools-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "ImagineImage",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "ImagineVideo",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "LSP",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "ListMcpResourcesTool",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "Monitor",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "MultiEdit",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "NotebookEdit",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "NotebookRead",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "Orient",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "ReadMcpResourceTool",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "SendUserMessage",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "Skill",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "Sleep",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "StructuredOutput",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "TaskCreate",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "TaskGet",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "TaskList",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "TaskOutput",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "TaskStop",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "TaskUpdate",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "TodoWrite",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "VerifyPlanExecution",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "WebSearch",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "WorkflowTool",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "Write",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agent-stress-validation.json",
+      "agents-validation.json",
+      "daemon-validation.json",
+      "file-tools-validation.json",
+      "image-validation.json",
+      "mcp-validation.json",
+      "pdf-validation.json",
+      "resume-validation.json",
+      "workflow-validation.json",
+      "browser-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "apply_patch",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "assign_task",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agents-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "close_agent",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agent-stress-validation.json",
+      "agents-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "exec_command",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agent-stress-validation.json",
+      "agents-validation.json",
+      "daemon-validation.json",
+      "file-tools-validation.json",
+      "image-validation.json",
+      "mcp-validation.json",
+      "pdf-validation.json",
+      "resume-validation.json",
+      "workflow-validation.json",
+      "browser-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "inspect_csv_agent_job",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "install_ledger_wallet_cli",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "kill_process",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "ledger_wallet_cli_status",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "list_agents",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agent-stress-validation.json",
+      "agents-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "list_csv_job_reviews",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "list_processes",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "read_csv_agent_job_result",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "report_agent_job_result",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "request_ledger_transfer",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "request_user_input",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "resolve_csv_job_review",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "send_message",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agents-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "show_csv_job_review",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "spawn_agent",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agent-stress-validation.json",
+      "agents-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "spawn_agents_on_csv",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.bash",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.delete",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitBranchInfo",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitChangeSummary",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitDiff",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitShow",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitStatus",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitWorktreeCreate",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitWorktreeList",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitWorktreeRemove",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.gitWorktreeStatus",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.listDir",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.mkdir",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.move",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.repoInventory",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.searchTools",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "workflow-validation.json",
+      "browser-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "system.stat",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.symbolDefinition",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.symbolReferences",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "system.symbolSearch",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "wait_agent",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [
+      "agent-stress-validation.json",
+      "agents-validation.json"
+    ],
+    "executionCoverage": "live Claude + real daemon"
+  },
+  {
+    "tool": "web_fetch",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  },
+  {
+    "tool": "write_stdin",
+    "catalogRoundTrip": "passed",
+    "liveEvidence": [],
+    "executionCoverage": "catalog/schema round trip passed; no live Claude execution claimed; consult suite results for execution tests"
+  }
+]

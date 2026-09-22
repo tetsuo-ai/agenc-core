@@ -395,10 +395,17 @@ export async function launchBrowser(
     throw missingSandboxExecutionBoundary("browser");
   }
   const env = scrubEnvForChildProcess(process.env);
+  // Crashpad also needs a writable config directory. Keep browser bookkeeping
+  // within the same private profile grant, including under an isolated daemon HOME.
+  if (process.platform === "linux") {
+    env.XDG_CONFIG_HOME = options.userDataDir;
+    env.XDG_CACHE_HOME = options.userDataDir;
+  }
   const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
     "browser",
     {
       program: options.executablePath,
+      browserCdp: true,
       args: buildChromiumArgs(options),
       cwd: sandboxExecutionBroker.cwd,
       env,
@@ -423,7 +430,9 @@ export async function launchBrowser(
         cwd: spawnCommand.cwd,
         env: spawnCommand.env,
         argv0: spawnCommand.argv0,
-        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+        stdio: spawnCommand.browserCdpOverStdio
+          ? ["pipe", "pipe", "pipe"]
+          : ["ignore", "ignore", "pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
       }),
   );
@@ -434,8 +443,8 @@ export async function launchBrowser(
     stderrTail = (stderrTail + chunk).slice(-2000);
   });
 
-  const writePipe = child.stdio[3] as Writable | null;
-  const readPipe = child.stdio[4] as Readable | null;
+  const writePipe = (child.stdio[3] ?? child.stdin) as Writable | null;
+  const readPipe = (child.stdio[4] ?? child.stdout) as Readable | null;
   if (writePipe === null || readPipe === null) {
     try {
       await terminateProcessTreeAndWait(child, {
@@ -493,7 +502,7 @@ export async function launchBrowser(
       );
     }
     throw new CdpError(
-      `browser did not establish a CDP pipe: ${detail}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+      `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
     );
   }
   return { child, connection };

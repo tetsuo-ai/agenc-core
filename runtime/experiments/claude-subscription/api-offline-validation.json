@@ -1,0 +1,92 @@
+{
+  "date": "2026-09-22",
+  "mode": "offline mocked transport; no live API inference",
+  "realApiRequests": 0,
+  "providedCredentialUsed": false,
+  "providedCredentialStored": false,
+  "builtInCatalogTools": 81,
+  "additionalMcpFixtureTools": 1,
+  "checks": [
+    "API-key header selection",
+    "all catalog schemas match subscription projection",
+    "all returned tool names/arguments restored",
+    "all tool results replayed",
+    "PNG and PDF projection",
+    "API streaming/retry/usage tests",
+    "factory/credential authority tests",
+    "runtime and test-support typecheck",
+    "git diff --check"
+  ],
+  "runs": [
+    {
+      "name": "offline",
+      "success": true,
+      "numPassedTests": 300,
+      "numFailedTests": 0,
+      "numPendingTests": 0,
+      "files": [
+        {
+          "name": "tests/llm/claude-api-offline-parity.test.ts",
+          "tests": 1
+        },
+        {
+          "name": "tests/llm/claude-subscription-surface.test.ts",
+          "tests": 1
+        },
+        {
+          "name": "tests/llm/claude-subscription.test.ts",
+          "tests": 4
+        },
+        {
+          "name": "tests/llm/provider-credential-authority.test.ts",
+          "tests": 40
+        },
+        {
+          "name": "tests/llm/provider-parity.test.ts",
+          "tests": 221
+        },
+        {
+          "name": "tests/llm/wire/messages-anthropic.test.ts",
+          "tests": 33
+        }
+      ]
+    },
+    {
+      "name": "streaming",
+      "success": true,
+      "numPassedTests": 207,
+      "numFailedTests": 0,
+      "numPendingTests": 0,
+      "files": [
+        {
+          "name": "tests/llm/provider.test.ts",
+          "tests": 150
+        },
+        {
+          "name": "tests/llm/providers/anthropic/adapter.input-json-delta-forwarding.parity.test.ts",
+          "tests": 9
+        },
+        {
+          "name": "tests/llm/providers/anthropic/adapter.partial-usage-cache.test.ts",
+          "tests": 2
+        },
+        {
+          "name": "tests/llm/providers/anthropic/adapter.stream-retry-duplication.test.ts",
+          "tests": 4
+        },
+        {
+          "name": "tests/llm/providers/anthropic/adapter.test.ts",
+          "tests": 23
+        },
+        {
+          "name": "tests/llm/providers/anthropic/adapter.thinking-stream.test.ts",
+          "tests": 6
+        },
+        {
+          "name": "tests/llm/providers/anthropic/fast-mode.test.ts",
+          "tests": 13
+        }
+      ]
+    }
+  ]
+}

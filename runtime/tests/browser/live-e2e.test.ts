@@ -13,11 +13,16 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { BrowserManager } from "../../src/browser/manager.js";
 import { resolveBrowserExecutable } from "../../src/browser/executable.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../src/sandbox/execution-lifecycle.js";
 
 const LIVE = process.env.AGENC_BROWSER_E2E === "1";
 
@@ -39,7 +44,13 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
   let base: string;
   // Local dev target → allow private network so the loopback fixture is
   // reachable; the metadata block is asserted independently below.
+  const fixtureRoot = LIVE ? mkdtempSync(join(tmpdir(), "agenc-browser-live-"))
+    : join(tmpdir(), "agenc-browser-live-not-started");
+  const broker = process.env.AGENC_BROWSER_WORKSPACE_E2E === "1"
+    ? new SandboxExecutionBroker({ mode: "workspace_write", cwd: fixtureRoot })
+    : explicitDangerBroker;
   const manager = new BrowserManager({
+    agencHome: fixtureRoot,
     policy: {
       headless: true,
       allowPrivateNetwork: true,
@@ -47,10 +58,14 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
       navigationTimeoutMs: 30_000,
     },
     idleShutdownMs: 120_000,
-    sandboxExecutionBroker: explicitDangerBroker,
+    sandboxExecutionBroker: broker,
   });
 
   beforeAll(async () => {
+    unregisterBrowser = registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "browser", spawnSurfaces: ["browser"],
+      quiesce: () => manager.closeAll(), resume: async () => {},
+    });
     // Fail loudly (not skip) if opted in but no browser is present.
     expect(
       resolveBrowserExecutable(process.env.AGENC_BROWSER_EXECUTABLE),
@@ -70,8 +85,11 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   }, 60_000);
 
+  let unregisterBrowser: (() => void) | undefined;
   afterAll(async () => {
     await manager.closeAll();
+    unregisterBrowser?.();
+    rmSync(fixtureRoot, { recursive: true, force: true });
     await new Promise<void>((r) => server.close(() => r()));
   });
 

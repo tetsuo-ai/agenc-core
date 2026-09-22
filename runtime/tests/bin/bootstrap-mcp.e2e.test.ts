@@ -243,6 +243,7 @@ async function expectLiveMcpEndToEnd(params: {
     }
     boot = await bootstrapPromise;
 
+    expect(boot.mcpManager.getConfiguredServers().map(server => server.name), JSON.stringify({ projectRoot: boot.configStore.projectRoot, warnings: boot.configStore.warnings(), mcp: boot.configStore.current().mcp_servers })).toContain(MCP_SERVER_NAME);
     pid = await readPid(params.pidFile);
     if (params.expectedSessionMarker !== undefined) {
       expect(await readSessionMarker(params.pidFile)).toBe(
@@ -415,6 +416,7 @@ timeout = 10000
     const home = await makeTempDir("agenc-live-mcp-home-");
     const workspace = await makeTempDir("agenc-live-mcp-ws-");
     const pidFile = join(home, "mcp", "live.pid");
+    await runCommand("git", ["init", "--quiet"], { cwd: workspace });
     trustProjectSync({
       agencHome: home,
       cwd: workspace,

@@ -603,6 +603,10 @@ const agencRuntimeAssets = {
   }) {
     build.onEnd(() => {
       copyYoloClassifierPrompts();
+      cpSync(resolve(runtimeSourceRoot, 'llm/providers/claude-subscription'), resolve(runtimeRoot, 'dist/claude-subscription'), {
+        recursive: true,
+        filter: (source: string) => !source.endsWith('.ts') && !source.endsWith('.pyc') && !source.includes('__pycache__'),
+      });
       compileLinuxProcessBroker();
       compileLinuxLandlockRun();
       compileLinuxSecretServiceHelper();

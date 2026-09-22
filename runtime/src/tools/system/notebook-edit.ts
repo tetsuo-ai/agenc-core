@@ -155,7 +155,7 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
           message: "notebook_path must be a non-empty string",
         };
       }
-      return checkToolPathPermission({
+      const decision = checkToolPathPermission({
         toolName: NOTEBOOK_EDIT_TOOL_NAME,
         input: { ...args, file_path: notebookPath },
         path: notebookPath,
@@ -164,6 +164,14 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         operationType: "write",
         extraWorkingDirectories: [config.workspaceRoot],
       });
+      if ("updatedInput" in decision && decision.updatedInput !== undefined) {
+        const updated = decision.updatedInput as Record<string, unknown>;
+        const notebookInput = { ...updated };
+        delete notebookInput.file_path;
+        delete notebookInput.cwd;
+        return { ...decision, updatedInput: { ...args, ...notebookInput, notebook_path: updated.file_path ?? notebookPath } };
+      }
+      return decision;
     },
     async execute(args) {
       const notebookPath = stringValue(args.notebook_path);

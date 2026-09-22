@@ -50,7 +50,7 @@ Credential values are not written into the canonical config snapshot.
 | grok | `XAI_API_KEY`, `GROK_API_KEY` (key order); `XAI_BASE_URL`, `GROK_BASE_URL` (endpoint aliases); `AGENC_XAI_STORE` and the `AGENC_XAI_*` capability switches below; `AGENC_GROK_CLI` and `AGENC_GROK_ACP_PERMISSIONS` for composer sessions |
 | OpenAI | `OPENAI_API_KEY`, `PROVIDER_CODE_API_KEY`, `PROVIDER_CODE_ACCOUNT_ID`, `PROVIDER_CODE_OAUTH_CLIENT_ID`, `PROVIDER_CODE_OAUTH_CALLBACK_PORT`, `CHATGPT_ACCOUNT_ID`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_AUTH_HEADER`, `OPENAI_AUTH_HEADER_VALUE`, `OPENAI_AUTH_SCHEME`, `OPENAI_API_FORMAT` |
 | OpenAI-compatible | `OPENAI_COMPATIBLE_API_KEY`, then `OPENAI_API_KEY`; `OPENAI_COMPATIBLE_BASE_URL`, then `OPENAI_BASE_URL`, then `OPENAI_API_BASE` |
-| Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` |
+| Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`; experimental subscription transport: `AGENC_EXPERIMENTAL_CLAUDE_SUBSCRIPTION`, `CLAUDE_CONFIG_DIR`, `CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND` |
 | LM Studio | `LMSTUDIO_API_KEY`, `LMSTUDIO_BASE_URL` |
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `AGENC_OPENROUTER_HTTP_REFERER`, `AGENC_OPENROUTER_TITLE` |
 | Groq | `GROQ_API_KEY`, `GROQ_BASE_URL` |
@@ -526,3 +526,7 @@ translated only while explicitly migrating a v1 config.
 - [config.md](config.md) TOML keys
 - [cli.md](cli.md) flags that overlap these vars
 - [daemon.md](daemon.md) socket and autostart
+
+### Experimental Claude subscription transport
+
+`AGENC_EXPERIMENTAL_CLAUDE_SUBSCRIPTION=1` selects the local official Claude CLI transport for an Anthropic session. It requires CLI-managed subscription authentication and refuses mixed API credentials. `CLAUDE_CONFIG_DIR` selects the CLI configuration directory; `CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND` selects the official CLI executable. These are opt-in experimental controls, forwarded through the daemon client environment.

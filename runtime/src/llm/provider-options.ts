@@ -9,6 +9,7 @@
  */
 
 import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
+import { claudeSubscriptionOptions } from "./providers/claude-subscription/config.js";
 import { canonicalSessionEnvironmentKeys } from "../session/environment.js";
 import {
   getGeminiProjectIdHint,
@@ -439,6 +440,11 @@ function resolveProviderCredentialAuthorityCore(
   env: ProviderEnvironment,
   candidates: ProviderCredentialCandidates = {},
 ): ResolvedProviderCredentialAuthority {
+  assertCanonicalEnvironmentIngress(env);
+  if (provider === "anthropic") {
+    const cliOptions = claudeSubscriptionOptions(requested, env);
+    if (cliOptions) return Object.freeze({ factoryOptions: cliOptions, credential: { status: "not-required" as const, mode: "none" as const, label: "Claude CLI subscription (experimental)" } });
+  }
   if (
     provider === "amazon-bedrock" &&
     nonEmpty(requested.apiKey) !== undefined

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+runtime_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+node_executable="${AGENC_NODE_BINARY:-node}"
+if [[ -z "${AGENC_NODE_BINARY:-}" && -x "$HOME/.local/node26/bin/node" ]]; then
+  node_executable="$HOME/.local/node26/bin/node"
+fi
+export AGENC_HOME="${AGENC_CLAUDE_HOME:-$HOME/.agenc-claude-subscription}"
+export AGENC_AUTH_BACKEND=local
+export AGENC_PROVIDER=anthropic
+export AGENC_MODEL="${AGENC_CLAUDE_MODEL:-claude-sonnet-5}"
+export AGENC_EXPERIMENTAL_CLAUDE_SUBSCRIPTION="${AGENC_EXPERIMENTAL_CLAUDE_SUBSCRIPTION:-1}"
+exec "$node_executable" "$runtime_dir/dist/bin/agenc.js" "$@"

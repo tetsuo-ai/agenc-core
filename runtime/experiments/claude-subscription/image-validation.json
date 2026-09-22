@@ -1,0 +1,201 @@
+{
+  "date": "2026-09-22T17:35:01.182Z",
+  "passed": true,
+  "route": "anthropic/claude-sonnet-5 via experimental official CLI transport",
+  "exitCode": 0,
+  "toolCalls": [
+    {
+      "callId": "toolu_011udTrLi9mCCHd81Lz4PByL",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"input.txt\"}"
+    },
+    {
+      "callId": "toolu_015WJ1mDajDjXFuPXW9YVnwD",
+      "toolName": "exec_command",
+      "args": "{\"cmd\":\"printf CLAUDE_EXEC_OK\"}"
+    },
+    {
+      "callId": "toolu_013SwmiiCnZgx6oSKkTD923q",
+      "toolName": "Write",
+      "args": "{\"file_path\":\"output.txt\",\"content\":\"0a648e45-0167-4e65-930c-ae38157cb490\\n\"}"
+    },
+    {
+      "callId": "toolu_0147VLstSmiU5n6syuSmdepE",
+      "toolName": "Write",
+      "args": "{\"file_path\":\"image-code.txt\",\"content\":\"VISION-AB4B29C1\\n\"}"
+    },
+    {
+      "callId": "toolu_019p3pjmNEDqBmNdLodKsGUj",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"output.txt\"}"
+    },
+    {
+      "callId": "toolu_01TQhGfgaJ4JozAqYzG9GKxS",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"input.txt\"}"
+    },
+    {
+      "callId": "toolu_01P476NdSDyvVexPAeom1rbu",
+      "toolName": "exec_command",
+      "args": "{\"cmd\":\"printf CLAUDE_EXEC_OK\"}"
+    },
+    {
+      "callId": "toolu_01C3i9GCCJjYoxCevMMzTmev",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"output.txt\"}"
+    }
+  ],
+  "toolResults": [
+    {
+      "callId": "toolu_011udTrLi9mCCHd81Lz4PByL",
+      "toolName": "FileRead",
+      "result": "1→0a648e45-0167-4e65-930c-ae38157cb490\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "input.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 46.76599300000089
+    },
+    {
+      "callId": "toolu_015WJ1mDajDjXFuPXW9YVnwD",
+      "toolName": "exec_command",
+      "result": "CLAUDE_EXEC_OK\n\n[exec exit_code=0 wall_time=0.1620s tokens=4]",
+      "isError": false,
+      "metadata": {
+        "command": "printf CLAUDE_EXEC_OK",
+        "cwd": "/tmp/agt-QrtFcZ/project",
+        "tty": false,
+        "exitCode": 0,
+        "stdout": "CLAUDE_EXEC_OK",
+        "stderr": "",
+        "timedOut": false,
+        "truncated": false,
+        "durationMs": 162
+      },
+      "durationMs": 182.04249999999956
+    },
+    {
+      "callId": "toolu_013SwmiiCnZgx6oSKkTD923q",
+      "toolName": "Write",
+      "result": "File created successfully at: output.txt",
+      "isError": false,
+      "metadata": {
+        "ui": {
+          "kind": "file_mutation",
+          "filePath": "output.txt",
+          "operation": "create",
+          "additions": 1,
+          "removals": 0
+        }
+      },
+      "durationMs": 72.66816599999947
+    },
+    {
+      "callId": "toolu_0147VLstSmiU5n6syuSmdepE",
+      "toolName": "Write",
+      "result": "File created successfully at: image-code.txt",
+      "isError": false,
+      "metadata": {
+        "ui": {
+          "kind": "file_mutation",
+          "filePath": "image-code.txt",
+          "operation": "create",
+          "additions": 1,
+          "removals": 0
+        }
+      },
+      "durationMs": 41.96451299999899
+    },
+    {
+      "callId": "toolu_019p3pjmNEDqBmNdLodKsGUj",
+      "toolName": "FileRead",
+      "result": "1→0a648e45-0167-4e65-930c-ae38157cb490\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "output.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 19.11090200000035
+    },
+    {
+      "callId": "toolu_01TQhGfgaJ4JozAqYzG9GKxS",
+      "toolName": "FileRead",
+      "result": "1→0a648e45-0167-4e65-930c-ae38157cb490\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "input.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 27.819798999997147
+    },
+    {
+      "callId": "toolu_01P476NdSDyvVexPAeom1rbu",
+      "toolName": "exec_command",
+      "result": "CLAUDE_EXEC_OK\n\n[exec exit_code=0 wall_time=0.1580s tokens=4]",
+      "isError": false,
+      "metadata": {
+        "command": "printf CLAUDE_EXEC_OK",
+        "cwd": "/tmp/agt-QrtFcZ/project",
+        "tty": false,
+        "exitCode": 0,
+        "stdout": "CLAUDE_EXEC_OK",
+        "stderr": "",
+        "timedOut": false,
+        "truncated": false,
+        "durationMs": 158
+      },
+      "durationMs": 170.12094499999512
+    },
+    {
+      "callId": "toolu_01C3i9GCCJjYoxCevMMzTmev",
+      "toolName": "FileRead",
+      "result": "1→0a648e45-0167-4e65-930c-ae38157cb490\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "output.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 37.87333199999557
+    }
+  ],
+  "finalOutput": "Checklist:\n\n1. **output.txt contains the input nonce** — verified. FileRead of output.txt shows `0a648e45-0167-4e65-930c-ae38157cb490` followed by a newline, matching input.txt's nonce exactly.\n2. **exec_command produced CLAUDE_EXEC_OK** — verified. `printf CLAUDE_EXEC_OK` returned stdout `CLAUDE_EXEC_OK` with exit_code=0.\n\nAdditional evidence: image-code.txt was written with the code observed visually in the attached image: `VISION-AB4B29C1`.\n- [x] output.txt contains the input nonce — FileRead of input.txt shows nonce `0a648e45-0167-4e65-930c-ae38157cb490`; FileRead of output.txt shows the identical line `0a648e45-0167-4e65-930c-ae38157cb490` followed by a newline.\n- [x] exec_command produced CLAUDE_EXEC_OK — ran `printf CLAUDE_EXEC_OK`, stdout was `CLAUDE_EXEC_OK`, exit_code=0.\n\nAdditional evidence (not a formal checklist item per task instructions): image-code.txt was written with the code observed visually in the attached image: `VISION-AB4B29C1`, plus a trailing newline, using Write only (image file was not read with tools).\n\nBoth acceptance items re-run and verified successfully.\n",
+  "fileContentVerified": true,
+  "attachmentCodeVerified": "VISION-AB4B29C1",
+  "attachmentRoute": "CLI --image through real daemon",
+  "completionGate": [
+    {
+      "turnId": "sub-conv-mucyedoa-3",
+      "round": 1,
+      "maxRounds": 3,
+      "outcome": "injected",
+      "reason": "initial",
+      "toolCallsSinceInjection": 0
+    },
+    {
+      "turnId": "sub-conv-mucyedoa-3",
+      "round": 1,
+      "maxRounds": 3,
+      "outcome": "verified",
+      "reason": "verified_with_tools",
+      "toolCallsSinceInjection": 3
+    }
+  ],
+  "note": "Real daemon and Session/runTurn; isolated workspace-write sandbox, approval policy never. Subscription billing meter was not inspected."
+}

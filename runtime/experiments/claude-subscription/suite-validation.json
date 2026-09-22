@@ -1,0 +1,933 @@
+{
+  "all-runtime-captured": {
+    "success": false,
+    "numTotalTests": 26873,
+    "numPassedTests": 26845,
+    "numFailedTests": 26,
+    "numPendingTests": 2,
+    "failedCases": [
+      {
+        "file": "tests/hermetic-env.test.ts",
+        "test": "suite-level hermetic env (vitest.setup.ts) covers canonical provider and subprocess secret registries",
+        "errors": [
+          "AssertionError: expected [ 'OLLAMA_API_KEY', 'OLLAMA_API_KEY' ] to deeply equal []\n    at /home/paul/agenc-claude-subscription/runtime/tests/hermetic-env.test.ts:94:61\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2955:64"
+        ]
+      },
+      {
+        "file": "tests/audio/whisper.test.ts",
+        "test": "Whisper installation boundary restarts its patience on every chunk, so a slow but live download survives",
+        "errors": [
+          "TypeError: Invalid state: Controller is already closed\n    at ReadableStreamDefaultController.enqueue (node:internal/webstreams/readablestream:1162:13)\n    at deliver (/home/paul/agenc-claude-subscription/runtime/tests/audio/whisper.test.ts:104:38)\n    at deliver (/home/paul/agenc-claude-subscription/runtime/tests/audio/whisper.test.ts:110:35)\n    at /home/paul/agenc-claude-subscription/runtime/tests/audio/whisper.test.ts:147:9\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/benchmarks/fuzzy-search-benchmark.contract.test.ts",
+        "test": "D2 fuzzy benchmark contract runs the quick matcher and persistent-index workers through the public script",
+        "errors": [
+          "Error: Command failed: /usr/local/bin/node benchmarks/fuzzy-search/run.mjs --quick --check\nfile:///home/paul/agenc-claude-subscription/runtime/benchmarks/fuzzy-search/run.mjs:436\n      throw new Error(\n            ^\n\nError: fuzzy benchmark refuses dirty tracked files in production tree\n    at assertGitPathIsClean (file:///home/paul/agenc-claude-subscription/runtime/benchmarks/fuzzy-search/run.mjs:436:13)\n    at assertBenchmarkInputsAreClean (file:///home/paul/agenc-claude-subscription/runtime/benchmarks/fuzzy-search/run.mjs:412:3)\n    at main (file:///home/paul/agenc-claude-subscription/runtime/benchmarks/fuzzy-search/run.mjs:43:3)\n    at file:///home/paul/agenc-claude-subscription/runtime/benchmarks/fuzzy-search/run.mjs:37:9\n    at ModuleJob.run (node:internal/modules/esm/module_job:569:25)\n    at async node:internal/modules/esm/loader:650:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)\n\nNode.js v26.5.0\n\n    at genericNodeError (node:internal/errors:999:15)\n    at wrappedFn (node:internal/errors:544:14)\n    at ChildProcess.exithandler (node:child_process:417:12)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Process.ChildProcess._handle.onexit (node:internal/child_process:305:5)"
+        ]
+      },
+      {
+        "file": "tests/app-server/command-exec.contract.test.ts",
+        "test": "AgenC daemon command exec runs a byte-preserving PTY-backed session and resizes it",
+        "errors": [
+          "Error: timed out waiting for command exec notification\n    at waitForNotification (/home/paul/agenc-claude-subscription/runtime/tests/app-server/command-exec.contract.test.ts:65:9)\n    at /home/paul/agenc-claude-subscription/runtime/tests/app-server/command-exec.contract.test.ts:620:5\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/app-server/command-exec.contract.test.ts",
+        "test": "AgenC daemon command exec drives a live PTY command through JSON-RPC while start is pending",
+        "errors": [
+          "Error: timed out waiting for command exec notification\n    at waitForNotification (/home/paul/agenc-claude-subscription/runtime/tests/app-server/command-exec.contract.test.ts:65:9)\n    at /home/paul/agenc-claude-subscription/runtime/tests/app-server/command-exec.contract.test.ts:705:7\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/app-server/command-exec.contract.test.ts",
+        "test": "AgenC daemon command exec request.cancel terminates a PTY foreground child process",
+        "errors": [
+          "Error: expected { jsonrpc: '2.0', \u2026(2) } to match object { result: {} }\n(6 matching properties omitted from actual)\n    at Assertion.__VITEST_RESOLVES__ (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/expect/dist/index.js:1710:17)\n    at Assertion.propertyGetter (file:///home/paul/agenc-claude-subscription/node_modules/chai/index.js:1570:27)\n    at Reflect.get (<anonymous>)\n    at Object.proxyGetter [as get] (file:///home/paul/agenc-claude-subscription/node_modules/chai/index.js:1659:22)\n    at /home/paul/agenc-claude-subscription/runtime/tests/app-server/command-exec.contract.test.ts:800:10\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/bin/bootstrap.session-ingress.test.ts",
+        "test": "bootstrapLocalRuntimeSession session-ingress startup wiring emits a visible cron storage warning when persisted jobs cannot be restored",
+        "errors": [
+          "AssertionError: expected [] to deep equally contain ObjectContaining{\u2026}\n    at /home/paul/agenc-claude-subscription/runtime/tests/bin/bootstrap.session-ingress.test.ts:433:22\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/config/env-documentation-coverage.architecture.test.ts",
+        "test": "environment reference coverage documents every production env name consumed by runtime authorities",
+        "errors": [
+          "AssertionError: ../docs/reference/env.md: expected [ \u2026(3) ] to deeply equal []\n    at /home/paul/agenc-claude-subscription/runtime/tests/config/env-documentation-coverage.architecture.test.ts:137:61\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2955:64"
+        ]
+      },
+      {
+        "file": "tests/fnd/benchmark-baselines.contract.test.ts",
+        "test": "FND benchmark baseline contract binds every measured point to its generated fixture and production source",
+        "errors": [
+          "AssertionError: expected [Function] to not throw an error but 'Error: current production module clos\u2026' was thrown\n    at Proxy.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/expect/dist/index.js:1552:16)\n    at Proxy.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file:///home/paul/agenc-claude-subscription/node_modules/chai/index.js:1700:25)\n    at /home/paul/agenc-claude-subscription/runtime/tests/fnd/benchmark-baselines.contract.test.ts:154:11\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20"
+        ]
+      },
+      {
+        "file": "tests/pty/loadPty.test.ts",
+        "test": "loadPty loads the required node-pty module",
+        "errors": [
+          "Error: PTY support is required but node-pty could not be loaded under v26.5.0. Run npm install in the runtime package and ensure native build tools are available. Failed to load native module: pty.node, checked: build/Release, build/Debug, prebuilds/linux-x64: Error: Cannot find module './prebuilds/linux-x64//pty.node'\nRequire stack:\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/utils.js\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/index.js\n- /home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts\n    at loadPtyFrom (/home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts:25:11)\n    at loadPty (/home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts:32:10)\n    at /home/paul/agenc-claude-subscription/runtime/tests/pty/loadPty.test.ts:7:12\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/prompt-race-safety.contract.test.ts",
+        "test": "agenc-sdk prompt race safety forwards the exact public session params through agent.create",
+        "errors": [
+          "AssertionError: expected { \u2026(6) } to deeply equal { \u2026(5) }\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/prompt-race-safety.contract.test.ts:615:39\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/protocol-drift.contract.test.ts",
+        "test": "agenc-sdk protocol mirror exactly matches every wire request, result and client signature",
+        "errors": [
+          "Error: STACK_TRACE_ERROR\n    at task (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1784:27)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1817:16)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1563:28)\n    at chain (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:599:14)\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/protocol-drift.contract.test.ts:77:3\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:40\n    at runWithSuite (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2258:8)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:10)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1893:54)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/sdk-wire-parity.test.ts",
+        "test": "SDK wire parity compiler rejects optional, required and nested producer drift until regeneration",
+        "errors": [
+          "Error: STACK_TRACE_ERROR\n    at task (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1784:27)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1817:16)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1563:28)\n    at chain (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:599:14)\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/sdk-wire-parity.test.ts:15:3\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:40\n    at runWithSuite (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2258:8)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:10)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1893:54)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/sdk-wire-parity.test.ts",
+        "test": "SDK wire parity compiler type-checks helper defaults and rejects missing or invalid wire payloads",
+        "errors": [
+          "Error: STACK_TRACE_ERROR\n    at task (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1784:27)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1817:16)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1563:28)\n    at chain (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:599:14)\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/sdk-wire-parity.test.ts:55:3\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:40\n    at runWithSuite (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2258:8)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:10)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1893:54)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/socket-protocol-errors.contract.test.ts",
+        "test": "SDK socket protocol failures still rejects incomplete-buffer overflow and closes once",
+        "errors": [
+          "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/socket-protocol-errors.contract.test.ts:171:44\n    at Timeout.checkCallback (file:///home/paul/agenc-claude-subscription/node_modules/vitest/dist/chunks/test.DNmyFkvJ.js:3383:20)\n    at listOnTimeout (node:internal/timers:635:17)\n    at processTimers (node:internal/timers:571:7)"
+        ]
+      },
+      {
+        "file": "tests/tools/streaming-executor.test.ts",
+        "test": "StreamingToolExecutor (I-65 + I-41) interrupted executor abort terminates an active exec_command PTY child",
+        "errors": [
+          "AssertionError: expected false to be true // Object.is equality\n    at /home/paul/agenc-claude-subscription/runtime/tests/tools/streaming-executor.test.ts:428:51\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/unified-exec/process-manager.test.ts",
+        "test": "UnifiedExecProcessManager persists PTY shell state across write_stdin calls",
+        "errors": [
+          "UnifiedExecError: PTY support is required but node-pty could not be loaded under v26.5.0. Run npm install in the runtime package and ensure native build tools are available. Failed to load native module: pty.node, checked: build/Release, build/Debug, prebuilds/linux-x64: Error: Cannot find module './prebuilds/linux-x64//pty.node'\nRequire stack:\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/utils.js\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/index.js\n- /home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts\n    at UnifiedExecProcessManager.spawnProcess (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:1379:15)\n    at UnifiedExecProcessManager.execCommand (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:698:19)\n    at /home/paul/agenc-claude-subscription/runtime/tests/unified-exec/process-manager.test.ts:621:23"
+        ]
+      },
+      {
+        "file": "tests/unified-exec/process-manager.test.ts",
+        "test": "UnifiedExecProcessManager aborting a yielded PTY poll terminates the foreground child process",
+        "errors": [
+          "UnifiedExecError: PTY support is required but node-pty could not be loaded under v26.5.0. Run npm install in the runtime package and ensure native build tools are available. Failed to load native module: pty.node, checked: build/Release, build/Debug, prebuilds/linux-x64: Error: Cannot find module './prebuilds/linux-x64//pty.node'\nRequire stack:\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/utils.js\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/index.js\n- /home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts\n    at UnifiedExecProcessManager.spawnProcess (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:1379:15)\n    at UnifiedExecProcessManager.execCommand (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:698:19)\n    at /home/paul/agenc-claude-subscription/runtime/tests/unified-exec/process-manager.test.ts:670:25"
+        ]
+      },
+      {
+        "file": "tests/unified-exec/process-manager.test.ts",
+        "test": "UnifiedExecProcessManager rejects restricted write_stdin for a non-sandboxed PTY session",
+        "errors": [
+          "UnifiedExecError: PTY support is required but node-pty could not be loaded under v26.5.0. Run npm install in the runtime package and ensure native build tools are available. Failed to load native module: pty.node, checked: build/Release, build/Debug, prebuilds/linux-x64: Error: Cannot find module './prebuilds/linux-x64//pty.node'\nRequire stack:\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/utils.js\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/index.js\n- /home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts\n    at UnifiedExecProcessManager.spawnProcess (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:1379:15)\n    at UnifiedExecProcessManager.execCommand (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:698:19)\n    at /home/paul/agenc-claude-subscription/runtime/tests/unified-exec/process-manager.test.ts:711:23"
+        ]
+      },
+      {
+        "file": "tests/unified-exec/process-manager.test.ts",
+        "test": "UnifiedExecProcessManager allows restricted write_stdin for a compatible sandboxed PTY session",
+        "errors": [
+          "UnifiedExecError: PTY support is required but node-pty could not be loaded under v26.5.0. Run npm install in the runtime package and ensure native build tools are available. Failed to load native module: pty.node, checked: build/Release, build/Debug, prebuilds/linux-x64: Error: Cannot find module './prebuilds/linux-x64//pty.node'\nRequire stack:\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/utils.js\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/index.js\n- /home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts\n    at UnifiedExecProcessManager.spawnProcess (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:1379:15)\n    at UnifiedExecProcessManager.execCommand (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:698:19)\n    at /home/paul/agenc-claude-subscription/runtime/tests/unified-exec/process-manager.test.ts:906:23"
+        ]
+      },
+      {
+        "file": "tests/unified-exec/process-manager.test.ts",
+        "test": "UnifiedExecProcessManager respects explicit timeoutMs for tty calls (default does not apply)",
+        "errors": [
+          "UnifiedExecError: PTY support is required but node-pty could not be loaded under v26.5.0. Run npm install in the runtime package and ensure native build tools are available. Failed to load native module: pty.node, checked: build/Release, build/Debug, prebuilds/linux-x64: Error: Cannot find module './prebuilds/linux-x64//pty.node'\nRequire stack:\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/utils.js\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/index.js\n- /home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts\n    at UnifiedExecProcessManager.spawnProcess (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:1379:15)\n    at UnifiedExecProcessManager.execCommand (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:698:19)\n    at /home/paul/agenc-claude-subscription/runtime/tests/unified-exec/process-manager.test.ts:987:23"
+        ]
+      },
+      {
+        "file": "tests/unified-exec/process-manager.test.ts",
+        "test": "UnifiedExecProcessManager closeAll terminates live PTY sessions",
+        "errors": [
+          "UnifiedExecError: PTY support is required but node-pty could not be loaded under v26.5.0. Run npm install in the runtime package and ensure native build tools are available. Failed to load native module: pty.node, checked: build/Release, build/Debug, prebuilds/linux-x64: Error: Cannot find module './prebuilds/linux-x64//pty.node'\nRequire stack:\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/utils.js\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/index.js\n- /home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts\n    at UnifiedExecProcessManager.spawnProcess (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:1379:15)\n    at UnifiedExecProcessManager.execCommand (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:698:19)\n    at /home/paul/agenc-claude-subscription/runtime/tests/unified-exec/process-manager.test.ts:1008:21"
+        ]
+      },
+      {
+        "file": "tests/unified-exec/process-ownership.test.ts",
+        "test": "process ownership (TOOL-01) manager denies write_stdin and kill across owners on a live process",
+        "errors": [
+          "UnifiedExecError: PTY support is required but node-pty could not be loaded under v26.5.0. Run npm install in the runtime package and ensure native build tools are available. Failed to load native module: pty.node, checked: build/Release, build/Debug, prebuilds/linux-x64: Error: Cannot find module './prebuilds/linux-x64//pty.node'\nRequire stack:\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/utils.js\n- /home/paul/agenc-claude-subscription/node_modules/node-pty/lib/index.js\n- /home/paul/agenc-claude-subscription/runtime/src/pty/loadPty.ts\n    at UnifiedExecProcessManager.spawnProcess (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:1379:15)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at UnifiedExecProcessManager.execCommand (/home/paul/agenc-claude-subscription/runtime/src/unified-exec/process-manager.ts:698:19)\n    at /home/paul/agenc-claude-subscription/runtime/tests/unified-exec/process-ownership.test.ts:69:23"
+        ]
+      },
+      {
+        "file": "tests/services/extractMemories/tool-history-batches.test.ts",
+        "test": "memory extraction tool history batches and persisted cursor survive lane reinitialization without losing tool outcomes",
+        "errors": [
+          "AssertionError: expected [] to deeply equal [ 14, 15, 2 ]\n    at /home/paul/agenc-claude-subscription/runtime/tests/services/extractMemories/tool-history-batches.test.ts:88:77\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/services/extractMemories/tool-history-batches.test.ts",
+        "test": "memory extraction tool history retries then drops the same complete failed batch without consuming the next exchange",
+        "errors": [
+          "AssertionError: expected 12 to be +0 // Object.is equality\n    at /home/paul/agenc-claude-subscription/runtime/tests/services/extractMemories/tool-history-batches.test.ts:107:90\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/tools/system/exec-command.test.ts",
+        "test": "exec_command tool returns a session id for live PTY commands and write_stdin can resume it",
+        "errors": [
+          "AssertionError: expected true to be undefined\n    at /home/paul/agenc-claude-subscription/runtime/tests/tools/system/exec-command.test.ts:807:33\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      }
+    ],
+    "skippedCases": [
+      {
+        "file": "tests/tools/bash-macos-read-only.test.ts",
+        "test": "macOS diagnostic commands collects real macOS diagnostics with the admitted bounded invocations"
+      },
+      {
+        "file": "tests/permissions/trust/project-trust.test.ts",
+        "test": "project trust store a project trusted under one spelling is trusted under every spelling of the same directory"
+      }
+    ]
+  },
+  "all-failed-retry": {
+    "success": false,
+    "numTotalTests": 353,
+    "numPassedTests": 346,
+    "numFailedTests": 7,
+    "numPendingTests": 0,
+    "failedCases": [
+      {
+        "file": "tests/bin/bootstrap.session-ingress.test.ts",
+        "test": "bootstrapLocalRuntimeSession session-ingress startup wiring emits a visible cron storage warning when persisted jobs cannot be restored",
+        "errors": [
+          "AssertionError: expected [] to deep equally contain ObjectContaining{\u2026}\n    at /home/paul/agenc-claude-subscription/runtime/tests/bin/bootstrap.session-ingress.test.ts:433:22\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/prompt-race-safety.contract.test.ts",
+        "test": "agenc-sdk prompt race safety forwards the exact public session params through agent.create",
+        "errors": [
+          "AssertionError: expected { \u2026(6) } to deeply equal { \u2026(5) }\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/prompt-race-safety.contract.test.ts:615:39\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/protocol-drift.contract.test.ts",
+        "test": "agenc-sdk protocol mirror exactly matches every wire request, result and client signature",
+        "errors": [
+          "Error: STACK_TRACE_ERROR\n    at task (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1784:27)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1817:16)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1563:28)\n    at chain (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:599:14)\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/protocol-drift.contract.test.ts:77:3\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:40\n    at runWithSuite (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2258:8)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:10)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1893:54)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/sdk-wire-parity.test.ts",
+        "test": "SDK wire parity compiler rejects optional, required and nested producer drift until regeneration",
+        "errors": [
+          "Error: STACK_TRACE_ERROR\n    at task (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1784:27)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1817:16)\n    at Object.<anonymous> (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1563:28)\n    at chain (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:599:14)\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/sdk-wire-parity.test.ts:15:3\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:40\n    at runWithSuite (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2258:8)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1889:10)\n    at Object.collect (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1893:54)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)"
+        ]
+      },
+      {
+        "file": "tests/sdk-package/socket-protocol-errors.contract.test.ts",
+        "test": "SDK socket protocol failures still rejects incomplete-buffer overflow and closes once",
+        "errors": [
+          "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times\n    at /home/paul/agenc-claude-subscription/runtime/tests/sdk-package/socket-protocol-errors.contract.test.ts:171:44\n    at Timeout.checkCallback (file:///home/paul/agenc-claude-subscription/node_modules/vitest/dist/chunks/test.DNmyFkvJ.js:3383:20)\n    at listOnTimeout (node:internal/timers:635:17)\n    at processTimers (node:internal/timers:571:7)"
+        ]
+      },
+      {
+        "file": "tests/services/extractMemories/tool-history-batches.test.ts",
+        "test": "memory extraction tool history batches and persisted cursor survive lane reinitialization without losing tool outcomes",
+        "errors": [
+          "AssertionError: expected [] to deeply equal [ 14, 15, 2 ]\n    at /home/paul/agenc-claude-subscription/runtime/tests/services/extractMemories/tool-history-batches.test.ts:88:77\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/services/extractMemories/tool-history-batches.test.ts",
+        "test": "memory extraction tool history retries then drops the same complete failed batch without consuming the next exchange",
+        "errors": [
+          "AssertionError: expected 12 to be +0 // Object.is equality\n    at /home/paul/agenc-claude-subscription/runtime/tests/services/extractMemories/tool-history-batches.test.ts:107:90\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      }
+    ],
+    "skippedCases": []
+  },
+  "broad-tests": {
+    "success": false,
+    "numTotalTests": 5898,
+    "numPassedTests": 5894,
+    "numFailedTests": 3,
+    "numPendingTests": 1,
+    "failedCases": [
+      {
+        "file": "tests/bin/bootstrap-mcp.e2e.test.ts",
+        "test": "bootstrapLocalRuntimeSession live MCP integration starts a real stdio MCP server from project config.toml in yolo mode",
+        "errors": [
+          "Error: ENOENT: no such file or directory, open '/tmp/agv-6OA3bn/t-715381-n2ufvM/agenc-live-mcp-home-1Nif0i/mcp/live.pid'\n    at open (node:internal/fs/promises:1360:25)\n    at readFile (node:internal/fs/promises:2149:14)\n    at readPid (/home/paul/agenc-claude-subscription/runtime/tests/bin/bootstrap-mcp.e2e.test.ts:43:15)\n    at expectLiveMcpEndToEnd (/home/paul/agenc-claude-subscription/runtime/tests/bin/bootstrap-mcp.e2e.test.ts:246:11)\n    at /home/paul/agenc-claude-subscription/runtime/tests/bin/bootstrap-mcp.e2e.test.ts:447:5\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/bin/model-facing-tools.test.ts",
+        "test": "model-facing tools allows subagent spawn_agent and emits a begin/end lifecycle pair",
+        "errors": [
+          "AssertionError: expected true not to be true // Object.is equality\n    at /home/paul/agenc-claude-subscription/runtime/tests/bin/model-facing-tools.test.ts:3975:34"
+        ]
+      },
+      {
+        "file": "tests/session/run-turn.test.ts",
+        "test": "daemon-owned scheduled turns recurring work does not overlap while an earlier attempt is still active",
+        "errors": [
+          "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times\n    at /home/paul/agenc-claude-subscription/runtime/tests/session/run-turn.test.ts:1143:25\n    at withCronSessions (/home/paul/agenc-claude-subscription/runtime/tests/session/run-turn.test.ts:812:7)\n    at /home/paul/agenc-claude-subscription/runtime/tests/session/run-turn.test.ts:1132:5\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      }
+    ],
+    "skippedCases": [
+      {
+        "file": "tests/tools/bash-macos-read-only.test.ts",
+        "test": "macOS diagnostic commands collects real macOS diagnostics with the admitted bounded invocations"
+      }
+    ]
+  },
+  "failure-recheck": {
+    "success": false,
+    "numTotalTests": 252,
+    "numPassedTests": 250,
+    "numFailedTests": 2,
+    "numPendingTests": 0,
+    "failedCases": [
+      {
+        "file": "tests/bin/bootstrap-mcp.e2e.test.ts",
+        "test": "bootstrapLocalRuntimeSession live MCP integration starts a real stdio MCP server from project config.toml in yolo mode",
+        "errors": [
+          "Error: ENOENT: no such file or directory, open '/tmp/agv-lpqQYt/t-742861-Dnv3sa/agenc-live-mcp-home-fg4XGX/mcp/live.pid'\n    at open (node:internal/fs/promises:1360:25)\n    at readFile (node:internal/fs/promises:2149:14)\n    at readPid (/home/paul/agenc-claude-subscription/runtime/tests/bin/bootstrap-mcp.e2e.test.ts:43:15)\n    at expectLiveMcpEndToEnd (/home/paul/agenc-claude-subscription/runtime/tests/bin/bootstrap-mcp.e2e.test.ts:246:11)\n    at /home/paul/agenc-claude-subscription/runtime/tests/bin/bootstrap-mcp.e2e.test.ts:447:5\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "tests/bin/model-facing-tools.test.ts",
+        "test": "model-facing tools allows subagent spawn_agent and emits a begin/end lifecycle pair",
+        "errors": [
+          "AssertionError: expected true not to be true // Object.is equality\n    at /home/paul/agenc-claude-subscription/runtime/tests/bin/model-facing-tools.test.ts:3975:34"
+        ]
+      }
+    ],
+    "skippedCases": []
+  },
+  "fixtures-fixed": {
+    "success": true,
+    "numTotalTests": 110,
+    "numPassedTests": 110,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "failedCases": [],
+    "skippedCases": []
+  },
+  "desktop-tests": {
+    "success": false,
+    "numTotalTests": 2945,
+    "numPassedTests": 2874,
+    "numFailedTests": 47,
+    "numPendingTests": 24,
+    "failedCases": [
+      {
+        "file": "tests/account-login-behavior.test.ts",
+        "test": "handles a fresh Desktop sign-in with managed model access=true",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/account-login-behavior.test.ts",
+        "test": "handles a fresh Desktop sign-in with managed model access=false",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/advanced-settings-behavior.test.ts",
+        "test": "runs compact Advanced settings actions and failures in isolated Electron",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/appearance-defaults-behavior.test.ts",
+        "test": "applies fresh appearance defaults and restores saved choices with native Electron zoom",
+        "errors": [
+          "Error: Appearance defaults exited null (SIGTRAP): [749120:0922/194341.387063:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/appearance-defaults-behavior.test.ts:152:21)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/assistant-opening-narration-behavior.test.ts",
+        "test": "keeps the streamed opening note above the live ticker after later tool events, commit, and hydration",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/composer-model-input-behavior.test.ts",
+        "test": "keeps a new chat ready for native typing after model selection while defaults are saving",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/composer-permission-motion.test.ts",
+        "test": "animates the real permission selector without a composer border, checkmarks or resting fill",
+        "errors": [
+          "Error: [749475:0922/194344.068061:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/composer-permission-motion.test.ts:98:96)\n    at ChildProcess.emit (node:events:509:20)\n    at Process.ChildProcess._handle.onexit (node:internal/child_process:294:12)"
+        ]
+      },
+      {
+        "file": "tests/connections-settings-behavior.test.ts",
+        "test": "keeps browser grants explicit through enable, QR, approval and revocation in isolated Electron",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/desktop-controls-native.test.ts",
+        "test": "drives real Desktop UI, browser tabs and PTY through private MCP in an isolated Electron app",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at runOnEndCallbacks (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1315:45)\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/first-run-polish-behavior.test.ts",
+        "test": "restores the original handwritten setup appearance without bypassing runtime readiness",
+        "errors": [
+          "Error: Restored setup harness exited null\n[749329:0922/194343.193192:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/first-run-polish-behavior.test.ts:111:99)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/git-settings-behavior.test.ts",
+        "test": "refreshes Git honestly, preserves drafts, and confirms saves against mocked readback",
+        "errors": [
+          "Error: Git fixture exited null: [747705:0922/194328.975638:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/git-settings-behavior.test.ts:104:101)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/git-workflow-settings-behavior.test.ts",
+        "test": "keeps project Git edits explicit, revision guarded, isolated, and usable in compact Settings",
+        "errors": [
+          "Error: Git workflow fixture exited null (SIGTRAP): [727477:0922/194105.638500:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/git-workflow-settings-behavior.test.ts:207:109)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/input-focus-behavior.test.ts",
+        "test": "keeps text field focus neutral across themes and gives workspace search one usable focus ring",
+        "errors": [
+          "Error: Input focus fixture exited null: [739116:0922/194234.523486:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/input-focus-behavior.test.ts:263:97)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/interface-colors-behavior.test.ts",
+        "test": "selects sidebar/chat colors through Appearance in the real app, restores them, and follows the system theme",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/kimi-provider.test.ts",
+        "test": "native Kimi (Moonshot) provider delegates native discovery to Core before loading a key in IPC",
+        "errors": [
+          "AssertionError: expected -1 to be greater than 44492\n    at /home/paul/agenc-desktop/tests/kimi-provider.test.ts:308:21\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)\n    at runTest (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at runSuite (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)\n    at runSuite (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)"
+        ]
+      },
+      {
+        "file": "tests/local-model-first-run-behavior.test.ts",
+        "test": "sets up a local model from a credential-free first run and keeps failed choices retryable",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/mcp-connection-behavior.test.ts",
+        "test": "connects, cancels, disconnects and configures OAuth in the real Electron plugin surface",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/mcp-editor-behavior.test.ts",
+        "test": "keeps MCP lists and dynamic editors readable while preserving safe configuration changes",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/message-layout-behavior.test.ts",
+        "test": "Chat message rendered layout wraps long prose while code and tables scroll only inside their own blocks",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/message-layout-behavior.test.ts",
+        "test": "Chat message rendered layout does not keep a finished entrance animation for every message",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/modal-layout-behavior.test.ts",
+        "test": "centers modal families in the full viewport with blurred backdrops without moving anchored menus",
+        "errors": [
+          "Error: [756242:0922/194425.852826:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/modal-layout-behavior.test.ts:64:165)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/overflow-dismissal-behavior.test.ts",
+        "test": "dismisses queue and plugin-detail overflow menus without swallowing outside or inside actions",
+        "errors": [
+          "Error: Overflow fixture exited null: [752793:0922/194356.392531:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/overflow-dismissal-behavior.test.ts:73:97)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/plugin-installation-actions-behavior.test.ts",
+        "test": "uses installed identity for mutations and catalog identity for installation in Electron",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/plugin-interface-behavior.test.ts",
+        "test": "keeps plugin and skill dialogs compact, neutral, keyboard accessible, and usable on narrow screens",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/plugin-marketplace-focus-behavior.test.ts",
+        "test": "gives marketplace fields one neutral focus border and Browse its own keyboard focus",
+        "errors": [
+          "Error: Marketplace focus fixture exited null: [747597:0922/194328.487200:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/plugin-marketplace-focus-behavior.test.ts:120:97)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/plugin-menu-behavior.test.ts",
+        "test": "opens usable plugin management and dismisses row menus without losing clicks",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/plugin-search-expansion-behavior.test.ts",
+        "test": "expands manager search smoothly leftward without losing queries or crowding tabs",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/plugin-search-focus-behavior.test.ts",
+        "test": "uses one neutral search focus ring in Plugins, Skills and the compact manager",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/prompt-navigation-rail-behavior.test.ts",
+        "test": "Prompt navigation rail rendered behavior preserves navigation, keyboard access, scrubbing, overflow and neutral themes in Electron",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/protocol-contract-drift.test.ts",
+        "test": "daemon protocol contract drift pins the bounded Whisper extension without exposing it as a public method",
+        "errors": [
+          "AssertionError: expected '878f0d0987bc5551581300582038e3927e0bf\u2026' to be 'b16c502d9e9f7274a70e5a0a2564f9ec3257b\u2026' // Object.is equality\n    at /home/paul/agenc-desktop/tests/protocol-contract-drift.test.ts:75:66\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)\n    at runTest (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at runSuite (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)\n    at runSuite (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)"
+        ]
+      },
+      {
+        "file": "tests/provider-key-dialog-behavior.test.ts",
+        "test": "keeps the provider key dialog compact and masked with one focus border and native keyboard actions",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/provider-spend-panel-behavior.test.ts",
+        "test": "hides unsupported balance options while preserving supported checks, local spend, and monthly warnings in native Electron",
+        "errors": [
+          "Error: Provider spend harness exited null\n[734402:0922/194158.388687:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/provider-spend-panel-behavior.test.ts:134:97)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/remote-browser-behavior.test.ts",
+        "test": "pairs a browser and keeps host scopes, viewer access and remote actions separate with mock transport",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/remote-mobile-ui.test.ts",
+        "test": "adapts the desktop design to a phone without changing session authority or losing drafts",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/rich-transcript-behavior.test.ts",
+        "test": "renders rich content in the real Transcript, survives streaming and narrow themes without executing content",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/routines-pane-behavior.test.ts",
+        "test": "Routines pane rendered behavior runs the CRUD, permission/history, error recovery and theme flows in isolated Electron",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/session-context-browser-layer-behavior.test.ts",
+        "test": "keeps floating Session context above native browser tabs without destroying their state",
+        "errors": [
+          "Error: Context browser harness exited null\n[745425:0922/194304.314554:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/session-context-browser-layer-behavior.test.ts:130:97)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/session-group-header-behavior.test.ts",
+        "test": "updates the live chat header when the window menu moves a session, preserving its actual workspace",
+        "errors": [
+          "Error: [757089:0922/194430.982929:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/session-group-header-behavior.test.ts:85:91)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/session-search-focus-behavior.test.ts",
+        "test": "keeps session-search focus neutral while filtering, choosing and dismissing sessions",
+        "errors": [
+          "Error: Search fixture exited null: [756316:0922/194426.208844:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/session-search-focus-behavior.test.ts:59:165)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/settings-audit-behavior.test.ts",
+        "test": "exercises the Settings audit with isolated mocked IPC and real rendered controls",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/settings-selectors-behavior.test.ts",
+        "test": "uses the Providers selector design throughout Settings without changing selection behavior",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at runOnEndCallbacks (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1315:45)\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/settings-surfaces-behavior.test.ts",
+        "test": "keeps all Settings cards rectangular without clipping menus or changing round controls",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/sidebar-glass-behavior.test.ts",
+        "test": "preserves the real glass sidebar cascade while flat themes, chat and popups stay opaque",
+        "errors": [
+          "Error: Glass fixture exited null: [749531:0922/194344.341218:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/sidebar-glass-behavior.test.ts:95:100)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/sidebar-width-behavior.test.ts",
+        "test": "widens only the app sidebar, preserves compact and Settings widths, and restores after collapse",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/ssh-connections-behavior.test.ts",
+        "test": "isolates SSH host tasks, guards submissions and approvals, and renders usable themes in an isolated profile",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/ui-consistency-behavior.test.ts",
+        "test": "keeps the integrated welcome, composer and chat navigation consistent in native Electron",
+        "errors": [
+          "Error: Build failed with 2 errors:\nsrc/renderer/src/components/MathEquation.tsx:2:18: ERROR: Could not resolve \"katex\"\nsrc/renderer/src/components/MathEquation.tsx:3:58: ERROR: Could not resolve \"parse5\"\n    at failureErrorWithLog (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:1472:15)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:945:25\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:897:52\n    at buildResponseToResult (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:943:7)\n    at /home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:970:16\n    at responseCallbacks.<computed> (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:622:9)\n    at handleIncomingPacket (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:677:12)\n    at Socket.readFromStdout (/home/paul/agenc-desktop/node_modules/esbuild/lib/main.js:600:7)\n    at Socket.emit (node:events:509:20)\n    at addChunk (node:internal/streams/readable:568:12)"
+        ]
+      },
+      {
+        "file": "tests/whisper-setup-behavior.test.ts",
+        "test": "prepares Whisper automatically in native setup, holds completion on failure, and retries without capture",
+        "errors": [
+          "Error: Whisper setup failed: [749595:0922/194344.622053:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/paul/agenc-desktop/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/whisper-setup-behavior.test.ts:105:99)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      }
+    ],
+    "skippedCases": [
+      {
+        "file": "src/main/localModels.live.test.ts",
+        "test": "live llm-checker scans this machine"
+      },
+      {
+        "file": "src/main/localModels.live.test.ts",
+        "test": "live llm-checker reports runtime status"
+      },
+      {
+        "file": "tests/agents-panel-behavior.test.ts",
+        "test": "agents panel real pointer interaction opens and reopens from flow and overlay tickers without rendering Qwen tool echoes"
+      },
+      {
+        "file": "tests/app-update-ui-behavior.test.ts",
+        "test": "rendered updater lifecycle shares state across profile and settings, rejects stale responses, and requires explicit actions"
+      },
+      {
+        "file": "tests/composer-action-behavior.test.ts",
+        "test": "renders composer actions and pulses Whisper only for real VAD speech"
+      },
+      {
+        "file": "tests/desktop-routines-native.test.ts",
+        "test": "shares real Core routines between private Desktop MCP and the visible App without a provider"
+      },
+      {
+        "file": "tests/first-run-progress-behavior.test.ts",
+        "test": "FirstRunFlow staged progress behavior paces recovered milestones and holds Preparing through the full ready settle"
+      },
+      {
+        "file": "tests/first-run-visibility-behavior.test.ts",
+        "test": "FirstRunFlow visibility behavior pauses the intro while hidden or blurred and completes only after focus returns"
+      },
+      {
+        "file": "tests/managed-usage-helper.test.ts",
+        "test": "managed usage helper boundary refuses helper execution on unsupported platforms"
+      },
+      {
+        "file": "tests/mcp-core-roundtrip.test.ts",
+        "test": "roundtrips Desktop patches through the actual Core CLI in an isolated home"
+      },
+      {
+        "file": "tests/provider-grouping-behavior.test.ts",
+        "test": "provider grouping in Electron keeps every cloud in one list without changing native or shared-slot credential routes"
+      },
+      {
+        "file": "tests/providers-settings-audit-behavior.test.ts",
+        "test": "Providers settings audit regressions isolates presets, binds detection to the edited URL, and recovers from failed operations"
+      },
+      {
+        "file": "tests/routines-core-roundtrip.test.ts",
+        "test": "roundtrips Desktop SDK routine CRUD, events, completion and cancellation through Core's real Unix dispatcher"
+      },
+      {
+        "file": "tests/session-context-panel-behavior.test.ts",
+        "test": "rendered session context panel keeps reported usage separate from estimates and refreshes without stale responses"
+      },
+      {
+        "file": "tests/session-context-panel-behavior.test.ts",
+        "test": "rendered session context panel supports modal focus, docking, theme contrast and a compact narrow viewport"
+      },
+      {
+        "file": "tests/session-project-popover-behavior.test.ts",
+        "test": "rendered session project popover keeps compact neutral styling, accessible actions, and viewport bounds"
+      },
+      {
+        "file": "tests/sidebar-action-menus.test.ts",
+        "test": "rendered project and session action menus preserves menu semantics, dismissal, and trigger focus across callback rerenders"
+      },
+      {
+        "file": "tests/sidebar-activity-behavior.test.ts",
+        "test": "Sidebar Activity rendered behavior opens in the rail, reports work, navigates, and closes accessibly"
+      },
+      {
+        "file": "tests/sidebar-disclosure-behavior.test.ts",
+        "test": "Sidebar disclosure rendered behavior keeps disclosures compact and duplicate project names path-free in every theme"
+      },
+      {
+        "file": "tests/sidebar-profile-menu-behavior.test.ts",
+        "test": "SidebarProfileMenu rendered behavior routes account actions and supports disclosure dismissal and keyboard focus"
+      },
+      {
+        "file": "tests/sidebar-session-selection-behavior.test.ts",
+        "test": "Sidebar session selection rendered behavior keeps project rows stable and expanded across selection and New session"
+      },
+      {
+        "file": "tests/whisper-new-session-behavior.test.ts",
+        "test": "keeps sequential Whisper turns unqueued, recovers busy overflow and cancels stale creation"
+      },
+      {
+        "file": "tests/whisper-wave-selector-behavior.test.ts",
+        "test": "selects and persists five Whisper waves without opening audio or changing chat state"
+      },
+      {
+        "file": "tests/windows-background-commands.test.ts",
+        "test": "Desktop CLI commands finish without opening a Windows console"
+      }
+    ]
+  },
+  "desktop-failed-retry": {
+    "success": false,
+    "numTotalTests": 62,
+    "numPassedTests": 57,
+    "numFailedTests": 5,
+    "numPendingTests": 0,
+    "failedCases": [
+      {
+        "file": "tests/desktop-controls-native.test.ts",
+        "test": "drives real Desktop UI, browser tabs and PTY through private MCP in an isolated Electron app",
+        "errors": [
+          "Error: Native Desktop controls exited 1: Xlib:  extension \"GLX\" missing on display \":197\".\nXlib:  extension \"GLX\" missing on display \":197\".\nError: desktop_window:{\"content\":[{\"type\":\"text\",\"text\":\"Native window transition was not acknowledged. Inspect window state before retrying.\"}],\"isError\":true}\n    at call (/tmp/agenc-desktop-controls-native-8rsXAi/main.cjs:46870:35)\n    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at async /tmp/agenc-desktop-controls-native-8rsXAi/main.cjs:46884:5\n\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/desktop-controls-native.test.ts:227:166)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/kimi-provider.test.ts",
+        "test": "native Kimi (Moonshot) provider delegates native discovery to Core before loading a key in IPC",
+        "errors": [
+          "AssertionError: expected -1 to be greater than 44492\n    at /home/paul/agenc-desktop/tests/kimi-provider.test.ts:308:21\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)\n    at runTest (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at runSuite (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)\n    at runSuite (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)"
+        ]
+      },
+      {
+        "file": "tests/local-model-first-run-behavior.test.ts",
+        "test": "sets up a local model from a credential-free first run and keeps failed choices retryable",
+        "errors": [
+          "Error: Xlib:  extension \"GLX\" missing on display \":197\".\nXlib:  extension \"GLX\" missing on display \":197\".\n[861138:0922/195714.566496:ERROR:angle_platform_impl.cc(44)] Display.cpp:1083 (initialize): ANGLE Display::initialize error 12289: GLX is not present.\nERR: Display.cpp:1083 (initialize): ANGLE Display::initialize error 12289: GLX is not present.\n[861138:0922/195714.566723:ERROR:gl_display.cc(497)] EGL Driver message (Critical) eglInitialize: GLX is not present.\n[861138:0922/195714.566766:ERROR:gl_display.cc(767)] eglInitialize OpenGL failed with error EGL_NOT_INITIALIZED, trying next display type\n[861138:0922/195714.566866:ERROR:angle_platform_impl.cc(44)] Display.cpp:1083 (initialize): ANGLE Display::initialize error 12289: GLX is not present.\nERR: Display.cpp:1083 (initialize): ANGLE Display::initialize error 12289: GLX is not present.\n[861138:0922/195714.566893:ERROR:gl_display.cc(497)] EGL Driver message (Critical) eglInitialize: GLX is not present.\n[861138:0922/195714.566915:ERROR:gl_display.cc(767)] eglInitialize OpenGLES failed with error EGL_NOT_INITIALIZED\n[861138:0922/195714.567375:ERROR:gl_display.cc(801)] Initialization of all EGL display types failed.\n[861138:0922/195714.567556:ERROR:gl_ozone_egl.cc(26)] GLDisplayEGL::Initialize failed.\nXlib:  extension \"GLX\" missing on display \":197\".\nXlib:  extension \"GLX\" missing on display \":197\".\n[861138:0922/195714.824307:ERROR:angle_platform_impl.cc(44)] Display.cpp:1083 (initialize): ANGLE Display::initialize error 12289: GLX is not present.\nERR: Display.cpp:1083 (initialize): ANGLE Display::initialize error 12289: GLX is not present.\n[861138:0922/195714.824849:ERROR:gl_display.cc(497)] EGL Driver message (Critical) eglInitialize: GLX is not present.\n[861138:0922/195714.824901:ERROR:gl_display.cc(767)] eglInitialize OpenGL failed with error EGL_NOT_INITIALIZED, trying next display type\n[861138:0922/195714.825031:ERROR:angle_platform_impl.cc(44)] Display.cpp:1083 (initialize): ANGLE Display::initialize error 12289: GLX is not present.\nERR: Display.cpp:1083 (initialize): ANGLE Display::initialize error 12289: GLX is not present.\n[861138:0922/195714.825054:ERROR:gl_display.cc(497)] EGL Driver message (Critical) eglInitialize: GLX is not present.\n[861138:0922/195714.825103:ERROR:gl_display.cc(767)] eglInitialize OpenGLES failed with error EGL_NOT_INITIALIZED\n[861138:0922/195714.825120:ERROR:gl_display.cc(801)] Initialization of all EGL display types failed.\n[861138:0922/195714.825148:ERROR:gl_ozone_egl.cc(26)] GLDisplayEGL::Initialize failed.\n[861138:0922/195714.827890:ERROR:viz_main_impl.cc(181)] Exiting GPU process due to errors during initialization\nXlib:  extension \"GLX\" missing on display \":197\".\nXlib:  extension \"GLX\" missing on display \":197\".\nAssertionError [ERR_ASSERTION]: the rail returns when local model setup enters chat\n\nfalse !== true\n\n    at /tmp/agenc-local-first-run-5lEBsF/main.cjs:58:18 {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: false,\n  expected: true,\n  operator: 'strictEqual'\n}\n\n    at ChildProcess.<anonymous> (/home/paul/agenc-desktop/tests/local-model-first-run-behavior.test.ts:252:97)\n    at ChildProcess.emit (node:events:509:20)\n    at maybeClose (node:internal/child_process:1125:16)\n    at Socket.<anonymous> (node:internal/child_process:497:11)\n    at Socket.emit (node:events:509:20)\n    at Pipe.<anonymous> (node:net:355:12)"
+        ]
+      },
+      {
+        "file": "tests/protocol-contract-drift.test.ts",
+        "test": "daemon protocol contract drift pins the bounded Whisper extension without exposing it as a public method",
+        "errors": [
+          "AssertionError: expected '878f0d0987bc5551581300582038e3927e0bf\u2026' to be 'b16c502d9e9f7274a70e5a0a2564f9ec3257b\u2026' // Object.is equality\n    at /home/paul/agenc-desktop/tests/protocol-contract-drift.test.ts:75:66\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)\n    at runTest (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at runSuite (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)\n    at runSuite (file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)"
+        ]
+      },
+      {
+        "file": "tests/settings-surfaces-behavior.test.ts",
+        "test": "keeps all Settings cards rectangular without clipping menus or changing round controls",
+        "errors": [
+          "AssertionError: {\"width\":700,\"theme\":\"theme-dark theme-glass\",\"section\":\"General\"} compact goal input: expected 79.9476318359375 to be close to 80, received difference is 0.0523681640625, but expected 0.05\n    at /home/paul/agenc-desktop/tests/settings-surfaces-behavior.test.ts:214:64\n    at file:///home/paul/agenc-desktop/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+        ]
+      }
+    ],
+    "skippedCases": []
+  },
+  "desktop-repaired": {
+    "success": true,
+    "numTotalTests": 25,
+    "numPassedTests": 25,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "failedCases": [],
+    "skippedCases": []
+  },
+  "notebook-tests": {
+    "success": true,
+    "numTotalTests": 137,
+    "numPassedTests": 137,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "failedCases": [],
+    "skippedCases": []
+  },
+  "fixes-regression": {
+    "success": true,
+    "numTotalTests": 541,
+    "numPassedTests": 541,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "failedCases": [],
+    "skippedCases": []
+  },
+  "final-regression": {
+    "success": true,
+    "numTotalTests": 212,
+    "numPassedTests": 212,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "failedCases": [],
+    "skippedCases": []
+  },
+  "last-fixes": {
+    "success": true,
+    "numTotalTests": 195,
+    "numPassedTests": 195,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "failedCases": [],
+    "skippedCases": []
+  },
+  "browser-live": {
+    "success": true,
+    "numTotalTests": 6,
+    "numPassedTests": 6,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "failedCases": [],
+    "skippedCases": []
+  },
+  "browser-workspace": {
+    "success": true,
+    "numTotalTests": 6,
+    "numPassedTests": 6,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "failedCases": [],
+    "skippedCases": []
+  },
+  "browser-workspace-default": {
+    "success": false,
+    "numTotalTests": 6,
+    "numPassedTests": 0,
+    "numFailedTests": 6,
+    "numPendingTests": 0,
+    "failedCases": [
+      {
+        "file": "/home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts",
+        "test": "Browser tool live e2e navigates and snapshots a page with refs",
+        "errors": [
+          "CdpError: browser did not establish a CDP pipe: CDP pipe closed ([9:9:0922/201316.436141:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /opt/google/chrome/chrome-sandbox is owned by root and has mode 4755.). If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.\n    at launchBrowser (/home/paul/agenc-claude-subscription/runtime/src/browser/cdp.ts:504:11)\n    at BrowserManager.#launch (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:214:18)\n    at BrowserManager.#ensureLaunched (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:188:9)\n    at BrowserManager.navigate (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:379:5)\n    at /home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts:96:18\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "/home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts",
+        "test": "Browser tool live e2e fills a form by ref and submits, reaching the result page",
+        "errors": [
+          "CdpError: browser did not establish a CDP pipe: CDP pipe closed ([9:9:0922/201316.738049:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /opt/google/chrome/chrome-sandbox is owned by root and has mode 4755.). If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.\n    at launchBrowser (/home/paul/agenc-claude-subscription/runtime/src/browser/cdp.ts:504:11)\n    at BrowserManager.#launch (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:214:18)\n    at BrowserManager.#ensureLaunched (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:188:9)\n    at BrowserManager.navigate (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:379:5)\n    at /home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts:103:18\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "/home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts",
+        "test": "Browser tool live e2e refs are stable across a re-snapshot of the same page",
+        "errors": [
+          "CdpError: browser did not establish a CDP pipe: CDP pipe closed ([9:9:0922/201317.058888:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /opt/google/chrome/chrome-sandbox is owned by root and has mode 4755.). If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.\n    at launchBrowser (/home/paul/agenc-claude-subscription/runtime/src/browser/cdp.ts:504:11)\n    at BrowserManager.#launch (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:214:18)\n    at BrowserManager.#ensureLaunched (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:188:9)\n    at BrowserManager.navigate (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:379:5)\n    at /home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts:120:18\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "/home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts",
+        "test": "Browser tool live e2e supports multiple tabs",
+        "errors": [
+          "CdpError: browser did not establish a CDP pipe: CDP pipe closed ([9:9:0922/201317.338129:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /opt/google/chrome/chrome-sandbox is owned by root and has mode 4755.). If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.\n    at launchBrowser (/home/paul/agenc-claude-subscription/runtime/src/browser/cdp.ts:504:11)\n    at BrowserManager.#launch (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:214:18)\n    at BrowserManager.#ensureLaunched (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:188:9)\n    at BrowserManager.newTab (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:393:5)\n    at /home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts:130:17\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "/home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts",
+        "test": "Browser tool live e2e captures a screenshot as PNG bytes",
+        "errors": [
+          "CdpError: browser did not establish a CDP pipe: CDP pipe closed ([9:9:0922/201317.605508:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /opt/google/chrome/chrome-sandbox is owned by root and has mode 4755.). If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.\n    at launchBrowser (/home/paul/agenc-claude-subscription/runtime/src/browser/cdp.ts:504:11)\n    at BrowserManager.#launch (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:214:18)\n    at BrowserManager.#ensureLaunched (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:188:9)\n    at BrowserManager.navigate (/home/paul/agenc-claude-subscription/runtime/src/browser/manager.ts:379:5)\n    at /home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts:137:18\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+        ]
+      },
+      {
+        "file": "/home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts",
+        "test": "Browser tool live e2e blocks navigation to a cloud-metadata address (live SSRF)",
+        "errors": [
+          "Error: expected [Function] to throw error matching /block/i but got 'browser did not establish a CDP pipe:\u2026'\n    at Assertion.__VITEST_REJECTS__ (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/expect/dist/index.js:1747:17)\n    at Assertion.propertyGetter (file:///home/paul/agenc-claude-subscription/node_modules/chai/index.js:1570:27)\n    at Reflect.get (<anonymous>)\n    at Object.proxyGetter [as get] (file:///home/paul/agenc-claude-subscription/node_modules/chai/index.js:1659:22)\n    at /home/paul/agenc-claude-subscription/runtime/tests/browser/live-e2e.test.ts:148:6\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/paul/agenc-claude-subscription/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)"
+        ]
+      }
+    ]
+  },
+  "checks": {
+    "runtimeBuild": "passed",
+    "runtimeTypecheckIncludingTestSupport": "passed",
+    "sdkGeneratedTypes": "passed",
+    "gitDiffCheck": "passed",
+    "interpretation": "Counts are separate runs and overlap. Initial full suites are not final aggregate pass counts; focused retries do not constitute a fresh all-green full suite."
+  }
+}

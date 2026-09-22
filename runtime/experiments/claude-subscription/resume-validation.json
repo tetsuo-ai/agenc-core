@@ -1,0 +1,285 @@
+{
+  "date": "2026-09-22T17:43:02.541Z",
+  "passed": true,
+  "route": "anthropic/claude-sonnet-5 via experimental official CLI transport",
+  "exitCode": 0,
+  "toolCalls": [
+    {
+      "callId": "toolu_01NGTWfL1jE7L63EB5TRwN62",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"input.txt\"}"
+    },
+    {
+      "callId": "toolu_01LN6NtsYerNWjyz5SrBx24S",
+      "toolName": "exec_command",
+      "args": "{\"cmd\":\"printf CLAUDE_EXEC_OK\"}"
+    },
+    {
+      "callId": "toolu_01BYhjPFgpQJ41ZsDSRjeu9m",
+      "toolName": "Write",
+      "args": "{\"file_path\":\"output.txt\",\"content\":\"885ea910-ff70-4cb7-a441-59b6cbe94678\\n\"}"
+    },
+    {
+      "callId": "toolu_01GnGR2gFZJEZf3LbKdvczY3",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"output.txt\"}"
+    },
+    {
+      "callId": "toolu_01GWZtQMzcKxwYAYphZ9VZCA",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"input.txt\"}"
+    },
+    {
+      "callId": "toolu_012ih4qDeHCN1HPnzt7xNU2j",
+      "toolName": "exec_command",
+      "args": "{\"cmd\":\"printf CLAUDE_EXEC_OK\"}"
+    },
+    {
+      "callId": "toolu_01LQPRFFUnecDf1B1wRWhHuZ",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"output.txt\"}"
+    },
+    {
+      "callId": "toolu_01Mt6CiHdJQoZAdkbEuZM8Er",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"output.txt\"}"
+    },
+    {
+      "callId": "toolu_01EHUj8ufbmzW7nkzNKrkgUD",
+      "toolName": "exec_command",
+      "args": "{\"cmd\":\"printf CLAUDE_EXEC_OK\"}"
+    },
+    {
+      "callId": "toolu_01FL4EUQKvXzmShiNyKcsyVT",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"output.txt\"}"
+    },
+    {
+      "callId": "toolu_014MKMttZBH5ronBGNMybSsc",
+      "toolName": "exec_command",
+      "args": "{\"cmd\":\"printf CLAUDE_EXEC_OK\"}"
+    }
+  ],
+  "resumedOutput": {
+    "code": 0,
+    "stdout": "RESUMED. Nonce: `885ea910-ff70-4cb7-a441-59b6cbe94678`\n\n- [x] output.txt content — FileRead shows `885ea910-ff70-4cb7-a441-59b6cbe94678` (matches recalled nonce), trailing newline present.\n- [x] exec_command output — `printf CLAUDE_EXEC_OK` returned stdout `CLAUDE_EXEC_OK`, exit_code=0.\nRESUMED. Nonce: `885ea910-ff70-4cb7-a441-59b6cbe94678`\n\n- [x] output.txt content matches recalled nonce — FileRead of output.txt returned `885ea910-ff70-4cb7-a441-59b6cbe94678` (line 1) plus trailing newline (line 2 empty), matching the nonce recalled from the prior conversation.\n- [x] exec_command stdout — ran `printf CLAUDE_EXEC_OK`, observed stdout `CLAUDE_EXEC_OK`, exit_code=0.\n\nSummary: Both checks re-run fresh in this turn; file content and command output confirmed directly from tool results, not from memory.\n",
+    "stderr": ""
+  },
+  "toolResults": [
+    {
+      "callId": "toolu_01NGTWfL1jE7L63EB5TRwN62",
+      "toolName": "FileRead",
+      "result": "1→885ea910-ff70-4cb7-a441-59b6cbe94678\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "input.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 32.60994800000026
+    },
+    {
+      "callId": "toolu_01LN6NtsYerNWjyz5SrBx24S",
+      "toolName": "exec_command",
+      "result": "CLAUDE_EXEC_OK\n\n[exec exit_code=0 wall_time=0.1800s tokens=4]",
+      "isError": false,
+      "metadata": {
+        "command": "printf CLAUDE_EXEC_OK",
+        "cwd": "/tmp/agt-BEpsYw/project",
+        "tty": false,
+        "exitCode": 0,
+        "stdout": "CLAUDE_EXEC_OK",
+        "stderr": "",
+        "timedOut": false,
+        "truncated": false,
+        "durationMs": 180
+      },
+      "durationMs": 217.8102340000005
+    },
+    {
+      "callId": "toolu_01BYhjPFgpQJ41ZsDSRjeu9m",
+      "toolName": "Write",
+      "result": "File created successfully at: output.txt",
+      "isError": false,
+      "metadata": {
+        "ui": {
+          "kind": "file_mutation",
+          "filePath": "output.txt",
+          "operation": "create",
+          "additions": 1,
+          "removals": 0
+        }
+      },
+      "durationMs": 58.66959500000121
+    },
+    {
+      "callId": "toolu_01GnGR2gFZJEZf3LbKdvczY3",
+      "toolName": "FileRead",
+      "result": "1→885ea910-ff70-4cb7-a441-59b6cbe94678\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "output.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 17.730640000001586
+    },
+    {
+      "callId": "toolu_01GWZtQMzcKxwYAYphZ9VZCA",
+      "toolName": "FileRead",
+      "result": "1→885ea910-ff70-4cb7-a441-59b6cbe94678\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "input.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 19.859832000001916
+    },
+    {
+      "callId": "toolu_012ih4qDeHCN1HPnzt7xNU2j",
+      "toolName": "exec_command",
+      "result": "CLAUDE_EXEC_OK\n\n[exec exit_code=0 wall_time=0.1960s tokens=4]",
+      "isError": false,
+      "metadata": {
+        "command": "printf CLAUDE_EXEC_OK",
+        "cwd": "/tmp/agt-BEpsYw/project",
+        "tty": false,
+        "exitCode": 0,
+        "stdout": "CLAUDE_EXEC_OK",
+        "stderr": "",
+        "timedOut": false,
+        "truncated": false,
+        "durationMs": 196
+      },
+      "durationMs": 220.52078299999994
+    },
+    {
+      "callId": "toolu_01LQPRFFUnecDf1B1wRWhHuZ",
+      "toolName": "FileRead",
+      "result": "1→885ea910-ff70-4cb7-a441-59b6cbe94678\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "output.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 100.2053470000028
+    },
+    {
+      "callId": "toolu_01Mt6CiHdJQoZAdkbEuZM8Er",
+      "toolName": "FileRead",
+      "result": "1→885ea910-ff70-4cb7-a441-59b6cbe94678\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "output.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 37.61382599999979
+    },
+    {
+      "callId": "toolu_01EHUj8ufbmzW7nkzNKrkgUD",
+      "toolName": "exec_command",
+      "result": "CLAUDE_EXEC_OK\n\n[exec exit_code=0 wall_time=0.2220s tokens=4]",
+      "isError": false,
+      "metadata": {
+        "command": "printf CLAUDE_EXEC_OK",
+        "cwd": "/tmp/agt-BEpsYw/project",
+        "tty": false,
+        "exitCode": 0,
+        "stdout": "CLAUDE_EXEC_OK",
+        "stderr": "",
+        "timedOut": false,
+        "truncated": false,
+        "durationMs": 222
+      },
+      "durationMs": 247.4273349999985
+    },
+    {
+      "callId": "toolu_01FL4EUQKvXzmShiNyKcsyVT",
+      "toolName": "FileRead",
+      "result": "1→885ea910-ff70-4cb7-a441-59b6cbe94678\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "output.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 37.375661000001855
+    },
+    {
+      "callId": "toolu_014MKMttZBH5ronBGNMybSsc",
+      "toolName": "exec_command",
+      "result": "CLAUDE_EXEC_OK\n\n[exec exit_code=0 wall_time=0.1650s tokens=4]",
+      "isError": false,
+      "metadata": {
+        "command": "printf CLAUDE_EXEC_OK",
+        "cwd": "/tmp/agt-BEpsYw/project",
+        "tty": false,
+        "exitCode": 0,
+        "stdout": "CLAUDE_EXEC_OK",
+        "stderr": "",
+        "timedOut": false,
+        "truncated": false,
+        "durationMs": 165
+      },
+      "durationMs": 178.19916300000114
+    }
+  ],
+  "finalOutput": "Checklist:\n\n- [x] output.txt contains the input nonce — FileRead of output.txt shows `885ea910-ff70-4cb7-a441-59b6cbe94678` (matches input.txt line 1), followed by a newline.\n- [x] exec_command produced CLAUDE_EXEC_OK — `printf CLAUDE_EXEC_OK` returned output `CLAUDE_EXEC_OK` with exit_code=0.\n- [x] output.txt contains the input nonce — input.txt line 1: `885ea910-ff70-4cb7-a441-59b6cbe94678`; output.txt FileRead shows identical content: `885ea910-ff70-4cb7-a441-59b6cbe94678` followed by a trailing newline (line 2 empty).\n- [x] exec_command produced CLAUDE_EXEC_OK — re-ran `printf CLAUDE_EXEC_OK`, result: `CLAUDE_EXEC_OK`, exit_code=0.\n\nSummary: Both checks re-verified directly against fresh tool output; nonce matches exactly and the exec command exits 0 with the expected literal string.\n",
+  "fileContentVerified": true,
+  "completionGate": [
+    {
+      "turnId": "sub-conv-mucyo4og-3",
+      "round": 1,
+      "maxRounds": 3,
+      "outcome": "injected",
+      "reason": "initial",
+      "toolCallsSinceInjection": 0
+    },
+    {
+      "turnId": "sub-conv-mucyo4og-3",
+      "round": 1,
+      "maxRounds": 3,
+      "outcome": "verified",
+      "reason": "verified_with_tools",
+      "toolCallsSinceInjection": 3
+    },
+    {
+      "turnId": "sub-conv-mucyo4og-127",
+      "round": 1,
+      "maxRounds": 3,
+      "outcome": "injected",
+      "reason": "initial",
+      "toolCallsSinceInjection": 0
+    },
+    {
+      "turnId": "sub-conv-mucyo4og-127",
+      "round": 1,
+      "maxRounds": 3,
+      "outcome": "verified",
+      "reason": "verified_with_tools",
+      "toolCallsSinceInjection": 2
+    }
+  ],
+  "note": "Real daemon and Session/runTurn; isolated workspace-write sandbox, approval policy never. Subscription billing meter was not inspected."
+}

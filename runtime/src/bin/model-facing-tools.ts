@@ -4008,11 +4008,14 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
       if (updatedInput === undefined) {
         return decision;
       }
+      const notebookInput = { ...updatedInput };
+      delete notebookInput.file_path;
+      delete notebookInput.cwd;
       return {
         ...decision,
         updatedInput: {
           ...record,
-          ...updatedInput,
+          ...notebookInput,
           notebook_path: updatedInput.file_path ?? record.notebook_path,
         },
       } satisfies PermissionResult<Record<string, unknown>>;

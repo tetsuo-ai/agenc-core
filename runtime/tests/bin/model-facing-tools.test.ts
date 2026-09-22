@@ -1,3 +1,4 @@
+import { validateToolArgs, stripAgenCInternalArgsForValidation } from "../tools/argument-validation.js";
 import {
   mkdir,
   mkdtemp,
@@ -17,6 +18,8 @@ import type { ProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { bindLiveAgentSession } from "../agents/live-session.js";
+import type { LiveAgent } from "../agents/control.js";
 import type { Session } from "../session/session.js";
 import { backgroundTaskLifecycle, isBackgroundTask } from "../tasks/index.js";
 import {
@@ -5958,10 +5961,13 @@ describe("model-facing tools", () => {
         (allowed as { updatedInput?: Record<string, unknown> } | undefined)
           ?.updatedInput,
       ).toMatchObject({
-        file_path: notebookPath,
         notebook_path: notebookPath,
       });
 
+      const updatedRead = (allowed as { updatedInput: Record<string, unknown> }).updatedInput;
+      expect(updatedRead).not.toHaveProperty("file_path");
+      expect(updatedRead).not.toHaveProperty("cwd");
+      expect(validateToolArgs(tool.inputSchema, stripAgenCInternalArgsForValidation(updatedRead)).valid).toBe(true);
       const blocked = await tool.checkPermissions?.(
         { notebook_path: outsidePath },
         context,
@@ -6013,10 +6019,12 @@ describe("model-facing tools", () => {
         (allowed as { updatedInput?: Record<string, unknown> } | undefined)
           ?.updatedInput,
       ).toMatchObject({
-        file_path: notebookPath,
         notebook_path: notebookPath,
       });
 
+      const updatedEdit = (allowed as { updatedInput: Record<string, unknown> }).updatedInput;
+      expect(updatedEdit).not.toHaveProperty("file_path");
+      expect(validateToolArgs(tool.inputSchema, stripAgenCInternalArgsForValidation(updatedEdit)).valid).toBe(true);
       const blocked = await tool.checkPermissions?.(
         {
           notebook_path: outsidePath,

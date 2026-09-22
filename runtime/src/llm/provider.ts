@@ -30,6 +30,7 @@ import type {
 import { OpenAIProvider } from "./providers/openai/adapter.js";
 import type { OpenAIProviderConfig } from "./providers/openai/types.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
+import { ClaudeSubscriptionProvider } from "./providers/claude-subscription/adapter.js";
 import type { AnthropicProviderConfig } from "./providers/anthropic/types.js";
 import {
   GeminiProvider,
@@ -823,6 +824,7 @@ function createAuthVendedProviderIfNeeded(
   provider: ProviderName,
   opts: ProviderFactoryOptions,
 ): LLMProvider | undefined {
+  if (provider === "anthropic" && opts.extra?.claudeSubscription === true) return undefined;
   if (!AUTH_VENDED_PROVIDER_NAMES.has(provider)) return undefined;
   if (providerTargetsLocalEndpoint(provider, opts)) return undefined;
   if (hasConcreteProviderCredentialInput(provider, opts)) {
@@ -1820,6 +1822,15 @@ export function createProvider(
       });
     }
     case "anthropic": {
+      if (opts.extra?.claudeSubscription === true) {
+        if (opts.apiKey || opts.authToken || opts.baseURL) throw new Error("Claude subscription transport rejects API credentials and endpoints");
+        const environment = opts.extra.claudeSubscriptionEnvironment;
+        if (!environment || typeof environment !== "object" || Array.isArray(environment) || Object.values(environment).some(value => typeof value !== "string")) throw new Error("Claude subscription requires a prepared environment");
+        return markFactoryProvider(new ClaudeSubscriptionProvider(opts.model ?? "sonnet", "python3", {
+          tools: opts.tools,
+          ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+        }, environment as NodeJS.ProcessEnv), { provider: "anthropic", options: opts });
+      }
       const apiKey = resolveFactoryApiKey(opts);
       const authToken = firstNonEmpty(opts.authToken);
       if (apiKey !== undefined && authToken !== undefined) {

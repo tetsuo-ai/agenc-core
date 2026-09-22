@@ -1372,6 +1372,18 @@ describe("Linux sandbox launcher", () => {
     expect(fs.statSync(binPath).mode & 0o111).not.toBe(0);
   });
 
+  it("refuses CDP transport when it would conflict with a restricted network policy", async () => {
+    const errors: string[] = [];
+    const code = await runLinuxSandboxMain([
+      "--browser-cdp-over-stdio", "--sandbox-policy-cwd", process.cwd(),
+      "--command-cwd", process.cwd(), "--session-temp-root", os.tmpdir(),
+      "--permission-profile", JSON.stringify(workspaceWriteProfile(process.cwd(), "disabled")),
+      "--", "/bin/true",
+    ], { onStderr: line => errors.push(line) });
+    expect(code).not.toBe(0);
+    expect(errors.join("\n")).toContain("enabled-network profile");
+  });
+
   it("supervises a direct child process exit", async () => {
     const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
     await new Promise<void>((resolve, reject) => {

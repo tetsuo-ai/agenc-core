@@ -196,6 +196,8 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
       description: `Create a durable AgenC task on the project task board. New tasks start pending and unowned; assign AgenC agents with TaskUpdate owner. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         mutating: true,
+        // Writes only runtime-derived task state; no model-selected file target.
+        virtualNoFsWrites: true,
         deferred: true,
         keywords: ["task", "create", "coordination", "subagent"],
       }),
@@ -287,6 +289,7 @@ export function createTaskBoardTools(opts: TaskToolOptions): readonly Tool[] {
       description: `Update a durable AgenC task: status, fields, AgenC-agent owner, metadata, and dependency edges. Set status to deleted to permanently remove the task and scrub dependency references. Metadata keys set to null are deleted. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         mutating: true,
+        virtualNoFsWrites: true,
         deferred: true,
         keywords: ["task", "update", "coordination", "dependencies"],
       }),

@@ -132,6 +132,9 @@ export interface SandboxExecutionStatus {
 }
 
 export interface SandboxSpawnCommand {
+  /** Browser-owned pipe transport; Linux carries it over standard IO across launcher stages. */
+  readonly browserCdp?: boolean;
+  readonly browserCdpOverStdio?: boolean;
   readonly program: string;
   readonly args: readonly string[];
   readonly cwd: string;
@@ -1928,6 +1931,12 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
       ...(params.runtimeSandbox.allowGpu === true ? { allowGpu: true } : {}),
     });
     const [program, ...args] = transformed.command;
+    const browserCdpOverStdio = params.browserCdp === true && sandbox === "linux_seccomp";
+    if (browserCdpOverStdio) {
+      const separator = args.indexOf("--");
+      if (separator < 0) throw new Error("Linux browser sandbox command separator missing");
+      args.splice(separator, 0, "--browser-cdp-over-stdio");
+    }
     if (program === undefined) {
       throw new UnifiedExecError(
         "create_process",
@@ -1940,6 +1949,7 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
       cwd: transformed.cwd,
       env: { ...transformed.env },
       argv0: transformed.arg0 ?? basename(program),
+      ...(browserCdpOverStdio ? { browserCdpOverStdio: true } : {}),
     };
   } catch (error) {
     if (error instanceof UnifiedExecError) throw error;

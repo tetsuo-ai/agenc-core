@@ -1,0 +1,246 @@
+{
+  "date": "2026-09-22T17:54:53.995Z",
+  "passed": true,
+  "route": "anthropic/claude-sonnet-5 via experimental official CLI transport",
+  "exitCode": 0,
+  "toolCalls": [
+    {
+      "callId": "toolu_01HZTZXw3BW8jDm6cS9ZaTg1",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"input.txt\"}"
+    },
+    {
+      "callId": "toolu_014f6CaaGEnvrzLV4Mwaod9B",
+      "toolName": "exec_command",
+      "args": "{\"cmd\":\"printf CLAUDE_EXEC_OK\"}"
+    },
+    {
+      "callId": "toolu_01QqkpeSP1iDf8qw7uDBch1R",
+      "toolName": "Write",
+      "args": "{\"file_path\":\"output.txt\",\"content\":\"e4a665d3-b83f-406f-851c-f1baf365d5e1\\n\"}"
+    },
+    {
+      "callId": "toolu_01TyEHvngFPn8CLJL8CdNGpy",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"output.txt\"}"
+    },
+    {
+      "callId": "toolu_01NENYCtiQaq4YkN1fcrcncN",
+      "toolName": "mcp.fixture.ping",
+      "args": "{}"
+    },
+    {
+      "callId": "toolu_018bJq21ba1yhzL4t46AgwmV",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"input.txt\"}"
+    },
+    {
+      "callId": "toolu_014xXJuLnKsKfMPizJWFETD5",
+      "toolName": "FileRead",
+      "args": "{\"file_path\":\"output.txt\"}"
+    },
+    {
+      "callId": "toolu_012c3iWzHa1n5Mv9Lq6SWdkM",
+      "toolName": "exec_command",
+      "args": "{\"cmd\":\"printf CLAUDE_EXEC_OK\"}"
+    },
+    {
+      "callId": "toolu_0115Q8n76o8EKLXVn8sAcgFN",
+      "toolName": "mcp.fixture.ping",
+      "args": "{}"
+    }
+  ],
+  "toolResults": [
+    {
+      "callId": "toolu_01HZTZXw3BW8jDm6cS9ZaTg1",
+      "toolName": "FileRead",
+      "result": "1→e4a665d3-b83f-406f-851c-f1baf365d5e1\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "input.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 114.57083899999998
+    },
+    {
+      "callId": "toolu_014f6CaaGEnvrzLV4Mwaod9B",
+      "toolName": "exec_command",
+      "result": "CLAUDE_EXEC_OK\n\n[exec exit_code=0 wall_time=0.2840s tokens=4]",
+      "isError": false,
+      "metadata": {
+        "command": "printf CLAUDE_EXEC_OK",
+        "cwd": "/tmp/agt-McLlNu/project",
+        "tty": false,
+        "exitCode": 0,
+        "stdout": "CLAUDE_EXEC_OK",
+        "stderr": "",
+        "timedOut": false,
+        "truncated": false,
+        "durationMs": 284
+      },
+      "durationMs": 319.13985599999796
+    },
+    {
+      "callId": "toolu_01QqkpeSP1iDf8qw7uDBch1R",
+      "toolName": "Write",
+      "result": "File created successfully at: output.txt",
+      "isError": false,
+      "metadata": {
+        "ui": {
+          "kind": "file_mutation",
+          "filePath": "output.txt",
+          "operation": "create",
+          "additions": 1,
+          "removals": 0
+        }
+      },
+      "durationMs": 84.06025399999999
+    },
+    {
+      "callId": "toolu_01TyEHvngFPn8CLJL8CdNGpy",
+      "toolName": "FileRead",
+      "result": "1→e4a665d3-b83f-406f-851c-f1baf365d5e1\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "output.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 49.479888000001665
+    },
+    {
+      "callId": "toolu_01NENYCtiQaq4YkN1fcrcncN",
+      "toolName": "mcp.fixture.ping",
+      "result": "pong",
+      "isError": false,
+      "metadata": {
+        "mcp": {
+          "server": "fixture",
+          "tool": "ping",
+          "callId": "toolu_01NENYCtiQaq4YkN1fcrcncN",
+          "originalRenderedBytes": 4,
+          "hardLimitBytes": 5242880,
+          "hardTruncated": false,
+          "workBudgetBytesRemaining": 5242876,
+          "workBudgetNodesRemaining": 99998,
+          "contentBlocksAccepted": 1,
+          "structuredContentPresent": false,
+          "structuredContentOmitted": false,
+          "structuredContentInlineOmitted": false,
+          "metaPresent": false,
+          "metaOmitted": false,
+          "metaInlineOmitted": false,
+          "base64InspectedBytes": 0,
+          "binaryBytes": 0,
+          "binaryArtifacts": []
+        }
+      },
+      "durationMs": 61.83311800000229
+    },
+    {
+      "callId": "toolu_018bJq21ba1yhzL4t46AgwmV",
+      "toolName": "FileRead",
+      "result": "1→e4a665d3-b83f-406f-851c-f1baf365d5e1\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "input.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 37.27507499999774
+    },
+    {
+      "callId": "toolu_014xXJuLnKsKfMPizJWFETD5",
+      "toolName": "FileRead",
+      "result": "1→e4a665d3-b83f-406f-851c-f1baf365d5e1\n2→",
+      "isError": false,
+      "metadata": {
+        "filePath": "output.txt",
+        "totalLines": 2,
+        "startLine": 1,
+        "endLine": 2,
+        "numLines": 2,
+        "isPartial": false
+      },
+      "durationMs": 56.51938200000586
+    },
+    {
+      "callId": "toolu_012c3iWzHa1n5Mv9Lq6SWdkM",
+      "toolName": "exec_command",
+      "result": "CLAUDE_EXEC_OK\n\n[exec exit_code=0 wall_time=0.2680s tokens=4]",
+      "isError": false,
+      "metadata": {
+        "command": "printf CLAUDE_EXEC_OK",
+        "cwd": "/tmp/agt-McLlNu/project",
+        "tty": false,
+        "exitCode": 0,
+        "stdout": "CLAUDE_EXEC_OK",
+        "stderr": "",
+        "timedOut": false,
+        "truncated": false,
+        "durationMs": 268
+      },
+      "durationMs": 302.1918930000029
+    },
+    {
+      "callId": "toolu_0115Q8n76o8EKLXVn8sAcgFN",
+      "toolName": "mcp.fixture.ping",
+      "result": "pong",
+      "isError": false,
+      "metadata": {
+        "mcp": {
+          "server": "fixture",
+          "tool": "ping",
+          "callId": "toolu_0115Q8n76o8EKLXVn8sAcgFN",
+          "originalRenderedBytes": 4,
+          "hardLimitBytes": 5242880,
+          "hardTruncated": false,
+          "workBudgetBytesRemaining": 5242876,
+          "workBudgetNodesRemaining": 99998,
+          "contentBlocksAccepted": 1,
+          "structuredContentPresent": false,
+          "structuredContentOmitted": false,
+          "structuredContentInlineOmitted": false,
+          "metaPresent": false,
+          "metaOmitted": false,
+          "metaInlineOmitted": false,
+          "base64InspectedBytes": 0,
+          "binaryBytes": 0,
+          "binaryArtifacts": []
+        }
+      },
+      "durationMs": 31.79861399999936
+    }
+  ],
+  "finalOutput": "Now discovering and calling the fixture ping tool.\nChecklist:\n\n- [x] output.txt contains the input nonce — FileRead of output.txt shows `e4a665d3-b83f-406f-851c-f1baf365d5e1` (matches input.txt's nonce).\n- [x] exec_command produced CLAUDE_EXEC_OK — `printf CLAUDE_EXEC_OK` returned stdout `CLAUDE_EXEC_OK` (exit_code=0).\n\nAdditional observed result: mcp.fixture.ping returned `pong`.\nRe-running both checks as requested.\n- [x] output.txt contains the input nonce — FileRead(input.txt) shows `e4a665d3-b83f-406f-851c-f1baf365d5e1`; FileRead(output.txt) shows the same value `e4a665d3-b83f-406f-851c-f1baf365d5e1` plus trailing newline.\n- [x] exec_command produced CLAUDE_EXEC_OK — `printf CLAUDE_EXEC_OK` returned stdout `CLAUDE_EXEC_OK`, exit_code=0.\n\nAdditional (not a checklist item per task instructions): mcp.fixture.ping was called and returned `pong`.\n\nSummary: Both re-run checks pass with identical evidence to the prior verification; nothing needed fixing.\n",
+  "fileContentVerified": true,
+  "completionGate": [
+    {
+      "turnId": "sub-conv-mucz3pn9-3",
+      "round": 1,
+      "maxRounds": 3,
+      "outcome": "injected",
+      "reason": "initial",
+      "toolCallsSinceInjection": 0
+    },
+    {
+      "turnId": "sub-conv-mucz3pn9-3",
+      "round": 1,
+      "maxRounds": 3,
+      "outcome": "verified",
+      "reason": "verified_with_tools",
+      "toolCallsSinceInjection": 4
+    }
+  ],
+  "note": "Real daemon and Session/runTurn; isolated workspace-write sandbox, approval policy never. Subscription billing meter was not inspected."
+}
