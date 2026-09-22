@@ -64,6 +64,23 @@ function dispatchFixture(permission: Partial<ToolPermissionContext>, decision: R
   return { execute, resolver, dispatch };
 }
 
+type DispatchFixture = ReturnType<typeof dispatchFixture>;
+type DispatchResult = Awaited<ReturnType<DispatchFixture["dispatch"]>>;
+
+// Shared assertion for the common case: the call succeeds and system.bash's
+// execute() receives every field the model sent (`command`, `args`, `cwd`,
+// `timeoutMs`), unchanged by the permission step.
+function expectFullRoundTrip(fixture: DispatchFixture, result: DispatchResult) {
+  expect(result.isError).not.toBe(true);
+  expect(fixture.execute).toHaveBeenCalledTimes(1);
+  const executed = fixture.execute.mock.calls[0]![0] as Record<string, unknown>;
+  expect(executed.command).toBe("cat");
+  expect(executed.args).toEqual(["x y.txt"]);
+  expect(executed.cwd).toBe(sub);
+  expect(executed.timeoutMs).toBe(45_000);
+  expect(String(result.content)).toContain("direct-mode-ok");
+}
+
 const PERMISSION_CASES: ReadonlyArray<readonly [string, Partial<ToolPermissionContext>]> = [
   ["bypassPermissions mode", { mode: "bypassPermissions", isBypassPermissionsModeAvailable: true }],
   ["a content allow rule", { alwaysAllowRules: { userSettings: ["system.bash(pwd:*)", "system.bash(cat:*)"] } }],
@@ -98,14 +115,7 @@ describe("system.bash permission keeps the model's fields", () => {
   test.each(PERMISSION_CASES)("%s keeps direct-mode args apart from the command", async (_label, permission) => {
     const fixture = dispatchFixture(permission);
     const result = await fixture.dispatch({ command: "cat", args: ["x y.txt"], cwd: sub, timeoutMs: 45_000 });
-    expect(result.isError).not.toBe(true);
-    expect(fixture.execute).toHaveBeenCalledTimes(1);
-    const executed = fixture.execute.mock.calls[0]![0] as Record<string, unknown>;
-    expect(executed.command).toBe("cat");
-    expect(executed.args).toEqual(["x y.txt"]);
-    expect(executed.cwd).toBe(sub);
-    expect(executed.timeoutMs).toBe(45_000);
-    expect(String(result.content)).toContain("direct-mode-ok");
+    expectFullRoundTrip(fixture, result);
   });
 
   test("an explicit ask that the user approves runs the call as sent and its approval shows argv and cwd", async () => {
@@ -123,14 +133,7 @@ describe("system.bash permission keeps the model's fields", () => {
     expect(approval.kind === "shell" ? approval.command : undefined).toEqual(["cat", "x y.txt"]);
     expect(guardianApprovalRequestActionText(approval)).toBe('["cat","x y.txt"]');
     expect(approval.cwd).toBe(sub);
-    expect(result.isError).not.toBe(true);
-    expect(fixture.execute).toHaveBeenCalledTimes(1);
-    const executed = fixture.execute.mock.calls[0]![0] as Record<string, unknown>;
-    expect(executed.command).toBe("cat");
-    expect(executed.args).toEqual(["x y.txt"]);
-    expect(executed.cwd).toBe(sub);
-    expect(executed.timeoutMs).toBe(45_000);
-    expect(String(result.content)).toContain("direct-mode-ok");
+    expectFullRoundTrip(fixture, result);
   });
 
   test("an allow rule written against the joined command runs the call as sent", async () => {
