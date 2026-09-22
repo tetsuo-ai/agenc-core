@@ -2062,7 +2062,7 @@ const runBoundReadWorker = async (command) => {
     spawnError = error;
   });
   const killChild = () => {
-    if (child.pid !== undefined) child.kill();
+    if (Number.isSafeInteger(child.pid) && child.pid > 1) child.kill();
   };
   const stdout = [];
   const stderr = [];

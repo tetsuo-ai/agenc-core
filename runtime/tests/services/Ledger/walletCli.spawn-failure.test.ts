@@ -2,7 +2,10 @@ import * as childProcess from "node:child_process";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { createFailedSpawnChild } from "../../helpers/failed-spawn-child.js";
+import {
+  createFailedSpawnChild,
+  createPidStandIn,
+} from "../../helpers/failed-spawn-child.js";
 
 // runWalletCliProcess used to call child.kill("SIGTERM") for a signal that
 // was already aborted, before the error listener existed. When that spawn had
@@ -92,5 +95,26 @@ describe("runWalletCliProcess with a failed spawn", () => {
     expect(failed.uncaught).toEqual([]);
     expect(result).toMatchObject({ code: -1, timedOut: false });
     expect(result.stderr).toContain("ENOENT");
+  });
+});
+
+describe("runWalletCliProcess with a handle reporting an unsafe pid", () => {
+  // Only a pid above 1 is signalled: 0 is this process's group, -1 every
+  // process of the user, 1 init.
+  test.each([0, -1, 1])("an abort never signals a child whose pid is %s", async (pid) => {
+    const child = createPidStandIn(pid);
+    spawnMock.mockImplementation(() => child as never);
+    const controller = new AbortController();
+
+    const running = runWalletCliProcess("/managed/wallet-cli", ["--version"], {
+      cwd: tmpdir(),
+      timeoutMs: 5_000,
+      signal: controller.signal,
+    });
+    controller.abort();
+    child.emit("close", 0);
+    await running;
+
+    expect(child.signals).toEqual([]);
   });
 });

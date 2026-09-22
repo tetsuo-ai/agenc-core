@@ -256,3 +256,35 @@ export function createFailedSpawnChild(
 
   return child;
 }
+
+/**
+ * A started-looking child whose handle reports `pid` (0, -1, 1, ...), with
+ * pipes. Its kill() records the signal and never sends one: the point of a
+ * test using it is that a handle reporting an unsafe pid is not signalled.
+ */
+export interface PidStandIn extends ChildProcess {
+  readonly signals: Array<NodeJS.Signals | number | undefined>;
+}
+
+export function createPidStandIn(pid: number): PidStandIn {
+  const pipes = [new PassThrough(), new PassThrough(), new PassThrough()];
+  const signals: Array<NodeJS.Signals | number | undefined> = [];
+  return Object.assign(new EventEmitter(), {
+    pid,
+    exitCode: null,
+    signalCode: null,
+    killed: false,
+    connected: false,
+    stdio: pipes,
+    stdin: pipes[0],
+    stdout: pipes[1],
+    stderr: pipes[2],
+    signals,
+    kill(signal?: NodeJS.Signals | number): boolean {
+      signals.push(signal ?? "SIGTERM");
+      return true;
+    },
+    ref(): void {},
+    unref(): void {},
+  }) as unknown as PidStandIn;
+}

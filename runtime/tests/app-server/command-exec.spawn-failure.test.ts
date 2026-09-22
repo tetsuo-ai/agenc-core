@@ -1,7 +1,7 @@
 import * as childProcess from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { failingSpawn } from "../helpers/failed-spawn-child.js";
+import { createPidStandIn, failingSpawn } from "../helpers/failed-spawn-child.js";
 
 // commandExec.start with an already-aborted signal terminates the session in
 // the same tick as the spawn. When that spawn had failed, terminateSession
@@ -52,4 +52,39 @@ describe("commandExec with a failed spawn", () => {
     expect(failures.children[0]!.groupSignals).toEqual([]);
     expect(failures.children[0]!.uncaught).toEqual([]);
   });
+});
+
+describe("commandExec with a handle reporting an unsafe pid", () => {
+  // A handle reporting 0 made terminateSession call process.kill(-0), this
+  // process's own group, and -1 made it call process.kill(1), init. Real
+  // children never report these; the check must not depend on that.
+  it.each([0, -1])("terminate never signals a child whose pid is %s", async (pid) => {
+    const child = createPidStandIn(pid);
+    spawnMock.mockImplementation((() => child) as never);
+    // Never calls through: a real kill with these pids is the hazard.
+    const osKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const controller = new AbortController();
+    controller.abort();
+    const service = new AgenCCommandExecService();
+    try {
+      const started = service.start(
+        {
+          command: ["/usr/bin/true"],
+          timeoutMs: 2_000,
+          permissionProfile: ":danger-full-access",
+        },
+        { connectionId: `unsafe-pid-${pid}`, signal: controller.signal },
+      );
+      // Past the 500 ms SIGKILL escalation, then let the stand-in exit.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+      await started.catch(() => undefined);
+
+      expect(osKill).not.toHaveBeenCalled();
+      expect(child.signals).toEqual([]);
+    } finally {
+      osKill.mockRestore();
+    }
+  }, 10_000);
 });

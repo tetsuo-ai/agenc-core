@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
 import type { ThreadRealtimeAudioChunk } from "../../app-server/protocol/index.js";
+import { isSignalablePid } from "../../utils/child-signal.js";
 
 export interface RealtimeAudioCaptureCallbacks {
   readonly onAudio: (audio: ThreadRealtimeAudioChunk) => void;
@@ -94,7 +95,7 @@ export function createProcessRealtimeAudioPlayer(
     // A failed spawn has no pid, but until Node reports the failure its open
     // handle sends kill() to pid 0: the TUI's whole process group, including
     // the shell job it runs in. Its error event does the cleanup instead.
-    if (active?.pid !== undefined) active.kill("SIGTERM");
+    if (active !== null && isSignalablePid(active.pid)) active.kill("SIGTERM");
   };
 
   const flush = (): void => {

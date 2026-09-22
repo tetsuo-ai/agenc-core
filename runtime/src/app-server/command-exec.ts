@@ -45,6 +45,7 @@ import {
 } from "./protocol/index.js";
 import { loadPty, type IPty } from "../pty/loadPty.js";
 import { signalPtyProcessTree } from "../pty/process-tree.js";
+import { isSignalablePid } from "../utils/child-signal.js";
 import {
   buildScrubbedSpawnEnv,
   isSecretEnvKey,
@@ -1167,8 +1168,10 @@ function terminateSession(session: CommandExecSession): void {
   const child = session.child;
   // A child without a pid never started. Until Node reports that on the next
   // tick, its open handle sends kill() to pid 0: the daemon's own process
-  // group. Its error event finalizes the session instead.
-  if (child === null || child.pid === undefined) return;
+  // group. Its error event finalizes the session instead. A handle reporting
+  // 0 or -1 would turn -pid into this process's group or pid 1, so only a
+  // pid above 1 is signalled.
+  if (child === null || !isSignalablePid(child.pid)) return;
   const pid = child.pid;
   if (process.platform !== "win32") {
     try {

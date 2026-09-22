@@ -1833,9 +1833,47 @@ describe("process-tree root safety", () => {
         };
         signalProcessTree(liveInvalidRoot, "SIGKILL");
 
+        // No OS-level signal: kill(1) is init and kill(-1) every process the
+        // user owns. The handle's own kill() is refused too. It used to be
+        // called here, on the theory that a ChildProcess handle only reaches
+        // its own child; but not every handle is bound to a real child
+        // (node-pty's kill() is process.kill(this.pid)), and no child this
+        // process starts can have pid 1.
         expect(osKill).not.toHaveBeenCalled();
-        expect(directKill).toHaveBeenCalledOnce();
-        expect(directKill).toHaveBeenCalledWith("SIGKILL");
+        expect(directKill).not.toHaveBeenCalled();
+
+        // A live invalid root is therefore never signalled; cleanup fails
+        // closed instead of being reported as done.
+        await expect(
+          terminateProcessTreeAndWait(liveInvalidRoot, {
+            terminateGraceMs: 1,
+            killGraceMs: 1,
+            label: "invalid root",
+          }),
+        ).rejects.toThrow("invalid root invalid process root survived forced shutdown");
+        expect(osKill).not.toHaveBeenCalled();
+        expect(directKill).not.toHaveBeenCalled();
+      } finally {
+        osKill.mockRestore();
+      }
+    },
+  );
+
+  // 0 and -1 were already refused; a non-integer pid reached process.kill.
+  it.each([2.5, Number.NaN])(
+    "never signals a handle whose pid is %s",
+    (pid) => {
+      const directKill = vi.fn(() => true);
+      // Never calls through: a real kill with these pids is the hazard.
+      const osKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+      try {
+        signalProcessTree(
+          { pid, exitCode: null, signalCode: null, kill: directKill },
+          "SIGTERM",
+        );
+
+        expect(osKill).not.toHaveBeenCalled();
+        expect(directKill).not.toHaveBeenCalled();
       } finally {
         osKill.mockRestore();
       }

@@ -1,5 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 
+import { isSignalablePid } from "../utils/child-signal.js";
 import { signalProcessTree } from "../utils/supervisedProcess.js";
 import type { IPty } from "./loadPty.js";
 
@@ -42,8 +43,7 @@ export function signalPtyProcessTree(
   pty: IPty,
   signal: "SIGTERM" | "SIGKILL",
 ): boolean {
-  const pid = pty.pid;
-  if (!Number.isSafeInteger(pid) || pid <= 1) return false;
+  if (!isSignalablePid(pty.pid)) return false;
   try {
     signalProcessTree(processTreeHandle(pty), signal);
   } catch {

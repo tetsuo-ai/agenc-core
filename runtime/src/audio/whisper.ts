@@ -5,6 +5,7 @@ import { access, lstat, mkdir, mkdtemp, open, realpath, rename, rm } from "node:
 import { isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonObject } from "../app-server/protocol/index.js";
+import { isSignalablePid } from "../utils/child-signal.js";
 
 export type WhisperModel = "base" | "small";
 export const WHISPER_LANGUAGES = ["auto", "en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "uk", "zh", "ja", "ko", "ar", "hi", "tr"] as const;
@@ -309,7 +310,7 @@ export function runWhisperProcess(executable: string, args: string[], cwd: strin
       failure ??= error;
       // A failed spawn has no pid, but until Node reports the failure its
       // open handle sends kill() to pid 0: the daemon's own process group.
-      if (child.pid === undefined) return;
+      if (!isSignalablePid(child.pid)) return;
       child.kill("SIGTERM");
       killTimer ??= setTimeout(() => child.kill("SIGKILL"), 1500);
       killTimer.unref();

@@ -7,6 +7,7 @@ import {
 } from "../../../src/tui/realtime/audio.js";
 import {
   createFailedSpawnChild,
+  createPidStandIn,
   type FailedSpawnChild,
 } from "../../helpers/failed-spawn-child.js";
 
@@ -88,5 +89,19 @@ describe("realtime audio player with a failed play spawn", () => {
 
     expect(spawnProcess).toHaveBeenCalledTimes(2);
     expect(spawned.flatMap((failed) => failed.groupSignals)).toEqual([]);
+  });
+});
+
+describe("realtime audio player with a handle reporting an unsafe pid", () => {
+  // Only a pid above 1 is signalled: 0 is this process's group, -1 every
+  // process of the user, 1 init.
+  test.each([0, -1, 1])("close() never signals a player whose pid is %s", (pid) => {
+    const child = createPidStandIn(pid);
+    const player = createProcessRealtimeAudioPlayer(() => child);
+
+    player.enqueue(chunk);
+    player.close();
+
+    expect(child.signals).toEqual([]);
   });
 });

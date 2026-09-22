@@ -1,7 +1,7 @@
 import * as childProcess from "child_process";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { failingSpawn } from "../helpers/failed-spawn-child.js";
+import { createPidStandIn, failingSpawn } from "../helpers/failed-spawn-child.js";
 
 // stopRecording() signalled the SoX recorder unconditionally. A recorder
 // whose spawn failed (no `rec` on PATH) has no pid, and until Node reports
@@ -69,6 +69,23 @@ describe("voice recording with a failed recorder spawn", () => {
       expect(failures.children[0]!.spawnfile).toBe("rec");
       expect(failures.children[0]!.groupSignals).toEqual([]);
       expect(failures.children[0]!.uncaught).toEqual([]);
+    },
+  );
+});
+
+describe("voice recording with a recorder reporting an unsafe pid", () => {
+  // Only a pid above 1 is signalled: 0 is this process's group, -1 every
+  // process of the user, 1 init.
+  test.skipIf(process.platform === "win32").each([0, -1, 1])(
+    "stopRecording never signals a recorder whose pid is %s",
+    async (pid) => {
+      const child = createPidStandIn(pid);
+      spawnMock.mockImplementation(() => child as never);
+
+      await voice.startRecording(() => {}, () => {}, { silenceDetection: false });
+      voice.stopRecording();
+
+      expect(child.signals).toEqual([]);
     },
   );
 });

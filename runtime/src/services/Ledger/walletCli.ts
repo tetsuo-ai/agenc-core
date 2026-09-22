@@ -37,6 +37,7 @@ import { Readable } from "node:stream";
 import { extract, list, type ReadEntry } from "tar";
 import { resolveHomeContext } from "../../config/home.js";
 import * as lockfile from "../../utils/lockfile.js";
+import { isSignalablePid } from "../../utils/child-signal.js";
 
 export const WALLET_CLI_PACKAGE = "@ledgerhq/wallet-cli";
 export const WALLET_CLI_INSTALL_TOOL_NAME = "install_ledger_wallet_cli";
@@ -471,7 +472,7 @@ export function runWalletCliProcess(
     const abort = (): void => {
       // A failed spawn has no pid, but until Node reports the failure its
       // open handle sends kill() to pid 0: this process's whole group.
-      if (child.pid === undefined) return;
+      if (!isSignalablePid(child.pid)) return;
       try {
         child.kill("SIGTERM");
       } catch {

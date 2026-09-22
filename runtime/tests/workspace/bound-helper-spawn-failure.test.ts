@@ -115,7 +115,8 @@ describe("embedded helper programs", () => {
   test("the directory helper never signals a read worker whose spawn failed", () => {
     // Its handoff failures run in the same microtask drain as the spawn. A
     // kill() there on a child without a pid reaches pid 0: the helper's own
-    // process group, which it shares with the daemon.
+    // process group, which it shares with the daemon. Only a pid above 1 is
+    // ever signalled.
     const program = programs.BOUND_DIRECTORY_HELPER_SOURCE;
     const start = program.indexOf("const runBoundReadWorker = async");
     const end = program.indexOf("const [closed, sourceWriteError, stdinWriteError]", start);
@@ -124,6 +125,8 @@ describe("embedded helper programs", () => {
     const body = program.slice(start, end);
     const kills = [...body.matchAll(/child\.kill\(/gu)];
     expect(kills).toHaveLength(1);
-    expect(body).toContain("if (child.pid !== undefined) child.kill();");
+    expect(body).toContain(
+      "if (Number.isSafeInteger(child.pid) && child.pid > 1) child.kill();",
+    );
   });
 });

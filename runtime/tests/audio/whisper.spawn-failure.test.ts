@@ -2,7 +2,7 @@ import * as childProcess from "node:child_process";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { createFailedSpawnChild } from "../helpers/failed-spawn-child.js";
+import { createFailedSpawnChild, createPidStandIn } from "../helpers/failed-spawn-child.js";
 
 // runWhisperProcess touched child.stdout before its error listener. EMFILE and
 // ENFILE leave a failed child's stdio undefined: the promise rejected with a
@@ -65,5 +65,28 @@ describe("runWhisperProcess with a failed spawn", () => {
     await failed.reported;
     expect(failed.groupSignals).toEqual([]);
     expect(failed.uncaught).toEqual([]);
+  });
+});
+
+describe("runWhisperProcess with a handle reporting an unsafe pid", () => {
+  // Only a pid above 1 is signalled: 0 is this process's group, -1 every
+  // process of the user, 1 init.
+  test.each([0, -1, 1])("a cancel never signals a child whose pid is %s", async (pid) => {
+    const child = createPidStandIn(pid);
+    spawnMock.mockImplementation(() => child as never);
+    const controller = new AbortController();
+
+    const running = runWhisperProcess(
+      "whisper-cli",
+      ["-f", "speech.wav"],
+      tmpdir(),
+      {},
+      controller.signal,
+    );
+    controller.abort();
+    child.emit("close", null);
+
+    await expect(running).rejects.toMatchObject({ code: "REQUEST_CANCELLED" });
+    expect(child.signals).toEqual([]);
   });
 });

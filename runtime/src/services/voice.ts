@@ -14,6 +14,7 @@ import { getPlatform } from '../utils/platform.js'
 import { getSelectedProviderEnvironment } from '../utils/model/providers.js'
 import { isSessionRemoteMode } from '../session/runtime-options.js'
 import { getIsRemoteMode } from '../bootstrap/state.js'
+import { isSignalablePid } from '../utils/child-signal.js'
 
 // Lazy-loaded native audio module. audio-capture.node links against
 // CoreAudio.framework + AudioUnit.framework; dlopen is synchronous and
@@ -531,7 +532,7 @@ export function stopRecording(): void {
     // A recorder whose spawn failed has no pid. Until Node reports that on
     // the next tick, its open handle sends kill() to pid 0: the TUI's whole
     // process group. Its error handler ends the recording instead.
-    if (activeRecorder.pid !== undefined) activeRecorder.kill('SIGTERM')
+    if (isSignalablePid(activeRecorder.pid)) activeRecorder.kill('SIGTERM')
     activeRecorder = null
   }
 }
