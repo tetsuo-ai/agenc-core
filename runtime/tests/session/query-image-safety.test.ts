@@ -4,6 +4,7 @@ import type { LLMMessage } from "../../src/llm/types.js";
 import {
   imageContentIdentity,
   imageRoute,
+  pruneRejectedImages,
   recordRejectedImages,
   rejectedImagesFor,
   requestImageUrls,
@@ -163,6 +164,30 @@ describe("rejected image bookkeeping", () => {
     expect(recordRejectedImages(session, FLASH_ROUTE, [TINY_PNG_URL, FAKE_PNG_URL], rejection)).toBe(1);
     expect(rejectedImagesFor(session, FLASH_ROUTE)?.has(imageContentIdentity(FAKE_PNG_URL))).toBe(true);
     expect(rejectedImagesFor({}, FLASH_ROUTE)).toBeUndefined();
+  });
+
+  it("forgets refusals whose images left history, on every route", () => {
+    // Review finding: refusals were never forgotten, so a long session kept
+    // one per refused image for its whole life.
+    const session = {};
+    const rejection = { provider: "deepseek", reason: "unsupported image" };
+    const claudeRoute = imageRoute("anthropic", "claude-sonnet-5");
+    recordRejectedImages(session, FLASH_ROUTE, [TINY_PNG_URL, FAKE_PNG_URL, REMOTE_URL], rejection);
+    recordRejectedImages(session, claudeRoute, [FAKE_PNG_URL], rejection);
+
+    // An image in history or in the request keeps its refusal.
+    expect(
+      pruneRejectedImages(session, [[toolImage(TINY_PNG_URL)], [userImage(REMOTE_URL)]]),
+    ).toBe(2);
+    expect([...(rejectedImagesFor(session, FLASH_ROUTE)?.keys() ?? [])]).toEqual([
+      imageContentIdentity(TINY_PNG_URL),
+      imageContentIdentity(REMOTE_URL),
+    ]);
+    expect(rejectedImagesFor(session, claudeRoute)).toBeUndefined();
+
+    expect(pruneRejectedImages(session, [[{ role: "user", content: "text" }]])).toBe(2);
+    expect(rejectedImagesFor(session, FLASH_ROUTE)).toBeUndefined();
+    expect(pruneRejectedImages(session, [])).toBe(0);
   });
 
   it("finds the images a request added after the last assistant message", () => {

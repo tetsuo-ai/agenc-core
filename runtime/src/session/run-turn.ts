@@ -92,6 +92,7 @@ import {
 } from "./query-image-budget.js";
 import {
   imageRoute,
+  pruneRejectedImages,
   rejectedImagesFor,
   rememberRequestImageRoute,
   withholdImagesForModel,
@@ -897,6 +898,8 @@ async function prepareSamplingRequestBoundary(
     currentConfig,
   );
   rememberRequestImageRoute(state, imagePolicy.route);
+  // A refusal matters only while its image can be sent again.
+  pruneRejectedImages(session, [state.messages, state.messagesForQuery]);
   const withheldForModel = withholdImagesForModel(
     state.messagesForQuery,
     imagePolicy,

@@ -12,6 +12,10 @@ import type {
   LLMProvider,
   LLMResponse,
 } from "../../src/llm/types.js";
+import {
+  imageRoute,
+  rejectedImagesFor,
+} from "../../src/session/query-image-safety.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import type { Config } from "../../src/session/turn-context.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
@@ -439,6 +443,55 @@ describe("one refused image does not brick the session", () => {
     expect(requests).toHaveLength(2);
     expect(imageUrls(requests[0]!)).toHaveLength(600);
     expect(imageUrls(requests[1]!)).toEqual([]);
+  });
+
+  test("refusals are forgotten once their images leave history, never before", async () => {
+    // Review finding: every refusal was kept for the rest of the session, so
+    // a long session that kept reading images the model refused grew the
+    // records without bound. Each turn here reads a new image and the older
+    // one leaves history, as a compaction would take it.
+    const images = distinctPngDataUrls(12);
+    const toolResult = (url: string, index: number): LLMMessage[] => [
+      { role: "user", content: `read shot ${index}` },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: `call_${index}`, name: "screenshot", arguments: "{}" }],
+      },
+      {
+        role: "tool",
+        toolCallId: `call_${index}`,
+        toolName: "screenshot",
+        content: [{ type: "image_url", image_url: { url } }],
+      },
+    ];
+    const { provider, requests } = scriptedProvider(
+      "deepseek",
+      [],
+      (messages) => imageUrls(messages).length > 0,
+    );
+    const { session, events, state } = sessionFor(provider, "deepseek-flash");
+    const route = imageRoute("deepseek", "deepseek-flash");
+
+    for (const [index, url] of images.entries()) {
+      state.history.splice(0, state.history.length, ...toolResult(url, index));
+      await drain(runTurn(session, ctxFor("deepseek-flash"), `turn ${index}`));
+      expect(rejectedImagesFor(session, route)?.size).toBe(1);
+    }
+    expect(turnFailures(events)).toEqual([]);
+    expect(requests).toHaveLength(images.length * 2);
+
+    // The image still in history stays recorded, so it stays out without a
+    // new refusal.
+    await drain(runTurn(session, ctxFor("deepseek-flash"), "once more"));
+    expect(requests).toHaveLength(images.length * 2 + 1);
+    expect(imageUrls(requests.at(-1)!)).toEqual([]);
+
+    // With no refused image left in history, nothing is kept.
+    state.history.splice(0, state.history.length, { role: "user", content: "text only" });
+    await drain(runTurn(session, ctxFor("deepseek-flash"), "plain"));
+    expect(rejectedImagesFor(session, route)).toBeUndefined();
+    expect(turnFailures(events)).toEqual([]);
   });
 
   test("a restarted session with the refused image in its history recovers again", async () => {

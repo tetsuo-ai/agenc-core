@@ -42,7 +42,7 @@ import {
 import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
 /**
- * A provider's refusal of one image, kept for the rest of the session and
+ * A provider's refusal of one image, kept while the image is in history and
  * applied only to requests that go to the same route.
  */
 export interface ProviderImageRejection {
@@ -108,10 +108,12 @@ export function imageContentIdentity(url: string): string {
  * Remember that the route refused these images. Returns how many were not
  * already recorded, so a caller can tell whether a retry changes anything.
  *
- * Nothing is ever evicted. Recovery ends only because every retry grows this
- * set; an eviction cap let a request with more refused images than the cap
- * restore one image for each it recorded, so the turn never recovered. An
- * entry is a 64-character digest and a shared reason, per refused image.
+ * Nothing is evicted while its image can still be sent. Recovery ends only
+ * because every retry grows this set; an eviction cap let a request with more
+ * refused images than the cap restore one image for each it recorded, so the
+ * turn never recovered. `pruneRejectedImages` forgets a refusal once its
+ * image has left history, which bounds the records by the images history
+ * holds.
  */
 export function recordRejectedImages(
   sessionKey: object,
@@ -137,6 +139,39 @@ export function recordRejectedImages(
     added += 1;
   }
   return added;
+}
+
+/**
+ * Forget every refusal, on every route, whose image none of `messageLists`
+ * carries. The caller passes the turn's history and the request about to be
+ * sent, so a refusal is kept exactly as long as its image could reach a
+ * provider again; one that leaves history (compacted away, or a new
+ * session state) is dropped, and a long session does not accumulate them.
+ * Returns how many were forgotten.
+ */
+export function pruneRejectedImages(
+  sessionKey: object,
+  messageLists: readonly (readonly LLMMessage[])[],
+): number {
+  const routes = rejectedImagesBySession.get(sessionKey);
+  if (routes === undefined) return 0;
+  const present = new Set<string>();
+  for (const messages of messageLists) {
+    for (const url of requestImageUrls(messages)) {
+      present.add(imageContentIdentity(url));
+    }
+  }
+  let forgotten = 0;
+  for (const [route, rejected] of routes) {
+    for (const identity of rejected.keys()) {
+      if (present.has(identity)) continue;
+      rejected.delete(identity);
+      forgotten += 1;
+    }
+    if (rejected.size === 0) routes.delete(route);
+  }
+  if (routes.size === 0) rejectedImagesBySession.delete(sessionKey);
+  return forgotten;
 }
 
 /** Images this route refused in this session, or `undefined` when none. */
