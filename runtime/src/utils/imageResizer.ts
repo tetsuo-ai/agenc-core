@@ -15,6 +15,11 @@ import {
 } from '../tools/FileReadTool/imageProcessor.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { formatFileSize } from './format.js'
+import {
+  imageFormatLabel,
+  inspectImageBytes,
+  type InlineImageFormat,
+} from './image-validation.js'
 import { logError } from './log.js'
 
 type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
@@ -26,6 +31,39 @@ export class ImageResizeError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'ImageResizeError'
+  }
+}
+
+/**
+ * The bytes are not a complete PNG, JPEG, GIF or WebP image. Providers decode
+ * every inline image and answer such bytes with an HTTP 400, so they must
+ * never be sent as an image.
+ */
+export class UndecodableImageError extends ImageResizeError {
+  constructor(
+    /** Lower-case clause describing the defect. */
+    readonly reason: string,
+    /** Container format named by the signature, when it has a known one. */
+    readonly format?: InlineImageFormat,
+  ) {
+    super(
+      format === undefined
+        ? `Not a valid image: ${reason}.`
+        : `Not a valid ${imageFormatLabel(format)} image: ${reason}.`,
+    )
+    this.name = 'UndecodableImageError'
+  }
+}
+
+/**
+ * Throw unless `buffer` is a complete image container. Paths that hand the
+ * caller's original bytes back unchanged must pass this first: nothing else
+ * on those paths has decoded them.
+ */
+function assertDecodableImage(buffer: Buffer): void {
+  const inspection = inspectImageBytes(buffer)
+  if (!inspection.ok) {
+    throw new UndecodableImageError(inspection.reason, inspection.format)
   }
 }
 
@@ -91,6 +129,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
         return { buffer: compressedBuffer, mediaType: 'jpeg' }
       }
       // Return without dimensions if we can't determine them
+      assertDecodableImage(imageBuffer)
       return { buffer: imageBuffer, mediaType: normalizedMediaType }
     }
 
@@ -102,12 +141,14 @@ export async function maybeResizeAndDownsampleImageBuffer(
     let width = originalWidth
     let height = originalHeight
 
-    // Check if the original file just works
+    // Check if the original file just works. Sharp read only the header, so
+    // a file truncated after it still reaches this point intact.
     if (
       originalSize <= IMAGE_TARGET_RAW_SIZE &&
       width <= IMAGE_MAX_WIDTH &&
       height <= IMAGE_MAX_HEIGHT
     ) {
+      assertDecodableImage(imageBuffer)
       return {
         buffer: imageBuffer,
         mediaType: normalizedMediaType,
@@ -275,26 +316,29 @@ export async function maybeResizeAndDownsampleImageBuffer(
       },
     }
   } catch (error) {
+    if (error instanceof UndecodableImageError) throw error
     logError(error as Error)
 
-    // Detect actual format from magic bytes instead of trusting extension
-    const detected = detectImageFormatFromBuffer(imageBuffer)
-    const normalizedExt = detected.slice(6) // Remove 'image/' prefix
+    // Sharp could not read the bytes or is not installed. They may pass
+    // through unprocessed only when they form a complete image container;
+    // anything else (such as a PNG signature with no image after it) would
+    // be rejected by the provider on this and every later request.
+    const inspection = inspectImageBytes(imageBuffer)
+    if (!inspection.ok) {
+      throw new UndecodableImageError(inspection.reason, inspection.format)
+    }
+    // The format comes from the signature, never from the extension.
+    const normalizedExt = inspection.format
 
     // Calculate the base64 size (API limit is on base64-encoded length)
     const base64Size = Math.ceil((originalSize * 4) / 3)
 
     // Size-under-5MB does not imply dimensions-under-cap. Don't return the
-    // raw buffer if the PNG header says it's oversized — fall through to
-    // ImageResizeError instead. PNG sig is 8 bytes, IHDR dims at 16-24.
+    // raw buffer if the header says it's oversized; fall through to
+    // ImageResizeError instead.
     const overDim =
-      imageBuffer.length >= 24 &&
-      imageBuffer[0] === 0x89 &&
-      imageBuffer[1] === 0x50 &&
-      imageBuffer[2] === 0x4e &&
-      imageBuffer[3] === 0x47 &&
-      (imageBuffer.readUInt32BE(16) > IMAGE_MAX_WIDTH ||
-        imageBuffer.readUInt32BE(20) > IMAGE_MAX_HEIGHT)
+      inspection.width > IMAGE_MAX_WIDTH ||
+      inspection.height > IMAGE_MAX_HEIGHT
 
     // If original image's base64 encoding is within API limit, allow it through uncompressed
     if (base64Size <= API_IMAGE_MAX_BASE64_SIZE && !overDim) {

@@ -71,7 +71,11 @@ import {
 } from "../../utils/pdfPageRange.js";
 import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
 import { asRecord } from "../../utils/record.js";
-import { maybeResizeAndDownsampleImageBuffer } from "../../utils/imageResizer.js";
+import {
+  maybeResizeAndDownsampleImageBuffer,
+  UndecodableImageError,
+} from "../../utils/imageResizer.js";
+import { imageFormatLabel } from "../../utils/image-validation.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
@@ -1326,6 +1330,46 @@ async function readPDFFile(
   };
 }
 
+/** The text line that accompanies every image FileRead returns. */
+export function fileReadImageSummary(
+  displayPath: string,
+  sizeBytes: number,
+  mime: string,
+): string {
+  return `Read image ${displayPath} (${formatBytes(sizeBytes)}, ${mime})`;
+}
+
+const FILE_READ_IMAGE_SUMMARY =
+  /^Read image (.+) \(\d+(?:\.\d+)?(?:B|KB|MB), image\/[a-z0-9.+-]+\)$/u;
+
+/** The path named by a {@link fileReadImageSummary} line, if `text` is one. */
+export function parseFileReadImageSummary(text: string): string | undefined {
+  return FILE_READ_IMAGE_SUMMARY.exec(text.trim())?.[1];
+}
+
+/**
+ * The tool result for an image file that cannot be sent to a model. It is an
+ * ordinary failed read: the model learns why, and the turn continues.
+ */
+function unattachableImageMessage(
+  displayPath: string,
+  sizeBytes: number,
+  error: unknown,
+): string {
+  const size = formatBytes(sizeBytes);
+  if (error instanceof UndecodableImageError) {
+    const inspect = "Use a shell command such as xxd to inspect its bytes.";
+    return error.format === undefined
+      ? `${displayPath} does not contain a PNG, JPEG, GIF or WebP image, so it was not attached. The file is ${size}. ${inspect}`
+      : `${displayPath} is not a valid ${imageFormatLabel(error.format)} image, so it was not attached: ${error.reason}. The file is ${size}. ${inspect}`;
+  }
+  const detail =
+    error instanceof Error && error.message.trim().length > 0
+      ? error.message.trim()
+      : String(error);
+  return `${displayPath} (${size}) could not be attached as an image: ${detail}`;
+}
+
 async function readImageFile(
   resolvedPath: ResolvedPath,
   opts: ImageReadOpts,
@@ -1364,10 +1408,10 @@ async function readImageFile(
   // encoding — a raw screenshot over ~3.7MB, or a small-but-high-DPI PNG over
   // 1568px, is otherwise emitted verbatim and rejected by the API with a 400 on
   // the common "read this screenshot" path. Mirrors BashTool/utils.ts and the MCP
-  // image path. Falls back to the original bytes if the image cannot be processed.
+  // image path.
   const declaredMime =
     IMAGE_MIME_BY_EXT[opts.ext] ?? "application/octet-stream";
-  let mime = declaredMime;
+  let mime: string;
   let base64: string;
   try {
     const extForResize = declaredMime.startsWith("image/")
@@ -1380,9 +1424,14 @@ async function readImageFile(
     );
     mime = `image/${resized.mediaType}`;
     base64 = resized.buffer.toString("base64");
-  } catch {
-    // Unprocessable image (unknown format, corrupt) — emit the original bytes.
-    base64 = rawBuffer.toString("base64");
+  } catch (error) {
+    // Never emit bytes the resizer refused. A provider answers an image it
+    // cannot decode (a 16-byte file holding only a PNG signature) with an
+    // HTTP 400, and because the tool result is replayed, every later request
+    // in the session failed the same way.
+    return errorResult(
+      unattachableImageMessage(opts.displayPath, rawBuffer.length, error),
+    );
   }
 
   // Record the read with no text content (binary). Use `viewKind: "full"`
@@ -1407,16 +1456,14 @@ async function readImageFile(
   // URLs verbatim. The text body remains a brief summary so the runtime
   // envelope is never empty.
   const dataUrl = `data:${mime};base64,${base64}`;
+  const summary = fileReadImageSummary(opts.displayPath, fileStats.size, mime);
   const contentItems: FunctionCallOutputContentItem[] = [
-    {
-      type: "input_text",
-      text: `Read image ${opts.displayPath} (${formatBytes(fileStats.size)}, ${mime})`,
-    },
+    { type: "input_text", text: summary },
     { type: "input_image", image_url: dataUrl },
   ];
 
   return {
-    content: `Read image ${opts.displayPath} (${formatBytes(fileStats.size)}, ${mime})`,
+    content: summary,
     contentItems,
     metadata: {
       filePath: opts.displayPath,
