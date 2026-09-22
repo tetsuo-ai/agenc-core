@@ -124,6 +124,14 @@ describe("read-only delegated search authority", () => {
     expect(nested.content).toBe("pub/inner.ts");
   });
 
+  it("treats a leading # in a delegated Glob pattern as a character", async () => {
+    // ripgrep's --glob would read "#*.ts" as a comment and list every file.
+    const tool = bindExplicitDangerBoundary(createGlobTool({ allowedPaths: [workspace] }));
+    const result = await tool.execute(guarded({ pattern: "#*.ts", path: workspace }));
+    expect(result.isError).not.toBe(true);
+    expect(result.content).toBe("No files found");
+  });
+
   it("does not read denied ignore-file bytes while matching allowed content", async () => {
     await writeFile(join(workspace, ".ignore"), "public.ts\n");
     const tool = bindExplicitDangerBoundary(createGrepTool({ allowedPaths: [workspace] }));

@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import {
+  GlobMatchWorkExceeded,
   GlobPatternError,
   normalizeGlobPattern,
   planGlobPattern,
@@ -131,6 +132,22 @@ describe("planGlobPattern", () => {
       expect(() => planGlobPattern(pattern)).toThrowError(message);
     }
   });
+
+  test("bounds brace nesting before compiling", () => {
+    const nested = (depth: number) =>
+      `src/${"{".repeat(depth)}a${"}".repeat(depth)}.ts`;
+    expect(planGlobPattern(nested(32)).pathMatcher?.matches(
+      Buffer.from("src/a.ts"),
+    )).toBe(true);
+    expect(() => planGlobPattern(nested(33))).toThrowError(GlobPatternError);
+    expect(() => planGlobPattern(nested(33))).toThrowError(
+      "alternate groups nest deeper than 32 levels",
+    );
+    // 4,003 bytes, under the pattern limit, used to overflow the stack.
+    expect(() =>
+      planGlobPattern(`x/${"{".repeat(2000)}a${"}".repeat(2000)}`),
+    ).toThrowError(GlobPatternError);
+  });
 });
 
 describe("compileGlobMatcher", () => {
@@ -146,6 +163,13 @@ describe("compileGlobMatcher", () => {
       true,
     );
     expect(matches("café-ñandú/*.md", "café-ñandú/résumé.md")).toBe(true);
+  });
+
+  test("stops once its work cap is spent", () => {
+    const matcher = compileGlobMatcher("**/a*/b*/c*", { maxWork: 10 });
+    expect(() => matcher.matches(Buffer.from("x/a1/b2/c3", "utf8"))).toThrowError(
+      GlobMatchWorkExceeded,
+    );
   });
 
   test("matches pathological patterns in linear time", () => {

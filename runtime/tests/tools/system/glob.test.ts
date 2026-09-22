@@ -38,8 +38,13 @@ import {
   __INTERNAL,
   createGlobTool as createUnboundGlobTool,
   GLOB_TOOL_NAME,
+  runRipgrepFiles,
 } from "./glob.js";
-import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import {
+  bindExplicitDangerBoundary,
+  withExplicitDangerBoundary,
+} from "../../helpers/explicit-danger-boundary.js";
+import { selectPinnedRipgrepPath } from "../../../src/tools/system/pinned-ripgrep.js";
 import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
 
 const createGlobTool = (...args: Parameters<typeof createUnboundGlobTool>) =>
@@ -900,7 +905,11 @@ describe("Glob slash patterns", () => {
 
   async function glob(
     args: Record<string, unknown>,
-    config: { readonly maxResults?: number; readonly maxPathPatternCandidates?: number } = {},
+    config: {
+      readonly maxResults?: number;
+      readonly maxPathPatternListingBytes?: number;
+      readonly maxPathPatternMatchWork?: number;
+    } = {},
   ) {
     const result = await createGlobTool({ allowedPaths: [root], ...config }).execute({
       path: root,
@@ -1050,28 +1059,106 @@ describe("Glob slash patterns", () => {
     expect(capped.metadata).toMatchObject({ numFiles: 2, truncated: true });
   });
 
-  test("report an exhausted candidate budget instead of a silent miss", async () => {
+  test("find an older match behind more than 20,000 newer non-matching files", async () => {
+    // A "/" pattern used to read at most 20,000 newest-first candidates, so a
+    // match listed after them was reported as missing.
     const now = Date.now() / 1000;
     await mkdir(join(root, "keep"));
     await writeFile(join(root, "keep", "old.txt"), "old\n", "utf8");
     await utimes(join(root, "keep", "old.txt"), now - 3600, now - 3600);
-    for (let index = 0; index < 6; index += 1) {
-      const file = join(root, `noise${index}`, "n.txt");
-      await mkdir(dirname(file));
-      await writeFile(file, "n\n", "utf8");
-      await utimes(file, now - index, now - index);
+    for (let batch = 0; batch < 21; batch += 1) {
+      const directory = join(root, `noise${batch}`);
+      await mkdir(directory);
+      await Promise.all(
+        Array.from({ length: 1000 }, (_, index) =>
+          writeFile(join(directory, `n${index}.txt`), "n\n", "utf8"),
+        ),
+      );
     }
 
-    const budgeted = await glob(
-      { pattern: "keep/*.txt" },
-      { maxResults: 1, maxPathPatternCandidates: 3 },
-    );
-    expect(budgeted.content).toBe(`No files found\n${TRUNCATION_NOTE}`);
-    expect(budgeted.metadata).toMatchObject({ numFiles: 0, truncated: true });
+    const result = await glob({ pattern: "keep/*.txt" });
+    expect(result.content).toBe("keep/old.txt");
+    expect(result.metadata).toMatchObject({ numFiles: 1, truncated: false });
+  }, 120_000);
 
-    const complete = await glob({ pattern: "keep/*.txt" }, { maxResults: 1 });
-    expect(complete.content).toBe("keep/old.txt");
-    expect(complete.metadata).toMatchObject({ numFiles: 1, truncated: false });
+  test("report a listing cut short by its byte cap as truncated", async () => {
+    await mkdir(join(root, "keep"));
+    await writeFile(join(root, "keep", "old.txt"), "old\n", "utf8");
+
+    const capped = await glob(
+      { pattern: "keep/*.txt" },
+      { maxPathPatternListingBytes: 8 },
+    );
+    expect(capped.content).toBe(`No files found\n${TRUNCATION_NOTE}`);
+    expect(capped.metadata).toMatchObject({ numFiles: 0, truncated: true });
+  });
+
+  test("report matching that runs out of work as truncated", async () => {
+    const result = await glob(
+      { pattern: "tree/**/*.txt" },
+      { maxPathPatternMatchWork: 1 },
+    );
+    expect(result.content).toBe(`No files found\n${TRUNCATION_NOTE}`);
+    expect(result.metadata).toMatchObject({ numFiles: 0, truncated: true });
+  });
+
+  test("filter a listing without a directory capability", async () => {
+    const now = Date.now() / 1000;
+    await mkdir(join(root, "keep"));
+    await writeFile(join(root, "keep", "old.txt"), "old\n", "utf8");
+    await utimes(join(root, "keep", "old.txt"), now - 3600, now - 3600);
+    const ripgrep = selectPinnedRipgrepPath();
+    expect(ripgrep).toBeDefined();
+    const examined: string[] = [];
+    const listing = {
+      command: ripgrep!,
+      pattern: "*.txt",
+      cwd: root,
+      searchPath: ".",
+      includeIgnored: false,
+    };
+
+    const filtered = await runRipgrepFiles({
+      ...listing,
+      toolArgs: withExplicitDangerBoundary({}),
+      limit: 1,
+      acceptRecord: (record) => {
+        const path = record.toString("utf8");
+        examined.push(path);
+        return path.endsWith("keep/old.txt") ? "accept" : "reject";
+      },
+    });
+    expect(filtered.pathRecords.map((record) => record.toString("utf8"))).toEqual([
+      "./keep/old.txt",
+    ]);
+    expect(filtered.killedAfterLimit).toBe(true);
+    expect(filtered.listingTruncated).toBeUndefined();
+    // The oldest file is listed last, after every newer non-match.
+    expect(examined.at(-1)).toBe("./keep/old.txt");
+    expect(examined.length).toBeGreaterThan(1);
+
+    const capped = await runRipgrepFiles({
+      ...listing,
+      toolArgs: withExplicitDangerBoundary({}),
+      limit: 10,
+      maxListingBytes: 8,
+      acceptRecord: () => "accept",
+    });
+    expect(capped.pathRecords).toEqual([]);
+    expect(capped.listingTruncated).toBe(true);
+  });
+
+  test("return a Glob error when brace groups nest too deeply", async () => {
+    // 4,003 bytes, well under the pattern limit; it used to overflow the
+    // stack while compiling and reject instead of returning a result.
+    const pattern = `x/${"{".repeat(2000)}a${"}".repeat(2000)}`;
+    const result = await createGlobTool({ allowedPaths: [root] }).execute({
+      pattern,
+      path: root,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Glob error: error parsing glob");
+    expect(result.content).toContain("nest deeper than 32 levels");
   });
 
   test("stay correct on the 5,000-file tree from the report", async () => {

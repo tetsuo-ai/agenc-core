@@ -18,8 +18,16 @@
  *   - a `**` path segment matches zero or more directories;
  *   - `[...]` classes, nested `{a,b}` alternatives and `\` escapes follow
  *     globset, including its byte-level treatment of non-ASCII classes.
- * It runs the pattern as a Thompson automaton over the path's bytes, so no
- * pattern can make matching backtrack exponentially.
+ * Deliberate differences from ripgrep's `--glob`, all chosen for patterns
+ * written by models:
+ *   - a leading `./` names the search root, so `./src/*.ts` means `src/*.ts`
+ *     (ripgrep's `--glob` matches nothing for it); see `normalizeGlobPattern`;
+ *   - on Windows a backslash is a path separator, never an escape;
+ *   - a leading `!` or `#` is an ordinary character, where ripgrep reads an
+ *     exclusion or a comment.
+ * The pattern runs as an automaton over the path's bytes (a lazily built DFA
+ * over a Thompson NFA), so matching never backtracks, and both brace nesting
+ * and matching work are capped.
  */
 
 export class GlobPatternError extends Error {
@@ -29,8 +37,23 @@ export class GlobPatternError extends Error {
   }
 }
 
+/**
+ * Thrown when matching needs more automaton work than the matcher allows.
+ * Callers stop scanning and report their result as truncated.
+ */
+export class GlobMatchWorkExceeded extends Error {
+  constructor() {
+    super("glob matching needed more work than allowed");
+    this.name = "GlobMatchWorkExceeded";
+  }
+}
+
 export interface GlobPathMatcher {
-  /** Whether a path relative to the search root (UTF-8, "/" separated) matches. */
+  /**
+   * Whether a path relative to the search root (UTF-8, "/" separated)
+   * matches. Throws `GlobMatchWorkExceeded` once the matcher's work cap is
+   * spent.
+   */
   matches(relativePath: Uint8Array): boolean;
 }
 
@@ -74,8 +97,21 @@ interface ParsedGlob {
 
 const SEPARATOR = "/";
 const SEPARATOR_BYTE = 0x2f;
-/** Upper bound on automaton steps for one matcher; real patterns stay far below. */
-const MAX_MATCH_WORK = 100_000_000;
+/**
+ * Brace groups may nest this deep. Real patterns use one or two levels; the
+ * bound keeps every recursive step below far from the stack limit.
+ */
+const MAX_ALTERNATE_NESTING = 32;
+/**
+ * Default cap on automaton construction work (NFA states visited while
+ * building DFA states) for one matcher. Real patterns build a few dozen DFA
+ * states and stay far below it.
+ */
+const DEFAULT_MAX_MATCH_WORK = 100_000_000;
+/** Cached DFA states before the cache is dropped and rebuilt on demand. */
+const MAX_DFA_STATES = 4_096;
+const DFA_UNKNOWN = -1;
+const DFA_DEAD = -2;
 
 function isSeparator(char: string | undefined): boolean {
   return char === SEPARATOR;
@@ -119,6 +155,11 @@ class GlobParser {
           this.parseClass();
           break;
         case "{":
+          if (this.alternateStarts.length >= MAX_ALTERNATE_NESTING) {
+            throw this.error(
+              `alternate groups nest deeper than ${MAX_ALTERNATE_NESTING} levels`,
+            );
+          }
           this.alternateStarts.push(this.branches.length);
           this.branches.push([]);
           break;
@@ -375,10 +416,12 @@ const NON_SEPARATOR_MASK = (() => {
 const SEPARATOR_MASK = BYTE_MASKS[SEPARATOR_BYTE] as Uint8Array;
 
 /**
- * Thompson automaton for one glob, simulated over path bytes. It mirrors
- * globset's regex translation: `?` is `[^/]`, `*` is `[^/]*`, and the three
- * recursive forms are `(?:/?|.*\/)`, `/.*` and `(?:/|/.*\/)`, where `.` also
- * matches a newline byte.
+ * Automaton for one glob over path bytes. The Thompson NFA mirrors globset's
+ * regex translation: `?` is `[^/]`, `*` is `[^/]*`, and the three recursive
+ * forms are `(?:/?|.*\/)`, `/.*` and `(?:/|/.*\/)`, where `.` also matches a
+ * newline byte. Matching walks a DFA whose states (sets of NFA states) and
+ * transitions are built on first use, so each path byte costs one table
+ * lookup once the few states a pattern needs exist.
  */
 class GlobAutomaton implements GlobPathMatcher {
   private readonly kinds: number[] = [];
@@ -389,8 +432,17 @@ class GlobAutomaton implements GlobPathMatcher {
   private readonly seen: Uint32Array;
   private stamp = 0;
   private work = 0;
+  private dfaSets: number[][] = [];
+  private dfaAccepts: boolean[] = [];
+  private dfaTransitions: Int32Array[] = [];
+  private dfaIds = new Map<string, number>();
+  private dfaStart = DFA_UNKNOWN;
+  private dfaGeneration = 0;
 
-  constructor(tokens: readonly GlobToken[]) {
+  constructor(
+    tokens: readonly GlobToken[],
+    private readonly maxWork: number,
+  ) {
     const match = this.state(NFA_MATCH);
     // globset special-cases a glob that is only `**`: it matches everything.
     this.start =
@@ -401,56 +453,93 @@ class GlobAutomaton implements GlobPathMatcher {
   }
 
   matches(relativePath: Uint8Array): boolean {
-    let active = this.step([this.start], undefined);
-    for (const byte of relativePath) {
-      active = this.step(active, byte);
-      if (active.length === 0) return false;
+    if (this.dfaStart === DFA_UNKNOWN) {
+      this.dfaStart = this.intern(this.closure([this.start]));
     }
-    return active.some((state) => this.kinds[state] === NFA_MATCH);
+    let state = this.dfaStart;
+    if (state === DFA_DEAD) return false;
+    for (let index = 0; index < relativePath.length; index += 1) {
+      const byte = relativePath[index] as number;
+      let next = (this.dfaTransitions[state] as Int32Array)[byte] as number;
+      if (next === DFA_UNKNOWN) next = this.transition(state, byte);
+      if (next === DFA_DEAD) return false;
+      state = next;
+    }
+    return this.dfaAccepts[state] === true;
   }
 
-  /**
-   * Consume `byte` from every active byte state (or start from `states` when
-   * `byte` is undefined) and follow split edges to the next active set.
-   */
-  private step(states: readonly number[], byte: number | undefined): number[] {
+  /** Build (and cache) the DFA transition from `state` on `byte`. */
+  private transition(state: number, byte: number): number {
+    const seeds: number[] = [];
+    const set = this.dfaSets[state] as number[];
+    this.charge(set.length);
+    for (const nfaState of set) {
+      if (
+        this.kinds[nfaState] === NFA_BYTE &&
+        (this.masks[nfaState] as Uint8Array)[byte] === 1
+      ) {
+        seeds.push(this.nexts[nfaState] as number);
+      }
+    }
+    const generation = this.dfaGeneration;
+    const next = this.intern(this.closure(seeds));
+    // Interning may have dropped the cache, and `state` with it.
+    if (generation === this.dfaGeneration) {
+      (this.dfaTransitions[state] as Int32Array)[byte] = next;
+    }
+    return next;
+  }
+
+  /** Sorted byte and match states reachable from `seeds` over split edges. */
+  private closure(seeds: readonly number[]): number[] {
     this.stamp += 1;
     if (this.stamp === 0xffffffff) {
       this.seen.fill(0);
       this.stamp = 1;
     }
-    const pending: number[] = [];
-    for (const state of states) {
-      if (byte === undefined) {
-        pending.push(state);
-      } else if (
-        this.kinds[state] === NFA_BYTE &&
-        (this.masks[state] as Uint8Array)[byte] === 1
-      ) {
-        pending.push(this.nexts[state] as number);
-      }
-    }
-    const next: number[] = [];
+    const pending = [...seeds];
+    const reached: number[] = [];
     while (pending.length > 0) {
       const state = pending.pop() as number;
       if (this.seen[state] === this.stamp) continue;
       this.seen[state] = this.stamp;
-      this.work += 1;
-      if (this.work > MAX_MATCH_WORK) {
-        throw new GlobPatternError(
-          "glob pattern is too complex to match; use a simpler pattern or a narrower path",
-        );
-      }
+      this.charge(1);
       if (this.kinds[state] === NFA_SPLIT) {
         const outs = this.outs[state] as number[];
         for (let index = outs.length - 1; index >= 0; index -= 1) {
           pending.push(outs[index] as number);
         }
       } else {
-        next.push(state);
+        reached.push(state);
       }
     }
-    return next;
+    return reached.sort((left, right) => left - right);
+  }
+
+  private intern(set: number[]): number {
+    if (set.length === 0) return DFA_DEAD;
+    const key = set.join(",");
+    const known = this.dfaIds.get(key);
+    if (known !== undefined) return known;
+    if (this.dfaSets.length >= MAX_DFA_STATES) {
+      this.dfaSets = [];
+      this.dfaAccepts = [];
+      this.dfaTransitions = [];
+      this.dfaIds = new Map();
+      this.dfaStart = DFA_UNKNOWN;
+      this.dfaGeneration += 1;
+    }
+    const id = this.dfaSets.length;
+    this.dfaSets.push(set);
+    this.dfaAccepts.push(set.some((state) => this.kinds[state] === NFA_MATCH));
+    this.dfaTransitions.push(new Int32Array(256).fill(DFA_UNKNOWN));
+    this.dfaIds.set(key, id);
+    return id;
+  }
+
+  private charge(units: number): void {
+    this.work += units;
+    if (this.work > this.maxWork) throw new GlobMatchWorkExceeded();
   }
 
   private state(kind: number): number {
@@ -542,12 +631,20 @@ interface CompiledGlob {
 
 const MATCHES_NOTHING: GlobPathMatcher = { matches: () => false };
 
+export interface GlobMatcherOptions {
+  /** Cap on automaton construction work (default {@link DEFAULT_MAX_MATCH_WORK}). */
+  readonly maxWork?: number;
+}
+
 /**
  * Compile a pattern exactly as ripgrep compiles a `--glob` (the gitignore
  * line rules, then globset), except that a leading `!` or `#` stays literal:
  * Glob searches for files and has no exclusions or comments.
  */
-function compileGlob(pattern: string): CompiledGlob {
+function compileGlob(
+  pattern: string,
+  options: GlobMatcherOptions = {},
+): CompiledGlob {
   let line = pattern;
   let anchored = false;
   if (line.startsWith("/")) {
@@ -572,21 +669,36 @@ function compileGlob(pattern: string): CompiledGlob {
   const parsed = new GlobParser(glob, pattern).parse();
   return {
     parsed,
-    matcher: onlyDirectories ? MATCHES_NOTHING : new GlobAutomaton(parsed.tokens),
+    matcher: onlyDirectories
+      ? MATCHES_NOTHING
+      : new GlobAutomaton(
+          parsed.tokens,
+          options.maxWork ?? DEFAULT_MAX_MATCH_WORK,
+        ),
     onlyDirectories,
   };
 }
 
-/** Compile a full relative-path matcher with ripgrep `--glob` semantics. */
-export function compileGlobMatcher(pattern: string): GlobPathMatcher {
-  return compileGlob(pattern).matcher;
+/**
+ * Compile a full relative-path matcher with ripgrep `--glob` semantics.
+ * `matches` throws `GlobMatchWorkExceeded` once the work cap is spent.
+ */
+export function compileGlobMatcher(
+  pattern: string,
+  options: GlobMatcherOptions = {},
+): GlobPathMatcher {
+  return compileGlob(pattern, options).matcher;
 }
 
 /**
  * Put a pattern in the "/"-separated form ripgrep globs use. On Windows a
  * backslash is a path separator (globset's own Windows default); elsewhere it
- * stays an escape. A leading `./` names the search root, so it is dropped and
- * the rest stays anchored there.
+ * stays an escape.
+ *
+ * A leading `./` names the search root, so it is dropped and the rest stays
+ * anchored there. This is a deliberate difference from ripgrep, whose
+ * `--glob './src/*.ts'` matches nothing: models often write paths that way,
+ * and a silent empty result is the failure this module exists to prevent.
  */
 export function normalizeGlobPattern(
   pattern: string,
@@ -613,12 +725,15 @@ function endsAtSeparator(token: GlobToken): boolean {
  * Plan how Glob evaluates a normalized pattern (see `normalizeGlobPattern`).
  * Throws `GlobPatternError` for a malformed pattern.
  */
-export function planGlobPattern(pattern: string): GlobPatternPlan {
+export function planGlobPattern(
+  pattern: string,
+  options: GlobMatcherOptions = {},
+): GlobPatternPlan {
   // Without a "/" the pattern names files at any depth, which is exactly
   // ripgrep's file-name filter. That path is unchanged.
   if (!pattern.includes("/")) return { nameGlob: pattern };
 
-  const compiled = compileGlob(pattern);
+  const compiled = compileGlob(pattern, options);
   if (compiled.onlyDirectories) return { nameGlob: "*", matchesNothing: true };
   const { tokens, chars, topLevelEnds } = compiled.parsed;
   if (tokens.length === 1 && tokens[0]?.kind === "recursivePrefix") {

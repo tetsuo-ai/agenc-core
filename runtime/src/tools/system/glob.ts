@@ -6,7 +6,8 @@
  *   - `rg --files` as the file-listing engine, filtered by the pattern's
  *     file-name part so ignore rules stay in force; a pattern with "/" is
  *     then matched against whole relative paths (see `glob-pattern.ts`),
- *     with the same meaning ripgrep's `--glob` gives it
+ *     with the meaning ripgrep's `--glob` gives it apart from the deliberate
+ *     differences listed there
  *   - sorted, capped file-path output with donor-compatible empty and
  *     truncation text
  *
@@ -21,7 +22,7 @@
  *     `safePath()` before and after the file-listing call.
  */
 
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import {
   hasReadOnlyDelegationReadGuard,
   readOnlyDelegationReadAuthorityCurrent,
@@ -31,12 +32,14 @@ import { collectGuardedSearchCandidates } from "./guarded-search-candidates.js";
 import { createSearchIgnoreMatcher, pinnedSnapshotPathEligibility } from "./grep.js";
 import {
   compileGlobMatcher,
+  GlobMatchWorkExceeded,
   GlobPatternError,
   normalizeGlobPattern,
   planGlobPattern,
   type GlobPathMatcher,
   type GlobPatternPlan,
 } from "./glob-pattern.js";
+import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 import {
   basename,
   dirname,
@@ -76,6 +79,7 @@ import {
 import {
   assertGrepArgumentEncoding,
   assertGrepArgvWithinLimits,
+  createRipgrepFilesRecordStream,
   createRipgrepWireParser,
   decodeRipgrepPathBytes,
   GrepBoundaryError,
@@ -98,13 +102,14 @@ export const GLOB_TOOL_NAME = "Glob";
 
 const DEFAULT_MAX_RESULTS = 100;
 /**
- * A pattern with "/" is matched against whole relative paths after ripgrep
- * lists the files whose names fit its last segment, newest first. This many
- * candidates are read before the result is reported as truncated; ripgrep
- * walks the whole tree for its mtime sort either way, so the bound only caps
- * the listing handed back.
+ * A pattern with "/" is matched against whole relative paths while Glob reads
+ * ripgrep's newest-first listing of the files whose names fit its last
+ * segment, and the read stops as soon as a page of matches is found. ripgrep
+ * walks the whole tree for its mtime sort either way. The listing is spooled
+ * and read up to this many bytes; a longer one is reported as truncated.
  */
-const DEFAULT_MAX_PATH_PATTERN_CANDIDATES = 20_000;
+const DEFAULT_MAX_PATH_PATTERN_LISTING_BYTES = 64 * 1024 * 1024;
+const PATH_PATTERN_LISTING_READ_BYTES = 64 * 1024;
 const MAX_RIPGREP_STDERR_CHARS = 128 * 1024;
 const RIPGREP_FILES_TIMEOUT_MS = 120_000;
 const RIPGREP_FILES_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -168,10 +173,16 @@ export interface GlobToolConfig {
   /** Override the hard result cap (default {@link DEFAULT_MAX_RESULTS}). */
   readonly maxResults?: number;
   /**
-   * Override how many candidates a "/" pattern may read before its result is
-   * truncated (default {@link DEFAULT_MAX_PATH_PATTERN_CANDIDATES}).
+   * Override how many bytes of ripgrep's listing a "/" pattern may read before
+   * its result is truncated (default
+   * {@link DEFAULT_MAX_PATH_PATTERN_LISTING_BYTES}).
    */
-  readonly maxPathPatternCandidates?: number;
+  readonly maxPathPatternListingBytes?: number;
+  /**
+   * Override the matching work a "/" pattern may spend before its result is
+   * truncated (default: the matcher's own cap).
+   */
+  readonly maxPathPatternMatchWork?: number;
   /** Test override for the subprocess path. Production uses packaged `rg`. */
   readonly ripgrepCommand?: string;
   /** Deterministic test seam immediately after the final path check. */
@@ -197,6 +208,11 @@ export interface LimitedRipgrepResult {
   readonly exitCode: number | null;
   readonly aborted: boolean;
   readonly killedAfterLimit: boolean;
+  /**
+   * A filtered listing stopped before its end: it reached its byte cap, or
+   * the filter asked to stop. Records past that point were never examined.
+   */
+  readonly listingTruncated?: boolean;
   readonly stopReason?: SupervisedProcessStopReason;
   readonly spawnError?: Error;
 }
@@ -441,7 +457,17 @@ export interface RunRipgrepFilesParams {
   readonly readCapability?: WorkspaceBoundReadCapability;
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;
+  /**
+   * Keep only the records this accepts; it sees each record as ripgrep
+   * printed it. `limit` then counts accepted records, and the listing is
+   * read until `limit` of them are found, its end, or `maxListingBytes`.
+   */
+  readonly acceptRecord?: (record: Buffer) => RipgrepRecordVerdict;
+  /** Byte cap on a filtered listing (default 64 MiB). */
+  readonly maxListingBytes?: number;
 }
+
+export type RipgrepRecordVerdict = "accept" | "reject" | "stop";
 
 type RunRipgrepFilesWithIgnorePathsParams = Omit<
   RunRipgrepFilesParams,
@@ -593,6 +619,17 @@ async function runRipgrepFilesWithIgnorePaths(
       killedAfterLimit: false,
       spawnError: error instanceof Error ? error : new Error(String(error)),
     };
+  }
+  if (params.acceptRecord !== undefined) {
+    return runFilteredRipgrepFiles({
+      ...params,
+      acceptRecord: params.acceptRecord,
+      args,
+      timeoutMs,
+      maxOutputBytes,
+      maxListingBytes:
+        params.maxListingBytes ?? DEFAULT_MAX_PATH_PATTERN_LISTING_BYTES,
+    });
   }
   if (params.readCapability !== undefined) {
     let command: SandboxSpawnCommand | SandboxPreparedSpawn;
@@ -764,6 +801,269 @@ async function runRipgrepFilesWithIgnorePaths(
   };
 }
 
+/** Streams a NUL-delimited listing and keeps the records a filter accepts. */
+class FilteredListingScan {
+  readonly accepted: Buffer[] = [];
+  reachedLimit = false;
+  stoppedByFilter = false;
+  private readonly records: RipgrepWireParser;
+
+  constructor(
+    private readonly limit: number,
+    private readonly acceptRecord: (record: Buffer) => RipgrepRecordVerdict,
+  ) {
+    this.records = createRipgrepFilesRecordStream(
+      (record) => this.consider(record),
+      { maxRecordBytes: MAX_GREP_RECORD_BYTES },
+    );
+  }
+
+  get done(): boolean {
+    return this.reachedLimit || this.stoppedByFilter;
+  }
+
+  push(chunk: Buffer): void {
+    if (!this.done) this.records.push(chunk);
+  }
+
+  finish(partial: boolean): void {
+    this.records.finish({ allowPartial: partial || this.done });
+  }
+
+  private consider(record: Buffer): void {
+    if (this.done) return;
+    const verdict = this.acceptRecord(record);
+    if (verdict === "stop") {
+      this.stoppedByFilter = true;
+    } else if (verdict === "accept") {
+      this.accepted.push(record);
+      if (this.accepted.length >= this.limit) this.reachedLimit = true;
+    }
+  }
+}
+
+/** Feed a spooled listing to `scan` until it is done or the file ends. */
+async function readSpooledListing(
+  spoolPath: string,
+  scan: FilteredListingScan,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const handle = await fs.open(
+    spoolPath,
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    let position = 0;
+    while (!scan.done && signal?.aborted !== true) {
+      // A fresh buffer per read: a record split across reads keeps a view of
+      // the previous chunk until it is complete.
+      const chunk = Buffer.allocUnsafe(PATH_PATTERN_LISTING_READ_BYTES);
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+      if (bytesRead === 0) return;
+      position += bytesRead;
+      scan.push(chunk.subarray(0, bytesRead));
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+type FilteredRipgrepFilesParams = RunRipgrepFilesWithIgnorePathsParams & {
+  readonly acceptRecord: (record: Buffer) => RipgrepRecordVerdict;
+  readonly args: readonly string[];
+  readonly timeoutMs: number;
+  readonly maxOutputBytes: number;
+  readonly maxListingBytes: number;
+};
+
+/**
+ * List files and keep only the records `acceptRecord` accepts, stopping once
+ * `limit` are found. Unlike the unfiltered listing, ripgrep cannot stop after
+ * `limit` printed records here: a match may sit behind any number of newer
+ * non-matches. Under a directory capability the listing is spooled to a
+ * private file (the helper keeps no stdout in memory), then read until
+ * enough records match or `maxListingBytes` is reached.
+ */
+async function runFilteredRipgrepFiles(
+  params: FilteredRipgrepFilesParams,
+): Promise<LimitedRipgrepResult> {
+  const scan = new FilteredListingScan(params.limit, params.acceptRecord);
+  if (params.readCapability !== undefined) {
+    let command: SandboxSpawnCommand | SandboxPreparedSpawn;
+    try {
+      command = prepareBoundRipgrepFilesCommand({
+        readCapability: params.readCapability,
+        toolArgs: params.toolArgs,
+        fallbackCwd: params.cwd,
+        program: params.command,
+        args: params.args,
+        env: scrubEnvForChildProcess(process.env),
+      });
+    } catch (error) {
+      if (!isExecutableUnavailable(error)) throw error;
+      return {
+        pathRecords: [],
+        stderr: "",
+        exitCode: null,
+        aborted: params.signal?.aborted === true,
+        killedAfterLimit: false,
+        spawnError: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
+    const spoolDirectory = await fs.mkdtemp(
+      join(resolveSessionTempRoot(), "agenc-glob-listing-"),
+    );
+    try {
+      const spoolPath = join(spoolDirectory, "listing");
+      const result = await withBoundRipgrepFilesCommand(
+        command,
+        (resolved, lifecycleSignal) =>
+          params.readCapability!.runRipgrep({
+            program: resolved.program,
+            args: resolved.args,
+            env: resolved.env,
+            ...(resolved.argv0 !== undefined ? { argv0: resolved.argv0 } : {}),
+            timeoutMs: params.timeoutMs,
+            maxOutputBytes: params.maxOutputBytes,
+            stdoutSpoolPath: spoolPath,
+            maxSpoolBytes: params.maxListingBytes,
+            ...(params.signal !== undefined || lifecycleSignal !== undefined
+              ? {
+                  signal:
+                    params.signal !== undefined &&
+                    lifecycleSignal !== undefined
+                      ? AbortSignal.any([params.signal, lifecycleSignal])
+                      : (params.signal ?? lifecycleSignal),
+                }
+              : {}),
+          }),
+      );
+      // Spooled stdout never counts toward `maxOutputBytes`, so an output
+      // limit that left room for stderr is the listing reaching its cap.
+      const listingCapped =
+        result.stopReason === "output_limit" &&
+        result.stderr.byteLength < params.maxOutputBytes;
+      const stderr = appendBoundedText("", result.stderr.toString("utf8"));
+      if (
+        result.aborted ||
+        result.spawnError !== undefined ||
+        (result.stopReason !== undefined && !listingCapped)
+      ) {
+        return {
+          pathRecords: [],
+          stderr,
+          exitCode: result.exitCode,
+          aborted: result.aborted,
+          killedAfterLimit: false,
+          ...(result.stopReason !== undefined
+            ? { stopReason: result.stopReason }
+            : {}),
+          ...(result.spawnError !== undefined
+            ? { spawnError: result.spawnError }
+            : {}),
+        };
+      }
+      let protocolError: Error | undefined;
+      try {
+        await readSpooledListing(spoolPath, scan, params.signal);
+        if (params.signal?.aborted !== true) scan.finish(listingCapped);
+      } catch (error) {
+        protocolError =
+          error instanceof Error ? error : new Error(String(error));
+      }
+      return {
+        pathRecords: scan.accepted,
+        stderr,
+        exitCode: result.exitCode,
+        aborted: params.signal?.aborted === true,
+        killedAfterLimit: scan.reachedLimit,
+        ...(listingCapped || scan.stoppedByFilter
+          ? { listingTruncated: true }
+          : {}),
+        ...(protocolError !== undefined ? { spawnError: protocolError } : {}),
+      };
+    } finally {
+      await fs.rm(spoolDirectory, { recursive: true, force: true });
+    }
+  }
+
+  let command: SandboxSpawnCommand | SandboxPreparedSpawn;
+  try {
+    command = applyReadOnlyRuntimeSandboxToSpawn({
+      toolArgs: params.toolArgs,
+      fallbackCwd: params.cwd,
+      program: params.command,
+      args: params.args,
+      cwd: params.cwd,
+      env: scrubEnvForChildProcess(process.env),
+    });
+  } catch (error) {
+    if (!isExecutableUnavailable(error)) throw error;
+    return {
+      pathRecords: [],
+      stderr: "",
+      exitCode: null,
+      aborted: params.signal?.aborted === true,
+      killedAfterLimit: false,
+      spawnError: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+  let listingBytes = 0;
+  let listingCapped = false;
+  let protocolError: Error | undefined;
+  const result = await runSupervisedProcess(command, {
+    timeoutMs: params.timeoutMs,
+    maxOutputBytes: params.maxOutputBytes,
+    signal: params.signal,
+    captureStdout: false,
+    onStdout: (chunk, control) => {
+      if (scan.done || listingCapped || protocolError !== undefined) return;
+      if (listingBytes + chunk.length > params.maxListingBytes) {
+        listingCapped = true;
+        control.stop("consumer_limit");
+        return;
+      }
+      listingBytes += chunk.length;
+      try {
+        scan.push(chunk);
+      } catch (error) {
+        protocolError =
+          error instanceof Error ? error : new Error(String(error));
+        control.stop("consumer_limit");
+        return;
+      }
+      if (scan.done) control.stop("consumer_limit");
+    },
+  });
+  const aborted =
+    params.signal?.aborted === true || result.stopReason === "aborted";
+  if (protocolError === undefined) {
+    try {
+      scan.finish(listingCapped || aborted || result.stopReason !== undefined);
+    } catch (error) {
+      protocolError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  return {
+    pathRecords: scan.accepted,
+    stderr: appendBoundedText("", result.stderr.toString("utf8")),
+    exitCode: result.exitCode,
+    aborted,
+    killedAfterLimit: scan.reachedLimit,
+    ...(listingCapped || scan.stoppedByFilter
+      ? { listingTruncated: true }
+      : {}),
+    ...(result.stopReason !== undefined
+      ? { stopReason: result.stopReason }
+      : {}),
+    ...(result.error !== undefined
+      ? { spawnError: result.error }
+      : protocolError !== undefined
+        ? { spawnError: protocolError }
+        : {}),
+  };
+}
+
 function normalizeRelativeRipgrepPathBytes(path: Buffer): Buffer {
   let start = 0;
   if (
@@ -824,36 +1124,49 @@ function isSafeRelativeRipgrepPathBytes(path: Buffer): boolean {
 }
 
 /**
- * Keep the ripgrep records whose path relative to the search root satisfies a
- * "/" pattern. Records are relative to the enumeration cwd and start with
- * `searchPath`; their newest-first order is preserved.
+ * Accept a ripgrep record when its path relative to the search root satisfies
+ * a "/" pattern. Records are relative to the enumeration cwd and start with
+ * `searchPath`. When the matcher runs out of work the scan stops, and the
+ * caller reports the result as truncated.
  */
-function selectPathPatternMatches(
-  records: readonly Buffer[],
+function pathPatternRecordFilter(
   searchPath: string,
   matcher: GlobPathMatcher,
-): Buffer[] {
+): (record: Buffer) => RipgrepRecordVerdict {
   const portableSearchPath =
     process.platform === "win32" ? searchPath.replace(/\\/gu, "/") : searchPath;
   const prefix =
     portableSearchPath === "."
       ? undefined
       : Buffer.from(`${portableSearchPath}/`, "utf8");
-  const selected: Buffer[] = [];
-  for (const record of records) {
+  return (record) => {
     let relativeToSearchRoot = normalizeRelativeRipgrepPathBytes(record);
     if (prefix !== undefined) {
       if (
         relativeToSearchRoot.length <= prefix.length ||
         !relativeToSearchRoot.subarray(0, prefix.length).equals(prefix)
       ) {
-        continue;
+        return "reject";
       }
       relativeToSearchRoot = relativeToSearchRoot.subarray(prefix.length);
     }
-    if (matcher.matches(relativeToSearchRoot)) selected.push(record);
-  }
-  return selected;
+    try {
+      return matcher.matches(relativeToSearchRoot) ? "accept" : "reject";
+    } catch (error) {
+      if (error instanceof GlobMatchWorkExceeded) return "stop";
+      throw error;
+    }
+  };
+}
+
+/**
+ * ripgrep's `--glob` reads a leading `!` as an exclusion and `#` as a comment.
+ * Glob means the character itself, so the delegated path escapes it.
+ */
+function literalRipgrepGlob(pattern: string): string {
+  return pattern.startsWith("!") || pattern.startsWith("#")
+    ? `\\${pattern}`
+    : pattern;
 }
 
 /**
@@ -983,11 +1296,16 @@ export function createGlobTool(
     "maxResults" in config && typeof config.maxResults === "number"
       ? Math.max(1, Math.floor(config.maxResults))
       : DEFAULT_MAX_RESULTS;
-  const pathPatternCandidateLimit =
-    "maxPathPatternCandidates" in config &&
-    typeof config.maxPathPatternCandidates === "number"
-      ? Math.max(1, Math.floor(config.maxPathPatternCandidates))
-      : DEFAULT_MAX_PATH_PATTERN_CANDIDATES;
+  const pathPatternListingBytes =
+    "maxPathPatternListingBytes" in config &&
+    typeof config.maxPathPatternListingBytes === "number"
+      ? Math.max(1, Math.floor(config.maxPathPatternListingBytes))
+      : DEFAULT_MAX_PATH_PATTERN_LISTING_BYTES;
+  const pathPatternMatchWork =
+    "maxPathPatternMatchWork" in config &&
+    typeof config.maxPathPatternMatchWork === "number"
+      ? Math.max(1, Math.floor(config.maxPathPatternMatchWork))
+      : undefined;
   const ripgrepCommand =
     "ripgrepCommand" in config && typeof config.ripgrepCommand === "string"
       ? config.ripgrepCommand
@@ -1091,7 +1409,12 @@ export function createGlobTool(
       const globPattern = normalizeGlobPattern(target.pattern);
       let plan: GlobPatternPlan;
       try {
-        plan = planGlobPattern(globPattern);
+        plan = planGlobPattern(
+          globPattern,
+          pathPatternMatchWork === undefined
+            ? {}
+            : { maxWork: pathPatternMatchWork },
+        );
       } catch (error) {
         if (error instanceof GlobPatternError) {
           return errorResult(`Glob error: ${error.message}`);
@@ -1156,7 +1479,7 @@ export function createGlobTool(
           });
           const selected = await pinnedSnapshotPathEligibility({
             relativePaths: candidates.map(candidate => relative(target.searchRoot, candidate.path)),
-            globs: [globPattern, ...(includeIgnored ? [] : DEFAULT_GLOB_EXCLUDE_GLOBS.map(pattern => `!${pattern}`))],
+            globs: [literalRipgrepGlob(globPattern), ...(includeIgnored ? [] : DEFAULT_GLOB_EXCLUDE_GLOBS.map(pattern => `!${pattern}`))],
             signal,
           });
           if ("error" in selected) return errorResult(selected.error);
@@ -1197,12 +1520,18 @@ export function createGlobTool(
           cwd: target.displayRoot,
           searchPath,
           toolArgs: rawArgs,
-          // A "/" pattern keeps only some of the files ripgrep lists, so it
-          // reads a larger candidate window than the page it returns.
-          limit:
-            plan.pathMatcher === undefined
-              ? effectiveLimit
-              : Math.max(effectiveLimit, pathPatternCandidateLimit),
+          limit: effectiveLimit,
+          // A "/" pattern keeps only the listed files whose whole relative
+          // path matches; the listing is read until a page of them is found.
+          ...(plan.pathMatcher !== undefined
+            ? {
+                acceptRecord: pathPatternRecordFilter(
+                  searchPath,
+                  plan.pathMatcher,
+                ),
+                maxListingBytes: pathPatternListingBytes,
+              }
+            : {}),
           includeIgnored,
           rootIgnoreFiles,
           signal,
@@ -1233,31 +1562,19 @@ export function createGlobTool(
             return errorResult(`Glob error: ${detail}`);
           }
           rawMatches = [];
-        } else if (rg.exitCode !== 0 && !rg.killedAfterLimit) {
+        } else if (
+          rg.exitCode !== 0 &&
+          !rg.killedAfterLimit &&
+          rg.listingTruncated !== true
+        ) {
           const detail = rg.stderr.trim() || "ripgrep failed";
           return errorResult(`Glob error: ${detail}`);
         } else {
           rawMatches = rg.pathRecords;
           truncated = rg.killedAfterLimit || rg.pathRecords.length > limit;
         }
-        if (plan.pathMatcher !== undefined) {
-          let selected: Buffer[];
-          try {
-            selected = selectPathPatternMatches(
-              rawMatches,
-              searchPath,
-              plan.pathMatcher,
-            );
-          } catch (error) {
-            if (error instanceof GlobPatternError) {
-              return errorResult(`Glob error: ${error.message}`);
-            }
-            throw error;
-          }
-          // Stopping at the candidate window can leave matches unread.
-          truncated = rg.killedAfterLimit || selected.length > limit;
-          rawMatches = selected.slice(0, effectiveLimit);
-        }
+        // A filtered listing cut short by a cap may hide further matches.
+        if (rg.listingTruncated === true) truncated = true;
 
         const normalized = await normalizeAndFilterMatches({
           matches: rawMatches,
@@ -1275,7 +1592,7 @@ export function createGlobTool(
         };
 
         if (kept.length === 0) {
-          // A "/" pattern that ran out of candidates may still have matches
+          // A "/" pattern whose listing was cut short may still have matches
           // among the files it did not read; say so instead of a bare miss.
           return textResult(
             plan.pathMatcher !== undefined && metadata.truncated
