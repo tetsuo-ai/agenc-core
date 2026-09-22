@@ -682,7 +682,8 @@ async function writeBoundSourcePipe(
   descriptor: number,
   source: BoundSourceDescriptor,
 ): Promise<void> {
-  const pipe = (child.stdio as readonly unknown[])[descriptor] as
+  // EMFILE and ENFILE leave a failed child's stdio undefined.
+  const pipe = (child.stdio as readonly unknown[] | undefined)?.[descriptor] as
     Writable | null | undefined;
   if (pipe === null || pipe === undefined || typeof pipe.end !== "function") {
     throw new Error(`bound helper source pipe ${descriptor} is unavailable`);
@@ -1592,13 +1593,21 @@ const runPinnedRipgrep = async (command, inputHandle) => {
     stdio: [inputHandle.fd, "pipe", "pipe"],
   });
   activeChild = child;
+  // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+  // stdout and stderr undefined: listen before touching them.
+  child.once("error", (error) => {
+    spawnError = {
+      message: error instanceof Error ? error.message : String(error),
+      ...(typeof error?.code === "string" ? { code: error.code } : {}),
+    };
+  });
   const timeout = setTimeout(() => {
     if (stopReason !== undefined) return;
     stopReason = "timeout";
     child.kill();
   }, timeoutMs);
   timeout.unref();
-  child.stdout.on("data", (rawChunk) => {
+  child.stdout?.on("data", (rawChunk) => {
     if (killedAfterLimit || structuredLimitFailed) return;
     const chunk = Buffer.from(rawChunk);
     totalOutputBytes += chunk.length;
@@ -1644,7 +1653,7 @@ const runPinnedRipgrep = async (command, inputHandle) => {
       child.kill();
     }
   });
-  child.stderr.on("data", (rawChunk) => {
+  child.stderr?.on("data", (rawChunk) => {
     const chunk = Buffer.from(rawChunk);
     totalOutputBytes += chunk.length;
     stderrBytes += append(stderrParts, chunk);
@@ -1652,12 +1661,6 @@ const runPinnedRipgrep = async (command, inputHandle) => {
       stopReason = "output_limit";
       child.kill();
     }
-  });
-  child.once("error", (error) => {
-    spawnError = {
-      message: error instanceof Error ? error.message : String(error),
-      ...(typeof error?.code === "string" ? { code: error.code } : {}),
-    };
   });
   const closed = await new Promise((resolveClose) => {
     child.once("close", (exitCode, signal) =>
@@ -2049,6 +2052,18 @@ const runBoundReadWorker = async (command) => {
     },
   );
   activeChild = child;
+  // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+  // its stdio undefined: listen before touching it. A child without a pid
+  // never started, and its kill() would reach pid 0 while that report is
+  // pending: this helper's own process group, which it shares with its
+  // owner.
+  let spawnError;
+  child.once("error", (error) => {
+    spawnError = error;
+  });
+  const killChild = () => {
+    if (child.pid !== undefined) child.kill();
+  };
   const stdout = [];
   const stderr = [];
   let outputBytes = 0;
@@ -2057,24 +2072,20 @@ const runBoundReadWorker = async (command) => {
     const chunk = Buffer.from(rawChunk);
     outputBytes += chunk.length;
     if (outputBytes > maxWorkerOutputBytes) {
-      child.kill();
+      killChild();
       return;
     }
     target.push(chunk);
   };
-  child.stdout.on("data", (chunk) => capture(stdout, chunk));
-  child.stderr.on("data", (chunk) => capture(stderr, chunk));
-  let spawnError;
-  child.once("error", (error) => {
-    spawnError = error;
-  });
+  child.stdout?.on("data", (chunk) => capture(stdout, chunk));
+  child.stderr?.on("data", (chunk) => capture(stderr, chunk));
   const closedPromise = new Promise((resolveClose) => {
     child.once("close", (exitCode, signal) =>
       resolveClose({ exitCode, signal }),
     );
   });
   const sourceWrite = new Promise((resolveWrite, rejectWrite) => {
-    const pipe = child.stdio[SOURCE_PIPE_FD];
+    const pipe = child.stdio?.[SOURCE_PIPE_FD];
     if (pipe === null || pipe === undefined || typeof pipe.end !== "function") {
       rejectWrite(new Error("bound read worker source pipe is unavailable"));
       return;
@@ -2092,7 +2103,7 @@ const runBoundReadWorker = async (command) => {
   const sourceWriteOutcome = sourceWrite.then(
     () => undefined,
     (error) => {
-      child.kill();
+      killChild();
       return error instanceof Error ? error : new Error(String(error));
     },
   );
@@ -2101,7 +2112,7 @@ const runBoundReadWorker = async (command) => {
     const settle = (error) => {
       if (settled) return;
       settled = true;
-      if (error !== undefined) child.kill();
+      if (error !== undefined) killChild();
       resolveWrite(
         error === undefined
           ? undefined
@@ -2110,6 +2121,10 @@ const runBoundReadWorker = async (command) => {
             : new Error(String(error)),
       );
     };
+    if (child.stdin === null || child.stdin === undefined) {
+      settle(new Error("bound read worker stdin is unavailable"));
+      return;
+    }
     child.stdin.once("error", settle);
     child.stdin.end(
       JSON.stringify({
@@ -2125,9 +2140,10 @@ const runBoundReadWorker = async (command) => {
     stdinWriteOutcome,
   ]);
   activeChild = null;
+  // A spawn that failed also fails both handoffs; report the cause.
+  if (spawnError !== undefined) throw spawnError;
   if (sourceWriteError !== undefined) throw sourceWriteError;
   if (stdinWriteError !== undefined) throw stdinWriteError;
-  if (spawnError !== undefined) throw spawnError;
   if (outputBytes > maxWorkerOutputBytes) {
     throw Object.assign(new Error("bound read worker output exceeded limit"), {
       code: "OUTPUT_LIMIT",
@@ -2426,13 +2442,21 @@ try {
             stdio: ["pipe", "pipe", "pipe"],
           });
           activeChild = child;
+          // A failed spawn reports on the next tick, and EMFILE or ENFILE
+          // also leave its stdio undefined: listen before touching it.
+          child.once("error", (error) => {
+            spawnError = {
+              message: error instanceof Error ? error.message : String(error),
+              ...(typeof error?.code === "string" ? { code: error.code } : {}),
+            };
+          });
           const timeout = setTimeout(() => {
             if (stopReason !== undefined) return;
             stopReason = "timeout";
             child.kill();
           }, timeoutMs);
           timeout.unref();
-          child.stdout.on("data", (rawChunk) => {
+          child.stdout?.on("data", (rawChunk) => {
             if (killedAfterLimit || structuredLimitFailed) return;
             const chunk = Buffer.from(rawChunk);
             if (spoolHandle !== undefined) {
@@ -2524,7 +2548,7 @@ try {
               child.kill();
             }
           });
-          child.stderr.on("data", (rawChunk) => {
+          child.stderr?.on("data", (rawChunk) => {
             const chunk = Buffer.from(rawChunk);
             totalOutputBytes += chunk.length;
             stderrBytes += append(stderrParts, chunk);
@@ -2536,17 +2560,11 @@ try {
               child.kill();
             }
           });
-          child.once("error", (error) => {
-            spawnError = {
-              message: error instanceof Error ? error.message : String(error),
-              ...(typeof error?.code === "string" ? { code: error.code } : {}),
-            };
-          });
           const stdin =
             typeof command.stdinBase64 === "string"
               ? Buffer.from(command.stdinBase64, "base64")
               : null;
-          child.stdin.end(stdin ?? undefined);
+          child.stdin?.end(stdin ?? undefined);
           const closed = await new Promise((resolveClose) => {
             child.once("close", (exitCode, signal) =>
               resolveClose({ exitCode, signal }),
@@ -2891,6 +2909,22 @@ class BoundDirectoryHelper {
     this.#child = child;
     this.#anchorPath = anchorPath;
     this.#readRootPath = anchorPath;
+    // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+    // its stdio undefined. Listen before touching stdio: without a listener
+    // that report is an uncaught exception in the daemon.
+    child.once("error", (error) => this.#rejectWaiters(error));
+    if (
+      child.stdin === null ||
+      child.stdin === undefined ||
+      child.stdout === null ||
+      child.stdout === undefined ||
+      child.stderr === null ||
+      child.stderr === undefined
+    ) {
+      // Nothing started; #nextMessage() and dispose() see a closed helper.
+      this.#closed = true;
+      return;
+    }
     const lines = createInterface({
       input: child.stdout,
       crlfDelay: Infinity,
@@ -2913,7 +2947,6 @@ class BoundDirectoryHelper {
       if (this.#stderr.length >= 4096) return;
       this.#stderr += String(chunk).slice(0, 4096 - this.#stderr.length);
     });
-    child.once("error", (error) => this.#rejectWaiters(error));
     child.once("exit", (code, signal) => {
       this.#closed = true;
       this.#rejectWaiters(

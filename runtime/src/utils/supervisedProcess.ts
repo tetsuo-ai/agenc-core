@@ -1080,8 +1080,12 @@ function launchPosixOwnerWatchdog(
       windowsHide: true,
     },
   );
+  // A failed spawn reports on the next tick; EMFILE and ENFILE also leave
+  // stdio undefined. Listen before touching it. fail() below acts on errors
+  // once the readiness pipe is wired.
+  watchdog.on("error", () => {});
   posixOwnerWatchdogs.set(child, watchdog);
-  const readiness = watchdog.stdio[3];
+  const readiness = watchdog.stdio?.[3];
   if (
     readiness === undefined ||
     readiness === null ||
@@ -1187,7 +1191,25 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
     stdoutBuffer: "",
     failed: false,
   };
-  linuxCgroupOwnerWatchdog = state;
+  // A failed spawn reports on the next tick; EMFILE and ENFILE also leave
+  // stdio undefined. Listen first, and publish the singleton only once it is
+  // set up: a published broken watchdog would be reused by every contained
+  // command started in the meantime.
+  child.once("error", (error) => {
+    failLinuxCgroupOwnerWatchdog(state, error);
+  });
+  if (
+    child.pid === undefined ||
+    child.stdin === null ||
+    child.stdin === undefined ||
+    child.stdout === null ||
+    child.stdout === undefined ||
+    child.stderr === null ||
+    child.stderr === undefined
+  ) {
+    state.failed = true;
+    throw new Error("contained process watchdog could not be started");
+  }
   child.unref();
   unrefProcessPipe(child.stdin);
   unrefProcessPipe(child.stdout);
@@ -1198,9 +1220,6 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
     handleLinuxCgroupWatchdogOutput(state, chunk);
   });
   child.stdin.on("error", (error) => {
-    failLinuxCgroupOwnerWatchdog(state, error);
-  });
-  child.once("error", (error) => {
     failLinuxCgroupOwnerWatchdog(state, error);
   });
   child.once("exit", (code, signal) => {
@@ -1214,6 +1233,7 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
       ),
     );
   });
+  linuxCgroupOwnerWatchdog = state;
   return state;
 }
 

@@ -47,6 +47,12 @@ export function runGit(
     let stderr = "";
     let timedOut = false;
 
+    // A failed spawn reports on the next tick, and EMFILE or ENFILE also
+    // leave stdout and stderr undefined: listen before touching them.
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr: stderr + String(err), code: -1, timedOut });
+    });
     const timer = setTimeout(() => {
       timedOut = true;
       try {
@@ -57,12 +63,8 @@ export function runGit(
     }, timeoutMs);
     timer.unref?.();
 
-    child.stdout.on("data", (d) => (stdout += d.toString("utf8")));
-    child.stderr.on("data", (d) => (stderr += d.toString("utf8")));
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr: stderr + String(err), code: -1, timedOut });
-    });
+    child.stdout?.on("data", (d) => (stdout += d.toString("utf8")));
+    child.stderr?.on("data", (d) => (stderr += d.toString("utf8")));
     child.on("close", (code) => {
       clearTimeout(timer);
       resolve({ stdout, stderr, code, timedOut });

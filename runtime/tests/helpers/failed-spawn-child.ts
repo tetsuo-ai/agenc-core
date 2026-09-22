@@ -29,6 +29,37 @@ export interface FailedSpawnChild extends ChildProcess {
   readonly reported: Promise<void>;
 }
 
+/**
+ * A spawn replacement that fails every call. Each child is created when the
+ * code under test calls spawn, because Node schedules the failure report
+ * from the spawn call: a child created earlier, before code that awaits,
+ * would report before anyone could listen.
+ */
+export function failingSpawn(
+  options: Parameters<typeof createFailedSpawnChild>[0] = {},
+): {
+  readonly children: FailedSpawnChild[];
+  readonly spawn: (...args: unknown[]) => FailedSpawnChild;
+} {
+  const children: FailedSpawnChild[] = [];
+  return {
+    children,
+    spawn: (...args: unknown[]) => {
+      const command = typeof args[0] === "string" ? args[0] : options.command;
+      const argv = Array.isArray(args[1])
+        ? (args[1] as readonly unknown[]).map(String)
+        : options.args;
+      const child = createFailedSpawnChild({
+        ...options,
+        ...(command !== undefined ? { command } : {}),
+        ...(argv !== undefined ? { args: argv } : {}),
+      });
+      children.push(child);
+      return child;
+    },
+  };
+}
+
 export function createFailedSpawnChild(
   options: {
     readonly code?: FailedSpawnCode;

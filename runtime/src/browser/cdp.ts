@@ -429,31 +429,9 @@ export async function launchBrowser(
   );
 
   let stderrTail = "";
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk: string) => {
-    stderrTail = (stderrTail + chunk).slice(-2000);
-  });
-
-  const writePipe = child.stdio[3] as Writable | null;
-  const readPipe = child.stdio[4] as Readable | null;
-  if (writePipe === null || readPipe === null) {
-    try {
-      await terminateProcessTreeAndWait(child, {
-        label: "browser launch",
-      });
-    } catch (error) {
-      const cleanupError = toError(error);
-      throw new BrowserLaunchCleanupError(
-        `browser did not expose the CDP pipe file descriptors; cleanup failed: ${cleanupError.message}`,
-        child,
-        cleanupError,
-      );
-    }
-    throw new CdpError(
-      "browser did not expose the CDP pipe file descriptors",
-    );
-  }
-
+  // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+  // stdio undefined. Listen before touching stdio or taking the branch below
+  // that awaits cleanup, so that report is never an uncaught exception.
   const spawnError = new Promise<never>((_, reject) => {
     child.once("error", (err) =>
       reject(new CdpError(`failed to spawn browser: ${err.message}`)),
@@ -468,6 +446,41 @@ export async function launchBrowser(
       ),
     );
   });
+  // Raced below; a launch that fails earlier leaves nobody to await it.
+  spawnError.catch(() => {});
+
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    stderrTail = (stderrTail + chunk).slice(-2000);
+  });
+
+  const writePipe = child.stdio?.[3] as Writable | null | undefined;
+  const readPipe = child.stdio?.[4] as Readable | null | undefined;
+  if (
+    writePipe === null ||
+    writePipe === undefined ||
+    readPipe === null ||
+    readPipe === undefined
+  ) {
+    try {
+      await terminateProcessTreeAndWait(child, {
+        label: "browser launch",
+      });
+    } catch (error) {
+      const cleanupError = toError(error);
+      throw new BrowserLaunchCleanupError(
+        `browser did not expose the CDP pipe file descriptors; cleanup failed: ${cleanupError.message}`,
+        child,
+        cleanupError,
+      );
+    }
+    // Without a pid the spawn itself failed (EMFILE and ENFILE leave no
+    // stdio at all); the cleanup above waited for its report, so say that.
+    if (child.pid === undefined) await spawnError;
+    throw new CdpError(
+      "browser did not expose the CDP pipe file descriptors",
+    );
+  }
 
   const connection = new CdpConnection(writePipe, readPipe);
   try {

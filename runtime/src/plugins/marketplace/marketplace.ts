@@ -727,6 +727,12 @@ export async function defaultRunProcess(
         GIT_ASKPASS: "",
       },
     });
+    // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+    // stdout and stderr undefined: listen before touching them.
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -740,23 +746,19 @@ export async function defaultRunProcess(
     let stderrBytes = 0;
     let stdoutTruncated = false;
     let stderrTruncated = false;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       const appended = appendBoundedOutput(stdout, stdoutBytes, chunk, maxOutputBytes);
       stdout = appended.text;
       stdoutBytes = appended.bytes;
       stdoutTruncated ||= appended.truncated;
     });
-    child.stderr.on("data", (chunk: string) => {
+    child.stderr?.on("data", (chunk: string) => {
       const appended = appendBoundedOutput(stderr, stderrBytes, chunk, maxOutputBytes);
       stderr = appended.text;
       stderrBytes = appended.bytes;
       stderrTruncated ||= appended.truncated;
-    });
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
     });
     child.once("close", (code) => {
       clearTimeout(timeout);

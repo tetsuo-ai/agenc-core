@@ -1344,6 +1344,12 @@ async function defaultPluginProcessRunner(
     let stderrBytes = 0;
     let timedOut = false;
     let killTimeout: NodeJS.Timeout | undefined;
+    // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+    // stdout and stderr undefined: listen before touching them.
+    child.on("error", (error) => {
+      clearProcessTimers();
+      reject(error);
+    });
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
@@ -1355,21 +1361,17 @@ async function defaultPluginProcessRunner(
       clearTimeout(timeout);
       if (killTimeout) clearTimeout(killTimeout);
     };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
       const appended = appendBounded(stdout, stdoutBytes, chunk, maxOutputBytes);
       stdout = appended.text;
       stdoutBytes = appended.bytes;
     });
-    child.stderr.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk) => {
       const appended = appendBounded(stderr, stderrBytes, chunk, maxOutputBytes);
       stderr = appended.text;
       stderrBytes = appended.bytes;
-    });
-    child.on("error", (error) => {
-      clearProcessTimers();
-      reject(error);
     });
     child.on("close", (code, signal) => {
       clearProcessTimers();

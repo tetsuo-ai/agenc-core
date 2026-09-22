@@ -22,7 +22,7 @@ const chunk: ThreadRealtimeAudioChunk = {
   numChannels: 1,
 };
 
-function failingSpawn(code: "ENOENT" | "EAGAIN" = "ENOENT") {
+function failingSpawn(code: "ENOENT" | "EAGAIN" | "EMFILE" = "ENOENT") {
   const spawned: FailedSpawnChild[] = [];
   const spawnProcess = vi.fn<RealtimeAudioPlayerSpawn>(() => {
     const failed = createFailedSpawnChild({ code, command: "play" });
@@ -60,6 +60,20 @@ describe("realtime audio player with a failed play spawn", () => {
 
     expect(spawnProcess).toHaveBeenCalledTimes(1);
     expect(spawned.flatMap((failed) => failed.groupSignals)).toEqual([]);
+  });
+
+  test("a play spawn that left no stdin (EMFILE) does not throw from enqueue", async () => {
+    // EMFILE and ENFILE leave stdin undefined, not null; flush() read
+    // stdin.destroyed and threw into the socket dispatch.
+    const { spawnProcess, spawned } = failingSpawn("EMFILE");
+    const player = createProcessRealtimeAudioPlayer(spawnProcess);
+
+    expect(() => player.enqueue(chunk)).not.toThrow();
+    await spawned[0]!.reported;
+    player.close();
+
+    expect(spawned[0]!.uncaught).toEqual([]);
+    expect(spawned[0]!.groupSignals).toEqual([]);
   });
 
   test("a transient spawn failure is retried on the next chunk", async () => {

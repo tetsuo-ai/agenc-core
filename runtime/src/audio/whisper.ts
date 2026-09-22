@@ -302,8 +302,14 @@ export function runWhisperProcess(executable: string, args: string[], cwd: strin
     let bytes = 0;
     let failure: Error | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+    // stdout and stderr undefined: listen before touching them.
+    child.on("error", () => { failure ??= new WhisperError("WHISPER_ENGINE_FAILED", "Could not run the Whisper engine"); });
     const stop = (error: Error): void => {
       failure ??= error;
+      // A failed spawn has no pid, but until Node reports the failure its
+      // open handle sends kill() to pid 0: the daemon's own process group.
+      if (child.pid === undefined) return;
       child.kill("SIGTERM");
       killTimer ??= setTimeout(() => child.kill("SIGKILL"), 1500);
       killTimer.unref();
@@ -317,9 +323,8 @@ export function runWhisperProcess(executable: string, args: string[], cwd: strin
       if (bytes > MAX_OUTPUT_BYTES) { stop(new WhisperError("WHISPER_OUTPUT_LIMIT", "Whisper output exceeded its limit")); return; }
       if (transcript) output += decoder.write(chunk);
     };
-    child.stdout.on("data", (chunk: Buffer) => collect(chunk, true));
-    child.stderr.on("data", (chunk: Buffer) => collect(chunk, false));
-    child.on("error", () => { failure ??= new WhisperError("WHISPER_ENGINE_FAILED", "Could not run the Whisper engine"); });
+    child.stdout?.on("data", (chunk: Buffer) => collect(chunk, true));
+    child.stderr?.on("data", (chunk: Buffer) => collect(chunk, false));
     child.on("close", (code) => {
       output += decoder.end();
       clearTimeout(timer);

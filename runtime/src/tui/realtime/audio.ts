@@ -99,7 +99,13 @@ export function createProcessRealtimeAudioPlayer(
 
   const flush = (): void => {
     const active = child;
-    if (active === null || active.stdin === null || active.stdin.destroyed) {
+    // EMFILE and ENFILE leave a failed child's stdin undefined, not null.
+    if (
+      active === null ||
+      active.stdin === null ||
+      active.stdin === undefined ||
+      active.stdin.destroyed
+    ) {
       queue.length = 0;
       queuedBytes = 0;
       waitingForDrain = false;
