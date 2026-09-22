@@ -1039,7 +1039,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         args: prepared.useShellMode
           ? { command: prepared.shellCommand, cwd: prepared.cwd }
           : { command: prepared.command, args: prepared.directArgs, cwd: prepared.cwd },
-        workspaceRoot: prepared.cwd,
+        workspaceRoot: defaultCwd,
         ...shellWorkspaceMutationPermission(input),
       });
     },
@@ -1100,7 +1100,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         args: useShellMode
           ? { command: shellCommand, cwd }
           : { command, args: execArgs, cwd },
-        workspaceRoot: cwd,
+        workspaceRoot: defaultCwd,
         ...shellWorkspaceMutationPermission(rawArgs),
       });
       if (workspaceWriteDecision.blocked) {

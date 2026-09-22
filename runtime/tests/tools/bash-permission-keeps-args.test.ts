@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -12,6 +12,7 @@ import { CanonicalBashTool } from "../../src/tools/canonicalToolSurface.js";
 import { attachContextDefaults, hasPermissionsToUseTool } from "../../src/permissions/evaluator.js";
 import { createEmptyToolPermissionContext, type ToolPermissionContext } from "../../src/permissions/types.js";
 import type { ReviewDecision } from "../../src/permissions/review-decision.js";
+import { withExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 
 // system.bash checks permission rules against `command` joined with `args`.
 // Whatever the permission step decides, the call that runs must still carry
@@ -121,6 +122,37 @@ describe("system.bash permission keeps the model's fields", () => {
       args: ["x y.txt"],
       cwd: sub,
       timeoutMs: 45_000,
+    });
+  });
+
+  // With `cwd` now reaching execution, the workspace write guard must stay
+  // anchored at the trusted workspace root, not at the call's directory.
+  describe("a cwd override does not move the workspace write guard", () => {
+    const escape = () => ({ command: "printf hi > ../README.md", cwd: sub });
+
+    test("preflight blocks a parent-directory workspace write", () => {
+      const tool = createBashTool({ cwd: workspace, unrestricted: true });
+      const failure = tool.preflight?.(escape());
+      expect(failure?.message ?? "").toContain("shell_workspace_");
+    });
+
+    test("execute blocks a parent-directory workspace write", async () => {
+      await writeFile(join(workspace, "README.md"), "original\n");
+      const tool = createBashTool({ cwd: workspace, unrestricted: true });
+      const result = await tool.execute(withExplicitDangerBoundary(escape()));
+      expect(result.isError).toBe(true);
+      expect(String(result.content)).toContain("shell_workspace_");
+      expect(await readFile(join(workspace, "README.md"), "utf8")).toBe("original\n");
+    });
+
+    test("the router blocks it in bypassPermissions mode", async () => {
+      await writeFile(join(workspace, "README.md"), "original\n");
+      const fixture = dispatchFixture({ mode: "bypassPermissions", isBypassPermissionsModeAvailable: true });
+      const result = await fixture.dispatch(escape());
+      expect(result.isError).toBe(true);
+      expect(String(result.content)).toContain("shell_workspace_");
+      expect(fixture.execute).not.toHaveBeenCalled();
+      expect(await readFile(join(workspace, "README.md"), "utf8")).toBe("original\n");
     });
   });
 });
