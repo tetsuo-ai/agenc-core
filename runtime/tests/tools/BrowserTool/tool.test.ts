@@ -123,6 +123,22 @@ describe("Browser tool validation (no browser launched)", () => {
     }
   });
 
+  test("refuses a url the browser may not navigate before touching the browser", async () => {
+    // A file: url reached page.navigate, whose plain error left an unknown
+    // outcome that blocked every later side-effecting call in the session.
+    for (const [input, message] of [
+      [{ action: "navigate", url: "file:///tmp/preview.html" }, 'unsupported scheme "file:"'],
+      [{ action: "new_tab", url: "file:///tmp/preview.html" }, 'unsupported scheme "file:"'],
+      [{ action: "navigate", url: "http://user:secret@example.com/" }, "embedded credentials"],
+      [{ action: "navigate", url: "not a url" }, "invalid URL"],
+    ] as const) {
+      const result = await createBrowserTool().execute({ ...input });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(message);
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+  });
+
   test("rejects click without a ref", async () => {
     const result = await createBrowserTool().execute({ action: "click" });
     expect(result.isError).toBe(true);

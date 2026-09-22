@@ -30,6 +30,7 @@ import {
   registerSandboxExecutionLifecycleParticipant,
 } from "../../sandbox/execution-lifecycle.js";
 import { resolveBrowserPolicy } from "../../browser/config.js";
+import { validateNavigableUrl } from "../../browser/ssrf.js";
 import type { BrowserConfig } from "../../config/schema.js";
 import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import {
@@ -221,14 +222,36 @@ export function createBrowserTool(
     }
   }
 
+  /**
+   * The check page.navigate runs first, applied before any browser work. A
+   * scheme, credential or host refusal there touched nothing, but it surfaced
+   * from inside the manager as a plain error, so the settlement supervisor saw
+   * an unknown outcome and blocked every later side-effecting call. Refusing
+   * here settles it as no effect, like a missing url (#2190).
+   */
+  function navigableUrlError(url: string): string | undefined {
+    try {
+      validateNavigableUrl(url);
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
   /** Validate required args before any config/manager work. */
   function validateRequired(
     action: string,
     input: BrowserToolInput,
   ): string | undefined {
     switch (action) {
-      case "navigate":
-        return str(input.url) === undefined ? "navigate requires a url" : undefined;
+      case "navigate": {
+        const url = str(input.url);
+        return url === undefined ? "navigate requires a url" : navigableUrlError(url);
+      }
+      case "new_tab": {
+        const url = str(input.url);
+        return url === undefined ? undefined : navigableUrlError(url);
+      }
       case "click":
         return str(input.ref) === undefined ? "click requires a ref" : undefined;
       case "type":
