@@ -193,6 +193,7 @@ const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   "sh",
   "bash",
   "zsh",
+  "dash",
   "fish",
   "ksh",
   "csh",
