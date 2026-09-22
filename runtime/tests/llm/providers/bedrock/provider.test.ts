@@ -183,6 +183,125 @@ describe("providers/bedrock", () => {
       .toHaveProperty("inferenceConfig");
   });
 
+  describe("Claude request contract on Converse", () => {
+    const lookupTool = {
+      type: "function" as const,
+      function: {
+        name: "lookup",
+        description: "Look up a value",
+        parameters: { type: "object", properties: {} },
+      },
+    };
+    const options = {
+      tools: [lookupTool],
+      toolChoice: "required" as const,
+      temperature: 0.3,
+      reasoningEffort: "max" as const,
+      maxOutputTokens: 256,
+    };
+    const converseReply = () =>
+      jsonResponse({
+        output: { message: { role: "assistant", content: [{ text: "ok" }] } },
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      });
+    const streamReply = () =>
+      eventStreamResponse([
+        { messageStart: { role: "assistant" } },
+        { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "ok" } } },
+        { messageStop: { stopReason: "end_turn" } },
+        { metadata: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } } },
+      ]);
+    const provider = (model: string, fetchImpl: typeof fetch) =>
+      new BedrockProvider({
+        accessKeyId: "AKIDEXAMPLE",
+        secretAccessKey: "secret",
+        region: "us-east-1",
+        model,
+        fetchImpl,
+        now: () => new Date("2024-01-02T03:04:05Z"),
+      });
+    const sentBody = (fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>) =>
+      JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+
+    it("sends Opus 5.5 no temperature, no forced tool, and its effort in chat and streaming", async () => {
+      for (const model of ["anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5"]) {
+        const chatFetch = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
+        await provider(model, chatFetch).chat([{ role: "user", content: "hello" }], options);
+        const streamFetch = vi.fn<typeof fetch>().mockResolvedValue(streamReply());
+        await provider(model, streamFetch).chatStream(
+          [{ role: "user", content: "hello" }],
+          () => {},
+          options,
+        );
+        for (const body of [sentBody(chatFetch), sentBody(streamFetch)]) {
+          expect(body.inferenceConfig, model).toEqual({ maxTokens: 256 });
+          expect(body.toolConfig, model).toMatchObject({ toolChoice: { auto: {} } });
+          expect(body.additionalModelRequestFields, model).toEqual({
+            output_config: { effort: "max" },
+          });
+          expect(body, model).not.toHaveProperty("thinking");
+        }
+      }
+    });
+
+    it("counts Opus 5.5 with the same effort field and tool choice", async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ inputTokens: 9 }));
+      const bedrock = provider("anthropic.claude-opus-5-5", fetchImpl);
+      const request = createTokenAccountingRequest({
+        provider: bedrock.name,
+        model: "anthropic.claude-opus-5-5",
+        messages: [{ role: "user", content: "hello" }],
+        options,
+        reservedOutputTokens: 256,
+      });
+      await bedrock.tokenCountCapability.countTokens(request, new AbortController().signal);
+      const converse = (sentBody(fetchImpl).input as { converse: Record<string, unknown> })
+        .converse;
+      expect(converse.additionalModelRequestFields).toEqual({ output_config: { effort: "max" } });
+      expect(converse.toolConfig).toMatchObject({ toolChoice: { auto: {} } });
+      expect(converse).not.toHaveProperty("inferenceConfig");
+    });
+
+    it("leaves other models on their existing request shape", async () => {
+      // Not Claude: every field passes through as before.
+      const novaFetch = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
+      await provider("amazon.nova-pro-v1:0", novaFetch).chat(
+        [{ role: "user", content: "hello" }],
+        options,
+      );
+      expect(sentBody(novaFetch)).toMatchObject({
+        inferenceConfig: { maxTokens: 256, temperature: 0.3 },
+        toolConfig: { toolChoice: { any: {} } },
+      });
+      expect(sentBody(novaFetch)).not.toHaveProperty("additionalModelRequestFields");
+      // Claude Opus 4.6 still takes sampling parameters and forced tools.
+      const opus46Fetch = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
+      await provider("global.anthropic.claude-opus-4-6-v1", opus46Fetch).chat(
+        [{ role: "user", content: "hello" }],
+        options,
+      );
+      expect(sentBody(opus46Fetch)).toMatchObject({
+        inferenceConfig: { maxTokens: 256, temperature: 0.3 },
+        toolConfig: { toolChoice: { any: {} } },
+      });
+      expect(sentBody(opus46Fetch)).not.toHaveProperty("additionalModelRequestFields");
+      // Opus 5 rejects sampling parameters but is not in the always-on family.
+      const opus5Fetch = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
+      await provider("anthropic.claude-opus-5", opus5Fetch).chat(
+        [{ role: "user", content: "hello" }],
+        options,
+      );
+      expect(sentBody(opus5Fetch)).toMatchObject({
+        inferenceConfig: { maxTokens: 256 },
+        toolConfig: { toolChoice: { any: {} } },
+      });
+      expect((sentBody(opus5Fetch).inferenceConfig as Record<string, unknown>)).not
+        .toHaveProperty("temperature");
+      expect(sentBody(opus5Fetch)).not.toHaveProperty("additionalModelRequestFields");
+    });
+  });
+
   it("serializes Converse requests and signs them with AWS SigV4", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({

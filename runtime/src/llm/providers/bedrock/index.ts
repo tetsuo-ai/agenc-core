@@ -36,6 +36,13 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
+import { parseClaudeModelId } from "../../../utils/model/claudeModelId.js";
+import { isAlwaysOnThinkingAnthropicModel } from "../../../utils/model/alwaysOnThinking.js";
+import {
+  anthropicAcceptsSamplingParameters,
+  anthropicEffort,
+  bedrockConverseEffortLevels,
+} from "../../../utils/model/anthropicThinkingControl.js";
 import {
   providerCredentialEnvironmentLabel,
   resolveBuiltInProviderRegionalEndpoint,
@@ -103,6 +110,7 @@ interface BedrockRequest {
     }[];
     readonly toolChoice?: BedrockToolChoice;
   };
+  readonly additionalModelRequestFields?: Readonly<Record<string, unknown>>;
 }
 
 type BedrockToolChoice =
@@ -391,6 +399,7 @@ function toBedrockToolChoice(
 function buildToolConfig(
   tools: readonly LLMTool[],
   toolChoice: LLMToolChoice | undefined,
+  forbidForcedToolChoice = false,
 ): BedrockRequest["toolConfig"] | undefined {
   if (tools.length === 0 || toolChoice === "none") return undefined;
   if (
@@ -401,7 +410,13 @@ function buildToolConfig(
       `amazon-bedrock provider toolChoice references unavailable tool: ${toolChoice.name}`,
     );
   }
-  const bedrockToolChoice = toBedrockToolChoice(toolChoice);
+  // Forced tool use (`any` / `tool`) is a 400 on the always-on Claude family;
+  // offer the tools with `auto` instead, as the Messages wire does.
+  const bedrockToolChoice =
+    forbidForcedToolChoice &&
+      (toolChoice === "required" || typeof toolChoice === "object")
+      ? { auto: {} }
+      : toBedrockToolChoice(toolChoice);
   createProviderToolNameWireLookup(
     tools.map((tool) => tool.function.name),
   );
@@ -436,12 +451,49 @@ function requestTools(
   );
 }
 
+interface ClaudeConverseContract {
+  readonly dropSampling: boolean;
+  readonly forbidForcedToolChoice: boolean;
+  readonly additionalModelRequestFields?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The Claude request contract on the Converse path, from the helpers the
+ * Messages wire uses. Sampling parameters stay off Claude models that reject
+ * them. The always-on family (Fable/Mythos 5, Opus 5.5) is never forced onto
+ * a tool, and its effort travels as `output_config.effort` inside
+ * `additionalModelRequestFields`, the Converse field AWS documents for Claude
+ * effort (Bedrock user guide, adaptive thinking, checked 2026-09-22); those
+ * models think without a `thinking` field. Other Claude models get no new
+ * thinking or effort fields here, and non-Claude models are untouched.
+ */
+function claudeConverseContract(
+  model: string,
+  options: LLMChatOptions | undefined,
+): ClaudeConverseContract {
+  if (parseClaudeModelId(model) === undefined) {
+    return { dropSampling: false, forbidForcedToolChoice: false };
+  }
+  const effort = anthropicEffort(options?.reasoningEffort);
+  const sendEffort =
+    effort !== undefined && bedrockConverseEffortLevels(model).includes(effort);
+  return {
+    dropSampling: !anthropicAcceptsSamplingParameters(model),
+    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(model),
+    ...(sendEffort
+      ? { additionalModelRequestFields: { output_config: { effort } } }
+      : {}),
+  };
+}
+
 function buildRequest(
   config: BedrockProviderConfig,
+  model: string,
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
 ): BedrockRequest {
   validateAgentInvocationMessageSequence(messages);
+  const contract = claudeConverseContract(model, options);
   const built = buildMessages(messages);
   const systemPrompt = firstNonEmpty(options?.systemPrompt, config.systemPrompt);
   const system = [
@@ -458,13 +510,19 @@ function buildRequest(
       Number.isFinite(config.temperature)
     ? config.temperature
     : undefined;
-  const temperature = optionTemperature ?? configTemperature;
+  const temperature = contract.dropSampling
+    ? undefined
+    : optionTemperature ?? configTemperature;
   const stopSequences = options?.stopSequences !== undefined &&
       options.stopSequences.length > 0
     ? [...options.stopSequences]
     : undefined;
   const tools = requestTools(config, options);
-  const toolConfig = buildToolConfig(tools, options?.toolChoice);
+  const toolConfig = buildToolConfig(
+    tools,
+    options?.toolChoice,
+    contract.forbidForcedToolChoice,
+  );
 
   return {
     messages: built.messages,
@@ -479,6 +537,9 @@ function buildRequest(
       }
       : {}),
     ...(toolConfig !== undefined ? { toolConfig } : {}),
+    ...(contract.additionalModelRequestFields !== undefined
+      ? { additionalModelRequestFields: contract.additionalModelRequestFields }
+      : {}),
   };
 }
 
@@ -1004,9 +1065,12 @@ export class BedrockProvider implements LLMProvider {
     }
     const inferenceRequest = buildRequest(
       this.config,
+      model,
       accountingRequest.messages,
       accountingRequest.options,
     );
+    // CountTokens takes the Converse input fields, including
+    // additionalModelRequestFields (API reference, ConverseTokensRequest).
     const countInput = {
       messages: inferenceRequest.messages,
       ...(inferenceRequest.system !== undefined
@@ -1014,6 +1078,12 @@ export class BedrockProvider implements LLMProvider {
         : {}),
       ...(inferenceRequest.toolConfig !== undefined
         ? { toolConfig: inferenceRequest.toolConfig }
+        : {}),
+      ...(inferenceRequest.additionalModelRequestFields !== undefined
+        ? {
+          additionalModelRequestFields:
+            inferenceRequest.additionalModelRequestFields,
+        }
         : {}),
     };
     const body = JSON.stringify({ input: { converse: countInput } });
@@ -1075,7 +1145,7 @@ export class BedrockProvider implements LLMProvider {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
     const tools = requestTools(this.config, options);
-    const request = buildRequest(this.config, messages, options);
+    const request = buildRequest(this.config, model, messages, options);
     const advertisedToolNames = request.toolConfig === undefined
       ? []
       : tools.map((tool) => tool.function.name);
@@ -1130,7 +1200,7 @@ export class BedrockProvider implements LLMProvider {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
     const tools = requestTools(this.config, options);
-    const request = buildRequest(this.config, messages, options);
+    const request = buildRequest(this.config, model, messages, options);
     const advertisedToolNames = request.toolConfig === undefined
       ? []
       : tools.map((tool) => tool.function.name);

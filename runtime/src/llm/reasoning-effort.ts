@@ -6,7 +6,10 @@ import { supportsXaiReasoningEffortParam } from "./structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "./registry/openai-reasoning-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "./registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel, DEEPSEEK_REASONING_LEVELS } from "./registry/deepseek-models.js";
-import { anthropicEffortLevels } from "../utils/model/anthropicThinkingControl.js";
+import {
+  anthropicEffortLevels,
+  bedrockConverseEffortLevels,
+} from "../utils/model/anthropicThinkingControl.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
@@ -184,6 +187,15 @@ export function resolveReasoningEffort(input: {
   } else if (slug === "nvidia-nim") {
     reasoningEffortAllowedValues = nimReasoningEffortValues(model);
     acceptsReasoningEffort = (reasoningEffortAllowedValues?.size ?? 0) > 0;
+  } else if (
+    slug === "amazon-bedrock" &&
+    model !== undefined &&
+    bedrockConverseEffortLevels(model).length > 0
+  ) {
+    // The Converse adapter sends effort only for the always-on Claude family,
+    // so only those models offer levels on Bedrock.
+    reasoningEffortAllowedValues = new Set(bedrockConverseEffortLevels(model));
+    acceptsReasoningEffort = true;
   }
 
   const entry = resolveRegisteredModelCatalogEntry(input);

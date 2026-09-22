@@ -120,6 +120,18 @@ it("carries every Claude Opus 5.5 tier from config seed to the wire", async () =
   }
 });
 
+it("offers Bedrock effort levels exactly where the Converse adapter sends effort", () => {
+  const opus55 = { provider: "amazon-bedrock", model: "anthropic.claude-opus-5-5" };
+  expect(resolveReasoningEffort(opus55).levels).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  // A configured max reaches the adapter unclamped.
+  expect(resolveSessionReasoningEffort("max", [], opus55)).toBe("max");
+  // Opus 5 and non-Claude models get no effort field on Converse, so no levels.
+  expect(resolveReasoningEffort({ provider: "amazon-bedrock", model: "anthropic.claude-opus-5" }).levels)
+    .toEqual([]);
+  expect(resolveReasoningEffort({ provider: "amazon-bedrock", model: "amazon.nova-pro-v1:0" }).levels)
+    .toEqual([]);
+});
+
 it.each([
   { provider: "openai", model: "gpt-5.6-sol-unverified" },
   { provider: "grok", model: "grok-4-20-multi-agent-unverified" },
