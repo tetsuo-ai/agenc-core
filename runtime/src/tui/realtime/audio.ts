@@ -71,6 +71,9 @@ export function createProcessRealtimeAudioPlayer(
   const queue: Buffer[] = [];
   let queuedBytes = 0;
   let waitingForDrain = false;
+  // Set once `play` turns out to be missing or not executable (stock macOS
+  // has no SoX). Without it every audio chunk spawned `play` again.
+  let playerUnavailable = false;
 
   const reset = (active: ChildProcess | null): void => {
     if (active !== child) return;
@@ -88,7 +91,10 @@ export function createProcessRealtimeAudioPlayer(
     active?.stdin?.removeAllListeners("error");
     active?.stdin?.removeAllListeners("close");
     active?.stdin?.destroy();
-    active?.kill("SIGTERM");
+    // A failed spawn has no pid, but until Node reports the failure its open
+    // handle sends kill() to pid 0: the TUI's whole process group, including
+    // the shell job it runs in. Its error event does the cleanup instead.
+    if (active?.pid !== undefined) active.kill("SIGTERM");
   };
 
   const flush = (): void => {
@@ -138,6 +144,7 @@ export function createProcessRealtimeAudioPlayer(
 
   return {
     enqueue(audio) {
+      if (playerUnavailable) return;
       const decoded = decodeRealtimeOutputAudioChunk(audio);
       if (decoded === null) return;
       const nextFormat = {
@@ -171,7 +178,15 @@ export function createProcessRealtimeAudioPlayer(
         );
         format = nextFormat;
         const active = child;
-        active?.on("error", () => reset(active));
+        active?.on("error", (error: NodeJS.ErrnoException) => {
+          if (
+            active?.pid === undefined &&
+            (error.code === "ENOENT" || error.code === "EACCES")
+          ) {
+            playerUnavailable = true;
+          }
+          reset(active);
+        });
         active?.on("close", () => reset(active));
         active?.stdin?.on("error", () => reset(active));
         active?.stdin?.on("close", () => reset(active));
