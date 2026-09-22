@@ -11,9 +11,6 @@ import { LocalWhisperService, MAX_WHISPER_WAV_BYTES, runWhisperProcess, validate
 const realSetTimeout = globalThis.setTimeout;
 const realTick = (): Promise<void> =>
   new Promise<void>((resolve) => { realSetTimeout(resolve, 0); });
-const settleIo = async (ticks = 50): Promise<void> => {
-  for (let tick = 0; tick < ticks; tick += 1) await realTick();
-};
 
 const homes: string[] = [];
 async function home(): Promise<string> { const value = await mkdtemp(join(tmpdir(), "agenc-whisper-unit-")); homes.push(value); return value; }
@@ -108,17 +105,21 @@ describe("Whisper installation boundary", () => {
   /** A body that opens, aborts like fetch does, and delivers only when asked. */
   const controllableDownload = () => {
     let deliver: (() => void) | undefined;
+    let reads = 0;
     const stub = vi.fn((_url: unknown, init: RequestInit) => {
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
           init.signal?.addEventListener("abort", () => controller.error(new Error("aborted")), { once: true });
           deliver = () => controller.enqueue(new Uint8Array([0]));
         },
-      });
+        // With a high-water mark of 0, pull runs only when the consumer asks
+        // for another chunk, which it does after handling the previous one.
+        pull() { reads += 1; },
+      }, { highWaterMark: 0 });
       return Promise.resolve(new Response(body));
     });
     vi.stubGlobal("fetch", stub);
-    return { stub, deliver: () => deliver?.() };
+    return { stub, deliver: () => deliver?.(), reads: () => reads };
   };
 
   /** Start an install and assert it ends as a stall, not a cancellation. */
@@ -150,16 +151,18 @@ describe("Whisper installation boundary", () => {
     vi.useFakeTimers();
     try {
       const root = await home();
-      const { stub, deliver } = controllableDownload();
+      const { stub, deliver, reads } = controllableDownload();
       const { rejected } = await expectStall(root, stub);
       // A byte just before each window closes, for far longer than the ten
       // minute deadline this replaced.
       for (let minute = 0; minute < 15; minute += 1) {
         await vi.advanceTimersByTimeAsync(50_000);
+        const before = reads();
         deliver();
-        // The chunk has to reach the consumer and be written before the next
-        // advance, or the idle clock never restarts and the window closes.
-        await settleIo();
+        // Advance again only once the download asks for the next chunk: by then
+        // it has restarted its idle clock and written this one.
+        for (let tick = 0; tick < 5_000 && reads() === before; tick += 1) await realTick();
+        expect(reads()).toBeGreaterThan(before);
       }
       await vi.advanceTimersByTimeAsync(61_000);
       await rejected;
