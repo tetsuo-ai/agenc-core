@@ -74,6 +74,7 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
+import { openAiChatCompletionsRejectsFunctionTools } from "../../registry/openai-reasoning-models.js";
 import {
   providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderInfo,
@@ -781,7 +782,7 @@ export class OpenAIProvider implements LLMProvider {
 
     try {
       return await this.auth.withAuthorizedOperation(async () => {
-        if (this.config.useResponsesApi !== false) {
+        if (this.usesResponsesApi(model, requestTools, options)) {
           assertProviderStructuredOutputCompatibility({
             providerName: this.name,
             model,
@@ -911,7 +912,13 @@ export class OpenAIProvider implements LLMProvider {
 
     try {
       return await this.auth.withAuthorizedOperation(async () => {
-        if (this.config.useResponsesApi !== false) {
+        if (
+          this.usesResponsesApi(
+            options?.model?.trim() || this.config.model,
+            options?.tools ?? this.config.tools ?? [],
+            options,
+          )
+        ) {
           return await this.streamResponses(messages, onChunk, options, timeoutMs, headers);
         }
         return await this.streamChatCompletions(
@@ -947,6 +954,25 @@ export class OpenAIProvider implements LLMProvider {
       }
       throw mapLLMError(this.name, error, timeoutMs ?? 0);
     }
+  }
+
+  /**
+   * Chat Completions unless configured otherwise. OpenAI's Chat Completions
+   * rejects function tools with a reasoning effort on GPT-6 Sol and Luna and
+   * any function tool on GPT-6 Astra, so such a request goes to the
+   * Responses API of the same endpoint, which accepts it.
+   */
+  private usesResponsesApi(
+    model: string,
+    tools: readonly LLMTool[],
+    options: LLMChatOptions | undefined,
+  ): boolean {
+    if (this.config.useResponsesApi !== false) return true;
+    return (
+      this.name === "openai" &&
+      tools.length > 0 &&
+      openAiChatCompletionsRejectsFunctionTools(model, options?.reasoningEffort)
+    );
   }
 
   async healthCheck(): Promise<boolean> {

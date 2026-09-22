@@ -38,29 +38,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
-import {
-  isOpenAiReasoningFamilyModel,
-  openAiModelDefaultsToNoReasoning,
-} from "../registry/openai-reasoning-models.js";
-
-/**
- * OpenAI's reasoning models take `temperature` only when the effective
- * reasoning effort is `none` (developers.openai.com: GPT-5.4 parameter
- * compatibility and the GPT-6 migration notes); gpt-6-luna answers anything
- * else with 400 "Unsupported parameter: 'temperature' is not supported with
- * this model". An omitted effort runs the model's documented default, which
- * is `none` only for GPT-5.1, 5.2 and the 5.4 line. A caller's temperature
- * (MCP sampling, a programmatic provider default) is dropped otherwise.
- */
-function acceptsSamplingTemperature(
-  model: string,
-  reasoningEffort: LLMChatOptions["reasoningEffort"],
-): boolean {
-  if (!isOpenAiReasoningFamilyModel(model)) return true;
-  return reasoningEffort === undefined
-    ? openAiModelDefaultsToNoReasoning(model)
-    : reasoningEffort === "none";
-}
+import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
@@ -377,7 +355,7 @@ export function buildOpenAIResponsesRequest(
   }
   if (
     input.options?.temperature !== undefined &&
-    acceptsSamplingTemperature(input.model, input.options.reasoningEffort)
+    openAiAcceptsSamplingTemperature(input.model, input.options.reasoningEffort)
   ) {
     body.temperature = input.options.temperature;
   }

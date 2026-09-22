@@ -157,6 +157,11 @@ export interface ChatCompletionsCapabilityHints {
   /** Whether caller-supplied temperature is accepted by this wire contract. */
   readonly acceptsTemperature?: boolean;
   /**
+   * OpenAI's own endpoint: a reasoning model takes temperature only at
+   * effective effort `none` (openAiAcceptsSamplingTemperature).
+   */
+  readonly gatesTemperatureOnOpenAiReasoning?: boolean;
+  /**
    * If `false`, `service_tier` is stripped. The field is recognized
    * only on an explicit provider allowlist; non-matching providers
    * either reject it or silently ignore it.
@@ -392,6 +397,7 @@ export function chatCompletionsCapabilityHintsForProvider(
 
   return {
     acceptsReasoningEffort,
+    ...(slug === "openai" ? { gatesTemperatureOnOpenAiReasoning: true } : {}),
     ...(slug === "ollama-cloud" ? {
       acceptsDirectImageInput: acceptsToolResultImages,
       toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,

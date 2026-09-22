@@ -75,3 +75,42 @@ export function openAiModelDefaultsToNoReasoning(model: string): boolean {
     isModelOrDatedSnapshot(normalized, entry)
   );
 }
+
+/**
+ * OpenAI's reasoning models take `temperature` only when the effective
+ * reasoning effort is `none` (developers.openai.com: GPT-5.4 parameter
+ * compatibility and the GPT-6 migration notes); gpt-6-luna answers anything
+ * else with 400 "Unsupported parameter: 'temperature' is not supported with
+ * this model". An omitted effort runs the model's documented default, which
+ * is `none` only for GPT-5.1, 5.2 and the 5.4 line. A caller's temperature
+ * (MCP sampling, a programmatic provider default) is dropped otherwise, on
+ * the Responses and the Chat Completions wire alike.
+ */
+export function openAiAcceptsSamplingTemperature(
+  model: string,
+  reasoningEffort: string | undefined,
+): boolean {
+  if (!isOpenAiReasoningFamilyModel(model)) return true;
+  return reasoningEffort === undefined
+    ? openAiModelDefaultsToNoReasoning(model)
+    : reasoningEffort === "none";
+}
+
+/**
+ * Chat Completions rejects function tools on GPT-6 Sol and Luna unless
+ * `reasoning_effort` is `none` (their default is medium), and never accepts
+ * them on GPT-6 Astra (Using GPT-6 guide, 2026-09-22; live: "Function tools
+ * with reasoning_effort are not supported for gpt-6-sol in
+ * /v1/chat/completions"). The Responses API takes them at every effort.
+ */
+export function openAiChatCompletionsRejectsFunctionTools(
+  model: string,
+  reasoningEffort: string | undefined,
+): boolean {
+  const normalized = model.trim().toLowerCase().replace(/^openai[/:]/, "");
+  if (normalized === "gpt-6-astra") return true;
+  if (normalized === "gpt-6-sol" || normalized === "gpt-6-luna") {
+    return reasoningEffort !== "none";
+  }
+  return false;
+}

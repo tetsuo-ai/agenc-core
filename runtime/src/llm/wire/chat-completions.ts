@@ -18,6 +18,7 @@ import {
   buildStructuredOutputTextFormat,
   parseStructuredOutputText,
 } from "../structured-output.js";
+import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
@@ -685,7 +686,14 @@ export function buildChatCompletionsRequest(
   }
   if (
     input.options?.temperature !== undefined &&
-    input.providerCapabilityHints?.acceptsTemperature !== false
+    input.providerCapabilityHints?.acceptsTemperature !== false &&
+    !(
+      input.providerCapabilityHints?.gatesTemperatureOnOpenAiReasoning === true &&
+      !openAiAcceptsSamplingTemperature(
+        input.model,
+        input.options.reasoningEffort,
+      )
+    )
   ) {
     body.temperature = input.options.temperature;
   }
