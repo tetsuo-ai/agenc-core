@@ -137,112 +137,86 @@ describe("the router and the phases executor hand ExitPlanMode the plan its appr
     home = undefined;
   });
 
-  it("does not implement an edit made while the approval was open, even when the model forges the snapshot", async () => {
-    home = await mkdtemp(join(tmpdir(), "agenc-exit-plan-"));
-    const sessionId = "conv-exit-plan-approved";
-    const context = { agencHome: home, sessionId };
-    writePlanSync(context, shown);
-    const registry = new PermissionModeRegistry({
-      ...createEmptyToolPermissionContext({ mode: "plan" }),
-      prePlanMode: "default",
-    });
-    const tool = createPlanningTools({
-      workflowController: {
-        getPermissionModeRegistry: () => registry,
-        readPlan: () => getPlan(context),
-        writePlan: async (content: string) => {
-          await writePlan(context, content);
-        },
-      },
-    }).find((candidate) => candidate.name === "ExitPlanMode")!;
-    const router = new ToolRouter([{ tool, supportsParallelToolCalls: false }]);
-    const requested: unknown[] = [];
-    const resolver = {
-      request: vi.fn(async (ctx: { readonly invocation: { readonly payload: { readonly arguments?: string } } }) => {
-        requested.push(JSON.parse(ctx.invocation.payload.arguments ?? "{}"));
-        // Someone edits the plan file while the user reads the approval sheet.
-        await writePlan(context, edited);
-        return { kind: "approved" as const };
-      }),
-    };
+  type Result = { readonly isError?: boolean; readonly content: unknown };
 
-    const result = await router.dispatchModelToolCall(
-      {
-        id: "call-exit-plan",
-        name: "ExitPlanMode",
-        // A model cannot pass the approved plan itself.
-        arguments: JSON.stringify({ [EXIT_PLAN_APPROVED_PLAN_ARG]: { plan: edited } }),
-      },
-      {
-        session: {
-          conversationId: sessionId,
-          eventLog: new EventLog(),
-          services: { admissionRequired: false, runtimeOptions: resolveAgentRuntimeOptions({}) },
-        } as never,
-        turn: { subId: "turn-exit-plan" } as never,
+  /** Dispatch one ExitPlanMode call through the router, or through the phases executor's own path. */
+  async function dispatch(
+    route: "router" | "phases",
+    tool: { readonly name: string; execute(args: Record<string, unknown>): Promise<unknown> },
+    call: { readonly id: string; readonly name: string; readonly arguments: string },
+    options: Record<string, unknown>,
+  ): Promise<Result> {
+    if (route === "router") {
+      const router = new ToolRouter([{ tool: tool as never, supportsParallelToolCalls: false }]);
+      return router.dispatchModelToolCall(call, {
+        ...options,
         tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
-        agencHome: home,
-        approvalPolicy: "never",
-        sandboxMode: "workspace_write",
-        approvalResolver: resolver,
-        canUseTool: async () => ({ behavior: "ask", message: "Permission required to use ExitPlanMode" }),
-        permissionContext: {} as never,
-      },
-    );
-
-    expect(resolver.request).toHaveBeenCalledOnce();
-    expect(requested[0]).toMatchObject({ plan: shown });
-    expect(result.isError).toBe(true);
-    expect(String(result.content)).toContain("changed after approval was requested");
-    expect(String(result.content)).not.toContain("drop the users table");
-    expect(registry.current().mode).toBe("plan");
-    expect(getPlan(context)).toBe(edited);
-  });
-
-  it("does the same on the phases executor's own dispatch path", async () => {
-    home = await mkdtemp(join(tmpdir(), "agenc-exit-plan-"));
-    const sessionId = "conv-exit-plan-approved-phases";
-    const context = { agencHome: home, sessionId };
-    writePlanSync(context, shown);
-    const registry = new PermissionModeRegistry({
-      ...createEmptyToolPermissionContext({ mode: "plan" }),
-      prePlanMode: "default",
-    });
-    const tool = createPlanningTools({
-      workflowController: {
-        getPermissionModeRegistry: () => registry,
-        readPlan: () => getPlan(context),
-        writePlan: async (content: string) => {
-          await writePlan(context, content);
-        },
-      },
-    }).find((candidate) => candidate.name === "ExitPlanMode")!;
-    const requested: unknown[] = [];
-    const resolver = {
-      request: vi.fn(async (ctx: { readonly invocation: { readonly payload: { readonly arguments?: string } } }) => {
-        requested.push(JSON.parse(ctx.invocation.payload.arguments ?? "{}"));
-        // Someone edits the plan file while the user reads the approval sheet.
-        await writePlan(context, edited);
-        return { kind: "approved" as const };
-      }),
-    };
+      } as never) as Promise<Result>;
+    }
     // No live router: the executor dispatches through the registry itself.
-    const toolRegistry = {
+    const registry = {
       tools: [tool],
       toLLMTools: () => [],
-      dispatch: async (call: { readonly arguments: string }) => tool.execute(JSON.parse(call.arguments)),
+      dispatch: async (entry: { readonly arguments: string }) => tool.execute(JSON.parse(entry.arguments)),
     };
     const executor = new StreamingToolExecutor({
-      registry: toolRegistry,
-      liveToolDispatch: {
-        router: { registry: toolRegistry },
-        options: {
+      registry,
+      liveToolDispatch: { router: { registry }, options },
+    } as never);
+    executor.addTool({} as never, call);
+    executor.close();
+    const results: Result[] = [];
+    for await (const entry of executor.getRemainingResults()) results.push(entry.result as Result);
+    expect(results).toHaveLength(1);
+    return results[0]!;
+  }
+
+  it.each(["router", "phases"] as const)(
+    "%s: does not implement an edit made while the approval was open, even when the model forges the snapshot",
+    async (route) => {
+      home = await mkdtemp(join(tmpdir(), "agenc-exit-plan-"));
+      const sessionId = `conv-exit-plan-approved-${route}`;
+      const context = { agencHome: home, sessionId };
+      writePlanSync(context, shown);
+      const registry = new PermissionModeRegistry({
+        ...createEmptyToolPermissionContext({ mode: "plan" }),
+        prePlanMode: "default",
+      });
+      const tool = createPlanningTools({
+        workflowController: {
+          getPermissionModeRegistry: () => registry,
+          readPlan: () => getPlan(context),
+          writePlan: async (content: string) => {
+            await writePlan(context, content);
+          },
+        },
+      }).find((candidate) => candidate.name === "ExitPlanMode")!;
+      const requested: unknown[] = [];
+      const resolver = {
+        request: vi.fn(async (ctx: { readonly invocation: { readonly payload: { readonly arguments?: string } } }) => {
+          requested.push(JSON.parse(ctx.invocation.payload.arguments ?? "{}"));
+          // Someone edits the plan file while the user reads the approval sheet.
+          await writePlan(context, edited);
+          return { kind: "approved" as const };
+        }),
+      };
+
+      const result = await dispatch(
+        route,
+        tool,
+        {
+          id: `call-exit-plan-${route}`,
+          name: "ExitPlanMode",
+          // A model cannot pass the approved plan itself.
+          arguments: JSON.stringify({ [EXIT_PLAN_APPROVED_PLAN_ARG]: { plan: edited } }),
+        },
+        {
           session: {
             conversationId: sessionId,
             eventLog: new EventLog(),
             services: { admissionRequired: false, runtimeOptions: resolveAgentRuntimeOptions({}) },
           },
-          turn: { subId: "turn-exit-plan-phases" },
+          turn: { subId: `turn-exit-plan-${route}` },
           agencHome: home,
           approvalPolicy: "never",
           sandboxMode: "workspace_write",
@@ -250,27 +224,15 @@ describe("the router and the phases executor hand ExitPlanMode the plan its appr
           canUseTool: async () => ({ behavior: "ask", message: "Permission required to use ExitPlanMode" }),
           permissionContext: {},
         },
-      },
-    } as never);
-    executor.addTool({} as never, {
-      id: "call-exit-plan-phases",
-      name: "ExitPlanMode",
-      // A model cannot pass the approved plan itself.
-      arguments: JSON.stringify({ [EXIT_PLAN_APPROVED_PLAN_ARG]: { plan: edited } }),
-    });
-    executor.close();
-    const results: { readonly isError?: boolean; readonly content: unknown }[] = [];
-    for await (const entry of executor.getRemainingResults()) {
-      results.push(entry.result as { readonly isError?: boolean; readonly content: unknown });
-    }
+      );
 
-    expect(results).toHaveLength(1);
-    expect(resolver.request).toHaveBeenCalledOnce();
-    expect(requested[0]).toMatchObject({ plan: shown });
-    expect(results[0]!.isError).toBe(true);
-    expect(String(results[0]!.content)).toContain("changed after approval was requested");
-    expect(String(results[0]!.content)).not.toContain("drop the users table");
-    expect(registry.current().mode).toBe("plan");
-    expect(getPlan(context)).toBe(edited);
-  });
+      expect(resolver.request).toHaveBeenCalledOnce();
+      expect(requested[0]).toMatchObject({ plan: shown });
+      expect(result.isError).toBe(true);
+      expect(String(result.content)).toContain("changed after approval was requested");
+      expect(String(result.content)).not.toContain("drop the users table");
+      expect(registry.current().mode).toBe("plan");
+      expect(getPlan(context)).toBe(edited);
+    },
+  );
 });
