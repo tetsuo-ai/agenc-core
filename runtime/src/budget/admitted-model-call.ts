@@ -841,13 +841,10 @@ export async function runAdmittedModelCall(
         // ratio locked a grok-4.7 conversation's factor at the cap after two
         // web searches (reported 58,887 and 62,442 against a query-sized
         // count), and every later turn was then denied context_window_exceeded
-        // with the real prompt at 86k of a 500k window. The widened reservation
-        // above already covers these turns; they must not scale the others.
-        {
-          calibrate:
-            providerNativeTools.length === 0 &&
-            !hasUnboundedPaidServerTool(accountingOptions),
-        },
+        // with the real prompt at 86k of a 500k window. Only the provider-native
+        // tools actually configured for this call count: a client tool that
+        // happens to be named web_search runs here and is counted normally.
+        { calibrate: providerNativeTools.length === 0 },
       );
     }
     const outcome = client.reconcile(reservationId, {

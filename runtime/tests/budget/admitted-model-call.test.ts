@@ -1265,9 +1265,12 @@ describe("runAdmittedModelCall provider-usage calibration", () => {
     // size until admission denied context_window_exceeded at 86k of 500k.
     const state = harness({});
     Object.assign(state.session, { conversationId: "calibration-server-tool" });
+    // runGrokNativeWebSearch enables native search on its provider and routes web_search.
+    Object.assign(state.provider, { config: { model: "grok-4.5", webSearch: true } });
     await admittedCall(state, 1_048_576, () => 62_442, {
       toolRouting: { allowedToolNames: ["web_search"] },
     });
+    Object.assign(state.provider, { config: { model: "grok-4.5" } });
     const afterSearch = await admittedCall(state, 1_048_576);
 
     const control = harness({});
@@ -1275,5 +1278,22 @@ describe("runAdmittedModelCall provider-usage calibration", () => {
     const plain = await admittedCall(control, 1_048_576);
 
     expect(afterSearch).toEqual(plain);
+  });
+
+  test("a client tool that is only named web_search still calibrates", async () => {
+    // Ordinary turns route their client-tool catalog by name; without a
+    // configured provider-native tool the whole input is ours to count.
+    const control = harness({});
+    Object.assign(control.session, { conversationId: "calibration-client-tool-control" });
+    const plain = await admittedCall(control, 1_048_576);
+
+    const state = harness({});
+    Object.assign(state.session, { conversationId: "calibration-client-tool" });
+    await admittedCall(state, 1_048_576, () => plain.input * 2, {
+      toolRouting: { allowedToolNames: ["web_search"] },
+    });
+    const next = await admittedCall(state, 1_048_576);
+
+    expect(next.input).toBeGreaterThan(plain.input);
   });
 });
