@@ -116,30 +116,42 @@ describe("workflow turn boundaries", () => {
       .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
+  // Both denial-without-a-user tests below replay the same two-turn script:
+  // the model requests approval_required once, is auto-denied by something
+  // other than the user, then explains rather than retrying or aborting.
+  function twoTurnApprovalScript(callId: string, requesting: string, explaining: string) {
+    const execute = vi.fn(async () => ({ content: "must not execute" }));
+    const registry = registryFor({ name: "approval_required", description: "Requires approval", inputSchema: { type: "object" }, requiresApproval: true, execute });
+    const provider = mkProvider();
+    const samples = { count: 0 };
+    provider.chatStream = async () => {
+      samples.count += 1;
+      return {
+        content: samples.count === 1 ? requesting : explaining,
+        toolCalls: samples.count === 1 ? [{ id: callId, name: "approval_required", arguments: "{}" }] : [],
+        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
+        model: "test-model",
+        finishReason: samples.count === 1 ? "tool_calls" : "stop",
+      };
+    };
+    return { execute, registry, provider, samples };
+  }
+
   test("lets the model continue after a resolver denial that no person made", async () => {
     // The live broker refuses some requests itself (inactive or mismatched
     // owner, duplicate occurrence) and a non-interactive client auto-denies.
     // Those are not the user's decision, so they neither end the turn nor
     // claim that the user denied anything.
-    const execute = vi.fn(async () => ({ content: "must not execute" }));
-    const registry = registryFor({ name: "approval_required", description: "Requires approval", inputSchema: { type: "object" }, requiresApproval: true, execute });
-    const provider = mkProvider();
-    let samples = 0;
-    provider.chatStream = async () => {
-      samples += 1;
-      return {
-        content: samples === 1 ? "Trying the action." : "The action was not permitted, so I made no changes.",
-        toolCalls: samples === 1 ? [{ id: "runtime-denial", name: "approval_required", arguments: "{}" }] : [],
-        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
-        model: "test-model",
-        finishReason: samples === 1 ? "tool_calls" : "stop",
-      };
-    };
+    const { execute, registry, provider, samples } = twoTurnApprovalScript(
+      "runtime-denial",
+      "Trying the action.",
+      "The action was not permitted, so I made no changes.",
+    );
     const { session, events } = mkSession({ provider, registry, services: { approvalResolver: { request: async () => ({ kind: "denied" as const }) } } });
 
     await drain(runTurn(session, mkCtx({ approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "workspace_write" } }), "Do the action."));
 
-    expect(samples).toBe(2);
+    expect(samples.count).toBe(2);
     expect(execute).not.toHaveBeenCalled();
     const closure = events.find((event) => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "runtime-denial");
     expect(closure?.msg).toMatchObject({ payload: { isError: true } });
@@ -149,25 +161,16 @@ describe("workflow turn boundaries", () => {
   });
 
   test("lets the model explain an unavailable approval resolver rather than marking a user denial", async () => {
-    const execute = vi.fn(async () => ({ content: "must not execute" }));
-    const registry = registryFor({ name: "approval_required", description: "Requires approval", inputSchema: { type: "object" }, requiresApproval: true, execute });
-    const provider = mkProvider();
-    let samples = 0;
-    provider.chatStream = async () => {
-      samples += 1;
-      return {
-        content: samples === 1 ? "Checking whether this action is permitted." : "No approval resolver is available, so I made no changes.",
-        toolCalls: samples === 1 ? [{ id: "default-denial", name: "approval_required", arguments: "{}" }] : [],
-        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
-        model: "test-model",
-        finishReason: samples === 1 ? "tool_calls" : "stop",
-      };
-    };
+    const { execute, registry, provider, samples } = twoTurnApprovalScript(
+      "default-denial",
+      "Checking whether this action is permitted.",
+      "No approval resolver is available, so I made no changes.",
+    );
     const { session, events } = mkSession({ provider, registry });
 
     await drain(runTurn(session, mkCtx({ approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "workspace_write" } }), "Explain whether this action can run."));
 
-    expect(samples).toBe(2);
+    expect(samples.count).toBe(2);
     expect(execute).not.toHaveBeenCalled();
     const closure = events.find((event) => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "default-denial");
     expect(closure?.msg).toMatchObject({ payload: { isError: true } });
