@@ -22,8 +22,8 @@ describe("signalPtyProcessTree", () => {
       // Never calls through: a real kill with these pids is the hazard.
       const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
       try {
-        expect(signalPtyProcessTree(pty, "SIGTERM")).toBe(false);
-        expect(signalPtyProcessTree(pty, "SIGKILL")).toBe(false);
+        expect(signalPtyProcessTree(pty, "SIGTERM", { exited: false })).toBe(false);
+        expect(signalPtyProcessTree(pty, "SIGKILL", { exited: false })).toBe(false);
         expect(pty.kill).not.toHaveBeenCalled();
         expect(killSpy).not.toHaveBeenCalled();
       } finally {

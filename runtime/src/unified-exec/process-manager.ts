@@ -1230,7 +1230,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     // Signals synchronously; closeProcessStrict then waits for the PTY's
     // exit. A PTY without a pid above 1 is not signalled at all (node-pty's
     // kill() is process.kill(pid)): its exit, or the quiesce timeout, decides.
-    signalPtyProcessTree(entry.stored.process, "SIGKILL");
+    signalPtyProcessTree(entry.stored.process, "SIGKILL", {
+      exited: entry.exitState !== null,
+    });
     return Promise.resolve();
   }
 
@@ -1693,7 +1695,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   ): void {
     try {
       if (entry.stored.kind === "pty") {
-        this.terminatePty(entry.stored.process, signal);
+        // closeAll and a poisoned authority reach exited entries too; the
+        // exit state keeps a reused pid from being signalled.
+        this.terminatePty(entry.stored.process, signal, entry.exitState !== null);
       } else {
         signalProcessTree(
           entry.stored.process,
@@ -1705,13 +1709,18 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
   }
 
-  private terminatePty(processHandle: IPty, signal: NodeJS.Signals): void {
+  private terminatePty(
+    processHandle: IPty,
+    signal: NodeJS.Signals,
+    exited: boolean,
+  ): void {
     // Refuses a PTY without a pid above 1. node-pty's own kill() is
     // process.kill(pid), which for 0, -1 or 1 would reach this process's
     // group, every process of the user, or init, so there is no fallback.
     signalPtyProcessTree(
       processHandle,
       signal === "SIGKILL" ? "SIGKILL" : "SIGTERM",
+      { exited },
     );
   }
 }

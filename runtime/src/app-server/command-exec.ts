@@ -1157,10 +1157,12 @@ function closeStdin(session: CommandExecSession): void {
 function terminateSession(session: CommandExecSession): void {
   if (session.pty !== null) {
     const pty = session.pty;
-    terminatePtySession(pty, "SIGTERM");
+    // A PTY session is finalized only by node-pty's exit report, which comes
+    // after the child was reaped; its pid may then belong to another process.
+    terminatePtySession(pty, "SIGTERM", session.finalized);
     setTimeout(() => {
       if (!session.finalized) {
-        terminatePtySession(pty, "SIGKILL");
+        terminatePtySession(pty, "SIGKILL", false);
       }
     }, FORCE_KILL_DELAY_MS).unref?.();
     return;
@@ -1196,11 +1198,17 @@ function terminateSession(session: CommandExecSession): void {
   }, FORCE_KILL_DELAY_MS).unref?.();
 }
 
-function terminatePtySession(pty: IPty, signal: NodeJS.Signals): void {
+function terminatePtySession(
+  pty: IPty,
+  signal: NodeJS.Signals,
+  exited: boolean,
+): void {
   // Refuses a PTY without a pid above 1. node-pty's own kill() is
   // process.kill(pid), which for 0, -1 or 1 would reach this process's
   // group, every process of the user, or init, so there is no fallback.
-  signalPtyProcessTree(pty, signal === "SIGKILL" ? "SIGKILL" : "SIGTERM");
+  signalPtyProcessTree(pty, signal === "SIGKILL" ? "SIGKILL" : "SIGTERM", {
+    exited,
+  });
 }
 
 function delay(ms: number): Promise<void> {

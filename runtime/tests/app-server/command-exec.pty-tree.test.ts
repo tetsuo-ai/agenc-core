@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { JsonObject } from "../../src/app-server/protocol/index.js";
 import {
+  processIsRunning,
   settlesWithin,
   spawnShellBackedPty,
   waitUntilProcessGone,
@@ -125,6 +126,65 @@ describe("commandExec PTY termination", () => {
       } finally {
         process.env.PATH = originalPath;
       }
+    },
+    15_000,
+  );
+});
+
+describe("commandExec PTY after its exit", () => {
+  // node-pty reports a PTY's exit after reaping the child, so its pid may
+  // then belong to an unrelated process. A terminate that arrives after the
+  // exit, before the session is released, used to reach that process and
+  // its whole group. The "unrelated process" here is a detached shell group
+  // the test owns, holding the PTY's reported pid.
+  posixOnly(
+    "terminate never signals an exited PTY's pid once another process holds it",
+    async () => {
+      const other = spawnShellBackedPty();
+      trees.push(other);
+      const otherChild = await other.descendantPid;
+      let exitListener:
+        | ((event: { readonly exitCode: number; readonly signal?: number }) => void)
+        | undefined;
+      const kill = vi.fn();
+      ptyFactory.current = () => ({
+        pid: other.shellPid,
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill,
+        onData: () => ({ dispose: vi.fn() }),
+        onExit: (listener: typeof exitListener) => {
+          exitListener = listener;
+          return { dispose: vi.fn() };
+        },
+      });
+      const service = new AgenCCommandExecService();
+      const context = {
+        connectionId: "pty-reuse",
+        sendNotification: () => {},
+      };
+      const started = service.start(
+        {
+          command: ["/bin/sh", "-c", "sleep 30"],
+          processId: "pty-reuse-1",
+          tty: true,
+          disableTimeout: true,
+          permissionProfile: ":danger-full-access",
+        },
+        context,
+      );
+      void started.catch(() => undefined);
+      await vi.waitFor(() => expect(exitListener).toBeDefined());
+
+      // The PTY exits and is reaped; its pid now belongs to the other group.
+      exitListener!({ exitCode: 0 });
+      await service.terminate({ processId: "pty-reuse-1" }, context);
+      await started.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+
+      expect(processIsRunning(other.shellPid)).toBe(true);
+      expect(processIsRunning(otherChild)).toBe(true);
+      expect(kill).not.toHaveBeenCalled();
     },
     15_000,
   );

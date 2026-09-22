@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import {
+  processIsRunning,
   settlesWithin,
   spawnShellBackedPty,
   waitUntilProcessGone,
@@ -180,6 +181,55 @@ describe("unified exec PTY process-tree termination", () => {
       } finally {
         restorePath();
       }
+    },
+    15_000,
+  );
+});
+
+describe("unified exec PTY after its exit", () => {
+  // node-pty reports a PTY's exit after reaping the child, so its pid may
+  // then belong to an unrelated process. closeAll signals every retained
+  // entry, exited ones included, and used to reach that process and its
+  // whole group. The "unrelated process" here is a detached shell group the
+  // test owns, holding the PTY's reported pid.
+  posixOnly(
+    "closeAll never signals an exited PTY's pid once another process holds it",
+    async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "agenc-pty-reuse-"));
+      cleanups.push(() => rm(cwd, { recursive: true, force: true }));
+      const other = spawnShellBackedPty();
+      cleanups.push(() => other.cleanup());
+      const otherChild = await other.descendantPid;
+      const manager = new UnifiedExecProcessManager({ cwd });
+      let exitListener:
+        | ((event: { readonly exitCode: number; readonly signal?: number }) => void)
+        | undefined;
+      const kill = vi.fn();
+      (manager as unknown as { loadPty: () => Promise<unknown> }).loadPty =
+        async () => ({
+          spawn: () => ({
+            pid: other.shellPid,
+            write: vi.fn(),
+            resize: vi.fn(),
+            kill,
+            onData: () => ({ dispose: vi.fn() }),
+            onExit: (listener: typeof exitListener) => {
+              exitListener = listener;
+              return { dispose: vi.fn() };
+            },
+          }),
+        });
+      await manager.execCommand({ cmd: "sleep 30", tty: true, yield_time_ms: 250 });
+      expect(exitListener).toBeDefined();
+
+      // The PTY exits and is reaped; its pid now belongs to the other group.
+      exitListener!({ exitCode: 0 });
+      await manager.closeAll("test_cleanup");
+      await new Promise((resolve) => setTimeout(resolve, 700));
+
+      expect(processIsRunning(other.shellPid)).toBe(true);
+      expect(processIsRunning(otherChild)).toBe(true);
+      expect(kill).not.toHaveBeenCalled();
     },
     15_000,
   );

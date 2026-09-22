@@ -2051,6 +2051,9 @@ export function isProcessTreeAlive(
     captureProcessTreeDescendants(child);
   }
   const ownedDescendantAlive = ownedBoundaryHasLiveMember(child);
+  // The leader was reaped and its pid now belongs to another process: a
+  // group with that id is not ours, so only recorded descendants count.
+  if (processIdReused(child)) return ownedDescendantAlive;
   if (process.platform === "linux") {
     const procState = linuxProcessGroupHasLiveMember(child.pid);
     if (procState === true) return true;
@@ -2093,6 +2096,9 @@ export function captureProcessTreeDescendants(
 
   const snapshot = readNativeProcessSnapshot();
   let boundary = ownedProcessBoundaries.get(child);
+  // Once the leader has been reaped its pid may belong to another process.
+  // Only identities recorded while it was ours can still be matched.
+  const reaped = leaderReaped(child);
   if (snapshot === undefined) {
     boundary ??= {
       rootPid,
@@ -2108,6 +2114,7 @@ export function captureProcessTreeDescendants(
   }
 
   if (boundary === undefined) {
+    if (reaped) return;
     const root = snapshot.records.get(rootPid);
     if (root === undefined && snapshot.complete) return;
     boundary = {
@@ -2121,7 +2128,7 @@ export function captureProcessTreeDescendants(
   } else if (!snapshot.complete) {
     boundary.snapshotComplete = false;
   }
-  extendOwnedProcessBoundary(boundary, snapshot);
+  extendOwnedProcessBoundary(boundary, snapshot, !reaped);
 }
 
 /**
@@ -2601,9 +2608,10 @@ function readPsProcessSnapshot(): NativeProcessSnapshot | undefined {
 function extendOwnedProcessBoundary(
   boundary: OwnedProcessBoundary,
   snapshot: NativeProcessSnapshot,
+  adoptRoot: boolean,
 ): void {
   const root = snapshot.records.get(boundary.rootPid);
-  if (boundary.identities.size === 0 && root !== undefined) {
+  if (adoptRoot && boundary.identities.size === 0 && root !== undefined) {
     boundary.identities.set(nativeProcessIdentity(root), root);
   }
 
@@ -2781,11 +2789,17 @@ export function signalProcessTree(
   if (process.platform !== "win32") {
     captureProcessTreeDescendants(child);
     signalOwnedDescendants(child, signal);
+    // The leader was reaped and its pid now belongs to another process:
+    // neither the pid nor -pid is ours. Recorded descendants were matched by
+    // identity above.
+    if (processIdReused(child)) return;
     try {
       process.kill(-child.pid, signal);
       return;
     } catch {
-      safeKill(child, signal);
+      // No group with that id. Only a leader that has not been reaped may
+      // still be signalled directly; a reaped one may have been replaced.
+      if (!leaderReaped(child)) safeKill(child, signal);
       return;
     }
   }
@@ -2814,6 +2828,40 @@ export function signalProcessTree(
   killer.once("close", (code) => {
     if (code !== 0) fallback();
   });
+}
+
+/**
+ * Whether the leader this handle started has been reaped. Node sets exitCode
+ * or signalCode only after waiting for the process, and the PTY handles do
+ * the same when node-pty reports an exit. From then on the kernel may hand
+ * the pid to an unrelated process.
+ */
+function leaderReaped(child: object): boolean {
+  const state = child as {
+    readonly exitCode?: number | null;
+    readonly signalCode?: NodeJS.Signals | null;
+  };
+  return (
+    (state.exitCode !== undefined && state.exitCode !== null) ||
+    (state.signalCode !== undefined && state.signalCode !== null)
+  );
+}
+
+/**
+ * Whether the handle's pid now belongs to a process it did not start: the
+ * leader was reaped and a live process holds the pid. The kernel does not
+ * hand out a pid that is still in use as a process group id, so while no
+ * process holds it, a group with that id is still the leader's own.
+ */
+function processIdReused(child: Pick<ChildProcess, "pid">): boolean {
+  if (!leaderReaped(child) || !isSignalablePid(child.pid)) return false;
+  try {
+    process.kill(child.pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the pid exists and belongs to another user.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function signalOwnedDescendants(
