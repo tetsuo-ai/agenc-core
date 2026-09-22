@@ -3460,6 +3460,22 @@
           "type": "string",
           "minLength": 1
         },
+        "callId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceConversationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceAgentNickname": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceAgentPath": {
+          "type": "string",
+          "minLength": 1
+        },
         "toolName": {
           "type": "string",
           "minLength": 1
