@@ -1297,3 +1297,65 @@ describe("runAdmittedModelCall provider-usage calibration", () => {
     expect(next.input).toBeGreaterThan(plain.input);
   });
 });
+
+// Codex review, P1: the Chat Completions parser cannot report prompt-cache
+// writes (unlike Responses' input_tokens_details.cache_write_tokens), so it
+// flags its usage with cacheWritesUnreported instead. usageCostUsd only acts
+// on that flag when the priced entry bills cache writes above its input
+// rate; every other Chat Completions user (DeepSeek, Grok, ...) must be
+// unaffected.
+describe("runAdmittedModelCall Chat Completions cache-write reconciliation", () => {
+  function deepSeekCall(
+    stepId: string,
+    usage: LLMResponse["usage"],
+  ): { readonly state: ReturnType<typeof harness>; readonly run: Promise<LLMResponse> } {
+    const state = harness({ maxCostUsd: 10 });
+    const provider = {
+      name: "deepseek",
+      getExecutionProfile: async () => ({
+        usageReporting: "authoritative" as const,
+        supportsMaxOutputTokens: true,
+      }),
+    } as unknown as LLMProvider;
+    const run = runAdmittedModelCall({
+      session: state.session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { maxOutputTokens: 200 },
+      stepId,
+      model: "deepseek-v4-pro",
+      providerName: "deepseek",
+      invoke: async () => response({ model: "deepseek-v4-pro", usage }),
+    });
+    return { state, run };
+  }
+
+  test("a DeepSeek usage without a higher cache-write rate prices exactly as before the flag", async () => {
+    const usage: LLMResponse["usage"] = {
+      promptTokens: 1000,
+      completionTokens: 50,
+      totalTokens: 1050,
+      availability: "reported",
+      provenance: "provider",
+      cachedInputTokens: 100,
+    };
+    const without = deepSeekCall("model:deepseek-no-flag", usage);
+    await without.run;
+    const withFlag = deepSeekCall("model:deepseek-flag", {
+      ...usage,
+      cacheWritesUnreported: true,
+    });
+    await withFlag.run;
+
+    const withoutCost = without.state.reconcile.mock.calls[0]?.[1].costUsd;
+    const withFlagCost = withFlag.state.reconcile.mock.calls[0]?.[1].costUsd;
+    expect(withFlagCost).toBe(withoutCost);
+    // Pins the actual DeepSeek native formula so a change on either path is
+    // caught: 900 uncached * $0.00132/1K + 100 cached * $0.000044/1K + 50 out
+    // * $0.00396/1K (COST_TIER_DEEPSEEK_V4_PRO_NATIVE, session/cost.ts).
+    expect(withFlagCost).toBeCloseTo(
+      0.9 * 0.00132 + 0.1 * 0.000044 + 0.05 * 0.00396,
+      12,
+    );
+  });
+});

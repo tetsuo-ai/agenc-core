@@ -594,4 +594,41 @@ describe("buildChatCompletionsRequest", () => {
     expect(response.content).toBe("");
     expect(response.providerReasoningContent).toBe("opaque replay state");
   });
+
+  // Codex review, P1: unlike Responses' input_tokens_details.cache_write_tokens,
+  // Chat Completions has no field for prompt-cache writes, so a real write is
+  // folded into prompt_tokens with no way to tell it apart from ordinary
+  // input. Budget reconciliation (admitted-model-call.ts) needs this flag to
+  // avoid under-pricing those writes as ordinary input.
+  test("flags Chat Completions usage as unable to report prompt-cache writes", () => {
+    const response = parseChatCompletionsResponse(
+      "gpt-6-sol",
+      {
+        id: "chatcmpl_cache_write",
+        choices: [
+          {
+            message: { role: "assistant", content: "ok" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 50,
+          total_tokens: 1050,
+          prompt_tokens_details: { cached_tokens: 200 },
+        },
+      },
+      {
+        model: "gpt-6-sol",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+      },
+    );
+
+    expect(response.usage.cacheWritesUnreported).toBe(true);
+    // Cached reads are still reported normally; only cache WRITES have no
+    // wire field on this path.
+    expect(response.usage.cachedInputTokens).toBe(200);
+    expect(response.usage.cacheCreationInputTokens).toBeUndefined();
+  });
 });

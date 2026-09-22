@@ -285,6 +285,15 @@ export interface LLMUsage {
   reasoningOutputTokens?: number;
   webSearchRequests?: number;
   /**
+   * The wire this usage came from cannot report prompt-cache writes: it has
+   * no field equivalent to Responses' `input_tokens_details.cache_write_tokens`
+   * (OpenAI Chat Completions folds real cache writes into `promptTokens` with
+   * no way to tell them apart from ordinary input). Budget reconciliation
+   * uses this to avoid under-pricing those writes as ordinary input on models
+   * that bill cache writes above the input rate.
+   */
+  readonly cacheWritesUnreported?: boolean;
+  /**
    * Speed the provider reports it served the call at (Anthropic
    * `usage.speed`). Fast mode bills at its own rates, so cost accounting
    * follows this rather than the speed that was requested.

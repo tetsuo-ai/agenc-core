@@ -318,7 +318,8 @@ function usageCostUsd(
   usage: LLMResponse["usage"],
   options: LLMChatOptions,
 ): number | null {
-  if (pricedEntry(model, provider) === null) return null;
+  const entry = pricedEntry(model, provider);
+  if (entry === null) return null;
   if (
     paidServerToolNames(options).some(
       (name) => name !== "web_search" && name !== "x_search",
@@ -326,13 +327,31 @@ function usageCostUsd(
   ) {
     return null;
   }
+  const cachedInputTokens = usage.cachedInputTokens ?? 0;
+  // Chat Completions cannot report prompt-cache writes as their own field
+  // (usage.cacheWritesUnreported), so a real write there is indistinguishable
+  // from ordinary input and would otherwise be priced at the input rate
+  // instead of the model's higher cache-write rate. The reservation already
+  // assumes the worst case (maximumTokenCostUsd reserves every input token at
+  // the dearest of input/cached/cache-write rate), so reconciliation has to
+  // match that worst case here, or it releases too much of the reservation
+  // and a later call can be admitted past the real cumulative spend. Price
+  // every uncached input token as a cache write; models without a higher
+  // cache-write rate are unaffected and price exactly as before.
+  const reconstructedCacheWriteTokens =
+    usage.cacheWritesUnreported === true &&
+    entry.cacheCreationUsdPer1K !== undefined &&
+    entry.cacheCreationUsdPer1K > entry.inputUsdPer1K
+      ? Math.max(0, usage.promptTokens - cachedInputTokens)
+      : undefined;
   const modelUsage: ModelUsage = {
     model,
     provider,
     inputTokens: usage.promptTokens,
     outputTokens: usage.completionTokens,
-    cachedInputTokens: usage.cachedInputTokens ?? 0,
-    cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
+    cachedInputTokens,
+    cacheCreationInputTokens:
+      reconstructedCacheWriteTokens ?? usage.cacheCreationInputTokens ?? 0,
     reasoningOutputTokens: usage.reasoningOutputTokens ?? 0,
     webSearchRequests: usage.webSearchRequests ?? 0,
     totalTokens: usage.totalTokens,

@@ -1017,6 +1017,13 @@ export function parseChatCompletionsResponse(
         promptDetails.cached_tokens ??
         (isKimiResponse ? usageRecord.cached_tokens : undefined),
       reasoningOutputTokens: completionDetails.reasoning_tokens,
+      // Unlike Responses' input_tokens_details.cache_write_tokens, Chat
+      // Completions has no field for prompt-cache writes: a real cache write
+      // is folded into prompt_tokens with no way to tell it apart from
+      // ordinary input. Flag it so budget reconciliation
+      // (admitted-model-call.ts) does not under-price it as ordinary input on
+      // models that bill cache writes above the input rate.
+      cacheWritesUnreported: true,
       // Only providers documented to take service_tier report the tier that
       // served the request; Fast mode bills at its own rates.
       ...(request.providerCapabilityHints?.acceptsServiceTier === true
