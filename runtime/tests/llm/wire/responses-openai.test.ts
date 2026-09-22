@@ -43,7 +43,7 @@ describe("buildOpenAIResponsesRequest", () => {
 
   test("serializes request-scoped temperature", () => {
     const request = buildOpenAIResponsesRequest({
-      model: "gpt-5",
+      model: "gpt-4.1",
       messages: [{ role: "user", content: "hello" }],
       tools: [],
       options: {
@@ -52,6 +52,51 @@ describe("buildOpenAIResponsesRequest", () => {
     });
 
     expect(request.temperature).toBe(0.3);
+  });
+
+  // OpenAI documents temperature on its reasoning models only when the
+  // effective effort is none (GPT-5.4 parameter compatibility, Using GPT-6);
+  // gpt-6-luna answered a live request with 400 "Unsupported parameter:
+  // 'temperature' is not supported with this model". An omitted effort runs
+  // the model's documented default: none for GPT-5.1, 5.2 and the 5.4 line.
+  test("keeps temperature off OpenAI reasoning models unless the effective effort is none", () => {
+    const build = (
+      model: string,
+      options: NonNullable<Parameters<typeof buildOpenAIResponsesRequest>[0]["options"]>,
+    ) =>
+      buildOpenAIResponsesRequest({
+        model,
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options,
+      });
+
+    for (const model of [
+      "gpt-6-luna",
+      "gpt-6-sol",
+      "gpt-6-astra",
+      "gpt-5.6-sol",
+      "gpt-5.5",
+      "gpt-5.4-pro",
+      "gpt-5",
+      "o3",
+      "openai/gpt-6-luna",
+    ]) {
+      expect(build(model, { temperature: 0.2 }).temperature, model).toBeUndefined();
+    }
+    for (const model of ["gpt-6-luna", "gpt-5.4", "gpt-5.2"]) {
+      expect(
+        build(model, { temperature: 0.2, reasoningEffort: "low" }).temperature,
+        model,
+      ).toBeUndefined();
+    }
+    for (const model of ["gpt-5.4", "gpt-5.4-2026-03-05", "gpt-5.4-mini", "gpt-5.2", "gpt-5.1"]) {
+      expect(build(model, { temperature: 0.2 }).temperature, model).toBe(0.2);
+    }
+    expect(
+      build("gpt-6-luna", { temperature: 0.2, reasoningEffort: "none" }),
+    ).toMatchObject({ temperature: 0.2, reasoning: { effort: "none" } });
+    expect(build("gpt-4.1", { temperature: 0.2 }).temperature).toBe(0.2);
   });
 
   test("folds developer messages into instructions before current user input", () => {

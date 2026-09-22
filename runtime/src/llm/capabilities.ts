@@ -9,7 +9,7 @@ import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
 import { supportsGrokServerSideTools } from "./provider-native-search.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import { ollamaCloudModel } from "./registry/ollama-cloud-models.js";
-import { isVerifiedOpenAiReasoningModel } from "./registry/openai-reasoning-models.js";
+import { isOpenAiReasoningFamilyModel } from "./registry/openai-reasoning-models.js";
 
 export interface ProviderModelCapabilities {
   readonly provider: string;
@@ -222,13 +222,6 @@ function matchesModelFamily(model: string, pattern: RegExp): boolean {
   return pattern.test(model.trim().toLowerCase());
 }
 
-function isOpenAIReasoningModel(model: string): boolean {
-  return isVerifiedOpenAiReasoningModel(model) || matchesModelFamily(
-    model,
-    /(?:^|[/:])(?:gpt-5|o1|o3|o4|codex|chatgpt-5)(?:$|[-_.:])/,
-  );
-}
-
 function isOpenAIAudioInputModel(model: string): boolean {
   return matchesModelFamily(
     model,
@@ -410,15 +403,15 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsStructuredOutput: supportsOpenAIStructuredOutputs,
     supportsStructuredOutputWithTools: supportsOpenAIStructuredOutputs,
     supportsProviderNativeWebSearch: false,
-    supportsExtendedThinking: isOpenAIReasoningModel,
+    supportsExtendedThinking: isOpenAiReasoningFamilyModel,
     acceptsImageHistory: true,
     // T13 only serializes inline/base64 audio parts for this provider. Session history
     // currently records audio as opaque URL-bearing blocks, so provider/model
     // switches must fail closed until replay serialization grows a transcoding
     // layer for those history entries.
     acceptsAudioHistory: false,
-    acceptsThinkingHistory: isOpenAIReasoningModel,
-    acceptsReasoningEffort: isOpenAIReasoningModel,
+    acceptsThinkingHistory: isOpenAiReasoningFamilyModel,
+    acceptsReasoningEffort: isOpenAiReasoningFamilyModel,
   },
   openrouter: {
     // Routed upstreams vary by model/provider and the runtime does not have a

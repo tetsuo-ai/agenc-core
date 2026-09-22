@@ -30,3 +30,48 @@ export function isVerifiedOpenAiReasoningModel(model: string): boolean {
   const normalized = model.trim().toLowerCase().replace(/^openai[/:]/, "");
   return OPENAI_REASONING_MODELS.some((entry) => entry.model === normalized);
 }
+
+const OPENAI_REASONING_FAMILY =
+  /(?:^|[/:])(?:gpt-5|o1|o3|o4|codex|chatgpt-5)(?:$|[-_.:])/i;
+
+/**
+ * OpenAI's reasoning family: the verified rows above plus the GPT-5, o1, o3,
+ * o4, Codex and chatgpt-5 families. Capability gating, the effort resolver
+ * and the Responses wire all read this one definition.
+ */
+export function isOpenAiReasoningFamilyModel(model: string): boolean {
+  return (
+    isVerifiedOpenAiReasoningModel(model) ||
+    OPENAI_REASONING_FAMILY.test(model.trim())
+  );
+}
+
+/**
+ * Models whose model page documents `reasoning.effort` none as the default
+ * (developers.openai.com, 2026-09-22). A request that omits the effort runs
+ * these without reasoning; every other reasoning model defaults to a
+ * reasoning tier or has no `none` at all.
+ */
+const OPENAI_MODELS_DEFAULTING_TO_NO_REASONING = Object.freeze([
+  "gpt-5.1",
+  "gpt-5.2",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+]);
+
+/** The model itself or one of its dated snapshots, never a sibling like `-pro`. */
+function isModelOrDatedSnapshot(candidate: string, model: string): boolean {
+  return (
+    candidate === model ||
+    (candidate.startsWith(`${model}-`) &&
+      /^\d{4}-\d{2}-\d{2}$/u.test(candidate.slice(model.length + 1)))
+  );
+}
+
+export function openAiModelDefaultsToNoReasoning(model: string): boolean {
+  const normalized = model.trim().toLowerCase().replace(/^openai[/:]/, "");
+  return OPENAI_MODELS_DEFAULTING_TO_NO_REASONING.some((entry) =>
+    isModelOrDatedSnapshot(normalized, entry)
+  );
+}

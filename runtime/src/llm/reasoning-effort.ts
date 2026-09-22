@@ -3,7 +3,7 @@
  * models have separate contracts, even when the model id names another vendor.
  */
 import { supportsXaiReasoningEffortParam } from "./structured-output.js";
-import { isVerifiedOpenAiReasoningModel } from "./registry/openai-reasoning-models.js";
+import { isOpenAiReasoningFamilyModel } from "./registry/openai-reasoning-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "./registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel, DEEPSEEK_REASONING_LEVELS } from "./registry/deepseek-models.js";
 import { anthropicEffortLevels } from "../utils/model/anthropicThinkingControl.js";
@@ -101,17 +101,9 @@ const ZAI_GLM_53_REASONING_EFFORT_VALUES = new Set([
   "max",
 ]);
 const KIMI_K3_REASONING_EFFORT_VALUES = new Set(["low", "high", "max"]);
-/**
- * Lightweight test for the upstream-provider reasoning model family.
- * Mirrors the regex in `capabilities.ts:isOpenAIReasoningModel` so we
- * don't have to widen that file's exports for this single use site.
- */
+/** The same OpenAI reasoning family that capability gating uses. */
 function isUpstreamReasoningModel(model: string | undefined): boolean {
-  if (model === undefined) return false;
-  if (isVerifiedOpenAiReasoningModel(model)) return true;
-  return /(?:^|[/:])(?:gpt-5|o1|o3|o4|codex|chatgpt-5)(?:$|[-_.:])/i.test(
-    model.trim(),
-  );
+  return model !== undefined && isOpenAiReasoningFamilyModel(model);
 }
 
 export function resolveReasoningEffort(input: {
