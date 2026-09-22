@@ -149,6 +149,8 @@ const MINIMAX_ASPECT_RATIOS = Object.freeze(
 const OPENAI_IMAGE_MODELS = Object.freeze(
   new Set([
     "gpt-image-2",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare",
     "gpt-image-1.5",
     "gpt-image-1",
     "gpt-image-1-mini",
@@ -156,8 +158,17 @@ const OPENAI_IMAGE_MODELS = Object.freeze(
   ]),
 );
 const OPENAI_IMAGE_QUALITIES = Object.freeze(
-  new Set(["low", "medium", "high", "auto"]),
+  new Set(["low", "medium", "high", "xhigh", "max", "auto"]),
 );
+/**
+ * GPT Image 2.5 adds the xhigh and max quality settings; earlier GPT Image
+ * models stop at high (developers.openai.com image generation guide,
+ * 2026-09-22). Refusing before the request keeps the model's retry cheap.
+ */
+const OPENAI_EXTENDED_QUALITY_IMAGE_MODELS = Object.freeze(
+  new Set(["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]),
+);
+const OPENAI_EXTENDED_IMAGE_QUALITIES = Object.freeze(new Set(["xhigh", "max"]));
 /** OpenAI's three encodings, keyed by the `output_format` it reports. */
 const OPENAI_OUTPUT_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze(
   { jpeg: "jpg", webp: "webp", png: "png" },
@@ -853,6 +864,7 @@ type QualityDecision =
 function decideImageQuality(
   backend: ImageBackend,
   quality: string | undefined,
+  model: string,
 ): QualityDecision {
   if (quality === undefined) return { kind: "use", value: undefined };
   if (backend.kind === "zai") {
@@ -862,12 +874,22 @@ function decideImageQuality(
   }
   if (backend.kind === "openai") {
     const translated = UNIVERSAL_TO_OPENAI_QUALITY[quality] ?? quality;
-    return OPENAI_IMAGE_QUALITIES.has(translated)
-      ? { kind: "use", value: translated }
-      : {
-          kind: "refuse",
-          error: `OpenAI quality must be one of ${[...OPENAI_IMAGE_QUALITIES].join(", ")}`,
-        };
+    if (!OPENAI_IMAGE_QUALITIES.has(translated)) {
+      return {
+        kind: "refuse",
+        error: `OpenAI quality must be one of ${[...OPENAI_IMAGE_QUALITIES].join(", ")}`,
+      };
+    }
+    if (
+      OPENAI_EXTENDED_IMAGE_QUALITIES.has(translated) &&
+      !OPENAI_EXTENDED_QUALITY_IMAGE_MODELS.has(model)
+    ) {
+      return {
+        kind: "refuse",
+        error: `OpenAI quality xhigh and max need gpt-image-2.5-sunburst or gpt-image-2.5-flare; ${model} accepts low, medium, high or auto`,
+      };
+    }
+    return { kind: "use", value: translated };
   }
   // Meta, QwenCloud, MiniMax and xAI have no quality control at all.
   return { kind: "ignore" };
@@ -1046,7 +1068,7 @@ function imagineImageInputSchema(
           type: "string",
           enum: [...OPENAI_IMAGE_QUALITIES],
           description:
-            "OpenAI rendering quality (default auto). Lower quality costs fewer output tokens.",
+            "OpenAI rendering quality (default auto). Lower quality costs fewer output tokens. xhigh and max need gpt-image-2.5-sunburst or gpt-image-2.5-flare.",
         },
       });
       break;
@@ -1303,6 +1325,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       const qualityDecision = decideImageQuality(
         backend,
         stringValue(args.quality),
+        model,
       );
       if (qualityDecision.kind === "refuse") {
         return refusal({ error: qualityDecision.error });

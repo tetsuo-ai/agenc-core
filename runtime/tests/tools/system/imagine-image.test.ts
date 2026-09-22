@@ -1547,6 +1547,59 @@ describe("ImagineImage tool", () => {
     ).toEqual(["quality"]);
   });
 
+  // developers.openai.com/api/docs/models/gpt-image-2.5-sunburst and
+  // /gpt-image-2.5-flare plus the image generation guide (2026-09-22): both
+  // take v1/images/generations and add the xhigh and max quality settings;
+  // earlier GPT Image models stop at high.
+  it.each(["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"])(
+    "generates with %s, including the xhigh and max qualities it adds",
+    async (model) => {
+      const root = await mkdtemp(join(tmpdir(), "imagine-openai-25-"));
+      const fetchImpl = backendAwareImageFetch();
+      const tool = openaiImagineTool(root, fetchImpl);
+      const calls = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+
+      for (const quality of ["xhigh", "max", "low"]) {
+        const result = await tool.execute({ prompt: "a grey square", model, quality });
+        expect(result.isError, quality).toBeUndefined();
+        expect(JSON.parse(result.content)).toMatchObject({ backend: "openai", model });
+        const init = calls.at(-1)?.[1] as { body: string };
+        expect(String(calls.at(-1)?.[0])).toBe("https://api.openai.com/v1/images/generations");
+        expect(JSON.parse(init.body)).toEqual({
+          model,
+          prompt: "a grey square",
+          n: 1,
+          size: "1024x1024",
+          quality,
+        });
+      }
+    },
+  );
+
+  it("refuses xhigh and max for GPT Image models before 2.5 without calling OpenAI", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-openai-quality-"));
+    const fetchImpl = vi.fn();
+    const tool = openaiImagineTool(root, fetchImpl as unknown as typeof fetch);
+
+    for (const [model, quality] of [
+      [undefined, "xhigh"],
+      ["gpt-image-2", "max"],
+      ["gpt-image-1.5", "xhigh"],
+    ] as const) {
+      const result = await tool.execute({
+        prompt: "x",
+        quality,
+        ...(model === undefined ? {} : { model }),
+      });
+      expect(result.isError, `${model}/${quality}`).toBe(true);
+      expect(String(result.content)).toContain(
+        "xhigh and max need gpt-image-2.5-sunburst or gpt-image-2.5-flare",
+      );
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("refuses controls the new backends do not have", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-controls-"));
     const fetchImpl = backendAwareImageFetch();
@@ -1645,11 +1698,19 @@ describe("ImagineImage tool", () => {
       "prompt",
       "quality",
     ]);
-    expect(openaiSchema.properties.model?.enum).toContain("gpt-image-2");
+    expect(openaiSchema.properties.model?.enum).toEqual(
+      expect.arrayContaining([
+        "gpt-image-2",
+        "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare",
+      ]),
+    );
     expect(openaiSchema.properties.quality?.enum).toEqual([
       "low",
       "medium",
       "high",
+      "xhigh",
+      "max",
       "auto",
     ]);
 
