@@ -84,11 +84,11 @@ const SAFE_PSEUDO_DEVICE_TARGETS = new Set([
 const SAFE_PSEUDO_DEVICE_FD_RE = /^\/dev\/fd\/\d+$/;
 
 export function isSafePseudoDevicePath(rawPath: string): boolean {
-  const trimmed = rawPath.trim();
-  return (
-    SAFE_PSEUDO_DEVICE_TARGETS.has(trimmed) ||
-    SAFE_PSEUDO_DEVICE_FD_RE.test(trimmed)
-  );
+  return isExactSafePseudoDevicePath(rawPath.trim());
+}
+
+function isExactSafePseudoDevicePath(path: string): boolean {
+  return SAFE_PSEUDO_DEVICE_TARGETS.has(path) || SAFE_PSEUDO_DEVICE_FD_RE.test(path);
 }
 
 export interface ShellWorkspaceWritePolicyDecision {
@@ -438,7 +438,9 @@ function collectMoveTargets(
 
 /**
  * `sed` writes its in-place files, their backups, and the files its script
- * names in `w` commands. The script itself is not a path.
+ * names in `w` commands, under GNU or BSD sed. The script itself is not a
+ * path. The names are resolved exactly as sed opens them: a blank at either
+ * end is part of the name.
  */
 function collectSedWriteTargets(
   args: readonly string[],
@@ -448,21 +450,13 @@ function collectSedWriteTargets(
   const writes = analyzeSedWrites(args, argsRequiringExpansion);
   const collection = emptyTargetCollection();
   collection.indeterminate = writes.indeterminate;
-  for (const edit of writes.inPlaceEdits) {
-    const file = normalizeConcreteTargetPath(edit.file, cwd);
-    mergeTargetCollections(collection, file);
-    // A backup is named after its file, so an unknown file has no known backup.
-    if (file.targets.length === 0) continue;
-    for (const backup of edit.backups) {
-      pushUnique(collection.targets, resolvePath(cwd, backup.trim()));
-    }
+  for (const target of writes.targets) {
+    if (isExactSafePseudoDevicePath(target)) continue;
+    pushUnique(collection.targets, resolvePath(cwd, target));
   }
-  // sed opens these names itself, so no shell expansion applies to them.
-  for (const file of writes.scriptWrites) {
-    if (isSafePseudoDevicePath(file)) continue;
-    pushUnique(collection.targets, resolvePath(cwd, file.trim()));
-  }
-  for (const command of writes.scriptCommands) {
+  // The commands an `e` runs already make the result indeterminate; their
+  // known targets are still checked.
+  for (const command of writes.commands) {
     mergeTargetCollections(collection, collectShellCommandWriteTargets(command, cwd));
   }
   return collection;

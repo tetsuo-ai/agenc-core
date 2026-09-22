@@ -4,39 +4,64 @@
  * sed writes files in three ways. An in-place edit (`-i`, `-I`,
  * `--in-place`) rewrites every file operand and may leave a backup beside
  * it. The `w` and `W` commands and the `s///w` flag write the file named
- * after them. The GNU `e` command and `s///e` flag run shell commands. The
- * rest of a script only prints.
+ * after them, which sed opens while it compiles the script, before it reads
+ * any input and even when a later command is rejected. The GNU `e` command
+ * and `s///e` flag run shell commands.
  *
  * GNU sed and BSD sed (macOS) read one command line differently. GNU
  * permutes options and takes a backup suffix only when it is attached to
- * `-i`. BSD stops at the first operand and always takes the word after a
- * bare `-i` as the suffix. This module follows GNU and takes that word as a
- * BSD suffix only in the shapes BSD users write (`-i ''`, `-i .bak`). The
- * script is never taken for a file.
+ * `-i`. BSD stops at the first operand and takes the word after a bare `-i`
+ * as the suffix, so a word GNU edits as a file can be a BSD suffix and a
+ * word GNU runs as a script can be a BSD file. Both readings are analyzed
+ * and every target either one reports is a target.
+ *
+ * Anything this analysis cannot know makes the result indeterminate while
+ * keeping the targets it found: a word the shell still expands, a script
+ * file, an `e` command, an option neither sed accepts, a script GNU may
+ * accept in a newer version, and an in-place edit that follows symlinks.
  */
 
-/** A word of a sed command line. */
+/**
+ * A word of a sed command line, or the part of an option word after the
+ * option letter. Any expansion in an option word already makes the reading
+ * unresolved, so that part is read as written: bash expands a tilde only at
+ * the start of a whole word.
+ */
 interface SedWord {
   readonly value: string;
   /** The shell still expands this word (`requiresExpansion` from the lexer). */
   readonly expands: boolean;
 }
 
-interface SedInPlaceEdit {
-  /** The file operand as written. */
-  readonly file: string;
-  /** Backup files the edit leaves, relative to the same working directory. */
-  readonly backups: readonly string[];
+interface SedWrites {
+  /** Paths sed may write, exactly as sed opens them, relative to its working directory. */
+  readonly targets: readonly string[];
+  /** Shell commands the script runs with the GNU `e command`. */
+  readonly commands: readonly string[];
+  /** Part of what sed writes cannot be known from the command line. */
+  readonly indeterminate: boolean;
 }
 
-interface SedWrites {
-  readonly inPlaceEdits: readonly SedInPlaceEdit[];
-  /** Files the script writes with `w`, `W`, or the `s///w` flag, as written. */
-  readonly scriptWrites: readonly string[];
-  /** Shell commands the script runs with the GNU `e command`. */
-  readonly scriptCommands: readonly string[];
-  /** Part of what sed writes cannot be read from the command line. */
-  readonly indeterminate: boolean;
+type SedFlavor = "gnu" | "bsd";
+
+/** One sed implementation's reading of a command line. */
+interface SedReading {
+  readonly flavor: SedFlavor;
+  /** Inline scripts, in the order sed compiles them. */
+  readonly scripts: readonly SedWord[];
+  /** `-f` or `--file`: a script whose contents are unknown here. */
+  readonly readsScriptFile: boolean;
+  readonly files: readonly SedWord[];
+  readonly inPlace: boolean;
+  /** The backup suffix of the last in-place option, when it has one. */
+  readonly suffix?: SedWord;
+  /** GNU without -n, --posix, or --debug: an empty script copies each file unchanged. */
+  readonly emptyScriptCopiesInput: boolean;
+  readonly followSymlinks: boolean;
+  /** sed exits while it reads its options, after compiling the `-e` scripts before that point. */
+  readonly exitsInOptions: boolean;
+  /** The shell or an unknown option decides part of this reading. */
+  readonly unresolved: boolean;
 }
 
 type LongOptionArgument = "none" | "required" | "optional";
@@ -63,23 +88,15 @@ const LONG_OPTIONS: ReadonlyMap<string, LongOptionArgument> = new Map([
   ["zero-terminated", "none"],
 ]);
 
-/** A `$` parameter the shell will substitute: `$name`, `${...}`, `$1`, `$@`. */
-const PARAMETER_EXPANSION_RE = /\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/u;
-const PARAMETER_EXPANSIONS_RE = new RegExp(PARAMETER_EXPANSION_RE.source, "gu");
+/** GNU short options without an argument (`bsnrzuE` in "bsnrzuEe:f:l:i::V:"). */
+const GNU_SHORT_FLAGS = new Set(["b", "E", "n", "r", "s", "u", "z"]);
+/** macOS short options without an argument (`EHalnru` in "EHI:ae:f:i:lnru"). */
+const BSD_SHORT_FLAGS = new Set(["a", "E", "H", "l", "n", "r", "u"]);
+/** Every short option either sed accepts. Anything else is unknown here. */
+const KNOWN_SHORT_OPTIONS = new Set([..."abefilnrsuzEHIV"]);
 
-/** Letters that start the commands and flags that write files or run commands. */
-const WRITE_OR_RUN_LETTER_RE = /[wWe]/u;
-
-/** A word shaped like a backup suffix (`.bak`, `~`, `orig`), never like a script. */
-const BACKUP_SUFFIX_RE = /^[A-Za-z0-9._~+-]+$/u;
-
-interface SedCommandLine {
-  /** The `-e` scripts, or else the first operand. */
-  readonly scriptWords: readonly SedWord[];
-  readonly files: readonly SedWord[];
-  readonly inPlace: boolean;
-  readonly suffixes: readonly SedWord[];
-}
+/** Commands only GNU sed has; BSD sed rejects them. */
+const GNU_ONLY_COMMANDS = new Set([..."eFLQRTvWz"]);
 
 /** Resolves a long option the way getopt_long does: its name or a unique prefix. */
 function resolveLongOption(name: string): string | undefined {
@@ -88,254 +105,338 @@ function resolveLongOption(name: string): string | undefined {
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-function parseSedCommandLine(
-  args: readonly string[],
-  argsRequiringExpansion: readonly boolean[] | undefined,
-): SedCommandLine {
-  const wordAt = (index: number): SedWord => ({
-    value: args[index] ?? "",
-    expands: argsRequiringExpansion?.[index] === true,
-  });
-  const scriptChunks: SedWord[] = [];
+/**
+ * Whether the shell may change this word: a `$` expansion, a glob, brace
+ * expansion, or a leading tilde. Quoting the lexer already removed is exact.
+ */
+function mayChange(word: SedWord): boolean {
+  if (!word.expands) return false;
+  const value = word.value;
+  return /[$*?[]/u.test(value) || /\{[^}]*(?:,|\.\.)[^}]*\}/u.test(value) || value.startsWith("~");
+}
+
+/**
+ * Whether the shell may turn this word into option words: an expansion can
+ * split into several words or start with `-`, and a glob or brace at the
+ * start can produce a word that starts with `-`.
+ */
+function mayExpandToOptions(word: SedWord): boolean {
+  return mayChange(word) && (word.value.includes("$") || /^[-*?[{]/u.test(word.value));
+}
+
+function nothingRead(flavor: SedFlavor, unresolved: boolean): SedReading {
+  return {
+    flavor,
+    scripts: [],
+    readsScriptFile: false,
+    files: [],
+    inPlace: false,
+    emptyScriptCopiesInput: false,
+    followSymlinks: false,
+    exitsInOptions: true,
+    unresolved,
+  };
+}
+
+/** GNU sed: getopt_long with permutation, so an option may follow an operand. */
+function readGnuCommandLine(words: readonly SedWord[]): SedReading {
+  const scripts: SedWord[] = [];
   let readsScriptFile = false;
   const operands: SedWord[] = [];
   let inPlace = false;
-  const suffixes: SedWord[] = [];
-  // A bare -i directly followed by the word that became the first operand.
-  // GNU reads that word as an operand, BSD as the backup suffix.
-  let bareInPlaceBeforeFirstOperand = false;
+  let suffix: SedWord | undefined;
+  let copiesInput = true;
+  let followSymlinks = false;
+  let exits = false;
+  let unresolved = false;
   let optionsEnded = false;
 
-  for (let index = 0; index < args.length; index += 1) {
-    const token = args[index]!;
-    if (optionsEnded || token === "-" || !token.startsWith("-")) {
-      operands.push(wordAt(index));
+  for (let index = 0; index < words.length && !exits; index += 1) {
+    const word = words[index]!;
+    if (optionsEnded) {
+      operands.push(word);
       continue;
     }
+    if (mayExpandToOptions(word)) unresolved = true;
+    const token = word.value;
     if (token === "--") {
       optionsEnded = true;
+      continue;
+    }
+    if (token === "-" || !token.startsWith("-")) {
+      operands.push(word);
       continue;
     }
     if (token.startsWith("--")) {
       const equals = token.indexOf("=");
       const name = resolveLongOption(token.slice(2, equals < 0 ? undefined : equals));
-      const attached: SedWord | undefined = equals < 0
-        ? undefined
-        : { value: token.slice(equals + 1), expands: wordAt(index).expands };
-      let value = attached;
-      if (
-        name !== undefined &&
-        LONG_OPTIONS.get(name) === "required" &&
-        value === undefined &&
-        index + 1 < args.length
-      ) {
-        index += 1;
-        value = wordAt(index);
+      if (name === undefined) {
+        // Neither sed accepts it (or the prefix is ambiguous): unknown here.
+        unresolved = true;
+        exits = true;
+        continue;
       }
-      if (name === "expression" && value !== undefined) scriptChunks.push(value);
+      const attached: SedWord | undefined =
+        equals < 0 ? undefined : { value: token.slice(equals + 1), expands: false };
+      let value = attached;
+      if (LONG_OPTIONS.get(name) === "required" && value === undefined) {
+        const next = words[index + 1];
+        if (next === undefined) {
+          exits = true;
+          continue;
+        }
+        if (mayExpandToOptions(next)) unresolved = true;
+        index += 1;
+        value = next;
+      }
+      if (name === "expression" && value !== undefined) scripts.push(value);
       if (name === "file") readsScriptFile = true;
       if (name === "in-place") {
         inPlace = true;
-        if (attached !== undefined && attached.value.length > 0) suffixes.push(attached);
+        suffix = attached !== undefined && attached.value.length > 0 ? attached : undefined;
       }
+      if (name === "quiet" || name === "silent" || name === "posix" || name === "debug") {
+        copiesInput = false;
+      }
+      if (name === "follow-symlinks") followSymlinks = true;
+      if (name === "help" || name === "version") exits = true;
       continue;
     }
-    // A cluster of short options: -n, -ne SCRIPT, -i.bak, -Ei, -I .orig.
     for (let at = 1; at < token.length; at += 1) {
       const option = token[at]!;
-      const rest: SedWord = { value: token.slice(at + 1), expands: wordAt(index).expands };
-      if (option === "e" || option === "f" || option === "I") {
+      const rest: SedWord = { value: token.slice(at + 1), expands: false };
+      if (option === "e" || option === "f" || option === "l" || option === "V") {
         let value: SedWord | undefined = rest.value.length > 0 ? rest : undefined;
-        if (value === undefined && index + 1 < args.length) {
+        if (value === undefined) {
+          const next = words[index + 1];
+          if (next === undefined) {
+            exits = true;
+            break;
+          }
+          if (mayExpandToOptions(next)) unresolved = true;
           index += 1;
-          value = wordAt(index);
+          value = next;
         }
-        if (option === "e" && value !== undefined) scriptChunks.push(value);
+        if (option === "e") scripts.push(value);
         if (option === "f") readsScriptFile = true;
-        if (option === "I") {
-          // BSD only: the suffix is always the next word, even `''`.
-          inPlace = true;
-          if (value !== undefined && value.value.length > 0) suffixes.push(value);
-        }
+        // `V` is in GNU's option string but has no handler: a usage error.
+        if (option === "V") exits = true;
         break;
       }
       if (option === "i") {
+        // The suffix is optional and only ever attached.
         inPlace = true;
-        if (rest.value.length > 0) {
-          suffixes.push(rest);
-          break;
-        }
-        const next = args[index + 1];
-        if (next === "") {
-          // BSD `-i ''`: edit without a backup.
-          index += 1;
-        } else if (next !== undefined && !next.startsWith("-") && operands.length === 0) {
-          bareInPlaceBeforeFirstOperand = true;
-        }
+        suffix = rest.value.length > 0 ? rest : undefined;
         break;
       }
-      if (option === "l") {
-        // GNU takes a line length here, BSD takes nothing. GNU can use only
-        // a number, so anything else is BSD's flag followed by more flags.
-        if (rest.value.length > 0) {
-          if (/^\d+$/u.test(rest.value)) break;
-          continue;
-        }
-        if (/^\d+$/u.test(args[index + 1] ?? "")) index += 1;
+      if (option === "n") copiesInput = false;
+      if (!GNU_SHORT_FLAGS.has(option)) {
+        if (!KNOWN_SHORT_OPTIONS.has(option)) unresolved = true;
+        exits = true;
         break;
       }
-      // Every other letter is a flag without an argument.
     }
   }
 
-  const hasScriptOption = scriptChunks.length > 0 || readsScriptFile;
-  if (bareInPlaceBeforeFirstOperand && operands.length > 0) {
-    const candidate = operands[0]!;
-    // Without -e or -f, GNU runs this word as the script, so it is the BSD
-    // suffix only when GNU could not compile it (`.bak`, `orig`). With -e or
-    // -f, GNU edits it as a file; it is the BSD suffix when another file
-    // follows and it starts like one (`-i .bak -e ...`). Either way a word
-    // not shaped like a suffix stays with GNU, so a script this reader
-    // cannot compile still leaves the files after it as the edited files.
-    const isBsdSuffix =
-      BACKUP_SUFFIX_RE.test(candidate.value) &&
-      (hasScriptOption
-        ? operands.length > 1 && /^[.~]/u.test(candidate.value)
-        : !scriptReadings([candidate]).some((text) => analyzeSedScript(text).compiles));
-    if (isBsdSuffix) {
-      operands.shift();
-      suffixes.push(candidate);
-    }
-  }
-
+  if (exits) return { ...nothingRead("gnu", unresolved), scripts, readsScriptFile };
+  const hasScriptOption = scripts.length > 0 || readsScriptFile;
   return {
-    scriptWords: hasScriptOption ? scriptChunks : operands.slice(0, 1),
+    flavor: "gnu",
+    scripts: hasScriptOption ? scripts : operands.slice(0, 1),
+    readsScriptFile,
     files: hasScriptOption ? operands : operands.slice(1),
     inPlace,
-    suffixes,
+    ...(suffix === undefined ? {} : { suffix }),
+    emptyScriptCopiesInput: copiesInput,
+    followSymlinks,
+    exitsInOptions: false,
+    unresolved,
   };
 }
 
-function hasParameterExpansion(word: SedWord): boolean {
-  return word.expands && PARAMETER_EXPANSION_RE.test(word.value);
+/** BSD sed: getopt without permutation; `-i` and `-I` always take the next word. */
+function readBsdCommandLine(words: readonly SedWord[]): SedReading {
+  const scripts: SedWord[] = [];
+  let readsScriptFile = false;
+  let inPlace = false;
+  let suffix: SedWord | undefined;
+  let unresolved = false;
+  let index = 0;
+
+  options: for (; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (mayExpandToOptions(word)) unresolved = true;
+    const token = word.value;
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (token === "-" || !token.startsWith("-")) break;
+    // A long option is an illegal option `-` to BSD sed: it exits before
+    // it compiles anything.
+    if (token.startsWith("--")) return nothingRead("bsd", unresolved);
+    for (let at = 1; at < token.length; at += 1) {
+      const option = token[at]!;
+      if (option === "e" || option === "f" || option === "i" || option === "I") {
+        const rest = token.slice(at + 1);
+        let value: SedWord | undefined =
+          rest.length > 0 ? { value: rest, expands: false } : undefined;
+        if (value === undefined) {
+          const next = words[index + 1];
+          if (next === undefined) return nothingRead("bsd", unresolved);
+          if (mayExpandToOptions(next)) unresolved = true;
+          index += 1;
+          value = next;
+        }
+        if (option === "e") scripts.push(value);
+        if (option === "f") readsScriptFile = true;
+        if (option === "i" || option === "I") {
+          inPlace = true;
+          suffix = value.value.length > 0 ? value : undefined;
+        }
+        continue options;
+      }
+      if (!BSD_SHORT_FLAGS.has(option)) return nothingRead("bsd", unresolved);
+    }
+  }
+
+  const operands = words.slice(index);
+  const hasScriptOption = scripts.length > 0 || readsScriptFile;
+  return {
+    flavor: "bsd",
+    scripts: hasScriptOption ? scripts : operands.slice(0, 1),
+    readsScriptFile,
+    files: hasScriptOption ? operands : operands.slice(1),
+    inPlace,
+    ...(suffix === undefined ? {} : { suffix }),
+    emptyScriptCopiesInput: false,
+    followSymlinks: false,
+    exitsInOptions: false,
+    unresolved,
+  };
+}
+
+/** GNU sed puts the file name in place of each `*`; BSD sed appends the suffix. */
+function backupFileName(file: string, suffix: string, flavor: SedFlavor): string {
+  return flavor === "gnu" && suffix.includes("*")
+    ? suffix.split("*").join(file)
+    : `${file}${suffix}`;
+}
+
+interface SedWritesAccumulator {
+  readonly targets: string[];
+  readonly commands: string[];
+  indeterminate: boolean;
+}
+
+function pushUnique(list: string[], value: string): void {
+  if (!list.includes(value)) list.push(value);
+}
+
+function addReadingWrites(reading: SedReading, into: SedWritesAccumulator): void {
+  const scriptChanges = reading.scripts.some(mayChange);
+  if (reading.unresolved || reading.readsScriptFile || scriptChanges) into.indeterminate = true;
+
+  // Whether sed gets past compiling its script to edit files. A script
+  // this analysis cannot see (a script file, a word the shell changes)
+  // might compile, so its files still count.
+  let compiles = true;
+  const text = reading.scripts.map((word) => word.value).join("\n");
+  if (!scriptChanges && reading.scripts.length > 0) {
+    const script = analyzeSedScript(text, reading.flavor);
+    for (const file of script.writes) pushUnique(into.targets, file);
+    for (const command of script.commands) pushUnique(into.commands, command);
+    if (script.outcome === "uncertain" || script.commands.length > 0 || script.runsPatternSpace) {
+      into.indeterminate = true;
+    }
+    compiles = reading.readsScriptFile || script.outcome === "compiled";
+  }
+
+  if (reading.exitsInOptions || !reading.inPlace || !compiles) return;
+  // GNU copies each file unchanged through an empty script without -n.
+  const scriptKnown = !reading.readsScriptFile && !scriptChanges;
+  if (scriptKnown && reading.emptyScriptCopiesInput && /^[\s;]*$/u.test(text)) return;
+  if (reading.followSymlinks) into.indeterminate = true;
+  const suffix = reading.suffix;
+  if (suffix !== undefined && mayChange(suffix)) into.indeterminate = true;
+  for (const file of reading.files) {
+    if (file.value.length === 0 || file.value === "-") continue;
+    if (mayChange(file)) {
+      into.indeterminate = true;
+      continue;
+    }
+    pushUnique(into.targets, file.value);
+    if (suffix !== undefined && !mayChange(suffix)) {
+      const backup = backupFileName(file.value, suffix.value, reading.flavor);
+      if (backup !== file.value) pushUnique(into.targets, backup);
+    }
+  }
 }
 
 /**
- * The script as written, and, when the shell substitutes parameters in it,
- * the script with each parameter replaced by `1`. The digit reads as data in
- * an address, a regular expression, a replacement, or a flag. The text as
- * written stays a reading because the lexer keeps `$'...'` quoting as a `$`
- * and the quoted text. GNU sed joins `-e` scripts with newlines.
- */
-function scriptReadings(words: readonly SedWord[]): string[] {
-  const written = words.map((word) => word.value).join("\n");
-  if (!words.some(hasParameterExpansion)) return [written];
-  const parametersAsData = words
-    .map((word) => (word.expands ? word.value.replace(PARAMETER_EXPANSIONS_RE, "1") : word.value))
-    .join("\n");
-  return [written, parametersAsData];
-}
-
-/** GNU sed puts the file name in place of each `*`; otherwise it appends the suffix. */
-function backupFileName(file: string, suffix: string): string {
-  return suffix.includes("*") ? suffix.split("*").join(file) : `${file}${suffix}`;
-}
-
-/**
- * Reports what a sed command line writes. `argsRequiringExpansion` marks
- * the words the shell still expands; without it every word is literal.
- *
- * A script file (`-f`) is not read, the way the policy does not read a shell
- * script it is asked to run.
+ * Reports what a sed command line writes under GNU sed and under BSD sed.
+ * `argsRequiringExpansion` marks the words the shell still expands; without
+ * it every word is literal, as in an argument vector run without a shell.
  */
 export function analyzeSedWrites(
   args: readonly string[],
   argsRequiringExpansion?: readonly boolean[],
 ): SedWrites {
-  const line = parseSedCommandLine(args, argsRequiringExpansion);
-  const writes: string[] = [];
-  const commands: string[] = [];
-  let indeterminate = false;
-
-  const readings = line.scriptWords.length > 0 ? scriptReadings(line.scriptWords) : [];
-  if (readings.length > 1) {
-    // The shell changes this script before sed reads it. It is data only
-    // when one reading compiles without a write or a command; otherwise
-    // what sed writes depends on the parameters.
-    indeterminate = !readings.some((reading) => onlyPrints(analyzeSedScript(reading)));
-  } else if (readings.length === 1) {
-    const text = readings[0]!;
-    const script = analyzeSedScript(text);
-    if (script.compiles) {
-      writes.push(...script.writes);
-      commands.push(...script.commands);
-      indeterminate = script.runsPatternSpace;
-    } else {
-      // sed rejects a script it cannot compile before it opens any file.
-      // Refuse only one that could hold a write or a command this reader
-      // missed, and leave the others for sed to report.
-      indeterminate = WRITE_OR_RUN_LETTER_RE.test(text);
-    }
-  }
-
-  const inPlaceEdits: SedInPlaceEdit[] = [];
-  if (line.inPlace) {
-    if (line.suffixes.some(hasParameterExpansion)) indeterminate = true;
-    for (const file of line.files) {
-      const backups = line.suffixes
-        .map((suffix) => backupFileName(file.value, suffix.value))
-        .filter((backup) => backup !== file.value);
-      inPlaceEdits.push({ file: file.value, backups });
-    }
-  }
-
-  return { inPlaceEdits, scriptWrites: writes, scriptCommands: commands, indeterminate };
+  const words = args.map((value, index) => ({
+    value,
+    expands: argsRequiringExpansion?.[index] === true,
+  }));
+  const writes: SedWritesAccumulator = { targets: [], commands: [], indeterminate: false };
+  addReadingWrites(readGnuCommandLine(words), writes);
+  addReadingWrites(readBsdCommandLine(words), writes);
+  return writes;
 }
 
 interface SedScriptAnalysis {
-  /** GNU sed would compile the script. */
-  readonly compiles: boolean;
+  /**
+   * `compiled`: sed accepts the script. `rejected`: sed stops at a syntax
+   * error. `uncertain`: an unknown letter where a newer GNU sed may accept
+   * a command or flag.
+   */
+  readonly outcome: "compiled" | "rejected" | "uncertain";
+  /** `w` files in compile order, up to where sed stops. */
   readonly writes: readonly string[];
   readonly commands: readonly string[];
   /** The script runs its pattern space as a command (`e`, `s///e`). */
   readonly runsPatternSpace: boolean;
 }
 
-function onlyPrints(script: SedScriptAnalysis): boolean {
-  return (
-    script.compiles &&
-    script.writes.length === 0 &&
-    script.commands.length === 0 &&
-    !script.runsPatternSpace
-  );
+class SedScriptError extends Error {
+  constructor(readonly certain: boolean) {
+    super("sed script rejected");
+  }
 }
 
-class SedScriptError extends Error {}
-
-function analyzeSedScript(script: string): SedScriptAnalysis {
-  const reader = new SedScriptReader(script);
+function analyzeSedScript(script: string, flavor: SedFlavor): SedScriptAnalysis {
+  const reader = new SedScriptReader(script, flavor);
+  let outcome: SedScriptAnalysis["outcome"] = "compiled";
   try {
     reader.readProgram();
   } catch (error) {
-    if (error instanceof SedScriptError) {
-      return { compiles: false, writes: [], commands: [], runsPatternSpace: false };
-    }
-    throw error;
+    if (!(error instanceof SedScriptError)) throw error;
+    outcome = error.certain ? "rejected" : "uncertain";
   }
+  // A rejected script never runs. One a newer GNU may accept keeps what it
+  // would run, so its commands' targets are still found.
   return {
-    compiles: true,
+    outcome,
     writes: reader.writes,
-    commands: reader.commands,
-    runsPatternSpace: reader.runsPatternSpace,
+    commands: outcome === "rejected" ? [] : reader.commands,
+    runsPatternSpace: outcome !== "rejected" && reader.runsPatternSpace,
   };
 }
 
 /**
  * Reads a script by the rules of GNU sed's compiler (sed/compile.c) and
- * keeps what it writes and runs. BSD sed differs in places: it ends a label
- * at the end of the line rather than at `;` or a blank, and it has no `e`,
- * no `W`, and no one-line `a text`. Where the two differ, the GNU reading
- * finds every write the BSD reading finds.
+ * keeps what it writes and runs. For BSD sed the GNU-only commands and `s`
+ * flags are rejected; elsewhere the GNU rules apply, which accept more than
+ * BSD sed (a BSD label runs to the end of the line) and so find every write
+ * BSD sed would make.
  */
 class SedScriptReader {
   readonly writes: string[] = [];
@@ -346,7 +447,10 @@ class SedScriptReader {
   private readonly labels = new Set<string>();
   private readonly jumps: string[] = [];
 
-  constructor(private readonly script: string) {}
+  constructor(
+    private readonly script: string,
+    private readonly flavor: SedFlavor,
+  ) {}
 
   readProgram(): void {
     for (;;) {
@@ -367,6 +471,7 @@ class SedScriptReader {
       if (this.peek() === "!") this.fail();
     }
     const command = this.next();
+    if (this.flavor === "bsd" && GNU_ONLY_COMMANDS.has(command)) this.fail();
     switch (command) {
       case "#":
         if (addressed) this.fail();
@@ -423,7 +528,7 @@ class SedScriptReader {
         this.readEndOfCommand();
         return;
       default:
-        this.fail();
+        this.failUnknown(command);
     }
   }
 
@@ -553,12 +658,12 @@ class SedScriptReader {
         this.writes.push(this.readFileName());
         return;
       }
-      if (flag === "e") {
-        this.runsPatternSpace = true;
-      } else if (/[0-9]/u.test(flag)) {
+      if (/[0-9]/u.test(flag)) {
         this.readNumber();
-      } else if (!"gpiImM".includes(flag)) {
-        this.fail();
+      } else if (flag === "e" && this.flavor === "gnu") {
+        this.runsPatternSpace = true;
+      } else if (!"gpiI".includes(flag) && !(this.flavor === "gnu" && "mM".includes(flag))) {
+        this.failUnknown(flag);
       }
     }
   }
@@ -645,7 +750,16 @@ class SedScriptReader {
     return this.position >= this.script.length;
   }
 
+  /** A syntax error every sed rejects: sed compiles nothing after it. */
   private fail(): never {
-    throw new SedScriptError();
+    throw new SedScriptError(true);
+  }
+
+  /**
+   * An unknown command or flag. BSD sed's set is fixed, and punctuation is
+   * never a command, but GNU sed has added letters before and may again.
+   */
+  private failUnknown(character: string): never {
+    throw new SedScriptError(!(this.flavor === "gnu" && /[A-Za-z]/u.test(character)));
   }
 }

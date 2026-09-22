@@ -383,17 +383,22 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
 
   // A Linux tester's session refused `sed -i 's/color = blue/color = red/'
   // <file>` and named `s/color = blue/color = red` as the blocked target.
+  // BSD sed takes the word after a bare -i as the backup suffix, which adds
+  // a backup when that word is an option (`-e`, `--expression`).
   it.each([
-    "sed -i 's/color = blue/color = red/' config/theme.toml",
-    "sed -i -e 's/color = blue/color = red/' config/theme.toml",
-    "sed -i --expression='s/color = blue/color = red/' config/theme.toml",
-    "sed -i --expression 's/color = blue/color = red/' config/theme.toml",
-    "sed -i -f tmp/colors.sed config/theme.toml",
-  ])("names only the edited file of an in-place edit, never the script: %s", (command) => {
+    ["sed -i 's/color = blue/color = red/' config/theme.toml", []],
+    ["sed -i -e 's/color = blue/color = red/' config/theme.toml", ["-e"]],
+    ["sed -i --expression='s/color = blue/color = red/' config/theme.toml", []],
+    ["sed -i --expression 's/color = blue/color = red/' config/theme.toml", ["--expression"]],
+  ])("names only the edited file of an in-place edit, never the script: %s", (command, suffixes) => {
     const decision = classify(command);
+    const targets = [
+      "/repo/config/theme.toml",
+      ...suffixes.map((suffix) => `/repo/config/theme.toml${suffix}`),
+    ];
 
-    expect(decision.observedTargets).toEqual(["/repo/config/theme.toml"]);
-    expect(decision.blockedTargets).toEqual(["/repo/config/theme.toml"]);
+    expect(decision.observedTargets).toEqual(targets);
+    expect(decision.blockedTargets).toEqual(targets);
     expect(decision.message).not.toContain("s/color");
   });
 
@@ -415,33 +420,41 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
         "/repo/tmp/two.txt.bak",
       ],
     ],
-    // BSD and macOS: an empty separate argument means no backup.
+    // BSD: an empty separate argument means no backup. GNU runs the empty
+    // script, which copies each file unchanged.
     ["sed -i '' 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt"]],
-    // BSD and macOS: a separate backup suffix. GNU could not compile `bak`
-    // as a script: it branches to a label that does not exist.
+    // BSD: a separate backup suffix. GNU cannot compile `.orig` or `bak`
+    // (a branch to a label that does not exist) and edits nothing.
     ["sed -i .orig 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt.orig"]],
     ["sed -i bak 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txtbak"]],
     ["sed -I .orig 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt.orig"]],
-    ["sed -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt.bak"]],
-    // GNU: the word after a bare -i is a file when -e gave the script.
-    ["sed -e 's/a/b/' -i tmp/one.txt tmp/two.txt", ["/repo/tmp/one.txt", "/repo/tmp/two.txt"]],
-    // A script file is read, not written.
-    ["sed -f script.sed -i tmp/file.txt", ["/repo/tmp/file.txt"]],
+    // GNU edits both files; BSD takes tmp/one.txt as the backup suffix.
+    [
+      "sed -e 's/a/b/' -i tmp/one.txt tmp/two.txt",
+      ["/repo/tmp/one.txt", "/repo/tmp/two.txt", "/repo/tmp/two.txttmp/one.txt"],
+    ],
     ["sed --in-place=.bak 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt.bak"]],
     ["sed --expression='s/a/b/' --in-place tmp/file.txt", ["/repo/tmp/file.txt"]],
     // GNU reads the letters after -i as the backup suffix.
     ["sed -ie 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txte"]],
-    // GNU sed replaces each * of the suffix with the file name.
+    // GNU puts the file name in place of each * of the suffix; BSD appends it.
     [
       "sed -i'tmp/backup/*' 's/a/b/' tmp/file.txt",
-      ["/repo/tmp/file.txt", "/repo/tmp/backup/tmp/file.txt"],
+      [
+        "/repo/tmp/file.txt",
+        "/repo/tmp/backup/tmp/file.txt",
+        "/repo/tmp/file.txttmp/backup/*",
+      ],
     ],
     ["sed -i 's|src/old dir/|src/new dir/|g' tmp/paths.txt", ["/repo/tmp/paths.txt"]],
-    ["sed -i -E 's/[0-9]+$//; /^$/d' tmp/log.txt", ["/repo/tmp/log.txt"]],
+    ["sed -i -E 's/[0-9]+$//; /^$/d' tmp/log.txt", ["/repo/tmp/log.txt", "/repo/tmp/log.txt-E"]],
     ["sed -n -i '/keep/p' tmp/file.txt", ["/repo/tmp/file.txt"]],
     ["sed -i 's/a/b/' /tmp/scratch.txt", ["/tmp/scratch.txt"]],
     ["sed -i 's/a/b/' ../sibling/notes.txt", ["/sibling/notes.txt"]],
     ["sed -i 's/a/b/' dist/app.js build/app.js", ["/repo/dist/app.js", "/repo/build/app.js"]],
+    // BSD takes -s and -z, which it does not have, as the backup suffix.
+    ["sed -i -s 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt-s"]],
+    ["sed -i -z 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt-z"]],
   ])("does not read the script as a file: %s", (command, observedTargets) => {
     const decision = classify(command);
 
@@ -461,11 +474,8 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     ["sed -ni 's/a/b/p' src/app.ts", ["/repo/src/app.ts"]],
     ["sed 's/a/b/' -i src/app.ts", ["/repo/src/app.ts"]],
     ["sed -e 's/a/b/' -i src/app.ts", ["/repo/src/app.ts"]],
-    ["sed -i -e 's/a/b/' -e 's/c/d/' src/app.ts", ["/repo/src/app.ts"]],
-    ["sed -i -f tmp/fix.sed src/app.ts", ["/repo/src/app.ts"]],
-    ["sed -i -- 's/a/b/' src/app.ts", ["/repo/src/app.ts"]],
-    ["sed -i $'s/\\t/ /g' src/app.ts", ["/repo/src/app.ts"]],
-    // The edited file is under tmp, but the backup is not.
+    ["sed -i -- 's/a/b/' src/app.ts", ["/repo/src/app.ts", "/repo/src/app.ts--"]],
+    // The edited file is under tmp, but GNU's backup is not.
     ["sed -i'bak/*' 's/a/b/' tmp/file.txt", ["/repo/bak/tmp/file.txt"]],
   ])("still blocks an in-place edit of a workspace file: %s", (command, blockedTargets) => {
     const decision = classify(command);
@@ -474,6 +484,60 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     expect(decision.indeterminate).toBe(false);
     expect(decision.blockedTargets).toEqual(blockedTargets);
     expect(decision.message).toContain("shell_workspace_file_write_disallowed");
+  });
+
+  describe("GNU and BSD readings of one command line", () => {
+    it.each([
+      // GNU edits .env as a file; BSD takes it as the backup suffix.
+      ["sed -e 's/a/b/' -i .env tmp/ok", ["/repo/.env"]],
+      ["sed -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/.bak"]],
+      // BSD rejects -s and -z, so only GNU's reading runs, and it edits .bak.
+      ["sed -s -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/.bak"]],
+      ["sed -z -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/.bak"]],
+      // GNU edits the file `w src/out`; BSD runs it as the script, which
+      // writes src/out.
+      ["sed -i p 'w src/out' tmp/input", ["/repo/w src/out", "/repo/src/out"]],
+      // BSD takes the first -e as the suffix and the words after the script
+      // as files, so it edits `-e` and `s/c/d/` when they exist.
+      [
+        "sed -i -e 's/a/b/' -e 's/c/d/' tmp/file.txt",
+        ["/repo/-e", "/repo/-e-e", "/repo/s/c/d", "/repo/s/c/d/-e"],
+      ],
+      // BSD runs /tmp/w.txt as the script: an address, then `w .txt`, which
+      // sed opens before it fails for having no file to edit.
+      ["sed -i 's/a/b/' /tmp/w.txt", ["/repo/.txt"]],
+      // GNU runs the empty script with -n, which empties every operand.
+      ["sed -n -i '' 's/a/b/p' tmp/file.txt", ["/repo/s/a/b/p"]],
+    ])("reports a write either sed would make: %s", (command, blockedTargets) => {
+      const decision = classify(command);
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.indeterminate).toBe(false);
+      expect(decision.blockedTargets).toEqual(blockedTargets);
+    });
+
+    it("reports both readings of the file after -e", () => {
+      expect(classify("sed -e 's/a/b/' -i .env tmp/ok").observedTargets).toEqual([
+        "/repo/.env",
+        "/repo/tmp/ok",
+        "/repo/tmp/ok.env",
+      ]);
+    });
+
+    it("fails closed on a letter GNU may accept as a command in a newer version", () => {
+      const decision = classify("sed -i orig 's/a/b/' tmp/file.txt");
+
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+      expect(decision.observedTargets).toEqual(["/repo/tmp/file.txt", "/repo/tmp/file.txtorig"]);
+    });
+
+    it("fails closed on an option neither sed accepts", () => {
+      const decision = classify("sed -x p tmp/file.txt");
+
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+    });
   });
 
   it("blocks the file a w command writes even without -i", () => {
@@ -508,12 +572,25 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     expect(decision.observedTargets).toEqual(["/repo/tmp/out.txt; p"]);
   });
 
+  it.each([
+    // `tmp ` with a trailing blank is not the tmp directory.
+    ["sed -n 'w tmp ' tmp/input", ["/repo/tmp "]],
+    ["sed -i' tmp/*' 's/a/b/' tmp/file.txt", ["/repo/ tmp/tmp/file.txt"]],
+    ["sed -i 's/a/b/' ' tmp/file.txt'", ["/repo/ tmp/file.txt"]],
+  ])("keeps the blanks sed keeps in a file name: %s", (command, blockedTargets) => {
+    const decision = classify(command);
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(blockedTargets);
+  });
+
   it("checks the w target and the edited file of one command", () => {
     const decision = classify("sed -i 's/a/b/w tmp/changes.log' src/app.ts");
 
     expect(decision.blocked).toBe(true);
     expect(decision.blockedTargets).toEqual(["/repo/src/app.ts"]);
-    expect(decision.observedTargets).toEqual(["/repo/src/app.ts", "/repo/tmp/changes.log"]);
+    // sed opens the w file while it compiles the script, before any edit.
+    expect(decision.observedTargets).toEqual(["/repo/tmp/changes.log", "/repo/src/app.ts"]);
   });
 
   it.each([
@@ -538,7 +615,6 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     "sed '1a\\\nw src/x.ts' src/app.ts",
     "sed -e '$a\\' -e 'w src/x.ts' src/app.ts",
     "sed 'y/abc/xyz/' src/app.ts",
-    "sed -f tmp/transform.sed src/app.ts",
     "sed --quiet --expression='10q;p' src/app.ts",
   ])("does not report a write for a read-only script: %s", (command) => {
     const decision = classify(command);
@@ -555,11 +631,16 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     expect(decision.observedTargets).toEqual(["/repo/tmp/app.ts"]);
   });
 
-  it("checks the command an e command runs", () => {
-    const decision = classify("sed '1e touch src/x.ts' tmp/file.txt");
+  it("leaves a script sed rejects before it opens a file to sed", () => {
+    const unbalanced = classify("sed -n '{p' src/app.ts");
+    expect(unbalanced.blocked).toBe(false);
+    expect(unbalanced.observedTargets).toEqual([]);
 
-    expect(decision.blocked).toBe(true);
-    expect(decision.blockedTargets).toEqual(["/repo/src/x.ts"]);
+    // Both seds refuse a w flag without a file name while compiling.
+    const missingFile = classify("sed 's/a/b/w' src/app.ts");
+    expect(missingFile.blocked).toBe(false);
+    expect(missingFile.indeterminate).toBe(false);
+    expect(missingFile.observedTargets).toEqual([]);
   });
 
   it.each([
@@ -570,29 +651,6 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
 
     expect(decision.indeterminate).toBe(true);
     expect(decision.blocked).toBe(true);
-  });
-
-  it("keeps the files after a script it cannot compile as edited files", () => {
-    // `index.ts` compiles as a sed script (an `i` command), so reading the
-    // broken script as a BSD suffix would lose the edited file.
-    const decision = classify("sed -i 's/a/b' index.ts");
-
-    expect(decision.blocked).toBe(true);
-    expect(decision.blockedTargets).toEqual(["/repo/index.ts"]);
-  });
-
-  it.each([
-    ['sed -n "${START},${END}p" src/app.ts', []],
-    ['sed -i "s/$OLD/$NEW/g" tmp/file.txt', ["/repo/tmp/file.txt"]],
-    // The lexer keeps $'...' quoting as a `$` and the quoted text.
-    ["sed $'s/\\t/ /g' src/app.ts", []],
-    ["sed -i $'s/\\t/ /g' tmp/file.txt", ["/repo/tmp/file.txt"]],
-  ])("reads a script the shell expands as data when it only prints: %s", (command, observedTargets) => {
-    const decision = classify(command);
-
-    expect(decision.observedTargets).toEqual(observedTargets);
-    expect(decision.indeterminate).toBe(false);
-    expect(decision.blocked).toBe(false);
   });
 
   it.each([
@@ -606,14 +664,74 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     expect(decision.blocked).toBe(true);
   });
 
-  it("leaves a script sed cannot compile to sed unless it could write", () => {
-    const unbalanced = classify("sed -n '{p' src/app.ts");
-    expect(unbalanced.blocked).toBe(false);
-    expect(unbalanced.observedTargets).toEqual([]);
+  describe("what the command line does not show", () => {
+    it.each([
+      ["sed -f tmp/evil.sed tmp/input", []],
+      ["sed --file=tmp/evil.sed tmp/input", []],
+      ["sed --file tmp/evil.sed tmp/input", []],
+      ["sed -f tmp/transform.sed src/app.ts", []],
+      ["sed -f tmp/evil.sed -e 'w src/x' tmp/input", ["/repo/src/x"]],
+      ["sed -f script.sed -i tmp/file.txt", ["/repo/tmp/file.txt"]],
+      ["sed -i -f tmp/fix.sed src/app.ts", ["/repo/src/app.ts"]],
+      ["sed -i -f tmp/colors.sed config/theme.toml", ["/repo/config/theme.toml"]],
+    ])("fails closed on a script file and keeps the targets it sees: %s", (command, targets) => {
+      const decision = classify(command);
 
-    const missingFile = classify("sed 's/a/b/w' src/app.ts");
-    expect(missingFile.indeterminate).toBe(true);
-    expect(missingFile.blocked).toBe(true);
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+      expect(decision.observedTargets).toEqual(targets);
+    });
+
+    it.each([
+      ['sed -i "s/$OLD/$NEW/g" tmp/file.txt', ["/repo/tmp/file.txt"]],
+      ['sed -n "${START},${END}p" src/app.ts', []],
+      ["sed -$FLAGS p src/app.ts", []],
+      // The lexer cannot decode $'...' quoting: `\167` is a `w`.
+      ["sed $'\\167 src/x' tmp/input", []],
+      ["sed $'s/\\t/ /g' src/app.ts", []],
+      ["sed -i $'s/\\t/ /g' src/app.ts", ["/repo/src/app.ts"]],
+      // GNU permutes options, so a variable before `--` can become one.
+      ['sed -n "1,5p" "$f"', []],
+    ])("fails closed on a word the shell still expands: %s", (command, targets) => {
+      const decision = classify(command);
+
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+      expect(decision.observedTargets).toEqual(targets);
+    });
+
+    it.each([
+      "sed 'e python3 -c \"open(\\\"src/x\\\",\\\"w\\\").close()\"' tmp/input",
+      "sed '1e echo done' tmp/file.txt",
+    ])("fails closed on a command the script runs: %s", (command) => {
+      const decision = classify(command);
+
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+    });
+
+    it("still checks the targets of a command the script runs", () => {
+      const decision = classify("sed '1e touch src/x.ts' tmp/file.txt");
+
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedTargets).toEqual(["/repo/src/x.ts"]);
+    });
+
+    it.each([
+      ["sed --follow-symlinks -i 's/a/b/' tmp/link", ["/repo/tmp/link"]],
+      ["sed --follow -i 's/a/b/' tmp/link", ["/repo/tmp/link"]],
+      [
+        "sed -i --follow-symlinks 's/a/b/' tmp/link",
+        ["/repo/tmp/link", "/repo/tmp/link--follow-symlinks"],
+      ],
+    ])("fails closed on an in-place edit that follows symlinks: %s", (command, targets) => {
+      const decision = classify(command);
+
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+      expect(decision.observedTargets).toEqual(targets);
+    });
   });
 
   it("parses an argument vector without a shell the same way", () => {
