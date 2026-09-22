@@ -39,6 +39,7 @@ import { VERSION } from "../index.js";
 import {
   APPROVAL_DENIED_ABORT_REASON,
   classifyTurnTerminal,
+  type TurnTerminal,
 } from "../contracts/turn-terminal.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
 import {
@@ -1837,20 +1838,35 @@ function daemonOneShotFinalStatus(
   const notificationTurnId = typeof params?.turnId === "string" ? params.turnId : undefined;
   if (expectedTurnId !== undefined && notificationTurnId !== undefined && notificationTurnId !== expectedTurnId) return null;
   if (event.method === "event.agent_status" && params !== null) {
+    // The projected turn terminal is the authority: an idle agent says
+    // nothing about whether its turn completed or was stopped.
+    const turnEvent = params.turnEvent;
+    if (isJsonRecord(turnEvent) && typeof turnEvent.type === "string") {
+      const embedded = classifyTurnTerminal({
+        type: turnEvent.type,
+        payload: turnEvent.payload,
+        turnId: notificationTurnId,
+      }, {
+        expectedTurnId: expectedTurnId ?? notificationTurnId,
+      });
+      if (embedded !== undefined) return oneShotStatusForTerminal(embedded);
+    }
     const runStatus =
       typeof params.runStatus === "string" ? params.runStatus : undefined;
     const status =
       typeof params.status === "string" ? params.status : undefined;
     const message =
       typeof params.message === "string" ? params.message : undefined;
-    if (runStatus === "completed" || status === "idle") {
-      return { code: 0, ...(message !== undefined ? { message } : {}) };
-    }
-    if (runStatus === "stopped" || status === "stopped") {
-      return { code: 130, ...(message !== undefined ? { message } : {}) };
-    }
-    if (runStatus === "errored" || status === "error") {
-      return { code: 1, ...(message !== undefined ? { message } : {}) };
+    const code =
+      runStatus === "stopped" ? 130
+        : runStatus === "errored" ? 1
+          : runStatus === "completed" ? 0
+            : status === "stopped" ? 130
+              : status === "error" ? 1
+                : status === "idle" ? 0
+                  : undefined;
+    if (code !== undefined) {
+      return oneShotStatusForRpcTerminal({ code, ...(message !== undefined ? { message } : {}) });
     }
   }
   const transcriptEvent = daemonNestedTranscriptEvent(event);
@@ -1862,7 +1878,10 @@ function daemonOneShotFinalStatus(
   }, {
     expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
-  if (terminal === undefined) return null;
+  return terminal === undefined ? null : oneShotStatusForTerminal(terminal);
+}
+
+function oneShotStatusForTerminal(terminal: TurnTerminal): DaemonOneShotFinalStatus {
   // A denial ends the turn as an abort, but it is not an interrupt: the run
   // reports it as a denied tool, with no reason code as its message.
   if (terminal.outcome === "aborted" && terminal.message === APPROVAL_DENIED_ABORT_REASON) {
@@ -1872,6 +1891,24 @@ function daemonOneShotFinalStatus(
     code: oneShotExitCodeForTerminal(terminal),
     ...(terminal.message !== undefined ? { message: terminal.message } : {}),
     ...(terminal.outcome === "errored" ? { failureCode: terminal.failureCode } : {}),
+  };
+}
+
+/**
+ * A terminal known only by its exit code and message: the `message.stream`
+ * RPC result, or a status without its turn event. The denial is recognized
+ * there too, so the run's outcome does not depend on which arrives first.
+ */
+function oneShotStatusForRpcTerminal(terminal: {
+  readonly code: number;
+  readonly message?: string;
+}): DaemonOneShotFinalStatus {
+  if (terminal.code === 130 && terminal.message === APPROVAL_DENIED_ABORT_REASON) {
+    return { code: terminal.code, approvalDenied: true };
+  }
+  return {
+    code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
   };
 }
 
@@ -2248,10 +2285,7 @@ async function awaitDaemonOneShotRun(params: {
                 return;
               }
               return finalize({
-                code: result.terminal.code,
-                ...(result.terminal.message !== undefined
-                  ? { message: result.terminal.message }
-                  : {}),
+                ...oneShotStatusForRpcTerminal(result.terminal),
                 ...(lastFailureCode !== undefined
                   ? { failureCode: lastFailureCode }
                   : {}),
