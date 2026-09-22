@@ -38,7 +38,16 @@ export function routineSessionEnvironment(env: Readonly<Record<string, string | 
   return Object.freeze(overrides);
 }
 
-/** Fresh canonical Core agent/session per invocation; permission decisions stay in Core. */
+/**
+ * Fresh canonical Core agent/session per invocation; permission decisions stay in Core.
+ *
+ * The run starts in the routine's stored permission mode, which is the mode
+ * of the session that created it (routines/permission-authority.ts). It never
+ * gets the dangerous combined flag: a Bypass routine skips approvals but keeps
+ * the OS sandbox, and the daemon runner confines its file writes to the
+ * routine's workspace and refuses anything that would need an approver
+ * (background-agent-runner.ts, runtime-settings.ts).
+ */
 export function createDaemonRoutineExecutor(options: {
   agentManager: Pick<AgenCDaemonAgentManager, "createAgent" | "streamAgentMessage" | "cancelRunTree" | "stopAgent" | "finishRoutineRun">;
   runtimeOptions: AgentRuntimeOptions;

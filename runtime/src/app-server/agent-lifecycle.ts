@@ -2562,6 +2562,30 @@ export class AgenCDaemonAgentManager {
     return result;
   }
 
+  /**
+   * Internal routine-authority seam, deliberately not a standalone RPC: the
+   * CURRENT permission mode of a live session, read by its owning runner
+   * from the session's own permission registry. A closed, unknown or
+   * recovered-without-runtime session has no mode to lend and throws.
+   */
+  async getSessionPermissionMode(sessionId: string): Promise<string> {
+    if (this.#runner?.getAgentPermissionMode === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session permission mode requires a background runner",
+      );
+    }
+    const { agentId } = await this.#resolvePermissionOwner(sessionId, false, true);
+    const mode = await this.#runner.getAgentPermissionMode(agentId);
+    if (mode === null) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon agent not found: ${agentId}`,
+      );
+    }
+    return mode;
+  }
+
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
       return this.#approveWorkflowTool(params);
@@ -4134,6 +4158,7 @@ export class AgenCDaemonAgentManager {
       readonly allowExecuteShell?: boolean;
       readonly allowExecuteStatusLine?: boolean;
       readonly allowSessionGoal?: boolean;
+      readonly allowPermissionMode?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -4214,8 +4239,12 @@ export class AgenCDaemonAgentManager {
     const hasSessionGoalRunner =
       options.allowSessionGoal === true &&
       this.#runner?.updateAgentSessionGoal !== undefined;
+    const hasPermissionModeRunner =
+      options.allowPermissionMode === true &&
+      this.#runner?.getAgentPermissionMode !== undefined;
     if (
       !hasSessionGoalRunner &&
+      !hasPermissionModeRunner &&
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
       !hasElicitationRunner &&
@@ -4345,6 +4374,7 @@ export class AgenCDaemonAgentManager {
   async #resolvePermissionOwner(
     ownerId: string,
     allowListPermissions = false,
+    allowPermissionMode = false,
   ): Promise<{ readonly agentId: string; readonly sessionId: string }> {
     const resolvedOwner = await this.#state.with((state) => {
       const canonicalAgent = state.agents.get(ownerId);
@@ -4356,7 +4386,7 @@ export class AgenCDaemonAgentManager {
       return { sessionId: latestSessionId, expectedAgentId: canonicalAgent.agentId };
     });
     const { sessionId } = resolvedOwner;
-    const agentId = await this.#resolveActiveAgentIdForSession(sessionId, { allowListPermissions });
+    const agentId = await this.#resolveActiveAgentIdForSession(sessionId, { allowListPermissions, allowPermissionMode });
     if (resolvedOwner.expectedAgentId !== undefined && resolvedOwner.expectedAgentId !== agentId) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `Permission owner changed while resolving session: ${ownerId}`);
     }

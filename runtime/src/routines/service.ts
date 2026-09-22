@@ -2,17 +2,37 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { computeNextCronRun, parseCronExpression } from "../utils/cron.js";
-import type { Routine, RoutineCapabilities, RoutineConfig, RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineUpdatedEvent, RoutineWorkspaceExpectation } from "./types.js";
+import { RoutineError } from "./errors.js";
+import {
+  LEGACY_ROUTINE_GRANT,
+  ROUTINE_PERMISSION_MODES,
+  isRoutinePermissionMode,
+  routineModeTooWide,
+  routineModeWithin,
+  routineWiderThanCaller,
+  type RoutinePermissionGrant,
+} from "./permission-authority.js";
+import type { Routine, RoutineCapabilities, RoutineConfig, RoutinePermissionMode, RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineUpdatedEvent, RoutineWorkspaceExpectation } from "./types.js";
+
+export { RoutineError } from "./errors.js";
 
 export const MAX_ROUTINES = 100;
 export const MAX_ROUTINE_RUNS = 50;
 const GENERIC_RUN_FAILURE = "Routine could not run. Check its workspace, provider configuration, and session details.";
-const PERMISSION_DENIED_RUN_FAILURE = "A tool action was blocked by this routine's read-only permissions. Update its instructions to use only read-only actions, then run it again. Open its session for details.";
 const UNKNOWN_OUTCOME_RUN_FAILURE = "An action's outcome could not be confirmed. Open the session for details.";
 /** Raised by Core when the agent's provider has no usable credential. */
 const CREDENTIALS_MISSING = /requires credentials/u;
+/**
+ * Raised by the daemon runner when a routine cannot start with the authority
+ * it carries (background-agent-runner/runtime-settings.ts,
+ * assertRoutineRunAuthority). It is never run with a different one instead.
+ */
+const BYPASS_UNTRUSTED = /not trusted for bypass permissions/u;
+const BYPASS_DISABLED = /bypass permissions are disabled by managed policy/u;
+const SANDBOX_OFF = /routine writes need the OS sandbox/u;
 
-export type RoutineRunFailureReason = "credentials_missing" | "workspace_changed" | "unknown";
+export type RoutineRunFailureReason =
+  | "credentials_missing" | "workspace_changed" | "workspace_untrusted" | "bypass_disabled" | "sandbox_off" | "unknown";
 /**
  * Diagnostic for the daemon log. It never carries cause text: a cause may quote
  * secrets or provider responses. Only a fixed reason, the error class name and an
@@ -24,14 +44,31 @@ function classifyRunFailure(cause: unknown): RoutineRunFailureReason {
   const message = cause instanceof Error ? cause.message : "";
   if (message === "workspace changed") return "workspace_changed";
   if (CREDENTIALS_MISSING.test(message)) return "credentials_missing";
+  if (BYPASS_UNTRUSTED.test(message)) return "workspace_untrusted";
+  if (BYPASS_DISABLED.test(message)) return "bypass_disabled";
+  if (SANDBOX_OFF.test(message)) return "sandbox_off";
   return "unknown";
 }
 /** Fixed strings only; run.error is client-visible. */
 function describeRunFailure(reason: RoutineRunFailureReason, routine: Routine): string {
   if (reason === "workspace_changed") return "Routine could not run: its workspace changed since it was approved.";
   if (reason === "credentials_missing") return `Routine could not run: the daemon has no credentials for the ${routine.provider ?? "configured"} provider.`;
+  if (reason === "workspace_untrusted") return "Routine could not run: its folder is not trusted for bypass permissions, and it was not run with fewer permissions than it has. Trust the folder in AgenC (open a Bypass chat there once), or change the routine's permissions, then run it again.";
+  if (reason === "bypass_disabled") return "Routine could not run: managed policy on this computer disables bypass permissions. Change the routine's permissions, then run it again.";
+  if (reason === "sandbox_off") return "Routine could not run: AgenC's configuration turns the OS sandbox off, so this routine's writes could not be kept inside its workspace. Turn the sandbox back on, or give the routine default permissions.";
   return GENERIC_RUN_FAILURE;
 }
+/**
+ * Fixed strings only. A refusal ends a scheduled run as failed: nobody was
+ * there to approve it, so what failed depends on what the mode allowed.
+ */
+function describePermissionDenial(mode: RoutinePermissionMode): string {
+  if (mode === "bypassPermissions") return "A tool action was refused: this routine writes files only inside its workspace, and nothing it asks for can be approved while it runs unattended. Open its session for details.";
+  if (mode === "acceptEdits") return "A tool action needed approval, and nobody is attached to a scheduled run to give it. This routine may edit files in its workspace without asking; anything else that needs approval is refused. Open its session for details.";
+  return "A tool action was blocked by this routine's read-only permissions. Update its instructions to use only read-only actions, then run it again. Open its session for details.";
+}
+/** Fields that change what a routine does or where. Only an equal or wider authority may change them. */
+const EXECUTION_KEYS = ["instructions", "cwd", "provider", "model", "permissionMode"] as const;
 function runFailureDiagnostic(routineId: string, runId: string, reason: RoutineRunFailureReason, cause: unknown): RoutineRunFailure {
   const errorName = cause instanceof Error && cause.name !== "Error" ? cause.name : undefined;
   const code = typeof cause === "object" && cause !== null ? (cause as { code?: unknown }).code : undefined;
@@ -48,9 +85,6 @@ type Identity = { dev: string; ino: string };
 type Entry = { routine: Routine; cwdIdentity: Identity; runs: RoutineRun[] };
 type Document = { version: 1; entries: Entry[] };
 
-export class RoutineError extends Error {
-  constructor(readonly code: string, message: string) { super(message); this.name = "RoutineError"; }
-}
 /** Execution could not prove quiescence; fence this routine until daemon restart. */
 export class RoutineExecutionUnsettledError extends Error {}
 function invalid(message: string): never { throw new RoutineError("ROUTINE_INVALID_ARGUMENT", message); }
@@ -117,14 +151,14 @@ function nextRun(routine: Pick<Routine, "schedule" | "enabled">, now: Date): str
 function normalizeCreate(value: unknown, now: Date): { config: Required<Pick<RoutineConfig, "name" | "description" | "instructions" | "cwd" | "schedule" | "permissionMode" | "enabled" | "notifyOnCompletion">> & Pick<RoutineConfig, "provider" | "model">; cwdIdentity: Identity } {
   const input = object(value, CREATE_KEYS);
   const authority = cwdAuthority(input.cwd);
-  if (input.permissionMode !== undefined && input.permissionMode !== "default" && input.permissionMode !== "plan") return invalid("Routine permission mode must be default or plan.");
+  if (input.permissionMode !== undefined && !isRoutinePermissionMode(input.permissionMode)) return invalid(`Routine permission mode must be one of ${ROUTINE_PERMISSION_MODES.join(", ")}.`);
   const optional = (key: "provider" | "model") => ({ [key]: input[key] === undefined ? undefined : text(input[key], key, 256, true).trim() || undefined });
   return {
     cwdIdentity: authority.cwdIdentity,
     config: {
       name: text(input.name, "Name", 128).trim(), description: text(input.description ?? "", "Description", 2048, true),
       instructions: text(input.instructions, "Instructions", 16_384), cwd: authority.cwd,
-      schedule: schedule(input.schedule, now), permissionMode: input.permissionMode ?? "default",
+      schedule: schedule(input.schedule, now), permissionMode: (input.permissionMode as RoutinePermissionMode | undefined) ?? "default",
       enabled: bool(input.enabled, "enabled", true), notifyOnCompletion: bool(input.notifyOnCompletion, "notifyOnCompletion", true),
       ...optional("provider"), ...optional("model"),
     },
@@ -249,7 +283,7 @@ export class RoutineService {
   capabilities(params: unknown = {}): RoutineCapabilities {
     object(params, []);
     this.#assertOpen();
-    return { version: 1, available: true, scheduleKinds: ["manual", "cron"], permissionModes: ["default", "plan"], timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, executionMode: "local", maxRoutines: MAX_ROUTINES, maxRunsPerRoutine: MAX_ROUTINE_RUNS };
+    return { version: 1, available: true, scheduleKinds: ["manual", "cron"], permissionModes: ["default", "plan", "acceptEdits", "bypassPermissions"], timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, executionMode: "local", maxRoutines: MAX_ROUTINES, maxRunsPerRoutine: MAX_ROUTINE_RUNS };
   }
   start(): void {
     this.#assertOpen(); if (this.#started) return;
@@ -265,17 +299,31 @@ export class RoutineService {
   onUpdated(listener: (event: RoutineUpdatedEvent) => void): () => void { this.#listeners.add(listener); return () => { this.#listeners.delete(listener); }; }
   list(params: unknown = {}): { routines: Routine[] } { object(params, []); this.#assertOpen(); return { routines: structuredClone(this.#entries.map((e) => e.routine)) }; }
   get(params: unknown): { routine: Routine } { const p = object(params, ["id"]); return { routine: structuredClone(this.#entry(p.id).routine) }; }
-  create(params: unknown): { routine: Routine } {
+  /**
+   * `grant` is resolved by the daemon from the request's authority (see
+   * permission-authority.ts); request fields never widen it. Without one a
+   * caller keeps the original default-or-plan contract.
+   */
+  create(params: unknown, grant: RoutinePermissionGrant = LEGACY_ROUTINE_GRANT): { routine: Routine } {
     this.#assertOpen(); if (this.#entries.length >= MAX_ROUTINES) throw new RoutineError("ROUTINE_LIMIT", `At most ${MAX_ROUTINES} routines are supported.`);
     const { expectedWorkspace, ...config } = object(params, [...CREATE_KEYS, "expectedWorkspace"]);
     const expected = workspaceExpectation(expectedWorkspace);
     const now = this.#now(); const normalized = normalizeCreate(config, now);
+    const permissionMode = config.permissionMode === undefined ? grant.defaultMode : normalized.config.permissionMode;
+    if (!routineModeWithin(permissionMode, grant.ceiling)) throw routineModeTooWide(grant, permissionMode);
     guardWorkspace(expected, normalized.config.cwd, normalized.cwdIdentity);
-    const routine: Routine = { ...normalized.config, id: `routine_${randomUUID()}`, createdAt: now.toISOString(), updatedAt: now.toISOString(), nextRunAt: nextRun(normalized.config, now), lastRun: null };
+    const routine: Routine = { ...normalized.config, permissionMode, id: `routine_${randomUUID()}`, createdAt: now.toISOString(), updatedAt: now.toISOString(), nextRunAt: nextRun(normalized.config, now), lastRun: null };
     this.#commit(() => { this.#entries.push({ routine, cwdIdentity: normalized.cwdIdentity, runs: [] }); });
     this.#emit(routine.id, "created"); this.#arm(); return { routine: structuredClone(routine) };
   }
-  update(params: unknown): { routine: Routine } {
+  /**
+   * A patch that changes what the routine does or where (instructions,
+   * workspace, provider, model or mode) needs a grant at least as wide as the
+   * routine's resulting mode, so a narrower session cannot rewrite a wider
+   * routine's instructions and have them run with the wider mode. Pausing,
+   * renaming, rescheduling and notifications stay open to any caller.
+   */
+  update(params: unknown, grant: RoutinePermissionGrant = LEGACY_ROUTINE_GRANT): { routine: Routine } {
     const p = object(params, ["id", "patch", "expectedUpdatedAt", "expectedWorkspace"]); const entry = this.#entry(p.id); this.#guard(entry, p.expectedUpdatedAt);
     const patch = object(p.patch, CREATE_KEYS); if (Object.keys(patch).length === 0) return invalid("Routine patch must contain a setting.");
     const expected = workspaceExpectation(p.expectedWorkspace);
@@ -283,6 +331,9 @@ export class RoutineService {
     const existing = Object.fromEntries(CREATE_KEYS.filter((key) => entry.routine[key] !== undefined).map((key) => [key, entry.routine[key]]));
     const now = this.#now(); const normalized = normalizeCreate({ ...existing, ...patch, ...(patch.cwd === undefined ? { cwd: this.#store.root } : {}) }, now);
     const config = { ...normalized.config, cwd: patch.cwd === undefined ? entry.routine.cwd : normalized.config.cwd };
+    if (EXECUTION_KEYS.some((key) => patch[key] !== undefined) && !routineModeWithin(config.permissionMode, grant.ceiling)) {
+      throw patch.permissionMode !== undefined ? routineModeTooWide(grant, config.permissionMode) : routineWiderThanCaller(grant, config.permissionMode);
+    }
     guardWorkspace(expected, config.cwd, normalized.cwdIdentity);
     this.#commit(() => {
       entry.routine = { ...entry.routine, ...config, updatedAt: new Date(Math.max(now.getTime(), Date.parse(entry.routine.updatedAt) + 1)).toISOString(), nextRunAt: nextRun(config, now) };
@@ -339,7 +390,7 @@ export class RoutineService {
           try {
             this.#replaceRun(entry, run.id, { status, finishedAt: this.#now().toISOString(),
               error: payload.status === "unknown_outcome" ? UNKNOWN_OUTCOME_RUN_FAILURE
-                : status === "failed" ? payload.stopReason === "routine_permission_denied" ? PERMISSION_DENIED_RUN_FAILURE
+                : status === "failed" ? payload.stopReason === "routine_permission_denied" ? describePermissionDenial(entry.routine.permissionMode)
                   : "Core could not complete this run. Open its session for details." : null });
             if (entry.runs[0]?.id === run.id) this.#held.delete(entry.routine.id);
             if (active?.runId === run.id) { active.resolveTerminal(status); this.#active.delete(entry.routine.id); }
@@ -397,7 +448,7 @@ export class RoutineService {
           if (realpathSync(snapshot.cwd) !== snapshot.cwd || !sameIdentity(identity(snapshot.cwd), cwdIdentity)) throw new Error("workspace changed");
           const outcome = await this.#executor.execute(snapshot, run, { signal: controller.signal, terminal, bind: (ids) => { this.#replaceRun(entry, run.id, { ...ids, status: "running" }); } });
           status = outcome === "permission_denied" ? "failed" : outcome;
-          if (outcome === "permission_denied") error = PERMISSION_DENIED_RUN_FAILURE;
+          if (outcome === "permission_denied") error = describePermissionDenial(snapshot.permissionMode);
         }
         if (status === "failed" && error === null) error = "Core could not complete this run. Open its session for details.";
       } catch (cause) {

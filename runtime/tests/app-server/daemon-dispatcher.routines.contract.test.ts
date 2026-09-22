@@ -66,6 +66,8 @@ async function harness(options: { enabled?: boolean } = {}) {
   const terminal = deferred<0 | 1 | 130>();
   const submission = deferred<{ agentId: string; params: AgenCBackgroundAgentMessageParams }>();
   const starts: AgenCBackgroundAgentStartParams[] = [];
+  // The live permission mode of each running agent, as its registry would report it.
+  const liveModes = new Map<string, string>();
   const bindings = new Map<string, AgenCBackgroundAgentSessionEventBinding>();
   const snapshots = new Map<string, AgenCBackgroundAgentSnapshot>();
   const cancellationOrder: string[] = [];
@@ -78,10 +80,12 @@ async function harness(options: { enabled?: boolean } = {}) {
     async startAgent(params) {
       starts.push(params);
       const agentId = `routine-agent-${++agentSequence}`;
+      liveModes.set(agentId, params.permissionMode ?? "default");
       snapshots.set(agentId, { status: "running", lastActiveAt: NOW });
       return { agentId, startedAt: NOW, status: "running" };
     },
     getAgentSnapshot: async (agentId) => snapshots.get(agentId) ?? null,
+    getAgentPermissionMode: async (agentId) => liveModes.get(agentId) ?? null,
     async finishAgentRun(agentId) {
       snapshots.set(agentId, { status: "stopped", lastActiveAt: NOW });
       await agents.handleRunnerTerminated(agentId, snapshots.get(agentId)!);
@@ -187,8 +191,16 @@ async function harness(options: { enabled?: boolean } = {}) {
   async function history(id: string) {
     return result<{ runs: RoutineRun[] }>(await client.connection.dispatch(request("history", "routine.runs", { id }))).runs;
   }
+  /** A live chat session in `mode`, created the way the Desktop creates one. */
+  async function chat(mode: string) {
+    const created = await agents.createAgent({
+      objective: "Interactive session", cwd, deferInitialTurn: true,
+      permissionMode: mode as "default", runtimeOptions: authority,
+    });
+    return { ...created, sessionId: created.sessionId! };
+  }
   return {
-    ...client, connect, dispatcher, service, sessions, agents, starts, bindings,
+    ...client, connect, dispatcher, service, sessions, agents, starts, bindings, liveModes, chat,
     terminal, submission, cancellationOrder, cwd, authority, createParams, create, run, history,
   };
 }
@@ -317,6 +329,78 @@ describe("routine dispatcher and daemon execution contract", () => {
       expect(listed.routines[0].lastRun).toEqual(final);
     },
   );
+
+  it.each(["bypassPermissions", "acceptEdits", "default"])(
+    "gives a routine the live mode of the %s session the Desktop names, and runs it in that mode with the sandbox kept",
+    async (mode) => {
+      const h = await harness();
+      const chat = await h.chat(mode);
+      const { permissionMode: _unset, ...fields } = h.createParams;
+      const routine = result<{ routine: Routine }>(await h.connection.dispatch(request("from-chat", "routine.create", {
+        ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+      }))).routine;
+      expect(routine.permissionMode).toBe(mode);
+      expect(routine).not.toHaveProperty("permissionAuthority");
+      await h.run(routine.id);
+      await h.submission.promise;
+      expect(h.starts.at(-1)).toMatchObject({
+        permissionMode: mode,
+        metadata: { routineId: routine.id },
+        runtimeOptions: { dangerouslyBypassApprovalsAndSandbox: false, remoteMode: false },
+      });
+    },
+  );
+
+  it("reads the session's current mode at request time, not the mode it was created with", async () => {
+    const h = await harness();
+    const chat = await h.chat("default");
+    h.liveModes.set(chat.agentId, "bypassPermissions");
+    const { permissionMode: _unset, ...fields } = h.createParams;
+    const routine = result<{ routine: Routine }>(await h.connection.dispatch(request("switched", "routine.create", {
+      ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+    }))).routine;
+    expect(routine.permissionMode).toBe("bypassPermissions");
+  });
+
+  it("refuses a wider mode than the session's, a closed or unknown session, and a forged authority", async () => {
+    const h = await harness();
+    const chat = await h.chat("default");
+    const denied = await h.connection.dispatch(request("wider", "routine.create", {
+      ...h.createParams, permissionMode: "bypassPermissions", permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+    }));
+    expect(denied).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_PERMISSION_DENIED" } } });
+    const unknown = await h.connection.dispatch(request("unknown", "routine.create", {
+      ...h.createParams, permissionAuthority: { kind: "session", sessionId: "session-that-does-not-exist" },
+    }));
+    expect(unknown).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_PERMISSION_DENIED" } } });
+    for (const permissionAuthority of [{ kind: "session" }, { kind: "session", sessionId: chat.sessionId, permissionMode: "bypassPermissions" }, { kind: "model" }, "operator"]) {
+      const forged = await h.connection.dispatch(request("forged", "routine.create", { ...h.createParams, permissionAuthority }));
+      expect(forged, JSON.stringify(permissionAuthority)).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_INVALID_ARGUMENT" } } });
+    }
+    await h.agents.stopAgent({ agentId: chat.agentId, reason: "chat closed" });
+    const closed = await h.connection.dispatch(request("closed", "routine.create", {
+      ...h.createParams, permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+    }));
+    expect(closed).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_PERMISSION_DENIED" } } });
+    expect(h.service.list().routines).toEqual([]);
+  });
+
+  it("lets the operator's Routines screen choose any session mode, and keeps an update from a narrower chat off a wider routine", async () => {
+    const h = await harness();
+    const routine = result<{ routine: Routine }>(await h.connection.dispatch(request("operator", "routine.create", {
+      ...h.createParams, permissionMode: "bypassPermissions", permissionAuthority: { kind: "operator" },
+    }))).routine;
+    expect(routine.permissionMode).toBe("bypassPermissions");
+    const chat = await h.chat("default");
+    const laundered = await h.connection.dispatch(request("launder", "routine.update", {
+      id: routine.id, patch: { instructions: "Something else" }, permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+    }));
+    expect(laundered).toMatchObject({ error: { code: -32602, data: { code: "ROUTINE_PERMISSION_DENIED" } } });
+    const paused = result<{ routine: Routine }>(await h.connection.dispatch(request("pause", "routine.update", {
+      id: routine.id, patch: { enabled: false }, permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+    }))).routine;
+    expect(paused).toMatchObject({ enabled: false, permissionMode: "bypassPermissions" });
+  });
 
   it("projects bound permission events and cancels through Core's canonical run-tree boundary", async () => {
     const h = await harness();

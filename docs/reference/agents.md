@@ -532,6 +532,29 @@ Background agents use the **unattended** permission policy when no interactive
 client is attached (internal mode; not a user-facing CLI default). Unattended
 allow/deny lists can be supplied at create time via CLI flags or the RPC.
 
+### Routine runs
+
+A scheduled routine run is a background agent with nobody attached, started
+in the permission mode its routine stores (`runtime/src/routines/`).
+
+- A routine's mode is the mode of the session that created it. On
+  `routine.create` and `routine.update` a client names a
+  `permissionAuthority`: `{ kind: "session", sessionId }` makes Core read that
+  live session's current mode from its own permission registry, and the
+  request may only narrow it; `{ kind: "operator" }` is a trusted client's own
+  Routines screen. A request without one keeps the original contract, default
+  or plan only. Changing a routine's instructions, workspace, provider, model
+  or mode needs an authority at least as wide as the routine's resulting mode.
+- `default` and `plan` runs keep the read-only grant.
+- `acceptEdits` and `bypassPermissions` runs keep their mode. Whatever would
+  ask a person is refused instead of waiting (questions, plan hand-offs,
+  sandbox escalations included). File tools write only inside the routine's
+  workspace, even under bypass, and the run never gets the dangerous combined
+  flag, so the OS sandbox confines shell writes.
+- A Bypass routine in a folder that is not a trusted project, or whose
+  configuration turns the OS sandbox off, fails with that reason instead of
+  running with a different authority.
+
 The channel gateway provisions passive agents
 (`initialContent: []` suppresses an objective turn) and adopts each agent's
 session so one conversation maps to one agent = one session. Details:

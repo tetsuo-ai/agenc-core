@@ -436,6 +436,14 @@ export type RoutineSchedule = {
     readonly expression: string;
 };
 
+/**
+ * The permission mode a scheduled run starts in. Nobody is attached to a
+ * scheduled run, so default and plan are read-only, acceptEdits may edit the
+ * routine's workspace, and bypassPermissions skips approvals; every mode
+ * writes files only inside the routine's workspace.
+ */
+export type RoutinePermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermissions";
+
 export interface RoutineConfig extends JsonObject {
     readonly name: string;
     readonly description?: string;
@@ -444,7 +452,7 @@ export interface RoutineConfig extends JsonObject {
     readonly schedule: RoutineSchedule;
     readonly provider?: string;
     readonly model?: string;
-    readonly permissionMode?: "default" | "plan";
+    readonly permissionMode?: RoutinePermissionMode;
     readonly enabled?: boolean;
     readonly notifyOnCompletion?: boolean;
 }
@@ -456,8 +464,26 @@ export interface RoutineWorkspaceExpectation extends JsonObject {
     readonly ino: string;
 }
 
+/**
+ * Request-only: whose permissions a create or update speaks for. Never stored.
+ *
+ * `session` names the live session that asked (the Desktop sends the session
+ * behind a model's routine tool call). Core reads that session's current mode
+ * from its own permission registry; a request cannot state it. `operator` is
+ * a trusted client's own Routines screen, where the user picks a mode the way
+ * they pick one for a session. Without either, a request keeps the original
+ * contract: default or plan only.
+ */
+export type RoutinePermissionAuthority = {
+    readonly kind: "session";
+    readonly sessionId: string;
+} | {
+    readonly kind: "operator";
+};
+
 export interface RoutineCreateParams extends RoutineConfig {
     readonly expectedWorkspace?: RoutineWorkspaceExpectation;
+    readonly permissionAuthority?: RoutinePermissionAuthority;
 }
 
 export interface RoutineUpdateParams extends RoutineIdParams {
@@ -465,6 +491,7 @@ export interface RoutineUpdateParams extends RoutineIdParams {
     readonly expectedUpdatedAt?: string;
     /** Only valid when patch.cwd supplies a new workspace. */
     readonly expectedWorkspace?: RoutineWorkspaceExpectation;
+    readonly permissionAuthority?: RoutinePermissionAuthority;
 }
 
 export interface RoutineDeleteParams extends RoutineIdParams {
@@ -1661,7 +1688,9 @@ export interface RoutineCapabilities extends JsonObject {
     ];
     readonly permissionModes: readonly [
         "default",
-        "plan"
+        "plan",
+        "acceptEdits",
+        "bypassPermissions"
     ];
     readonly timezone: string;
     readonly executionMode: "local";
@@ -1687,7 +1716,7 @@ export interface RoutineRun extends JsonObject {
 export interface Routine extends RoutineConfig {
     readonly id: string;
     readonly description: string;
-    readonly permissionMode: "default" | "plan";
+    readonly permissionMode: RoutinePermissionMode;
     readonly enabled: boolean;
     readonly notifyOnCompletion: boolean;
     readonly createdAt: string;

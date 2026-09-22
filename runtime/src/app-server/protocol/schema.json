@@ -666,6 +666,41 @@
         "ino"
       ]
     },
+    "RoutinePermissionAuthority": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "session"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[\\x21-\\x7e]{1,256}(?![\\s\\S])"
+            }
+          },
+          "required": [
+            "kind",
+            "sessionId"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operator"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
     "RoutineCreateParams": {
       "type": "object",
       "additionalProperties": false,
@@ -706,7 +741,9 @@
         "permissionMode": {
           "enum": [
             "default",
-            "plan"
+            "plan",
+            "acceptEdits",
+            "bypassPermissions"
           ]
         },
         "enabled": {
@@ -717,6 +754,9 @@
         },
         "expectedWorkspace": {
           "$ref": "#/definitions/RoutineWorkspaceExpectation"
+        },
+        "permissionAuthority": {
+          "$ref": "#/definitions/RoutinePermissionAuthority"
         }
       },
       "required": [
@@ -789,7 +829,9 @@
             "permissionMode": {
               "enum": [
                 "default",
-                "plan"
+                "plan",
+                "acceptEdits",
+                "bypassPermissions"
               ]
             },
             "enabled": {
@@ -809,6 +851,9 @@
         },
         "expectedWorkspace": {
           "$ref": "#/definitions/RoutineWorkspaceExpectation"
+        },
+        "permissionAuthority": {
+          "$ref": "#/definitions/RoutinePermissionAuthority"
         }
       },
       "required": [
@@ -1053,7 +1098,9 @@
         "permissionMode": {
           "enum": [
             "default",
-            "plan"
+            "plan",
+            "acceptEdits",
+            "bypassPermissions"
           ]
         },
         "enabled": {
@@ -1135,7 +1182,9 @@
         "permissionModes": {
           "const": [
             "default",
-            "plan"
+            "plan",
+            "acceptEdits",
+            "bypassPermissions"
           ]
         },
         "timezone": {

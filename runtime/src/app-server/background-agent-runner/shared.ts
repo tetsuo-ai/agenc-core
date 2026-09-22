@@ -660,6 +660,13 @@ export interface AgenCBackgroundAgentRunner {
     params: AgenCBackgroundAgentElicitationResponseParams,
   ): Promise<boolean>;
   listPermissions?(agentId: string): Promise<PermissionListResult | null>;
+  /**
+   * The CURRENT permission mode in a runnable agent's own permission
+   * registry, or null when the agent has no live runtime. The routine
+   * service reads a session's mode through this so a routine the session
+   * creates can never carry a wider one.
+   */
+  getAgentPermissionMode?(agentId: string): Promise<string | null>;
   resolveRealtimeThread?(
     threadId: string,
   ):

@@ -242,6 +242,22 @@ describe("getPermissionsSection", () => {
     expect(out).not.toContain("Any other tool pauses the agent");
   });
 
+  test.each(["acceptEdits", "bypassPermissions"] as const)(
+    "a %s routine keeps its mode's text and learns that nobody can approve anything",
+    (mode) => {
+      const context = createEmptyToolPermissionContext({ mode,
+        unattendedPolicy: { allowlist: [], denylist: [], readOnly: false, noApprover: true, workspaceRoots: ["/workspace"] },
+      });
+      const out = getPermissionsSection(context, WORKSPACE_AUTHORITY)!;
+      expect(out).toContain(`# Permission Mode: ${permissionsSection(mode)!.split("\n")[0]!.replace("# Permission Mode: ", "")}`);
+      expect(out).toContain("nobody attached");
+      expect(out).toContain("refused, not paused");
+      expect(out).toContain("only inside the routine's workspace");
+      expect(out).not.toContain("ask one question with AskUserQuestion");
+      expect(permissionsSection(mode)).not.toContain("nobody attached");
+    },
+  );
+
   test("composition uses a blank line between heading, sandbox, and approval", () => {
     const out = permissionsSection("default");
     expect(out).not.toBeNull();

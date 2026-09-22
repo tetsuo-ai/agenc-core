@@ -657,8 +657,10 @@ function desktopRoutineMutationAllowed(args: Record<string, unknown>, callId: st
   toolName: string, options: MCPToolBridgePermissionOptions | undefined): boolean {
   const context = exactMcpInvocation(args, callId, toolName, options);
   const broker = readSandboxExecutionBroker(args);
-  // A routine does not inherit a one-shot escalation or the parent's bypass.
-  // Its separate child policy cannot be used to escape a read-only parent.
+  // A routine never inherits a one-shot escalation. Its mode is at most this
+  // session's current mode, which Core reads from the session's own registry
+  // when the Desktop relays the call (routines/permission-authority.ts), so a
+  // routine cannot be used to escape a read-only or plan parent.
   if (!context || !broker || broker !== context.invocation.session.services.sandboxExecutionBroker ||
       context.requestedSandboxMode === "read_only" || context.sandboxMode === "read_only" ||
       broker.mode === "read_only") return false;

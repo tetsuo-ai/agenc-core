@@ -17,6 +17,12 @@ import type { RemoteService } from "../remote/service.js";
 import type { OwnerTelegramService } from "../gateway/owner-telegram.js";
 import { OWNER_TELEGRAM_METHODS, type OwnerTelegramMethod } from "../gateway/owner-telegram-types.js";
 import { RoutineError, type RoutineService } from "../routines/service.js";
+import {
+  resolveRoutinePermissionGrant,
+  takeRoutinePermissionAuthority,
+  type RoutinePermissionGrant,
+} from "../routines/permission-authority.js";
+import type { RoutinePermissionAuthority } from "../routines/types.js";
 import type { RoutineUpdatedEvent } from "../routines/types.js";
 import { isSafeSessionIdSegment } from "../session/session-store.js";
 import { DaemonOperationTimeoutError } from "./operation-deadline.js";
@@ -523,6 +529,7 @@ export interface AgenCDaemonDispatcherOptions {
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
     readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
+    readonly getSessionPermissionMode?: AgenCDaemonAgentManager["getSessionPermissionMode"];
   };
   readonly initializeAuthenticator?: (
     params: InitializeParams,
@@ -647,6 +654,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
     readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
+    readonly getSessionPermissionMode?: AgenCDaemonAgentManager["getSessionPermissionMode"];
   };
   readonly #initializeAuthenticator:
     | ((
@@ -971,6 +979,19 @@ export class AgenCDaemonJsonRpcDispatcher {
     }
   }
 
+  /**
+   * Who vouches for a routine's permission mode. A session authority is read
+   * from that live session's own permission registry through the agent
+   * manager; the request never states the mode it is granted.
+   */
+  #routinePermissionGrant(authority: RoutinePermissionAuthority | undefined): Promise<RoutinePermissionGrant> {
+    const agentManager = this.#agentManager;
+    return resolveRoutinePermissionGrant(authority, async (sessionId) => {
+      if (agentManager.getSessionPermissionMode === undefined) throw new Error("live session permission modes are unavailable");
+      return agentManager.getSessionPermissionMode(sessionId);
+    });
+  }
+
   async #dispatchKnownMethod(
     connection: AgenCDaemonJsonRpcConnection,
     id: RequestId,
@@ -997,12 +1018,18 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "routine.get":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         return successResponse(id, this.#routines.get(params));
-      case "routine.create":
+      case "routine.create": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        return successResponse(id, this.#routines.create(params));
-      case "routine.update":
+        const request = takeRoutinePermissionAuthority(params);
+        const grant = await this.#routinePermissionGrant(request.authority);
+        return successResponse(id, this.#routines.create(request.params, grant));
+      }
+      case "routine.update": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        return successResponse(id, this.#routines.update(params));
+        const request = takeRoutinePermissionAuthority(params);
+        const grant = await this.#routinePermissionGrant(request.authority);
+        return successResponse(id, this.#routines.update(request.params, grant));
+      }
       case "routine.delete":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         return successResponse(id, this.#routines.delete(params));

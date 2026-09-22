@@ -91,6 +91,22 @@ describe("routine agent environment", () => {
   });
 });
 
+describe("routine permission mode", () => {
+  it.each(["bypassPermissions", "acceptEdits", "default", "plan"] as const)(
+    "starts a %s routine in its own mode with the OS sandbox kept on",
+    async (permissionMode) => {
+      const f = fixture();
+      f.manager.streamAgentMessage.mockImplementation(async () => ({ terminal: { code: 0 } }) as never);
+      await f.executor.execute({ ...f.routine, permissionMode }, f.run, { signal: f.controller.signal, bind: vi.fn() });
+      expect(f.manager.createAgent).toHaveBeenCalledWith(expect.objectContaining({
+        permissionMode, cwd: "/fixture",
+        metadata: { routineId: "routine", routineRunId: "routine-run" },
+        runtimeOptions: expect.objectContaining({ dangerouslyBypassApprovalsAndSandbox: false, allowUntrustedHooks: false, remoteMode: false }),
+      }));
+    },
+  );
+});
+
 describe("routine execution finalization", () => {
   /** A routine's run held open, its stream and stop both rejected, waiting for a canonical terminal. */
   async function runAwaitingUnconfirmedTerminal() {
