@@ -91,7 +91,11 @@ import {
   sharedServer,
   type ConcurrencyClass,
 } from "./tools/concurrency.js";
-import { ToolRouter, type ConfiguredToolSpec } from "./tools/router.js";
+import {
+  ToolRouter,
+  unavailableToolResult,
+  type ConfiguredToolSpec,
+} from "./tools/router.js";
 import { resolvePerToolConfig, toolConfigAllowsTool } from "./tools/config.js";
 import {
   attachSandboxExecutionBroker,
@@ -140,6 +144,12 @@ export interface ToolRegistryDispatchOptions {
 export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
+  /**
+   * Tools kept for telemetry only (`unavailableCalledTools`). They stay in
+   * `tools` so history still resolves, but are never offered and every
+   * dispatch refuses them; `routerFromRegistry` carries the flag over.
+   */
+  getUnavailableToolNames?(): ReadonlySet<string>;
   dispatch(toolCall: LLMToolCall, options?: ToolRegistryDispatchOptions): Promise<ToolDispatchResult>;
   dispatchCodeModeNestedTool?(
     toolCall: CodeModeNestedToolDispatch,
@@ -662,6 +672,7 @@ export function buildToolRegistry(
     getToolCatalog: () =>
       buildRouter()
         .getSpecs()
+        .filter((spec) => spec.unavailable !== true)
         .map((spec) => catalogEntryForTool(spec.tool, spec)),
     onDiscoverTools: markDiscovered,
   });
@@ -923,7 +934,10 @@ export function buildToolRegistry(
     options.codeModeService?.enabled() === true
       ? createCodeModeTools({
           service: options.codeModeService,
-          getEnabledTools: () => allSpecs().map((spec) => spec.tool),
+          getEnabledTools: () =>
+            allSpecs()
+              .filter((spec) => spec.unavailable !== true)
+              .map((spec) => spec.tool),
           descriptionTools: configuredRawDefaultBuiltinTools,
           stringArgumentFields: baseBuiltinSurface.stringArgumentFields,
         })
@@ -1088,7 +1102,8 @@ export function buildToolRegistry(
   function visibleSpecs(): readonly ConfiguredToolSpec[] {
     return allSpecs().filter(
       (spec) =>
-        spec.deferred !== true || discoveredToolNames.has(spec.tool.name),
+        spec.unavailable !== true &&
+        (spec.deferred !== true || discoveredToolNames.has(spec.tool.name)),
     );
   }
 
@@ -1178,6 +1193,13 @@ export function buildToolRegistry(
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;
     },
+    getUnavailableToolNames(): ReadonlySet<string> {
+      return new Set(
+        allSpecs()
+          .filter((spec) => spec.unavailable === true)
+          .map((spec) => spec.tool.name),
+      );
+    },
     discoverToolNames(toolNames: readonly string[]): void {
       markDiscovered(toolNames);
     },
@@ -1192,6 +1214,7 @@ export function buildToolRegistry(
           isError: true,
         };
       }
+      if (spec.unavailable === true) return unavailableToolResult(spec.tool.name);
       try {
         const parseResult = parseToolCallArguments(
           toolCall,
@@ -1242,6 +1265,7 @@ export function buildToolRegistry(
           isError: true,
         };
       }
+      if (spec.unavailable === true) return unavailableToolResult(spec.tool.name);
       if (!canDirectDispatchFromCodeMode(spec.tool)) {
         return {
           content: safeStringify({
