@@ -112,6 +112,18 @@ describe("read-only delegated search authority", () => {
     expect(result.content).toBe("public.ts");
   });
 
+  it("anchors ./ and slash Glob patterns at the guarded search root", async () => {
+    await mkdir(join(workspace, "pub"));
+    await writeFile(join(workspace, "pub", "inner.ts"), "needle inner\n");
+    const tool = bindExplicitDangerBoundary(createGlobTool({ allowedPaths: [workspace] }));
+    const anchored = await tool.execute(guarded({ pattern: "./*.ts", path: workspace }));
+    expect(anchored.isError).not.toBe(true);
+    expect(anchored.content).toBe("public.ts");
+    const nested = await tool.execute(guarded({ pattern: "pub/*.ts", path: workspace }));
+    expect(nested.isError).not.toBe(true);
+    expect(nested.content).toBe("pub/inner.ts");
+  });
+
   it("does not read denied ignore-file bytes while matching allowed content", async () => {
     await writeFile(join(workspace, ".ignore"), "public.ts\n");
     const tool = bindExplicitDangerBoundary(createGrepTool({ allowedPaths: [workspace] }));

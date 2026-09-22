@@ -3,7 +3,10 @@
  *
  * Ports the donor `GlobTool` behavior onto AgenC's tool interface:
  *   - model-facing bare tool name `Glob`
- *   - `rg --files --glob <pattern>` as the primary file-listing engine
+ *   - `rg --files` as the file-listing engine, filtered by the pattern's
+ *     file-name part so ignore rules stay in force; a pattern with "/" is
+ *     then matched against whole relative paths (see `glob-pattern.ts`),
+ *     with the same meaning ripgrep's `--glob` gives it
  *   - sorted, capped file-path output with donor-compatible empty and
  *     truncation text
  *
@@ -26,6 +29,14 @@ import {
 } from "../../permissions/readonly-read-guard.js";
 import { collectGuardedSearchCandidates } from "./guarded-search-candidates.js";
 import { createSearchIgnoreMatcher, pinnedSnapshotPathEligibility } from "./grep.js";
+import {
+  compileGlobMatcher,
+  GlobPatternError,
+  normalizeGlobPattern,
+  planGlobPattern,
+  type GlobPathMatcher,
+  type GlobPatternPlan,
+} from "./glob-pattern.js";
 import {
   basename,
   dirname,
@@ -86,6 +97,14 @@ import {
 export const GLOB_TOOL_NAME = "Glob";
 
 const DEFAULT_MAX_RESULTS = 100;
+/**
+ * A pattern with "/" is matched against whole relative paths after ripgrep
+ * lists the files whose names fit its last segment, newest first. This many
+ * candidates are read before the result is reported as truncated; ripgrep
+ * walks the whole tree for its mtime sort either way, so the bound only caps
+ * the listing handed back.
+ */
+const DEFAULT_MAX_PATH_PATTERN_CANDIDATES = 20_000;
 const MAX_RIPGREP_STDERR_CHARS = 128 * 1024;
 const RIPGREP_FILES_TIMEOUT_MS = 120_000;
 const RIPGREP_FILES_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -148,6 +167,11 @@ export interface GlobToolConfig {
   readonly allowedPaths: readonly string[];
   /** Override the hard result cap (default {@link DEFAULT_MAX_RESULTS}). */
   readonly maxResults?: number;
+  /**
+   * Override how many candidates a "/" pattern may read before its result is
+   * truncated (default {@link DEFAULT_MAX_PATH_PATTERN_CANDIDATES}).
+   */
+  readonly maxPathPatternCandidates?: number;
   /** Test override for the subprocess path. Production uses packaged `rg`. */
   readonly ripgrepCommand?: string;
   /** Deterministic test seam immediately after the final path check. */
@@ -402,7 +426,10 @@ function isExecutableUnavailable(error: unknown): boolean {
 
 export interface RunRipgrepFilesParams {
   readonly command: string;
+  /** File-name glob (ripgrep `--type-add`); it never sees directories. */
   readonly pattern: string;
+  /** Optional `--max-depth` below `searchPath`. */
+  readonly maxDepth?: number;
   readonly cwd: string;
   /** Literal search target relative to the authenticated cwd. */
   readonly searchPath?: string;
@@ -425,6 +452,7 @@ type RunRipgrepFilesWithIgnorePathsParams = Omit<
 
 interface BuildRipgrepFilesArgsParams {
   readonly pattern: string;
+  readonly maxDepth?: number;
   readonly searchPath?: string;
   readonly includeIgnored: boolean;
   readonly rootIgnoreFilePaths: readonly string[];
@@ -460,6 +488,9 @@ function buildRipgrepFilesArgs(params: BuildRipgrepFilesArgsParams): string[] {
     for (const exclude of DEFAULT_GLOB_EXCLUDE_GLOBS) {
       args.push("--glob", `!${exclude}`);
     }
+  }
+  if (params.maxDepth !== undefined) {
+    args.push("--max-depth", String(params.maxDepth));
   }
   args.push("--", params.searchPath ?? ".");
   return args;
@@ -793,6 +824,39 @@ function isSafeRelativeRipgrepPathBytes(path: Buffer): boolean {
 }
 
 /**
+ * Keep the ripgrep records whose path relative to the search root satisfies a
+ * "/" pattern. Records are relative to the enumeration cwd and start with
+ * `searchPath`; their newest-first order is preserved.
+ */
+function selectPathPatternMatches(
+  records: readonly Buffer[],
+  searchPath: string,
+  matcher: GlobPathMatcher,
+): Buffer[] {
+  const portableSearchPath =
+    process.platform === "win32" ? searchPath.replace(/\\/gu, "/") : searchPath;
+  const prefix =
+    portableSearchPath === "."
+      ? undefined
+      : Buffer.from(`${portableSearchPath}/`, "utf8");
+  const selected: Buffer[] = [];
+  for (const record of records) {
+    let relativeToSearchRoot = normalizeRelativeRipgrepPathBytes(record);
+    if (prefix !== undefined) {
+      if (
+        relativeToSearchRoot.length <= prefix.length ||
+        !relativeToSearchRoot.subarray(0, prefix.length).equals(prefix)
+      ) {
+        continue;
+      }
+      relativeToSearchRoot = relativeToSearchRoot.subarray(prefix.length);
+    }
+    if (matcher.matches(relativeToSearchRoot)) selected.push(record);
+  }
+  return selected;
+}
+
+/**
  * Matches are validated this many at a time. Each validation is an IPC round
  * trip to the directory helper (which spawns a read worker per path), so
  * validating sequentially made Glob scale linearly with the match count:
@@ -919,6 +983,11 @@ export function createGlobTool(
     "maxResults" in config && typeof config.maxResults === "number"
       ? Math.max(1, Math.floor(config.maxResults))
       : DEFAULT_MAX_RESULTS;
+  const pathPatternCandidateLimit =
+    "maxPathPatternCandidates" in config &&
+    typeof config.maxPathPatternCandidates === "number"
+      ? Math.max(1, Math.floor(config.maxPathPatternCandidates))
+      : DEFAULT_MAX_PATH_PATTERN_CANDIDATES;
   const ripgrepCommand =
     "ripgrepCommand" in config && typeof config.ripgrepCommand === "string"
       ? config.ripgrepCommand
@@ -1016,6 +1085,28 @@ export function createGlobTool(
         return errorResult(target.error);
       }
       if (!readOnlyDelegationReadPathAllowed(rawArgs, target.searchRoot)) return errorResult("Access denied: search path is outside delegated read authority");
+      // Patterns are relative to the search root. One without "/" names files
+      // at any depth; one with "/" must match the whole relative path, which
+      // ripgrep's file-name filter alone cannot check.
+      const globPattern = normalizeGlobPattern(target.pattern);
+      let plan: GlobPatternPlan;
+      try {
+        plan = planGlobPattern(globPattern);
+      } catch (error) {
+        if (error instanceof GlobPatternError) {
+          return errorResult(`Glob error: ${error.message}`);
+        }
+        throw error;
+      }
+      if (plan.matchesNothing === true) {
+        return textResult("No files found", {
+          pattern,
+          searchRoot: target.searchRoot,
+          numFiles: 0,
+          durationMs: 0,
+          truncated: false,
+        });
+      }
       let readCapability: WorkspaceBoundReadCapability | undefined;
       let enumerationCapability: WorkspaceBoundReadCapability | undefined;
       const bindReadCapabilities = async (): Promise<void> => {
@@ -1065,7 +1156,7 @@ export function createGlobTool(
           });
           const selected = await pinnedSnapshotPathEligibility({
             relativePaths: candidates.map(candidate => relative(target.searchRoot, candidate.path)),
-            globs: [target.pattern, ...(includeIgnored ? [] : DEFAULT_GLOB_EXCLUDE_GLOBS.map(pattern => `!${pattern}`))],
+            globs: [globPattern, ...(includeIgnored ? [] : DEFAULT_GLOB_EXCLUDE_GLOBS.map(pattern => `!${pattern}`))],
             signal,
           });
           if ("error" in selected) return errorResult(selected.error);
@@ -1097,13 +1188,21 @@ export function createGlobTool(
         await afterRootIgnoreSnapshot?.();
         let rawMatches: readonly Buffer[];
         let truncated = false;
+        const searchPath =
+          relative(target.displayRoot, target.searchRoot) || ".";
         const rg = await runRipgrepFiles({
           command: ripgrepCommand,
-          pattern: target.pattern,
+          pattern: plan.nameGlob,
+          ...(plan.maxDepth !== undefined ? { maxDepth: plan.maxDepth } : {}),
           cwd: target.displayRoot,
-          searchPath: relative(target.displayRoot, target.searchRoot) || ".",
+          searchPath,
           toolArgs: rawArgs,
-          limit: effectiveLimit,
+          // A "/" pattern keeps only some of the files ripgrep lists, so it
+          // reads a larger candidate window than the page it returns.
+          limit:
+            plan.pathMatcher === undefined
+              ? effectiveLimit
+              : Math.max(effectiveLimit, pathPatternCandidateLimit),
           includeIgnored,
           rootIgnoreFiles,
           signal,
@@ -1141,6 +1240,24 @@ export function createGlobTool(
           rawMatches = rg.pathRecords;
           truncated = rg.killedAfterLimit || rg.pathRecords.length > limit;
         }
+        if (plan.pathMatcher !== undefined) {
+          let selected: Buffer[];
+          try {
+            selected = selectPathPatternMatches(
+              rawMatches,
+              searchPath,
+              plan.pathMatcher,
+            );
+          } catch (error) {
+            if (error instanceof GlobPatternError) {
+              return errorResult(`Glob error: ${error.message}`);
+            }
+            throw error;
+          }
+          // Stopping at the candidate window can leave matches unread.
+          truncated = rg.killedAfterLimit || selected.length > limit;
+          rawMatches = selected.slice(0, effectiveLimit);
+        }
 
         const normalized = await normalizeAndFilterMatches({
           matches: rawMatches,
@@ -1158,7 +1275,14 @@ export function createGlobTool(
         };
 
         if (kept.length === 0) {
-          return textResult("No files found", metadata);
+          // A "/" pattern that ran out of candidates may still have matches
+          // among the files it did not read; say so instead of a bare miss.
+          return textResult(
+            plan.pathMatcher !== undefined && metadata.truncated
+              ? `No files found\n${TRUNCATION_NOTE}`
+              : "No files found",
+            metadata,
+          );
         }
 
         const lines = [...kept];
@@ -1185,4 +1309,5 @@ export const __INTERNAL = {
   DEFAULT_GLOB_EXCLUDE_GLOBS,
   buildRipgrepFilesArgs,
   assertRipgrepFilesArgvWithinLimits,
+  compileGlobMatcher,
 };

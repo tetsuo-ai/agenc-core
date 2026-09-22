@@ -30,7 +30,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -830,4 +830,288 @@ await rename(displaced, nested);
       expect.arrayContaining(["x.txt", "a/y.txt", "a/b/z.txt"]),
     );
   });
+});
+
+const TRUNCATION_NOTE =
+  "(Results are truncated. Consider using a more specific path or pattern.)";
+
+/**
+ * The workspace shape from the Linux release-candidate report: slash patterns
+ * such as `tree/**\/*.txt`, `repo/*.py` and `dir with spaces/*.txt` returned
+ * "No files found" while the files existed.
+ */
+const SLASH_FIXTURE: readonly string[] = [
+  "top.txt",
+  "tree/top.txt",
+  "tree/d0/s0/f0.txt",
+  "tree/d0/s0/f1.txt",
+  "tree/d0/s1/f0.txt",
+  "tree/d1/s0/f0.txt",
+  "tree/d1/s1/f1.txt",
+  "other/tree/x.txt",
+  "repo/config.py",
+  "repo/pkg/mod.py",
+  "dir with spaces/a.txt",
+  "dir with spaces/nested/b.txt",
+  "café-ñandú/résumé.md",
+  ".github/workflows/ci.yml",
+];
+
+async function writeFiles(
+  root: string,
+  files: readonly string[],
+): Promise<void> {
+  for (const file of files) {
+    await mkdir(dirname(join(root, file)), { recursive: true });
+    await writeFile(join(root, file), `${file}\n`, "utf8");
+  }
+}
+
+function listedPaths(content: string): string[] {
+  return content
+    .split("\n")
+    .filter(
+      (line) =>
+        line.length > 0 && line !== TRUNCATION_NOTE && line !== "No files found",
+    )
+    .sort();
+}
+
+describe("Glob slash patterns", () => {
+  let root = "";
+  let previousAgencHome: string | undefined;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-glob-slash-"));
+    previousAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = join(root, ".agenc-test-home");
+    await writeFiles(root, SLASH_FIXTURE);
+  });
+
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    root = "";
+    if (previousAgencHome === undefined) {
+      delete process.env.AGENC_HOME;
+    } else {
+      process.env.AGENC_HOME = previousAgencHome;
+    }
+  });
+
+  async function glob(
+    args: Record<string, unknown>,
+    config: { readonly maxResults?: number; readonly maxPathPatternCandidates?: number } = {},
+  ) {
+    const result = await createGlobTool({ allowedPaths: [root], ...config }).execute({
+      path: root,
+      ...args,
+    });
+    expect(result.isError).toBeUndefined();
+    return result;
+  }
+
+  async function listed(pattern: string): Promise<string[]> {
+    return listedPaths((await glob({ pattern })).content);
+  }
+
+  test("match full paths relative to the search root", async () => {
+    const underTree = [
+      "tree/d0/s0/f0.txt",
+      "tree/d0/s0/f1.txt",
+      "tree/d0/s1/f0.txt",
+      "tree/d1/s0/f0.txt",
+      "tree/d1/s1/f1.txt",
+    ];
+    expect(await listed("tree/**/*.txt")).toEqual(
+      [...underTree, "tree/top.txt"].sort(),
+    );
+    expect(await listed("tree/*/*/*.txt")).toEqual(underTree);
+    expect(await listed("tree/d0/*/*.txt")).toEqual(underTree.slice(0, 3));
+    expect(await listed("**/tree/*.txt")).toEqual([
+      "other/tree/x.txt",
+      "tree/top.txt",
+    ]);
+    expect(await listed("tree/**")).toEqual(
+      [...underTree, "tree/top.txt"].sort(),
+    );
+  });
+
+  test("keep `*` inside one directory while slash-free patterns match at any depth", async () => {
+    expect(await listed("repo/*.py")).toEqual(["repo/config.py"]);
+    expect(await listed("repo/**/*.py")).toEqual([
+      "repo/config.py",
+      "repo/pkg/mod.py",
+    ]);
+    expect(await listed("*.py")).toEqual(["repo/config.py", "repo/pkg/mod.py"]);
+  });
+
+  test("match directory names with spaces, unicode and leading dots", async () => {
+    expect(await listed("dir with spaces/*.txt")).toEqual([
+      "dir with spaces/a.txt",
+    ]);
+    expect(await listed("dir with spaces/**/*.txt")).toEqual([
+      "dir with spaces/a.txt",
+      "dir with spaces/nested/b.txt",
+    ]);
+    expect(await listed("dir with spaces/**")).toEqual([
+      "dir with spaces/a.txt",
+      "dir with spaces/nested/b.txt",
+    ]);
+    expect(await listed("**/dir*/**")).toEqual([
+      "dir with spaces/a.txt",
+      "dir with spaces/nested/b.txt",
+    ]);
+    expect(await listed("café-ñandú/*.md")).toEqual(["café-ñandú/résumé.md"]);
+    expect(await listed(".github/workflows/*.yml")).toEqual([
+      ".github/workflows/ci.yml",
+    ]);
+  });
+
+  test("resolve against an explicit path and an absolute pattern's base directory", async () => {
+    const tree = join(root, "tree");
+    expect(
+      listedPaths((await glob({ pattern: "d0/*/*.txt", path: tree })).content),
+    ).toEqual(["tree/d0/s0/f0.txt", "tree/d0/s0/f1.txt", "tree/d0/s1/f0.txt"]);
+    expect((await glob({ pattern: "tree/*.txt", path: tree })).content).toBe(
+      "No files found",
+    );
+    expect(
+      listedPaths(
+        (await glob({ pattern: join(root, "tree", "*", "s1", "*.txt") }))
+          .content,
+      ),
+    ).toEqual(["tree/d0/s1/f0.txt", "tree/d1/s1/f1.txt"]);
+  });
+
+  test("support brace alternatives across directories and a leading ./", async () => {
+    expect(await listed("{repo,tree}/*.{py,txt}")).toEqual([
+      "repo/config.py",
+      "tree/top.txt",
+    ]);
+    expect(await listed("./repo/*.py")).toEqual(["repo/config.py"]);
+    // `./` anchors the pattern at the search root instead of any depth.
+    expect(await listed("./*.txt")).toEqual(["top.txt"]);
+  });
+
+  test("keep ignore rules, default excludes and includeIgnored", async () => {
+    await writeFile(join(root, ".ignore"), "repo/secret.py\n", "utf8");
+    await writeFile(join(root, "repo", "secret.py"), "secret\n", "utf8");
+    await mkdir(join(root, "node_modules", "pkg"), { recursive: true });
+    await writeFile(join(root, "node_modules", "pkg", "index.js"), "x\n", "utf8");
+
+    expect(await listed("repo/*.py")).toEqual(["repo/config.py"]);
+    expect((await glob({ pattern: "node_modules/*/*.js" })).content).toBe(
+      "No files found",
+    );
+    expect(
+      listedPaths(
+        (await glob({ pattern: "node_modules/*/*.js", includeIgnored: true }))
+          .content,
+      ),
+    ).toEqual(["node_modules/pkg/index.js"]);
+    expect(
+      listedPaths(
+        (await glob({ pattern: "repo/*.py", includeIgnored: true })).content,
+      ),
+    ).toEqual(["repo/config.py", "repo/secret.py"]);
+  });
+
+  test("keep newest-first order and the result cap", async () => {
+    const logs = join(root, "logs");
+    await mkdir(logs);
+    const now = Date.now() / 1000;
+    for (const [name, age] of [
+      ["old.log", 300],
+      ["mid.log", 150],
+      ["new.log", 0],
+    ] as const) {
+      await writeFile(join(logs, name), `${name}\n`, "utf8");
+      await utimes(join(logs, name), now - age, now - age);
+    }
+    // The newest .log overall is outside `logs/`, so it must be filtered out
+    // without disturbing the order of the real matches.
+    await writeFile(join(root, "stray.log"), "stray\n", "utf8");
+    await utimes(join(root, "stray.log"), now + 60, now + 60);
+
+    const all = await glob({ pattern: "logs/*.log" });
+    expect(all.content.split("\n")).toEqual([
+      "logs/new.log",
+      "logs/mid.log",
+      "logs/old.log",
+    ]);
+    expect(all.metadata).toMatchObject({ numFiles: 3, truncated: false });
+
+    const capped = await glob({ pattern: "logs/*.log" }, { maxResults: 2 });
+    expect(capped.content.split("\n")).toEqual([
+      "logs/new.log",
+      "logs/mid.log",
+      TRUNCATION_NOTE,
+    ]);
+    expect(capped.metadata).toMatchObject({ numFiles: 2, truncated: true });
+  });
+
+  test("report an exhausted candidate budget instead of a silent miss", async () => {
+    const now = Date.now() / 1000;
+    await mkdir(join(root, "keep"));
+    await writeFile(join(root, "keep", "old.txt"), "old\n", "utf8");
+    await utimes(join(root, "keep", "old.txt"), now - 3600, now - 3600);
+    for (let index = 0; index < 6; index += 1) {
+      const file = join(root, `noise${index}`, "n.txt");
+      await mkdir(dirname(file));
+      await writeFile(file, "n\n", "utf8");
+      await utimes(file, now - index, now - index);
+    }
+
+    const budgeted = await glob(
+      { pattern: "keep/*.txt" },
+      { maxResults: 1, maxPathPatternCandidates: 3 },
+    );
+    expect(budgeted.content).toBe(`No files found\n${TRUNCATION_NOTE}`);
+    expect(budgeted.metadata).toMatchObject({ numFiles: 0, truncated: true });
+
+    const complete = await glob({ pattern: "keep/*.txt" }, { maxResults: 1 });
+    expect(complete.content).toBe("keep/old.txt");
+    expect(complete.metadata).toMatchObject({ numFiles: 1, truncated: false });
+  });
+
+  test("stay correct on the 5,000-file tree from the report", async () => {
+    await rm(join(root, "tree"), { recursive: true, force: true });
+    for (let d = 0; d < 50; d += 1) {
+      for (let s = 0; s < 10; s += 1) {
+        const directory = join(root, "tree", `d${d}`, `s${s}`);
+        await mkdir(directory, { recursive: true });
+        await Promise.all(
+          Array.from({ length: 10 }, (_, f) =>
+            writeFile(join(directory, `f${f}.txt`), "x\n", "utf8"),
+          ),
+        );
+      }
+    }
+
+    // Every .txt file is a candidate; a page of 20 matches is returned.
+    const recursive = await glob(
+      { pattern: "tree/**/*.txt" },
+      { maxResults: 20 },
+    );
+    expect(recursive.metadata).toMatchObject({ numFiles: 20, truncated: true });
+    for (const line of listedPaths(recursive.content)) {
+      expect(line).toMatch(/^tree\/d\d+\/s\d\/f\d\.txt$/u);
+    }
+
+    // 500 files named f0.txt are candidates; 50 match and none is left unread.
+    const oneSubdirectory = await glob({ pattern: "tree/*/s0/f0.txt" });
+    expect(oneSubdirectory.metadata).toMatchObject({
+      numFiles: 50,
+      truncated: false,
+    });
+    expect(listedPaths(oneSubdirectory.content)).toEqual(
+      Array.from({ length: 50 }, (_, d) => `tree/d${d}/s0/f0.txt`).sort(),
+    );
+
+    expect(await listed("tree/d4*/s9/f9.txt")).toEqual(
+      ["d4", ...Array.from({ length: 10 }, (_, index) => `d4${index}`)]
+        .map((directory) => `tree/${directory}/s9/f9.txt`)
+        .sort(),
+    );
+  }, 120_000);
 });

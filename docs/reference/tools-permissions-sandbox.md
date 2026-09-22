@@ -111,6 +111,14 @@ rejected on Windows. `head_limit: 0` removes user pagination only, not the hard
 record, decoded-output, 32 MiB rendered-output, 100,000 rendered-line/result,
 context, diagnostic, or 120-second process ceilings.
 
+`Glob` patterns are relative to `path` (or the workspace root) and mean what
+ripgrep's `--glob` means there. A pattern without `/` matches file names at any
+depth. A pattern with `/` must match the whole relative path: `*` and `?` stay
+inside one directory and a `**` segment spans directories. ripgrep lists the
+files whose names fit the pattern's last segment, newest first, so ignore rules
+stay in force, and Glob checks each full path. It reads at most 20,000 such
+candidates; past that the result says it is truncated.
+
 Search children do **not** inherit the session's workspace-write or network
 profile. `Grep`, `Glob`, and `Orient` (`Orient` via `runRipgrepFiles`) call
 `applyReadOnlyRuntimeSandboxToSpawn` (`tools/system/apply-runtime-sandbox.ts`).
