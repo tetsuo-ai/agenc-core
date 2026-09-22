@@ -230,6 +230,9 @@ export function createBrowserTool(
    * here settles it as no effect, like a missing url (#2190).
    */
   function navigableUrlError(url: string): string | undefined {
+    // The manager opens about:blank without navigating (#createTab), so a new
+    // or first tab at about:blank keeps working exactly as before.
+    if (url === "about:blank") return undefined;
     try {
       validateNavigableUrl(url);
       return undefined;

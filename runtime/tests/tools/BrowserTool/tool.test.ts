@@ -139,6 +139,15 @@ describe("Browser tool validation (no browser launched)", () => {
     }
   });
 
+  test("still lets about:blank through to the manager", async () => {
+    // #createTab opens about:blank without navigating; the early check must not
+    // refuse what the manager has always accepted.
+    for (const action of ["new_tab", "navigate"] as const) {
+      const result = await createBrowserTool().execute({ action, url: "about:blank" });
+      expect(String(result.content)).not.toContain("unsupported scheme");
+    }
+  });
+
   test("rejects click without a ref", async () => {
     const result = await createBrowserTool().execute({ action: "click" });
     expect(result.isError).toBe(true);
