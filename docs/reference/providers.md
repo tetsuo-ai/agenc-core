@@ -810,6 +810,17 @@ single "Fast" dial. What it does depends on the provider:
 `flex` is OpenAI's lower-priority tier and is only sent to providers that
 document `service_tier`.
 
+OpenAI cost follows the tier the response reports it served (`priority` or
+`fast` is Fast, `default` a downgraded Fast request), the long-context rates
+when one request's input passes 272K tokens, and cache writes (1.25x input on
+GPT-5.6 and later). Under a hard USD cap a Fast request is reserved at Fast
+rates, a reservation that could pass 272K input is priced at the long-context
+rates, and a call without Fast sends `service_tier: "default"` so a
+project-level Fast default cannot apply. A Fast request on a model or context
+length with no published Fast price (Pro and nano models, GPT-5.5 and 5.4
+above 272K) is refused under a hard USD cap with
+`unpriced_service_tier_under_hard_cap`.
+
 ## Zero data retention
 
 Only one built-in provider takes a request-level zero-data-retention control:
