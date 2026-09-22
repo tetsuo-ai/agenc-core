@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { LLMProviderError } from "../../src/llm/errors.js";
 import type {
+  LLMContentPart,
   LLMMessage,
   LLMProvider,
   LLMResponse,
@@ -274,5 +275,102 @@ describe("bytes that are not an image are never sent as an image", () => {
       "[Image not shown: the PNG image fake.png (image/png, 16 bytes) returned by FileRead is not a valid PNG image (the data ends before its header (IHDR) chunk is complete), so it was left out.]",
     );
     expect(turnFailures(events)).toEqual([]);
+  });
+});
+
+describe("one refused image does not brick the session", () => {
+  async function historyWithValidImage(): Promise<{
+    readonly history: LLMMessage[];
+    readonly url: string;
+  }> {
+    const url = `data:image/png;base64,${(await makePng(8, 8)).toString("base64")}`;
+    const parts: LLMContentPart[] = [
+      { type: "text", text: "Read image chart.png (70B, image/png)" },
+      { type: "image_url", image_url: { url } },
+    ];
+    return {
+      url,
+      history: [
+        { role: "user", content: "look at chart.png" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "call_chart", name: "FileRead", arguments: '{"file_path":"chart.png"}' }],
+        },
+        { role: "tool", toolCallId: "call_chart", toolName: "FileRead", content: parts },
+      ],
+    };
+  }
+
+  test("the provider refusal is recovered in the same turn and later turns stay clean", async () => {
+    // A structurally valid image the provider still refuses: the recovery,
+    // not the structural check, has to handle it.
+    const { history, url } = await historyWithValidImage();
+    const { provider, requests } = scriptedProvider(
+      "deepseek",
+      [reply("first answer"), reply("second answer")],
+      (messages) => imageUrls(messages).length > 0,
+    );
+    const { session, events, state } = sessionFor(provider, "deepseek-flash", history);
+
+    await drain(runTurn(session, ctxFor("deepseek-flash"), "describe the chart"));
+
+    expect(turnFailures(events)).toEqual([]);
+    expect(requests).toHaveLength(2);
+    expect(imageUrls(requests[0]!)).toEqual([url]);
+    expect(imageUrls(requests[1]!)).toEqual([]);
+    expect(toolText(requests[1]!, "call_chart")).toContain(
+      "[Image not shown: deepseek refused the PNG image chart.png",
+    );
+    expect(
+      events.some((event) =>
+        event.msg.type === "warning" &&
+        (event.msg.payload as { cause?: string }).cause === "provider_rejected_image"),
+    ).toBe(true);
+
+    // The follow-up that failed in two seconds in conv-mucyox5d.
+    await drain(runTurn(session, ctxFor("deepseek-flash"), "Continue with items 4 to 7."));
+
+    expect(turnFailures(events)).toEqual([]);
+    expect(requests).toHaveLength(3);
+    expect(imageUrls(requests[2]!)).toEqual([]);
+    // History still holds the image: nothing durable was rewritten.
+    expect(imageUrls(state.history)).toContain(url);
+  });
+
+  test("a restarted session with the refused image in its history recovers again", async () => {
+    const { history } = await historyWithValidImage();
+    const { provider, requests } = scriptedProvider(
+      "deepseek",
+      [reply("recovered")],
+      (messages) => imageUrls(messages).length > 0,
+    );
+    const { session, events } = sessionFor(provider, "deepseek-flash", history);
+
+    await drain(runTurn(session, ctxFor("deepseek-flash"), "continue"));
+
+    expect(turnFailures(events)).toEqual([]);
+    expect(requests).toHaveLength(2);
+    expect(imageUrls(requests[1]!)).toEqual([]);
+  });
+
+  test("a refusal that is not about an image still fails the turn", async () => {
+    const { history } = await historyWithValidImage();
+    const requests: LLMMessage[][] = [];
+    const provider = {
+      name: "deepseek",
+      chat: async () => reply("summary"),
+      chatStream: async (messages: LLMMessage[]) => {
+        requests.push(messages);
+        throw new LLMProviderError("deepseek", "Invalid parameter: tools[0].function.name", 400);
+      },
+      healthCheck: async () => true,
+    } as unknown as LLMProvider;
+    const { session, events } = sessionFor(provider, "deepseek-flash", history);
+
+    await drain(runTurn(session, ctxFor("deepseek-flash"), "continue"));
+
+    expect(requests).toHaveLength(1);
+    expect(turnFailures(events)).toHaveLength(1);
   });
 });

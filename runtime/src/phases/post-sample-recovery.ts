@@ -58,7 +58,7 @@ import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
-import type { TurnState } from "../session/turn-state.js";
+import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 import { StreamModelError } from "./stream-model.js";
 import {
   isFallbackTriggeredError,
@@ -79,6 +79,7 @@ import type { StreamingToolExecutor } from "./_deps/tool-runtime.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
 import { recoverRejectedTextToolCall } from "../recovery/rejected-text-tool-call.js";
+import { rejectImagesForRetry } from "../recovery/image-rejection.js";
 
 /** One compaction ladder tier that declined during a 413 collapse, with history unchanged. */
 export interface ContextCollapseTierFailure {
@@ -591,6 +592,27 @@ export async function postSampleRecovery(
       },
 
       async onMedia(c) {
+        // The request is refused for an image it carries. Replaying the same
+        // history fails the same way on this and every later turn, so leave
+        // the images out (the query projection puts a note in their place)
+        // and sample again.
+        const withheld = rejectImagesForRetry(
+          c.session,
+          c.state,
+          c.streamError ?? mediaErrorText(c.lastMessage),
+        );
+        if (withheld !== undefined) {
+          emitWarning(
+            c.session.eventLog,
+            c.session.nextInternalSubId(),
+            "provider_rejected_image",
+            `${c.session.services.provider.name} refused an image in the request ` +
+              `(${withheld.reason}); retrying with ${withheld.rejected} ` +
+              `${withheld.scope === "newest" ? "new " : ""}image(s) replaced by a text note`,
+          );
+          c.state.transition = { reason: "image_rejection_retry" };
+          return { kind: "applied", reason: "image_rejection" };
+        }
         emitError(c.session, c.session.nextInternalSubId(), {
           cause: "image_error",
           message: "media-size recovery exhausted",
@@ -807,6 +829,13 @@ export async function applyPendingBudgetContinuation(
   state.stopHookActive = undefined;
   state.pendingBudgetDecision = undefined;
   return state;
+}
+
+/** The error text a withheld media-size message carries, for the note. */
+function mediaErrorText(message: AssistantMessage | undefined): string {
+  const details = (message as (AssistantMessage & { errorDetails?: string }) | undefined)
+    ?.errorDetails;
+  return details ?? message?.text ?? "media error";
 }
 
 // Re-export so run-turn can detect the wire-layer error class without

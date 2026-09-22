@@ -49,6 +49,7 @@ import {
  *   token_budget_continuation
  *   continuation_nudge
  *   model_fallback (model-fallback site)
+ *   image_rejection_retry (a provider refused an image; it is left out)
  *
  * T8 disambiguation:
  *   - `model_fallback` is reserved for `onFallbackError` (FallbackTriggeredError
@@ -71,7 +72,8 @@ export type ContinueReason =
   | "text_tool_call_correction"
   | "continuation_nudge"
   | "completion_gate"
-  | "goal_gate";
+  | "goal_gate"
+  | "image_rejection_retry";
 
 export interface Continue {
   readonly reason: ContinueReason;
@@ -742,6 +744,7 @@ const CONTINUE_REASONS: ReadonlySet<string> = new Set<ContinueReason>([
   "continuation_nudge",
   "completion_gate",
   "goal_gate",
+  "image_rejection_retry",
 ]);
 
 /**

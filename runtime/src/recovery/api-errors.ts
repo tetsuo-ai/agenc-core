@@ -150,6 +150,68 @@ export function isMediaTooLargeMessage(msg: AssistantMessage): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Refused image (shares the I-10 media trigger)
+// ─────────────────────────────────────────────────────────────────────
+
+const IMAGE_REJECTION_SUBJECT = /\bimages?\b|\bimage_url\b/iu;
+const IMAGE_REJECTION_VERDICT =
+  /\b(?:unsupported|not supported|does not support|doesn't support|invalid|not (?:a )?valid|does not appear|could not|couldn't|cannot|can't|unable to|failed to|not allowed|only allowed|supported only|only supported|must be|exceeds?|exceeded|too (?:large|big|many)|at most|dimensions?|corrupt(?:ed)?|malformed|decod(?:e|ed|ing)|pars(?:e|ing))\b/iu;
+
+/** Refusal statuses a provider uses for a request it will never accept. */
+const IMAGE_REJECTION_STATUSES = new Set([400, 415, 422]);
+
+/**
+ * The provider, or the wire contract in front of it, refused the request
+ * because of an image it carries: an image it cannot decode, one over its
+ * size limits, or any image at all for a model without vision. Sending the
+ * same history again fails the same way, so the turn must change the
+ * request instead of retrying it.
+ *
+ * Context overflow, authentication, rate limits, server errors and partial
+ * responses are never image refusals, whatever their text says.
+ */
+export function isProviderImageRejection(err: unknown): boolean {
+  return isProviderImageRejectionInner(err, new Set<object>(), 0);
+}
+
+function isProviderImageRejectionInner(
+  err: unknown,
+  seen: Set<object>,
+  depth: number,
+): boolean {
+  if (depth > 4 || !(err instanceof Error)) return false;
+  if (seen.has(err)) return false;
+  seen.add(err);
+  if (
+    isPartialProviderResponseError(err) ||
+    err instanceof LLMContextWindowExceededError ||
+    isExplicitNonTransientProviderError(err) ||
+    isTransientProviderError(err)
+  ) {
+    return false;
+  }
+  const status =
+    err instanceof LLMProviderError
+      ? err.statusCode
+      : (err as { readonly status?: unknown }).status;
+  const refusal =
+    status === undefined ||
+    (typeof status === "number" && IMAGE_REJECTION_STATUSES.has(status));
+  if (
+    refusal &&
+    IMAGE_REJECTION_SUBJECT.test(err.message) &&
+    IMAGE_REJECTION_VERDICT.test(err.message)
+  ) {
+    return true;
+  }
+  return isProviderImageRejectionInner(
+    (err as { readonly cause?: unknown }).cause,
+    seen,
+    depth + 1,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Max-output-tokens error (I-10 third-priority trigger)
 // ─────────────────────────────────────────────────────────────────────
 

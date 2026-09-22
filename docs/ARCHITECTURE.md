@@ -416,16 +416,24 @@ recovery condition, triggers are evaluated in a **fixed priority order**
 | Order | Trigger name                | Intent                                               |
 | ----- | --------------------------- | ---------------------------------------------------- |
 | 1     | `isWithheld413`             | Prompt-too-long → collapse / reactive recovery       |
-| 2     | `isWithheldMedia`           | Media-too-large → reactive recovery (skips collapse) |
+| 2     | `isWithheldMedia`           | Media-too-large or a provider-refused image → leave the images out and re-sample |
 | 3     | `isWithheldMaxOutputTokens` | Max-output-tokens → escalate or continuation         |
 | 4     | `stopHookBlocking`          | Stop-hook inject + re-enter                          |
 | 5     | `streamingFallbackOccured`  | Streaming fallback tombstone + recreate executor     |
 | 6     | `FallbackTriggeredError`    | Model fallback swap                                  |
 
-Related modules: `api-errors.ts` (match predicates), `model-fallback.ts`,
-`max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
+Related modules: `api-errors.ts` (match predicates), `image-rejection.ts`,
+`model-fallback.ts`, `max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
 `withhold-cascading.ts`. Do not reorder the trigger array without updating
 the I-10 tests that pin `I10_TRIGGER_ORDER`.
+
+A refused image is recorded for the session and replaced in every later
+request by a short note (`session/query-image-safety.ts`), so a replayed tool
+result cannot fail each turn that follows. The same projection leaves out
+every image for a model the registry documents as text-only
+(`resolveImageInputSupport` in `llm/capabilities.ts`) and any tool-result
+image whose bytes are not a complete PNG, JPEG, GIF or WebP image
+(`utils/image-validation.ts`). Durable history keeps the original content.
 
 ## LLM / providers
 
