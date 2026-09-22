@@ -58,7 +58,7 @@ import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
-import type { AssistantMessage, TurnState } from "../session/turn-state.js";
+import type { TurnState } from "../session/turn-state.js";
 import { StreamModelError } from "./stream-model.js";
 import {
   isFallbackTriggeredError,
@@ -79,7 +79,10 @@ import type { StreamingToolExecutor } from "./_deps/tool-runtime.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
 import { recoverRejectedTextToolCall } from "../recovery/rejected-text-tool-call.js";
-import { rejectImagesForRetry } from "../recovery/image-rejection.js";
+import {
+  isRecoverableImageRejection,
+  rejectImagesForRetry,
+} from "../recovery/image-rejection.js";
 import {
   imageRoute,
   requestImageRoute,
@@ -596,17 +599,21 @@ export async function postSampleRecovery(
       },
 
       async onMedia(c) {
-        // The request is refused for an image it carries. Replaying the same
-        // history fails the same way on this and every later turn, so leave
-        // the images out (the query projection puts a note in their place)
-        // and sample again.
-        const withheld = rejectImagesForRetry(
-          c.session,
-          c.state,
-          c.streamError ?? mediaErrorText(c.lastMessage),
-          requestImageRoute(c.state) ??
-            imageRoute(c.session.services.provider.name, ctx.modelInfo.slug),
-        );
+        // A provider refused the request for an image it carries, before any
+        // tool call streamed. Replaying the same history fails the same way on
+        // this and every later turn, so leave the images out (the query
+        // projection puts a note in their place) and sample again. A withheld
+        // media-size message (a PDF page limit, for one) is not that: it keeps
+        // its original handling below.
+        const withheld = isRecoverableImageRejection(c.state, c.streamError)
+          ? rejectImagesForRetry(
+              c.session,
+              c.state,
+              c.streamError,
+              requestImageRoute(c.state) ??
+                imageRoute(c.session.services.provider.name, ctx.modelInfo.slug),
+            )
+          : undefined;
         if (withheld !== undefined) {
           emitWarning(
             c.session.eventLog,
@@ -835,13 +842,6 @@ export async function applyPendingBudgetContinuation(
   state.stopHookActive = undefined;
   state.pendingBudgetDecision = undefined;
   return state;
-}
-
-/** The error text a withheld media-size message carries, for the note. */
-function mediaErrorText(message: AssistantMessage | undefined): string {
-  const details = (message as (AssistantMessage & { errorDetails?: string }) | undefined)
-    ?.errorDetails;
-  return details ?? message?.text ?? "media error";
 }
 
 // Re-export so run-turn can detect the wire-layer error class without

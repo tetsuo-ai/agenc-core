@@ -20,7 +20,8 @@ import {
 import { rejectedImagesFor } from "../../src/session/query-image-safety.js";
 import type { Session } from "../../src/session/session.js";
 import { buildInitialTurnState, type ToolUseBlock } from "../../src/session/turn-state.js";
-import { mkCtx } from "../fixtures.js";
+import { postSampleRecovery } from "../../src/phases/post-sample-recovery.js";
+import { mkCtx, mkSession } from "../fixtures.js";
 
 // The refusal DeepSeek returned for FileRead's fake.png (conv-mucyox5d).
 const deepseekRefusal = () =>
@@ -130,5 +131,55 @@ describe("rejectImagesForRetry", () => {
     expect(rejectedImagesFor(session, FLASH_ROUTE)?.size).toBe(2);
 
     expect(rejectImagesForRetry(session, state, deepseekRefusal(), FLASH_ROUTE)).toBeUndefined();
+  });
+});
+
+describe("the media trigger retries only a classified image refusal", () => {
+  // Review finding: the trigger also matches a withheld media-size message
+  // such as a PDF page limit, and the retry then dropped unrelated images,
+  // even after a tool call had streamed.
+  const route = "stub-provider/test-model";
+
+  function withheldMedia(text: string, streamError?: unknown, streamed: ToolUseBlock[] = []) {
+    const ctx = mkCtx();
+    const { session, events } = mkSession();
+    const state = stateFor(requestWithImages(), streamed);
+    state.assistantMessages = [
+      { uuid: "withheld-media", role: "assistant", text, toolCalls: [] },
+    ];
+    if (streamError !== undefined) {
+      (state as typeof state & { lastStreamError?: unknown }).lastStreamError = streamError;
+    }
+    return { ctx, session, events, state };
+  }
+
+  it("leaves images alone for a PDF page-limit message", async () => {
+    const { ctx, session, events, state } = withheldMedia(
+      "A maximum of 100 PDF pages may be provided.",
+    );
+
+    await postSampleRecovery(state, ctx, session);
+
+    expect(state.transition).toBeUndefined();
+    expect(rejectedImagesFor(session, route)).toBeUndefined();
+    expect(events.some((event) =>
+      event.msg.type === "error" &&
+      (event.msg.payload as { cause?: string }).cause === "image_error")).toBe(true);
+  });
+
+  it("samples again for an image refusal only before any tool call streamed", async () => {
+    const sizeMessage =
+      "messages.3.content.1.image.source.base64: image exceeds 5 MB maximum: 7340032 bytes > 5242880 bytes";
+    const before = withheldMedia(sizeMessage, deepseekRefusal());
+    await postSampleRecovery(before.state, before.ctx, before.session);
+    expect(before.state.transition).toEqual({ reason: "image_rejection_retry" });
+    expect(rejectedImagesFor(before.session, route)?.size).toBe(1);
+
+    const after = withheldMedia(sizeMessage, deepseekRefusal(), [
+      { type: "tool_use", id: "t-streamed", name: "Write", input: {} },
+    ]);
+    await postSampleRecovery(after.state, after.ctx, after.session);
+    expect(after.state.transition).toBeUndefined();
+    expect(rejectedImagesFor(after.session, route)).toBeUndefined();
   });
 });
