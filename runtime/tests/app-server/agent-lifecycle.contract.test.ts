@@ -6097,6 +6097,30 @@ describe("AgenC background agent lifecycle", () => {
     return { kind: "resolved" as const, durable: false as const, resolution: params.resolution };
   };
 
+  // Seeds a durable effect row left at an unknown outcome for a tool call,
+  // then starts the agent's daemon session: the fixture both /resolve-by
+  // -daemon-session-id tests below start from.
+  const seedUnknownEffectSession = async (
+    driver: StateSqliteDriver,
+    sessions: AgenCDaemonSessionManager,
+    params: { readonly cwd: string; readonly agentId: string; readonly callId: string; readonly toolName: string },
+  ) => {
+    const effects = new StateRunDurabilityRepository(driver);
+    effects.ensureInitialEpoch({ runId: params.agentId, openedAt: "2026-09-22T00:00:00.000Z", openedEventId: `${params.agentId}:opened` });
+    effects.beginEffect({
+      runId: params.agentId, epoch: 1, stepId: `tool:turn:${params.callId}`, sessionId: params.agentId,
+      callId: params.callId, toolName: params.toolName, recoveryCategory: "side-effecting",
+      intentDigest: "intent-digest", eventId: "intent", eventSequence: 1,
+      intentAt: "2026-09-22T00:00:01.000Z", effectFormatVersion: 2,
+    });
+    effects.markEffectUnknown({
+      runId: params.agentId, stepId: `tool:turn:${params.callId}`, eventId: "unknown", eventSequence: 2,
+      reason: "caller_abort_after_effect_boundary", observedAt: "2026-09-22T00:00:02.000Z",
+    });
+    await sessions.createSession({ cwd: params.cwd, agentId: params.agentId });
+    return effects;
+  };
+
   it("resolves a live Desktop session by its daemon session id against the agent's durable effects", async () => {
     // A Desktop sends the daemon session id (`session_...`); the durable
     // effect rows and the live runtime session are keyed by the agent's
@@ -6107,19 +6131,9 @@ describe("AgenC background agent lifecycle", () => {
     const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {
-      const effects = new StateRunDurabilityRepository(driver);
-      effects.ensureInitialEpoch({ runId: agentId, openedAt: "2026-09-22T00:00:00.000Z", openedEventId: `${agentId}:opened` });
-      effects.beginEffect({
-        runId: agentId, epoch: 1, stepId: "tool:turn:call_mcp_fail", sessionId: agentId,
-        callId: "call_mcp_fail", toolName: "mcp.lane.lane_fail", recoveryCategory: "side-effecting",
-        intentDigest: "intent-digest", eventId: "intent", eventSequence: 1,
-        intentAt: "2026-09-22T00:00:01.000Z", effectFormatVersion: 2,
+      const effects = await seedUnknownEffectSession(driver, sessions, {
+        cwd, agentId, callId: "call_mcp_fail", toolName: "mcp.lane.lane_fail",
       });
-      effects.markEffectUnknown({
-        runId: agentId, stepId: "tool:turn:call_mcp_fail", eventId: "unknown", eventSequence: 2,
-        reason: "caller_abort_after_effect_boundary", observedAt: "2026-09-22T00:00:02.000Z",
-      });
-      await sessions.createSession({ cwd, agentId });
       const seen: { agentId: string; sessionId: string }[] = [];
       const runner = {
         // Mirrors the production runner's ownership rule: the live session
@@ -6162,19 +6176,9 @@ describe("AgenC background agent lifecycle", () => {
     const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {
-      const effects = new StateRunDurabilityRepository(driver);
-      effects.ensureInitialEpoch({ runId: agentId, openedAt: "2026-09-22T00:00:00.000Z", openedEventId: `${agentId}:opened` });
-      effects.beginEffect({
-        runId: agentId, epoch: 1, stepId: "tool:turn:call_hang", sessionId: agentId,
-        callId: "call_hang", toolName: "mcp.lane.lane_hang", recoveryCategory: "side-effecting",
-        intentDigest: "intent-digest", eventId: "intent", eventSequence: 1,
-        intentAt: "2026-09-22T00:00:01.000Z", effectFormatVersion: 2,
+      const effects = await seedUnknownEffectSession(driver, sessions, {
+        cwd, agentId, callId: "call_hang", toolName: "mcp.lane.lane_hang",
       });
-      effects.markEffectUnknown({
-        runId: agentId, stepId: "tool:turn:call_hang", eventId: "unknown", eventSequence: 2,
-        reason: "caller_abort_after_effect_boundary", observedAt: "2026-09-22T00:00:02.000Z",
-      });
-      await sessions.createSession({ cwd, agentId });
       const runner = {
         resolveLiveEffectReview: vi.fn(async (_owner: string, params: ResolveDurableEffectReviewOptions) =>
           projectLiveReview(driver, params)),

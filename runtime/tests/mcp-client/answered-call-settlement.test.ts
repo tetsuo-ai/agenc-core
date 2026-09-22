@@ -20,42 +20,54 @@ import { createToolBridge } from "../../src/mcp-client/tools.js";
 // fate is unknown (transport loss, a local timeout or a stop with no answer)
 // may lock the session behind /resolve.
 
+// Builds the always-allow lease acquire() resolves with, keyed off the same
+// scope the harness hands to the mocked ExecutionAdmissionClient, so the
+// reservation and request never drift from the scope they claim to be in.
+function allowLease(
+  scope: { readonly runId: string; readonly workspaceId: string; readonly sessionId: string },
+  input: AdmissionAcquireInput,
+): AdmissionLease {
+  const step = { runId: scope.runId, stepId: input.stepId };
+  return {
+    decision: "allow",
+    reservation: {
+      reservationId: `reservation-${input.stepId}`,
+      step,
+      reservedCostUsd: input.maxCostUsd ?? 0,
+      reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+      reservedAt: "2026-09-22T00:00:00.000Z",
+    },
+    request: {
+      step,
+      kind: input.kind,
+      estimate: {
+        maxInputTokens: input.maxInputTokens,
+        maxOutputTokens: input.maxOutputTokens,
+        maxCostUsd: input.maxCostUsd,
+      },
+      workspaceId: scope.workspaceId,
+      sessionId: scope.sessionId,
+      parentScopeId: "turn-1",
+      autonomous: false,
+    },
+    signal: new AbortController().signal,
+  };
+}
+
 function sessionHarness() {
   const effectEvents: Event[] = [];
   const eventLog = new EventLog();
   eventLog.subscribe((event) => effectEvents.push(event));
+  const scope = {
+    runId: "run-mcp",
+    workspaceId: "workspace-1",
+    sessionId: "session-mcp",
+    autonomous: false,
+  };
   const admission = {
-    scope: {
-      runId: "run-mcp",
-      workspaceId: "workspace-1",
-      sessionId: "session-mcp",
-      autonomous: false,
-    },
+    scope,
     acquire: vi.fn(
-      async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
-        decision: "allow",
-        reservation: {
-          reservationId: `reservation-${input.stepId}`,
-          step: { runId: "run-mcp", stepId: input.stepId },
-          reservedCostUsd: input.maxCostUsd ?? 0,
-          reservedTokens: input.maxInputTokens + input.maxOutputTokens,
-          reservedAt: "2026-09-22T00:00:00.000Z",
-        },
-        request: {
-          step: { runId: "run-mcp", stepId: input.stepId },
-          kind: input.kind,
-          estimate: {
-            maxInputTokens: input.maxInputTokens,
-            maxOutputTokens: input.maxOutputTokens,
-            maxCostUsd: input.maxCostUsd,
-          },
-          workspaceId: "workspace-1",
-          sessionId: "session-mcp",
-          parentScopeId: "turn-1",
-          autonomous: false,
-        },
-        signal: new AbortController().signal,
-      }),
+      async (input: AdmissionAcquireInput): Promise<AdmissionLease> => allowLease(scope, input),
     ),
     markDispatched: vi.fn(),
     reconcile: vi.fn(() => ({ applied: true as const, outcome: "reconciled" as const })),
