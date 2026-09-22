@@ -83,12 +83,18 @@ describe("permission owner decisions", () => {
     await expect(state.manager.approveTool({ sessionId, requestId: state.requestId })).rejects.toThrow("not pending");
   });
 
-  it.each([false, true])("preserves denial feedback and fences only ordinary owners (workflow=%s)", async (workflow) => {
+  it.each([false, true])("preserves denial feedback for a child request without stopping its owner (workflow=%s)", async (workflow) => {
     const state = await fixture(workflow);
     const reason = "Do not commit.\nExplain the changes instead.";
     await state.manager.denyTool({ sessionId: state.owner.conversationId, requestId: state.requestId, reason });
     expect(await state.waiting).toMatchObject({ decision: { kind: "denied", reason }, source: "resolver", reason });
-    expect(state.owner.stoppedByUserSinceLastPrompt).toBe(!workflow);
+    // The fixture's request comes from a child session. Denying it stops the
+    // child (its turn ends as the person's stop) but no longer latches a stop
+    // on the owner: that latch held back the follow-up turn the child's report
+    // starts, so an asynchronous child could never resume its parent. A denial
+    // of the owner's own call still stops the owner
+    // (child-approval-attribution.test.ts).
+    expect(state.owner.stoppedByUserSinceLastPrompt).toBe(false);
     expect(state.owner.abortController.signal.aborted).toBe(false);
   });
 

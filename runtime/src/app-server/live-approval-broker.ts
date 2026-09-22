@@ -228,7 +228,16 @@ export class LiveApprovalBroker {
       decision.kind === "denied" && !isNonInteractiveSession(owner.session)
         ? { ...decision, decidedBy: "user" as const }
         : decision;
-    if (!owner.workflow && userDecision.kind === "denied" && userDecision.decidedBy === "user") {
+    // Only a denial of the owner's own call stops the owner. Denying a
+    // sub-agent's call stops that sub-agent (its turn ends as the person's
+    // stop); latching the owner too would hold back the follow-up turn the
+    // child's report starts once the owner's turn has ended.
+    if (
+      !owner.workflow &&
+      userDecision.kind === "denied" &&
+      userDecision.decidedBy === "user" &&
+      pending.ctx.invocation.session === owner.session
+    ) {
       owner.session.markStoppedByUser?.();
     }
     pending.settle(userDecision);

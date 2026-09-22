@@ -49,6 +49,8 @@ function sessionFixture(
         },
       },
     },
+    userStops: 0,
+    markStoppedByUser: () => { (session as unknown as { userStops: number }).userStops += 1; },
     emit: (event: Parameters<EventLog["emit"]>[0]) => {
       const canonical = { ...event, eventId: `${conversationId}:${++sequence}`, seq: sequence };
       eventLog.emit(canonical);
@@ -170,5 +172,32 @@ describe("forwarded child approval attribution", () => {
     expect(decision).toMatchObject({ kind: "denied", reason: expect.stringMatching(/could not be shown/) });
     expect(broker.list("conv-parent-3")).toEqual([]);
     expect(parent.abortController.signal.aborted).toBe(false);
+  });
+
+  it("a person denying a sub-agent's request stops that sub-agent, not its parent", async () => {
+    const broker = new LiveApprovalBroker();
+    const parent = sessionFixture("conv-parent-4");
+    const events: BackgroundAgentDaemonEvent[] = [];
+    cleanups.push(broker.register(parent, { isActive: () => true, onEvent: (event) => events.push(event) }));
+    const child = sessionFixture("child-4", { parent: "conv-parent-4", nickname: "Braindance", path: "/root/echo_probe" });
+    registerChildApprovalSession(child, parent);
+    const userStops = (session: Session) => (session as unknown as { userStops: number }).userStops;
+
+    const childDecision = ask(parent, child, "echo SUBAGENT_OK");
+    await Promise.resolve();
+    const childRequestId = String(events[0]!.payload!.requestId);
+    expect(broker.resolve("conv-parent-4", childRequestId, { kind: "denied" })).toBe(true);
+    // Still the person's decision for the child: its own turn ends as their stop.
+    expect((await childDecision).decision).toMatchObject({ kind: "denied", decidedBy: "user" });
+    // A stop latched on the parent would hold back the follow-up turn that the
+    // child's report starts after the parent's turn has ended.
+    expect(userStops(parent)).toBe(0);
+
+    const ownDecision = ask(parent, parent, "rm -rf build");
+    await Promise.resolve();
+    const own = broker.list("conv-parent-4")[0]!;
+    expect(broker.resolve("conv-parent-4", own.requestId, { kind: "denied" })).toBe(true);
+    expect((await ownDecision).decision).toMatchObject({ kind: "denied", decidedBy: "user" });
+    expect(userStops(parent)).toBe(1);
   });
 });
