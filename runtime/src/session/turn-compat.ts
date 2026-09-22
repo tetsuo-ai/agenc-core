@@ -1386,12 +1386,11 @@ function emitLegacyProgress(
 function stripInjectedArgs(
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  const clean: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (key.startsWith("__")) continue;
-    clean[key] = value;
-  }
-  return clean;
+  // Own data properties only: assigning model keys onto `{}` would run any
+  // setter on the prototype chain, `__proto__` included.
+  return Object.fromEntries(
+    Object.entries(args).filter(([key]) => !key.startsWith("__")),
+  );
 }
 
 function copyExecutionBoundary(
