@@ -3865,38 +3865,54 @@ describe("model-facing tools", () => {
     );
   });
 
-  it("validates Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
+  // Shared by the Opus 5.5 registry-validation tests below: a session wired
+  // to a StaticModelsManager for the given config, and a spawn_agent tool
+  // whose delegateMock resolves a live thread named after `agentSlug`.
+  function sessionWithStaticModels(
+    configOverrides: Partial<ReturnType<typeof defaultConfig>> = {},
+    fallbackProvider = "anthropic",
+  ) {
     const session = fakeSession();
     (session.services as unknown as { modelsManager: unknown }).modelsManager =
       new StaticModelsManager({
-        config: defaultConfig(),
-        fallbackProvider: "anthropic",
+        config: { ...defaultConfig(), ...configOverrides },
+        fallbackProvider,
         metadata: { fetchImpl: vi.fn<typeof fetch>() },
       });
+    return session;
+  }
+
+  function spawnAgentTool(session: Session, agentSlug: string) {
+    const nickname = agentSlug[0]!.toUpperCase() + agentSlug.slice(1);
     delegateMock.mockResolvedValue({
       kind: "async_launched",
       thread: {
         live: {
-          agentId: "thread-opus",
-          agentPath: "/root/opus",
-          nickname: "Opus",
+          agentId: `thread-${agentSlug}`,
+          agentPath: `/root/${agentSlug}`,
+          nickname,
           role: { name: "runner" },
           status: {
-            value: { status: "running", turnId: "turn-opus", startedAtMs: 1 },
+            value: { status: "running", turnId: `turn-${agentSlug}`, startedAtMs: 1 },
           },
         },
         join: vi.fn(async () => ({
-          threadId: "thread-opus",
+          threadId: `thread-${agentSlug}`,
           durationMs: 1,
           outcome: "completed",
           finalMessage: "done",
         })),
       },
     });
-    const spawn = createModelFacingTools({
+    return createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
     }).find((tool) => tool.name === "spawn_agent")!;
+  }
+
+  it("validates Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
+    const session = sessionWithStaticModels();
+    const spawn = spawnAgentTool(session, "opus");
 
     for (const effort of ["xhigh", "max"] as const) {
       const result = await spawn.execute({
@@ -3928,37 +3944,8 @@ describe("model-facing tools", () => {
 
   it("validates Bedrock Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
     const model = "global.anthropic.claude-opus-5-5";
-    const session = fakeSession();
-    (session.services as unknown as { modelsManager: unknown }).modelsManager =
-      new StaticModelsManager({
-        config: { ...defaultConfig(), model_provider: "amazon-bedrock", model },
-        fallbackProvider: "amazon-bedrock",
-        metadata: { fetchImpl: vi.fn<typeof fetch>() },
-      });
-    delegateMock.mockResolvedValue({
-      kind: "async_launched",
-      thread: {
-        live: {
-          agentId: "thread-bedrock",
-          agentPath: "/root/bedrock",
-          nickname: "Bedrock",
-          role: { name: "runner" },
-          status: {
-            value: { status: "running", turnId: "turn-bedrock", startedAtMs: 1 },
-          },
-        },
-        join: vi.fn(async () => ({
-          threadId: "thread-bedrock",
-          durationMs: 1,
-          outcome: "completed",
-          finalMessage: "done",
-        })),
-      },
-    });
-    const spawn = createModelFacingTools({
-      workspaceRoot: process.cwd(),
-      getSession: () => session,
-    }).find((tool) => tool.name === "spawn_agent")!;
+    const session = sessionWithStaticModels({ model_provider: "amazon-bedrock", model }, "amazon-bedrock");
+    const spawn = spawnAgentTool(session, "bedrock");
 
     for (const effort of ["xhigh", "max"] as const) {
       const result = await spawn.execute({
@@ -3989,39 +3976,10 @@ describe("model-facing tools", () => {
 
   describe("sub-agent effort by the shared Claude parser's identity", () => {
     const spawnWithConfiguredModel = async (model: string, effort: "max" | "xhigh") => {
-      const session = fakeSession();
-      (session.services as unknown as { modelsManager: unknown }).modelsManager =
-        new StaticModelsManager({
-          // The configured selection is listed, so spawn_agent accepts the id
-          // and validates its effort against the registry's ModelInfo.
-          config: { ...defaultConfig(), model_provider: "anthropic", model },
-          fallbackProvider: "anthropic",
-          metadata: { fetchImpl: vi.fn<typeof fetch>() },
-        });
-      delegateMock.mockResolvedValue({
-        kind: "async_launched",
-        thread: {
-          live: {
-            agentId: "thread-claude",
-            agentPath: "/root/claude",
-            nickname: "Claude",
-            role: { name: "runner" },
-            status: {
-              value: { status: "running", turnId: "turn-claude", startedAtMs: 1 },
-            },
-          },
-          join: vi.fn(async () => ({
-            threadId: "thread-claude",
-            durationMs: 1,
-            outcome: "completed",
-            finalMessage: "done",
-          })),
-        },
-      });
-      const spawn = createModelFacingTools({
-        workspaceRoot: process.cwd(),
-        getSession: () => session,
-      }).find((tool) => tool.name === "spawn_agent")!;
+      // The configured selection is listed, so spawn_agent accepts the id
+      // and validates its effort against the registry's ModelInfo.
+      const session = sessionWithStaticModels({ model_provider: "anthropic", model });
+      const spawn = spawnAgentTool(session, "claude");
       return await spawn.execute({
         message: "inspect",
         task_name: `claude_${effort}`,

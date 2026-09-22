@@ -37,23 +37,32 @@ function messagesStream(servedSpeed: "fast" | "standard"): Response {
   ]);
 }
 
+const SINGLE_SLOT_LIMITS = { global: 1, workspace: 1, session: 1, parent: 1, provider: 1 } as const;
+
+// Scratch kernel bound to a single-slot client, the fixture every synthetic
+// admission probe in this file starts from.
+function createSyntheticAdmissionClient(directory: string, ownerId: string, runId: string) {
+  const workspace = join(directory, "workspace");
+  mkdirSync(join(workspace, ".git"), { recursive: true });
+  const kernel = new ExecutionAdmissionKernel({
+    agencHome: join(directory, "home"),
+    ownerId,
+    ownerPid: process.pid,
+    limits: SINGLE_SLOT_LIMITS,
+  });
+  const client = kernel.bindClient({
+    cwd: workspace,
+    scope: { runId, sessionId: runId, autonomous: false, maxCostUsd: 10 },
+  });
+  return { kernel, client };
+}
+
 async function admittedCall(params: {
   readonly serviceTier?: "priority";
   readonly servedSpeed: "fast" | "standard";
 }): Promise<{ readonly reservedUsd: number; readonly chargedUsd: number }> {
   const directory = mkdtempSync(join(tmpdir(), "agenc-anthropic-fast-admission-"));
-  const workspace = join(directory, "workspace");
-  mkdirSync(join(workspace, ".git"), { recursive: true });
-  const kernel = new ExecutionAdmissionKernel({
-    agencHome: join(directory, "home"),
-    ownerId: "anthropic-fast-admission",
-    ownerPid: process.pid,
-    limits: { global: 1, workspace: 1, session: 1, parent: 1, provider: 1 },
-  });
-  const client = kernel.bindClient({
-    cwd: workspace,
-    scope: { runId: "fast-admission", sessionId: "fast-admission", autonomous: false, maxCostUsd: 10 },
-  });
+  const { kernel, client } = createSyntheticAdmissionClient(directory, "anthropic-fast-admission", "fast-admission");
   const acquire = vi.spyOn(client, "acquire");
   const reconcile = vi.spyOn(client, "reconcile");
   const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) =>
