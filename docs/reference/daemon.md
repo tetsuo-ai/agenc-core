@@ -334,6 +334,10 @@ with different content is rejected. A retry response reports
 crash tail without a durable terminal event. The terminals are `turn_complete`
 (code 0), `turn_aborted` (code 130), and `turn_failed` (code 1). A mid-turn `error` is
 session telemetry, not a closer; see [Mid-turn error events](#mid-turn-error-events).
+The daemon projects `turn_complete` and `turn_aborted` to `event.agent_status`
+with `status: "idle"` and the original event in `turnEvent`; `runStatus` is
+`completed` for `turn_complete` and `stopped` for `turn_aborted`. Clients read
+`turnEvent` first: an idle agent does not say whether its turn completed.
 Denying a permission request is the user's decision, not a failure: the turn
 ends as `turn_aborted` with reason `approval_denied`, the denied call's
 `tool_call_completed` carries `metadata.approvalDenied: true`, and the session

@@ -180,27 +180,27 @@ export function terminalStatusFromNotification(
   const notificationTurnId = typeof params?.turnId === "string" ? params.turnId : undefined;
   if (expectedTurnId !== undefined && notificationTurnId !== undefined && notificationTurnId !== expectedTurnId) return null;
   if (message.method === "event.agent_status" && params !== null) {
+    // The projected turn terminal is the authority: an idle agent says
+    // nothing about whether its turn completed or was stopped.
+    const embedded = embeddedTurnTerminal(params, notificationTurnId, expectedTurnId);
+    if (embedded !== undefined) return embedded;
     const runStatus =
       typeof params.runStatus === "string" ? params.runStatus : undefined;
     const status =
       typeof params.status === "string" ? params.status : undefined;
     const statusMessage =
       typeof params.message === "string" ? params.message : undefined;
-    if (runStatus === "completed" || status === "idle") {
+    const code =
+      runStatus === "stopped" ? 130
+        : runStatus === "errored" ? 1
+          : runStatus === "completed" ? 0
+            : status === "stopped" ? 130
+              : status === "error" ? 1
+                : status === "idle" ? 0
+                  : undefined;
+    if (code !== undefined) {
       return {
-        code: 0,
-        ...(statusMessage !== undefined ? { message: statusMessage } : {}),
-      };
-    }
-    if (runStatus === "stopped" || status === "stopped") {
-      return {
-        code: 130,
-        ...(statusMessage !== undefined ? { message: statusMessage } : {}),
-      };
-    }
-    if (runStatus === "errored" || status === "error") {
-      return {
-        code: 1,
+        code,
         ...(statusMessage !== undefined ? { message: statusMessage } : {}),
       };
     }
@@ -215,6 +215,33 @@ export function terminalStatusFromNotification(
     expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
   return terminal === undefined ? null : {
+    code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
+  };
+}
+
+function embeddedTurnTerminal(
+  params: JsonObject,
+  notificationTurnId: string | undefined,
+  expectedTurnId: string | undefined,
+): AgencTerminalStatus | undefined {
+  const turnEvent = params.turnEvent;
+  if (
+    turnEvent === null ||
+    typeof turnEvent !== "object" ||
+    Array.isArray(turnEvent) ||
+    typeof (turnEvent as JsonObject).type !== "string"
+  ) {
+    return undefined;
+  }
+  const terminal = classifyTurnTerminal({
+    type: (turnEvent as JsonObject).type as string,
+    payload: (turnEvent as JsonObject).payload,
+    turnId: notificationTurnId,
+  }, {
+    expectedTurnId: expectedTurnId ?? notificationTurnId,
+  });
+  return terminal === undefined ? undefined : {
     code: terminal.code,
     ...(terminal.message !== undefined ? { message: terminal.message } : {}),
   };

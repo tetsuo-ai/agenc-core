@@ -14,6 +14,7 @@ import {
   type AgencTransport,
   type JsonObject,
 } from "../../../packages/agenc-sdk/src/index";
+import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -848,6 +849,26 @@ describe("agenc-sdk prompt race safety", () => {
     const nextSend = await waitForSend(transport, 1);
     resolveSend(nextSend, "next-turn");
     await expect(next.result()).resolves.toMatchObject({ exitCode: 0 });
+    await client.close();
+  });
+
+  it("settles a prompt the user ended by denying approval as stopped, not completed", async () => {
+    const transport = new PromptTransport();
+    const client = await initializedClient(transport);
+    const run = client.runPrompt("session_1", "write it", { clientMessageId: "denied-message", includeUsage: false });
+    const send = await waitForSend(transport, 0);
+    transport.emit(userMessage("denied-message", "write it"));
+    transport.emit(turnStarted("turn-denied"));
+    // The daemon's own projection of the denial terminal.
+    transport.emit(notificationFromDaemonEvent("session_1", "session_1", {
+      id: "aborted-denied", eventId: "aborted-denied", type: "turn_aborted",
+      payload: { turnId: "turn-denied", reason: "approval_denied" },
+    }) as unknown as JsonObject);
+    const clientMessageId = String((send.request.params as JsonObject).clientMessageId);
+    send.response.resolve(success(send.request, {
+      messageId: clientMessageId, acceptedAt: "2026-08-17T00:00:00.000Z", disposition: "started", turnId: "turn-denied",
+    }));
+    await expect(run.result()).resolves.toMatchObject({ stopReason: "stopped", exitCode: 130 });
     await client.close();
   });
 

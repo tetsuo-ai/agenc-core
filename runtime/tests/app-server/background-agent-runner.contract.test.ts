@@ -10739,7 +10739,7 @@ describe("AgenC delegate background-agent runner", () => {
           method: "event.agent_status",
           params: expect.objectContaining({
             status: "idle",
-            runStatus: "completed",
+            runStatus: "stopped",
             turnId: "turn-interrupted",
             message: "user_cancel",
             eventId: "turn-interrupted",
@@ -10793,7 +10793,7 @@ describe("AgenC delegate background-agent runner", () => {
           method: "event.agent_status",
           params: expect.objectContaining({
             status: "idle",
-            runStatus: "completed",
+            runStatus: "stopped",
             message: "cancelled",
             eventId: "turn-cancelled",
             sequence: expect.any(Number),
@@ -10901,7 +10901,7 @@ describe("AgenC delegate background-agent runner", () => {
           method: "event.agent_status",
           params: expect.objectContaining({
             status: "idle",
-            runStatus: "completed",
+            runStatus: "stopped",
             message: "cancelled",
           }),
         }),

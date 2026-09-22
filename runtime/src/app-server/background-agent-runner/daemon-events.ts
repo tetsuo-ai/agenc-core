@@ -475,7 +475,14 @@ export function notificationFromDaemonEvent(
         ...base,
         agentId: base.agentId ?? sessionId,
         status: event.type === "turn_started" ? "running" : "idle",
-        runStatus: event.type === "turn_started" ? "running" : "completed",
+        // An aborted turn (a Stop or a denied permission request) left the
+        // agent idle, but its run did not complete.
+        runStatus:
+          event.type === "turn_started"
+            ? "running"
+            : event.type === "turn_aborted"
+              ? "stopped"
+              : "completed",
         // Joining clients have no message.stream response to close their
         // hydrated turn. Preserve the boundary alongside the status projection.
         turnEvent: {
