@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   classifyShellWorkspaceWritePolicy,
@@ -7,11 +11,17 @@ import {
 
 const WORKSPACE_ROOT = "/repo";
 
-function classify(command: string, allowWorkspaceDeletions?: boolean) {
+function classify(
+  command: string,
+  allowWorkspaceDeletions?: boolean,
+  // On macOS `sed` may be GNU or BSD sed, so both readings count.
+  platform: NodeJS.Platform = "darwin",
+) {
   return classifyShellWorkspaceWritePolicy({
     toolName: "exec_command",
     args: { command },
     workspaceRoot: WORKSPACE_ROOT,
+    platform,
     ...(allowWorkspaceDeletions === undefined ? {} : { allowWorkspaceDeletions }),
   });
 }
@@ -144,6 +154,21 @@ describe("classifyShellWorkspaceWritePolicy", () => {
     );
   });
 
+  it.each([
+    ["touch ' tmp/x'", "/repo/ tmp/x"],
+    ["touch 'tmp '", "/repo/tmp "],
+    ["echo hi > ' tmp/x'", "/repo/ tmp/x"],
+    ["echo hi | tee ' tmp/x'", "/repo/ tmp/x"],
+    ["cp notes.txt ' tmp/x'", "/repo/ tmp/x"],
+    // A name with a blank is not the device.
+    ["echo hi 2> ' /dev/null'", "/repo/ /dev/null"],
+  ])("keeps the blanks of a target name: %s", (command, target) => {
+    const decision = classify(command);
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual([target]);
+  });
+
   describe("workspace deletions", () => {
     it("lets a session that edits without prompting rm a workspace file", () => {
       const decision = classify(REFACTOR_CLEANUP, true);
@@ -176,6 +201,13 @@ describe("classifyShellWorkspaceWritePolicy", () => {
 
       expect(decision.blocked).toBe(false);
       expect(decision.deletionTargets).toEqual(["/repo/src/a.js", "/repo/src/empty"]);
+    });
+
+    it("keeps the blanks of a removed name", () => {
+      const decision = classify("rm ' tmp/x'", false);
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedDeletions).toEqual(["/repo/ tmp/x"]);
     });
 
     it("blocks rm outside the workspace even when deletions are allowed", () => {
@@ -428,11 +460,6 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     ["sed -i .orig 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt.orig"]],
     ["sed -i bak 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txtbak"]],
     ["sed -I .orig 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt.orig"]],
-    // GNU edits both files; BSD takes tmp/one.txt as the backup suffix.
-    [
-      "sed -e 's/a/b/' -i tmp/one.txt tmp/two.txt",
-      ["/repo/tmp/one.txt", "/repo/tmp/two.txt", "/repo/tmp/two.txttmp/one.txt"],
-    ],
     ["sed --in-place=.bak 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt.bak"]],
     ["sed --expression='s/a/b/' --in-place tmp/file.txt", ["/repo/tmp/file.txt"]],
     // GNU reads the letters after -i as the backup suffix.
@@ -488,26 +515,20 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
 
   describe("GNU and BSD readings of one command line", () => {
     it.each([
-      // GNU edits .env as a file; BSD takes it as the backup suffix.
-      ["sed -e 's/a/b/' -i .env tmp/ok", ["/repo/.env"]],
-      ["sed -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/.bak"]],
       // BSD rejects -s and -z, so only GNU's reading runs, and it edits .bak.
       ["sed -s -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/.bak"]],
       ["sed -z -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/.bak"]],
-      // GNU edits the file `w src/out`; BSD runs it as the script, which
-      // writes src/out.
-      ["sed -i p 'w src/out' tmp/input", ["/repo/w src/out", "/repo/src/out"]],
-      // BSD takes the first -e as the suffix and the words after the script
-      // as files, so it edits `-e` and `s/c/d/` when they exist.
-      [
-        "sed -i -e 's/a/b/' -e 's/c/d/' tmp/file.txt",
-        ["/repo/-e", "/repo/-e-e", "/repo/s/c/d", "/repo/s/c/d/-e"],
-      ],
+      // BSD runs `w src/out` as the script, which creates src/out. GNU would
+      // edit a file of that name, which does not exist.
+      ["sed -i p 'w src/out' tmp/input", ["/repo/src/out"]],
       // BSD runs /tmp/w.txt as the script: an address, then `w .txt`, which
       // sed opens before it fails for having no file to edit.
       ["sed -i 's/a/b/' /tmp/w.txt", ["/repo/.txt"]],
-      // GNU runs the empty script with -n, which empties every operand.
-      ["sed -n -i '' 's/a/b/p' tmp/file.txt", ["/repo/s/a/b/p"]],
+      // GNU permutes and runs src/x as an -e script, unless POSIXLY_CORRECT
+      // is set, when it stops at `s/a/b/` and edits `-e` and src/x.
+      ["POSIXLY_CORRECT=1 sed -i 's/a/b/' -e src/x", ["/repo/-e", "/repo/src/x"]],
+      ["env POSIXLY_CORRECT=1 sed -i 's/a/b/' -e src/x", ["/repo/-e", "/repo/src/x"]],
+      ["sed -i 's/a/b/' -e src/x", ["/repo/-e", "/repo/src/x"]],
     ])("reports a write either sed would make: %s", (command, blockedTargets) => {
       const decision = classify(command);
 
@@ -516,12 +537,31 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
       expect(decision.blockedTargets).toEqual(blockedTargets);
     });
 
-    it("reports both readings of the file after -e", () => {
-      expect(classify("sed -e 's/a/b/' -i .env tmp/ok").observedTargets).toEqual([
-        "/repo/.env",
-        "/repo/tmp/ok",
-        "/repo/tmp/ok.env",
-      ]);
+    it.each([
+      // BSD takes the first -e as the suffix and edits the words after the
+      // script, `-e` and `s/c/d/`, as files; they do not exist.
+      ["sed -i -e 's/a/b/' -e 's/c/d/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt-e"]],
+      // GNU edits .bak, and s/a/b/p with -n, as files; they do not exist.
+      ["sed -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt", "/repo/tmp/file.txt.bak"]],
+      ["sed -n -i '' 's/a/b/p' tmp/file.txt", ["/repo/tmp/file.txt"]],
+    ])("does not report a disputed word that is not a file: %s", (command, observedTargets) => {
+      const decision = classify(command);
+
+      expect(decision.blocked).toBe(false);
+      expect(decision.indeterminate).toBe(false);
+      expect(decision.observedTargets).toEqual(observedTargets);
+    });
+
+    it.each([
+      ["sed -i 's/a/b/' /tmp/w.txt", ["/tmp/w.txt"]],
+      ["sed -i 's/a/b/' /var/www/html/index.html", ["/var/www/html/index.html"]],
+      ["sed -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt"]],
+      ["sed -i p 'w src/out' tmp/input", ["/repo/tmp/input"]],
+    ])("counts only GNU sed's writes on Linux: %s", (command, observedTargets) => {
+      const decision = classify(command, undefined, "linux");
+
+      expect(decision.blocked).toBe(false);
+      expect(decision.observedTargets).toEqual(observedTargets);
     });
 
     it("fails closed on a letter GNU may accept as a command in a newer version", () => {
@@ -534,6 +574,44 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
 
     it("fails closed on an option neither sed accepts", () => {
       const decision = classify("sed -x p tmp/file.txt");
+
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+    });
+  });
+
+  describe("sed behind env, and gsed", () => {
+    it.each([
+      "env sed -i 's/a/b/' src/x",
+      "env FOO=1 sed -i 's/a/b/' src/x",
+      "env -i sed -i 's/a/b/' src/x",
+      "env -u HOME -- sed -i 's/a/b/' src/x",
+      "env --unset=HOME /usr/bin/sed -i 's/a/b/' src/x",
+      "gsed -i 's/a/b/' src/x",
+      "env gsed -i 's/a/b/' src/x",
+    ])("sends the command to the sed analysis: %s", (command) => {
+      const decision = classify(command);
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.indeterminate).toBe(false);
+      expect(decision.blockedTargets).toEqual(["/repo/src/x"]);
+    });
+
+    it("reads gsed as GNU sed only", () => {
+      const decision = classify("gsed -i -e 's/a/b/' -e 's/c/d/' tmp/file.txt");
+
+      expect(decision.blocked).toBe(false);
+      expect(decision.observedTargets).toEqual(["/repo/tmp/file.txt"]);
+    });
+
+    it.each([
+      "env -S 'sed -i s/a/b/ src/x'",
+      "env --split-string='sed -i s/a/b/ src/x'",
+      "env -C src sed -i 's/a/b/' x",
+      "env $TOOL -i 's/a/b/' src/x",
+      "env --frobnicate sed -i 's/a/b/' tmp/x",
+    ])("fails closed when env hides the command: %s", (command) => {
+      const decision = classify(command);
 
       expect(decision.indeterminate).toBe(true);
       expect(decision.blocked).toBe(true);
@@ -664,6 +742,27 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     expect(decision.blocked).toBe(true);
   });
 
+  it.each([
+    ['sed -n "/foo$/p" src/app.ts', []],
+    ['sed -n "s/foo$/bar/p" src/app.ts', []],
+    ['sed "/^$/d" src/app.ts', []],
+    ['sed -e "s/ *$//" -e "/^$/d" src/app.ts', []],
+    ['sed -i "s/ *$//" tmp/file.txt', ["/repo/tmp/file.txt"]],
+  ])("reads a $ anchor in a double-quoted script as literal: %s", (command, observedTargets) => {
+    const decision = classify(command);
+
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.observedTargets).toEqual(observedTargets);
+  });
+
+  it("reads a variable where sed expects a file as that file", () => {
+    const decision = classify('sed -n "1,5p" "$f"');
+
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
+  });
+
   describe("what the command line does not show", () => {
     it.each([
       ["sed -f tmp/evil.sed tmp/input", []],
@@ -690,8 +789,6 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
       ["sed $'\\167 src/x' tmp/input", []],
       ["sed $'s/\\t/ /g' src/app.ts", []],
       ["sed -i $'s/\\t/ /g' src/app.ts", ["/repo/src/app.ts"]],
-      // GNU permutes options, so a variable before `--` can become one.
-      ['sed -n "1,5p" "$f"', []],
     ])("fails closed on a word the shell still expands: %s", (command, targets) => {
       const decision = classify(command);
 
@@ -743,6 +840,83 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
 
     expect(decision.blocked).toBe(false);
     expect(decision.observedTargets).toEqual(["/repo/tmp/game.js"]);
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => {
+  let workspace = "";
+
+  beforeAll(() => {
+    workspace = mkdtempSync(join(tmpdir(), "sed-policy-"));
+    mkdirSync(join(workspace, "src"));
+    mkdirSync(join(workspace, "tmp"));
+    writeFileSync(join(workspace, ".env"), "KEY=1\n");
+    writeFileSync(join(workspace, "src", "app.ts"), "export {};\n");
+    writeFileSync(join(workspace, "src", "x"), "a\n");
+    writeFileSync(join(workspace, "tmp", "input"), "a\n");
+    writeFileSync(join(workspace, "tmp", "one.txt"), "a\n");
+    symlinkSync("../src/app.ts", join(workspace, "tmp", "link"));
+    symlinkSync("../src", join(workspace, "tmp", "dirlink"));
+    symlinkSync("../src/missing.ts", join(workspace, "tmp", "dangling"));
+  });
+
+  afterAll(() => {
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  function classifyIn(command: string, platform: NodeJS.Platform = "darwin") {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: workspace,
+      platform,
+    });
+  }
+
+  it.each([
+    ["sed -n 'w tmp/link' tmp/input", "src/app.ts"],
+    ["sed -n 'W tmp/link' tmp/input", "src/app.ts"],
+    ["sed 's/a/b/w tmp/link' tmp/input", "src/app.ts"],
+    ["sed -n 'w tmp/dirlink/new.ts' tmp/input", "src/new.ts"],
+  ])("judges a w file by the file its symlinks reach: %s", (command, reached) => {
+    const decision = classifyIn(command);
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual([join(workspace, reached)]);
+    expect(classifyIn("sed -n 'w tmp/plain.txt' tmp/input").blocked).toBe(false);
+  });
+
+  it("fails closed on a w file behind a symlink to nothing", () => {
+    const decision = classifyIn("sed -n 'w tmp/dangling' tmp/input");
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+  });
+
+  it.each([
+    ["sed -i '' src/x", ["src/x"]],
+    ["gsed -i.bak '' src/x", ["src/x", "src/x.bak"]],
+  ])("reports the files an empty GNU script rewrites: %s", (command, targets) => {
+    for (const platform of ["darwin", "linux"] as const) {
+      const decision = classifyIn(command, platform);
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedTargets).toEqual(targets.map((target) => join(workspace, target)));
+    }
+  });
+
+  it("edits a word the readings dispute only when it is a file", () => {
+    // GNU edits .env, .bak and tmp/one.txt as files; BSD takes each as the
+    // backup suffix. Only .bak does not exist.
+    expect(classifyIn("sed -e 's/a/b/' -i .env tmp/input").blockedTargets).toEqual([
+      join(workspace, ".env"),
+    ]);
+    expect(classifyIn("sed -e 's/a/b/' -i .bak tmp/input").blocked).toBe(false);
+    expect(classifyIn("sed -e 's/a/b/' -i tmp/one.txt tmp/input").observedTargets).toEqual([
+      join(workspace, "tmp/one.txt"),
+      join(workspace, "tmp/input"),
+      join(workspace, "tmp/inputtmp/one.txt"),
+    ]);
   });
 });
 

@@ -1,5 +1,14 @@
+import { lstatSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, relative, resolve as resolvePath, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve as resolvePath,
+  sep,
+} from "node:path";
 
 import {
   getShellRedirectOperator,
@@ -83,11 +92,8 @@ const SAFE_PSEUDO_DEVICE_TARGETS = new Set([
 ]);
 const SAFE_PSEUDO_DEVICE_FD_RE = /^\/dev\/fd\/\d+$/;
 
-export function isSafePseudoDevicePath(rawPath: string): boolean {
-  return isExactSafePseudoDevicePath(rawPath.trim());
-}
-
-function isExactSafePseudoDevicePath(path: string): boolean {
+/** Matches the name exactly: ` /dev/null` with a blank is a workspace path. */
+export function isSafePseudoDevicePath(path: string): boolean {
   return SAFE_PSEUDO_DEVICE_TARGETS.has(path) || SAFE_PSEUDO_DEVICE_FD_RE.test(path);
 }
 
@@ -144,6 +150,11 @@ export interface ShellWorkspaceWritePolicyInput {
    * AgenC home, shell and git config files) stay refused.
    */
   readonly bypassesApprovalsAndSandbox?: boolean;
+  /**
+   * The host the command runs on; `process.platform` when absent. On macOS
+   * and the BSDs `sed` may be BSD sed, which reads `-i` differently.
+   */
+  readonly platform?: NodeJS.Platform;
 }
 
 interface ShellMove {
@@ -195,25 +206,21 @@ function mergeTargetCollections(
   into.indeterminate ||= from.indeterminate;
 }
 
+/**
+ * A target exactly as the command names it: a blank at either end is part
+ * of the name, so ` tmp/x` is not under tmp.
+ */
 function normalizeConcreteTargetPath(
   rawPath: string,
   cwd: string,
 ): ShellWriteTargetCollection {
-  const trimmed = rawPath.trim();
-  if (trimmed.length === 0 || trimmed === "-") {
+  if (rawPath.length === 0 || rawPath === "-") {
     return emptyTargetCollection();
   }
-  if (DYNAMIC_SHELL_TARGET_RE.test(trimmed)) {
+  if (DYNAMIC_SHELL_TARGET_RE.test(rawPath)) {
     return indeterminateTargetCollection();
   }
-  return {
-    ...emptyTargetCollection(),
-    targets: [
-      trimmed.startsWith("/")
-        ? resolvePath(trimmed)
-        : resolvePath(cwd, trimmed),
-    ],
-  };
+  return { ...emptyTargetCollection(), targets: [resolvePath(cwd, rawPath)] };
 }
 
 function collectOperandTargets(
@@ -436,30 +443,181 @@ function collectMoveTargets(
   return collection;
 }
 
+/** Where the command runs, as far as the targets depend on it. */
+interface ShellWriteEnvironment {
+  /** `sed` may be BSD sed on this host (macOS and the BSDs). */
+  readonly bsdSed: boolean;
+  readonly workspaceRoot: string;
+}
+
+/** Hosts whose `sed` is BSD sed unless GNU sed comes first on the PATH. */
+const BSD_SED_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set([
+  "darwin",
+  "freebsd",
+  "netbsd",
+  "openbsd",
+]);
+
+/** The path the kernel opens: a `..` after a symlink is not collapsed first. */
+function kernelPath(cwd: string, name: string): string {
+  return isAbsolute(name) ? name : `${cwd}${sep}${name}`;
+}
+
+function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The file a write to `path` reaches once the filesystem follows the
+ * symlinks in it, named under the workspace root when it lands inside.
+ * Undefined when that cannot be read, as with a symlink to nothing.
+ */
+function resolveWriteThroughSymlinks(path: string, workspaceRoot: string): string | undefined {
+  let existing = path;
+  const missing: string[] = [];
+  while (!pathExists(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    missing.unshift(basename(existing));
+    existing = parent;
+  }
+  let reached: string;
+  try {
+    reached = join(realpathSync.native(existing), ...missing);
+  } catch {
+    return undefined;
+  }
+  let realRoot: string;
+  try {
+    realRoot = realpathSync.native(workspaceRoot);
+  } catch {
+    return reached;
+  }
+  const rel = relative(realRoot, reached);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return reached;
+  return resolvePath(workspaceRoot, rel);
+}
+
 /**
  * `sed` writes its in-place files, their backups, and the files its script
- * names in `w` commands, under GNU or BSD sed. The script itself is not a
- * path. The names are resolved exactly as sed opens them: a blank at either
- * end is part of the name.
+ * names in `w` commands. The script itself is not a path. Names are taken
+ * exactly as sed opens them, blanks included. An in-place edit replaces the
+ * named file; a `w` file is opened through any symlink in its path, so it is
+ * judged by the file it reaches.
  */
-function collectSedWriteTargets(
-  args: readonly string[],
-  argsRequiringExpansion: readonly boolean[] | undefined,
-  cwd: string,
-): ShellWriteTargetCollection {
-  const writes = analyzeSedWrites(args, argsRequiringExpansion);
+function collectSedWriteTargets(params: {
+  readonly args: readonly string[];
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+  /** Whether BSD sed may run it, or only shows which words are disputed. */
+  readonly bsd: "runs" | "disputes" | "absent";
+}): ShellWriteTargetCollection {
+  const { cwd, environment } = params;
+  const writes = analyzeSedWrites(params.args, params.argsRequiringExpansion, { bsd: params.bsd });
   const collection = emptyTargetCollection();
   collection.indeterminate = writes.indeterminate;
-  for (const target of writes.targets) {
-    if (isExactSafePseudoDevicePath(target)) continue;
-    pushUnique(collection.targets, resolvePath(cwd, target));
+  // sed opens the `w` files while it compiles, before it edits anything.
+  for (const name of writes.scriptWrites) {
+    if (isSafePseudoDevicePath(name)) continue;
+    const reached = resolveWriteThroughSymlinks(kernelPath(cwd, name), environment.workspaceRoot);
+    if (reached === undefined) collection.indeterminate = true;
+    pushUnique(collection.targets, reached ?? resolvePath(cwd, name));
+  }
+  for (const edit of writes.edits) {
+    // sed -i never creates a file.
+    if (edit.onlyIfExists && !pathExists(kernelPath(cwd, edit.file))) continue;
+    pushUnique(collection.targets, resolvePath(cwd, edit.file));
+    if (edit.backup !== undefined) pushUnique(collection.targets, resolvePath(cwd, edit.backup));
   }
   // The commands an `e` runs already make the result indeterminate; their
   // known targets are still checked.
   for (const command of writes.commands) {
-    mergeTargetCollections(collection, collectShellCommandWriteTargets(command, cwd));
+    mergeTargetCollections(collection, collectShellCommandWriteTargets(command, cwd, environment));
   }
   return collection;
+}
+
+/** env's long options that take no argument, or only an attached one. */
+const ENV_LONG_FLAGS = new Set([
+  "block-signal",
+  "debug",
+  "default-signal",
+  "ignore-environment",
+  "ignore-signal",
+  "list-signal-handling",
+  "null",
+]);
+
+/**
+ * `env [option]... [NAME=VALUE]... [command [argument]...]` runs the command
+ * with a changed environment, so it writes what the command writes. An
+ * option that moves or rebuilds the command (`-C`, `-S`), an option env does
+ * not document, and a command or option the shell still expands leave the
+ * command unknown.
+ */
+function collectEnvCommandWriteTargets(params: {
+  readonly args: readonly string[];
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}): ShellWriteTargetCollection {
+  const { args } = params;
+  const expands = (index: number): boolean => params.argsRequiringExpansion?.[index] === true;
+  let index = 0;
+  let assigning = false;
+  words: for (; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (ENV_ASSIGNMENT_RE.test(token)) {
+      assigning = true;
+      continue;
+    }
+    // Options come before the assignments; `-` is `-i`.
+    if (assigning || !token.startsWith("-")) break;
+    if (expands(index)) return indeterminateTargetCollection();
+    if (token === "-") continue;
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (token.startsWith("--")) {
+      const equals = token.indexOf("=");
+      const name = token.slice(2, equals < 0 ? undefined : equals);
+      if (ENV_LONG_FLAGS.has(name)) continue;
+      if (name === "unset" || name === "argv0") {
+        if (equals < 0) index += 1;
+        continue;
+      }
+      if (name === "help" || name === "version") return emptyTargetCollection();
+      return indeterminateTargetCollection();
+    }
+    for (let at = 1; at < token.length; at += 1) {
+      const option = token[at]!;
+      if (option === "i" || option === "0" || option === "v") continue;
+      if (option === "u" || option === "P" || option === "a") {
+        if (at + 1 === token.length) index += 1;
+        continue words;
+      }
+      return indeterminateTargetCollection();
+    }
+  }
+  // Without a command, env only prints the environment.
+  if (index >= args.length) return emptyTargetCollection();
+  if (expands(index)) return indeterminateTargetCollection();
+  return collectDirectCommandWriteTargets({
+    command: args[index]!,
+    args: args.slice(index + 1),
+    ...(params.argsRequiringExpansion === undefined
+      ? {}
+      : { argsRequiringExpansion: params.argsRequiringExpansion.slice(index + 1) }),
+    cwd: params.cwd,
+    environment: params.environment,
+  });
 }
 
 function collectDirectCommandWriteTargets(params: {
@@ -468,28 +626,16 @@ function collectDirectCommandWriteTargets(params: {
   /** Which of `args` the shell still expands; absent for an argument vector. */
   readonly argsRequiringExpansion?: readonly boolean[];
   readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
 }): ShellWriteTargetCollection {
   const command = basename(params.command);
   if (command === "env") {
-    const shellIndex = params.args.findIndex((token) =>
-      SHELL_WRAPPER_COMMANDS.has(basename(token)) ||
-      token === "env"
-    );
-    if (shellIndex >= 0) {
-      const nestedCommand = extractWrappedShellCommand(
-        params.args.slice(shellIndex + 1),
-      );
-      if (nestedCommand) {
-        return collectShellCommandWriteTargets(nestedCommand, params.cwd);
-      }
-      return indeterminateTargetCollection();
-    }
-    return emptyTargetCollection();
+    return collectEnvCommandWriteTargets(params);
   }
   if (SHELL_WRAPPER_COMMANDS.has(command)) {
     const nestedCommand = extractWrappedShellCommand(params.args);
     return nestedCommand
-      ? collectShellCommandWriteTargets(nestedCommand, params.cwd)
+      ? collectShellCommandWriteTargets(nestedCommand, params.cwd, params.environment)
       : hasWrapperScriptOperand(params.args)
         ? emptyTargetCollection()
         : indeterminateTargetCollection();
@@ -531,8 +677,10 @@ function collectDirectCommandWriteTargets(params: {
     }
     return collection;
   }
-  if (command === "sed") {
-    return collectSedWriteTargets(params.args, params.argsRequiringExpansion, params.cwd);
+  if (command === "sed" || command === "gsed") {
+    // `gsed` is GNU sed installed next to a BSD `sed`.
+    const bsd = command === "gsed" ? "absent" : params.environment.bsdSed ? "runs" : "disputes";
+    return collectSedWriteTargets({ ...params, bsd });
   }
   if (command === "perl") {
     const inPlace = params.args.some((token) => token === "-i" || token.startsWith("-i"));
@@ -579,6 +727,7 @@ function collectRedirectionTargets(
 function collectSegmentCommandWriteTargets(
   segment: readonly ShellToken[],
   cwd: string,
+  environment: ShellWriteEnvironment,
 ): ShellWriteTargetCollection {
   const stripped = stripRedirections(segment);
   if (stripped.length === 0) {
@@ -602,12 +751,14 @@ function collectSegmentCommandWriteTargets(
     args: args.map((token) => token.value),
     argsRequiringExpansion: args.map((token) => token.requiresExpansion),
     cwd,
+    environment,
   });
 }
 
 function collectShellCommandWriteTargets(
   commandLine: string,
   cwd: string,
+  environment: ShellWriteEnvironment,
 ): ShellWriteTargetCollection {
   const parsed = lexShellCommand(commandLine);
   const collection = collectRedirectionTargets(parsed.tokens, cwd);
@@ -616,7 +767,7 @@ function collectShellCommandWriteTargets(
   const flushSegment = (): void => {
     mergeTargetCollections(
       collection,
-      collectSegmentCommandWriteTargets(segment, cwd),
+      collectSegmentCommandWriteTargets(segment, cwd, environment),
     );
     segment = [];
   };
@@ -815,6 +966,10 @@ export function classifyShellWorkspaceWritePolicy(
 
   const workspaceRoot = params.workspaceRoot;
   const cwd = resolveWorkingDirectory(workspaceRoot, params.args.cwd);
+  const environment: ShellWriteEnvironment = {
+    bsdSed: BSD_SED_PLATFORMS.has(params.platform ?? process.platform),
+    workspaceRoot,
+  };
   let collected: ShellWriteTargetCollection = emptyTargetCollection();
   if (Array.isArray(params.args.args)) {
     collected = collectDirectCommandWriteTargets({
@@ -822,9 +977,10 @@ export function classifyShellWorkspaceWritePolicy(
         typeof params.args.command === "string" ? params.args.command : "",
       args: params.args.args.filter((value): value is string => typeof value === "string"),
       cwd,
+      environment,
     });
   } else if (typeof params.args.command === "string") {
-    collected = collectShellCommandWriteTargets(params.args.command, cwd);
+    collected = collectShellCommandWriteTargets(params.args.command, cwd, environment);
   }
 
   // A move keeps workspace content in the workspace when every source is a

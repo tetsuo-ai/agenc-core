@@ -8,17 +8,19 @@
  * any input and even when a later command is rejected. The GNU `e` command
  * and `s///e` flag run shell commands.
  *
- * GNU sed and BSD sed (macOS) read one command line differently. GNU
- * permutes options and takes a backup suffix only when it is attached to
- * `-i`. BSD stops at the first operand and takes the word after a bare `-i`
- * as the suffix, so a word GNU edits as a file can be a BSD suffix and a
- * word GNU runs as a script can be a BSD file. Both readings are analyzed
- * and every target either one reports is a target.
+ * One command line reads differently to different seds. GNU sed permutes
+ * options unless POSIXLY_CORRECT is set, and takes a backup suffix only when
+ * it is attached to `-i`. BSD sed (macOS) stops at the first operand and
+ * takes the word after a bare `-i` as the suffix. Every reading that may run
+ * is analyzed, and every target one of them reports counts. sed -i never
+ * creates a file, so an operand that only some readings edit, or that an
+ * empty script rewrites unchanged, counts only when the file exists.
  *
  * Anything this analysis cannot know makes the result indeterminate while
- * keeping the targets it found: a word the shell still expands, a script
- * file, an `e` command, an option neither sed accepts, a script GNU may
- * accept in a newer version, and an in-place edit that follows symlinks.
+ * keeping the targets it found: an option or script the shell still
+ * expands, a script file, an `e` command, an option no sed accepts, a script
+ * GNU may accept in a newer version, and an in-place edit that follows
+ * symlinks.
  */
 
 /**
@@ -33,9 +35,23 @@ interface SedWord {
   readonly expands: boolean;
 }
 
+/** An in-place edit of one file operand. */
+interface SedEdit {
+  /** The operand as written. */
+  readonly file: string;
+  /** The backup the edit leaves, when a suffix is given. */
+  readonly backup?: string;
+  /**
+   * The edit counts only when the file exists: not every reading edits it,
+   * or it runs an empty script. sed -i cannot create the file.
+   */
+  readonly onlyIfExists: boolean;
+}
+
 interface SedWrites {
-  /** Paths sed may write, exactly as sed opens them, relative to its working directory. */
-  readonly targets: readonly string[];
+  readonly edits: readonly SedEdit[];
+  /** Files named by `w`, `W`, or `s///w`, as written; sed creates them while compiling. */
+  readonly scriptWrites: readonly string[];
   /** Shell commands the script runs with the GNU `e command`. */
   readonly commands: readonly string[];
   /** Part of what sed writes cannot be known from the command line. */
@@ -116,12 +132,12 @@ function mayChange(word: SedWord): boolean {
 }
 
 /**
- * Whether the shell may turn this word into option words: an expansion can
- * split into several words or start with `-`, and a glob or brace at the
- * start can produce a word that starts with `-`.
+ * An option word the shell may change (`-$FLAGS`, `-e"$S"`). A variable that
+ * stands where sed expects a file is read as that file; that it could expand
+ * to an option is a known limit, not a reason to refuse every loop over files.
  */
-function mayExpandToOptions(word: SedWord): boolean {
-  return mayChange(word) && (word.value.includes("$") || /^[-*?[{]/u.test(word.value));
+function isUnresolvedOption(word: SedWord): boolean {
+  return word.value.startsWith("-") && mayChange(word);
 }
 
 function nothingRead(flavor: SedFlavor, unresolved: boolean): SedReading {
@@ -138,8 +154,12 @@ function nothingRead(flavor: SedFlavor, unresolved: boolean): SedReading {
   };
 }
 
-/** GNU sed: getopt_long with permutation, so an option may follow an operand. */
-function readGnuCommandLine(words: readonly SedWord[]): SedReading {
+/**
+ * GNU sed's getopt_long. It permutes, so an option may follow an operand,
+ * unless POSIXLY_CORRECT is set in its environment; then it stops at the
+ * first operand. The environment is not visible here, so both are read.
+ */
+function readGnuCommandLine(words: readonly SedWord[], permute: boolean): SedReading {
   const scripts: SedWord[] = [];
   let readsScriptFile = false;
   const operands: SedWord[] = [];
@@ -157,7 +177,7 @@ function readGnuCommandLine(words: readonly SedWord[]): SedReading {
       operands.push(word);
       continue;
     }
-    if (mayExpandToOptions(word)) unresolved = true;
+    if (isUnresolvedOption(word)) unresolved = true;
     const token = word.value;
     if (token === "--") {
       optionsEnded = true;
@@ -165,6 +185,7 @@ function readGnuCommandLine(words: readonly SedWord[]): SedReading {
     }
     if (token === "-" || !token.startsWith("-")) {
       operands.push(word);
+      if (!permute) optionsEnded = true;
       continue;
     }
     if (token.startsWith("--")) {
@@ -185,7 +206,6 @@ function readGnuCommandLine(words: readonly SedWord[]): SedReading {
           exits = true;
           continue;
         }
-        if (mayExpandToOptions(next)) unresolved = true;
         index += 1;
         value = next;
       }
@@ -213,7 +233,6 @@ function readGnuCommandLine(words: readonly SedWord[]): SedReading {
             exits = true;
             break;
           }
-          if (mayExpandToOptions(next)) unresolved = true;
           index += 1;
           value = next;
         }
@@ -265,7 +284,7 @@ function readBsdCommandLine(words: readonly SedWord[]): SedReading {
 
   options: for (; index < words.length; index += 1) {
     const word = words[index]!;
-    if (mayExpandToOptions(word)) unresolved = true;
+    if (isUnresolvedOption(word)) unresolved = true;
     const token = word.value;
     if (token === "--") {
       index += 1;
@@ -284,7 +303,6 @@ function readBsdCommandLine(words: readonly SedWord[]): SedReading {
         if (value === undefined) {
           const next = words[index + 1];
           if (next === undefined) return nothingRead("bsd", unresolved);
-          if (mayExpandToOptions(next)) unresolved = true;
           index += 1;
           value = next;
         }
@@ -323,19 +341,25 @@ function backupFileName(file: string, suffix: string, flavor: SedFlavor): string
     : `${file}${suffix}`;
 }
 
-interface SedWritesAccumulator {
-  readonly targets: string[];
-  readonly commands: string[];
-  indeterminate: boolean;
+interface SedReadingWrites {
+  readonly scriptWrites: readonly string[];
+  readonly commands: readonly string[];
+  readonly indeterminate: boolean;
+  /** The files this reading edits in place; undefined when it edits none. */
+  readonly edits?: readonly { readonly file: string; readonly backup?: string }[];
+  /** The reading rewrites its files with an empty script, which leaves them unchanged. */
+  readonly copiesFiles: boolean;
 }
 
 function pushUnique(list: string[], value: string): void {
   if (!list.includes(value)) list.push(value);
 }
 
-function addReadingWrites(reading: SedReading, into: SedWritesAccumulator): void {
+function readingWrites(reading: SedReading): SedReadingWrites {
   const scriptChanges = reading.scripts.some(mayChange);
-  if (reading.unresolved || reading.readsScriptFile || scriptChanges) into.indeterminate = true;
+  let indeterminate = reading.unresolved || reading.readsScriptFile || scriptChanges;
+  const scriptWrites: string[] = [];
+  const commands: string[] = [];
 
   // Whether sed gets past compiling its script to edit files. A script
   // this analysis cannot see (a script file, a word the shell changes)
@@ -344,52 +368,101 @@ function addReadingWrites(reading: SedReading, into: SedWritesAccumulator): void
   const text = reading.scripts.map((word) => word.value).join("\n");
   if (!scriptChanges && reading.scripts.length > 0) {
     const script = analyzeSedScript(text, reading.flavor);
-    for (const file of script.writes) pushUnique(into.targets, file);
-    for (const command of script.commands) pushUnique(into.commands, command);
+    for (const file of script.writes) pushUnique(scriptWrites, file);
+    for (const command of script.commands) pushUnique(commands, command);
     if (script.outcome === "uncertain" || script.commands.length > 0 || script.runsPatternSpace) {
-      into.indeterminate = true;
+      indeterminate = true;
     }
     compiles = reading.readsScriptFile || script.outcome === "compiled";
   }
-
-  if (reading.exitsInOptions || !reading.inPlace || !compiles) return;
-  // GNU copies each file unchanged through an empty script without -n.
   const scriptKnown = !reading.readsScriptFile && !scriptChanges;
-  if (scriptKnown && reading.emptyScriptCopiesInput && /^[\s;]*$/u.test(text)) return;
-  if (reading.followSymlinks) into.indeterminate = true;
+  const copiesFiles =
+    scriptKnown && reading.emptyScriptCopiesInput && /^[\s;]*$/u.test(text);
+
+  if (reading.exitsInOptions || !reading.inPlace || !compiles || reading.files.length === 0) {
+    return { scriptWrites, commands, indeterminate, copiesFiles };
+  }
+  if (reading.followSymlinks) indeterminate = true;
   const suffix = reading.suffix;
-  if (suffix !== undefined && mayChange(suffix)) into.indeterminate = true;
+  if (suffix !== undefined && mayChange(suffix)) indeterminate = true;
+  const edits: { file: string; backup?: string }[] = [];
   for (const file of reading.files) {
     if (file.value.length === 0 || file.value === "-") continue;
     if (mayChange(file)) {
-      into.indeterminate = true;
+      indeterminate = true;
       continue;
     }
-    pushUnique(into.targets, file.value);
-    if (suffix !== undefined && !mayChange(suffix)) {
-      const backup = backupFileName(file.value, suffix.value, reading.flavor);
-      if (backup !== file.value) pushUnique(into.targets, backup);
-    }
+    const backup =
+      suffix !== undefined && !mayChange(suffix)
+        ? backupFileName(file.value, suffix.value, reading.flavor)
+        : undefined;
+    edits.push(backup === undefined || backup === file.value
+      ? { file: file.value }
+      : { file: file.value, backup });
   }
+  if (edits.length === 0) return { scriptWrites, commands, indeterminate, copiesFiles };
+  return { scriptWrites, commands, indeterminate, edits, copiesFiles };
 }
 
 /**
- * Reports what a sed command line writes under GNU sed and under BSD sed.
+ * How BSD sed takes part: its writes count where it may run (`runs`); where
+ * only GNU sed runs, a word BSD would read as a suffix or a script still
+ * marks the GNU edit of that word as disputed (`disputes`), because the
+ * command was likely written for BSD; `absent` for a command that is GNU
+ * sed by name.
+ */
+type BsdSedRole = "runs" | "disputes" | "absent";
+
+/**
+ * Reports what a sed command line writes under every reading that may run:
+ * GNU sed with and without option permutation, and BSD sed as `bsd` says.
  * `argsRequiringExpansion` marks the words the shell still expands; without
  * it every word is literal, as in an argument vector run without a shell.
  */
 export function analyzeSedWrites(
   args: readonly string[],
-  argsRequiringExpansion?: readonly boolean[],
+  argsRequiringExpansion: readonly boolean[] | undefined,
+  options: { readonly bsd: BsdSedRole },
 ): SedWrites {
   const words = args.map((value, index) => ({
     value,
     expands: argsRequiringExpansion?.[index] === true,
   }));
-  const writes: SedWritesAccumulator = { targets: [], commands: [], indeterminate: false };
-  addReadingWrites(readGnuCommandLine(words), writes);
-  addReadingWrites(readBsdCommandLine(words), writes);
-  return writes;
+  const running = [readGnuCommandLine(words, true), readGnuCommandLine(words, false)].map(
+    readingWrites,
+  );
+  const bsd = options.bsd === "absent" ? undefined : readingWrites(readBsdCommandLine(words));
+  if (bsd !== undefined && options.bsd === "runs") running.push(bsd);
+
+  const scriptWrites: string[] = [];
+  const commands: string[] = [];
+  let indeterminate = false;
+  for (const result of running) {
+    for (const file of result.scriptWrites) pushUnique(scriptWrites, file);
+    for (const command of result.commands) pushUnique(commands, command);
+    indeterminate ||= result.indeterminate;
+  }
+
+  // An edit counts outright when every reading that edits (BSD's included
+  // where it only disputes) makes it with a script that changes the file.
+  // Otherwise it counts only if the file exists; the flags of one edit
+  // reported twice combine to the stricter.
+  const editing = running.filter((result) => result.edits !== undefined);
+  const disputing = bsd?.edits !== undefined && options.bsd === "disputes" ? [bsd] : [];
+  const edits = new Map<string, SedEdit>();
+  for (const result of editing) {
+    for (const edit of result.edits!) {
+      const everyReading = [...editing, ...disputing].every((other) =>
+        other.edits!.some((otherEdit) => otherEdit.file === edit.file),
+      );
+      const onlyIfExists = result.copiesFiles || !everyReading;
+      const key = `${edit.file}\u0000${edit.backup ?? ""}`;
+      const known = edits.get(key);
+      edits.set(key, { ...edit, onlyIfExists: (known?.onlyIfExists ?? true) && onlyIfExists });
+    }
+  }
+
+  return { edits: [...edits.values()], scriptWrites, commands, indeterminate };
 }
 
 interface SedScriptAnalysis {
