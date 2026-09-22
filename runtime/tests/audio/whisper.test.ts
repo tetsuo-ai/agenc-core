@@ -4,6 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalWhisperService, MAX_WHISPER_WAV_BYTES, runWhisperProcess, validateWhisperAudio, WHISPER_MODELS, WHISPER_LANGUAGES, whisperOptionsArgs } from "../../src/audio/whisper.js";
 
+// Captured before any test installs fake timers, so these yields still reach
+// the real event loop. The download fixtures drive fake time but depend on
+// real filesystem work (open/write/close) landing in between, and a fake-timer
+// advance is not a substitute for waiting on it.
+const realSetTimeout = globalThis.setTimeout;
+const realTick = (): Promise<void> =>
+  new Promise<void>((resolve) => { realSetTimeout(resolve, 0); });
+const settleIo = async (ticks = 50): Promise<void> => {
+  for (let tick = 0; tick < ticks; tick += 1) await realTick();
+};
+
 const homes: string[] = [];
 async function home(): Promise<string> { const value = await mkdtemp(join(tmpdir(), "agenc-whisper-unit-")); homes.push(value); return value; }
 function wav(samples = 1600): Buffer {
@@ -117,8 +128,9 @@ describe("Whisper installation boundary", () => {
       code: "WHISPER_DOWNLOAD_FAILED",
       message: expect.stringContaining("stopped receiving data"),
     });
-    // The idle clock is armed only once the request is in flight.
-    for (let tick = 0; tick < 50 && stub.mock.calls.length === 0; tick += 1) await vi.advanceTimersByTimeAsync(100);
+    // The idle clock is armed only once the request is in flight, and getting
+    // there costs real filesystem round trips, not fake time.
+    for (let tick = 0; tick < 5_000 && stub.mock.calls.length === 0; tick += 1) await realTick();
     expect(stub).toHaveBeenCalledOnce();
     return { rejected };
   };
@@ -145,7 +157,9 @@ describe("Whisper installation boundary", () => {
       for (let minute = 0; minute < 15; minute += 1) {
         await vi.advanceTimersByTimeAsync(50_000);
         deliver();
-        await vi.advanceTimersByTimeAsync(0);
+        // The chunk has to reach the consumer and be written before the next
+        // advance, or the idle clock never restarts and the window closes.
+        await settleIo();
       }
       await vi.advanceTimersByTimeAsync(61_000);
       await rejected;
