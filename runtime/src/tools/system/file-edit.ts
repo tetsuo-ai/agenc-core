@@ -330,6 +330,54 @@ function validateInputs(
   };
 }
 
+const EDIT_SHAPE_KEYS: ReadonlySet<string> = new Set([
+  "file_path",
+  "old_string",
+  "new_string",
+  "replace_all",
+]);
+
+/**
+ * MultiEdit's `reshapeModelArgs`: a call in Edit's argument shape is one edit.
+ *
+ * Models used to other harnesses call MultiEdit as
+ * `{ file_path, old_string, new_string }`, sometimes with `replace_all`, and
+ * no `edits` array. That becomes
+ * `{ file_path, edits: [{ old_string, new_string, replace_all? }] }`, and only
+ * when all of these hold:
+ * - `edits` is absent;
+ * - `file_path`, `old_string` and `new_string` are all present;
+ * - no other key is present except an optional `replace_all`.
+ * Anything else returns undefined, so the call keeps its original validation
+ * error. Value types are not checked here: the runtime validates the folded
+ * value strictly, and a failure there also keeps the original error.
+ */
+export function foldEditShapedMultiEditArgs(
+  args: Readonly<Record<string, unknown>>,
+): Record<string, unknown> | undefined {
+  if (
+    Object.hasOwn(args, "edits") ||
+    !Object.hasOwn(args, "file_path") ||
+    !Object.hasOwn(args, "old_string") ||
+    !Object.hasOwn(args, "new_string") ||
+    !Object.keys(args).every((key) => EDIT_SHAPE_KEYS.has(key))
+  ) {
+    return undefined;
+  }
+  return {
+    file_path: args.file_path,
+    edits: [
+      {
+        old_string: args.old_string,
+        new_string: args.new_string,
+        ...(Object.hasOwn(args, "replace_all")
+          ? { replace_all: args.replace_all }
+          : {}),
+      },
+    ],
+  };
+}
+
 function validateMultiEditInputs(
   args: MultiEditArgs,
 ): ResolvedMultiEditInputs | { error: string } {
@@ -1171,6 +1219,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       required: ["file_path", "edits"],
       additionalProperties: false,
     },
+    reshapeModelArgs: foldEditShapedMultiEditArgs,
     checkPermissions(input, context) {
       const args = input as MultiEditArgs;
       const filePath = asNonEmptyString(args.file_path);

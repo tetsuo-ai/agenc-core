@@ -1,4 +1,5 @@
 import { isRecord } from "../utils/record.js";
+import type { Tool } from "./types.js";
 
 export interface SchemaValidationError {
   readonly path: string;
@@ -18,6 +19,8 @@ export interface SchemaValidationResult {
   /** Execution-only copy; the caller must preserve the model input for replay. */
   readonly args?: Record<string, unknown>;
   readonly coercedPaths?: readonly string[];
+  /** Set when `args` is the tool's `reshapeModelArgs` fold of the input. */
+  readonly reshaped?: true;
 }
 
 function schemaTypeOf(value: unknown): string {
@@ -85,10 +88,16 @@ export function validateToolArgs(
   return { valid: false, errors };
 }
 
-/** Only for original model input, before execution gates or scheduling predicates. */
+/**
+ * Only for original model input, before execution gates or scheduling predicates.
+ * `reshape` is the tool's own `reshapeModelArgs`; it runs only when strict
+ * validation and the JSON container repair both fail, gets the untouched
+ * input, and its result must pass the same strict validation.
+ */
 export function normalizeModelToolArgs(
   schema: Record<string, unknown> | undefined,
   args: Record<string, unknown>,
+  reshape?: Tool["reshapeModelArgs"],
 ): SchemaValidationResult {
   const strict = validateToolArgs(schema, args);
   if (strict.valid || !schema) return strict;
@@ -102,8 +111,26 @@ export function normalizeModelToolArgs(
       return { valid: true, errors: [], args: candidate, coercedPaths };
     }
   }
+  const reshaped = reshapeOrDecline(reshape, args);
+  if (reshaped !== undefined && validateToolArgs(schema, reshaped).valid) {
+    return { valid: true, errors: [], args: reshaped, reshaped: true };
+  }
   // Failed repair must retain the original diagnostics, including their paths.
   return { valid: false, errors };
+}
+
+/** A throwing, identity or non-object reshape declines. */
+function reshapeOrDecline(
+  reshape: Tool["reshapeModelArgs"],
+  args: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (reshape === undefined) return undefined;
+  try {
+    const reshaped = reshape(args);
+    return isRecord(reshaped) && reshaped !== args ? reshaped : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Types admitted by the keywords our validator walks. Unknown means unrestricted. */

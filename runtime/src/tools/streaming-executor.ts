@@ -615,8 +615,12 @@ export class StreamingToolExecutor {
     }
 
     const classifiable = this.resolveClassifiable(toolCall);
+    const resolvedName = this.resolveModelToolName(toolCall.name);
+    const tool = this.registry.tools.find((t) => t.name === resolvedName);
     const parsedArgs = parseToolArgsWithBigInt(toolCall.arguments ?? "{}");
-    const validation = parsedArgs === null ? null : normalizeModelToolArgs(classifiable.inputSchema, parsedArgs);
+    const validation = parsedArgs === null
+      ? null
+      : normalizeModelToolArgs(classifiable.inputSchema, parsedArgs, tool?.reshapeModelArgs);
     const executionArgs = validation?.valid ? validation.args ?? parsedArgs : null;
     const classification = executionArgs === null ? EXCLUSIVE : classify(classifiable, executionArgs);
     // AgenC tracks a per-call `isConcurrencySafe` boolean derived
@@ -624,8 +628,6 @@ export class StreamingToolExecutor {
     // classification model but also cache the boolean so the
     // head-of-line-break logic in `getCompletedResults` matches
     // reference `:436-438` semantics exactly.
-    const resolvedName = this.resolveModelToolName(toolCall.name);
-    const tool = this.registry.tools.find((t) => t.name === resolvedName);
     let concurrencySafe = false;
     if (executionArgs === null) {
       concurrencySafe = false;

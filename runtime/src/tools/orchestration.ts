@@ -56,6 +56,7 @@ function toolIsConcurrencySafe(
   const schemaResult = normalizeModelToolArgs(
     tool.inputSchema as Record<string, unknown> | undefined,
     parsedInput,
+    tool.reshapeModelArgs,
   );
   if (!schemaResult.valid) return false;
   try {

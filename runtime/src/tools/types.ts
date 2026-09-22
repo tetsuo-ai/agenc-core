@@ -168,6 +168,19 @@ export interface Tool {
   readonly description: string;
   /** JSON Schema describing the input parameters */
   readonly inputSchema: JSONSchema;
+  /**
+   * Folds one recognized, unambiguous wrong argument shape from the model
+   * into this tool's schema (MultiEdit: an Edit-shaped call is one edit).
+   * Only `normalizeModelToolArgs` calls it, on the model's own raw
+   * arguments at the entry point, after strict validation of the original
+   * failed and before any hook, rule, approval or scheduling predicate. The
+   * result is validated strictly; on failure the original errors stand.
+   * Must be pure: return a new object, or undefined to decline. Hook and
+   * rewrite values never pass through it.
+   */
+  readonly reshapeModelArgs?: (
+    args: Readonly<Record<string, unknown>>,
+  ) => Record<string, unknown> | undefined;
   readonly preflight?: (
     args: Readonly<Record<string, unknown>>,
   ) => ToolPreflightFailure | null;

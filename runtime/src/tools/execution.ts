@@ -953,11 +953,28 @@ export function prepareModelToolArgs(
   eventLog?: EventLog,
   subId = tool.name,
 ): void {
+  const modelArgs = stripAgenCInternalArgsForValidation(args);
   const validation = normalizeModelToolArgs(
     tool.inputSchema as Record<string, unknown> | undefined,
-    stripAgenCInternalArgsForValidation(args),
+    modelArgs,
+    tool.reshapeModelArgs,
   );
-  if (validation.valid && validation.args && validation.coercedPaths?.length) {
+  if (!validation.valid || !validation.args) return;
+  if (validation.reshaped) {
+    // The fold replaces the model's own keys. Runtime `__agenc*` keys and
+    // non-enumerable context already on the copy stay as they are.
+    const from = Object.keys(modelArgs);
+    for (const key of from) {
+      if (!Object.hasOwn(validation.args, key)) delete args[key];
+    }
+    Object.defineProperties(args, Object.getOwnPropertyDescriptors(validation.args));
+    if (eventLog) {
+      emitWarningEvent(eventLog, subId, "tool_input_reshaped",
+        JSON.stringify({ tool: tool.name, from, to: Object.keys(validation.args) }));
+    }
+    return;
+  }
+  if (validation.coercedPaths?.length) {
     Object.defineProperties(args, Object.getOwnPropertyDescriptors(validation.args));
     if (eventLog) {
       emitWarningEvent(eventLog, subId, "tool_input_json_coercion",
