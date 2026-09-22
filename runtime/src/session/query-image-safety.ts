@@ -18,7 +18,7 @@
  * later prompt in that session failed within two seconds. Durable history
  * keeps the original content, like the byte budget in query-image-budget.ts:
  * only what this request shows the model changes, and compaction of the
- * request projection gets the originals back (`restoreWithheldImages`).
+ * request projection gets the originals back (query-image-withheld.ts).
  *
  * @module
  */
@@ -39,6 +39,7 @@ import {
   imageMediaTypeLabel,
   inspectImageDataUrl,
 } from "../utils/image-validation.js";
+import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
 /**
  * A provider's refusal of one image, kept for the rest of the session and
@@ -271,33 +272,6 @@ export function summarizeProviderReason(message: string): string {
     : oneLine;
 }
 
-/** Each note this module put in a request, to the image part it replaced. */
-const withheldImageByNote = new WeakMap<object, LLMContentPart>();
-
-/**
- * The same messages with every note from this module turned back into the
- * image part it stands for. A 413 collapse compacts the request projection,
- * and the compaction maps each message it is offered onto canonical durable
- * history: a user message whose image this module replaced has no canonical
- * match (pin_failed), and notes must never become durable. Compaction
- * therefore gets the original content back.
- */
-export function restoreWithheldImages(
-  messages: readonly LLMMessage[],
-): LLMMessage[] {
-  return messages.map((message) => {
-    if (!Array.isArray(message.content)) return message;
-    let changed = false;
-    const parts = message.content.map((part): LLMContentPart => {
-      const original = withheldImageByNote.get(part);
-      if (original === undefined) return part;
-      changed = true;
-      return original;
-    });
-    return changed ? { ...message, content: parts } : message;
-  });
-}
-
 function replaceImageParts(
   message: LLMMessage,
   replacement: (url: string, index: number) => string | undefined,
@@ -309,9 +283,7 @@ function replaceImageParts(
     const text = replacement(part.image_url.url, index);
     if (text === undefined) return part;
     changed = true;
-    const note: LLMContentPart = { type: "text", text };
-    withheldImageByNote.set(note, part);
-    return note;
+    return withheldImagePlaceholder(part, text);
   });
   return changed ? { ...message, content: parts } : message;
 }
