@@ -185,13 +185,22 @@ describe("cost helpers", () => {
     },
   );
 
-  // developers.openai.com/api/docs/pricing, Standard rows for prompts up to
-  // 272K input tokens (read 2026-09-22): Astra $10 / $1 cached / $50 output,
-  // Sol $2 / $0.20 / $10, Luna $0.10 / $0.01 / $0.50 per 1M tokens.
+  // developers.openai.com/api/docs/pricing and the model pages, Standard
+  // rows for prompts up to 272K input tokens (read 2026-09-22), per 1M:
+  // Astra $10 / $1 cached / $50 output, GPT-6 Sol $2 / $0.20 / $10, GPT-6
+  // Luna $0.10 / $0.01 / $0.50, GPT-5.6 Sol $4 / $0.40 / $20 (promotional,
+  // at least through 2026-11-21), Terra $2 / $0.20 / $12, GPT-5.6 Luna
+  // $0.20 / $0.02 / $1.20, GPT-5.5 $5 / $0.50 / $30, GPT-5.3 Codex
+  // $1.75 / $0.175 / $14.
   test.each([
     ["gpt-6-astra", 0.01, 0.001, 0.05],
     ["gpt-6-sol", 0.002, 0.0002, 0.01],
     ["gpt-6-luna", 0.0001, 0.00001, 0.0005],
+    ["gpt-5.6-sol", 0.004, 0.0004, 0.02],
+    ["gpt-5.6-terra", 0.002, 0.0002, 0.012],
+    ["gpt-5.6-luna", 0.0002, 0.00002, 0.0012],
+    ["gpt-5.5", 0.005, 0.0005, 0.03],
+    ["gpt-5.3-codex", 0.00175, 0.000175, 0.014],
   ])(
     "prices %s at its documented standard rates",
     (model, inputUsdPer1K, cachedInputUsdPer1K, outputUsdPer1K) => {
@@ -223,6 +232,28 @@ describe("cost helpers", () => {
       }
     },
   );
+
+  test("keeps GPT-5.x ids from collapsing onto another model's price", () => {
+    const matchedKey = (model: string) =>
+      resolveModelCostEntry({ provider: "openai", model }, DEFAULT_MODEL_COSTS)
+        ?.key ?? null;
+    // Dated snapshots and documented aliases keep their model's price.
+    expect(matchedKey("gpt-5.5-2026-04-23")).toBe("openai:gpt-5.5");
+    expect(matchedKey("gpt-5.6")).toBe("openai:gpt-5.6-sol");
+    expect(matchedKey("gpt-5-2025-08-07")).toBe("openai:gpt-5");
+    expect(matchedKey("gpt-5-codex")).toBe("openai:gpt-5");
+    // A dotted minor is a different model, and a sibling of a priced model
+    // is not that model: unpriced beats a borrowed price.
+    for (const model of [
+      "gpt-5.5-pro",
+      "gpt-5.6-cyber",
+      "gpt-5.6-sol-unverified",
+      "gpt-5.3-codex-spark",
+      "gpt-5.9",
+    ]) {
+      expect(matchedKey(model), model).toBeNull();
+    }
+  });
 
   test("computeUsdCost reports unknown pricing without throwing", () => {
     const usage = {

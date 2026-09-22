@@ -144,6 +144,15 @@ function openAiCostAliases(
 const COST_TIER_GPT_6_ASTRA = openAiCachedInputTier(10, 50, 1);
 const COST_TIER_GPT_6_SOL = openAiCachedInputTier(2, 10, 0.2);
 const COST_TIER_GPT_6_LUNA = openAiCachedInputTier(0.1, 0.5, 0.01);
+// GPT-5.6 and GPT-5.5 from the same page and their model pages, with the
+// same long-context, cache-write and Fast mode caveat. GPT-5.6 Sol's rate is
+// promotional, available at least through 2026-11-21; GPT-5.5 has no
+// cache-write charge. GPT-5.3 Codex is on its model page only.
+const COST_TIER_GPT_5_6_SOL = openAiCachedInputTier(4, 20, 0.4);
+const COST_TIER_GPT_5_6_TERRA = openAiCachedInputTier(2, 12, 0.2);
+const COST_TIER_GPT_5_6_LUNA = openAiCachedInputTier(0.2, 1.2, 0.02);
+const COST_TIER_GPT_5_5 = openAiCachedInputTier(5, 30, 0.5);
+const COST_TIER_GPT_5_3_CODEX = openAiCachedInputTier(1.75, 14, 0.175);
 const COST_TIER_GPT_5_4 = openAiCachedInputTier(2.5, 15, 0.25);
 const COST_TIER_GPT_5_4_MINI = openAiCachedInputTier(0.75, 4.5, 0.075);
 const COST_TIER_GPT_5_4_NANO = openAiCachedInputTier(0.2, 1.25, 0.02);
@@ -502,6 +511,11 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("gpt-6-astra", COST_TIER_GPT_6_ASTRA),
     ...openAiCostAliases("gpt-6-sol", COST_TIER_GPT_6_SOL),
     ...openAiCostAliases("gpt-6-luna", COST_TIER_GPT_6_LUNA),
+    ...openAiCostAliases("gpt-5.6-sol", COST_TIER_GPT_5_6_SOL),
+    ...openAiCostAliases("gpt-5.6-terra", COST_TIER_GPT_5_6_TERRA),
+    ...openAiCostAliases("gpt-5.6-luna", COST_TIER_GPT_5_6_LUNA),
+    ...openAiCostAliases("gpt-5.5", COST_TIER_GPT_5_5),
+    ...openAiCostAliases("gpt-5.3-codex", COST_TIER_GPT_5_3_CODEX),
     ...openAiCostAliases("gpt-5.4", COST_TIER_GPT_5_4),
     ...openAiCostAliases("gpt-5.4-mini", COST_TIER_GPT_5_4_MINI),
     ...openAiCostAliases("gpt-5.4-nano", COST_TIER_GPT_5_4_NANO),
@@ -825,6 +839,30 @@ export function resolveModelCostEntry(
 }
 
 /**
+ * OpenAI models priced by exact id: the id itself or one of its dated
+ * snapshots (`<id>-YYYY-MM-DD`) share its price, but a sibling such as
+ * gpt-5.5-pro or gpt-5.6-cyber does not.
+ */
+const OPENAI_EXACTLY_PRICED_MODELS = Object.freeze([
+  "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.3-codex",
+]);
+
+function isModelOrDatedSnapshot(candidate: string, model: string): boolean {
+  return (
+    candidate === model ||
+    (candidate.startsWith(`${model}-`) &&
+      /^\d{4}-\d{2}-\d{2}$/u.test(candidate.slice(model.length + 1)))
+  );
+}
+
+/**
  * Normalize model slug to a canonical key present in the registry.
  */
 function canonicalModel(model: string): string {
@@ -865,6 +903,12 @@ function canonicalModel(model: string): string {
   if (unqualified.startsWith("grok-4") && unqualified.includes("reasoning")) {
     return "grok-4.20-0309-reasoning";
   }
+  const exactlyPricedOpenAiModel = OPENAI_EXACTLY_PRICED_MODELS.find(
+    (priced) => isModelOrDatedSnapshot(unqualified, priced),
+  );
+  if (exactlyPricedOpenAiModel !== undefined) return exactlyPricedOpenAiModel;
+  // OpenAI documents the gpt-5.6 alias as routing to gpt-5.6-sol.
+  if (unqualified === "gpt-5.6") return "gpt-5.6-sol";
   if (unqualified.startsWith("gpt-5.4-mini")) return "gpt-5.4-mini";
   if (unqualified.startsWith("gpt-5.4-nano")) return "gpt-5.4-nano";
   if (unqualified.startsWith("gpt-5.4")) return "gpt-5.4";
@@ -872,7 +916,15 @@ function canonicalModel(model: string): string {
   if (unqualified.startsWith("gpt-5.1")) return "gpt-5.1";
   if (unqualified.startsWith("gpt-5-mini")) return "gpt-5-mini";
   if (unqualified.startsWith("gpt-5-nano")) return "gpt-5-nano";
-  if (unqualified.startsWith("gpt-5")) return "gpt-5";
+  // gpt-5 itself, its dated snapshots and gpt-5-codex, which OpenAI prices
+  // the same. A dotted minor (gpt-5.5, gpt-5.6-sol) is another model and
+  // stays unpriced unless it has its own entry above.
+  if (
+    unqualified === "gpt-5-codex" ||
+    isModelOrDatedSnapshot(unqualified, "gpt-5")
+  ) {
+    return "gpt-5";
+  }
   if (unqualified.startsWith("o1-mini")) return "o1-mini";
   if (unqualified.startsWith("o1-preview")) return "o1-preview";
   if (unqualified.startsWith("o1-pro")) return "o1-pro";
