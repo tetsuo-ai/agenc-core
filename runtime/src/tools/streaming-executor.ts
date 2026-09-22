@@ -67,6 +67,10 @@ import {
 } from "./router.js";
 import { resolveTimeoutMs, parseToolArgsWithBigInt } from "./execution.js";
 import { normalizeModelToolArgs } from "./argument-validation.js";
+import {
+  formatUnknownToolMessage,
+  suggestAvailableToolName,
+} from "./tool-name-suggestion.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import type { Tool } from "./types.js";
 import {
@@ -541,7 +545,9 @@ export class StreamingToolExecutor {
    * pre-synthesize a deterministic `No such tool available` terminal
    * result and mark the tracked tool `completed`. That guarantees
    * every `tool_use` block receives a paired `tool_result` and keeps
-   * the model from seeing orphaned tool calls on the next turn.
+   * the model from seeing orphaned tool calls on the next turn. When a
+   * registered tool clearly matches the name (`Read` -> `FileRead`), the
+   * error names it; the call itself is never redirected.
    */
   addTool(block: ToolUseBlock, toolCall: LLMToolCall): void {
     if (this.closed || this.isAborting) {
@@ -587,11 +593,17 @@ export class StreamingToolExecutor {
     // Unknown-tool short-circuit (AgenC StreamingToolExecutor.ts:77-102).
     const isKnown = this.isKnownToolCall(toolCall);
     if (!isKnown) {
+      // Never an alias: the call fails here. With a clear match, the error
+      // names the tool this session can call instead.
+      const message = formatUnknownToolMessage(
+        toolCall.name,
+        this.suggestToolName(toolCall.name),
+      );
       const syntheticResult: ToolDispatchResult = {
         content: JSON.stringify({
           tool_use_id: toolCall.id,
           is_error: true,
-          content: `<tool_use_error>Error: No such tool available: ${toolCall.name}</tool_use_error>`,
+          content: `<tool_use_error>Error: ${message}</tool_use_error>`,
         }),
         isError: true,
       };
@@ -917,6 +929,31 @@ export class StreamingToolExecutor {
 
   private resolveModelToolName(toolName: string): string {
     return toolName;
+  }
+
+  /**
+   * The closest tool this session can call for an unknown name. Tools the
+   * model was offered, whose schema it already has, come first; then any
+   * registered tool. Never throws: the call still needs its terminal result.
+   */
+  private suggestToolName(requested: string): string | undefined {
+    try {
+      const available = new Set(this.registry.tools.map((tool) => tool.name));
+      for (const spec of this.liveToolDispatch?.router.getSpecs() ?? []) {
+        available.add(spec.tool.name);
+      }
+      const offered =
+        this.liveToolDispatch?.options.advertisedToolNames ??
+        this.registry.toLLMTools().map((tool) => tool.function.name);
+      return (
+        suggestAvailableToolName(
+          requested,
+          offered.filter((name) => available.has(name)),
+        ) ?? suggestAvailableToolName(requested, available)
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   private isKnownToolCall(toolCall: LLMToolCall): boolean {

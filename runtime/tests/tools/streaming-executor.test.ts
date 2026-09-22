@@ -645,6 +645,112 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(results).toHaveLength(1);
     expect(results[0]!.result.isError).toBe(true);
     expect(results[0]!.result.content).toContain("No such tool available: Read");
+    // Not an alias: the call fails, and the error names the real tool.
+    expect(JSON.parse(results[0]!.result.content)).toEqual({
+      tool_use_id: "read-alias",
+      is_error: true,
+      content:
+        "<tool_use_error>Error: No such tool available: Read. " +
+        "The closest available tool is FileRead, which has its own parameters.</tool_use_error>",
+    });
+  });
+
+  test("unknown foreign tool names get the closest available tool, never a dispatch", async () => {
+    const dispatch = vi.fn(async () => ({ content: "must not dispatch" }));
+    const tools = ["FileRead", "Edit", "Write", "exec_command", "Grep"].map(
+      (name) => testTool({ name }),
+    );
+    const exec = new StreamingToolExecutor(mockGuardedDispatch(dispatch, tools));
+    const calls = [
+      ["c-read", "Read", "FileRead"],
+      ["c-edit", "edit_file", "Edit"],
+      ["c-write", "write_file", "Write"],
+      ["c-bash", "bash", "exec_command"],
+      ["c-grep", "grep", "Grep"],
+    ] as const;
+    for (const [id, name] of calls) exec.addTool(makeBlock(id, name), makeCall(id, name));
+    exec.close();
+
+    const results = [];
+    for await (const result of exec.getRemainingResults()) results.push(result);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    // Every tool_use still gets exactly one paired terminal result.
+    expect(results.map((result) => result.toolCall.id)).toEqual(calls.map(([id]) => id));
+    for (const [index, [id, name, suggestion]] of calls.entries()) {
+      expect(results[index]!.result.isError).toBe(true);
+      expect(JSON.parse(results[index]!.result.content)).toEqual({
+        tool_use_id: id,
+        is_error: true,
+        content:
+          `<tool_use_error>Error: No such tool available: ${name}. ` +
+          `The closest available tool is ${suggestion}, which has its own parameters.</tool_use_error>`,
+      });
+    }
+  });
+
+  test("unknown tool suggestions come only from tools the session has", async () => {
+    const exec = new StreamingToolExecutor(
+      mockGuardedDispatch(async () => ({ content: "must not dispatch" }), [
+        testTool({ name: "Grep" }),
+      ]),
+    );
+    exec.addTool(makeBlock("c-read", "Read"), makeCall("c-read", "Read"));
+    exec.close();
+    const results = [];
+    for await (const result of exec.getRemainingResults()) results.push(result);
+    expect(JSON.parse(results[0]!.result.content).content).toBe(
+      "<tool_use_error>Error: No such tool available: Read</tool_use_error>",
+    );
+  });
+
+  test("unknown tool suggestions prefer a tool the model was offered", async () => {
+    const glob = testTool({ name: "Glob" });
+    const listDir = testTool({ name: "system.listDir", metadata: { deferred: true } });
+    const registry: ToolRegistry = {
+      tools: [glob, listDir],
+      // A deferred tool is registered but its schema was not sent.
+      toLLMTools: () => [
+        { type: "function", function: { name: "Glob", description: "", parameters: {} } },
+      ],
+      dispatch: async () => ({ content: "must not dispatch" }),
+    };
+    const liveOptions = {
+      session: {
+        eventLog: new EventLog(),
+        services: { admissionRequired: false },
+      } as never,
+      turn: { subId: "turn-suggest" } as never,
+      tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
+      approvalPolicy: "never" as const,
+      sandboxMode: "workspace_write" as const,
+    };
+    const suggestionFor = async (advertisedToolNames?: readonly string[]) => {
+      const exec = new StreamingToolExecutor({
+        registry,
+        liveToolDispatch: {
+          router: routerFromRegistry(registry),
+          options: {
+            ...liveOptions,
+            ...(advertisedToolNames !== undefined ? { advertisedToolNames } : {}),
+          },
+        },
+      });
+      exec.addTool(makeBlock("c-ls", "ls"), makeCall("c-ls", "ls"));
+      exec.close();
+      const results = [];
+      for await (const result of exec.getRemainingResults()) results.push(result);
+      return JSON.parse(results[0]!.result.content).content as string;
+    };
+
+    expect(await suggestionFor()).toContain("The closest available tool is Glob,");
+    expect(await suggestionFor(["Glob", "system.listDir"])).toContain(
+      "The closest available tool is system.listDir,",
+    );
+    // With nothing offered that matches, any registered tool still counts.
+    expect(await suggestionFor([])).toContain(
+      "The closest available tool is system.listDir,",
+    );
   });
 
   test("external abort reasons are preserved in synthetic terminal results", async () => {
@@ -807,6 +913,10 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
     expect(results[0]!.id).toBe("u1");
     expect(results[0]!.isError).toBe(true);
     expect(results[0]!.content).toContain("No such tool available: no.such.tool");
+    // No clear match: the error text is unchanged.
+    expect(JSON.parse(results[0]!.content).content).toBe(
+      "<tool_use_error>Error: No such tool available: no.such.tool</tool_use_error>",
+    );
   });
 
   test("addTool on a closed executor still emits a synthetic completion (regression: pwd-storm silent drop)", async () => {
