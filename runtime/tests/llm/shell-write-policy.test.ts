@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,11 @@ import {
 } from "../../src/llm/shell-write-policy.js";
 
 const WORKSPACE_ROOT = "/repo";
+
+/** A sed target under /tmp, named as the filesystem reaches it (/private/tmp on macOS). */
+function realTmp(name: string): string {
+  return join(realpathSync("/tmp"), name);
+}
 
 function classify(
   command: string,
@@ -378,6 +383,12 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
     expect(decision.blockedTargets).toContain("/repo/src/output.txt");
   });
 
+  it("keeps refusing a sed write into a protected path under tmp", () => {
+    const decision = classifyBypassed("sed -i 's/a/b/' tmp/.git/config");
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/tmp/.git/config"]);
+  });
+
   it("names the file a sed -i edits, never its script", () => {
     // The shape a Linux tester hit in Bypass mode on the release candidate.
     const decision = classifyBypassed("sed -i 's/color = blue/color = red/' config/theme.toml");
@@ -476,7 +487,7 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     ["sed -i 's|src/old dir/|src/new dir/|g' tmp/paths.txt", ["/repo/tmp/paths.txt"]],
     ["sed -i -E 's/[0-9]+$//; /^$/d' tmp/log.txt", ["/repo/tmp/log.txt", "/repo/tmp/log.txt-E"]],
     ["sed -n -i '/keep/p' tmp/file.txt", ["/repo/tmp/file.txt"]],
-    ["sed -i 's/a/b/' /tmp/scratch.txt", ["/tmp/scratch.txt"]],
+    ["sed -i 's/a/b/' /tmp/scratch.txt", [realTmp("scratch.txt")]],
     ["sed -i 's/a/b/' ../sibling/notes.txt", ["/sibling/notes.txt"]],
     ["sed -i 's/a/b/' dist/app.js build/app.js", ["/repo/dist/app.js", "/repo/build/app.js"]],
     // BSD takes -s and -z, which it does not have, as the backup suffix.
@@ -553,8 +564,8 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     });
 
     it.each([
-      ["sed -i 's/a/b/' /tmp/w.txt", ["/tmp/w.txt"]],
-      ["sed -i 's/a/b/' /var/www/html/index.html", ["/var/www/html/index.html"]],
+      ["sed -i 's/a/b/' /tmp/w.txt", [realTmp("w.txt")]],
+      ["sed -i 's/a/b/' /tmp/www/index.html", [realTmp("www/index.html")]],
       ["sed -i .bak -e 's/a/b/' tmp/file.txt", ["/repo/tmp/file.txt"]],
       ["sed -i p 'w src/out' tmp/input", ["/repo/tmp/input"]],
     ])("counts only GNU sed's writes on Linux: %s", (command, observedTargets) => {
@@ -742,6 +753,48 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
     expect(decision.blocked).toBe(true);
   });
 
+  describe("protected paths", () => {
+    it.each([
+      ["sed -i 's/a/b/' tmp/.git/config", ["/repo/tmp/.git/config"]],
+      ["sed -n 'w tmp/.git/config' tmp/input", ["/repo/tmp/.git/config"]],
+      ["sed -n 'w /nobody-home/.bashrc' tmp/input", ["/nobody-home/.bashrc"]],
+      ["sed -i 's/a/b/' /nobody-home/.gitconfig", ["/nobody-home/.gitconfig"]],
+      ["sed 's/a/b/w dist/.agenc/state.json' tmp/input", ["/repo/dist/.agenc/state.json"]],
+    ])("refuses a protected path under a generated directory or outside the workspace: %s", (command, blockedTargets) => {
+      const decision = classify(command);
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedTargets).toEqual(blockedTargets);
+      expect(decision.message).toContain("may not write protected paths");
+    });
+
+    it("refuses a write into the AgenC home", () => {
+      const decision = classifyShellWorkspaceWritePolicy({
+        toolName: "exec_command",
+        args: { command: "sed -n 'w /Users/dev/agenc-home/state.json' tmp/input" },
+        workspaceRoot: WORKSPACE_ROOT,
+        protectedRoots: ["/Users/dev/agenc-home"],
+        platform: "darwin",
+      });
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedTargets).toEqual(["/Users/dev/agenc-home/state.json"]);
+    });
+
+    it("protects only what is below the root of a worktree placed under .agenc", () => {
+      const inWorktree = (command: string) =>
+        classifyShellWorkspaceWritePolicy({
+          toolName: "exec_command",
+          args: { command },
+          workspaceRoot: "/Users/dev/.agenc/worktrees/project",
+          platform: "darwin",
+        });
+
+      expect(inWorktree("sed -i 's/a/b/' tmp/notes.txt").blocked).toBe(false);
+      expect(inWorktree("sed -i 's/a/b/' tmp/.git/config").blocked).toBe(true);
+    });
+  });
+
   it.each([
     ['sed -n "/foo$/p" src/app.ts', []],
     ['sed -n "s/foo$/bar/p" src/app.ts', []],
@@ -845,9 +898,14 @@ describe("classifyShellWorkspaceWritePolicy for sed", () => {
 
 describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => {
   let workspace = "";
+  let home = "";
 
   beforeAll(() => {
     workspace = mkdtempSync(join(tmpdir(), "sed-policy-"));
+    home = mkdtempSync(join(tmpdir(), "sed-policy-home-"));
+    writeFileSync(join(home, ".gitconfig"), "[user]\n");
+    mkdirSync(join(workspace, ".git"));
+    writeFileSync(join(workspace, ".git", "config"), "[core]\n");
     mkdirSync(join(workspace, "src"));
     mkdirSync(join(workspace, "tmp"));
     writeFileSync(join(workspace, ".env"), "KEY=1\n");
@@ -858,10 +916,14 @@ describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => 
     symlinkSync("../src/app.ts", join(workspace, "tmp", "link"));
     symlinkSync("../src", join(workspace, "tmp", "dirlink"));
     symlinkSync("../src/missing.ts", join(workspace, "tmp", "dangling"));
+    symlinkSync("../.git", join(workspace, "tmp", "gitlink"));
+    symlinkSync("../missing-dir", join(workspace, "tmp", "nowhere"));
+    symlinkSync(join(home, ".gitconfig"), join(workspace, "tmp", "outlink"));
   });
 
   afterAll(() => {
     rmSync(workspace, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   });
 
   function classifyIn(command: string, platform: NodeJS.Platform = "darwin") {
@@ -903,6 +965,44 @@ describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => 
       expect(decision.blocked).toBe(true);
       expect(decision.blockedTargets).toEqual(targets.map((target) => join(workspace, target)));
     }
+  });
+
+  it.each([
+    ["sed -i 's/a/b/' tmp/gitlink/config", [".git/config"]],
+    ["sed -i.bak 's/a/b/' tmp/gitlink/config", [".git/config", ".git/config.bak"]],
+  ])("resolves the directory of an in-place file through symlinks: %s", (command, targets) => {
+    const decision = classifyIn(command);
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(targets.map((target) => join(workspace, target)));
+    expect(decision.message).toContain("may not write protected paths");
+  });
+
+  it("judges an in-place file in a linked directory where it lands, and a linked file as written", () => {
+    // tmp/dirlink is ../src, so this replaces src/app.ts.
+    const throughDirectory = classifyIn("sed -i 's/a/b/' tmp/dirlink/app.ts");
+    expect(throughDirectory.blocked).toBe(true);
+    expect(throughDirectory.blockedTargets).toEqual([join(workspace, "src/app.ts")]);
+
+    // sed -i replaces the link tmp/link itself, not src/app.ts.
+    const leafLink = classifyIn("sed -i 's/a/b/' tmp/link");
+    expect(leafLink.blocked).toBe(false);
+    expect(leafLink.observedTargets).toEqual([join(workspace, "tmp/link")]);
+  });
+
+  it("fails closed on an in-place file behind a directory link to nothing", () => {
+    const decision = classifyIn("sed -i 's/a/b/' tmp/nowhere/x");
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+  });
+
+  it("refuses a w file that reaches a protected file outside the workspace", () => {
+    const decision = classifyIn("sed -n 'w tmp/outlink' tmp/input");
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual([join(realpathSync(home), ".gitconfig")]);
+    expect(decision.message).toContain("may not write protected paths");
   });
 
   it("edits a word the readings dispute only when it is a file", () => {

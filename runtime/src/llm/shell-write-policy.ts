@@ -164,6 +164,11 @@ interface ShellMove {
 
 interface ShellWriteTargetCollection {
   targets: string[];
+  /**
+   * Targets whose protected-path check runs before the generated-root and
+   * outside-workspace exemptions (sed's, which are resolved through symlinks).
+   */
+  protectedFirstTargets: string[];
   deletions: string[];
   moves: ShellMove[];
   indeterminate: boolean;
@@ -185,7 +190,7 @@ function resolveWorkingDirectory(
 }
 
 function emptyTargetCollection(): ShellWriteTargetCollection {
-  return { targets: [], deletions: [], moves: [], indeterminate: false };
+  return { targets: [], protectedFirstTargets: [], deletions: [], moves: [], indeterminate: false };
 }
 
 function indeterminateTargetCollection(): ShellWriteTargetCollection {
@@ -201,6 +206,7 @@ function mergeTargetCollections(
   from: ShellWriteTargetCollection,
 ): void {
   for (const target of from.targets) pushUnique(into.targets, target);
+  for (const target of from.protectedFirstTargets) pushUnique(into.protectedFirstTargets, target);
   for (const target of from.deletions) pushUnique(into.deletions, target);
   into.moves.push(...from.moves);
   into.indeterminate ||= from.indeterminate;
@@ -504,6 +510,16 @@ function resolveWriteThroughSymlinks(path: string, workspaceRoot: string): strin
 }
 
 /**
+ * The file `sed -i` replaces: its directory as the filesystem reaches it,
+ * its name as written, since sed replaces a symlink there rather than the
+ * file it points to. Undefined when the directory cannot be resolved.
+ */
+function resolveInPlaceTarget(path: string, workspaceRoot: string): string | undefined {
+  const directory = resolveWriteThroughSymlinks(dirname(path), workspaceRoot);
+  return directory === undefined ? undefined : join(directory, basename(path));
+}
+
+/**
  * `sed` writes its in-place files, their backups, and the files its script
  * names in `w` commands. The script itself is not a path. Names are taken
  * exactly as sed opens them, blanks included. An in-place edit replaces the
@@ -522,18 +538,23 @@ function collectSedWriteTargets(params: {
   const writes = analyzeSedWrites(params.args, params.argsRequiringExpansion, { bsd: params.bsd });
   const collection = emptyTargetCollection();
   collection.indeterminate = writes.indeterminate;
+  const addTarget = (name: string, reached: string | undefined): void => {
+    if (reached === undefined) collection.indeterminate = true;
+    const target = reached ?? resolvePath(cwd, name);
+    pushUnique(collection.targets, target);
+    pushUnique(collection.protectedFirstTargets, target);
+  };
   // sed opens the `w` files while it compiles, before it edits anything.
   for (const name of writes.scriptWrites) {
     if (isSafePseudoDevicePath(name)) continue;
-    const reached = resolveWriteThroughSymlinks(kernelPath(cwd, name), environment.workspaceRoot);
-    if (reached === undefined) collection.indeterminate = true;
-    pushUnique(collection.targets, reached ?? resolvePath(cwd, name));
+    addTarget(name, resolveWriteThroughSymlinks(kernelPath(cwd, name), environment.workspaceRoot));
   }
   for (const edit of writes.edits) {
     // sed -i never creates a file.
     if (edit.onlyIfExists && !pathExists(kernelPath(cwd, edit.file))) continue;
-    pushUnique(collection.targets, resolvePath(cwd, edit.file));
-    if (edit.backup !== undefined) pushUnique(collection.targets, resolvePath(cwd, edit.backup));
+    for (const name of edit.backup === undefined ? [edit.file] : [edit.file, edit.backup]) {
+      addTarget(name, resolveInPlaceTarget(kernelPath(cwd, name), environment.workspaceRoot));
+    }
   }
   // The commands an `e` runs already make the result indeterminate; their
   // known targets are still checked.
@@ -813,6 +834,30 @@ function isDangerousRemovalRoot(absolutePath: string): boolean {
   return normalized === homedir().replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
+/**
+ * A path no shell command may write: a .git, .agenc or .agents directory, a
+ * shell or git config file, or the AgenC home. Inside the workspace only the
+ * part below its root counts, so a worktree placed under .agenc is not
+ * protected as a whole.
+ */
+function isProtectedWriteTarget(
+  absolutePath: string,
+  workspaceRoot: string,
+  protectedRoots: readonly string[],
+): boolean {
+  const relation = workspaceRelation(workspaceRoot, absolutePath);
+  const named = relation === "outside" ? absolutePath : relative(workspaceRoot, absolutePath);
+  if (named.split(/[\\/]/).some((segment) => PROTECTED_DELETION_SEGMENTS.has(segment))) {
+    return true;
+  }
+  if (PROTECTED_DELETION_FILES.has(basename(absolutePath))) return true;
+  return protectedRoots.some(
+    (root) =>
+      (absolutePath === root || isStrictlyUnder(root, absolutePath)) &&
+      (relation === "outside" || workspaceRelation(root, workspaceRoot) === "outside"),
+  );
+}
+
 function isProtectedDeletionPath(
   absolutePath: string,
   workspaceRoot: string,
@@ -891,6 +936,16 @@ function buildPolicyMessage(blockedTargets: readonly string[]): string {
     (blockedTargets.length > 0
       ? ` Blocked target(s): ${blockedTargets.join(", ")}`
       : "")
+  );
+}
+
+function buildProtectedWritePolicyMessage(blockedTargets: readonly string[]): string {
+  return (
+    "shell_workspace_file_write_disallowed: shell commands may not write protected " +
+    "paths (.git, .agenc, .agents, the AgenC home, shell and git config files), " +
+    "including through a symlink or under tmp and the other generated directories; " +
+    "ask the user to change them themselves. Blocked target(s): " +
+    blockedTargets.join(", ")
   );
 }
 
@@ -1004,18 +1059,28 @@ export function classifyShellWorkspaceWritePolicy(
     }
   }
 
-  const blockedTargets = writes.filter(
+  const protectedRoots = params.protectedRoots ?? [];
+  // A protected path stays refused under a generated root and outside the
+  // workspace. For now only sed's targets are checked this way.
+  const protectedTargets = writes.filter(
     (target) =>
+      collected.protectedFirstTargets.includes(target) &&
+      isProtectedWriteTarget(target, workspaceRoot, protectedRoots),
+  );
+  const routedTargets = writes.filter(
+    (target) =>
+      !protectedTargets.includes(target) &&
       workspaceRelation(workspaceRoot, target) === "inside" &&
       !isWorkspaceGeneratedOutputPath(workspaceRoot, target),
   );
+  const blockedTargets = [...protectedTargets, ...routedTargets];
   const deletionTargets: string[] = [];
   const blockedDeletions: string[] = [];
   const deletionReasons = new Set<DeletionBlockReason>();
   const bypassesApprovalsAndSandbox = params.bypassesApprovalsAndSandbox === true;
   const deletionScope: DeletionPolicyScope = {
     workspaceRoot,
-    protectedRoots: params.protectedRoots ?? [],
+    protectedRoots,
     additionalRoots: (params.additionalRoots ?? []).map((root) => resolvePath(root)),
     allowWorkspaceDeletions: params.allowWorkspaceDeletions === true,
     bypassesApprovalsAndSandbox,
@@ -1036,7 +1101,10 @@ export function classifyShellWorkspaceWritePolicy(
   const observedTargets = [...writes];
   for (const target of removals) pushUnique(observedTargets, target);
   const messages: string[] = [];
-  if (blockedTargets.length > 0) messages.push(buildPolicyMessage(blockedTargets));
+  if (protectedTargets.length > 0) {
+    messages.push(buildProtectedWritePolicyMessage(protectedTargets));
+  }
+  if (routedTargets.length > 0) messages.push(buildPolicyMessage(routedTargets));
   if (blockedDeletions.length > 0) {
     messages.push(buildDeletionPolicyMessage(deletionReasons, blockedDeletions));
   }
