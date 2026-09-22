@@ -334,6 +334,18 @@ const COST_TIER_OPUS_5_25: Readonly<ModelCostEntry> = Object.freeze({
   webSearchUsdPerRequest: 0.01,
 });
 
+// Claude Opus 5.5 at $4/$20 (platform.claude.com pricing, 2026-09-22). Cache
+// reads cost 0.05x base input ($0.20/MTok), not the usual 0.1x; the 5-minute
+// cache write is the standard 1.25x ($5/MTok). Like the other tiers, the
+// 1-hour write ($8/MTok) and fast mode ($8/$40) have no separate rate here.
+const COST_TIER_OPUS_5_5_4_20: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.004,
+  outputUsdPer1K: 0.02,
+  cachedInputUsdPer1K: 0.0002,
+  cacheCreationUsdPer1K: 0.005,
+  webSearchUsdPerRequest: 0.01,
+});
+
 // Claude Fable 5 / 5.1 at $10/$50 and Claude Sonnet 5 at $2/$10
 // (platform.claude.com models overview, 2026-09-11).
 const COST_TIER_FABLE_10_50: Readonly<ModelCostEntry> = Object.freeze({
@@ -472,6 +484,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "claude-fable-5-1": COST_TIER_FABLE_10_50,
     "anthropic:claude-fable-5": COST_TIER_FABLE_10_50,
     "claude-fable-5": COST_TIER_FABLE_10_50,
+    "anthropic:claude-opus-5-5": COST_TIER_OPUS_5_5_4_20,
+    "claude-opus-5-5": COST_TIER_OPUS_5_5_4_20,
     "anthropic:claude-opus-5": COST_TIER_OPUS_5_25,
     "claude-opus-5": COST_TIER_OPUS_5_25,
     "anthropic:claude-sonnet-5": COST_TIER_SONNET_2_10,

@@ -399,11 +399,12 @@ export function buildAnthropicMessagesRequest(
   // by omitting any forced tool_choice (falling back to auto) whenever
   // thinking will be enabled on this request.
   //
-  // Task 28: on the Fable/Mythos 5 family thinking is ALWAYS on server-side
-  // regardless of `reasoningEffort`, so the forced-tool_choice constraint
-  // applies unconditionally there. The docs do not state that the family
-  // relaxed the forced-tool_choice-with-thinking rule, so we conservatively
-  // keep it (falling back to auto never 400s; forcing could).
+  // Task 28: on the always-on family (Fable/Mythos 5, Opus 5.5) thinking is
+  // ALWAYS on server-side regardless of `reasoningEffort`, so the
+  // forced-tool_choice constraint applies unconditionally there. Fable 5.1
+  // and Opus 5.5 reject forced tool use outright ("tool_choice: type "tool"
+  // and "any" are not supported for this model", Opus 5.5 migration guide,
+  // 2026-09-22); falling back to auto never 400s.
   const thinkingEnabled =
     alwaysOnThinking || input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
@@ -418,11 +419,11 @@ export function buildAnthropicMessagesRequest(
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     };
   }
-  // Task 28: never attach a `thinking` config for the Fable/Mythos 5
-  // family — thinking is always on and any explicit configuration other
-  // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)
-  // returns a 400; omitting the param runs adaptive thinking. Depth is the
-  // effort parameter's job on that family.
+  // Task 28: never attach a `thinking` config for the always-on family
+  // (Fable/Mythos 5, Opus 5.5): thinking is always on and any explicit
+  // configuration other than `{type:"adaptive"}` (incl. `disabled` and
+  // `enabled`/budget_tokens) returns a 400; omitting the param runs adaptive
+  // thinking. Depth is the effort parameter's job on that family.
   //
   // Opus 5, Sonnet 5, Opus 4.8 and Opus 4.7 return the same 400 for
   // `enabled` + `budget_tokens` ("Use thinking.type.adaptive and

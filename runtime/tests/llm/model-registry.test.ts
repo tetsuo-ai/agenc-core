@@ -78,6 +78,8 @@ describe("ModelRegistry", () => {
       },
     ]);
     expect(tiersFor("anthropic", "claude-opus-4-8").map((tier) => tier.id)).toEqual(["priority"]);
+    // Opus 5.5 fast mode is $8/$40, the same 2x multiple (fast-mode doc, 2026-09-22).
+    expect(tiersFor("anthropic", "claude-opus-5-5")).toEqual(tiersFor("anthropic", "claude-opus-5"));
     // Sonnet 5 and Fable have no fast mode; the dial must not offer one.
     expect(tiersFor("anthropic", "claude-sonnet-5")).toEqual([]);
     expect(tiersFor("anthropic", "claude-fable-5-1")).toEqual([]);

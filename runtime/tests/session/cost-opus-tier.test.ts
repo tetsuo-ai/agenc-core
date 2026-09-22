@@ -63,6 +63,55 @@ describe("session cost — Opus 4.5-4.8 priced at $5/$25 (not $15/$75)", () => {
     expect(future.costUsd).toBeCloseTo(EXPECTED_5_25, 6);
   });
 
+  // Claude Opus 5.5 (platform.claude.com pricing, 2026-09-22): $4 input,
+  // $20 output, $5 5-minute cache writes and $0.20 cache reads per MTok, so
+  // cache hits cost 0.05x base input instead of the usual 0.1x.
+  // 100k in + 100k out + 1M cache reads + 100k cache writes:
+  //   Opus 5.5: 0.4 + 2.0 + 0.2 + 0.5   = 3.1
+  //   Opus 5:   0.5 + 2.5 + 0.5 + 0.625 = 4.125
+  const withCache = (model: string, provider?: string): ModelUsage => ({
+    ...usage(model),
+    ...(provider !== undefined ? { provider } : {}),
+    cachedInputTokens: 1_000_000,
+    cacheCreationInputTokens: 100_000,
+  });
+
+  it.each([
+    ["claude-opus-5-5", undefined, "claude-opus-5-5"],
+    ["claude-opus-5-5", "anthropic", "anthropic:claude-opus-5-5"],
+  ])("prices %s (provider %s) on the Opus 5.5 tier", (model, provider, key) => {
+    const result = computeUsdCostWithResolution(
+      withCache(model, provider),
+      DEFAULT_MODEL_COSTS,
+    );
+    expect(result.known).toBe(true);
+    expect(result.matchedKey).toBe(key);
+    expect(result.costUsd).toBeCloseTo(3.1, 6);
+  });
+
+  it("bills Opus 5.5 cache reads at 5% of input, half of Opus 5's 10%", () => {
+    const readsOnly = (model: string): ModelUsage => ({
+      ...usage(model),
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 1_000_000,
+      totalTokens: 1_000_000,
+    });
+    expect(computeUsdCost(readsOnly("claude-opus-5-5"), DEFAULT_MODEL_COSTS))
+      .toBeCloseTo(0.2, 6);
+    expect(computeUsdCost(readsOnly("claude-opus-5"), DEFAULT_MODEL_COSTS))
+      .toBeCloseTo(0.5, 6);
+  });
+
+  it("keeps Claude Opus 5 on the 5-over-25 tier", () => {
+    const result = computeUsdCostWithResolution(
+      withCache("claude-opus-5"),
+      DEFAULT_MODEL_COSTS,
+    );
+    expect(result.matchedKey).toBe("claude-opus-5");
+    expect(result.costUsd).toBeCloseTo(4.125, 6);
+  });
+
   // M-COST-2: the background-agent dollar_cap path calls computeUsdCost(usage,
   // DEFAULT_MODEL_COSTS) directly (background-agent-runner.ts). Pin that this
   // function — not just the resolution wrapper the sidecar uses — also prices

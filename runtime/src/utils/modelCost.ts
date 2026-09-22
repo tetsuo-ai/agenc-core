@@ -12,6 +12,7 @@ import {
   AGENC_OPUS_4_7_CONFIG,
   AGENC_FABLE_5_CONFIG,
   AGENC_FABLE_5_1_CONFIG,
+  AGENC_OPUS_5_5_CONFIG,
   AGENC_OPUS_5_CONFIG,
   AGENC_SONNET_5_CONFIG,
   AGENC_OPUS_4_8_CONFIG,
@@ -80,6 +81,17 @@ export const COST_TIER_10_50 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// Pricing tier for Claude Opus 5.5: $4 input / $20 output per Mtok
+// (platform.claude.com pricing, 2026-09-22). Cache write = 1.25x input, but
+// cache read = 0.05x input ($0.20), half the ratio of the other tiers.
+export const COST_TIER_4_20 = {
+  inputTokens: 4,
+  outputTokens: 20,
+  promptCacheWriteTokens: 5,
+  promptCacheReadTokens: 0.2,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Pricing tier for Claude Sonnet 5: $2 input / $10 output per Mtok
 // (platform.claude.com models overview, 2026-09-11). Same cache ratios as
 // the other first-party tiers.
@@ -114,6 +126,8 @@ function firstPartyNameToCanonicalForCost(name: string): ModelShortName {
   const normalized = name.toLowerCase()
   if (normalized.includes('claude-fable-5-1')) return 'claude-fable-5-1'
   if (normalized.includes('claude-fable-5')) return 'claude-fable-5'
+  // Before opus-5: 'claude-opus-5-5' contains 'claude-opus-5'.
+  if (normalized.includes('claude-opus-5-5')) return 'claude-opus-5-5'
   if (normalized.includes('claude-opus-5')) return 'claude-opus-5'
   if (normalized.includes('claude-sonnet-5')) return 'claude-sonnet-5'
   if (normalized.includes('claude-opus-4-8')) return 'claude-opus-4-8'
@@ -188,6 +202,9 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_TIER_10_50,
   [firstPartyNameToCanonicalForCost(AGENC_OPUS_5_CONFIG.firstParty)]:
     COST_TIER_5_25,
+  // Opus 5.5 (platform.claude.com, 2026-09-22): $4/$20, cache reads 0.05x.
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_5_5_CONFIG.firstParty)]:
+    COST_TIER_4_20,
   [firstPartyNameToCanonicalForCost(AGENC_SONNET_5_CONFIG.firstParty)]:
     COST_TIER_2_10,
 }

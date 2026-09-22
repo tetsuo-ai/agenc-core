@@ -93,6 +93,26 @@ it.each(catalog.filter(row => row.provider === "anthropic"))(
   });
 
 
+// Opus 5.5 is not in the Desktop fixture yet. Before it had its own effort
+// row, the empty contract seeded a configured max as xhigh, clamped it to
+// high, and the wire then dropped output_config.effort altogether.
+it("carries every Claude Opus 5.5 tier from config seed to the wire", () => {
+  const row = { provider: "anthropic", model: "claude-opus-5-5" };
+  const levels = ["low", "medium", "high", "xhigh", "max"] as const;
+  expect(resolveReasoningEffort(row).levels).toEqual(levels);
+  for (const effort of levels) {
+    const seed = sessionConfigurationFromAgenCConfig({ config: { reasoning_effort: effort },
+      workspaceRoot: process.cwd(), ...row }).collaborationMode.reasoningEffort;
+    expect(seed).toBe(effort);
+    const normalized = resolveSessionReasoningEffort(seed, [], row);
+    expect(normalized).toBe(effort);
+    const body = buildAnthropicMessagesRequest({ model: row.model, messages: [], tools: [],
+      maxTokens: 4096, options: { reasoningEffort: normalized } });
+    expect(body.output_config).toEqual({ effort });
+    expect(body.thinking).toBeUndefined();
+  }
+});
+
 it.each([
   { provider: "openai", model: "gpt-5.6-sol-unverified" },
   { provider: "grok", model: "grok-4-20-multi-agent-unverified" },

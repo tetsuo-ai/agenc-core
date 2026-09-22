@@ -132,6 +132,21 @@ describe("provider/model configuration authority", () => {
     });
   });
 
+  test("a bare Claude Opus 5.5 slug selects Anthropic from another provider", () => {
+    const base = mergeConfigs(defaultConfig(), {
+      model_provider: "openai",
+      model: "gpt-5",
+    });
+
+    expect(
+      resolveProviderModelLayer(base, { model: "claude-opus-5-5" }),
+    ).toMatchObject({ model_provider: "anthropic", model: "claude-opus-5-5" });
+    // Opus 5 is legacy but stays selectable the same way.
+    expect(
+      resolveProviderModelLayer(base, { model: "claude-opus-5" }),
+    ).toMatchObject({ model_provider: "anthropic", model: "claude-opus-5" });
+  });
+
   test("unknown model-only partial layers remain partial without a provider", () => {
     expect(
       resolveProviderModelLayer({}, { model: "profile-private-model" }),
@@ -275,7 +290,7 @@ describe("provider/model configuration authority", () => {
       mergeProviderModelLayer(defaultConfig(), { model_provider: "anthropic" }),
     ).toMatchObject({
       model_provider: "anthropic",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
     });
   });
 });

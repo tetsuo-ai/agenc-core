@@ -359,6 +359,10 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-fable-5')) {
     return 'claude-fable-5'
   }
+  // Before opus-5: 'claude-opus-5-5' contains 'claude-opus-5'.
+  if (name.includes('claude-opus-5-5')) {
+    return 'claude-opus-5-5'
+  }
   if (name.includes('claude-opus-5')) {
     return 'claude-opus-5'
   }
