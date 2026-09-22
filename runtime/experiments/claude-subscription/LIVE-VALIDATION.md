@@ -115,3 +115,19 @@ Attachment fixtures need Pillow and DejaVuSans; browser uses local Chrome.
 Subscription billing attribution was not inspected. The validated attachment
 path is daemon CLI input; these results do not establish outgoing attachment
 delivery or every desktop attachment interaction through Claude.
+
+## PR preparation after updating main
+
+Rebased onto Core `000fd2f8`. Upstream #2650 supersedes the nested-agent
+fixture repair and fixes several failures in the historical full-suite report.
+After resolving overlap, 98 selected provider/catalog, model-facing tool,
+hermetic-environment, browser and sandbox assertions passed under the hermetic
+runner, with no failures or skips. Runtime/test-support typechecks passed.
+The full-suite counts above are historical; the entire suite was not rerun after
+this rebase. Live browser completion remains a known qualification failure.
+
+The companion Desktop change adds explicit account OAuth/API selection and
+passes 63 authentication/discovery tests after rebasing onto Desktop `f3f3cdd`.
+Before that rebase, its real Electron bridge created a new session with explicit
+OAuth preference and received `CLAUDE_OAUTH_OK`; the durable turn result identified
+`claude-subscription-experimental`, with model `claude-sonnet-5`.
