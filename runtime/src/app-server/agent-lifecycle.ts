@@ -454,6 +454,11 @@ interface AgenCDaemonSnapshotRoute {
 interface AgentAttachmentTarget {
   readonly agentId: string;
   readonly sessionIds: readonly string[];
+  /**
+   * The daemon restored this agent's records at startup but not its runtime
+   * (see `isRecoveredRuntimeUnavailable`); only a client resume revives it.
+   */
+  readonly recoveredRuntimeUnavailable: boolean;
 }
 
 interface AgentLifecycleState {
@@ -1635,6 +1640,17 @@ export class AgenCDaemonAgentManager {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
         `daemon session ${session.sessionId} has no valid runtime-options authority`,
+      );
+    }
+    // A daemon restart restores the records of a run whose runtime it could
+    // not bring back, for example a provider whose credential only the client
+    // holds. Say so the way message.send, permission.list and every session
+    // request do, before opening an attachment: clients resume the runtime on
+    // this code, and an INVALID_ARGUMENT here reads as a bad request instead.
+    if (target.recoveredRuntimeUnavailable) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        `AgenC daemon agent recovered without a live runtime: ${target.agentId}`,
       );
     }
     if (this.#runner?.getAgentSnapshot === undefined) {
@@ -4457,6 +4473,7 @@ export class AgenCDaemonAgentManager {
           return {
             agentId: persisted.agentId,
             sessionIds: [...persisted.sessionIds],
+            recoveredRuntimeUnavailable: false,
           };
         }
         throw new AgenCDaemonAgentLifecycleError(
@@ -4467,6 +4484,7 @@ export class AgenCDaemonAgentManager {
       return {
         agentId: refreshed.agentId,
         sessionIds: [...refreshed.sessionIds],
+        recoveredRuntimeUnavailable: isRecoveredRuntimeUnavailable(refreshed),
       };
     });
   }

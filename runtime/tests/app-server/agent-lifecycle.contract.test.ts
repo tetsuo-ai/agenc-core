@@ -2171,8 +2171,9 @@ describe("AgenC background agent lifecycle", () => {
         registerNoopSessionRoute,
       ),
     ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("live runtime-settings authority"),
+      code: "BACKGROUND_RUNNER_UNAVAILABLE",
+      message:
+        "AgenC daemon agent recovered without a live runtime: agent-cancel-recovered",
     });
     await expect(
       agents.cancelSessionTurn({
