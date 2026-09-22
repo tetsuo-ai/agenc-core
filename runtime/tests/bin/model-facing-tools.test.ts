@@ -5954,13 +5954,14 @@ describe("model-facing tools", () => {
         context,
       );
       expect(allowed?.behavior).toBe("allow");
-      expect(
-        (allowed as { updatedInput?: Record<string, unknown> } | undefined)
-          ?.updatedInput,
-      ).toMatchObject({
-        file_path: notebookPath,
-        notebook_path: notebookPath,
-      });
+      const allowedInput = (
+        allowed as { updatedInput?: Record<string, unknown> } | undefined
+      )?.updatedInput;
+      expect(allowedInput).toMatchObject({ notebook_path: notebookPath });
+      // The dispatcher validates this against NotebookRead's strict schema
+      // again, so FileRead's own fields must not come back in it.
+      expect(allowedInput).not.toHaveProperty("file_path");
+      expect(allowedInput).not.toHaveProperty("cwd");
 
       const blocked = await tool.checkPermissions?.(
         { notebook_path: outsidePath },
@@ -6009,13 +6010,12 @@ describe("model-facing tools", () => {
         context,
       );
       expect(allowed?.behavior).toBe("allow");
-      expect(
-        (allowed as { updatedInput?: Record<string, unknown> } | undefined)
-          ?.updatedInput,
-      ).toMatchObject({
-        file_path: notebookPath,
-        notebook_path: notebookPath,
-      });
+      const allowedInput = (
+        allowed as { updatedInput?: Record<string, unknown> } | undefined
+      )?.updatedInput;
+      expect(allowedInput).toMatchObject({ notebook_path: notebookPath });
+      // NotebookEdit's schema has no file_path; the dispatcher re-validates.
+      expect(allowedInput).not.toHaveProperty("file_path");
 
       const blocked = await tool.checkPermissions?.(
         {

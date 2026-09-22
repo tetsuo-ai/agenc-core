@@ -69,7 +69,11 @@ import {
 import { safeStringify } from "../tools/types.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "../tools/system/notebook-edit.js";
-import { SESSION_ID_ARG } from "../agents/_deps/filesystem-args.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ALLOWED_ROOTS_SIG_ARG,
+  SESSION_ID_ARG,
+} from "../agents/_deps/filesystem-args.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../unified-exec/process-ownership.js";
 import { runtimeSandboxForExec } from "../tools/system/exec-command.js";
@@ -4008,13 +4012,22 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
       if (updatedInput === undefined) {
         return decision;
       }
+      // FileRead judged the notebook in its own shape (`file_path`, `cwd`).
+      // The dispatcher validates `updatedInput` against NotebookRead's strict
+      // schema again, so spreading FileRead's input back failed every call
+      // with "unexpected parameter file_path/cwd". Keep NotebookRead's input
+      // and carry over only the signed roots FileRead granted; they travel on
+      // the runtime's `__agenc*` channel, which schema validation skips.
+      const notebookInput: Record<string, unknown> = {
+        ...record,
+        notebook_path: updatedInput.file_path ?? record.notebook_path,
+      };
+      for (const key of [SESSION_ALLOWED_ROOTS_ARG, SESSION_ALLOWED_ROOTS_SIG_ARG]) {
+        if (updatedInput[key] !== undefined) notebookInput[key] = updatedInput[key];
+      }
       return {
         ...decision,
-        updatedInput: {
-          ...record,
-          ...updatedInput,
-          notebook_path: updatedInput.file_path ?? record.notebook_path,
-        },
+        updatedInput: notebookInput,
       } satisfies PermissionResult<Record<string, unknown>>;
     },
     execute: async (args) => {

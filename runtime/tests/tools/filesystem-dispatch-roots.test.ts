@@ -49,6 +49,25 @@ describe("filesystemRootsForDispatch", () => {
     expect(signedRoots(args)).toContain(dirname(target));
   });
 
+  test("NotebookEdit is widened from notebook_path, the only path field its schema has", () => {
+    const target = join(outside, "shared.ipynb");
+    const input = { notebook_path: target, cell_id: "0", new_source: "# Shared" };
+    for (const [approvalResolved, sandboxMode, mode] of [
+      [true, "workspace_write", "default"],
+      [false, "danger_full_access", "bypassPermissions"],
+    ] as const) {
+      const args = filesystemRootsForDispatch("NotebookEdit", input, {
+        approvalResolved,
+        sandboxMode,
+        session: session(mode),
+      });
+      expect(signedRoots(args)).toContain(dirname(target));
+      // The widening rides the internal channel; no file_path is invented.
+      expect(Object.keys(args).filter((key) => !key.startsWith("__agenc")).sort())
+        .toEqual(["cell_id", "new_source", "notebook_path"]);
+    }
+  });
+
   test("the full bypass hands it out without a prompt", () => {
     // Under --dangerously-bypass-approvals-and-sandbox the evaluator never
     // runs, so no approval ever resolved; FileRead /build/... was refused by

@@ -155,9 +155,13 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
           message: "notebook_path must be a non-empty string",
         };
       }
+      // `input` comes back as the decision's `updatedInput`, which the
+      // dispatcher validates against this tool's strict schema again. The
+      // path is checked through `path`; a `file_path` copy in the input
+      // failed every call with "unexpected parameter file_path".
       return checkToolPathPermission({
         toolName: NOTEBOOK_EDIT_TOOL_NAME,
-        input: { ...args, file_path: notebookPath },
+        input: args,
         path: notebookPath,
         cwd: config.workspaceRoot,
         context: context.getAppState().toolPermissionContext,

@@ -3,13 +3,17 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import { withSignedAllowedRoots } from "./system/filesystem.js";
 
-/** The file tools whose `file_path` the dispatcher may widen a root for. */
-const APPROVED_FILE_PATH_TOOLS: ReadonlySet<string> = new Set([
-  "FileRead",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
+/**
+ * The file tools the dispatcher may widen a root for, each with the argument
+ * that names its file. NotebookEdit's schema has `notebook_path` and no
+ * `file_path`.
+ */
+const APPROVED_FILE_PATH_ARGS: ReadonlyMap<string, string> = new Map([
+  ["FileRead", "file_path"],
+  ["Write", "file_path"],
+  ["Edit", "file_path"],
+  ["MultiEdit", "file_path"],
+  ["NotebookEdit", "notebook_path"],
 ]);
 
 /**
@@ -28,8 +32,9 @@ export function approvedFilePathForTool(
   toolName: string,
   args: Record<string, unknown>,
 ): string | null {
-  if (!APPROVED_FILE_PATH_TOOLS.has(toolName)) return null;
-  return nonEmptyString(args["file_path"]) ?? null;
+  const pathArg = APPROVED_FILE_PATH_ARGS.get(toolName);
+  if (pathArg === undefined) return null;
+  return nonEmptyString(args[pathArg]) ?? null;
 }
 
 /** The directory an absolute glob pattern is anchored at: everything before the first segment with a metacharacter. */
@@ -136,7 +141,7 @@ function addedDirectories(context: ReturnType<typeof publishedPermissionContext>
  * "Path is outside allowed directories" on FileRead /build/... and on
  * `Glob path=/` under --dangerously-bypass-approvals-and-sandbox with
  * --add-dir /). Anything else leaves the args untouched, and tools without a
- * `file_path` or a search path are never widened.
+ * file path argument or a search path are never widened.
  */
 export function filesystemRootsForDispatch(
   toolName: string,
