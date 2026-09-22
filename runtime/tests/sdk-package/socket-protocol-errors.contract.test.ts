@@ -166,13 +166,16 @@ describe("SDK socket protocol failures", () => {
   });
 
   it("still rejects incomplete-buffer overflow and closes once", async () => {
+    // 16 MiB has to cross a real socket before the overflow can be detected;
+    // on a loaded machine that takes longer than the 1s waitFor default.
+    const overflowWait = { timeout: 30_000 } as const;
     const pending = startPendingRequests(transport);
     peer.write("x".repeat(16 * 1024 * 1024 + 1));
-    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1), overflowWait);
     await pending.settled;
     expect(pending.outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
     expect((pending.outcomes[0]?.value as Error).message).toContain("exceeded 16777216 bytes");
-    await vi.waitFor(() => expect(peer.destroyed).toBe(true));
+    await vi.waitFor(() => expect(peer.destroyed).toBe(true), overflowWait);
     await transport.close();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
