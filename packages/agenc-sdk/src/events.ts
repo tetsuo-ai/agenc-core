@@ -67,6 +67,14 @@ export type AgencPromptEvent = AgencPromptEventIdentity &
         readonly permissions: readonly string[];
         readonly input?: JsonValue;
         readonly reason?: string;
+        /**
+         * Set when a spawned sub-agent (or a nested one) asks through this
+         * session: its own session id, and the name and path it was spawned
+         * with. The request is answered on this session like any other.
+         */
+        readonly sourceConversationId?: string;
+        readonly sourceAgentNickname?: string;
+        readonly sourceAgentPath?: string;
       }
     | {
         readonly type: "elicitation_request";
@@ -380,6 +388,18 @@ export function promptEventFromNotification(
         : {}),
       ...(params.input !== undefined ? { input: params.input } : {}),
       ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+      ...(typeof params.sourceConversationId === "string" &&
+      params.sourceConversationId.length > 0
+        ? { sourceConversationId: params.sourceConversationId }
+        : {}),
+      ...(typeof params.sourceAgentNickname === "string" &&
+      params.sourceAgentNickname.length > 0
+        ? { sourceAgentNickname: params.sourceAgentNickname }
+        : {}),
+      ...(typeof params.sourceAgentPath === "string" &&
+      params.sourceAgentPath.length > 0
+        ? { sourceAgentPath: params.sourceAgentPath }
+        : {}),
     };
   }
 
