@@ -116,7 +116,10 @@ import {
   readToolRuntimeContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
-import { filesystemRootsForDispatch } from "./filesystem-dispatch-roots.js";
+import {
+  approvalRootForDispatch,
+  filesystemRootsForDispatch,
+} from "./filesystem-dispatch-roots.js";
 import {
   hasExactLedgerMention,
   REQUEST_LEDGER_TRANSFER_TOOL_NAME,
@@ -574,6 +577,11 @@ export class ToolRouter {
       }
       const approvalPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
       if (approvalPreflight !== null) return approvalPreflight;
+      // Fixed before any prompt: an approval grants this root and no other.
+      const approvalRoot = approvalRootForDispatch(
+        nameDisplay(invocation.toolName),
+        executionArgs,
+      );
       const effectiveApprovalPolicy = permissionAlreadyAllowed
         ? "never"
         : forcedApprovalReason !== undefined
@@ -664,6 +672,7 @@ export class ToolRouter {
             executionArgs,
             {
               approvalResolved: dispatchContext.approvalResolved,
+              approvalRoot,
               sandboxMode: sandbox,
               session: invocation.session,
             },
@@ -1073,6 +1082,8 @@ export class ToolRouter {
 
     const approvalPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
     if (approvalPreflight !== null) return approvalPreflight;
+    // Fixed before any prompt: an approval grants this root and no other.
+    const approvalRoot = approvalRootForDispatch(toolCall.name, executionArgs);
     const executionPayload = buildPayloadForArgs(routed.payload, executionArgs);
     const executionInvocation: ToolInvocation = {
       ...invocation,
@@ -1222,6 +1233,7 @@ export class ToolRouter {
             executionArgs,
             {
               approvalResolved: dispatchContext.approvalResolved,
+              approvalRoot,
               sandboxMode: sandbox,
               session: opts.session,
             },

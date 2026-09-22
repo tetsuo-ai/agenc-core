@@ -33,6 +33,7 @@
 
 import { isWorkflowApprovalSession } from "../../permissions/approval-failure.js";
 import {
+  approvalRootForDispatch,
   filesystemRootsForDispatch,
   type FilesystemRootSessionLike,
 } from "../../tools/filesystem-dispatch-roots.js";
@@ -855,6 +856,11 @@ export class StreamingToolExecutor {
         };
 
         try {
+          // Fixed before any prompt: an approval grants this root and no other.
+          const approvalRoot = approvalRootForDispatch(
+            tool.toolCall.name,
+            effectiveArgs,
+          );
           const approvalArgs = withPlanApprovalPreview(
             tool.toolCall.name,
             effectiveArgs,
@@ -949,6 +955,7 @@ export class StreamingToolExecutor {
                 effectiveArgs,
                 {
                   approvalResolved: dispatchContext.approvalResolved,
+                  approvalRoot,
                   sandboxMode: sandbox,
                   session: session as FilesystemRootSessionLike | undefined,
                 },
