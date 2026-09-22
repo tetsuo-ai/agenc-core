@@ -462,20 +462,31 @@ function effectiveApprovalPolicyForTool(
     : fallback;
 }
 
+/**
+ * When an approval was refused. `before_execution`: the call never ran.
+ * `sandbox_escalation`: the call already ran once inside the sandbox, the
+ * sandbox blocked it, and the refused approval was for running it again
+ * without the sandbox.
+ */
+export type ApprovalRejectionStage = "before_execution" | "sandbox_escalation";
+
 export class ApprovalRejectedError extends Error {
   readonly kind = "approval_rejected" as const;
   readonly decision: ReviewDecision;
   /** Where the decision came from; absent for callers that predate it. */
   readonly source?: RequestApprovalResult["source"];
+  readonly stage: ApprovalRejectionStage;
   constructor(
     message: string,
     decision: ReviewDecision,
     source?: RequestApprovalResult["source"],
+    stage: ApprovalRejectionStage = "before_execution",
   ) {
     super(message);
     this.name = "ApprovalRejectedError";
     this.decision = decision;
     if (source !== undefined) this.source = source;
+    this.stage = stage;
   }
 }
 
@@ -928,10 +939,13 @@ export async function orchestrateToolCall<T>(
         stage: "sandbox_escalation",
       });
       if (!isApprovalAccepted(approval.decision)) {
+        // The sandboxed attempt above already ran; only the unsandboxed
+        // retry is refused, and its effect records stay as they are.
         throw new ApprovalRejectedError(
           approvalRejectionMessage(approval, escalationCtx.toolName),
           approval.decision,
           approval.source,
+          "sandbox_escalation",
         );
       }
     }

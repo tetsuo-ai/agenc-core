@@ -47,6 +47,7 @@ describe("phase tool-runtime dependency executor", () => {
       preventContinuation: true,
       metadata: {
         approvalDenied: true,
+        approvalDeniedStage: "before_execution",
         approvalFailure: { decision: "denied", source: "resolver" },
       },
     })]);

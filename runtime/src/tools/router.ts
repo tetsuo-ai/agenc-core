@@ -1853,7 +1853,9 @@ function toolDispatchErrorResult(err: unknown, session?: Session): ToolDispatchR
         ? { preventContinuation: true }
         : {}),
       metadata: {
-        ...(approvalDenialEndsTurn(err) ? { approvalDenied: true } : {}),
+        ...(approvalDenialEndsTurn(err)
+          ? { approvalDenied: true, approvalDeniedStage: err.stage }
+          : {}),
         approvalFailure: {
           decision: err.decision.kind,
           source: err.source ?? "policy",

@@ -337,8 +337,16 @@ session telemetry, not a closer; see [Mid-turn error events](#mid-turn-error-eve
 Denying a permission request is the user's decision, not a failure: the turn
 ends as `turn_aborted` with reason `approval_denied`, the denied call's
 `tool_call_completed` carries `metadata.approvalDenied: true`, and the session
-waits for the next prompt as after a Stop. The denied call never ran, so it
-records no effect. `agenc -p` reports such a run as a denied tool (exit 2).
+waits for the next prompt as after a Stop. `metadata.approvalDeniedStage` says
+what was denied. `before_execution`: the call never ran and records no effect.
+`sandbox_escalation`: under `on_failure` the call already ran once inside the
+sandbox, the sandbox blocked it, and the user denied running it again without
+the sandbox; that attempt keeps its effect records (`effect_intent` and
+`effect_result`), and anything it changed before the block remains. Only a
+person's Deny ends the turn this way (`permission_decision.decidedBy: "user"`).
+A resolver that refuses on its own, or a non-interactive client's auto-denial,
+records `decidedBy: "runtime"` or no user provenance, and the model keeps the
+turn to report what was not permitted.
 Callers that require strict
 single-turn admission pass `ifBusy: "reject"`. That flag refuses only an
 in-flight or queued turn (`pendingMessageSubmissionCount`,

@@ -436,7 +436,9 @@ function approvalRejectedResult(err: ApprovalRejectedError, session?: object): T
           ? { reason: err.decision.reason }
           : {}),
       },
-      ...(approvalDenialEndsTurn(err) ? { approvalDenied: true } : {}),
+      ...(approvalDenialEndsTurn(err)
+        ? { approvalDenied: true, approvalDeniedStage: err.stage }
+        : {}),
     },
     ...(approvalDenialEndsTurn(err) || isWorkflowApprovalSession(session)
       ? { preventContinuation: true }
