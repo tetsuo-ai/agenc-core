@@ -667,6 +667,58 @@ export function resolveProviderModelCapabilities(input: {
   );
 }
 
+/**
+ * Whether a model accepts image input, as far as the registry actually knows.
+ *
+ * `supportsImageInput: false` means two different things in the table above.
+ * A catalog row or a per-model rule records a model documented as text-only.
+ * A constant `false` on a provider that serves many vendors' models (a
+ * router, a generic compatible endpoint, a multi-model host) only makes
+ * model-switch checks fail closed: vision models sit behind it too. Removing
+ * images from a request is right only for the first kind, so the second
+ * resolves to `unknown` and keeps the provider's own wire policy. A
+ * configured capability override wins over both.
+ */
+export type ImageInputSupport = "supported" | "unsupported" | "unknown";
+
+/** Per-model rules that are name heuristics, not documentation. */
+const HEURISTIC_IMAGE_INPUT_PROVIDERS = new Set(["ollama", "lmstudio"]);
+
+/** Adapters that serialize text only, so no model behind them sees an image. */
+const TEXT_ONLY_ADAPTER_PROVIDERS = new Set(["amazon-bedrock"]);
+
+export function resolveImageInputSupport(input: {
+  readonly provider: string | undefined;
+  readonly model: string | undefined;
+  readonly overrides?: Pick<ProviderCapabilityOverrides, "supportsImageInput">;
+}): ImageInputSupport {
+  const override = input.overrides?.supportsImageInput;
+  if (override !== undefined) return override ? "supported" : "unsupported";
+  let provider: string;
+  try {
+    provider =
+      normalizeProviderIdentity(input.provider, "capability resolution") ?? "";
+  } catch {
+    return "unknown";
+  }
+  const model = input.model?.trim() ?? "";
+  if (provider.length === 0 || model.length === 0) return "unknown";
+  if (TEXT_ONLY_ADAPTER_PROVIDERS.has(provider)) return "unsupported";
+  // A catalog row is documented knowledge of this model.
+  const hints = resolveModelCapabilityHints({ provider, model });
+  if (hints?.supportsImageInput !== undefined) {
+    return hints.supportsImageInput ? "supported" : "unsupported";
+  }
+  const flag = PROVIDER_CAPABILITIES[provider]?.supportsImageInput;
+  if (flag === undefined || HEURISTIC_IMAGE_INPUT_PROVIDERS.has(provider)) {
+    return "unknown";
+  }
+  if (typeof flag === "function") {
+    return flag(model) ? "supported" : "unsupported";
+  }
+  return flag ? "supported" : "unknown";
+}
+
 export function resolveProviderCapabilityEntry(input: {
   readonly provider: string | undefined;
   readonly model: string | undefined;

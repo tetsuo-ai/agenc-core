@@ -738,15 +738,26 @@ export function applyToolResultImagePolicyForWire(
       .map((part) => messageTextContent([part]))
       .filter((text) => text.length > 0)
       .join("\n");
+    // A text-only model keeps the tool's text, and is told the image itself
+    // was left out: "Read image shot.png (...)" alone reads as if it had
+    // seen the picture.
+    const strippedNote =
+      policy !== "strip" || imageParts.length === 0
+        ? undefined
+        : imageParts.length === 1
+          ? "[Image not shown: this model does not accept image input, so the image in this tool result was left out.]"
+          : `[Images not shown: this model does not accept image input, so the ${imageParts.length} images in this tool result were left out.]`;
     projected.push({
       ...message,
-      content:
-        textContent ||
-        (imageParts.length > 0
+      content: textContent
+        ? strippedNote === undefined
+          ? textContent
+          : `${textContent}\n${strippedNote}`
+        : imageParts.length > 0
           ? policy === "relay_as_user"
             ? "[Tool returned image content; image follows in the next message.]"
             : "[Tool returned image content; this model does not accept image input.]"
-          : "[Tool returned no textual content.]"),
+          : "[Tool returned no textual content.]",
     });
     if (policy === "relay_as_user" && imageParts.length > 0) {
       pendingRelays.push({

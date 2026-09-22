@@ -91,6 +91,15 @@ import {
   resolveContextImageBudgetBytes,
 } from "./query-image-budget.js";
 import {
+  rejectedImagesFor,
+  withholdImagesForModel,
+  withholdUndecodableToolImages,
+  type ModelImagePolicy,
+} from "./query-image-safety.js";
+import { resolveImageInputSupport } from "../llm/capabilities.js";
+import { readProviderConfig } from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
+import {
   completionGate,
   planCompletionGateForTurn,
 } from "../phases/completion-gate.js";
@@ -673,6 +682,80 @@ type PreparedSamplingRequestBoundary =
       readonly result: SamplingRequestResult;
     };
 
+/**
+ * What the registry knows about image input for the model this request goes
+ * to: the same provider and model the stream phase dispatches to, including
+ * a pending fallback model, with any configured capability override.
+ */
+function modelImagePolicy(
+  session: Session,
+  ctx: TurnContext,
+  state: TurnState,
+  config: AgenCConfig,
+): ModelImagePolicy {
+  const provider = session.services.provider.name;
+  const requested =
+    state.pendingAdmissionFallback?.toModel ??
+    session.config?.model ??
+    ctx.config.model ??
+    ctx.modelInfo.slug;
+  const model = providerLocalModelSlug(requested ?? "", provider);
+  let overrides: Parameters<typeof resolveImageInputSupport>[0]["overrides"];
+  try {
+    overrides = readProviderConfig(config, provider)?.capability_overrides;
+  } catch {
+    overrides = undefined;
+  }
+  return {
+    imageInput: resolveImageInputSupport({ provider, model, overrides }),
+    modelLabel: `${provider}/${model}`,
+  };
+}
+
+/** One warning per distinct outcome within a turn, like the image budget's. */
+function reportWithheldImages(
+  session: Session,
+  state: TurnState,
+  counts: {
+    readonly unsupported: number;
+    readonly rejected: number;
+    readonly undecodable: number;
+  },
+): void {
+  const total = counts.unsupported + counts.rejected + counts.undecodable;
+  const tracked = state as TurnState & { contextImagesWithheld?: string };
+  if (total === 0) {
+    tracked.contextImagesWithheld = undefined;
+    return;
+  }
+  const signature = `${counts.unsupported}:${counts.rejected}:${counts.undecodable}`;
+  if (tracked.contextImagesWithheld === signature) return;
+  tracked.contextImagesWithheld = signature;
+  const reasons = [
+    counts.unsupported > 0
+      ? `${counts.unsupported} the model cannot view`
+      : undefined,
+    counts.undecodable > 0
+      ? `${counts.undecodable} not a valid image`
+      : undefined,
+    counts.rejected > 0
+      ? `${counts.rejected} refused earlier by the provider`
+      : undefined,
+  ].filter((reason): reason is string => reason !== undefined);
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "context_images_withheld",
+        message:
+          `${total} image(s) replaced by a text note in the request: ` +
+          reasons.join(", "),
+      },
+    },
+  });
+}
+
 async function prepareSamplingRequestBoundary(
   state: TurnState,
   ctx: TurnContext,
@@ -800,6 +883,17 @@ async function prepareSamplingRequestBoundary(
   }
   state.attachmentsAnchoredForTurn = true;
 
+  // Leave out every image the selected model must not receive: all of them
+  // when the registry knows the model is text-only, and any image a
+  // provider refused earlier in this session. Before the byte budget, so the
+  // budget counts only images that are sent.
+  const withheldForModel = withholdImagesForModel(
+    state.messagesForQuery,
+    modelImagePolicy(session, samplingContext, state, currentConfig),
+    rejectedImagesFor(session),
+  );
+  state.messagesForQuery = withheldForModel.messages;
+
   // Bound the fully assembled query, including fresh image mentions from
   // attachment producers. Durable history and retained attachments keep
   // every image; only this request projection changes.
@@ -831,6 +925,19 @@ async function prepareSamplingRequestBoundary(
       });
     }
   }
+
+  // A tool-result image whose bytes are not a complete image is refused by
+  // every provider, and because tool results are replayed, by every request
+  // after it. After the budget, so only images still on the wire are decoded.
+  const withheldUndecodable = withholdUndecodableToolImages(
+    state.messagesForQuery,
+  );
+  state.messagesForQuery = withheldUndecodable.messages;
+  reportWithheldImages(session, state, {
+    unsupported: withheldForModel.unsupported,
+    rejected: withheldForModel.rejected,
+    undecodable: withheldUndecodable.undecodable,
+  });
 
   // Remaining run budget on each tool result (#2503), fixed when the result
   // completed so its bytes never change between requests. Projection only.
