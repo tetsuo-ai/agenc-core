@@ -506,6 +506,11 @@ function deepEq(a: unknown, b: unknown): boolean {
 
 const AGENC_INTERNAL_ARG_PREFIX = "__agenc";
 
+/**
+ * The copy is built from own data properties. Assigning keys onto `{}` would
+ * turn a model's JSON `__proto__` key into the copy's prototype, hiding it
+ * from `additionalProperties: false` and every other shape check.
+ */
 export function stripAgenCInternalArgsForValidation(
   input: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -517,10 +522,9 @@ export function stripAgenCInternalArgsForValidation(
     }
   }
   if (!needed) return input;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) continue;
-    out[key] = value;
-  }
-  return out;
+  return Object.fromEntries(
+    Object.entries(input).filter(
+      ([key]) => !key.startsWith(AGENC_INTERNAL_ARG_PREFIX),
+    ),
+  );
 }

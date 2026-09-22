@@ -2591,12 +2591,11 @@ function stripModelSuppliedChildArgs(
     }
   }
   if (!needsStrip) return args;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (key.startsWith("__agenc")) continue;
-    out[key] = value;
-  }
-  return out;
+  // Own data properties only: assigning a model's JSON `__proto__` key onto
+  // `{}` would make it the copy's prototype instead of an argument.
+  return Object.fromEntries(
+    Object.entries(args).filter(([key]) => !key.startsWith("__agenc")),
+  );
 }
 
 export function injectChildToolArgs(

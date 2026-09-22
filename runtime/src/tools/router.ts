@@ -1503,12 +1503,13 @@ function stripModelSuppliedAgenCInternalArgs(
     }
   }
   if (!needsStrip) return input;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) continue;
-    out[key] = value;
-  }
-  return out;
+  // Own data properties only: assigning a model's JSON `__proto__` key onto
+  // `{}` would make it the copy's prototype instead of an argument.
+  return Object.fromEntries(
+    Object.entries(input).filter(
+      ([key]) => !key.startsWith(AGENC_INTERNAL_ARG_PREFIX),
+    ),
+  );
 }
 
 function planFileContextForApproval(
