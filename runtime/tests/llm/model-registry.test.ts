@@ -65,6 +65,25 @@ describe("ModelRegistry", () => {
     });
   });
 
+  it.each(["gpt-6-sol", "gpt-6-luna"])("resolves %s from the registry with a known price", (model) => {
+    const registry = new ModelRegistry({ config: defaultConfig() });
+
+    const entry = registry.resolveSync({ provider: "openai", model });
+
+    expect(entry.metadata.contextWindow).toBe(1_050_000);
+    expect(entry.cost.known).toBe(true);
+    expect(entry.cost.matchedKey).toBe(`openai:${model}`);
+    expect(entry.capabilities.acceptsReasoningEffort).toBe(true);
+    expect(entry.capabilities.supportsVisionInput).toBe(true);
+    expect(entry.capabilities.supportsProviderNativeWebSearch).toBe(true);
+    expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
+      slug: model,
+      contextWindow: 1_050_000,
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      usedFallbackModelMetadata: false,
+    });
+  });
+
   it("advertises the Fast tier for Anthropic fast-mode models and the rest of the GPT-5 family", () => {
     const registry = new ModelRegistry({ config: defaultConfig() });
     const tiersFor = (provider: string, model: string) =>
@@ -84,7 +103,7 @@ describe("ModelRegistry", () => {
     expect(tiersFor("anthropic", "claude-sonnet-5")).toEqual([]);
     expect(tiersFor("anthropic", "claude-fable-5-1")).toEqual([]);
     // OpenAI fast mode pricing covers the whole GPT-5.x line, not only gpt-5/5.4/5.5.
-    for (const model of ["gpt-5.2", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-6-astra"]) {
+    for (const model of ["gpt-5.2", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]) {
       expect(tiersFor("openai", model).map((tier) => tier.id)).toEqual(["priority"]);
     }
   });

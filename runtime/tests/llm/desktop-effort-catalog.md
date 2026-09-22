@@ -2,7 +2,12 @@
 
 `desktop-effort-catalog.json` is the evaluated `MODEL_CATALOG` export from
 `tetsuo-ai/agenc-desktop` origin/main at
-`7849e260c0468a20e0946ad2d17bcf7396b993ad` (2026-09-21).
+`231273663c3e6db36506673a4c5afd526ec40531` (2026-09-22; it reproduces the
+126 rows taken at `7849e260`)
+plus the `gpt-6-sol` and `gpt-6-luna` rows that the Desktop
+`feat/openai-gpt-6-sol-luna` change generates from this Core registry.
+Core lands first, so the contract covers them before Desktop offers them;
+refresh from Desktop main once that change is merged.
 The source is `src/renderer/src/modelCatalog.ts`, including its shared catalog imports.
 
 To refresh, fetch that repository, bundle the source with esbuild for Node (ESM),
