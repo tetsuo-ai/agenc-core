@@ -1589,7 +1589,8 @@ export interface SessionClearParams extends JsonObject {
  * Protocol-1.0 compatibility request shipped with agenc-sdk 0.3.0.
  *
  * This shape may resolve only legacy poisoned rows that have no canonical
- * durable effect. Durable effect records always require explicit evidence.
+ * durable effect. Durable effect records always require explicit evidence
+ * or an explicit operator attestation.
  */
 export interface SessionResolveToolCallLegacyParams extends JsonObject {
   readonly sessionId: string;
@@ -1599,6 +1600,7 @@ export interface SessionResolveToolCallLegacyParams extends JsonObject {
   readonly disposition?: never;
   readonly evidenceRef?: never;
   readonly evidenceSha256?: never;
+  readonly attestation?: never;
 }
 
 /** Evidence-bearing resolution required for every durable effect record. */
@@ -1610,10 +1612,30 @@ export interface SessionResolveToolCallEvidenceParams extends JsonObject {
   readonly evidenceRef: string;
   readonly evidenceSha256: string;
   readonly reviewer?: string;
+  readonly attestation?: never;
+}
+
+/**
+ * Operator attestation: the user states the outcome from their own knowledge
+ * and has no separate evidence document. Core records the attestation itself
+ * as the operator evidence (a reference naming the session and call plus the
+ * SHA-256 of the canonical attestation), so the review stays auditable.
+ */
+export interface SessionResolveToolCallAttestationParams extends JsonObject {
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly disposition:
+    "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
+  readonly attestation: "operator";
+  readonly reviewer?: string;
+  readonly evidenceRef?: never;
+  readonly evidenceSha256?: never;
 }
 
 export type SessionResolveToolCallParams =
-  SessionResolveToolCallLegacyParams | SessionResolveToolCallEvidenceParams;
+  | SessionResolveToolCallLegacyParams
+  | SessionResolveToolCallEvidenceParams
+  | SessionResolveToolCallAttestationParams;
 
 export interface SessionSnapshotParams extends JsonObject {
   readonly sessionId: string;

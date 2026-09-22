@@ -48,6 +48,7 @@ import {
 } from "./operation-deadline.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 import {
+  createOperatorAttestationEvidence,
   createOperatorEffectReviewResolution,
   resolveDurableEffectReview,
 } from "../state/effect-review.js";
@@ -126,6 +127,7 @@ import type {
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionParams,
   SessionExtendCompactionRollbackRetentionResult,
+  SessionResolveToolCallAttestationParams,
   SessionResolveToolCallEvidenceParams,
   SessionResolveToolCallParams,
   SessionResolveToolCallResult,
@@ -487,8 +489,18 @@ interface RunnerTerminationTarget {
 
 function isEvidenceToolCallResolution(
   params: SessionResolveToolCallParams,
-): params is SessionResolveToolCallEvidenceParams {
+): params is
+  | SessionResolveToolCallEvidenceParams
+  | SessionResolveToolCallAttestationParams {
   return Object.prototype.hasOwnProperty.call(params, "disposition");
+}
+
+function isOperatorAttestation(
+  params:
+    | SessionResolveToolCallEvidenceParams
+    | SessionResolveToolCallAttestationParams,
+): params is SessionResolveToolCallAttestationParams {
+  return params.attestation === "operator";
 }
 
 const AGENT_LIFECYCLE_OPERATION_TIMEOUT_MS = 30_000;
@@ -2778,19 +2790,28 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon session has no working directory: ${params.sessionId}`,
       );
     }
+    // Clients address the daemon session (`session_...`), but the durable
+    // effect rows and the live runtime session belong to the agent's
+    // conversation (`conv-...`). The live runner resolves only its own
+    // conversation, so review against that id. Injected runners without a
+    // live journal keep the legacy daemon-session keying.
+    const reviewSessionId =
+      this.#runner?.resolveLiveEffectReview !== undefined
+        ? session.agentId
+        : params.sessionId;
     const driver = openStateDatabases({ cwd: session.cwd, agencHome: this.#agencHome });
     try {
       const candidates =
         params.toolCallId !== undefined
           ? [
               {
-                sessionId: params.sessionId,
+                sessionId: reviewSessionId,
                 toolCallId: params.toolCallId,
                 toolName: "",
                 startedAt: "",
               },
             ]
-          : [...listUnresolvedUnknownOutcomeEffects(driver, params.sessionId)];
+          : [...listUnresolvedUnknownOutcomeEffects(driver, reviewSessionId)];
       const resolved: SessionResolveToolCallResult["resolved"][number][] = [];
 
       if (!isEvidenceToolCallResolution(params)) {
@@ -2801,7 +2822,7 @@ export class AgenCDaemonAgentManager {
           // v1/v2 effect stays pending until an evidence-bearing request arrives.
           if (
             durableEffects.getEffectBySessionCall(
-              params.sessionId,
+              reviewSessionId,
               effect.toolCallId,
             ) !== undefined
           ) {
@@ -2809,7 +2830,7 @@ export class AgenCDaemonAgentManager {
           }
           if (
             resolveUnknownOutcomeEffect(driver, {
-              sessionId: params.sessionId,
+              sessionId: reviewSessionId,
               toolCallId: effect.toolCallId,
             })
           ) {
@@ -2824,7 +2845,7 @@ export class AgenCDaemonAgentManager {
           resolved,
           remaining: listUnresolvedUnknownOutcomeEffects(
             driver,
-            params.sessionId,
+            reviewSessionId,
           ).length,
         };
       }
@@ -2834,13 +2855,23 @@ export class AgenCDaemonAgentManager {
       const resolution = createOperatorEffectReviewResolution({
         disposition: params.disposition,
         actorId: reviewedBy,
-        evidenceRef: params.evidenceRef,
-        evidenceSha256: params.evidenceSha256,
+        ...(isOperatorAttestation(params)
+          ? createOperatorAttestationEvidence({
+              sessionId: reviewSessionId,
+              toolCallId: params.toolCallId,
+              disposition: params.disposition,
+              actorId: reviewedBy,
+              attestedAt: reviewedAt,
+            })
+          : {
+              evidenceRef: params.evidenceRef,
+              evidenceSha256: params.evidenceSha256,
+            }),
         reviewedAt,
       });
       for (const effect of candidates) {
         const reviewOptions = {
-          sessionId: params.sessionId,
+          sessionId: reviewSessionId,
           toolCallId: effect.toolCallId,
           resolution,
         } as const;
@@ -2865,7 +2896,7 @@ export class AgenCDaemonAgentManager {
       }
       const remaining = listUnresolvedUnknownOutcomeEffects(
         driver,
-        params.sessionId,
+        reviewSessionId,
       ).length;
       return { sessionId: params.sessionId, resolved, remaining };
     } finally {

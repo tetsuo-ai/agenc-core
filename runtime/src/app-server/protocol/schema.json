@@ -2187,6 +2187,42 @@
         "evidenceSha256"
       ]
     },
+    "SessionResolveToolCallAttestationParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolCallId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "confirmed_committed",
+            "confirmed_no_effect",
+            "remains_unknown"
+          ]
+        },
+        "attestation": {
+          "type": "string",
+          "const": "operator"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId",
+        "toolCallId",
+        "disposition",
+        "attestation"
+      ]
+    },
     "SessionResolveToolCallParams": {
       "oneOf": [
         {
@@ -2194,6 +2230,9 @@
         },
         {
           "$ref": "#/definitions/SessionResolveToolCallEvidenceParams"
+        },
+        {
+          "$ref": "#/definitions/SessionResolveToolCallAttestationParams"
         }
       ]
     },

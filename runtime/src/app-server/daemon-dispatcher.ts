@@ -143,6 +143,7 @@ import {
   type SessionAttachResult,
   type SessionCancelTurnParams,
   type SessionTranscriptV2Params,
+  type SessionResolveToolCallAttestationParams,
   type SessionResolveToolCallEvidenceParams,
   type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
@@ -3190,6 +3191,7 @@ function validateSessionResolveToolCallParams(
       "disposition",
       "evidenceRef",
       "evidenceSha256",
+      "attestation",
       "reviewer",
     ],
   });
@@ -3198,6 +3200,7 @@ function validateSessionResolveToolCallParams(
     "disposition",
     "evidenceRef",
     "evidenceSha256",
+    "attestation",
   ].some((field) => Object.prototype.hasOwnProperty.call(validated, field));
   if (!hasEvidenceFields) {
     if (validated.toolCallId !== undefined) {
@@ -3213,12 +3216,34 @@ function validateSessionResolveToolCallParams(
     return validated as SessionResolveToolCallLegacyParams;
   }
   validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
-  validateRequiredString(validated, "session.resolveToolCall", "evidenceRef");
-  validateRequiredString(
+  const attesting = Object.prototype.hasOwnProperty.call(
     validated,
-    "session.resolveToolCall",
-    "evidenceSha256",
+    "attestation",
   );
+  if (attesting) {
+    // An attestation is the operator's own statement; it never travels
+    // with a separate evidence document, so the two shapes cannot mix.
+    if (validated.attestation !== "operator") {
+      throw invalidParams(
+        "session.resolveToolCall attestation must be operator",
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(validated, "evidenceRef") ||
+      Object.prototype.hasOwnProperty.call(validated, "evidenceSha256")
+    ) {
+      throw invalidParams(
+        "session.resolveToolCall takes either an operator attestation or evidenceRef and evidenceSha256, not both",
+      );
+    }
+  } else {
+    validateRequiredString(validated, "session.resolveToolCall", "evidenceRef");
+    validateRequiredString(
+      validated,
+      "session.resolveToolCall",
+      "evidenceSha256",
+    );
+  }
   const disposition = validated.disposition;
   if (
     disposition !== "confirmed_committed" &&
@@ -3228,6 +3253,9 @@ function validateSessionResolveToolCallParams(
     throw invalidParams(
       "session.resolveToolCall disposition must be confirmed_committed, confirmed_no_effect, or remains_unknown",
     );
+  }
+  if (attesting) {
+    return validated as SessionResolveToolCallAttestationParams;
   }
   if (!/^[0-9a-f]{64}$/u.test(String(validated.evidenceSha256))) {
     throw invalidParams(

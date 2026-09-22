@@ -25,8 +25,12 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
-import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
+import {
+  listUnresolvedUnknownOutcomeEffects,
+  resolveUnknownOutcomeEffect,
+} from "../state/unknown-outcome-gate.js";
 import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
+import type { ResolveDurableEffectReviewOptions } from "../state/effect-review.js";
 import {
   __setAgentLifecycleResumeSourceTestHooksForTest,
   AgenCDaemonAgentLifecycleError,
@@ -40,6 +44,7 @@ import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   JSON_RPC_VERSION,
+  type SessionResolveToolCallParams,
 } from "./protocol/index.js";
 import {
   AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
@@ -6077,6 +6082,127 @@ describe("AgenC background agent lifecycle", () => {
       restoreEnv();
       rmSync(home, { recursive: true, force: true });
       rmSync(otherHome, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // Stands in for the live runner's journal append: project the operator
+  // review onto the durable effect row the way the canonical event would.
+  const projectLiveReview = (driver: StateSqliteDriver, params: ResolveDurableEffectReviewOptions) => {
+    const repository = new StateRunDurabilityRepository(driver);
+    const effect = repository.getEffectBySessionCall(params.sessionId, params.toolCallId);
+    if (effect === undefined) return { kind: "not_found" as const };
+    repository.resolveEffectReview({ runId: effect.runId, stepId: effect.stepId, resolution: params.resolution, eventId: `${effect.stepId}:review` });
+    resolveUnknownOutcomeEffect(driver, { sessionId: params.sessionId, toolCallId: params.toolCallId });
+    return { kind: "resolved" as const, durable: false as const, resolution: params.resolution };
+  };
+
+  it("resolves a live Desktop session by its daemon session id against the agent's durable effects", async () => {
+    // A Desktop sends the daemon session id (`session_...`); the durable
+    // effect rows and the live runtime session are keyed by the agent's
+    // conversation id (`conv-...`). /resolve must translate, not compare.
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const daemonSessionId = "session_desktop_review";
+    const agentId = "conv-desktop-review";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const effects = new StateRunDurabilityRepository(driver);
+      effects.ensureInitialEpoch({ runId: agentId, openedAt: "2026-09-22T00:00:00.000Z", openedEventId: `${agentId}:opened` });
+      effects.beginEffect({
+        runId: agentId, epoch: 1, stepId: "tool:turn:call_mcp_fail", sessionId: agentId,
+        callId: "call_mcp_fail", toolName: "mcp.lane.lane_fail", recoveryCategory: "side-effecting",
+        intentDigest: "intent-digest", eventId: "intent", eventSequence: 1,
+        intentAt: "2026-09-22T00:00:01.000Z", effectFormatVersion: 2,
+      });
+      effects.markEffectUnknown({
+        runId: agentId, stepId: "tool:turn:call_mcp_fail", eventId: "unknown", eventSequence: 2,
+        reason: "caller_abort_after_effect_boundary", observedAt: "2026-09-22T00:00:02.000Z",
+      });
+      await sessions.createSession({ cwd, agentId });
+      const seen: { agentId: string; sessionId: string }[] = [];
+      const runner = {
+        // Mirrors the production runner's ownership rule: the live session
+        // it owns is the agent's conversation, never a daemon session id.
+        resolveLiveEffectReview: vi.fn(async (owner: string, params: ResolveDurableEffectReviewOptions) => {
+          seen.push({ agentId: owner, sessionId: params.sessionId });
+          if (params.sessionId !== owner) {
+            throw new Error(`AgenC daemon agent ${owner} does not own session ${params.sessionId}`);
+          }
+          return projectLiveReview(driver, params);
+        }),
+      } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      await expect(agents.resolveSessionToolCall({
+        sessionId: daemonSessionId,
+        toolCallId: "call_mcp_fail",
+        disposition: "confirmed_no_effect",
+        evidenceRef: "operator-note",
+        evidenceSha256: "a".repeat(64),
+        reviewer: "desktop_user",
+      })).resolves.toMatchObject({
+        sessionId: daemonSessionId,
+        resolved: [{ toolCallId: "call_mcp_fail" }],
+        remaining: 0,
+      });
+      expect(seen).toEqual([{ agentId, sessionId: agentId }]);
+      expect(effects.getEffect(agentId, "tool:turn:call_mcp_fail")).toMatchObject({ reviewStatus: "resolved" });
+    } finally {
+      driver.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records an operator attestation when /resolve carries a disposition without an evidence file", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const daemonSessionId = "session_desktop_attest";
+    const agentId = "conv-desktop-attest";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const effects = new StateRunDurabilityRepository(driver);
+      effects.ensureInitialEpoch({ runId: agentId, openedAt: "2026-09-22T00:00:00.000Z", openedEventId: `${agentId}:opened` });
+      effects.beginEffect({
+        runId: agentId, epoch: 1, stepId: "tool:turn:call_hang", sessionId: agentId,
+        callId: "call_hang", toolName: "mcp.lane.lane_hang", recoveryCategory: "side-effecting",
+        intentDigest: "intent-digest", eventId: "intent", eventSequence: 1,
+        intentAt: "2026-09-22T00:00:01.000Z", effectFormatVersion: 2,
+      });
+      effects.markEffectUnknown({
+        runId: agentId, stepId: "tool:turn:call_hang", eventId: "unknown", eventSequence: 2,
+        reason: "caller_abort_after_effect_boundary", observedAt: "2026-09-22T00:00:02.000Z",
+      });
+      await sessions.createSession({ cwd, agentId });
+      const runner = {
+        resolveLiveEffectReview: vi.fn(async (_owner: string, params: ResolveDurableEffectReviewOptions) =>
+          projectLiveReview(driver, params)),
+      } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      await expect(agents.resolveSessionToolCall({
+        sessionId: daemonSessionId,
+        toolCallId: "call_hang",
+        disposition: "confirmed_no_effect",
+        attestation: "operator",
+        reviewer: "desktop_user",
+      } as SessionResolveToolCallParams)).resolves.toMatchObject({
+        resolved: [{ toolCallId: "call_hang" }],
+        remaining: 0,
+      });
+      const review = effects.getEffect(agentId, "tool:turn:call_hang")?.review;
+      expect(review).toMatchObject({
+        disposition: "confirmed_no_effect",
+        actorKind: "operator",
+        actorId: "desktop_user",
+        evidenceKind: "operator_evidence",
+        evidenceRef: `operator-attestation:${agentId}:call_hang`,
+      });
+      expect(review?.evidenceSha256).toMatch(/^[0-9a-f]{64}$/u);
+    } finally {
+      driver.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
     }
   });

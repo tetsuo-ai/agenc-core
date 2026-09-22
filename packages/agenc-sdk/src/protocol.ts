@@ -263,6 +263,10 @@ export type SessionResolveToolCallLegacyParams =
 export type SessionResolveToolCallEvidenceParams =
   Wire.SessionResolveToolCallEvidenceParams;
 
+/** Operator attestation of an outcome, recorded by Core as the evidence. */
+export type SessionResolveToolCallAttestationParams =
+  Wire.SessionResolveToolCallAttestationParams;
+
 export type SessionResolveToolCallParams = Wire.SessionResolveToolCallParams;
 
 export type SessionMcpStatusParams = Wire.SessionMcpStatusParams;

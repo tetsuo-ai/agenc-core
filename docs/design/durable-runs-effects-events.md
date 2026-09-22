@@ -217,7 +217,13 @@ daemon restarted.
 
 Two operator paths settle a projected `unknown_outcome` review. For a
 `completed`, `failed`, or `cancelled` terminal, resume first and then use
-`/resolve` or `session.resolveToolCall` in the live session.
+`/resolve` or `session.resolveToolCall` in the live session. Clients address
+the live path by their daemon session id; the daemon reviews the owning
+agent's conversation, which keys the durable effect rows. The live path
+accepts either an evidence reference with its SHA-256 or
+`attestation: "operator"`, which records the operator's own statement as
+`operator_evidence` (`operator-attestation:<session>:<call-id>` plus the
+SHA-256 of the canonical attestation).
 
 The offline CLI still works after the session is stopped:
 
@@ -294,6 +300,17 @@ ExitPlanMode "You are not in plan mode" check and other argument or mode
 checks. A bare `isError` from a non-idempotent tool still poisons the mutation
 gate. ExitPlanMode deliberately keeps a bare error after a possible plan-file
 write so a genuine mid-flight failure remains `unknown_outcome`.
+
+An MCP `tools/call` that the server answered, with or without `isError`,
+settles as `confirmed_committed` with a `provider_receipt`
+(`mcp-response:<server>:<tool>:<call-id>`), the same way a shell command that
+exited is settled by its process exit. The answer proves the call finished on
+the server; it never claims `confirmed_no_effect`, so the call is not retried
+as if it changed nothing. `readOnlyHint` and other server annotations are not
+consulted: they are untrusted hints. A lost connection, a local deadline, a
+JSON-RPC error (the SDK cannot tell a server error response from a locally
+raised one) or a user stop before any answer produce no receipt and stay
+`unknown_outcome`.
 
 The workspace file tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) run
 through the identity-bound mutation transaction, which already re-verifies

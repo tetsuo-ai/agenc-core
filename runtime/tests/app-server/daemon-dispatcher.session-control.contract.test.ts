@@ -130,6 +130,43 @@ describe("daemon session-control internal method dispatch", () => {
       }),
     ).resolves.toMatchObject({ error: { code: -32602 } });
 
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attestation",
+        method: "session.resolveToolCall",
+        params: {
+          sessionId: "session_1",
+          toolCallId: "call_v2",
+          disposition: "confirmed_no_effect",
+          attestation: "operator",
+          reviewer: "desktop_user",
+        },
+      }),
+    ).resolves.toMatchObject({ result: { sessionId: "session_1" } });
+    expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
+      sessionId: "session_1",
+      toolCallId: "call_v2",
+      disposition: "confirmed_no_effect",
+      attestation: "operator",
+      reviewer: "desktop_user",
+    });
+
+    for (const [id, params] of [
+      ["attestation-with-evidence", { disposition: "confirmed_no_effect", attestation: "operator", evidenceRef: "x", evidenceSha256: "a".repeat(64) }],
+      ["attestation-unknown-kind", { disposition: "confirmed_no_effect", attestation: "system" }],
+      ["attestation-without-disposition", { attestation: "operator" }],
+    ] as const) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method: "session.resolveToolCall",
+          params: { sessionId: "session_1", toolCallId: "call_v2", ...params },
+        }),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+    }
+
     for (const [id, field] of [
       ["empty-tool-call", "toolCallId"],
       ["empty-reviewer", "reviewer"],
@@ -146,7 +183,7 @@ describe("daemon session-control internal method dispatch", () => {
         }),
       ).resolves.toMatchObject({ error: { code: -32602 } });
     }
-    expect(resolveSessionToolCall).toHaveBeenCalledTimes(2);
+    expect(resolveSessionToolCall).toHaveBeenCalledTimes(3);
   });
 
   it("routes both compaction operator methods", async () => {

@@ -86,6 +86,7 @@ import {
 import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
 import { goalKickoffPrompt, goalSetRequestParams } from "../commands/goal.js";
+import type { ResolveDaemonToolCallParams } from "../commands/resolve.js";
 import { parseGoalCommand } from "../goal/intake.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { ConfigStore } from "../config/store.js";
@@ -3437,14 +3438,9 @@ type TuiSessionShape = Pick<
   emitPhaseEvent?: (event: PhaseEvent) => void;
   cancelActiveTurn?: (reason?: string) => Promise<void>;
   clearDaemonSession?: () => Promise<void>;
-  resolveDaemonToolCall?: (params: {
-    readonly toolCallId: string;
-    readonly disposition:
-      "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
-    readonly evidenceRef: string;
-    readonly evidenceSha256: string;
-    readonly reviewer?: string;
-  }) => Promise<unknown>;
+  resolveDaemonToolCall?: (
+    params: ResolveDaemonToolCallParams,
+  ) => Promise<unknown>;
   getDaemonSessionSnapshot?: () => Promise<unknown>;
   partialCompactFromMessage?: (params: {
     readonly messageOrdinal: number;
@@ -4509,14 +4505,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // session.resolveToolCall RPC. The deferred session attaches LAZILY on
     // the first real turn, so before that there is nothing to resolve —
     // report a clean empty result instead of throwing.
-    resolveDaemonToolCall: async (params: {
-      readonly toolCallId: string;
-      readonly disposition:
-        "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
-      readonly evidenceRef: string;
-      readonly evidenceSha256: string;
-      readonly reviewer?: string;
-    }) => {
+    resolveDaemonToolCall: async (params: ResolveDaemonToolCallParams) => {
       if (liveSession === null) {
         return {
           sessionId: "pending",

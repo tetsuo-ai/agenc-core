@@ -544,6 +544,27 @@ describe("AgenC daemon protocol surface", () => {
         }),
       ),
     ).toBe(false);
+    expect(
+      validate(
+        request("attestation", {
+          sessionId: "session_1",
+          toolCallId: "call_v2",
+          disposition: "confirmed_no_effect",
+          attestation: "operator",
+          reviewer: "desktop_user",
+        }),
+      ),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+    for (const params of [
+      { disposition: "confirmed_no_effect", attestation: "system" },
+      { disposition: "confirmed_no_effect", attestation: "operator", evidenceRef: "x", evidenceSha256: "a".repeat(64) },
+      { attestation: "operator" },
+    ]) {
+      expect(
+        validate(request("attestation-invalid", { sessionId: "session_1", toolCallId: "call_v2", ...params })),
+      ).toBe(false);
+    }
   });
 
   it("publishes the private Desktop attachment without loosening other request fields", () => {

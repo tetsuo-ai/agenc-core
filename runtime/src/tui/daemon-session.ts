@@ -123,6 +123,7 @@ import type {
   AgenCShellExecuteParams,
 } from "./session-types.js";
 import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
+import type { ResolveDaemonToolCallParams } from "../commands/resolve.js";
 import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
@@ -1353,22 +1354,17 @@ export function createDaemonTuiSession<
     clearDaemonSession: async () => {
       await client.request("session.clear", { sessionId });
     },
-    resolveDaemonToolCall: async (params: {
-      readonly toolCallId: string;
-      readonly disposition:
-        | "confirmed_committed"
-        | "confirmed_no_effect"
-        | "remains_unknown";
-      readonly evidenceRef: string;
-      readonly evidenceSha256: string;
-      readonly reviewer?: string;
-    }) =>
+    resolveDaemonToolCall: async (params: ResolveDaemonToolCallParams) =>
       client.request("session.resolveToolCall", {
         sessionId,
         toolCallId: params.toolCallId,
         disposition: params.disposition,
-        evidenceRef: params.evidenceRef,
-        evidenceSha256: params.evidenceSha256,
+        ...("attestation" in params
+          ? { attestation: params.attestation }
+          : {
+              evidenceRef: params.evidenceRef,
+              evidenceSha256: params.evidenceSha256,
+            }),
         ...(params.reviewer !== undefined ? { reviewer: params.reviewer } : {}),
       }),
     getDaemonSessionSnapshot: async () => {
