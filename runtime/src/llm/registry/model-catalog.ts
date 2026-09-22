@@ -24,6 +24,7 @@ import {
   GEMINI_THINKING_MODELS,
   resolveGeminiThinkingModel,
 } from "./gemini-thinking-models.js";
+import { parseClaudeModelId } from "../../utils/model/claudeModelId.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -1363,6 +1364,20 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     },
   ]);
 
+/**
+ * The registered Claude rows, keyed by the canonical id the shared parser
+ * (utils/model/claudeModelId.ts) reads from each row.
+ */
+const CLAUDE_CATALOG_ROWS: ReadonlyMap<string, RegisteredModelCatalogEntry> =
+  new Map(
+    REGISTERED_MODEL_CATALOG.flatMap((entry) => {
+      const id = entry.provider === "anthropic"
+        ? parseClaudeModelId(entry.model)
+        : undefined;
+      return id === undefined ? [] : [[id.canonical, entry] as const];
+    }),
+  );
+
 export function listRegisteredModelCatalogEntries(
   provider?: string,
 ): readonly RegisteredModelCatalogEntry[] {
@@ -1389,6 +1404,7 @@ export function resolveRegisteredModelCatalogEntry(input: {
       GEMINI_MODEL_CATALOG,
     );
   }
+  if (provider === "anthropic") return resolveAnthropicCatalogEntry(model);
   const candidates = REGISTERED_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );
@@ -1493,6 +1509,23 @@ export function resolveModelCapabilityHints(input: {
     acceptsImageHistory: supportsImageInput,
     acceptsReasoningEffort: entry.supportedReasoningLevels.length > 0,
   };
+}
+
+/**
+ * Anthropic rows resolve through the shared Claude id parser, the same
+ * reading pricing and the wire use, and never by prefix. Every Claude API
+ * spelling the parser reads (dated, dotted `claude-opus-5.5`, `anthropic/`
+ * qualified, `[1m]`) finds the one row of its canonical model. An id the
+ * parser rejects (`claude-opus-5-5-fast`, `-preview`) or a canonical model
+ * with no row (`claude-opus-5-50`) finds nothing rather than a neighbour.
+ * Bedrock and Vertex spellings are not Anthropic-provider ids.
+ */
+function resolveAnthropicCatalogEntry(
+  model: string,
+): RegisteredModelCatalogEntry | undefined {
+  const id = parseClaudeModelId(model);
+  if (id === undefined || id.platform !== "anthropic") return undefined;
+  return CLAUDE_CATALOG_ROWS.get(id.canonical);
 }
 
 function findExactModel(

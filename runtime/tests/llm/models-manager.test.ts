@@ -73,6 +73,48 @@ describe("StaticModelsManager", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  const claudeManager = () =>
+    new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "anthropic",
+      metadata: { fetchImpl: vi.fn<typeof fetch>() },
+    });
+
+  it("gives every spelling the shared parser reads as Opus 5.5 its catalog contract", async () => {
+    const manager = claudeManager();
+    for (const model of [
+      "claude-opus-5.5",
+      "anthropic/claude-opus-5.5",
+      "claude-opus-5-5-20260922",
+      "claude-opus-5-5[1m]",
+    ]) {
+      expect(await manager.getModelInfo(model), model).toMatchObject({
+        slug: model,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 64_000,
+        maxOutputTokensUpperLimit: 128_000,
+        supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningLevel: "medium",
+      });
+    }
+  });
+
+  it("never lends the Opus 5.5 row by prefix to ids the parser rejects", async () => {
+    const manager = claudeManager();
+    for (const model of [
+      "claude-opus-5-5-fast",
+      "claude-opus-5-5-preview",
+      "claude-opus-5-50",
+      "claude-opus-5",
+    ]) {
+      const info = await manager.getModelInfo(model);
+      expect(info.contextWindow, model).toBe(200_000);
+      expect(info.maxOutputTokensUpperLimit, model).toBeLessThan(128_000);
+      expect(info.supportedReasoningLevels, model).not.toContain("xhigh");
+      expect(info.supportedReasoningLevels, model).not.toContain("max");
+    }
+  });
+
   it("uses curated Z.ai metadata without probing a custom base URL", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const manager = new StaticModelsManager({

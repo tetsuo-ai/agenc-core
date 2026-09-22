@@ -16,6 +16,7 @@ import {
   anthropicThinkingControl,
 } from "../../../src/utils/model/anthropicThinkingControl.js";
 import { anthropicSupportsFastMode } from "../../../src/llm/providers/anthropic/fast-mode.js";
+import { resolveRegisteredModelCatalogEntry } from "../../../src/llm/registry/model-catalog.js";
 
 const OPUS_55_SPELLINGS = [
   "claude-opus-5-5",
@@ -177,6 +178,23 @@ describe("one identity for pricing and capabilities", () => {
         computeUsdCostWithResolution(usage(model), DEFAULT_MODEL_COSTS).matchedKey ===
           "claude-opus-5-5";
       expect(isAlwaysOnThinkingAnthropicModel(model), model).toBe(pricedAsOpus55);
+    }
+  });
+
+  test.each([
+    ["the Opus 5.5 spellings", OPUS_55_SPELLINGS],
+    ["other ids", [...OPUS_5_SPELLINGS, "claude-opus-5-50", "claude-opus-5-5-preview", "claude-opus-5-5-fast", "claude-opus-5-5x"]],
+  ])("gives the Anthropic catalog row exactly to the Claude API ids priced as Opus 5.5 (%s)", (_label, models) => {
+    for (const model of models) {
+      const id = parseClaudeModelId(model);
+      const claudeApiOpus55 =
+        id?.platform === "anthropic" &&
+        computeUsdCostWithResolution(usage(model), DEFAULT_MODEL_COSTS).matchedKey ===
+          "claude-opus-5-5";
+      expect(
+        resolveRegisteredModelCatalogEntry({ provider: "anthropic", model })?.model,
+        model,
+      ).toBe(claudeApiOpus55 ? "claude-opus-5-5" : undefined);
     }
   });
 });

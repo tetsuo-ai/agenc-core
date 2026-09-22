@@ -3926,6 +3926,74 @@ describe("model-facing tools", () => {
     );
   });
 
+  describe("sub-agent effort by the shared Claude parser's identity", () => {
+    const spawnWithConfiguredModel = async (model: string, effort: "max" | "xhigh") => {
+      const session = fakeSession();
+      (session.services as unknown as { modelsManager: unknown }).modelsManager =
+        new StaticModelsManager({
+          // The configured selection is listed, so spawn_agent accepts the id
+          // and validates its effort against the registry's ModelInfo.
+          config: { ...defaultConfig(), model_provider: "anthropic", model },
+          fallbackProvider: "anthropic",
+          metadata: { fetchImpl: vi.fn<typeof fetch>() },
+        });
+      delegateMock.mockResolvedValue({
+        kind: "async_launched",
+        thread: {
+          live: {
+            agentId: "thread-claude",
+            agentPath: "/root/claude",
+            nickname: "Claude",
+            role: { name: "runner" },
+            status: {
+              value: { status: "running", turnId: "turn-claude", startedAtMs: 1 },
+            },
+          },
+          join: vi.fn(async () => ({
+            threadId: "thread-claude",
+            durationMs: 1,
+            outcome: "completed",
+            finalMessage: "done",
+          })),
+        },
+      });
+      const spawn = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "spawn_agent")!;
+      return await spawn.execute({
+        message: "inspect",
+        task_name: `claude_${effort}`,
+        model,
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+    };
+
+    it("accepts the top tiers for the dotted and dated Opus 5.5 spellings", async () => {
+      for (const model of ["claude-opus-5.5", "claude-opus-5-5-20260922"]) {
+        for (const effort of ["xhigh", "max"] as const) {
+          const result = await spawnWithConfiguredModel(model, effort);
+          expect(result.isError, `${model} ${effort}`).not.toBe(true);
+          expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+            model,
+            reasoningEffort: effort,
+          });
+        }
+      }
+    });
+
+    it("rejects them for ids the parser rejects instead of lending them by prefix", async () => {
+      for (const model of ["claude-opus-5-5-fast", "claude-opus-5-5-preview"]) {
+        const rejected = await spawnWithConfiguredModel(model, "max");
+        expect(rejected.isError, model).toBe(true);
+        expect(JSON.parse(rejected.content).error, model).toContain(
+          `Reasoning effort \`max\` is not supported for model \`${model}\``,
+        );
+      }
+    });
+  });
+
   it("uses a clean fork when spawn_agent role or effort overrides explicitly set fork_turns none", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
