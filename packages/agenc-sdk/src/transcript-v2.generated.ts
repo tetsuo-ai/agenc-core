@@ -43,7 +43,11 @@ export interface SessionTranscriptV2TurnResult extends TranscriptV2JsonObject {
 export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
   readonly eventId: string;
   readonly committedSequence: number;
-  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted";
+  /**
+   * `approval_denied` names a call the user denied (`callId`, `toolName`,
+   * `stage`, and `input` bounded to the fields that identify its target).
+   */
+  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted" | "approval_denied";
   readonly payload: {
     readonly runId?: string;
     readonly sequence?: number;
@@ -87,6 +91,10 @@ export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
     readonly code?: string;
     readonly message?: string;
     readonly reason?: string;
+    readonly callId?: string;
+    readonly toolName?: string;
+    readonly input?: { readonly [key: string]: string };
+    readonly stage?: "before_execution" | "sandbox_escalation";
   };
 }
 

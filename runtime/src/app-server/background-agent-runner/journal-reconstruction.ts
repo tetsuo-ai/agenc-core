@@ -216,6 +216,9 @@ function transcriptNoticesFromRollout(
   const seenEventIds = new Set<string>();
   const closedTurnIds = new Set<string>();
   let currentTurnId: string | undefined;
+  // The arguments of calls in this epoch, so a denied call can be named on
+  // reopen. Only the bounded identifying fields ever leave this map.
+  const callInputs = new Map<string, { readonly toolName: string; readonly input?: DeniedCallInput }>();
   for (const [index, item] of items.entries()) {
     if (item.type !== "event_msg") continue;
     const event = item.payload;
@@ -250,6 +253,45 @@ function transcriptNoticesFromRollout(
     if (index <= boundaryIndex) continue;
     if (event.msg.type === "turn_started") {
       currentTurnId = event.msg.payload.turnId;
+      continue;
+    }
+    if (event.msg.type === "tool_call_started") {
+      const input = deniedCallInput(parseJsonObject(event.msg.payload.args));
+      callInputs.set(event.msg.payload.callId, {
+        toolName: event.msg.payload.toolName,
+        ...(input !== undefined ? { input } : {}),
+      });
+      continue;
+    }
+    if (event.msg.type === "request_permissions") {
+      const known = callInputs.get(event.msg.payload.callId);
+      const input = deniedCallInput(event.msg.payload.input);
+      if (known?.input === undefined) {
+        callInputs.set(event.msg.payload.callId, {
+          toolName: event.msg.payload.toolName,
+          ...(input !== undefined ? { input } : {}),
+        });
+      }
+      continue;
+    }
+    if (event.msg.type === "tool_call_completed") {
+      const metadata = event.msg.payload.metadata;
+      if (metadata?.approvalDenied !== true) continue;
+      const call = callInputs.get(event.msg.payload.callId);
+      const toolName = event.msg.payload.toolName ?? call?.toolName;
+      if (toolName === undefined) continue;
+      notices.push({
+        eventId, committedSequence, type: "approval_denied",
+        payload: {
+          ...(currentTurnId !== undefined ? { turnId: currentTurnId } : {}),
+          callId: event.msg.payload.callId,
+          toolName,
+          ...(call?.input !== undefined ? { input: call.input } : {}),
+          stage: metadata.approvalDeniedStage === "sandbox_escalation"
+            ? "sandbox_escalation"
+            : "before_execution",
+        },
+      });
       continue;
     }
     const terminal = classifyTurnTerminal(event.msg, {
@@ -531,6 +573,32 @@ export function sessionTranscriptV2FromRollout(
         }
       : {}),
   };
+}
+
+/** The fields that say what a call would act on, for "You denied: ...". */
+const DENIED_CALL_INPUT_KEYS = ["command", "cmd", "file_path", "path", "url", "pattern", "query"] as const;
+const DENIED_CALL_INPUT_MAX_CHARS = 1_000;
+
+type DeniedCallInput = { readonly [key: string]: string };
+
+function deniedCallInput(input: unknown): DeniedCallInput | undefined {
+  if (!isJsonObject(input)) return undefined;
+  const bounded: Record<string, string> = {};
+  for (const key of DENIED_CALL_INPUT_KEYS) {
+    const value = input[key];
+    if (typeof value === "string" && value.length > 0) {
+      bounded[key] = value.slice(0, DENIED_CALL_INPUT_MAX_CHARS);
+    }
+  }
+  return Object.keys(bounded).length > 0 ? bounded : undefined;
+}
+
+function parseJsonObject(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 function maxEventSequence(items: readonly RolloutItem[]): number {

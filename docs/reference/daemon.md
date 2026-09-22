@@ -380,6 +380,14 @@ their own stable `clientMessageId` before the first attempt.
 cursor. Compaction, rewind, rollback, and clear each advance `historyEpoch` and
 replace the active projection. The same scan may also emit additive
 `activeTurn` and `turnResults` (below).
+Its additive `events` list carries durable notices (`token_count`,
+`session_usage`, `turn_failed`, `turn_aborted`) and `approval_denied`, one per
+call the user denied: `turnId`, `callId`, `toolName`, `stage`
+(`before_execution` or `sandbox_escalation`), and `input` reduced to the
+fields that name the call's target (`command`, `cmd`, `file_path`, `path`,
+`url`, `pattern`, `query`, each at most 1000 characters). A reopened client
+can say what was denied without the call's full arguments. Clients ignore
+notice types they do not know.
 
 Live notifications carry the same `eventId`, `sequence`, `runId`,
 `historyEpoch`, `turnId`, `clientMessageId`, and `messageId` correlation where
