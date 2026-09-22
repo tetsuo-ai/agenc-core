@@ -134,12 +134,14 @@ function openAiCostAliases(
   };
 }
 
-// GPT-6 Sol and Luna, Standard rows of developers.openai.com/api/docs/pricing
-// for prompts up to 272K input tokens (read 2026-09-22). OpenAI bills a
-// longer prompt at 2x input and cache and 1.5x output for the whole request,
-// bills cache writes at 1.25x input, and doubles every rate in Fast mode.
-// This table has none of those dimensions, so such turns are under-counted,
-// the same trade the grok-4.6 note below makes for its 200k tier.
+// GPT-6 Astra, Sol and Luna, Standard rows of
+// developers.openai.com/api/docs/pricing for prompts up to 272K input tokens
+// (read 2026-09-22). OpenAI bills a longer prompt at 2x input and cache and
+// 1.5x output for the whole request, bills cache writes at 1.25x input, and
+// doubles every rate in Fast mode. This table has none of those dimensions,
+// so such turns are under-counted, the same trade the grok-4.6 note below
+// makes for its 200k tier.
+const COST_TIER_GPT_6_ASTRA = openAiCachedInputTier(10, 50, 1);
 const COST_TIER_GPT_6_SOL = openAiCachedInputTier(2, 10, 0.2);
 const COST_TIER_GPT_6_LUNA = openAiCachedInputTier(0.1, 0.5, 0.01);
 const COST_TIER_GPT_5_4 = openAiCachedInputTier(2.5, 15, 0.25);
@@ -497,6 +499,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       "grok-4.20-multi-agent-0309",
       COST_TIER_GROK_4X_NON_REASONING,
     ),
+    ...openAiCostAliases("gpt-6-astra", COST_TIER_GPT_6_ASTRA),
     ...openAiCostAliases("gpt-6-sol", COST_TIER_GPT_6_SOL),
     ...openAiCostAliases("gpt-6-luna", COST_TIER_GPT_6_LUNA),
     ...openAiCostAliases("gpt-5.4", COST_TIER_GPT_5_4),

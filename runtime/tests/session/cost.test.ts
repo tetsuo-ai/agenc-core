@@ -186,9 +186,10 @@ describe("cost helpers", () => {
   );
 
   // developers.openai.com/api/docs/pricing, Standard rows for prompts up to
-  // 272K input tokens (read 2026-09-22): Sol $2 / $0.20 cached / $10 output,
-  // Luna $0.10 / $0.01 cached / $0.50 output per 1M tokens.
+  // 272K input tokens (read 2026-09-22): Astra $10 / $1 cached / $50 output,
+  // Sol $2 / $0.20 / $10, Luna $0.10 / $0.01 / $0.50 per 1M tokens.
   test.each([
+    ["gpt-6-astra", 0.01, 0.001, 0.05],
     ["gpt-6-sol", 0.002, 0.0002, 0.01],
     ["gpt-6-luna", 0.0001, 0.00001, 0.0005],
   ])(

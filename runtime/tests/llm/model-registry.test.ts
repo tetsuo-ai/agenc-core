@@ -65,7 +65,7 @@ describe("ModelRegistry", () => {
     });
   });
 
-  it.each(["gpt-6-sol", "gpt-6-luna"])("resolves %s from the registry with a known price", (model) => {
+  it.each(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("resolves %s from the registry with a known price", (model) => {
     const registry = new ModelRegistry({ config: defaultConfig() });
 
     const entry = registry.resolveSync({ provider: "openai", model });
