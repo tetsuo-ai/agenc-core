@@ -911,6 +911,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
         "aborted",
       ),
       reason: isString,
+      decidedBy: oneOf("user", "runtime"),
     },
   ),
   request_user_input: objectShape(

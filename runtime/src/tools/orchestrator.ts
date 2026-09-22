@@ -480,10 +480,12 @@ export class ApprovalRejectedError extends Error {
 }
 
 /**
- * True for a resolver denial: the session's approval resolver (a live
- * prompt or an automated policy) said no. Such results end the turn after
- * the batch so the model cannot loop on the same call, the way a user
- * rejection does in the reference harness.
+ * True for a denial a person made on the session's approval prompt. Such
+ * results end the turn after the batch so the model cannot loop on the same
+ * call, the way a user rejection does in the reference harness. A resolver
+ * denial without user provenance (the live broker refusing a request itself,
+ * a non-interactive client's auto-denial) is a policy answer: the model keeps
+ * the turn and can say what was not permitted.
  *
  * A default denial (no resolver exists at all) is deliberately excluded:
  * nobody could ever approve, so ending the turn would only cut off the
@@ -492,7 +494,11 @@ export class ApprovalRejectedError extends Error {
  * says not to retry, and the identical-failing-call guard stops any loop.
  */
 export function approvalDenialEndsTurn(err: ApprovalRejectedError): boolean {
-  return err.decision.kind === "denied" && err.source === "resolver";
+  return (
+    err.decision.kind === "denied" &&
+    err.decision.decidedBy === "user" &&
+    err.source === "resolver"
+  );
 }
 
 function resolveApprovalSignal(

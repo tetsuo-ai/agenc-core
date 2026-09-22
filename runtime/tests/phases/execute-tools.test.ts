@@ -3138,7 +3138,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       log,
       registry,
       approvalResolver: {
-        request: async () => ({ kind: "denied" }),
+        request: async () => ({ kind: "denied", decidedBy: "user" }),
       },
     });
     const state = mkState({

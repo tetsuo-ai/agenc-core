@@ -29,7 +29,7 @@ describe("phase tool-runtime dependency executor", () => {
           session: { services: session.services },
           turn: mkCtx(),
           approvalPolicy: "on_request",
-          approvalResolver: { request: async () => ({ kind: "denied" }) },
+          approvalResolver: { request: async () => ({ kind: "denied", decidedBy: "user" }) },
           permissionAuditLogger: async () => { if (throwAudit) throw new Error("audit failed"); },
           onPermissionAuditError: () => {},
         },

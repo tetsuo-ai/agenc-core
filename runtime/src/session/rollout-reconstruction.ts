@@ -821,7 +821,8 @@ export function reconstructFromRollout(
     if (
       event.type === "permission_decision" &&
       event.payload.decision === "denied" &&
-      event.payload.source === "resolver"
+      event.payload.source === "resolver" &&
+      event.payload.decidedBy !== "runtime"
     ) {
       resolverDeniedTurns.add(event.payload.turnId);
       if (reconstructionRunId === undefined || event.payload.runId === reconstructionRunId) {

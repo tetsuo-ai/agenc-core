@@ -183,10 +183,18 @@ export class LiveApprovalBroker {
     const pending = this.pending(ownerRunId, requestId);
     if (pending === undefined || pending.ctx.signal?.aborted) return false;
     const owner = this.#owners.get(ownerRunId)!;
-    if (!owner.workflow && decision.kind === "denied") {
+    // A client answering the pending request is the only path a person can
+    // take to deny it. A non-interactive client has nobody attached, so its
+    // denial is a policy answer, not the user's decision. The broker's own
+    // refusals in #request never pass through here.
+    const userDecision =
+      decision.kind === "denied" && !isNonInteractiveSession(owner.session)
+        ? { ...decision, decidedBy: "user" as const }
+        : decision;
+    if (!owner.workflow && userDecision.kind === "denied" && userDecision.decidedBy === "user") {
       owner.session.markStoppedByUser?.();
     }
-    pending.settle(decision);
+    pending.settle(userDecision);
     return true;
   }
 
@@ -270,6 +278,12 @@ export class LiveApprovalBroker {
       if (ctx.signal?.aborted || ownershipSignal?.aborted) abort();
     });
   }
+}
+
+function isNonInteractiveSession(session: Session): boolean {
+  return (
+    session.services as { readonly runtimeOptions?: { readonly nonInteractive?: unknown } } | undefined
+  )?.runtimeOptions?.nonInteractive === true;
 }
 
 function approvalInput(ctx: ApprovalCtx): JsonObject | undefined {

@@ -470,6 +470,12 @@ export interface PermissionDecisionEvent {
     | "cache"
     | "aborted";
   readonly reason?: string;
+  /**
+   * For a resolver denial: `user` when a person chose Deny, `runtime` when
+   * the resolver refused on its own. Absent in journals written before the
+   * distinction, where a resolver denial was taken as the user's.
+   */
+  readonly decidedBy?: "user" | "runtime";
   readonly recordedAt: string;
 }
 

@@ -124,7 +124,8 @@ describe("permission owner decisions", () => {
     const state = await fixture();
     await state.manager.denyTool({ sessionId: "daemon-permission-session", requestId: state.requestId, ...(reason === undefined ? {} : { reason }) });
     const result = await state.waiting;
-    expect(result.decision).toEqual(reason?.trim() ? { kind: "denied", reason } : { kind: "denied" });
+    // A client answering the pending request is a person's decision.
+    expect(result.decision).toEqual(reason?.trim() ? { kind: "denied", reason, decidedBy: "user" } : { kind: "denied", decidedBy: "user" });
     expect(result.reason).toBe(reason?.trim() || undefined);
   });
 });

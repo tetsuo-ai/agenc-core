@@ -755,6 +755,9 @@ function appendDurableApprovalDecision(
           decision: result.decision.kind,
           source: result.source,
           ...(result.reason !== undefined ? { reason: result.reason } : {}),
+          ...(result.decision.kind === "denied" && result.source === "resolver"
+            ? { decidedBy: result.decision.decidedBy ?? "runtime" }
+            : {}),
           recordedAt: new Date().toISOString(),
         },
       },

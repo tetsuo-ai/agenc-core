@@ -5269,7 +5269,8 @@ export class Session {
         event.type === "permission_decision" &&
         event.payload.runId === this.conversationId &&
         event.payload.decision === "denied" &&
-        event.payload.source === "resolver"
+        event.payload.source === "resolver" &&
+        event.payload.decidedBy !== "runtime"
       ) {
         if (!stopped) generation += 1;
         stopped = true;
