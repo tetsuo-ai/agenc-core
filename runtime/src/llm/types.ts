@@ -430,7 +430,11 @@ type LLMReasoningEffort =
   | "max";
 type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
 type LLMModelVerbosity = "low" | "medium" | "high";
-type LLMServiceTier = "priority" | "flex";
+/**
+ * "default" names OpenAI's Standard tier explicitly; admission sends it under
+ * a hard USD cap so a project-level Fast default cannot apply.
+ */
+type LLMServiceTier = "priority" | "flex" | "default";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"

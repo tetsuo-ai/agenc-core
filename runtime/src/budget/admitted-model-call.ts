@@ -26,6 +26,7 @@ import {
   computeUsdCostWithResolution,
   DEFAULT_MODEL_COSTS,
   resolveModelCostEntry,
+  selectCallRates,
   type ModelCostEntry,
   type ModelUsage,
 } from "../session/cost.js";
@@ -230,20 +231,55 @@ function requestsAnthropicFastMode(
   );
 }
 
-function maximumTokenCostUsd(
+function isOpenAiProvider(provider: string): boolean {
+  return provider.trim().toLowerCase() === "openai";
+}
+
+/**
+ * OpenAI Fast mode is `service_tier: "priority"` (or "fast") and bills at
+ * the model's Fast rates when the response reports that tier.
+ */
+function requestsOpenAiFastMode(
+  provider: string,
+  options: LLMChatOptions,
+): boolean {
+  return isOpenAiProvider(provider) && options.serviceTier === "priority";
+}
+
+/**
+ * The rates the most expensive outcome of this request bills at, or null
+ * when the model is unpriced. A request that asks for fast mode is reserved
+ * at fast rates. A reservation admits up to `inputTokens + outputTokens`
+ * before reconciliation counts a token overrun, so a price that depends on
+ * one request's input length (OpenAI long context above 272K) is taken at
+ * the tier that total can reach. `documented` is false when the provider
+ * publishes no rate for that tier.
+ */
+function reservationRates(
   model: string,
   provider: string,
   inputTokens: number,
   outputTokens: number,
   options: LLMChatOptions,
-): number | null {
+): ReturnType<typeof selectCallRates> | null {
   const standardEntry = pricedEntry(model, provider);
   if (standardEntry === null) return null;
-  const entry =
-    standardEntry.fastMode !== undefined &&
-      requestsAnthropicFastMode(model, provider, options)
-      ? standardEntry.fastMode
-      : standardEntry;
+  const fast =
+    requestsAnthropicFastMode(model, provider, options) ||
+    requestsOpenAiFastMode(provider, options);
+  return selectCallRates(standardEntry, {
+    ...(fast ? { speed: "fast" as const } : {}),
+    singleCallInputTokens: inputTokens + outputTokens,
+  });
+}
+
+function maximumTokenCostUsd(
+  entry: Readonly<ModelCostEntry> | null,
+  inputTokens: number,
+  outputTokens: number,
+  options: LLMChatOptions,
+): number | null {
+  if (entry === null) return null;
   const worstInputRate = Math.max(
     entry.inputUsdPer1K,
     entry.cachedInputUsdPer1K ?? 0,
@@ -301,6 +337,8 @@ function usageCostUsd(
     webSearchRequests: usage.webSearchRequests ?? 0,
     totalTokens: usage.totalTokens,
     turns: 1,
+    // One request: per-request rates such as OpenAI long context apply.
+    singleCall: true,
     // Charge by the speed the provider reports it served, not the one
     // requested: a fast request served at standard speed bills standard.
     ...(usage.speed === "fast" ? { speed: "fast" as const } : {}),
@@ -534,6 +572,14 @@ export async function runAdmittedModelCall(
     {
       ...params.options,
       model: effectiveModel,
+      // An omitted service_tier runs at the OpenAI project's default tier,
+      // which can be Fast (fast-mode guide). Under a hard USD cap the
+      // Standard reservation must bound the call, so name Standard.
+      ...(hasHardCostCap &&
+      isOpenAiProvider(effectiveProvider) &&
+      params.options.serviceTier === undefined
+        ? { serviceTier: "default" as const }
+        : {}),
       ...(configuredMaxOutputTokens !== undefined
         ? { maxOutputTokens: configuredMaxOutputTokens }
         : {}),
@@ -637,13 +683,21 @@ export async function runAdmittedModelCall(
       : countedInputTokens;
   const unboundedPaidServerTool =
     hasHardCostCap && hasUnboundedPaidServerTool(accountingOptions);
-  const maximumCost = maximumTokenCostUsd(
+  const reservedRates = reservationRates(
     effectiveModel,
     effectiveProvider,
     maxInputTokens,
     admittedMaxOutputTokens,
     accountingOptions,
   );
+  const maximumCost = reservedRates?.documented === false
+    ? null
+    : maximumTokenCostUsd(
+      reservedRates?.rates ?? null,
+      maxInputTokens,
+      admittedMaxOutputTokens,
+      accountingOptions,
+    );
   const denialReason =
     accountingFailureReason ??
     (configuredMaxOutputTokens === undefined
@@ -652,9 +706,11 @@ export async function runAdmittedModelCall(
         ? "provider_budget_contract_unavailable"
         : unboundedPaidServerTool
           ? "unbounded_provider_tool_under_hard_cap"
-          : hasHardCostCap && maximumCost === null
-            ? "unpriced_model_under_hard_cap"
-            : undefined);
+          : hasHardCostCap && reservedRates?.documented === false
+            ? "unpriced_service_tier_under_hard_cap"
+            : hasHardCostCap && maximumCost === null
+              ? "unpriced_model_under_hard_cap"
+              : undefined);
   if (client === undefined) {
     if (params.session.services.admissionRequired !== false) {
       throw new AdmissionDeniedError("admission_kernel_unavailable");

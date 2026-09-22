@@ -27,6 +27,7 @@ import {
   messageTextContent,
   normalizeFinishReason,
   normalizeToolCallsStrict,
+  openAiServedSpeed,
   parseOpenAIToolChoice,
   prepareMessagesForWire,
   serializeProviderToolArguments,
@@ -1008,6 +1009,11 @@ export function parseChatCompletionsResponse(
         promptDetails.cached_tokens ??
         (isKimiResponse ? usageRecord.cached_tokens : undefined),
       reasoningOutputTokens: completionDetails.reasoning_tokens,
+      // Only providers documented to take service_tier report the tier that
+      // served the request; Fast mode bills at its own rates.
+      ...(request.providerCapabilityHints?.acceptsServiceTier === true
+        ? { speed: openAiServedSpeed(response.service_tier) }
+        : {}),
     }),
     model:
       typeof response.model === "string" ? response.model : model,

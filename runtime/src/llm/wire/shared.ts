@@ -265,6 +265,7 @@ export function coerceUsage(usage: {
   readonly cacheCreationInputTokens?: unknown;
   readonly reasoningOutputTokens?: unknown;
   readonly webSearchRequests?: unknown;
+  readonly speed?: LLMUsage["speed"];
   readonly availability?: LLMUsage["availability"];
   readonly provenance?: LLMUsage["provenance"];
 }): LLMUsage {
@@ -301,7 +302,21 @@ export function coerceUsage(usage: {
       : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(webSearchRequests !== undefined ? { webSearchRequests } : {}),
+    ...(usage.speed !== undefined ? { speed: usage.speed } : {}),
   };
+}
+
+/**
+ * The speed OpenAI reports it served a request at. `service_tier` in the
+ * Responses and Chat Completions response names the tier used: "priority"
+ * for Fast mode on GPT-5.6 and earlier, "fast" on GPT-6, and "default" when
+ * a Fast request was downgraded and billed at Standard rates
+ * (developers.openai.com/api/docs/guides/fast-mode, read 2026-09-23).
+ */
+export function openAiServedSpeed(serviceTier: unknown): "fast" | undefined {
+  return serviceTier === "priority" || serviceTier === "fast"
+    ? "fast"
+    : undefined;
 }
 
 type LLMFinishReason = LLMResponse["finishReason"];

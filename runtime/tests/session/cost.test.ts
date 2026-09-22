@@ -242,10 +242,12 @@ describe("cost helpers", () => {
     expect(matchedKey("gpt-5.6")).toBe("openai:gpt-5.6-sol");
     expect(matchedKey("gpt-5-2025-08-07")).toBe("openai:gpt-5");
     expect(matchedKey("gpt-5-codex")).toBe("openai:gpt-5");
+    // A Pro sibling has its own documented row, never its base model's.
+    expect(matchedKey("gpt-5.5-pro")).toBe("openai:gpt-5.5-pro");
     // A dotted minor is a different model, and a sibling of a priced model
     // is not that model: unpriced beats a borrowed price.
     for (const model of [
-      "gpt-5.5-pro",
+      "gpt-5.5-turbo",
       "gpt-5.6-cyber",
       "gpt-5.6-sol-unverified",
       "gpt-5.3-codex-spark",

@@ -1047,6 +1047,9 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
     webSearchRequests,
     totalTokens,
     turns: 1,
+    // One token_count is one provider call, so per-request rates such as
+    // OpenAI long context apply to it.
+    singleCall: true,
     // A turn served in fast mode bills at the model's fast-mode rates.
     ...(payload.speed === "fast" ? { speed: "fast" as const } : {}),
   };

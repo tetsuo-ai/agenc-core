@@ -1644,6 +1644,7 @@ export class OpenAIProvider implements LLMProvider {
       let unterminatedFragmentNamesToolCalls = false;
       const rawFinishReasons = new Set<string>();
       let usage: Record<string, unknown> = {};
+      let servedServiceTier: unknown;
       const toolCallAccumulator = new Map<
         number,
         { id: string; name: string; arguments: string }
@@ -1694,6 +1695,9 @@ export class OpenAIProvider implements LLMProvider {
         }
         if (chunk.usage && typeof chunk.usage === "object") {
           usage = chunk.usage as Record<string, unknown>;
+        }
+        if (typeof chunk.service_tier === "string") {
+          servedServiceTier = chunk.service_tier;
         }
 
         const choices = Array.isArray(chunk.choices)
@@ -1969,6 +1973,9 @@ export class OpenAIProvider implements LLMProvider {
               },
             ],
             usage,
+            ...(servedServiceTier !== undefined
+              ? { service_tier: servedServiceTier }
+              : {}),
           },
           requestOptions,
         ),
