@@ -33,6 +33,8 @@ import {
   _setAgentControlForTesting,
 } from "./delegate-tool.js";
 import { AgentControl } from "../agents/control.js";
+import type { LiveAgent } from "../agents/control.js";
+import { bindLiveAgentSession } from "../agents/live-session.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {
   checkForLSPDiagnostics,
@@ -3916,23 +3918,33 @@ describe("model-facing tools", () => {
     const session = fakeSession();
     (session.config as { agent_max_depth?: number }).agent_max_depth = 1;
     const emit = vi.fn();
-    (session as unknown as { emit: typeof emit }).emit = emit;
+    // A nested caller spawns from its own Session, and that Session is
+    // authoritative only through the live handle its AgentControl hands out:
+    // one stable object, bound by runAgent. Both are required here, or the
+    // spawn path refuses the caller as invalid-runtime-identity.
+    const callerSession = {
+      ...session,
+      conversationId: "child-1",
+      abortController: new AbortController(),
+      emit,
+    } as unknown as Session;
+    const callerLive = {
+      agentId: "child-1",
+      agentPath: "/root/child_1",
+      depth: 1,
+      nickname: "Deckard",
+      role: { name: "runner" },
+      abortController: new AbortController(),
+      status: {
+        value: { status: "running", turnId: "t", startedAtMs: 1 },
+      },
+    } as unknown as LiveAgent;
+    const revokeCallerSession = bindLiveAgentSession(callerLive, callerSession);
     const control = {
       roleWorkspace: DEFAULT_ROLE_WORKSPACE,
       assertRoleWorkspace: vi.fn(),
       getLive: vi.fn((threadId: string) =>
-        threadId === "child-1"
-          ? {
-              agentId: "child-1",
-              agentPath: "/root/child_1",
-              depth: 1,
-              nickname: "Deckard",
-              role: { name: "runner" },
-              status: {
-                value: { status: "running", turnId: "t", startedAtMs: 1 },
-              },
-            }
-          : undefined,
+        threadId === "child-1" ? callerLive : undefined,
       ),
     };
     delegateMock.mockResolvedValue({
@@ -3979,7 +3991,7 @@ describe("model-facing tools", () => {
       });
       expect(delegateMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          parent: session,
+          parent: callerSession,
           parentPath: "/root/child_1",
           taskPrompt: "inspect",
           agentName: "grandchild",
@@ -4004,6 +4016,7 @@ describe("model-facing tools", () => {
       expect(endEnvelope?.msg?.payload?.status?.status).toBe("running");
       expect(endEnvelope?.msg?.payload?.status?.error).toBeUndefined();
     } finally {
+      revokeCallerSession();
       _clearAgentControlCacheForTesting(session);
     }
   });
