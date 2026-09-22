@@ -842,12 +842,15 @@ export function parseChatCompletionsResponse(
     (request.providerCapabilityHints.rejectsPartialToolCalls === true ||
       finishReason === "stop" ||
       finishReason === "tool_calls") &&
-    choice.finish_reason !== "tool_calls"
+    choice.finish_reason !== "tool_calls" &&
+    // An output-limit cutoff is a known truncation: its tool calls are dropped
+    // below and the turn takes max-output recovery.
+    choice.finish_reason !== "length"
   ) {
     throw new LLMInvalidResponseError(
       request.providerCapabilityHints?.reasoningContentProvenance?.provider ??
         "zai",
-      "Tool calls arrived without finish_reason=tool_calls",
+      `Tool calls arrived without finish_reason=tool_calls (received ${JSON.stringify(choice.finish_reason ?? null)})`,
     );
   }
   if (

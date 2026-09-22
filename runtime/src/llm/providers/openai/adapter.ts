@@ -1853,11 +1853,18 @@ export class OpenAIProvider implements LLMProvider {
           `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
         );
       }
+      // A single `length` finish is the documented output-limit cutoff. Its
+      // unfinished tool calls are dropped below and never dispatched; the turn
+      // then takes max-output recovery. Failing the response instead ended a
+      // DeepSeek subagent whose Write call ran into its 64k output cap.
+      const cutOffByOutputLimit =
+        rawFinishReasons.size === 1 && rawFinishReasons.has("length");
       if (
         streamCapabilityHints.requiresExplicitFinishReason === true &&
         (!sawFinishReason ||
           rawFinishReasons.size > 1 ||
           (toolCallAccumulator.size > 0 &&
+            !cutOffByOutputLimit &&
             (streamCapabilityHints.rejectsPartialToolCalls === true ||
               finishReason === "stop" ||
               finishReason === "tool_calls") &&
@@ -1872,7 +1879,11 @@ export class OpenAIProvider implements LLMProvider {
                 (streamCapabilityHints.rejectsPartialToolCalls === true ||
                   finishReason === "stop" ||
                   finishReason === "tool_calls")
-            ? "Streamed tool calls arrived without finish_reason=tool_calls"
+            ? `Streamed tool calls arrived without finish_reason=tool_calls (${
+              sawFinishReason
+                ? `received ${JSON.stringify([...rawFinishReasons][0])}`
+                : "no finish_reason"
+            })`
             : "Stream closed without an explicit finish_reason",
         );
       }

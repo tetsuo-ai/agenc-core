@@ -108,7 +108,7 @@ describe("MetaProvider", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test.each([undefined, "stop", "length"])(
+  test.each([undefined, "stop"])(
     "rejects streamed tools without their terminal tool_calls reason (%s)",
     async (finishReason) => {
       const chunk = {
@@ -138,7 +138,32 @@ describe("MetaProvider", () => {
     },
   );
 
-  test.each(["stop", "length"])(
+  test("drops streamed and non-streaming tools cut off by the output limit", async () => {
+    const chunk = { choices: [{ index: 0, finish_reason: "length", delta: { tool_calls: [{
+      index: 0, id: "call_echo", type: "function", function: { name: "system.echo", arguments: '{"text":"o' },
+    }] } }] };
+    const streamFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    ));
+    const onChunk = vi.fn();
+    await expect(createProvider("meta", { apiKey: "meta-test", tools: [echoTool], extra: { fetchImpl: streamFetch } })
+      .chatStream([{ role: "user", content: "echo ok" }], onChunk))
+      .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
+    expect(onChunk).not.toHaveBeenCalledWith(expect.objectContaining({ toolCalls: expect.anything() }));
+
+    const jsonFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify({ choices: [{ finish_reason: "length", message: { role: "assistant", content: null, tool_calls: [{
+        id: "call_echo", type: "function", function: { name: "system.echo", arguments: '{"text":"o' },
+      }] } }] }),
+      { headers: { "content-type": "application/json" } },
+    ));
+    await expect(createProvider("meta", { apiKey: "meta-test", tools: [echoTool], extra: { fetchImpl: jsonFetch } })
+      .chat([{ role: "user", content: "echo ok" }]))
+      .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
+  });
+
+  test.each(["stop"])(
     "rejects non-streaming tools with unfinished reason %s",
     async (finishReason) => {
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(

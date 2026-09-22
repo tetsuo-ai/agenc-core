@@ -792,7 +792,7 @@ describe("KimiProvider", () => {
         function: { name: "system.echo", arguments: { text: "ok" } },
       }],
     };
-    for (const finishReason of ["stop", "length", "unknown"]) {
+    for (const finishReason of ["stop", "unknown"]) {
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
         successfulChat("kimi-k3", "", toolMessage, finishReason),
       );
@@ -805,6 +805,18 @@ describe("KimiProvider", () => {
       await expect(provider.chat([{ role: "user", content: "go" }]))
         .rejects.toThrow(/finish_reason(?:=tool_calls|.*unsupported)/i);
     }
+
+    // An output-limit cutoff drops the unfinished calls for max-output recovery.
+    const cutFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      successfulChat("kimi-k3", "", toolMessage, "length"),
+    );
+    await expect(new KimiProvider({
+      apiKey: "moonshot-test",
+      model: "kimi-k3",
+      tools: [ECHO_TOOL],
+      fetchImpl: cutFetch,
+    }).chat([{ role: "user", content: "go" }]))
+      .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
 
     const validFetch = vi.fn<typeof fetch>().mockResolvedValue(
       successfulChat("kimi-k3", "", toolMessage, "tool_calls"),
@@ -826,7 +838,7 @@ describe("KimiProvider", () => {
       });
   });
 
-  test("rejects partial streamed tool calls terminated by length", async () => {
+  test("drops partial streamed tool calls terminated by length", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
       'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_echo","type":"function","function":{"name":"system.echo","arguments":"{\\"text\\":\\"partial\\"}"}}]},"finish_reason":null}]}\n\n',
       'data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}\n\n',
@@ -838,10 +850,12 @@ describe("KimiProvider", () => {
       tools: [ECHO_TOOL],
       fetchImpl,
     });
+    const onChunk = vi.fn();
     await expect(provider.chatStream(
       [{ role: "user", content: "go" }],
-      () => undefined,
-    )).rejects.toThrow(/tool calls.*finish_reason=tool_calls/i);
+      onChunk,
+    )).resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
+    expect(onChunk).not.toHaveBeenCalledWith(expect.objectContaining({ toolCalls: expect.anything() }));
   });
 
   test("captures streamed reasoning with exact Kimi model provenance", async () => {
