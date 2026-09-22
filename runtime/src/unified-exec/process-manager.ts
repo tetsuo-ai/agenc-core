@@ -836,13 +836,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       // The child holds its own copies of the log descriptor.
       closeSync(logFd);
     }
-    request.observer?.onBegin?.({
-      callId,
-      command: request.cmd,
-      cwd,
-      processId,
-      tty: false,
-    });
+    // A failed spawn reports on the next tick. Listen before anything else
+    // runs, observer.onBegin included, so that report is never uncaught.
     let settled: (ExitState & { readonly error?: Error }) | null = null;
     const exit = new Promise<void>((resolveExit) => {
       child.once("exit", (code, signal) => {
@@ -853,6 +848,31 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         settled = { exitCode: 1, signal: null, error };
         resolveExit();
       });
+    });
+    if (child.pid === undefined) {
+      // The spawn failed: the working directory was removed after its check,
+      // the shell is missing, or the process or descriptor table is full.
+      // Nothing started, so this is a create_process error (settled as no
+      // effect) rather than an exit of a service that never ran.
+      await exit;
+      this.releaseProcessId(processId);
+      const failure = settled as (ExitState & { readonly error?: Error }) | null;
+      let message = failure?.error?.message ?? "detached process did not start";
+      try {
+        if (!statSync(cwd).isDirectory()) {
+          message = `working directory does not exist: ${cwd}`;
+        }
+      } catch {
+        message = `working directory does not exist: ${cwd}`;
+      }
+      throw new UnifiedExecError("create_process", message);
+    }
+    request.observer?.onBegin?.({
+      callId,
+      command: request.cmd,
+      cwd,
+      processId,
+      tty: false,
     });
     const yieldMs = clampExecYield(
       request.yield_time_ms ?? DEFAULT_DETACHED_YIELD_TIME_MS,
@@ -1370,6 +1390,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           env: params.env,
         });
       } catch (error) {
+        detachUpstreamAbort?.();
         throw new UnifiedExecError(
           "create_process",
           error instanceof Error ? error.message : String(error),
@@ -1396,11 +1417,34 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
-    const child = spawnContainedProcess(params.program, params.args, {
-      cwd: params.cwd,
-      env: params.env,
-      argv0: params.argv0 ?? basename(params.program),
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawnContainedProcess(params.program, params.args, {
+        cwd: params.cwd,
+        env: params.env,
+        argv0: params.argv0 ?? basename(params.program),
+      });
+    } catch (error) {
+      // spawnContainedProcess throws only before the command can run: the
+      // working directory is gone (the session root was deleted, or a workdir
+      // was removed after its check), the gate or broker did not start, or
+      // its launch payload was never handed over. A create_process error is
+      // what exec_command and Monitor settle as no effect.
+      detachUpstreamAbort?.();
+      throw new UnifiedExecError(
+        "create_process",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    if (child.pid === undefined) {
+      // Only the Windows Job Object path returns a child whose spawn failed.
+      // Node reports that on the next tick; nothing started.
+      const spawnError = await new Promise<Error>((resolveError) => {
+        child.once("error", resolveError);
+      });
+      detachUpstreamAbort?.();
+      throw new UnifiedExecError("create_process", spawnError.message);
+    }
     child.stdin.end();
     child.stdout.on("data", (data: Buffer) =>
       notifyData("stdout", data.toString("utf8")),

@@ -1047,6 +1047,32 @@ describe("exec_command tool", () => {
       expect(existsSync(missing)).toBe(false);
     });
 
+    test.skipIf(process.platform === "win32")(
+      "refuses a deleted session root as no effect when no workdir was given",
+      async () => {
+        // No workdir, so the tool's own check does not apply: the process
+        // manager refuses the missing directory before spawning anything, and
+        // that refusal must not be filed as an unknown outcome.
+        const sessionRoot = join(root, "session");
+        await mkdir(sessionRoot);
+        const manager = new UnifiedExecProcessManager({ cwd: sessionRoot });
+        const tool = createExecCommandTool({
+          cwd: sessionRoot,
+          allowedPaths: [sessionRoot],
+          unifiedExecManager: manager,
+        });
+        await rm(sessionRoot, { recursive: true });
+
+        const result = await tool.execute(contextArgs({ cmd: "printf should-not-run" }));
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain(`working directory does not exist: ${sessionRoot}`);
+        expect(result.content).toContain("create_process");
+        expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+        await manager.closeAll("test_cleanup");
+      },
+    );
+
     test("resolves a relative workdir against the workspace for the check and the launch", async () => {
       // The process manager resolved the raw string against the daemon's cwd
       // while validation used the workspace, so the two could disagree.
