@@ -4,6 +4,7 @@ import {
   AgencCapabilityUnavailableError,
   AgencDuplicateSubmissionIncompleteError,
   AgencPromptRunInProgressError,
+  collectClientEnvOverrides,
   createAgencClient,
   type AgencClient,
   type AgencDaemonMethod,
@@ -612,6 +613,9 @@ describe("agenc-sdk prompt race safety", () => {
       (request) => request.method === "agent.create",
     );
     expect(createRequests).toHaveLength(1);
+    // createSession() with no explicit envOverrides forwards this process's
+    // allowlisted environment, so the exact-params assertion has to carry it.
+    const forwardedEnv = collectClientEnvOverrides();
     expect(createRequests[0]?.params).toEqual({
       objective: "Interactive session",
       cwd: VALID_ATTACH_CWD,
@@ -621,6 +625,9 @@ describe("agenc-sdk prompt race safety", () => {
         request: { id: "request_1" },
       },
       runtimeOptions: VALID_ATTACH_RUNTIME_OPTIONS,
+      ...(Object.keys(forwardedEnv).length > 0
+        ? { envOverrides: forwardedEnv }
+        : {}),
     });
     expect(
       transport.requests.filter(
