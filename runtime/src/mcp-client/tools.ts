@@ -11,6 +11,8 @@ import type { Tool, ToolResult, JSONSchema } from "./_deps/tools-types.js";
 import { hasLocalMcpAccess, redactMcpAttachmentText, redactMcpAttachmentValue, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
 import { desktopToolClassification, hasDesktopAuthority } from "./desktop-authority.js";
 import { preEffectRefusal } from "../tools/results.js";
+import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
+import type { ToolEffectDispositionEvidence } from "../contracts/run-contracts.js";
 import { readToolRuntimeContext, type ToolRuntimeAttemptContext } from "../tools/runtimes/context.js";
 import { readSandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import type { MCPToolBridge } from "./types.js";
@@ -743,6 +745,29 @@ async function callRequestPermissionsTool(
   }
 }
 
+/**
+ * A `tools/call` result is the server's own answer: the call ran to
+ * completion there, whether it reports `isError` or not. Like a process exit
+ * for a shell command, that answer is the provider receipt that settles the
+ * effect as committed (whatever the tool did, it is done; nothing is still in
+ * flight). It never claims `confirmed_no_effect`, so a failed call is not
+ * retried as if it had changed nothing. Transport loss, a local deadline and
+ * a stop with no answer produce no receipt and stay unknown outcomes.
+ */
+function mcpServerAnswerReceipt(
+  serverName: string,
+  toolName: string,
+  callId: string,
+  isError: boolean,
+): ToolEffectDispositionEvidence {
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_committed",
+    evidenceKind: "provider_receipt",
+    evidenceRef: `mcp-response:${serverName}:${toolName}:${callId}`,
+    evidenceMaterial: JSON.stringify({ serverName, toolName, callId, isError }),
+  });
+}
+
 async function withRPCDeadline<T>(
   operation: string,
   timeoutMs: number | undefined,
@@ -1164,7 +1189,12 @@ export async function createToolBridge(
             isError,
             durationMs,
           });
-          return effectDisposition === undefined ? result : { ...result, effectDisposition };
+          return {
+            ...result,
+            effectDisposition:
+              effectDisposition ??
+              mcpServerAnswerReceipt(serverName, mcpTool.name, callId, isError),
+          };
         } catch (error) {
           const effectiveError = effectSignal?.aborted
             ? effectSignal.reason

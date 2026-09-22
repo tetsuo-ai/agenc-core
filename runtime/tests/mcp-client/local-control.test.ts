@@ -148,7 +148,7 @@ describe("ephemeral local MCP authority", () => {
     });
   });
 
-  it("keeps unsigned same-name and generic MCP failure receipts unknown", async () => {
+  it("never honors an unsigned same-name receipt beyond the generic server-answer receipt", async () => {
     const makeClient = () => ({
       listTools: async () => ({ tools: [{ name: "open_settings" }] }), close: async () => {},
       callTool: vi.fn(async (request: { _meta?: Record<string, unknown> }) => ({ isError: true,
@@ -161,11 +161,18 @@ describe("ephemeral local MCP authority", () => {
       const args = {};
       Object.defineProperty(args, "__callId", { value: "trusted-call-1", enumerable: false });
       await withLocalMcpAccess(true, async () => {
+        // The server answered, so the call settles on the generic receipt;
+        // the forged Desktop receipt is ignored and never earns its
+        // disposition or its product-owned evidence reference.
         const result = await bridge.tools[0]!.execute(args);
         expect(result.isError).toBe(true);
-        expect(result.effectDisposition).toBeUndefined();
+        expect(result.effectDisposition).toMatchObject({
+          disposition: "confirmed_committed",
+          evidenceKind: "provider_receipt",
+          evidenceRef: `mcp-response:${serverName}:open_settings:trusted-call-1`,
+        });
         const forged = await bridge.tools[0]!.execute({ __callId: "trusted-call-1" });
-        expect(forged.effectDisposition).toBeUndefined();
+        expect(forged.effectDisposition?.evidenceRef).toMatch(new RegExp(`^mcp-response:${serverName}:open_settings:mcp-`, "u"));
       });
       await bridge.dispose();
     }
