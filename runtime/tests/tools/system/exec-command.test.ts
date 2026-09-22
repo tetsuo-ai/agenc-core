@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1038,6 +1038,40 @@ describe("exec_command tool", () => {
       expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
       expect(execCommand).not.toHaveBeenCalled();
       expect(existsSync(missing)).toBe(false);
+    });
+
+    test("resolves a relative workdir against the workspace for the check and the launch", async () => {
+      // The process manager resolved the raw string against the daemon's cwd
+      // while validation used the workspace, so the two could disagree.
+      await mkdir(join(root, "scripts"));
+      const { tool, execCommand } = workdirTool();
+
+      const result = await tool.execute(contextArgs({ cmd: "ls", workdir: "scripts" }));
+
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+      expect(execCommand.mock.calls[0]![0]).toMatchObject({ workdir: join(root, "scripts") });
+
+      // "src" exists beside the test process (the daemon's cwd) but not in the
+      // workspace, so it is refused rather than launched in the wrong place.
+      expect(existsSync(join(process.cwd(), "src"))).toBe(true);
+      const refused = await tool.execute(contextArgs({ cmd: "ls", workdir: "src" }));
+      expect(refused.isError).toBe(true);
+      expect(refused.content).toContain("workdir does not exist: src");
+      expect(execCommand).toHaveBeenCalledTimes(1);
+    });
+
+    test("launches a detached command in the same resolved workdir", async () => {
+      await mkdir(join(root, "svc"));
+      const startDetachedProcess = vi.fn<NonNullable<UnifiedExecProcessManagerLike["startDetachedProcess"]>>(
+        async () => ({ ...completedExecOutput("started"), detached: true, pid: 4242 }),
+      );
+      const { tool } = mockManagerTool({ startDetachedProcess });
+
+      await tool.execute(contextArgs({ cmd: "sleep 1", workdir: "svc", detach: true }));
+
+      expect(startDetachedProcess).toHaveBeenCalledTimes(1);
+      expect(startDetachedProcess.mock.calls[0]![0]).toMatchObject({ workdir: join(root, "svc") });
     });
 
     test("refuses a working directory outside the workspace in a prompting session", async () => {

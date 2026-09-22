@@ -610,23 +610,30 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         };
       }
       const cmd = asString(args.cmd)!;
-      const workdir = asString(args.workdir);
+      const requestedWorkdir = asString(args.workdir);
+      // One absolute directory for the existence check, the write policy and
+      // the launch. Validation resolves a relative workdir against the
+      // workspace, but the process manager would resolve the raw string
+      // against the daemon's own cwd.
+      const workdir =
+        requestedWorkdir !== undefined && requestedWorkdir.trim().length > 0
+          ? resolve(config?.cwd ?? process.cwd(), requestedWorkdir)
+          : undefined;
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
       const detach = asBoolean(args.detach) === true;
 
       // Checked here, not in preflight: an earlier call in the same turn may
       // create the directory. Nothing has started, so the refusal is no effect.
-      if (workdir !== undefined && workdir.trim().length > 0) {
-        const resolvedWorkdir = resolve(config?.cwd ?? process.cwd(), workdir);
+      if (workdir !== undefined) {
         let isDirectory = false;
         try {
-          isDirectory = statSync(resolvedWorkdir).isDirectory();
+          isDirectory = statSync(workdir).isDirectory();
         } catch {
           isDirectory = false;
         }
         if (!isDirectory) {
-          const message = `workdir does not exist: ${workdir}. It must exist before the command starts; create it in an earlier command, or run from an existing directory and cd inside the command.`;
+          const message = `workdir does not exist: ${requestedWorkdir}. It must exist before the command starts; create it in an earlier command, or run from an existing directory and cd inside the command.`;
           return {
             content: safeStringify({ error: message }),
             isError: true,
