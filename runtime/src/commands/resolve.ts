@@ -85,21 +85,11 @@ export const resolveCommand: SlashCommand = {
       ) {
         return { kind: "error", message: USAGE };
       }
+      // The daemon records the reviewer from this client's attachment.
       const result = await session.resolveDaemonToolCall(
         evidenceRef === undefined || evidenceSha256 === undefined
-          ? {
-              toolCallId,
-              disposition,
-              attestation: "operator",
-              reviewer: "tui_operator",
-            }
-          : {
-              toolCallId,
-              disposition,
-              evidenceRef,
-              evidenceSha256,
-              reviewer: "tui_operator",
-            },
+          ? { toolCallId, disposition, attestation: "operator" }
+          : { toolCallId, disposition, evidenceRef, evidenceSha256 },
       );
       if (result.resolved.length === 0) {
         return {

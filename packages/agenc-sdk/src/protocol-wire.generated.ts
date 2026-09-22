@@ -869,6 +869,11 @@ export interface SessionResolveToolCallAttestationParams extends JsonObject {
     readonly evidenceSha256?: never;
 }
 
+/**
+ * Accepted only from a local client attached to `sessionId` on the same
+ * connection. `reviewer` is advisory and ignored: the daemon records the
+ * reviewer from the attached client and the verified transport identity.
+ */
 export type SessionResolveToolCallParams = SessionResolveToolCallLegacyParams | SessionResolveToolCallEvidenceParams | SessionResolveToolCallAttestationParams;
 
 export interface SessionMcpStatusParams extends JsonObject {

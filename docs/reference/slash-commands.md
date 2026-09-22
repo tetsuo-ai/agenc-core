@@ -206,7 +206,9 @@ knowledge (for example, "that stopped MCP call never reached anything that
 writes"). Core records the attestation itself as the operator evidence: the
 reference `operator-attestation:<session>:<call-id>` and the SHA-256 of the
 canonical attestation (reviewer, disposition, time). Pass an evidence
-reference and its SHA-256 instead when you hold a receipt or ticket.
+reference and its SHA-256 instead when you hold a receipt or ticket. Only a
+client attached to the session can resolve it, and the recorded reviewer is
+that client, not a name given in the command.
 
 Resume first (`--resume` / `/resume`) when the previous epoch ended as
 `completed`, `failed`, or `cancelled`. Pending reviews do not block those

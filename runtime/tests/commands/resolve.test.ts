@@ -26,7 +26,6 @@ describe("resolveCommand", () => {
       toolCallId: "call_1",
       disposition: "confirmed_no_effect",
       attestation: "operator",
-      reviewer: "tui_operator",
     });
     expect(res.kind).toBe("text");
   });
@@ -39,7 +38,6 @@ describe("resolveCommand", () => {
       disposition: "confirmed_committed",
       evidenceRef: "ticket:INC-1",
       evidenceSha256: "b".repeat(64),
-      reviewer: "tui_operator",
     });
   });
 

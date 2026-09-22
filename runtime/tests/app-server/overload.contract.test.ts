@@ -77,6 +77,15 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonPriorityMessage(request("message.stream"))).toBe(false);
   });
 
+  it("lets an effect review overtake the turn it unblocks on the same connection", () => {
+    // Desktop reviews on the session's turn connection, which it must be
+    // attached to; a review queued behind the refused turn would wait on it.
+    const review = request("session.resolveToolCall");
+    expect(isDaemonPriorityMessage(review)).toBe(true);
+    expect(isDaemonPreemptiveMessage(review)).toBe(false);
+    expect(isDaemonControlMessage(review)).toBe(false);
+  });
+
   it("keeps preemptive interactive decisions subject to normal overload limits", () => {
     const limiter = new AgenCDaemonConnectionLimiter({
       maxInFlightRequests: 1,

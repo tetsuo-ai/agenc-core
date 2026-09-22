@@ -55,6 +55,9 @@ const DAEMON_PRIORITY_METHODS = new Set<string>([
   "session.processes.list",
   "session.goal",
   "session.hooks.status",
+  // An operator effect review unblocks the turn that may be streaming on
+  // the same connection; it must not wait behind that turn.
+  "session.resolveToolCall",
   "health.ping",
   "health.ready",
   "health.stats",

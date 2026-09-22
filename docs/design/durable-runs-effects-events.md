@@ -223,7 +223,15 @@ agent's conversation, which keys the durable effect rows. The live path
 accepts either an evidence reference with its SHA-256 or
 `attestation: "operator"`, which records the operator's own statement as
 `operator_evidence` (`operator-attestation:<session>:<call-id>` plus the
-SHA-256 of the canonical attestation).
+SHA-256 of the canonical attestation). The daemon accepts
+`session.resolveToolCall` only from a local connection that has a client
+attached to that session, refuses anything else with `SESSION_NOT_ATTACHED`,
+and records the reviewer from that attachment and the verified transport
+identity (`local-user:uid=<uid>:client=<client-id>`, or
+`local-client:<client-id>` when the transport proved no uid). A `reviewer`
+in the request body is ignored. Remote connections cannot call the method.
+The request uses the connection's priority lane, so it does not wait behind
+the turn it unblocks.
 
 The offline CLI still works after the session is stopped:
 

@@ -528,6 +528,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "removeClientIfUnused"
     | "terminateSession"
     | "removeClient"
+    | "attachedClientIds"
   >;
   readonly sessionManager?: Pick<
     AgenCDaemonSessionManager,
@@ -649,6 +650,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         | "removeClientIfUnused"
         | "terminateSession"
         | "removeClient"
+        | "attachedClientIds"
       >
     | undefined;
   readonly #sessionManager:
@@ -1176,12 +1178,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "session.resolveToolCall":
-        return successResponse(
-          id,
-          await this.#agentManager.resolveSessionToolCall(
-            validateSessionResolveToolCallParams(params),
-          ),
-        );
+        return this.#resolveSessionToolCall(id, connection, params);
       case "session.mcp.status":
         return successResponse(
           id,
@@ -1609,6 +1606,43 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#registerAttachedClient(connection, attachParams, sessionId, attachmentOwner),
     );
     return successResponse(id, result);
+  }
+
+  /**
+   * A review lifts the session's mutation gate, so it must come from a
+   * client this connection attached to that very session: another local
+   * client that only knows the ids cannot clear someone else's gate. The
+   * recorded reviewer is derived from the connection, never from the body.
+   * Remote connections never reach this method (see remote/access.ts).
+   */
+  async #resolveSessionToolCall(
+    id: RequestId,
+    connection: AgenCDaemonJsonRpcConnection,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    const validated = validateSessionResolveToolCallParams(params);
+    const attachedClientIds =
+      this.#clientMultiplexer === undefined
+        ? []
+        : await this.#clientMultiplexer.attachedClientIds(validated.sessionId);
+    const ownClientId = connection.trackedClientIds.find((clientId) =>
+      attachedClientIds.includes(clientId),
+    );
+    if (connection.remoteAccess !== undefined || ownClientId === undefined) {
+      return errorResponse(
+        id,
+        -32000,
+        `session.resolveToolCall requires a client attached to session ${validated.sessionId} on this connection`,
+        { code: "SESSION_NOT_ATTACHED" },
+      );
+    }
+    return successResponse(
+      id,
+      await this.#agentManager.resolveSessionToolCall({
+        ...validated,
+        reviewer: trustedReviewer(connection.daemonSocketIdentity, ownClientId),
+      }),
+    );
   }
 
   async #createSession(
@@ -3178,6 +3212,21 @@ function validateSessionCancelTurnParams(
   });
   validateRequiredString(validated, "session.cancelTurn", "sessionId");
   return validated as SessionCancelTurnParams;
+}
+
+/**
+ * The reviewer recorded for an operator review: the verified local user when
+ * the transport proved one, plus the attached client id this connection
+ * registered. A request body cannot choose it.
+ */
+function trustedReviewer(
+  identity: AuthDaemonSocketIdentity | undefined,
+  clientId: string,
+): string {
+  const uid = identity?.peerUid ?? identity?.privateSocketOwnerUid;
+  return typeof uid === "number"
+    ? `local-user:uid=${uid}:client=${clientId}`
+    : `local-client:${clientId}`;
 }
 
 function validateSessionResolveToolCallParams(
