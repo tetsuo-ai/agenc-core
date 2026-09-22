@@ -3,6 +3,7 @@
  * Split out of background-agent-runner.ts as a pure move.
  */
 
+import type { AgenCSessionEventDelivery } from "../approval-delivery.js";
 import { createHash } from "node:crypto";
 import type {
   BootstrapLocalRuntimeSessionOptions,
@@ -274,7 +275,13 @@ export interface AgenCBackgroundAgentTurnCancellationResult {
 
 export interface AgenCBackgroundAgentSessionEventBinding {
   readonly sessionId: string;
-  readonly emit: (event: JsonObject) => void | Promise<void>;
+  /** Resolves to the daemon's delivery result when it has one. */
+  readonly emit: (
+    event: JsonObject,
+  ) =>
+    | void
+    | AgenCSessionEventDelivery
+    | Promise<void | AgenCSessionEventDelivery>;
 }
 
 export interface AgenCBackgroundAgentMessageParams {

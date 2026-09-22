@@ -18,12 +18,18 @@ import {
   clearApprovalResponseKey,
 } from "../permissions/approval-response-key.js";
 import { daemonEventFromUnboundSessionEvent } from "./background-agent-runner/daemon-events.js";
+import { isUndeliverableApproval } from "./approval-delivery.js";
 import type { BackgroundAgentDaemonEvent } from "./background-agent-runner/shared.js";
 import type { PendingToolApproval, JsonObject } from "./protocol/index.js";
 
+/**
+ * A runtime refusal, not the person's decision (no `decidedBy`): the child's
+ * tool never ran, and its turn does not end as a user stop.
+ */
 const UNDELIVERABLE: ReviewDecision = {
   kind: "denied",
-  reason: "this sub-agent approval could not be shown to the user, so it was denied instead of waiting",
+  reason:
+    "this sub-agent approval could not be shown to the user, so it was denied and the tool did not run",
 };
 
 interface ApprovalOwner {
@@ -53,9 +59,11 @@ export class LiveApprovalBroker {
       readonly timeoutMs?: number;
       /**
        * Publishes a forwarded child approval to the owner's clients. Return
-       * `false`, or a promise that rejects, when it cannot be delivered: the
-       * child's request is then denied with a visible reason rather than left
-       * pending behind a card nobody can see.
+       * `false`, a promise that rejects, or a delivery result in which no
+       * client received it and none lists pending requests
+       * (`isUndeliverableApproval`) when it cannot be shown: the child's
+       * request is then denied with a visible reason rather than left pending
+       * behind a card nobody can see.
        */
       readonly onEvent?: (event: BackgroundAgentDaemonEvent) => unknown;
     },
@@ -125,7 +133,12 @@ export class LiveApprovalBroker {
             const occurrence = requestId;
             if (delivered === false) this.#failUndeliverable(owner, occurrence);
             else if (delivered instanceof Promise) {
-              delivered.catch(() => this.#failUndeliverable(owner, occurrence));
+              delivered.then(
+                (delivery) => {
+                  if (isUndeliverableApproval(delivery)) this.#failUndeliverable(owner, occurrence);
+                },
+                () => this.#failUndeliverable(owner, occurrence),
+              );
             }
           } else if (delivered instanceof Promise) {
             delivered.catch(() => {});

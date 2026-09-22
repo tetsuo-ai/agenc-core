@@ -7,6 +7,7 @@
  * response is returned.
  */
 
+import type { AgenCSessionEventDelivery } from "./approval-delivery.js";
 import { LiveApprovalBroker } from "./live-approval-broker.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
@@ -5242,7 +5243,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async #emitOrBufferEvent(
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent | null,
-  ): Promise<void> {
+  ): Promise<void | AgenCSessionEventDelivery> {
     if (event === null) return;
     // Serialize emission per agent on the agent's dispatch chain. Several
     // call sites are fire-and-forget (`void this.#emitOrBufferEvent(...)`)
@@ -5254,15 +5255,22 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // later events. Mirrors AgenCStdioTransport.#dispatchChain.
     let emitError: unknown;
     let raised = false;
+    let delivery: void | AgenCSessionEventDelivery = undefined;
     const tail = active.dispatchChain.then(() =>
-      this.#emitDaemonEvent(active, event).catch((error: unknown) => {
-        emitError = error;
-        raised = true;
-      }),
+      this.#emitDaemonEvent(active, event).then(
+        (result) => {
+          delivery = result;
+        },
+        (error: unknown) => {
+          emitError = error;
+          raised = true;
+        },
+      ),
     );
     active.dispatchChain = tail;
     await tail;
     if (raised) throw emitError;
+    return delivery;
   }
 
   async #drainDispatchChain(active: ActiveBackgroundAgent): Promise<void> {
@@ -5302,14 +5310,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async #emitDaemonEvent(
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
-  ): Promise<void> {
+  ): Promise<void | AgenCSessionEventDelivery> {
     const binding = active.sessionBinding;
     if (binding === undefined) {
       active.bufferedEvents.push(event);
       boundBufferedAgentEvents(active.bufferedEvents, active.thread.threadId);
-      return;
+      // Kept for a client that attaches later; nobody holds it now.
+      return { deliveredClientIds: [] };
     }
-    await binding.emit(
+    return await binding.emit(
       notificationFromDaemonEvent(
         binding.sessionId,
         active.thread.threadId,

@@ -7,6 +7,7 @@
  * available for follow-up inspection.
  */
 
+import type { AgenCSessionEventDelivery } from "./approval-delivery.js";
 import {
   closeSync,
   constants as fsConstants,
@@ -221,6 +222,11 @@ import type { ResponseItem } from "../session/rollout-item.js";
 import type { AgenCStateAgentRunRecord } from "../state/agent-runs.js";
 import type { CancelAgentRunTreeReport } from "../state/run-cancellation.js";
 
+type SessionEventDeliveryResult =
+  | void
+  | AgenCSessionEventDelivery
+  | Promise<void | AgenCSessionEventDelivery>;
+
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
   | "BACKGROUND_RUNNER_UNAVAILABLE"
@@ -301,10 +307,11 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly snapshotFlush?: (
     snapshot: AgenCDaemonAgentSnapshotFlush,
   ) => void | Promise<void>;
+  /** Resolves to the delivery result, which the approval broker reads. */
   readonly broadcastSessionEvent?: (
     sessionId: string,
     event: JsonObject,
-  ) => void | Promise<void>;
+  ) => SessionEventDeliveryResult;
   readonly recordMessageExchange?: (
     exchange: AgenCDaemonMessageExchangeSnapshot,
   ) => void | Promise<void>;
@@ -526,7 +533,7 @@ export class AgenCDaemonAgentManager {
     | ((snapshot: AgenCDaemonAgentSnapshotFlush) => void | Promise<void>)
     | undefined;
   readonly #broadcastSessionEvent:
-    | ((sessionId: string, event: JsonObject) => void | Promise<void>)
+    | ((sessionId: string, event: JsonObject) => SessionEventDeliveryResult)
     | undefined;
   readonly #recordMessageExchange:
     | ((exchange: AgenCDaemonMessageExchangeSnapshot) => void | Promise<void>)

@@ -789,6 +789,15 @@ export class AgenCDaemonClientMultiplexer {
     };
   }
 
+  /** Whether a live, non-evicted client advertised this capability. */
+  async hasClientWithCapability(capability: string): Promise<boolean> {
+    return await this.#state.with(async (state) =>
+      [...state.clients.values()].some(
+        (client) => !client.evicted && client.capabilities.has(capability),
+      ),
+    );
+  }
+
   /**
    * Deliver a client action to initialized clients advertising an exact
    * capability, independently of transcript/session attachment. A Ledger action

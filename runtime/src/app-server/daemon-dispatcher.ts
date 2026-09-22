@@ -94,6 +94,7 @@ import {
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+  AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
   MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES,
@@ -1772,8 +1773,12 @@ export class AgenCDaemonJsonRpcDispatcher {
       capabilities[LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY] === true;
     const receivesMobileStatus =
       capabilities[AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY] === true;
+    // Registered so the daemon can count it as able to show a pending
+    // approval it never received live; it gets no extra notifications.
+    const listsPendingApprovals =
+      capabilities[AGENC_PENDING_APPROVALS_LIST_CAPABILITY] === true;
     if (
-      (!receivesLedgerActions && !receivesMobileStatus) ||
+      (!receivesLedgerActions && !receivesMobileStatus && !listsPendingApprovals) ||
       this.#clientMultiplexer === undefined ||
       connection.sendNotification === undefined
     ) {

@@ -114,7 +114,9 @@ import {
   type JsonObject,
   type JsonValue,
   type SessionStatus,
+  AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
 } from "./protocol/index.js";
+import { sessionEventDelivery } from "./approval-delivery.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   AgenCUnixSocketServer,
@@ -3629,7 +3631,16 @@ async function runAgenCDaemonForegroundLocked(
             `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
           );
         }
-        await clientMultiplexer.broadcastSessionEvent(sessionId, event);
+        // The result reaches the approval broker: a forwarded sub-agent
+        // request that nobody received and nobody will list is denied.
+        return await sessionEventDelivery(
+          event,
+          await clientMultiplexer.broadcastSessionEvent(sessionId, event),
+          async () =>
+            (await clientMultiplexer.hasClientWithCapability(
+              AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+            )) || (remote?.status().connectedDevices ?? 0) > 0,
+        );
       },
       recordMessageExchange: (exchange) => {
         try {
