@@ -10,9 +10,11 @@
  * any native image library, whether bytes form a complete image container:
  * the headers parse, the declared chunk and segment lengths stay inside the
  * data, the image has a non-zero size, and the stream reaches its end marker.
- * It does not decode pixels, so a container that is intact but carries
- * corrupt compressed data can still pass; the turn loop treats a provider
- * rejection of such an image as recoverable instead.
+ * It does not decode pixels, so an intact container can still carry corrupt
+ * compressed data. The image resizer therefore also decodes any bytes it
+ * hands on unchanged; the query projection, which cannot afford a decode on
+ * every request, uses this check as a filter and leaves the rest to the turn
+ * loop's recovery from a provider refusal.
  *
  * @module
  */
@@ -451,63 +453,144 @@ function skipGifSubBlocks(bytes: Buffer, start: number): number | undefined {
 // WebP
 // ─────────────────────────────────────────────────────────────────────
 
+interface RiffChunk {
+  readonly fourcc: string;
+  readonly size: number;
+  readonly dataStart: number;
+  readonly dataEnd: number;
+}
+
+type WebpFrame =
+  | { readonly width: number; readonly height: number }
+  | { readonly error: string };
+
+/** VP8X flag for an animated image: its frames live in ANMF chunks. */
+const WEBP_ANIMATION_FLAG = 0x02;
+
+/**
+ * A WebP image is one of three layouts: a lone VP8 (lossy) or VP8L
+ * (lossless) bitstream, an extended VP8X still with one such bitstream, or
+ * an extended animation whose every ANMF frame carries one. An empty frame
+ * or a missing bitstream is not an image, whatever chunks surround it.
+ */
 function inspectWebp(bytes: Buffer): ImageInspection {
   const riffEnd = bytes.readUInt32LE(4) + 8;
   if (riffEnd > bytes.length) {
     return invalid("webp", "the data ends before the size its header declares");
   }
-  let offset = 12;
-  let canvas: { readonly width: number; readonly height: number } | undefined;
-  let frame: { readonly width: number; readonly height: number } | undefined;
-  let sawImage = false;
-  while (offset + 8 <= riffEnd) {
+  const chunks = readRiffChunks(bytes, 12, riffEnd);
+  if ("error" in chunks) return invalid("webp", chunks.error);
+  const first = chunks.list[0];
+  if (first === undefined) {
+    return invalid("webp", "the data contains no image chunk");
+  }
+  if (first.fourcc === "VP8 " || first.fourcc === "VP8L") {
+    const frame = inspectWebpBitstream(bytes, first);
+    return "error" in frame
+      ? invalid("webp", frame.error)
+      : valid("webp", frame.width, frame.height);
+  }
+  if (first.fourcc !== "VP8X") {
+    return invalid("webp", "the data does not start with a VP8, VP8L or VP8X chunk");
+  }
+  if (first.size < 10) return invalid("webp", "the VP8X chunk is malformed");
+  const width = 1 + bytes.readUIntLE(first.dataStart + 4, 3);
+  const height = 1 + bytes.readUIntLE(first.dataStart + 7, 3);
+  if ((bytes[first.dataStart]! & WEBP_ANIMATION_FLAG) !== 0) {
+    if (!chunks.list.some((chunk) => chunk.fourcc === "ANIM")) {
+      return invalid("webp", "the animated image has no ANIM chunk");
+    }
+    const frames = chunks.list.filter((chunk) => chunk.fourcc === "ANMF");
+    if (frames.length === 0) {
+      return invalid("webp", "the animated image has no frames");
+    }
+    for (const frame of frames) {
+      const defect = inspectAnimationFrame(bytes, frame);
+      if (defect !== undefined) return invalid("webp", defect);
+    }
+    return valid("webp", width, height);
+  }
+  const image = chunks.list.find(
+    (chunk) => chunk.fourcc === "VP8 " || chunk.fourcc === "VP8L",
+  );
+  if (image === undefined) {
+    return invalid("webp", "the data contains no image (VP8 or VP8L) chunk");
+  }
+  const frame = inspectWebpBitstream(bytes, image);
+  return "error" in frame
+    ? invalid("webp", frame.error)
+    : valid("webp", width, height);
+}
+
+function readRiffChunks(
+  bytes: Buffer,
+  start: number,
+  end: number,
+): { readonly list: RiffChunk[] } | { readonly error: string } {
+  const list: RiffChunk[] = [];
+  let offset = start;
+  while (offset + 8 <= end) {
     const fourcc = ascii(bytes, offset, offset + 4);
     const size = bytes.readUInt32LE(offset + 4);
     const dataStart = offset + 8;
     const dataEnd = dataStart + size;
-    if (dataEnd > riffEnd) {
-      return invalid("webp", `the data ends inside its ${fourcc.trim()} chunk`);
+    if (dataEnd > end) {
+      return { error: `the data ends inside its ${fourcc.trim()} chunk` };
     }
-    if (fourcc === "VP8X") {
-      if (size < 10) return invalid("webp", "the VP8X chunk is malformed");
-      canvas = {
-        width: 1 + bytes.readUIntLE(dataStart + 4, 3),
-        height: 1 + bytes.readUIntLE(dataStart + 7, 3),
-      };
-    } else if (fourcc === "VP8 ") {
-      if (
-        size < 10 ||
-        bytes[dataStart + 3] !== 0x9d ||
-        bytes[dataStart + 4] !== 0x01 ||
-        bytes[dataStart + 5] !== 0x2a
-      ) {
-        return invalid("webp", "the VP8 chunk is malformed");
-      }
-      frame ??= {
-        width: bytes.readUInt16LE(dataStart + 6) & 0x3fff,
-        height: bytes.readUInt16LE(dataStart + 8) & 0x3fff,
-      };
-      sawImage = true;
-    } else if (fourcc === "VP8L") {
-      if (size < 5 || bytes[dataStart] !== 0x2f) {
-        return invalid("webp", "the VP8L chunk is malformed");
-      }
-      const bits = bytes.readUInt32LE(dataStart + 1);
-      frame ??= {
-        width: (bits & 0x3fff) + 1,
-        height: ((bits >>> 14) & 0x3fff) + 1,
-      };
-      sawImage = true;
-    } else if (fourcc === "ANMF") {
-      sawImage = true;
-    }
+    list.push({ fourcc, size, dataStart, dataEnd });
     offset = dataEnd + (size & 1);
   }
-  if (!sawImage) {
-    return invalid("webp", "the data contains no image (VP8, VP8L or ANMF) chunk");
+  return { list };
+}
+
+function inspectWebpBitstream(bytes: Buffer, chunk: RiffChunk): WebpFrame {
+  const start = chunk.dataStart;
+  if (chunk.fourcc === "VP8 ") {
+    if (chunk.size < 10) return { error: "the VP8 chunk is malformed" };
+    const tag = bytes[start]! | (bytes[start + 1]! << 8) | (bytes[start + 2]! << 16);
+    const keyFrame = (tag & 1) === 0;
+    const firstPartitionSize = (tag >>> 5) & 0x7ffff;
+    if (
+      !keyFrame ||
+      bytes[start + 3] !== 0x9d ||
+      bytes[start + 4] !== 0x01 ||
+      bytes[start + 5] !== 0x2a
+    ) {
+      return { error: "the VP8 chunk is malformed" };
+    }
+    if (10 + firstPartitionSize > chunk.size) {
+      return { error: "the VP8 chunk is cut off" };
+    }
+    return {
+      width: bytes.readUInt16LE(start + 6) & 0x3fff,
+      height: bytes.readUInt16LE(start + 8) & 0x3fff,
+    };
   }
-  const dimensions = canvas ?? frame;
-  return dimensions === undefined
-    ? invalid("webp", "the data does not declare an image size")
-    : valid("webp", dimensions.width, dimensions.height);
+  if (chunk.size < 5 || bytes[start] !== 0x2f) {
+    return { error: "the VP8L chunk is malformed" };
+  }
+  const bits = bytes.readUInt32LE(start + 1);
+  if (bits >>> 29 !== 0) {
+    return { error: "the VP8L chunk has an unknown version" };
+  }
+  return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+}
+
+/** An ANMF frame: a 16-byte frame header, then its own VP8 or VP8L chunk. */
+function inspectAnimationFrame(
+  bytes: Buffer,
+  frame: RiffChunk,
+): string | undefined {
+  if (frame.size < 16) return "an animation frame (ANMF) is malformed";
+  const inner = readRiffChunks(bytes, frame.dataStart + 16, frame.dataEnd);
+  if ("error" in inner) return inner.error;
+  const image = inner.list.find(
+    (chunk) => chunk.fourcc === "VP8 " || chunk.fourcc === "VP8L",
+  );
+  if (image === undefined) return "an animation frame (ANMF) has no image data";
+  const bitstream = inspectWebpBitstream(bytes, image);
+  if ("error" in bitstream) return bitstream.error;
+  return bitstream.width > 0 && bitstream.height > 0
+    ? undefined
+    : "an animation frame (ANMF) has a width or height of zero";
 }

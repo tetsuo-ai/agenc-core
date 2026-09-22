@@ -56,14 +56,50 @@ export class UndecodableImageError extends ImageResizeError {
 }
 
 /**
- * Throw unless `buffer` is a complete image container. Paths that hand the
- * caller's original bytes back unchanged must pass this first: nothing else
- * on those paths has decoded them.
+ * No image decoder is installed, so no bytes can be shown to be an image.
+ * Passing them on unchecked is how a 16-byte fake PNG reached a provider.
  */
-function assertDecodableImage(buffer: Buffer): void {
+export class ImageDecoderUnavailableError extends ImageResizeError {
+  constructor() {
+    super(
+      'No image decoder is available (sharp is not installed), so the image cannot be checked.',
+    )
+    this.name = 'ImageDecoderUnavailableError'
+  }
+}
+
+const MAX_DECODER_DETAIL_CHARS = 160
+
+/**
+ * Throw unless `buffer` is a complete image that decodes. Paths that hand the
+ * caller's original bytes back unchanged must pass this first. The structural
+ * check names common defects precisely; the full decode catches what a
+ * container walk cannot, such as corrupt compressed data behind valid
+ * headers. Sharp's metadata read parses only the header, while a provider
+ * decodes every pixel.
+ */
+async function assertImageDecodes(
+  sharp: SharpFunction,
+  buffer: Buffer,
+): Promise<void> {
   const inspection = inspectImageBytes(buffer)
   if (!inspection.ok) {
     throw new UndecodableImageError(inspection.reason, inspection.format)
+  }
+  try {
+    const image = sharp(buffer)
+    await (typeof image.raw === 'function' ? image.raw() : image).toBuffer()
+  } catch (error) {
+    const detail = (error instanceof Error ? error.message : String(error))
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .slice(0, MAX_DECODER_DETAIL_CHARS)
+    throw new UndecodableImageError(
+      detail.length > 0
+        ? `the image decoder could not read it (${detail})`
+        : 'the image decoder could not read it',
+      inspection.format,
+    )
   }
 }
 
@@ -110,8 +146,13 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // that the API rejects with `image cannot be empty`.
     throw new ImageResizeError('Image file is empty (0 bytes)')
   }
+  let sharp: SharpFunction
   try {
-    const sharp = await getImageProcessor()
+    sharp = await getImageProcessor()
+  } catch {
+    throw new ImageDecoderUnavailableError()
+  }
+  try {
     const image = sharp(imageBuffer)
     const metadata = await image.metadata()
 
@@ -129,7 +170,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
         return { buffer: compressedBuffer, mediaType: 'jpeg' }
       }
       // Return without dimensions if we can't determine them
-      assertDecodableImage(imageBuffer)
+      await assertImageDecodes(sharp, imageBuffer)
       return { buffer: imageBuffer, mediaType: normalizedMediaType }
     }
 
@@ -142,13 +183,13 @@ export async function maybeResizeAndDownsampleImageBuffer(
     let height = originalHeight
 
     // Check if the original file just works. Sharp read only the header, so
-    // a file truncated after it still reaches this point intact.
+    // a file truncated or corrupt after it still reaches this point.
     if (
       originalSize <= IMAGE_TARGET_RAW_SIZE &&
       width <= IMAGE_MAX_WIDTH &&
       height <= IMAGE_MAX_HEIGHT
     ) {
-      assertDecodableImage(imageBuffer)
+      await assertImageDecodes(sharp, imageBuffer)
       return {
         buffer: imageBuffer,
         mediaType: normalizedMediaType,
@@ -319,10 +360,11 @@ export async function maybeResizeAndDownsampleImageBuffer(
     if (error instanceof UndecodableImageError) throw error
     logError(error as Error)
 
-    // Sharp could not read the bytes or is not installed. They may pass
-    // through unprocessed only when they form a complete image container;
-    // anything else (such as a PNG signature with no image after it) would
-    // be rejected by the provider on this and every later request.
+    // Sharp could not read or process the bytes. They may pass through
+    // unprocessed only when they decode completely; anything else (such as a
+    // PNG signature with no image after it) would be rejected by the
+    // provider on this and every later request.
+    await assertImageDecodes(sharp, imageBuffer)
     const inspection = inspectImageBytes(imageBuffer)
     if (!inspection.ok) {
       throw new UndecodableImageError(inspection.reason, inspection.format)

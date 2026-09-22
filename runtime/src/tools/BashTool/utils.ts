@@ -11,6 +11,7 @@ import { pathInAllowedWorkingPath } from 'src/utils/permissions/filesystem.js'
 import { setCwd } from 'src/utils/Shell.js'
 import { shouldMaintainProjectWorkingDir } from '../../utils/envUtils.js'
 import {
+  ImageDecoderUnavailableError,
   maybeResizeAndDownsampleImageBuffer,
   UndecodableImageError,
 } from '../../utils/imageResizer.js'
@@ -128,9 +129,14 @@ export async function resizeShellImageOutput(
   try {
     resized = await maybeResizeAndDownsampleImageBuffer(buf, buf.length, ext)
   } catch (error) {
-    // Bytes that are not an image stay text; sending them as an image
-    // would be refused by the provider on every later request.
-    if (error instanceof UndecodableImageError) return null
+    // Bytes that are not an image, or that no decoder can check, stay text;
+    // sending them as an image could be refused on every later request.
+    if (
+      error instanceof UndecodableImageError ||
+      error instanceof ImageDecoderUnavailableError
+    ) {
+      return null
+    }
     throw error
   }
   return `data:image/${resized.mediaType};base64,${resized.buffer.toString('base64')}`

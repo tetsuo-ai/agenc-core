@@ -16,6 +16,8 @@ export type SharpInstance = {
     colors?: number
   }): SharpInstance
   webp(options?: { quality?: number }): SharpInstance
+  /** Uncompressed pixel output; sharp decodes every pixel to produce it. */
+  raw?(): SharpInstance
   toBuffer(): Promise<Buffer>
 }
 

@@ -72,6 +72,7 @@ import {
 import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
 import { asRecord } from "../../utils/record.js";
 import {
+  ImageDecoderUnavailableError,
   maybeResizeAndDownsampleImageBuffer,
   UndecodableImageError,
 } from "../../utils/imageResizer.js";
@@ -1357,6 +1358,9 @@ function unattachableImageMessage(
   error: unknown,
 ): string {
   const size = formatBytes(sizeBytes);
+  if (error instanceof ImageDecoderUnavailableError) {
+    return `${displayPath} (${size}) was not attached: no image decoder is available (sharp is not installed), so the image cannot be checked.`;
+  }
   if (error instanceof UndecodableImageError) {
     const inspect = "Use a shell command such as xxd to inspect its bytes.";
     return error.format === undefined

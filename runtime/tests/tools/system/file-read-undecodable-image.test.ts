@@ -94,6 +94,27 @@ describe("FileRead never returns bytes that are not an image as an image", () =>
     expect(result.contentItems).toBeUndefined();
   });
 
+  it("returns a clear failed read for a WebP with an empty animation frame", async () => {
+    // Review finding: VP8X plus an empty ANMF chunk passed the container
+    // check, sharp could not read it, and the fallback returned the bytes.
+    const webp = Buffer.alloc(38);
+    webp.write("RIFF", 0, "latin1");
+    webp.writeUInt32LE(30, 4);
+    webp.write("WEBP", 8, "latin1");
+    webp.write("VP8X", 12, "latin1");
+    webp.writeUInt32LE(10, 16);
+    webp.write("ANMF", 30, "latin1");
+    webp.writeUInt32LE(0, 34);
+    const file = join(root, "frame.webp");
+    await writeFile(file, webp);
+
+    const result = await read(file);
+
+    expect(result.isError).toBe(true);
+    expect(result.contentItems).toBeUndefined();
+    expect(result.content).toContain("is not a valid WebP image, so it was not attached");
+  });
+
   it("still returns a valid image as an image", async () => {
     const file = join(root, "real.png");
     await writeFile(file, await makePng(32, 24));
