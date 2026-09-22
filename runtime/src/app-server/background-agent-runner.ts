@@ -4769,10 +4769,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         return active?.bootstrap.session === session && isRunnableActiveAgent(active);
       },
       timeoutMs: resolvePermissionDecisionTimeoutMs(),
+      // A child's request the clients never receive would block the child,
+      // and every wait_agent on it, until someone pressed Stop. Report the
+      // failure so the broker denies it visibly instead.
       onEvent: (event) => {
         const active = this.#active.get(session.conversationId);
-        if (active?.bootstrap.session !== session || !isRunnableActiveAgent(active)) return;
-        void this.#emitOrBufferEvent(active, event).catch(() => {});
+        if (active?.bootstrap.session !== session || !isRunnableActiveAgent(active)) return false;
+        return this.#emitOrBufferEvent(active, event);
       },
     });
   }

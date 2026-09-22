@@ -301,6 +301,12 @@ export function notificationFromDaemonEvent(
         ...(typeof payload.sourceConversationId === "string"
           ? { sourceConversationId: payload.sourceConversationId }
           : {}),
+        ...(typeof payload.sourceAgentNickname === "string"
+          ? { sourceAgentNickname: payload.sourceAgentNickname }
+          : {}),
+        ...(typeof payload.sourceAgentPath === "string"
+          ? { sourceAgentPath: payload.sourceAgentPath }
+          : {}),
         ...(typeof payload.toolName === "string"
           ? { toolName: payload.toolName }
           : {}),

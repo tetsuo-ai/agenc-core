@@ -21,11 +21,18 @@ import { daemonEventFromUnboundSessionEvent } from "./background-agent-runner/da
 import type { BackgroundAgentDaemonEvent } from "./background-agent-runner/shared.js";
 import type { PendingToolApproval, JsonObject } from "./protocol/index.js";
 
+const UNDELIVERABLE: ReviewDecision = {
+  kind: "denied",
+  reason: "this sub-agent approval could not be shown to the user, so it was denied instead of waiting",
+};
+
 interface ApprovalOwner {
   readonly session: Session;
   readonly workflow: boolean;
   readonly isActive: () => boolean;
   readonly pending: Map<string, LivePendingApproval>;
+  /** Forwarded requests no client could be shown; failed on arrival. */
+  readonly undeliverable: Set<string>;
 }
 
 export interface LivePendingApproval {
@@ -44,7 +51,13 @@ export class LiveApprovalBroker {
       readonly workflow?: boolean;
       readonly isActive: () => boolean;
       readonly timeoutMs?: number;
-      readonly onEvent?: (event: BackgroundAgentDaemonEvent) => void;
+      /**
+       * Publishes a forwarded child approval to the owner's clients. Return
+       * `false`, or a promise that rejects, when it cannot be delivered: the
+       * child's request is then denied with a visible reason rather than left
+       * pending behind a card nobody can see.
+       */
+      readonly onEvent?: (event: BackgroundAgentDaemonEvent) => unknown;
     },
   ): () => void {
     if (this.#owners.has(session.conversationId)) {
@@ -55,6 +68,7 @@ export class LiveApprovalBroker {
       workflow: options.workflow === true,
       isActive: options.isActive,
       pending: new Map(),
+      undeliverable: new Set(),
     };
     this.#owners.set(session.conversationId, owner);
     const services = session.services as { approvalResolver?: ApprovalResolver };
@@ -94,7 +108,7 @@ export class LiveApprovalBroker {
           ids.delete(sourceRequestId);
         }
         if (requestingSession !== session || owner.workflow) {
-          options.onEvent?.({
+          const delivered = options.onEvent?.({
             id: `${requestId}:${projected.type}`,
             eventId: `${eventNamespace}:${projected.eventId}`,
             type: projected.type,
@@ -103,9 +117,19 @@ export class LiveApprovalBroker {
               requestId,
               sourceEventId: projected.eventId!,
               sourceConversationId: requestingSession.conversationId,
+              ...subAgentAttribution(requestingSession),
             },
             statusProjection: "session_only",
           });
+          if (event.msg.type === "request_permissions") {
+            const occurrence = requestId;
+            if (delivered === false) this.#failUndeliverable(owner, occurrence);
+            else if (delivered instanceof Promise) {
+              delivered.catch(() => this.#failUndeliverable(owner, occurrence));
+            }
+          } else if (delivered instanceof Promise) {
+            delivered.catch(() => {});
+          }
         }
       });
       const cleanup = () => {
@@ -204,6 +228,16 @@ export class LiveApprovalBroker {
     }
   }
 
+  #failUndeliverable(owner: ApprovalOwner, requestId: string): void {
+    const pending = owner.pending.get(requestId);
+    if (pending === undefined) {
+      // The resolver has not registered it yet; #request fails it on arrival.
+      owner.undeliverable.add(requestId);
+      return;
+    }
+    pending.settle(UNDELIVERABLE);
+  }
+
   #request(
     owner: ApprovalOwner,
     ctx: ApprovalCtx,
@@ -224,6 +258,7 @@ export class LiveApprovalBroker {
     ) {
       return Promise.resolve(DENIED);
     }
+    if (owner.undeliverable.delete(requestId)) return Promise.resolve(UNDELIVERABLE);
     const ownershipSignal = childApprovalRevocationSignal(requestingSession);
     if (
       ctx.signal?.aborted ||
@@ -260,6 +295,7 @@ export class LiveApprovalBroker {
         projection: {
           ownerRunId: owner.session.conversationId,
           sessionId: requestingSession.conversationId,
+          ...(requestingSession === owner.session ? {} : subAgentAttribution(requestingSession)),
           requestId,
           toolName: ctx.toolName,
           turnId: ctx.turnId,
@@ -284,6 +320,32 @@ function isNonInteractiveSession(session: Session): boolean {
   return (
     session.services as { readonly runtimeOptions?: { readonly nonInteractive?: unknown } } | undefined
   )?.runtimeOptions?.nonInteractive === true;
+}
+
+/**
+ * Who is asking, for a request forwarded from a spawned sub-agent. The
+ * owner's client sees only the child's session id; the nickname and path let
+ * it say "Sub-agent X wants to ..." even for a nested child it never saw
+ * spawn.
+ */
+function subAgentAttribution(session: Session): {
+  readonly sourceAgentNickname?: string;
+  readonly sourceAgentPath?: string;
+} {
+  const source = (session as { readonly sessionConfiguration?: Session["sessionConfiguration"] })
+    .sessionConfiguration?.sessionSource;
+  if (typeof source !== "object" || source.kind !== "subagent" || source.source.kind !== "thread_spawn") {
+    return {};
+  }
+  const { agentNickname, agentPath } = source.source;
+  return {
+    ...(typeof agentNickname === "string" && agentNickname.length > 0
+      ? { sourceAgentNickname: agentNickname }
+      : {}),
+    ...(typeof agentPath === "string" && agentPath.length > 0
+      ? { sourceAgentPath: agentPath }
+      : {}),
+  };
 }
 
 function approvalInput(ctx: ApprovalCtx): JsonObject | undefined {

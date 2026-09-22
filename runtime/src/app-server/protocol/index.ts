@@ -2196,6 +2196,11 @@ export interface EventToolRequestParams extends AgenCEventBaseParams {
 
 export interface EventPermissionRequestParams extends AgenCEventBaseParams {
   readonly requestId: string;
+  readonly callId?: string;
+  /** Set when a spawned sub-agent (or a nested one) asks through its owner. */
+  readonly sourceConversationId?: string;
+  readonly sourceAgentNickname?: string;
+  readonly sourceAgentPath?: string;
   readonly toolName?: string;
   readonly turnId?: string;
   readonly permissions: readonly string[];
@@ -3648,6 +3653,8 @@ export interface PendingToolApproval extends JsonObject {
   readonly requestId: string;
   readonly ownerRunId: string;
   readonly sessionId: string;
+  readonly sourceAgentNickname?: string;
+  readonly sourceAgentPath?: string;
   readonly toolName: string;
   readonly input?: JsonObject;
   readonly turnId?: string;
