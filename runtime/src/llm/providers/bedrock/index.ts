@@ -36,7 +36,11 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
-import { parseClaudeModelId } from "../../../utils/model/claudeModelId.js";
+import {
+  isOpaqueBedrockModelArn,
+  parseClaudeModelId,
+  resolveBedrockModelIdentity,
+} from "../../../utils/model/claudeModelId.js";
 import { isAlwaysOnThinkingAnthropicModel } from "../../../utils/model/alwaysOnThinking.js";
 import {
   anthropicAcceptsSamplingParameters,
@@ -61,6 +65,12 @@ export interface BedrockProviderConfig extends LLMProviderConfig {
   readonly baseURL?: string;
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => Date;
+  /**
+   * The config's `modelOverrides` (canonical Claude id to provider id). A
+   * model id that names no model, such as an application inference profile
+   * ARN, resolves through it to the Claude model it serves.
+   */
+  readonly modelOverrides?: Readonly<Record<string, string>>;
 }
 
 interface BedrockCredentials {
@@ -468,20 +478,31 @@ interface ClaudeConverseContract {
  * registered Bedrock contract, which session and spawn_agent validation
  * read too. Other Claude models get no new thinking or effort fields here,
  * and non-Claude models are untouched.
+ *
+ * The contract follows the model, not its spelling: an id that names no
+ * model (an application inference profile, provisioned or custom model
+ * ARN) resolves through the configured `modelOverrides` to the Claude model
+ * it serves. One that cannot be resolved gets the strict always-on rules,
+ * no sampling parameters and no forced tool, and no effort field, because
+ * sending too little is safe while a field the model rejects is a 400.
  */
 function claudeConverseContract(
   model: string,
   options: LLMChatOptions | undefined,
+  modelOverrides: BedrockProviderConfig["modelOverrides"],
 ): ClaudeConverseContract {
-  if (parseClaudeModelId(model) === undefined) {
-    return { dropSampling: false, forbidForcedToolChoice: false };
+  const identity = resolveBedrockModelIdentity(model, modelOverrides);
+  if (parseClaudeModelId(identity) === undefined) {
+    return isOpaqueBedrockModelArn(identity)
+      ? { dropSampling: true, forbidForcedToolChoice: true }
+      : { dropSampling: false, forbidForcedToolChoice: false };
   }
   const effort = anthropicEffort(options?.reasoningEffort);
   const sendEffort =
-    effort !== undefined && bedrockConverseEffortLevels(model).includes(effort);
+    effort !== undefined && bedrockConverseEffortLevels(identity).includes(effort);
   return {
-    dropSampling: !anthropicAcceptsSamplingParameters(model),
-    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(model),
+    dropSampling: !anthropicAcceptsSamplingParameters(identity),
+    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(identity),
     ...(sendEffort
       ? { additionalModelRequestFields: { output_config: { effort } } }
       : {}),
@@ -495,7 +516,7 @@ function buildRequest(
   options: LLMChatOptions | undefined,
 ): BedrockRequest {
   validateAgentInvocationMessageSequence(messages);
-  const contract = claudeConverseContract(model, options);
+  const contract = claudeConverseContract(model, options, config.modelOverrides);
   const built = buildMessages(messages);
   const systemPrompt = firstNonEmpty(options?.systemPrompt, config.systemPrompt);
   const system = [

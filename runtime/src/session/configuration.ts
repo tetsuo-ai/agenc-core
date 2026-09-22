@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { AgenCConfig } from "../config/schema.js";
 import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
+import { resolveBedrockModelIdentity } from "../utils/model/claudeModelId.js";
 import { resolveApprovalPolicy } from "../permissions/approval-policy.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { SandboxExecutionBrokerAuthority } from "../sandbox/execution-broker.js";
@@ -200,9 +201,15 @@ export function sessionConfigurationFromAgenCConfig(params: {
   readonly provider?: string;
   readonly projectTrust?: "trusted" | "untrusted";
 }): SessionConfiguration {
+  const effortProvider = params.provider ?? params.config.model_provider;
+  // A Bedrock profile id that names no model is seeded by the Claude model a
+  // configured override maps it to, as the registry and the wire read it.
   const effort = resolveReasoningEffort({
-    provider: params.provider ?? params.config.model_provider,
-    model: params.model,
+    provider: effortProvider,
+    model: normalizeProviderIdentity(effortProvider, "configured reasoning effort") ===
+        "amazon-bedrock"
+      ? resolveBedrockModelIdentity(params.model, params.config.modelOverrides)
+      : params.model,
   });
   // Older Claude configuration used max as the persisted xhigh alias even
   // when the API accepted literal max. Keep that seed distinct from a new

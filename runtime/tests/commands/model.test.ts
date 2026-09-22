@@ -229,6 +229,30 @@ describe("checkModelHistoryCompat", () => {
   });
 });
 
+describe("Bedrock profile switch compatibility", () => {
+  it("checks a configured application profile as the Claude model it serves", () => {
+    const profile =
+      "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3d4e5f6";
+    const session = (config: unknown) => stubSession({
+      provider: "amazon-bedrock",
+      model: "amazon.nova-pro-v1:0",
+      reasoningEffort: "max",
+      configStore: commandConfigStore(TEST_HOME, config),
+    });
+    expect(
+      checkModelHistoryCompat(
+        session({ modelOverrides: { "claude-opus-5-5": profile } }),
+        profile,
+        "amazon-bedrock",
+      ),
+    ).toEqual({ compatible: true, missingCapabilities: [] });
+    // Unmapped, the profile names no model and cannot take the effort.
+    expect(
+      checkModelHistoryCompat(session({}), profile, "amazon-bedrock").missingCapabilities,
+    ).toEqual(["reasoning effort"]);
+  });
+});
+
 describe("Gemini effort switch compatibility", () => {
   it.each([
     ["grok", "grok-4.6", "high", "gemini", "gemini-3.1-pro-preview", true],

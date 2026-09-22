@@ -160,6 +160,8 @@ export type ProviderRuntimeExtra = Partial<
   readonly secretAccessKey?: string;
   readonly sessionToken?: string;
   readonly region?: string;
+  /** Amazon Bedrock: the config's `modelOverrides`, for model identity. */
+  readonly modelOverrides?: Readonly<Record<string, string>>;
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];
   readonly contextManagement?: Record<string, unknown>;
@@ -211,6 +213,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "secretAccessKey",
   "sessionToken",
   "region",
+  "modelOverrides",
   "anthropicVersion",
   "betaHeaders",
   "contextManagement",
@@ -1151,6 +1154,9 @@ function readRuntimeExtra(
       : {}),
     ...(readString(extra, "region") !== undefined
       ? { region: readString(extra, "region") }
+      : {}),
+    ...(readStringRecord(extra, "modelOverrides") !== undefined
+      ? { modelOverrides: readStringRecord(extra, "modelOverrides") }
       : {}),
     ...(readString(extra, "anthropicVersion") !== undefined
       ? { anthropicVersion: readString(extra, "anthropicVersion") }
@@ -2116,6 +2122,9 @@ export function createProvider(
         secretAccessKey,
         ...(sessionToken !== undefined ? { sessionToken } : {}),
         region,
+        ...(extra.modelOverrides !== undefined
+          ? { modelOverrides: extra.modelOverrides }
+          : {}),
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL: normalizeBaseURL(opts.baseURL) ?? endpoint.baseURL,

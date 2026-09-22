@@ -149,6 +149,28 @@ it("reads Bedrock effort from the registered contract that session and spawn val
     .toMatchObject({ registered: false, levels: [] });
 });
 
+it("seeds and sends a configured max for a Bedrock profile an override maps to Opus 5.5", async () => {
+  const profile =
+    "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3d4e5f6";
+  const config = {
+    ...defaultConfig(),
+    reasoning_effort: "max" as const,
+    modelOverrides: { "claude-opus-5-5": profile },
+  };
+  const seed = sessionConfigurationFromAgenCConfig({
+    config, workspaceRoot: process.cwd(), provider: "amazon-bedrock", model: profile,
+  }).collaborationMode.reasoningEffort;
+  expect(seed).toBe("max");
+  const modelInfo = await new StaticModelsManager({
+    config,
+    fallbackProvider: "amazon-bedrock",
+  }).getModelInfo(profile);
+  expect(resolveSessionReasoningEffort(seed, modelInfo.supportedReasoningLevels, {
+    provider: "amazon-bedrock",
+    model: profile,
+  })).toBe("max");
+});
+
 it.each([
   { provider: "openai", model: "gpt-5.6-sol-unverified" },
   { provider: "grok", model: "grok-4-20-multi-agent-unverified" },

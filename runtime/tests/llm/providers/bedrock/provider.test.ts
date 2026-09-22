@@ -8,6 +8,9 @@ import {
   createCsvAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
 } from "../../../../src/contracts/agent-invocation-envelope.js";
+import { defaultConfig } from "../../../../src/config/schema.js";
+import { createProvider, readProviderFactoryOptions } from "../../../../src/llm/provider.js";
+import { resolveProviderRuntimeRequest } from "../../../../src/llm/provider-request.js";
 
 function invocationMessages() {
   return materializeAgentInvocationMessages(
@@ -261,6 +264,119 @@ describe("providers/bedrock", () => {
       expect(converse.additionalModelRequestFields).toEqual({ output_config: { effort: "max" } });
       expect(converse.toolConfig).toMatchObject({ toolChoice: { auto: {} } });
       expect(converse).not.toHaveProperty("inferenceConfig");
+    });
+
+    const applicationProfile =
+      "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3d4e5f6";
+    const requestBodies = async (bedrock: BedrockProvider, fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>) => {
+      fetchImpl
+        .mockResolvedValueOnce(converseReply())
+        .mockResolvedValueOnce(streamReply())
+        .mockResolvedValueOnce(jsonResponse({ inputTokens: 9 }));
+      await bedrock.chat([{ role: "user", content: "hello" }], options);
+      await bedrock.chatStream([{ role: "user", content: "hello" }], () => {}, options);
+      await bedrock.tokenCountCapability.countTokens(
+        createTokenAccountingRequest({
+          provider: bedrock.name,
+          model: applicationProfile,
+          messages: [{ role: "user", content: "hello" }],
+          options,
+          reservedOutputTokens: 256,
+        }),
+        new AbortController().signal,
+      );
+      const bodies = fetchImpl.mock.calls.map(
+        ([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>,
+      );
+      return [
+        bodies[0]!,
+        bodies[1]!,
+        (bodies[2]!.input as { converse: Record<string, unknown> }).converse,
+      ];
+    };
+
+    it("applies the strict always-on rules to a profile ARN that names no model", async () => {
+      for (const model of [
+        applicationProfile,
+        "arn:aws:bedrock:us-east-1:123456789012:provisioned-model/abc123",
+        "arn:aws:bedrock:us-east-1:123456789012:custom-model/my-model/abc123",
+      ]) {
+        const fetchImpl = vi.fn<typeof fetch>();
+        const bedrock = provider(model, fetchImpl);
+        const bodies = model === applicationProfile
+          ? await requestBodies(bedrock, fetchImpl)
+          : [await (async () => {
+            fetchImpl.mockResolvedValueOnce(converseReply());
+            await bedrock.chat([{ role: "user", content: "hello" }], options);
+            return sentBody(fetchImpl);
+          })()];
+        for (const body of bodies) {
+          // No temperature, no forced tool, and no effort: its levels are unknown.
+          expect((body.inferenceConfig ?? {}) as Record<string, unknown>, model)
+            .not.toHaveProperty("temperature");
+          expect(body.toolConfig, model).toMatchObject({ toolChoice: { auto: {} } });
+          expect(body, model).not.toHaveProperty("additionalModelRequestFields");
+        }
+      }
+      // An ARN that names its model keeps that model's contract.
+      const novaFetch = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
+      await provider(
+        "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        novaFetch,
+      ).chat([{ role: "user", content: "hello" }], options);
+      expect(sentBody(novaFetch)).toMatchObject({
+        inferenceConfig: { maxTokens: 256, temperature: 0.3 },
+        toolConfig: { toolChoice: { any: {} } },
+      });
+    });
+
+    it("gives a configured application profile its Claude model's contract", async () => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const bedrock = new BedrockProvider({
+        accessKeyId: "AKIDEXAMPLE",
+        secretAccessKey: "secret",
+        region: "us-east-1",
+        model: applicationProfile,
+        modelOverrides: { "claude-opus-5-5": applicationProfile },
+        fetchImpl,
+        now: () => new Date("2024-01-02T03:04:05Z"),
+      });
+      for (const body of await requestBodies(bedrock, fetchImpl)) {
+        expect((body.inferenceConfig ?? {}) as Record<string, unknown>)
+          .not.toHaveProperty("temperature");
+        expect(body.toolConfig).toMatchObject({ toolChoice: { auto: {} } });
+        expect(body.additionalModelRequestFields).toEqual({
+          output_config: { effort: "max" },
+        });
+      }
+    });
+
+    it("carries the configured overrides from config through the provider factory", async () => {
+      const request = resolveProviderRuntimeRequest({
+        provider: "amazon-bedrock",
+        model: applicationProfile,
+        config: { ...defaultConfig(), modelOverrides: { "claude-opus-5-5": applicationProfile } },
+        environment: {},
+      });
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
+      const bedrock = createProvider("amazon-bedrock", {
+        ...request.requested,
+        extra: {
+          ...request.requested.extra,
+          accessKeyId: "AKIDEXAMPLE",
+          secretAccessKey: "secret",
+          region: "us-east-1",
+          fetchImpl,
+        },
+      });
+      await bedrock.chat([{ role: "user", content: "hello" }], options);
+      expect(sentBody(fetchImpl).additionalModelRequestFields).toEqual({
+        output_config: { effort: "max" },
+      });
+      // A provider re-created from its binding keeps the mapping.
+      expect(readProviderFactoryOptions(bedrock).extra?.modelOverrides).toEqual({
+        "claude-opus-5-5": applicationProfile,
+      });
     });
 
     it("sends effort only at the levels of a registered Bedrock contract", async () => {

@@ -150,6 +150,30 @@ describe("StaticModelsManager", () => {
     }
   });
 
+  it("reads a configured Bedrock application profile as the Claude model it serves", async () => {
+    const profile =
+      "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3d4e5f6";
+    const infoFor = async (config: ReturnType<typeof defaultConfig>) =>
+      await new StaticModelsManager({
+        config,
+        fallbackProvider: "amazon-bedrock",
+        metadata: { fetchImpl: vi.fn<typeof fetch>() },
+      }).getModelInfo(profile);
+    expect(
+      await infoFor({ ...defaultConfig(), modelOverrides: { "claude-opus-5-5": profile } }),
+    ).toMatchObject({
+      slug: profile,
+      contextWindow: 1_000_000,
+      maxOutputTokensUpperLimit: 128_000,
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningLevel: "medium",
+    });
+    // Without a mapping the profile names no model and gets no effort levels.
+    const unmapped = await infoFor(defaultConfig());
+    expect(unmapped.supportedReasoningLevels).toEqual([]);
+    expect(unmapped.contextWindow).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
+  });
+
   it("uses curated Z.ai metadata without probing a custom base URL", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const manager = new StaticModelsManager({

@@ -80,3 +80,41 @@ export function parseClaudeModelId(model: string): ClaudeModelId | undefined {
 export function isClaudeModel(model: string, canonical: string): boolean {
   return parseClaudeModelId(model)?.canonical === canonical;
 }
+
+/**
+ * True for a Bedrock ARN whose resource does not name its model: an
+ * application inference profile, a provisioned or custom model, a prompt
+ * router or a marketplace endpoint. Foundation-model and system
+ * inference-profile ARNs carry the model id, which the parser reads.
+ */
+export function isOpaqueBedrockModelArn(model: string): boolean {
+  const arn = model.trim().toLowerCase();
+  return (
+    arn.startsWith("arn:") &&
+    !/^arn:aws[a-z-]*:bedrock:[a-z0-9-]*:\d*:(?:inference-profile|foundation-model)\//u.test(arn)
+  );
+}
+
+/**
+ * The model id Amazon Bedrock capability checks should read for `model`.
+ * An id that names its Claude model is returned as is. One that names no
+ * model, such as an application inference profile ARN, but is the value a
+ * `modelOverrides` entry maps a Claude model to, resolves back to that
+ * model in the Bedrock foundation-model form (`anthropic.claude-opus-5-5`).
+ * Anything else is returned unchanged.
+ */
+export function resolveBedrockModelIdentity(
+  model: string,
+  modelOverrides: Readonly<Record<string, string>> | undefined,
+): string {
+  if (modelOverrides === undefined || parseClaudeModelId(model) !== undefined) {
+    return model;
+  }
+  const wanted = model.trim();
+  for (const [configured, override] of Object.entries(modelOverrides)) {
+    if (typeof override !== "string" || override.trim() !== wanted) continue;
+    const id = parseClaudeModelId(configured);
+    return id === undefined ? model : `anthropic.${id.canonical}`;
+  }
+  return model;
+}

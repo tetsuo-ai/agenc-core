@@ -19,6 +19,7 @@ import {
   type ResolvedModelMetadata,
 } from "./model-metadata.js";
 import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
+import { resolveBedrockModelIdentity } from "../utils/model/claudeModelId.js";
 import { modelSupportsPersonality } from "../context/personality-spec-instructions.js";
 import {
   DEFAULT_MODEL_COSTS,
@@ -45,6 +46,13 @@ export interface ModelRegistryCostEntry {
 export interface ModelRegistryEntry {
   readonly provider: string;
   readonly model: string;
+  /**
+   * The id catalog and capability lookups read, when it differs from
+   * `model`: on Bedrock, a configured `modelOverrides` value that names no
+   * model (an application inference profile ARN) resolves to the Claude
+   * model it serves.
+   */
+  readonly capabilityModel?: string;
   readonly metadata: ResolvedModelMetadata;
   readonly capabilities: ProviderCapabilityRegistryEntry;
   readonly cost: ModelRegistryCostEntry;
@@ -56,13 +64,17 @@ export interface ModelRegistryOptions {
   readonly costRegistry?: Readonly<Record<string, ModelCostEntry>>;
 }
 
+function catalogEntryFor(entry: ModelRegistryEntry) {
+  return resolveRegisteredModelCatalogEntry({
+    provider: entry.provider,
+    model: entry.capabilityModel ?? entry.model,
+  });
+}
+
 function inferReasoningLevels(
   entry: ModelRegistryEntry,
 ): readonly ReasoningEffort[] {
-  const catalog = resolveRegisteredModelCatalogEntry({
-    provider: entry.provider,
-    model: entry.model,
-  });
+  const catalog = catalogEntryFor(entry);
   if (catalog?.supportedReasoningLevels.length) {
     return catalog.supportedReasoningLevels;
   }
@@ -76,10 +88,7 @@ function inferDefaultReasoningLevel(
   supportedReasoningLevels: readonly ReasoningEffort[],
 ): ReasoningEffort | undefined {
   if (entry.provider === "gemini") return undefined;
-  const catalog = resolveRegisteredModelCatalogEntry({
-    provider: entry.provider,
-    model: entry.model,
-  });
+  const catalog = catalogEntryFor(entry);
   if (
     catalog?.defaultReasoningLevel !== undefined &&
     supportedReasoningLevels.includes(catalog.defaultReasoningLevel)
@@ -92,10 +101,7 @@ function inferDefaultReasoningLevel(
 function inferServiceTiers(
   entry: ModelRegistryEntry,
 ): readonly ModelServiceTier[] {
-  const catalog = resolveRegisteredModelCatalogEntry({
-    provider: entry.provider,
-    model: entry.model,
-  });
+  const catalog = catalogEntryFor(entry);
   const tiers = new Map<string, ModelServiceTier>();
   // Anthropic has no registered catalog rows; fast mode is a per-model wire
   // feature (speed: "fast" + beta header), so the tier comes from the model
@@ -173,10 +179,7 @@ export function modelRegistryEntryToModelInfo(
     supportedReasoningLevels,
   );
   const serviceTiers = inferServiceTiers(entry);
-  const catalog = resolveRegisteredModelCatalogEntry({
-    provider: entry.provider,
-    model: entry.model,
-  });
+  const catalog = catalogEntryFor(entry);
   const visibility = catalog?.visibility ?? "list";
   return {
     slug: entry.model,
@@ -264,11 +267,13 @@ export class ModelRegistry {
     readonly model: string;
   }): ModelRegistryEntry {
     const selection = normalizeRegistrySelection(params);
+    const capabilityModel = this.capabilityModel(selection);
     return this.buildEntry({
       ...selection,
+      capabilityModel,
       metadata: this.metadataResolver.resolveSync({
         provider: selection.provider,
-        model: selection.model,
+        model: capabilityModel,
         config: this.config,
       }),
     });
@@ -279,19 +284,36 @@ export class ModelRegistry {
     readonly model: string;
   }): Promise<ModelRegistryEntry> {
     const selection = normalizeRegistrySelection(params);
+    const capabilityModel = this.capabilityModel(selection);
     return this.buildEntry({
       ...selection,
+      capabilityModel,
       metadata: await this.metadataResolver.resolve({
         provider: selection.provider,
-        model: selection.model,
+        model: capabilityModel,
         config: this.config,
       }),
     });
   }
 
+  /**
+   * The id lookups read. On Bedrock a configured override that names no
+   * model (an application inference profile ARN) resolves to the Claude
+   * model it serves, as the Converse adapter resolves it.
+   */
+  private capabilityModel(selection: {
+    readonly provider: string;
+    readonly model: string;
+  }): string {
+    return selection.provider === "amazon-bedrock"
+      ? resolveBedrockModelIdentity(selection.model, this.config.modelOverrides)
+      : selection.model;
+  }
+
   private buildEntry(params: {
     readonly provider: string;
     readonly model: string;
+    readonly capabilityModel: string;
     readonly metadata: ResolvedModelMetadata;
   }): ModelRegistryEntry {
     const overrides = readProviderConfig(this.config, params.provider)
@@ -299,10 +321,13 @@ export class ModelRegistry {
     return {
       provider: params.provider,
       model: params.model,
+      ...(params.capabilityModel !== params.model
+        ? { capabilityModel: params.capabilityModel }
+        : {}),
       metadata: params.metadata,
       capabilities: resolveProviderCapabilityEntry({
         provider: params.provider,
-        model: params.model,
+        model: params.capabilityModel,
         overrides,
       }),
       cost: resolveCostEntry({
