@@ -849,7 +849,11 @@ async function bashContentRulePermission(
   if (candidate === undefined) {
     return { behavior: "passthrough", message: "Run shell command" };
   }
-  return bashToolHasPermission(
+  // Rules and the safety checks see `command` joined with `args`, but that
+  // remapped object is not the call: the router executes an allow's
+  // `updatedInput`, so hand back what the model sent (`cwd`, `args`,
+  // `timeoutMs` and any runtime-injected fields included).
+  const result = await bashToolHasPermission(
     {
       command: candidate.command,
       ...(typeof input.description === "string"
@@ -873,6 +877,9 @@ async function bashContentRulePermission(
       },
     },
   );
+  return "updatedInput" in result && result.updatedInput !== undefined
+    ? { ...result, updatedInput: { ...input } }
+    : result;
 }
 
 /**
