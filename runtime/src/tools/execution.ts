@@ -94,6 +94,10 @@ import { SYSTEM_SEARCH_TOOLS_NAME } from "./system/tool-search-name.js";
 import { signedSessionPlanFileArgs } from "../agents/_deps/filesystem-args.js";
 import { sessionFilesystemContext, sessionPlanFileAuthority } from "../planning/session-plan-authority.js";
 import {
+  EXIT_PLAN_APPROVED_PLAN_ARG,
+  type ExitPlanApprovedPlan,
+} from "../planning/exit-plan-approval.js";
+import {
   SESSION_ID_SIG_ARG,
   signSessionId,
 } from "./system/filesystem.js";
@@ -1111,6 +1115,11 @@ export interface RunToolUseOptions {
   /** Immutable names from the prepared request; only affects discovery copy. */
   readonly advertisedToolNames?: readonly string[];
   /**
+   * ExitPlanMode: the plan its approval request showed. Injected hidden so
+   * the tool executes exactly that text.
+   */
+  readonly approvedPlan?: ExitPlanApprovedPlan;
+  /**
    * Optional MCP side-effect hook. Called when the tool throws an
    * `McpAuthError` — allows the caller (session services) to flip the
    * corresponding client to `needs-auth` state. Duck-typed on
@@ -1914,6 +1923,17 @@ export async function runToolUse(
     // argument must never decide which capabilities were actually sent.
     Object.defineProperty(argsForTool, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
       value: Object.freeze([...opts.advertisedToolNames]),
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+  }
+  if (opts.approvedPlan !== undefined) {
+    // Also after validation: a model-supplied argument of the same name is
+    // replaced here and never decides which plan the user approved.
+    if (argsForTool === inputForTool) argsForTool = { ...inputForTool };
+    Object.defineProperty(argsForTool, EXIT_PLAN_APPROVED_PLAN_ARG, {
+      value: opts.approvedPlan,
       enumerable: false,
       writable: false,
       configurable: true,

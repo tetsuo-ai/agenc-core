@@ -39,6 +39,10 @@ import {
 } from "../../tools/filesystem-dispatch-roots.js";
 import type { LLMToolCall } from "../../llm/types.js";
 import { signedSessionPlanFileArgs } from "../../agents/_deps/filesystem-args.js";
+import {
+  EXIT_PLAN_APPROVED_PLAN_ARG,
+  exitPlanApprovedPlan,
+} from "../../planning/exit-plan-approval.js";
 import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import {
   getPlan,
@@ -973,6 +977,10 @@ export class StreamingToolExecutor {
                 __onProgress: onProgress,
                 __abortSignal: this.abortSignal,
                 __callId: tool.toolCall.id,
+                // ExitPlanMode executes the plan its approval request showed.
+                ...(tool.toolCall.name === "ExitPlanMode"
+                  ? { [EXIT_PLAN_APPROVED_PLAN_ARG]: exitPlanApprovedPlan(approvalArgs) }
+                  : {}),
                 ...(this.liveOptions?.agencHome !== undefined
                   ? { [SESSION_AGENC_HOME_ARG]: this.liveOptions.agencHome }
                   : {}),

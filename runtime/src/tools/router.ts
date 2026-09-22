@@ -103,6 +103,10 @@ import {
   type PermissionAuditLogger,
 } from "../permissions/permission-audit-log.js";
 import {
+  exitPlanApprovedPlan,
+  type ExitPlanApprovedPlan,
+} from "../planning/exit-plan-approval.js";
+import {
   getPlan,
   getPlanFilePath,
   type PlanFileContext,
@@ -1098,6 +1102,12 @@ export class ToolRouter {
       executionArgs,
       opts,
     );
+    // ExitPlanMode executes the plan its approval request shows, not the
+    // plan file as it reads after the user answered.
+    const approvedPlan =
+      toolCall.name === "ExitPlanMode"
+        ? exitPlanApprovedPlan(approvalArgs)
+        : undefined;
     const approvalInvocation: ToolInvocation = {
       ...invocation,
       payload: buildPayloadForArgs(routed.payload, approvalArgs),
@@ -1296,6 +1306,7 @@ export class ToolRouter {
                   onEffectBoundaryCrossed: crossEffectBoundary,
                   subId: toolCall.id,
                   runtimeAttemptContext,
+                  ...(approvedPlan !== undefined ? { approvedPlan } : {}),
                 }),
               ),
           });
@@ -1599,6 +1610,7 @@ function rawDispatchOptions(
     readonly approvalAlreadyResolved?: boolean;
     readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
     readonly onEffectBoundaryCrossed?: () => void;
+    readonly approvedPlan?: ExitPlanApprovedPlan;
   },
 ) {
   const contextWindowTokens = effectiveContextWindowTokens(opts.turn);
@@ -1645,6 +1657,9 @@ function rawDispatchOptions(
       : {}),
     ...(opts.onEffectBoundaryCrossed !== undefined
       ? { onEffectBoundaryCrossed: opts.onEffectBoundaryCrossed }
+      : {}),
+    ...(opts.approvedPlan !== undefined
+      ? { approvedPlan: opts.approvedPlan }
       : {}),
     ...(opts.permissionAuditLogger !== undefined
       ? { permissionAuditLogger: opts.permissionAuditLogger }
