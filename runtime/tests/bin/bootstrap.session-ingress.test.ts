@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -414,6 +414,15 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
     vi.spyOn(providerMod, "createProvider").mockReturnValue({ name: "stub", chat } as never);
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const cronTasks = await import("../utils/cronTasks.js");
+    // A DESCRIPTOR_UNSUPPORTED read is only worth a warning when a durable
+    // record actually exists; a workspace that never scheduled anything has
+    // nothing to restore and stays quiet. Give this one a record to lose.
+    await mkdir(join(workspace, ".agenc"), { recursive: true });
+    await writeFile(
+      cronTasks.getCronFilePath(workspace),
+      JSON.stringify({ tasks: [] }),
+      "utf8",
+    );
     vi.spyOn(cronTasks, "readCronTasks").mockRejectedValue(
       Object.assign(new Error("descriptor-confined I/O is unsupported on darwin"), { code: "DESCRIPTOR_UNSUPPORTED" }),
     );
