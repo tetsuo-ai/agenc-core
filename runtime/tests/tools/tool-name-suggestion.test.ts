@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { buildBootstrapToolRegistry } from "../../src/bin/bootstrap-tool-registry.js";
 import {
-  FOREIGN_TOOL_NAME_EQUIVALENTS,
+  FOREIGN_TOOL_NAME_TARGETS,
   formatUnknownToolMessage,
   suggestAvailableToolName,
 } from "../../src/tools/tool-name-suggestion.js";
@@ -55,7 +55,6 @@ describe("suggestAvailableToolName", () => {
     ["execute_command", "exec_command"],
     ["read_file", "FileRead"],
     ["view_file", "FileRead"],
-    ["str_replace_editor", "Edit"],
     ["replace", "Edit"],
     ["write_to_file", "Write"],
     ["multi_edit", "MultiEdit"],
@@ -74,9 +73,9 @@ describe("suggestAvailableToolName", () => {
     expect(suggestAvailableToolName(requested, catalog)).toBe(expected);
   });
 
-  test("every equivalent it can suggest is a real default tool", () => {
+  test("every tool it can point to is a real default tool", () => {
     const catalog = productionCatalog();
-    for (const entry of FOREIGN_TOOL_NAME_EQUIVALENTS) {
+    for (const entry of FOREIGN_TOOL_NAME_TARGETS) {
       for (const tool of entry.tools) expect(catalog).toContain(tool);
     }
   });
@@ -94,6 +93,20 @@ describe("suggestAvailableToolName", () => {
       expect(suggestAvailableToolName(requested, productionCatalog())).toBeUndefined();
     },
   );
+
+  test.each([
+    // Multi-purpose editors: they also view, create or insert, or apply
+    // several blocks per call, so no single tool is their counterpart.
+    "str_replace_editor",
+    "str_replace_based_edit_tool",
+    "replace_in_file",
+    "replace_file_content",
+    // Names that mean different jobs in different harnesses.
+    "search_files",
+    "todo",
+  ])("names no tool for the multi-purpose or ambiguous name %j", (requested) => {
+    expect(suggestAvailableToolName(requested, productionCatalog())).toBeUndefined();
+  });
 
   test("declines when the spelling matches more than one tool", () => {
     expect(suggestAvailableToolName("Webfetch", ["web_fetch", "WebFetch"])).toBeUndefined();

@@ -16,11 +16,16 @@ function toolNameKey(name: string): string {
 }
 
 /**
- * Other harnesses' tool names, as `toolNameKey` values, and the AgenC tools
- * that do the same job, in order of preference. Only names with one clear
- * equivalent belong here; `search`, `task` or `exec` would be guesses.
+ * Other harnesses' tool names, as `toolNameKey` values, and the AgenC tools to
+ * point to, in order of preference. An entry points to the closest tool for
+ * the same single job. It does not claim the two take the same arguments,
+ * which is why the message says the tool has its own parameters. Left out:
+ * multi-purpose tools with no single counterpart (`str_replace_editor` also
+ * views and creates files; `replace_in_file` applies several blocks per
+ * call), and names that mean different jobs in different harnesses
+ * (`search_files`, `todo`, `search`, `task`, `exec`).
  */
-export const FOREIGN_TOOL_NAME_EQUIVALENTS: ReadonlyArray<{
+export const FOREIGN_TOOL_NAME_TARGETS: ReadonlyArray<{
   readonly names: readonly string[];
   readonly tools: readonly string[];
 }> = [
@@ -29,11 +34,7 @@ export const FOREIGN_TOOL_NAME_EQUIVALENTS: ReadonlyArray<{
     tools: ["FileRead"],
   },
   {
-    names: [
-      "editfile", "fileedit", "fileedittool", "strreplace", "strreplaceeditor",
-      "strreplacebasededittool", "replace", "replaceinfile", "searchreplace",
-      "replacefilecontent",
-    ],
+    names: ["editfile", "fileedit", "fileedittool", "strreplace", "replace", "searchreplace"],
     tools: ["Edit"],
   },
   {
@@ -49,7 +50,7 @@ export const FOREIGN_TOOL_NAME_EQUIVALENTS: ReadonlyArray<{
   },
   { names: ["killshell", "killbash"], tools: ["kill_process"] },
   {
-    names: ["grepsearch", "searchfilecontent", "searchfiles", "ripgrep", "rg"],
+    names: ["grepsearch", "searchfilecontent", "ripgrep", "rg"],
     tools: ["Grep"],
   },
   { names: ["filesearch", "findfiles", "findbyname"], tools: ["Glob"] },
@@ -59,7 +60,7 @@ export const FOREIGN_TOOL_NAME_EQUIVALENTS: ReadonlyArray<{
   },
   { names: ["fetch", "fetchurl"], tools: ["web_fetch"] },
   { names: ["googlewebsearch", "searchweb"], tools: ["WebSearch"] },
-  { names: ["todo", "updateplan"], tools: ["TodoWrite"] },
+  { names: ["updateplan"], tools: ["TodoWrite"] },
   { names: ["agent", "subagent"], tools: ["spawn_agent"] },
   { names: ["askuser", "askfollowupquestion"], tools: ["AskUserQuestion"] },
   { names: ["patch"], tools: ["apply_patch"] },
@@ -69,7 +70,7 @@ export const FOREIGN_TOOL_NAME_EQUIVALENTS: ReadonlyArray<{
  * The available tool `requested` most likely meant, or undefined without a
  * clear match. An available name that differs only in case or separators
  * wins (`grep` -> `Grep`) unless more than one does; otherwise the first
- * available equivalent from `FOREIGN_TOOL_NAME_EQUIVALENTS`.
+ * available target from `FOREIGN_TOOL_NAME_TARGETS`.
  */
 export function suggestAvailableToolName(
   requested: string,
@@ -81,10 +82,10 @@ export function suggestAvailableToolName(
   if (key.length === 0) return undefined;
   const sameKey = [...available].filter((name) => toolNameKey(name) === key);
   if (sameKey.length > 0) return sameKey.length === 1 ? sameKey[0] : undefined;
-  const equivalent = FOREIGN_TOOL_NAME_EQUIVALENTS.find((entry) =>
+  const target = FOREIGN_TOOL_NAME_TARGETS.find((entry) =>
     entry.names.includes(key),
   );
-  return equivalent?.tools.find((tool) => available.has(tool));
+  return target?.tools.find((tool) => available.has(tool));
 }
 
 /** What a suggestion needs to know about one tool the session can dispatch. */
