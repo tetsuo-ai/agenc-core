@@ -29,6 +29,10 @@ import {
   type ModelCostEntry,
   type ModelUsage,
 } from "../session/cost.js";
+import {
+  anthropicFastModeRequested,
+  anthropicSupportsFastMode,
+} from "../llm/providers/anthropic/fast-mode.js";
 import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import { LLMManagedAdmissionError } from "../llm/errors.js";
@@ -208,6 +212,24 @@ function pricedEntry(model: string, provider: string): ModelCostEntry | null {
   return rates.some((rate) => rate > 0) ? entry : null;
 }
 
+/**
+ * Anthropic fast mode rides the "priority" service tier on the models that
+ * accept it. Such a request may be served fast and billed at fast-mode
+ * rates, so its reservation has to cover those rates; a hard cap would
+ * otherwise flag a fast turn as a provider overrun.
+ */
+function requestsAnthropicFastMode(
+  model: string,
+  provider: string,
+  options: LLMChatOptions,
+): boolean {
+  return (
+    provider.trim().toLowerCase() === "anthropic" &&
+    anthropicFastModeRequested(options) &&
+    anthropicSupportsFastMode(model)
+  );
+}
+
 function maximumTokenCostUsd(
   model: string,
   provider: string,
@@ -215,8 +237,13 @@ function maximumTokenCostUsd(
   outputTokens: number,
   options: LLMChatOptions,
 ): number | null {
-  const entry = pricedEntry(model, provider);
-  if (entry === null) return null;
+  const standardEntry = pricedEntry(model, provider);
+  if (standardEntry === null) return null;
+  const entry =
+    standardEntry.fastMode !== undefined &&
+      requestsAnthropicFastMode(model, provider, options)
+      ? standardEntry.fastMode
+      : standardEntry;
   const worstInputRate = Math.max(
     entry.inputUsdPer1K,
     entry.cachedInputUsdPer1K ?? 0,
@@ -274,6 +301,9 @@ function usageCostUsd(
     webSearchRequests: usage.webSearchRequests ?? 0,
     totalTokens: usage.totalTokens,
     turns: 1,
+    // Charge by the speed the provider reports it served, not the one
+    // requested: a fast request served at standard speed bills standard.
+    ...(usage.speed === "fast" ? { speed: "fast" as const } : {}),
   };
   const resolved = computeUsdCostWithResolution(
     modelUsage,

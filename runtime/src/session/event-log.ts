@@ -380,6 +380,11 @@ export interface TokenCountEvent {
   readonly model?: string;
   /** Optional provider override for this usage payload. */
   readonly provider?: string;
+  /**
+   * Present when the provider reports the call was served in fast mode
+   * (Anthropic `usage.speed: "fast"`), which bills at fast-mode rates.
+   */
+  readonly speed?: "fast";
 }
 
 export interface McpToolCallBeginEvent {

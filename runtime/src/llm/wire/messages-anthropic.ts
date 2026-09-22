@@ -561,18 +561,29 @@ export function parseAnthropicMessagesResponse(
     request.options,
   );
 
+  // `usage.speed` is the speed the turn was actually served at. Fast mode
+  // bills at its own rates, and a request that asked for fast can still be
+  // served (and billed) at standard speed, so cost follows this field.
+  const servedSpeed =
+    usageRecord.speed === "fast" || usageRecord.speed === "standard"
+      ? usageRecord.speed
+      : undefined;
+
   return {
     content,
     toolCalls,
-    usage: coerceUsage({
-      promptTokens: usageRecord.input_tokens,
-      completionTokens: usageRecord.output_tokens,
-      totalTokens: undefined,
-      cachedInputTokens: usageRecord.cache_read_input_tokens,
-      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-      reasoningOutputTokens: usageRecord.reasoning_output_tokens,
-      webSearchRequests: serverToolUse.web_search_requests,
-    }),
+    usage: {
+      ...coerceUsage({
+        promptTokens: usageRecord.input_tokens,
+        completionTokens: usageRecord.output_tokens,
+        totalTokens: undefined,
+        cachedInputTokens: usageRecord.cache_read_input_tokens,
+        cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+        reasoningOutputTokens: usageRecord.reasoning_output_tokens,
+        webSearchRequests: serverToolUse.web_search_requests,
+      }),
+      ...(servedSpeed !== undefined ? { speed: servedSpeed } : {}),
+    },
     model:
       typeof response.model === "string" ? response.model : model,
     finishReason:

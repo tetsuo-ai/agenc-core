@@ -1047,6 +1047,8 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
     webSearchRequests,
     totalTokens,
     turns: 1,
+    // A turn served in fast mode bills at the model's fast-mode rates.
+    ...(payload.speed === "fast" ? { speed: "fast" as const } : {}),
   };
 }
 

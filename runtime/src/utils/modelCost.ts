@@ -93,6 +93,26 @@ export const COST_TIER_4_20 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// Fast mode (platform.claude.com fast-mode and pricing docs, 2026-09-22):
+// 2x the standard price, with the prompt-caching multipliers on top.
+// Claude Opus 5.5: $8 / $40, cache write $10, cache read 0.05x = $0.40.
+export const COST_TIER_8_40_FAST = {
+  inputTokens: 8,
+  outputTokens: 40,
+  promptCacheWriteTokens: 10,
+  promptCacheReadTokens: 0.4,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
+// Claude Opus 5 and Opus 4.8: $10 / $50, cache write $12.50, read $1.
+export const COST_TIER_10_50_FAST = {
+  inputTokens: 10,
+  outputTokens: 50,
+  promptCacheWriteTokens: 12.5,
+  promptCacheReadTokens: 1,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Pricing tier for Claude Sonnet 5: $2 input / $10 output per Mtok
 // (platform.claude.com models overview, 2026-09-11). Same cache ratios as
 // the other first-party tiers.
@@ -210,6 +230,18 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_TIER_2_10,
 }
 
+// The models the fast-mode doc lists, at their documented fast-mode rates.
+// Opus 4.8 used to route through the $30/$150 legacy premium; the doc prices
+// it with Opus 5 at $10/$50.
+const FAST_MODE_COSTS: Readonly<Record<ModelShortName, ModelCosts | undefined>> = {
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_5_5_CONFIG.firstParty)]:
+    COST_TIER_8_40_FAST,
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_5_CONFIG.firstParty)]:
+    COST_TIER_10_50_FAST,
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_8_CONFIG.firstParty)]:
+    COST_TIER_10_50_FAST,
+}
+
 /**
  * Calculates the USD cost based on token usage and model cost configuration
  */
@@ -229,9 +261,17 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const shortName = getCanonicalNameForCost(model)
 
-  // Opus 4.6 / 4.7 / 4.8 share base pricing ($5/$25); all carry the fast-mode
-  // premium ($30/$150). Route them through the fast-aware tier so fast usage
-  // is billed correctly instead of at base.
+  // A turn the API reports as served in fast mode bills at that model's
+  // documented fast-mode rates.
+  const fastModeCosts = FAST_MODE_COSTS[shortName]
+  if (usage.speed === 'fast' && fastModeCosts !== undefined) {
+    return fastModeCosts
+  }
+
+  // Opus 4.6 / 4.7 share base pricing ($5/$25) with the legacy $30/$150
+  // fast-mode premium. The fast-mode doc no longer offers either model fast
+  // (4.6 serves and bills standard, 4.7 rejects the request), so this path
+  // only applies to historical usage.
   if (
     shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_6_CONFIG.firstParty) ||
     shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_7_CONFIG.firstParty) ||

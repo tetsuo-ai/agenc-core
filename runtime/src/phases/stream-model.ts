@@ -1649,6 +1649,9 @@ export async function streamModel(
             ? { reasoningOutputTokens: reasoning }
             : {}),
           ...(webSearch !== undefined ? { webSearchRequests: webSearch } : {}),
+          // Served speed, not requested speed: fast mode bills at its own
+          // rates only when the provider says the turn ran fast.
+          ...(response.usage.speed === "fast" ? { speed: "fast" as const } : {}),
         },
       },
     });

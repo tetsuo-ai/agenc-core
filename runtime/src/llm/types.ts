@@ -284,6 +284,12 @@ export interface LLMUsage {
   cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
   webSearchRequests?: number;
+  /**
+   * Speed the provider reports it served the call at (Anthropic
+   * `usage.speed`). Fast mode bills at its own rates, so cost accounting
+   * follows this rather than the speed that was requested.
+   */
+  readonly speed?: "fast" | "standard";
 }
 
 /**

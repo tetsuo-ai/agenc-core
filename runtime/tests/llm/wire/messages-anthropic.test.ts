@@ -1188,6 +1188,24 @@ describe("buildAnthropicMessagesRequest: Claude Opus 5.5", () => {
     expect(request()).not.toHaveProperty("speed");
   });
 
+  test("keeps the served speed on the response usage", () => {
+    const parse = (usage: Record<string, unknown>) =>
+      parseAnthropicMessagesResponse(
+        "claude-opus-5-5",
+        {
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage,
+        },
+        { model: "claude-opus-5-5", messages: turns, tools: [] },
+      ).usage;
+    expect(parse({ input_tokens: 3, output_tokens: 1, speed: "fast" }).speed).toBe("fast");
+    expect(parse({ input_tokens: 3, output_tokens: 1, speed: "standard" }).speed).toBe("standard");
+    expect(parse({ input_tokens: 3, output_tokens: 1 })).not.toHaveProperty("speed");
+    expect(parse({ input_tokens: 3, output_tokens: 1, speed: "turbo" })).not.toHaveProperty("speed");
+  });
+
   test("Claude Opus 5 is not swept into the always-on surface", () => {
     for (const model of ["claude-opus-5", "us.anthropic.agenc-opus-5-v1"]) {
       const request = buildAnthropicMessagesRequest({

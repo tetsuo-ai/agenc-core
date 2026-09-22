@@ -100,6 +100,29 @@ describe('Opus 5.5 onboarding', () => {
     })
   })
 
+  it('bills a fast-served turn at the documented fast-mode rates', () => {
+    // Fast-mode doc, 2026-09-22: Opus 5.5 $8/$40; Opus 5 and 4.8 $10/$50;
+    // prompt-caching multipliers apply on top.
+    const fast = { input_tokens: 0, output_tokens: 0, speed: 'fast' } as never
+    expect(getModelCosts(OPUS_55, fast)).toMatchObject({
+      inputTokens: 8,
+      outputTokens: 40,
+      promptCacheWriteTokens: 10,
+      promptCacheReadTokens: 0.4,
+    })
+    for (const model of [OPUS_5, 'claude-opus-4-8']) {
+      expect(getModelCosts(model, fast), model).toMatchObject({
+        inputTokens: 10,
+        outputTokens: 50,
+        promptCacheWriteTokens: 12.5,
+        promptCacheReadTokens: 1,
+      })
+    }
+    // Requested fast but served standard: the standard tier.
+    const standard = { input_tokens: 0, output_tokens: 0, speed: 'standard' } as never
+    expect(getModelCosts(OPUS_55, standard).inputTokens).toBe(4)
+  })
+
   it('supports effort including max', () => {
     runWithStartupProviderSelection({
       provider: 'anthropic',

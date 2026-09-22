@@ -78,6 +78,39 @@ describe("AnthropicProvider", () => {
         message: expect.stringContaining("served at standard speed"),
       }),
     ]);
+    // Cost accounting sees the served speed, so the turn bills standard.
+    expect(response.usage.speed).toBe("standard");
+  });
+
+  test("reports a fast-served Opus 5.5 turn on the response usage", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_fast55","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":3,"output_tokens":0,"speed":"fast"}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1,"speed":"fast"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ]),
+    );
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-opus-5-5",
+      fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      () => {},
+      { serviceTier: "priority", maxOutputTokens: 64 },
+    );
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).toMatchObject({ speed: "fast" });
+    expect(response.usage.speed).toBe("fast");
+    expect(warnings).toEqual([]);
   });
 
   test("keeps fast mode off the wire for models and tiers that do not take it", async () => {

@@ -55,6 +55,16 @@ describe("strict canonical journal contract", () => {
     expect(isCanonicalRolloutPayload("turn_context", invalidContext)).toBe(false);
   });
 
+  it("keeps a fast-mode token_count replayable and rejects any other speed", () => {
+    const usage = {
+      promptTokens: 1000, completionTokens: 100, totalTokens: 1100,
+      model: "claude-opus-5-5", provider: "anthropic",
+    };
+    expect(isCanonicalEventPayload("token_count", usage)).toBe(true);
+    expect(isCanonicalEventPayload("token_count", { ...usage, speed: "fast" })).toBe(true);
+    expect(isCanonicalEventPayload("token_count", { ...usage, speed: "turbo" })).toBe(false);
+  });
+
   it("accepts sequenced and explicit legacy format lanes", async () => {
     const catalog = await openFndFixtureCatalog();
     const sequenced = validateCanonicalJournalBytes(
