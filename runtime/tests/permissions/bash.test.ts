@@ -426,6 +426,10 @@ describe("bashToolHasPermission", () => {
     ["git push origin -f main", "git push --force main"],
     ["bash -euc 'rm -rf /'", "rm -rf"],
     ["bash -c -- 'rm -rf /'", "rm -rf"],
+    ["dash -c 'rm -rf /'", "rm -rf"],
+    ["dash -lc 'rm -rf /'", "rm -rf"],
+    ["/bin/dash -c -- 'rm -rf /'", "rm -rf"],
+    ["env dash -c 'rm -rf /'", "rm -rf"],
     ["timeout -v 10 rm -rf /", "rm -rf"],
     ["echo $(rm -rf /)", "dangerous command substitution"],
     ["echo ok\nrm -rf /", "rm -rf"],
@@ -782,6 +786,23 @@ describe("bashToolHasPermission", () => {
     );
     expect(denied.behavior).toBe("deny");
   });
+
+  test.each([
+    "dash -c 'rm -rf /'",
+    "/bin/dash -c 'rm -rf /'",
+    "curl http://127.0.0.1/install.sh | dash",
+  ])(
+    "dash wrappers stay on the safety floor under bypassPermissions: %s",
+    async (command) => {
+      const ctx = makeCtx({ mode: "bypassPermissions" });
+      const evalCtx = makeEvaluatorCtx(ctx);
+      const result = await bashToolHasPermission({ command }, evalCtx);
+      expect(result.behavior).toBe("deny");
+      if (result.behavior === "deny") {
+        expect(result.decisionReason.type).toBe("safetyCheck");
+      }
+    },
+  );
 
   test("BASH_TOOL_NAME is the canonical string", () => {
     expect(BASH_TOOL_NAME).toBe("system.bash");
