@@ -62,7 +62,7 @@ describe("workflow turn boundaries", () => {
     expect(events.filter((event) => event.msg.type === "turn_complete")).toHaveLength(1);
   });
 
-  test("fails a resolver-denied action with truthful text while keeping the session reusable", async () => {
+  test("ends a resolver-denied action as a user stop, not an error, while keeping the session reusable", async () => {
     const execute = vi.fn(async () => ({ content: "must not execute" }));
     const registry = registryFor({ name: "spawn_agent", description: "Spawn a verifier", inputSchema: { type: "object" }, requiresApproval: true, execute });
     const provider = mkProvider({
@@ -91,12 +91,15 @@ describe("workflow turn boundaries", () => {
     expect(events.flatMap((event) => {
       const terminal = classifyTurnTerminal(event.msg);
       return terminal === undefined ? [] : [terminal];
-    })).toEqual([expect.objectContaining({ outcome: "errored", code: 1, message: expect.stringMatching(/approval.*denied/i) })]);
+    })).toEqual([expect.objectContaining({ outcome: "aborted", code: 130, message: "approval_denied" })]);
+    expect(events.some((event) => event.msg.type === "turn_failed")).toBe(false);
     const closures = events.filter((event) => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "denied-spawn");
     expect(closures).toHaveLength(1);
     expect(closures[0]?.msg).toMatchObject({ payload: { isError: true, metadata: { approvalDenied: true } } });
-    expect(events.indexOf(closures[0]!)).toBeLessThan(events.findIndex((event) => event.msg.type === "turn_failed"));
-    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "error", content: expect.stringMatching(/approval.*denied/i) });
+    expect(events.indexOf(closures[0]!)).toBeLessThan(events.findIndex((event) => event.msg.type === "turn_aborted"));
+    // The denied call never ran, so the effect gate has nothing to settle.
+    expect(events.some((event) => /^effect_/u.test(event.msg.type))).toBe(false);
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "cancelled", content: expect.stringMatching(/approval.*denied/i) });
     expect(session.snapshotHistoryMessages().at(-1)).toMatchObject({ role: "assistant", content: expect.stringMatching(/approval.*denied/i) });
     expect(findToolTurnValidationIssue(session.snapshotHistoryMessages())).toBeNull();
     expect(session.abortController.signal.aborted).toBe(false);

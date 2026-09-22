@@ -60,7 +60,10 @@ import {
   LEDGER_WALLET_CLI_ROUTING_GUIDANCE,
 } from "../elicitation/ledger-wallet-cli.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
-import { createTurnFailedEvent } from "../contracts/turn-terminal.js";
+import {
+  APPROVAL_DENIED_ABORT_REASON,
+  createTurnFailedEvent,
+} from "../contracts/turn-terminal.js";
 import {
   createTokenAccountingConfigurationRevision,
   createTokenAccountingRequest,
@@ -3234,11 +3237,16 @@ async function* runTurnKernelInner(
           return typeof failure.reason === "string" && failure.reason.trim().length > 0 ? [failure.reason] : [];
         }))];
         if (reasons.length > 0) lastContent += ` ${reasons.join("\n")}`;
+        // A resolver denial is the user's decision, not a failure: the turn
+        // stops the way a user Stop does (the session already holds as
+        // stopped by the user) and waits for the next prompt. The denied
+        // call never ran, so it leaves no effect to settle. The stable
+        // reason lets clients say what was denied instead of "errored".
         const error = new Error(lastContent);
         state.messages.push({ role: "assistant", content: lastContent });
         await syncSessionState();
-        emitTurnComplete(lastContent, "error", error);
-        yield { type: "turn_complete", content: lastContent, usage, stopReason: "error", error };
+        emitTurnAborted(APPROVAL_DENIED_ABORT_REASON);
+        yield { type: "turn_complete", content: lastContent, usage, stopReason: "cancelled", error };
         return { reason: "aborted_tools", error };
       }
       await commit(state, ctx, session, signal, {
