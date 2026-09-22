@@ -123,13 +123,30 @@ it("carries every Claude Opus 5.5 tier from config seed to the wire", async () =
 it("offers Bedrock effort levels exactly where the Converse adapter sends effort", () => {
   const opus55 = { provider: "amazon-bedrock", model: "anthropic.claude-opus-5-5" };
   expect(resolveReasoningEffort(opus55).levels).toEqual(["low", "medium", "high", "xhigh", "max"]);
-  // A configured max reaches the adapter unclamped.
-  expect(resolveSessionReasoningEffort("max", [], opus55)).toBe("max");
   // Opus 5 and non-Claude models get no effort field on Converse, so no levels.
   expect(resolveReasoningEffort({ provider: "amazon-bedrock", model: "anthropic.claude-opus-5" }).levels)
     .toEqual([]);
   expect(resolveReasoningEffort({ provider: "amazon-bedrock", model: "amazon.nova-pro-v1:0" }).levels)
     .toEqual([]);
+});
+
+it("reads Bedrock effort from the registered contract that session and spawn validation use", async () => {
+  const modelInfo = await new StaticModelsManager({
+    config: defaultConfig(),
+    fallbackProvider: "amazon-bedrock",
+  }).getModelInfo("global.anthropic.claude-opus-5-5");
+  const row = { provider: "amazon-bedrock", model: "global.anthropic.claude-opus-5-5" };
+  expect(resolveReasoningEffort(row)).toMatchObject({
+    registered: true,
+    levels: modelInfo.supportedReasoningLevels,
+    defaultLevel: modelInfo.defaultReasoningLevel,
+  });
+  // A configured max reaches the adapter unclamped, as stream-model passes it.
+  expect(resolveSessionReasoningEffort("max", modelInfo.supportedReasoningLevels, row)).toBe("max");
+  // A Claude model without a registered Bedrock contract gets no levels, so
+  // the adapter sends it no effort field either.
+  expect(resolveReasoningEffort({ provider: "amazon-bedrock", model: "global.anthropic.claude-fable-5-1" }))
+    .toMatchObject({ registered: false, levels: [] });
 });
 
 it.each([

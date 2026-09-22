@@ -6,12 +6,12 @@ import { supportsXaiReasoningEffortParam } from "./structured-output.js";
 import { isVerifiedOpenAiReasoningModel } from "./registry/openai-reasoning-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "./registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel, DEEPSEEK_REASONING_LEVELS } from "./registry/deepseek-models.js";
-import {
-  anthropicEffortLevels,
-  bedrockConverseEffortLevels,
-} from "../utils/model/anthropicThinkingControl.js";
+import { anthropicEffortLevels } from "../utils/model/anthropicThinkingControl.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
-import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
+import {
+  bedrockConverseEffortLevels,
+  resolveRegisteredModelCatalogEntry,
+} from "./registry/model-catalog.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
 
 /**
@@ -192,8 +192,8 @@ export function resolveReasoningEffort(input: {
     model !== undefined &&
     bedrockConverseEffortLevels(model).length > 0
   ) {
-    // The Converse adapter sends effort only for the always-on Claude family,
-    // so only those models offer levels on Bedrock.
+    // The Converse adapter sends effort only for models with a registered
+    // Bedrock contract that has levels, so only those offer levels here.
     reasoningEffortAllowedValues = new Set(bedrockConverseEffortLevels(model));
     acceptsReasoningEffort = true;
   }

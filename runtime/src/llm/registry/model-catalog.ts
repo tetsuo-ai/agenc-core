@@ -25,6 +25,7 @@ import {
   resolveGeminiThinkingModel,
 } from "./gemini-thinking-models.js";
 import { parseClaudeModelId } from "../../utils/model/claudeModelId.js";
+import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -1405,6 +1406,7 @@ export function resolveRegisteredModelCatalogEntry(input: {
     );
   }
   if (provider === "anthropic") return resolveAnthropicCatalogEntry(model);
+  if (provider === "amazon-bedrock") return resolveBedrockCatalogEntry(model);
   const candidates = REGISTERED_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );
@@ -1526,6 +1528,70 @@ function resolveAnthropicCatalogEntry(
   const id = parseClaudeModelId(model);
   if (id === undefined || id.platform !== "anthropic") return undefined;
   return CLAUDE_CATALOG_ROWS.get(id.canonical);
+}
+
+/**
+ * Bedrock ids of a registered Claude model (`anthropic.claude-opus-5-5`,
+ * the geo and `global.` inference profiles, their `-v1:0` versions and
+ * ARNs) resolve through the same parser to that model's Bedrock contract.
+ * Other Bedrock ids, including Claude models without a row, have none.
+ */
+function resolveBedrockCatalogEntry(
+  model: string,
+): RegisteredModelCatalogEntry | undefined {
+  const id = parseClaudeModelId(model);
+  if (id === undefined || id.platform !== "bedrock") return undefined;
+  const row = CLAUDE_CATALOG_ROWS.get(id.canonical);
+  return row === undefined ? undefined : bedrockClaudeCatalogEntry(row, model);
+}
+
+/**
+ * A registered Claude row as AgenC's Amazon Bedrock provider serves it
+ * through Converse. The context and output limits are the model's (the AWS
+ * model card for Opus 5.5 gives the same 1M context and 128K output as the
+ * Claude API). The Converse adapter sends text and tools only, and Bedrock
+ * serves these models no structured output, web search or fast mode, so
+ * those stay off. Effort levels carry over only for the always-on family,
+ * whose effort the adapter sends as `output_config.effort` inside
+ * `additionalModelRequestFields`.
+ */
+function bedrockClaudeCatalogEntry(
+  row: RegisteredModelCatalogEntry,
+  model: string,
+): RegisteredModelCatalogEntry {
+  const { defaultReasoningLevel, ...contract } = row;
+  const levels = isAlwaysOnThinkingAnthropicModel(row.model)
+    ? row.supportedReasoningLevels
+    : NO_REASONING_LEVELS;
+  return Object.freeze({
+    ...contract,
+    provider: "amazon-bedrock",
+    model,
+    inputModalities: TEXT_MODALITIES,
+    supportsParallelToolCalls: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
+    supportsSearchTool: false,
+    webSearchToolType: "none",
+    supportedReasoningLevels: levels,
+    ...(defaultReasoningLevel !== undefined &&
+    levels.includes(defaultReasoningLevel)
+      ? { defaultReasoningLevel }
+      : {}),
+    additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+  });
+}
+
+/**
+ * The effort levels the Bedrock Converse adapter sends for `model`: those
+ * of its registered Bedrock contract, so session validation, spawn_agent
+ * and the wire agree. A model without one gets no effort field.
+ */
+export function bedrockConverseEffortLevels(
+  model: string,
+): readonly ReasoningEffort[] {
+  return resolveBedrockCatalogEntry(model)?.supportedReasoningLevels ??
+    NO_REASONING_LEVELS;
 }
 
 function findExactModel(

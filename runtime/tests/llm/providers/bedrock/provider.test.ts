@@ -263,6 +263,21 @@ describe("providers/bedrock", () => {
       expect(converse).not.toHaveProperty("inferenceConfig");
     });
 
+    it("sends effort only at the levels of a registered Bedrock contract", async () => {
+      // Fable 5.1 is always-on but has no registered Bedrock contract, so
+      // registry validation offers it no levels and the wire sends none,
+      // while the always-on request rules still apply.
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
+      await provider("global.anthropic.claude-fable-5-1", fetchImpl).chat(
+        [{ role: "user", content: "hello" }],
+        options,
+      );
+      const body = sentBody(fetchImpl);
+      expect(body).not.toHaveProperty("additionalModelRequestFields");
+      expect(body.inferenceConfig).toEqual({ maxTokens: 256 });
+      expect(body.toolConfig).toMatchObject({ toolChoice: { auto: {} } });
+    });
+
     it("leaves other models on their existing request shape", async () => {
       // Not Claude: every field passes through as before.
       const novaFetch = vi.fn<typeof fetch>().mockResolvedValue(converseReply());

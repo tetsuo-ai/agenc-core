@@ -25,7 +25,7 @@
  * layer can import it.
  */
 import { isAlwaysOnThinkingAnthropicModel } from "./alwaysOnThinking.js";
-import { CLAUDE_OPUS_5_5, isClaudeModel, parseClaudeModelId } from "./claudeModelId.js";
+import { CLAUDE_OPUS_5_5, isClaudeModel } from "./claudeModelId.js";
 
 export type AnthropicThinkingControl = "always_on" | "adaptive" | "budget";
 
@@ -80,18 +80,6 @@ const OPUS_5_5_EFFORT_LEVELS: readonly AnthropicEffort[] = ["low", "medium", "hi
 export function anthropicEffortLevels(model: string): readonly AnthropicEffort[] {
   if (isClaudeModel(model, CLAUDE_OPUS_5_5)) return OPUS_5_5_EFFORT_LEVELS;
   return ANTHROPIC_EFFORT_CONTRACTS.find(row => row.pattern.test(familySpelling(model)))?.levels ?? [];
-}
-
-/**
- * Effort levels the Amazon Bedrock Converse path sends for `model`. Only the
- * always-on Claude family (Fable/Mythos 5, Opus 5.5) carries effort there,
- * as `output_config.effort` in `additionalModelRequestFields`; other models
- * get no effort field on Converse.
- */
-export function bedrockConverseEffortLevels(model: string): readonly AnthropicEffort[] {
-  return parseClaudeModelId(model) !== undefined && isAlwaysOnThinkingAnthropicModel(model)
-    ? anthropicEffortLevels(model)
-    : [];
 }
 
 export function anthropicAcceptsEffort(model: string): boolean {

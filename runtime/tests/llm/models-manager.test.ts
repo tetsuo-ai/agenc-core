@@ -115,6 +115,41 @@ describe("StaticModelsManager", () => {
     }
   });
 
+  it("gives Bedrock ids of Claude Opus 5.5 its registered contract", async () => {
+    // AWS model card (2026-09-22): 1M context, 128K output, effort low..max
+    // with medium as the default. The Converse adapter sends all five.
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "amazon-bedrock",
+      metadata: { fetchImpl: vi.fn<typeof fetch>() },
+    });
+    for (const model of [
+      "anthropic.claude-opus-5-5",
+      "global.anthropic.claude-opus-5-5",
+      "us.anthropic.claude-opus-5-5-v1:0",
+      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-opus-5-5",
+    ]) {
+      const info = await manager.getModelInfo(model);
+      expect(info, model).toMatchObject({
+        slug: model,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 64_000,
+        maxOutputTokensUpperLimit: 128_000,
+        supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningLevel: "medium",
+        usedFallbackModelMetadata: false,
+      });
+      // Fast mode is Claude API only.
+      expect(info.serviceTiers, model).toBeUndefined();
+    }
+    // Models without a registered contract keep their Bedrock fallback.
+    for (const model of ["anthropic.claude-opus-5", "amazon.nova-pro-v1:0"]) {
+      const info = await manager.getModelInfo(model);
+      expect(info.supportedReasoningLevels, model).toEqual([]);
+      expect(info.contextWindow, model).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
+    }
+  });
+
   it("uses curated Z.ai metadata without probing a custom base URL", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const manager = new StaticModelsManager({

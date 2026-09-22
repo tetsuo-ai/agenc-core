@@ -41,8 +41,8 @@ import { isAlwaysOnThinkingAnthropicModel } from "../../../utils/model/alwaysOnT
 import {
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
-  bedrockConverseEffortLevels,
 } from "../../../utils/model/anthropicThinkingControl.js";
+import { bedrockConverseEffortLevels } from "../../registry/model-catalog.js";
 import {
   providerCredentialEnvironmentLabel,
   resolveBuiltInProviderRegionalEndpoint,
@@ -461,11 +461,13 @@ interface ClaudeConverseContract {
  * The Claude request contract on the Converse path, from the helpers the
  * Messages wire uses. Sampling parameters stay off Claude models that reject
  * them. The always-on family (Fable/Mythos 5, Opus 5.5) is never forced onto
- * a tool, and its effort travels as `output_config.effort` inside
- * `additionalModelRequestFields`, the Converse field AWS documents for Claude
- * effort (Bedrock user guide, adaptive thinking, checked 2026-09-22); those
- * models think without a `thinking` field. Other Claude models get no new
- * thinking or effort fields here, and non-Claude models are untouched.
+ * a tool and thinks without a `thinking` field. Effort travels as
+ * `output_config.effort` inside `additionalModelRequestFields`, the Converse
+ * field AWS documents for Claude effort (Bedrock user guide, adaptive
+ * thinking, checked 2026-09-22), and only at the levels of the model's
+ * registered Bedrock contract, which session and spawn_agent validation
+ * read too. Other Claude models get no new thinking or effort fields here,
+ * and non-Claude models are untouched.
  */
 function claudeConverseContract(
   model: string,

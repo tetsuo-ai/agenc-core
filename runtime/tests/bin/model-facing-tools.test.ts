@@ -3926,6 +3926,67 @@ describe("model-facing tools", () => {
     );
   });
 
+  it("validates Bedrock Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
+    const model = "global.anthropic.claude-opus-5-5";
+    const session = fakeSession();
+    (session.services as unknown as { modelsManager: unknown }).modelsManager =
+      new StaticModelsManager({
+        config: { ...defaultConfig(), model_provider: "amazon-bedrock", model },
+        fallbackProvider: "amazon-bedrock",
+        metadata: { fetchImpl: vi.fn<typeof fetch>() },
+      });
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-bedrock",
+          agentPath: "/root/bedrock",
+          nickname: "Bedrock",
+          role: { name: "runner" },
+          status: {
+            value: { status: "running", turnId: "turn-bedrock", startedAtMs: 1 },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-bedrock",
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+    const spawn = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!;
+
+    for (const effort of ["xhigh", "max"] as const) {
+      const result = await spawn.execute({
+        message: "inspect",
+        task_name: `bedrock_${effort}`,
+        model,
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+      expect(result.isError, effort).not.toBe(true);
+      expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+        model,
+        reasoningEffort: effort,
+      });
+    }
+    const rejected = await spawn.execute({
+      message: "inspect",
+      task_name: "bedrock_minimal",
+      model,
+      reasoning_effort: "minimal",
+      fork_turns: "none",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(JSON.parse(rejected.content).error).toBe(
+      `Reasoning effort \`minimal\` is not supported for model \`${model}\`. Supported reasoning efforts: low, medium, high, xhigh, max`,
+    );
+  });
+
   describe("sub-agent effort by the shared Claude parser's identity", () => {
     const spawnWithConfiguredModel = async (model: string, effort: "max" | "xhigh") => {
       const session = fakeSession();
