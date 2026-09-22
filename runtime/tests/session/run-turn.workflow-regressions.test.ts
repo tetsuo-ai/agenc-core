@@ -32,6 +32,10 @@ describe("workflow turn boundaries", () => {
       expect(closure?.msg).toMatchObject({ payload: { isError: true, metadata: { approvalFailure: { decision: "denied", source: "resolver", reason } } } });
       expect(session.snapshotHistoryMessages().at(-1)?.content).toContain(reason);
       expect(registry.tools[0]!.execute).not.toHaveBeenCalled();
+      // A person's denial is their stop, never a failed turn, in a workflow too.
+      expect(events.some((event) => event.msg.type === "turn_aborted"
+        && (event.msg.payload as { readonly reason?: string } | undefined)?.reason === "approval_denied")).toBe(true);
+      expect(events.some((event) => event.msg.type === "turn_failed")).toBe(false);
     } finally {
       unmark();
       await session.shutdown();

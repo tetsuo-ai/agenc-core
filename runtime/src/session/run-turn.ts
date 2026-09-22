@@ -3245,7 +3245,9 @@ async function* runTurnKernelInner(
     }
     const workflowApprovalFailure = isWorkflowApprovalSession(session)
       ? state.completedToolResults
-          .filter((result) => result.isError === true)
+          // A person's denial ends the turn as their stop, below, in a
+          // workflow too. Only an automatic refusal is a workflow failure.
+          .filter((result) => result.isError === true && result.metadata?.approvalDenied !== true)
           .map((result) => workflowApprovalFailureFromMetadata(result.metadata?.approvalFailure))
           .find((failure) => failure !== undefined)
       : undefined;
