@@ -13,6 +13,11 @@ import { attachContextDefaults, hasPermissionsToUseTool } from "../../src/permis
 import { createEmptyToolPermissionContext, type ToolPermissionContext } from "../../src/permissions/types.js";
 import type { ReviewDecision } from "../../src/permissions/review-decision.js";
 import { withExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
+import type { ApprovalCtx } from "../../src/permissions/guardian/arbiter.js";
+import {
+  buildGuardianApprovalRequest,
+  guardianApprovalRequestActionText,
+} from "../../src/permissions/guardian/approval-request.js";
 
 // system.bash checks permission rules against `command` joined with `args`.
 // Whatever the permission step decides, the call that runs must still carry
@@ -85,6 +90,31 @@ describe("system.bash permission keeps the model's fields", () => {
   test.each(PERMISSION_CASES)("%s keeps direct-mode args apart from the command", async (_label, permission) => {
     const fixture = dispatchFixture(permission);
     const result = await fixture.dispatch({ command: "cat", args: ["x y.txt"], cwd: sub, timeoutMs: 45_000 });
+    expect(result.isError).not.toBe(true);
+    expect(fixture.execute).toHaveBeenCalledTimes(1);
+    const executed = fixture.execute.mock.calls[0]![0] as Record<string, unknown>;
+    expect(executed.command).toBe("cat");
+    expect(executed.args).toEqual(["x y.txt"]);
+    expect(executed.cwd).toBe(sub);
+    expect(executed.timeoutMs).toBe(45_000);
+    expect(String(result.content)).toContain("direct-mode-ok");
+  });
+
+  test("an explicit ask that the user approves runs the call as sent and its approval shows argv and cwd", async () => {
+    const fixture = dispatchFixture(
+      { alwaysAskRules: { userSettings: ["system.bash(cat:*)"] } },
+      { kind: "approved" },
+    );
+    const result = await fixture.dispatch({ command: "cat", args: ["x y.txt"], cwd: sub, timeoutMs: 45_000 });
+    expect(fixture.resolver.request).toHaveBeenCalledTimes(1);
+    const approvalCtx = (fixture.resolver.request.mock.calls[0] as unknown as [ApprovalCtx])[0];
+    const payload = approvalCtx.invocation.payload;
+    const approvalArgs = payload.kind === "function" ? JSON.parse(payload.arguments) as Record<string, unknown> : {};
+    const approval = buildGuardianApprovalRequest(approvalCtx, approvalArgs);
+    expect(approval.kind).toBe("shell");
+    expect(approval.kind === "shell" ? approval.command : undefined).toEqual(["cat", "x y.txt"]);
+    expect(guardianApprovalRequestActionText(approval)).toBe('["cat","x y.txt"]');
+    expect(approval.cwd).toBe(sub);
     expect(result.isError).not.toBe(true);
     expect(fixture.execute).toHaveBeenCalledTimes(1);
     const executed = fixture.execute.mock.calls[0]![0] as Record<string, unknown>;

@@ -9,6 +9,8 @@
  * @module
  */
 
+import { resolve } from "node:path";
+
 import type { ToolPayload } from "../../tools/context.js";
 import type { ApprovalCtx } from "./arbiter.js";
 
@@ -109,8 +111,10 @@ export function buildGuardianApprovalRequest(
 
   const command = commandFromArgs(args);
   if (command.length > 0 && isShellToolName(ctx.toolName)) {
+    const cwd = shellCallCwd(args, base.cwd);
     return {
       ...base,
+      ...(cwd !== undefined ? { cwd } : {}),
       kind: "shell",
       command,
       args,
@@ -251,7 +255,11 @@ function guardianApprovalRequestBase(ctx: ApprovalCtx): GuardianApprovalRequestB
 function commandFromArgs(args: Record<string, unknown>): readonly string[] {
   const command = args.command ?? args.cmd;
   if (typeof command === "string" && command.trim().length > 0) {
-    return [command];
+    // system.bash direct mode: the operands live in `args`.
+    return Array.isArray(args.args) &&
+      args.args.every((part) => typeof part === "string")
+      ? [command, ...args.args]
+      : [command];
   }
   if (Array.isArray(command) && command.every((part) => typeof part === "string")) {
     return command;
@@ -264,6 +272,24 @@ function commandFromArgs(args: Record<string, unknown>): readonly string[] {
     return [...head, ...args.args];
   }
   return [];
+}
+
+/**
+ * The directory the shell call runs in: `cwd` (system.bash) or `workdir`
+ * (exec_command), resolved against the turn cwd, else the turn cwd.
+ */
+function shellCallCwd(
+  args: Record<string, unknown>,
+  turnCwd: string | undefined,
+): string | undefined {
+  const requested =
+    typeof args.cwd === "string" && args.cwd.length > 0
+      ? args.cwd
+      : typeof args.workdir === "string" && args.workdir.length > 0
+        ? args.workdir
+        : undefined;
+  if (requested === undefined) return turnCwd;
+  return turnCwd !== undefined ? resolve(turnCwd, requested) : requested;
 }
 
 function isShellToolName(toolName: string): boolean {
