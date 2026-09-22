@@ -835,6 +835,19 @@ export async function runAdmittedModelCall(
       tokenAccountingService.recordProviderUsage(
         accountingResult,
         reconciled.inputTokens,
+        // A provider-native server tool feeds its results (search pages, code
+        // output) back into this turn on the provider side, so the reported
+        // input exceeds anything this process could count. Learning from that
+        // ratio locked a grok-4.7 conversation's factor at the cap after two
+        // web searches (reported 58,887 and 62,442 against a query-sized
+        // count), and every later turn was then denied context_window_exceeded
+        // with the real prompt at 86k of a 500k window. The widened reservation
+        // above already covers these turns; they must not scale the others.
+        {
+          calibrate:
+            providerNativeTools.length === 0 &&
+            !hasUnboundedPaidServerTool(accountingOptions),
+        },
       );
     }
     const outcome = client.reconcile(reservationId, {
