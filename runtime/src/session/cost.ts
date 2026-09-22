@@ -26,6 +26,7 @@ import type { BudgetTracker } from "../conversation/token-budget.js";
 import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
+import { parseClaudeModelId } from "../utils/model/claudeModelId.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Cost registry — USD per 1K tokens.
@@ -785,6 +786,16 @@ function canonicalModel(model: string): string {
   const unqualified = pathUnqualified.includes(":")
     ? pathUnqualified.slice(pathUnqualified.lastIndexOf(":") + 1)
     : pathUnqualified;
+  // The Claude 5 generation prices by exact identity through the shared
+  // parser, tried on the whole id first because a Bedrock `-v1:0` suffix
+  // would otherwise be cut at its colon. Opus 5 and Opus 5.5 bill
+  // differently, so an unknown minor (claude-opus-5-50) stays unpriced
+  // rather than inheriting either one.
+  const claude =
+    parseClaudeModelId(normalized) ??
+    parseClaudeModelId(pathUnqualified) ??
+    parseClaudeModelId(unqualified);
+  if (claude !== undefined && claude.major >= 5) return claude.canonical;
   if (unqualified.startsWith("grok-4-fast")) return "grok-4-fast";
   // Non-reasoning grok-4.x variants are priced explicitly below; route them to
   // their own keys so they are NOT collapsed onto the reasoning entry (which

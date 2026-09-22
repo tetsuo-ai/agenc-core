@@ -9,6 +9,8 @@
  * Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
  * (Opus 5.5 row checked 2026-09-22).
  */
+import { parseClaudeModelId } from "../../../utils/model/claudeModelId.js";
+
 export const ANTHROPIC_FAST_MODE_BETA_HEADER = "fast-mode-2026-02-01";
 
 export const ANTHROPIC_FAST_MODE_MODELS = Object.freeze([
@@ -17,16 +19,18 @@ export const ANTHROPIC_FAST_MODE_MODELS = Object.freeze([
   "claude-opus-4-8",
 ] as const);
 
-function normalizeAnthropicModel(model: string): string {
-  return model.trim().toLowerCase().replace(/^anthropic[/:]/, "");
-}
+const FAST_MODE_MODEL_IDS: ReadonlySet<string> = new Set(ANTHROPIC_FAST_MODE_MODELS);
 
-/** True for the exact fast-mode models and their dated snapshots. */
+/**
+ * True for the exact fast-mode models and their dated snapshots, in the
+ * Claude API spelling. Identity comes from the shared parser, so
+ * `claude-opus-5-5` and `claude-opus-5` never stand in for each other, and
+ * Bedrock or Vertex spellings (no fast mode there) never match.
+ */
 export function anthropicSupportsFastMode(model: string): boolean {
-  const normalized = normalizeAnthropicModel(model);
-  return ANTHROPIC_FAST_MODE_MODELS.some(
-    (id) => normalized === id || normalized.startsWith(`${id}-20`),
-  );
+  const id = parseClaudeModelId(model);
+  return id !== undefined && id.platform === "anthropic" &&
+    FAST_MODE_MODEL_IDS.has(id.canonical);
 }
 
 /**

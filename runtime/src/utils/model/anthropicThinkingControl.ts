@@ -25,6 +25,7 @@
  * layer can import it.
  */
 import { isAlwaysOnThinkingAnthropicModel } from "./alwaysOnThinking.js";
+import { CLAUDE_OPUS_5_5, isClaudeModel } from "./claudeModelId.js";
 
 export type AnthropicThinkingControl = "always_on" | "adaptive" | "budget";
 
@@ -61,21 +62,23 @@ export function anthropicAcceptsSamplingParameters(model: string): boolean {
 
 // Verified 2026-09-21 against https://platform.claude.com/docs/en/build-with-claude/effort.
 // Field support alone does not establish which tiers a generation accepts.
-// Opus 5.5 (effort doc, 2026-09-22) takes all five levels. Without its own
-// row `claude-opus-5-5` matched none of these patterns, so the session
-// resolver offered it no levels and the wire dropped every effort.
 const ANTHROPIC_EFFORT_CONTRACTS: readonly {
   pattern: RegExp;
   levels: readonly AnthropicEffort[];
 }[] = [
   { pattern: /(?:fable|mythos)-5(?:[.-]1)?(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "xhigh", "max"] },
-  { pattern: /opus-5[.-]5(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "xhigh", "max"] },
   { pattern: /(?:(?:opus|sonnet)-5|opus-4[.-][78])(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "xhigh", "max"] },
   { pattern: /(?:(?:opus|sonnet)-4[.-]6|mythos-preview)(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "max"] },
   { pattern: /opus-4[.-]5(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high"] },
 ];
 
+// Opus 5.5 (effort doc, 2026-09-22) takes all five levels. It is matched by
+// exact identity, ahead of the patterns above, so no Opus 5 row can claim it
+// and it can claim no other id.
+const OPUS_5_5_EFFORT_LEVELS: readonly AnthropicEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
 export function anthropicEffortLevels(model: string): readonly AnthropicEffort[] {
+  if (isClaudeModel(model, CLAUDE_OPUS_5_5)) return OPUS_5_5_EFFORT_LEVELS;
   return ANTHROPIC_EFFORT_CONTRACTS.find(row => row.pattern.test(familySpelling(model)))?.levels ?? [];
 }
 

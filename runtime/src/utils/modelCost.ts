@@ -24,6 +24,7 @@ import {
 import {
   type ModelShortName,
 } from './model/model.js'
+import { parseClaudeModelId } from './model/claudeModelId.js'
 
 // @see https://agenc.tech/docs/en/about-agenc/pricing
 export type ModelCosts = {
@@ -124,12 +125,12 @@ const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 function firstPartyNameToCanonicalForCost(name: string): ModelShortName {
   const normalized = name.toLowerCase()
-  if (normalized.includes('claude-fable-5-1')) return 'claude-fable-5-1'
-  if (normalized.includes('claude-fable-5')) return 'claude-fable-5'
-  // Before opus-5: 'claude-opus-5-5' contains 'claude-opus-5'.
-  if (normalized.includes('claude-opus-5-5')) return 'claude-opus-5-5'
-  if (normalized.includes('claude-opus-5')) return 'claude-opus-5'
-  if (normalized.includes('claude-sonnet-5')) return 'claude-sonnet-5'
+  // The Claude 5 generation prices by exact identity through the shared
+  // parser (see firstPartyNameToCanonical): opus-5 and opus-5-5 bill
+  // differently, and a Bedrock or dotted spelling must not fall back to the
+  // unknown-model default.
+  const claude = parseClaudeModelId(normalized)
+  if (claude !== undefined && claude.major >= 5) return claude.canonical
   if (normalized.includes('claude-opus-4-8')) return 'claude-opus-4-8'
   if (normalized.includes('claude-opus-4-7')) return 'claude-opus-4-7'
   if (normalized.includes('claude-opus-4-6')) return 'claude-opus-4-6'

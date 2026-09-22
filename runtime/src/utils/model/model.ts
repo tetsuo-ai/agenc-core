@@ -33,6 +33,7 @@ import {
   isModelAllowed,
 } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
+import { parseClaudeModelId } from './claudeModelId.js'
 import { capitalize } from '../stringUtils.js'
 
 export type ModelShortName = string
@@ -351,24 +352,17 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   // branches below match instead of falling through to the generic regex (which
   // would only capture "agenc-opus").
   name = name.replaceAll('anthropic.agenc-', 'anthropic.claude-')
+  // The Claude 5 generation pairs models whose ids contain each other
+  // (fable-5 / fable-5-1, opus-5 / opus-5-5), so it resolves only by exact
+  // identity through the shared parser: dated, Bedrock, Vertex and dotted
+  // spellings map to their model, and an unknown minor such as
+  // claude-opus-5-50 stays unknown instead of borrowing a neighbour.
+  const claude = parseClaudeModelId(name)
+  if (claude !== undefined && claude.major >= 5) {
+    return claude.canonical
+  }
   // Special cases for AgenC 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-7 before 4-6 before 4-5 before 4)
-  if (name.includes('claude-fable-5-1')) {
-    return 'claude-fable-5-1'
-  }
-  if (name.includes('claude-fable-5')) {
-    return 'claude-fable-5'
-  }
-  // Before opus-5: 'claude-opus-5-5' contains 'claude-opus-5'.
-  if (name.includes('claude-opus-5-5')) {
-    return 'claude-opus-5-5'
-  }
-  if (name.includes('claude-opus-5')) {
-    return 'claude-opus-5'
-  }
-  if (name.includes('claude-sonnet-5')) {
-    return 'claude-sonnet-5'
-  }
   if (name.includes('claude-opus-4-8')) {
     return 'claude-opus-4-8'
   }
