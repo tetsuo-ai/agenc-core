@@ -6491,6 +6491,10 @@ export function createNodeDaemonCliHost(
       } finally {
         if (stderrFd !== "ignore") closeSync(stderrFd);
       }
+      // A failed spawn (the executable replaced by an update, EAGAIN) reports
+      // on the next tick. Listen before the throw below, or that report is an
+      // uncaught exception in this CLI or TUI process.
+      child.on("error", () => {});
       child.unref();
       if (child.pid === undefined) {
         throw new Error("AgenC daemon child process did not expose a pid");

@@ -685,7 +685,7 @@ export function spawnContainedProcess(
     // surface ECONNRESET on this private stream. It is not a user-visible I/O
     // failure and must not become an unhandled process-level exception.
     gate.on("error", () => {});
-    launchPosixOwnerWatchdog(child, gate, gatePayload, options.cwd, cgroupPath);
+    launchPosixOwnerWatchdog(child, gate, gatePayload, cgroupPath);
     return child;
   } catch (error) {
     if (child !== undefined) {
@@ -1048,7 +1048,6 @@ function launchPosixOwnerWatchdog(
   child: ChildProcessWithoutNullStreams,
   gate: Writable,
   gatePayload: string,
-  cwd: string,
   cgroupPath: string | null,
 ): void {
   if (cgroupPath !== null && process.platform === "linux") {
@@ -1071,7 +1070,10 @@ function launchPosixOwnerWatchdog(
     process.execPath,
     ["-e", POSIX_OWNER_WATCHDOG_SCRIPT],
     {
-      cwd,
+      // The watchdog uses only absolute paths. Starting it in the command's
+      // directory let a directory removed after the gate spawn fail it, and
+      // fail() then reported the never-run command as SIGKILLed.
+      cwd: "/",
       env: trustedPosixBootstrapEnvironment({
         AGENC_PROCESS_WATCHDOG_CONFIG: config,
       }),

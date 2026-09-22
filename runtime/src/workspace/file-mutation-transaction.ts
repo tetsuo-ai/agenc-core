@@ -2912,7 +2912,13 @@ class BoundDirectoryHelper {
     // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
     // its stdio undefined. Listen before touching stdio: without a listener
     // that report is an uncaught exception in the daemon.
-    child.once("error", (error) => this.#rejectWaiters(error));
+    child.once("error", (error) => {
+      // A helper whose spawn failed never ran and never emits exit, so
+      // dispose() must not wait for one. It waited 2 s and then threw
+      // "did not exit", which replaced the real spawn error.
+      if (child.pid === undefined) this.#closed = true;
+      this.#rejectWaiters(error);
+    });
     if (
       child.stdin === null ||
       child.stdin === undefined ||

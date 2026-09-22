@@ -49,6 +49,39 @@ function startedGate() {
 
 describe("contained process owner watchdog", () => {
   it.runIf(process.platform === "darwin")(
+    "starts the watchdog in /, not in the command's working directory",
+    async () => {
+      // A command directory removed between the gate spawn and the watchdog
+      // spawn failed the watchdog, and the command that never ran was then
+      // reported as SIGKILLed. The watchdog only uses absolute paths.
+      const gate = startedGate();
+      const watchdog = startedGate();
+      spawnMock
+        .mockImplementationOnce(() => gate as never)
+        .mockImplementationOnce(() => watchdog as never);
+      const commandDirectory = tmpdir();
+
+      spawnContainedProcess(process.execPath, ["-e", "0"], {
+        cwd: commandDirectory,
+        env: {},
+      });
+
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      expect(spawnMock.mock.calls[0]![2]).toMatchObject({ cwd: commandDirectory });
+      expect(spawnMock.mock.calls[1]![2]).toMatchObject({ cwd: "/" });
+      // Let the launch finish: the watchdog reports ready, the gate gets its
+      // payload. Nothing runs; both children are stand-ins.
+      const gateHandoff = new Promise<void>((resolve) => {
+        gate.stdio[3]!.on("finish", () => resolve());
+      });
+      watchdog.stdio[3]!.write("ready\n");
+      await gateHandoff;
+      expect(gate.kill).not.toHaveBeenCalled();
+    },
+  );
+
+
+  it.runIf(process.platform === "darwin")(
     "a watchdog spawn that left no stdio fails the launch without an uncaught error",
     async () => {
       const gate = startedGate();

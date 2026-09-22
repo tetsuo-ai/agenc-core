@@ -528,7 +528,10 @@ export function stopRecording(): void {
     return
   }
   if (activeRecorder) {
-    activeRecorder.kill('SIGTERM')
+    // A recorder whose spawn failed has no pid. Until Node reports that on
+    // the next tick, its open handle sends kill() to pid 0: the TUI's whole
+    // process group. Its error handler ends the recording instead.
+    if (activeRecorder.pid !== undefined) activeRecorder.kill('SIGTERM')
     activeRecorder = null
   }
 }

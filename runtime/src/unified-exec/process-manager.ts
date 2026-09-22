@@ -1227,18 +1227,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   private terminatePtyStrict(entry: ProcessEntry): Promise<void> {
     if (entry.stored.kind !== "pty") return Promise.resolve();
-    const processHandle = entry.stored.process;
-    const pid = processHandle.pid;
-    if (!Number.isInteger(pid) || pid <= 1) {
-      try {
-        processHandle.kill("SIGKILL");
-        return Promise.resolve();
-      } catch (error) {
-        return Promise.reject(error);
-      }
-    }
-    // Signals synchronously; closeProcessStrict then waits for the PTY's exit.
-    signalPtyProcessTree(processHandle, "SIGKILL");
+    // Signals synchronously; closeProcessStrict then waits for the PTY's
+    // exit. A PTY without a pid above 1 is not signalled at all (node-pty's
+    // kill() is process.kill(pid)): its exit, or the quiesce timeout, decides.
+    signalPtyProcessTree(entry.stored.process, "SIGKILL");
     return Promise.resolve();
   }
 
@@ -1714,18 +1706,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   private terminatePty(processHandle: IPty, signal: NodeJS.Signals): void {
-    if (
-      signalPtyProcessTree(
-        processHandle,
-        signal === "SIGKILL" ? "SIGKILL" : "SIGTERM",
-      )
-    ) {
-      return;
-    }
-    try {
-      processHandle.kill(signal);
-    } catch {
-      // Best-effort shutdown.
-    }
+    // Refuses a PTY without a pid above 1. node-pty's own kill() is
+    // process.kill(pid), which for 0, -1 or 1 would reach this process's
+    // group, every process of the user, or init, so there is no fallback.
+    signalPtyProcessTree(
+      processHandle,
+      signal === "SIGKILL" ? "SIGKILL" : "SIGTERM",
+    );
   }
 }

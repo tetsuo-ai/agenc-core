@@ -52,6 +52,26 @@ describe("directory-binding helper with a failed spawn", () => {
   });
 });
 
+describe("directory-binding helper whose spawn failed with its pipes open", () => {
+  test("reports the spawn error instead of waiting for an exit that never comes", async () => {
+    // ENOENT (the anchor directory removed after its identity was captured)
+    // still creates the pipes, so the helper is built normally. A failed
+    // spawn never emits exit: dispose() waited 2 s, then threw "did not exit
+    // after forced termination", which replaced the ENOENT.
+    const failures = failingSpawn({ code: "ENOENT", pipes: 5 });
+    spawnMock.mockImplementation(failures.spawn as never);
+
+    const binding = bindWorkspaceDirectoryReadCapability(dir);
+
+    await expect(binding).rejects.toThrow(/ENOENT/u);
+    await expect(binding).rejects.not.toThrow(/did not exit/u);
+    await Promise.all(failures.children.map((child) => child.reported));
+    expect(failures.children).toHaveLength(1);
+    expect(failures.children[0]!.uncaught).toEqual([]);
+    expect(failures.children[0]!.groupSignals).toEqual([]);
+  });
+});
+
 /**
  * The helper and read-worker programs run in their own processes, loaded
  * through a digest-checked pipe with a sanitized environment, so a test

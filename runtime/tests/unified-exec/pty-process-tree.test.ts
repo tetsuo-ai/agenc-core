@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import {
@@ -67,6 +67,80 @@ function withoutProcessTableTools(): () => void {
     process.env.PATH = originalPath;
   };
 }
+
+/**
+ * node-pty's kill() is process.kill(this.pid, signal): pid 0 would signal
+ * the daemon's own process group and -1 every process of the user. These
+ * stand-ins only record the call. (pid 1 is not used here: on main it went
+ * to tree-kill, which signals every child of init.)
+ */
+function installInvalidPidPty(
+  manager: UnifiedExecProcessManager,
+  pid: number,
+): { readonly kill: ReturnType<typeof vi.fn> } {
+  const kill = vi.fn();
+  (manager as unknown as { loadPty: () => Promise<unknown> }).loadPty =
+    async () => ({
+      spawn: () => ({
+        pid,
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill,
+        onData: () => ({ dispose: vi.fn() }),
+        onExit: () => ({ dispose: vi.fn() }),
+      }),
+    });
+  return { kill };
+}
+
+describe("unified exec PTY without a valid pid", () => {
+  test.each([0, -1])(
+    "kill_process never signals a PTY whose pid is %s",
+    async (pid) => {
+      const cwd = await mkdtemp(join(tmpdir(), "agenc-pty-invalid-"));
+      cleanups.push(() => rm(cwd, { recursive: true, force: true }));
+      const manager = new UnifiedExecProcessManager({ cwd });
+      const pty = installInvalidPidPty(manager, pid);
+      const started = await manager.execCommand({
+        cmd: "sleep 30",
+        tty: true,
+        yield_time_ms: 250,
+      });
+
+      expect(manager.terminateProcess(started.process_id!)).toEqual({
+        terminated: true,
+      });
+      // Past the 500 ms SIGKILL escalation.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+
+      expect(pty.kill).not.toHaveBeenCalled();
+    },
+    10_000,
+  );
+
+  test.each([0, -1])(
+    "a strict quiesce never signals a PTY whose pid is %s and fails closed",
+    async (pid) => {
+      const cwd = await mkdtemp(join(tmpdir(), "agenc-pty-invalid-"));
+      cleanups.push(() => rm(cwd, { recursive: true, force: true }));
+      const manager = new UnifiedExecProcessManager({
+        cwd,
+        sandboxAuthorityQuiesceTimeoutMs: 200,
+      });
+      const pty = installInvalidPidPty(manager, pid);
+      await manager.execCommand({ cmd: "sleep 30", tty: true, yield_time_ms: 250 });
+
+      const token = manager.beginSandboxAuthorityQuiesce();
+      await expect(manager.finishSandboxAuthorityQuiesce(token)).rejects.toThrow(
+        /could not prove process-tree cleanup/u,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 700));
+
+      expect(pty.kill).not.toHaveBeenCalled();
+    },
+    10_000,
+  );
+});
 
 describe("unified exec PTY process-tree termination", () => {
   posixOnly(

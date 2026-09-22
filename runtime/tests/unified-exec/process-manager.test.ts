@@ -71,7 +71,14 @@ function installFakePty(
       readonly env?: Record<string, string>;
     },
   ) => void,
-): void {
+): { readonly exitAll: () => void } {
+  // pid 0 keeps these fakes away from real signals, and the manager never
+  // signals a PTY without a pid above 1 (node-pty's kill() would reach pid 0,
+  // the test runner's own group). exitAll() stands in for the PTY exiting so
+  // cleanup does not wait out closeAll's bound.
+  const exitListeners: Array<
+    (event: { readonly exitCode: number; readonly signal?: number | string }) => void
+  > = [];
   (
     manager as unknown as {
       loadPty: () => Promise<{
@@ -116,11 +123,19 @@ function installFakePty(
         onData: () => ({ dispose: vi.fn() }),
         onExit: (listener) => {
           exitListener = listener;
+          exitListeners.push(listener);
           return { dispose: vi.fn() };
         },
       };
     },
   });
+  return {
+    exitAll: () => {
+      for (const listener of exitListeners.splice(0)) {
+        listener({ exitCode: 0 });
+      }
+    },
+  };
 }
 
 function markerPids(marker: string): number[] {
@@ -249,7 +264,7 @@ describe("UnifiedExecProcessManager", () => {
         },
       },
     });
-    installFakePty(manager, (_file, _args, options) => {
+    const fakePty = installFakePty(manager, (_file, _args, options) => {
       spawnedEnvironment = options.env;
     });
     try {
@@ -276,6 +291,7 @@ describe("UnifiedExecProcessManager", () => {
         TMP: sessionTempRoot,
       });
     } finally {
+      fakePty.exitAll();
       await manager.closeAll("test_cleanup");
     }
   });
@@ -759,7 +775,7 @@ describe("UnifiedExecProcessManager", () => {
     });
     let spawned:
       { readonly file: string; readonly args: readonly string[] } | undefined;
-    installFakePty(manager, (file, args) => {
+    const fakePty = installFakePty(manager, (file, args) => {
       spawned = { file, args };
     });
 
@@ -782,6 +798,7 @@ describe("UnifiedExecProcessManager", () => {
         expect.arrayContaining(["agenc-sandbox-test", "bash -i"]),
       );
     } finally {
+      fakePty.exitAll();
       await manager.closeAll("test_cleanup");
     }
   });
@@ -801,7 +818,7 @@ describe("UnifiedExecProcessManager", () => {
       cwd: process.cwd(),
       sandboxManager: ptyCompatibleSandboxManager(),
     });
-    installFakePty(manager);
+    const fakePty = installFakePty(manager);
     try {
       const started = await manager.execCommand({
         cmd: "bash -i",
@@ -864,6 +881,7 @@ describe("UnifiedExecProcessManager", () => {
         code: "write_stdin",
       } satisfies Partial<UnifiedExecError>);
     } finally {
+      fakePty.exitAll();
       await manager.closeAll("test_cleanup");
     }
   });

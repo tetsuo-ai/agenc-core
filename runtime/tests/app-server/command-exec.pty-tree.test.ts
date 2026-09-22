@@ -39,6 +39,52 @@ afterEach(() => {
   for (const tree of trees.splice(0)) tree.cleanup();
 });
 
+describe("commandExec PTY without a valid pid", () => {
+  // node-pty's kill() is process.kill(this.pid, signal): pid 0 would signal
+  // the daemon's own process group and -1 every process of the user. The
+  // stand-in only records the call. (pid 1 is not used: on main it went to
+  // tree-kill, which signals every child of init.)
+  it.each([0, -1])("terminate never signals a PTY whose pid is %s", async (pid) => {
+    const kill = vi.fn();
+    let spawned = false;
+    ptyFactory.current = () => {
+      spawned = true;
+      return {
+        pid,
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill,
+        onData: () => ({ dispose: vi.fn() }),
+        onExit: () => ({ dispose: vi.fn() }),
+      };
+    };
+    const service = new AgenCCommandExecService();
+    const context = {
+      connectionId: `pty-invalid-${pid}`,
+      sendNotification: () => {},
+    };
+    const started = service.start(
+      {
+        command: ["/bin/sh", "-c", "sleep 30"],
+        processId: "pty-invalid-1",
+        tty: true,
+        disableTimeout: true,
+        permissionProfile: ":danger-full-access",
+      },
+      context,
+    );
+    void started.catch(() => undefined);
+    await vi.waitFor(() => expect(spawned).toBe(true));
+
+    await service.terminate({ processId: "pty-invalid-1" }, context);
+    // Past the 500 ms SIGKILL escalation.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    expect(kill).not.toHaveBeenCalled();
+    await service.closeConnection(context.connectionId);
+  }, 10_000);
+});
+
 describe("commandExec PTY termination", () => {
   posixOnly(
     "terminate stops the PTY's whole tree when pgrep and ps are not on PATH",

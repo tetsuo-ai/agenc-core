@@ -1165,10 +1165,14 @@ function terminateSession(session: CommandExecSession): void {
     return;
   }
   const child = session.child;
-  if (child === null) return;
-  if (child.pid !== undefined && process.platform !== "win32") {
+  // A child without a pid never started. Until Node reports that on the next
+  // tick, its open handle sends kill() to pid 0: the daemon's own process
+  // group. Its error event finalizes the session instead.
+  if (child === null || child.pid === undefined) return;
+  const pid = child.pid;
+  if (process.platform !== "win32") {
     try {
-      process.kill(-child.pid, "SIGTERM");
+      process.kill(-pid, "SIGTERM");
     } catch {
       child.kill("SIGTERM");
     }
@@ -1177,9 +1181,9 @@ function terminateSession(session: CommandExecSession): void {
   }
   setTimeout(() => {
     if (session.finalized) return;
-    if (child.pid !== undefined && process.platform !== "win32") {
+    if (process.platform !== "win32") {
       try {
-        process.kill(-child.pid, "SIGKILL");
+        process.kill(-pid, "SIGKILL");
       } catch {
         child.kill("SIGKILL");
       }
@@ -1190,16 +1194,10 @@ function terminateSession(session: CommandExecSession): void {
 }
 
 function terminatePtySession(pty: IPty, signal: NodeJS.Signals): void {
-  if (
-    signalPtyProcessTree(pty, signal === "SIGKILL" ? "SIGKILL" : "SIGTERM")
-  ) {
-    return;
-  }
-  try {
-    pty.kill(signal);
-  } catch {
-    // Best-effort shutdown.
-  }
+  // Refuses a PTY without a pid above 1. node-pty's own kill() is
+  // process.kill(pid), which for 0, -1 or 1 would reach this process's
+  // group, every process of the user, or init, so there is no fallback.
+  signalPtyProcessTree(pty, signal === "SIGKILL" ? "SIGKILL" : "SIGTERM");
 }
 
 function delay(ms: number): Promise<void> {
