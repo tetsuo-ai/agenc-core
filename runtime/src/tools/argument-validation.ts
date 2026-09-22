@@ -442,11 +442,14 @@ function validateObject(
   const declaredType = schema["type"];
   if (typeof declaredType === "string" && declaredType !== "object") return;
 
+  // Presence means an own key. `key in obj` also finds inherited ones, so a
+  // plain object would satisfy a required `constructor` or `__proto__` and
+  // have an absent optional one validated against Object.prototype's value.
   const required = schema["required"];
   if (Array.isArray(required)) {
     for (const key of required) {
       if (typeof key !== "string") continue;
-      if (!(key in obj)) {
+      if (!Object.hasOwn(obj, key)) {
         errors.push({
           path: joinPath(path, key),
           message: "missing required field",
@@ -461,7 +464,7 @@ function validateObject(
     const propMap = properties as Record<string, unknown>;
     for (const [key, sub] of Object.entries(propMap)) {
       declaredProps.add(key);
-      if (!(key in obj)) continue;
+      if (!Object.hasOwn(obj, key)) continue;
       if (!isRecord(sub)) continue;
       validateNode(sub, obj[key], joinPath(path, key), errors, rootSchema);
     }
