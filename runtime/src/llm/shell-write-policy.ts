@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import {
   basename,
@@ -169,6 +169,11 @@ interface ShellWriteTargetCollection {
    * outside-workspace exemptions (sed's, which are resolved through symlinks).
    */
   protectedFirstTargets: string[];
+  /**
+   * sed targets whose destination could not be determined, such as a symlink
+   * loop. They are refused in every mode, since they could reach a protected path.
+   */
+  unresolvedProtectedFirst: string[];
   deletions: string[];
   moves: ShellMove[];
   indeterminate: boolean;
@@ -190,7 +195,7 @@ function resolveWorkingDirectory(
 }
 
 function emptyTargetCollection(): ShellWriteTargetCollection {
-  return { targets: [], protectedFirstTargets: [], deletions: [], moves: [], indeterminate: false };
+  return { targets: [], protectedFirstTargets: [], unresolvedProtectedFirst: [], deletions: [], moves: [], indeterminate: false };
 }
 
 function indeterminateTargetCollection(): ShellWriteTargetCollection {
@@ -207,6 +212,7 @@ function mergeTargetCollections(
 ): void {
   for (const target of from.targets) pushUnique(into.targets, target);
   for (const target of from.protectedFirstTargets) pushUnique(into.protectedFirstTargets, target);
+  for (const target of from.unresolvedProtectedFirst) pushUnique(into.unresolvedProtectedFirst, target);
   for (const target of from.deletions) pushUnique(into.deletions, target);
   into.moves.push(...from.moves);
   into.indeterminate ||= from.indeterminate;
@@ -481,9 +487,13 @@ function pathExists(path: string): boolean {
 /**
  * The file a write to `path` reaches once the filesystem follows the
  * symlinks in it, named under the workspace root when it lands inside.
- * Undefined when that cannot be read, as with a symlink to nothing.
+ * A symlink to something that does not exist yet is followed to the file
+ * the write would create. Undefined when that cannot be read, as with a
+ * symlink loop.
  */
-function resolveWriteThroughSymlinks(path: string, workspaceRoot: string): string | undefined {
+function resolveWriteThroughSymlinks(path: string, workspaceRoot: string, depth = 0): string | undefined {
+  // The kernel gives up after about 40 links; so does this.
+  if (depth > 40) return undefined;
   let existing = path;
   const missing: string[] = [];
   while (!pathExists(existing)) {
@@ -496,7 +506,17 @@ function resolveWriteThroughSymlinks(path: string, workspaceRoot: string): strin
   try {
     reached = join(realpathSync.native(existing), ...missing);
   } catch {
-    return undefined;
+    // A symlink whose destination does not exist yet: writing through it
+    // creates that destination, so judge the destination. A relative link is
+    // read from the link's own directory as the filesystem reaches it.
+    let destination: string;
+    try {
+      if (!lstatSync(existing).isSymbolicLink()) return undefined;
+      destination = resolvePath(realpathSync.native(dirname(existing)), readlinkSync(existing));
+    } catch {
+      return undefined;
+    }
+    return resolveWriteThroughSymlinks(join(destination, ...missing), workspaceRoot, depth + 1);
   }
   let realRoot: string;
   try {
@@ -539,7 +559,10 @@ function collectSedWriteTargets(params: {
   const collection = emptyTargetCollection();
   collection.indeterminate = writes.indeterminate;
   const addTarget = (name: string, reached: string | undefined): void => {
-    if (reached === undefined) collection.indeterminate = true;
+    if (reached === undefined) {
+      collection.indeterminate = true;
+      pushUnique(collection.unresolvedProtectedFirst, resolvePath(cwd, name));
+    }
     const target = reached ?? resolvePath(cwd, name);
     pushUnique(collection.targets, target);
     pushUnique(collection.protectedFirstTargets, target);
@@ -1073,7 +1096,9 @@ export function classifyShellWorkspaceWritePolicy(
       workspaceRelation(workspaceRoot, target) === "inside" &&
       !isWorkspaceGeneratedOutputPath(workspaceRoot, target),
   );
+  const unresolvedTargets = writes.filter((target) => collected.unresolvedProtectedFirst.includes(target));
   const blockedTargets = [...protectedTargets, ...routedTargets];
+  for (const target of unresolvedTargets) pushUnique(blockedTargets, target);
   const deletionTargets: string[] = [];
   const blockedDeletions: string[] = [];
   const deletionReasons = new Set<DeletionBlockReason>();
@@ -1105,6 +1130,13 @@ export function classifyShellWorkspaceWritePolicy(
     messages.push(buildProtectedWritePolicyMessage(protectedTargets));
   }
   if (routedTargets.length > 0) messages.push(buildPolicyMessage(routedTargets));
+  // Refused even with approvals bypassed: where these land is unknown, so they
+  // could reach a protected path.
+  if (unresolvedTargets.length > 0) {
+    messages.push(
+      `sed would write through a path whose destination cannot be determined (${unresolvedTargets.join(", ")}); the command was not run. Write to a path without a symlink loop.`,
+    );
+  }
   if (blockedDeletions.length > 0) {
     messages.push(buildDeletionPolicyMessage(deletionReasons, blockedDeletions));
   }

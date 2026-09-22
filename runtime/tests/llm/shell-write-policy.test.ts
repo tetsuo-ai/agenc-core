@@ -919,6 +919,9 @@ describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => 
     symlinkSync("../.git", join(workspace, "tmp", "gitlink"));
     symlinkSync("../missing-dir", join(workspace, "tmp", "nowhere"));
     symlinkSync(join(home, ".gitconfig"), join(workspace, "tmp", "outlink"));
+    symlinkSync("../.git/newfile", join(workspace, "tmp", "gitnew"));
+    symlinkSync("loop2", join(workspace, "tmp", "loop1"));
+    symlinkSync("loop1", join(workspace, "tmp", "loop2"));
   });
 
   afterAll(() => {
@@ -926,12 +929,13 @@ describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => 
     rmSync(home, { recursive: true, force: true });
   });
 
-  function classifyIn(command: string, platform: NodeJS.Platform = "darwin") {
+  function classifyIn(command: string, platform: NodeJS.Platform = "darwin", bypassed = false) {
     return classifyShellWorkspaceWritePolicy({
       toolName: "exec_command",
       args: { command },
       workspaceRoot: workspace,
       platform,
+      ...(bypassed ? { bypassesApprovalsAndSandbox: true } : {}),
     });
   }
 
@@ -948,11 +952,32 @@ describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => 
     expect(classifyIn("sed -n 'w tmp/plain.txt' tmp/input").blocked).toBe(false);
   });
 
-  it("fails closed on a w file behind a symlink to nothing", () => {
+  it("judges a w file behind a symlink to nothing by the file the write would create", () => {
+    // tmp/dangling is ../src/missing.ts, which the write creates.
     const decision = classifyIn("sed -n 'w tmp/dangling' tmp/input");
 
-    expect(decision.indeterminate).toBe(true);
     expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual([join(workspace, "src/missing.ts")]);
+  });
+
+  it.each([false, true])(
+    "refuses a w file behind a dangling symlink into a protected path (full bypass: %s)",
+    (bypassed) => {
+      // tmp/gitnew is ../.git/newfile, which does not exist yet; sed would create it.
+      const decision = classifyIn("sed -n 'w tmp/gitnew' tmp/input", "darwin", bypassed);
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedTargets).toEqual([join(workspace, ".git/newfile")]);
+      expect(decision.message).toContain("may not write protected paths");
+    },
+  );
+
+  it("refuses a w file whose destination cannot be determined, even with approvals bypassed", () => {
+    const decision = classifyIn("sed -n 'w tmp/loop1' tmp/input", "darwin", true);
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual([join(workspace, "tmp/loop1")]);
+    expect(decision.message).toContain("destination cannot be determined");
   });
 
   it.each([
@@ -990,11 +1015,12 @@ describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => 
     expect(leafLink.observedTargets).toEqual([join(workspace, "tmp/link")]);
   });
 
-  it("fails closed on an in-place file behind a directory link to nothing", () => {
+  it("judges an in-place file behind a directory link to nothing where it would land", () => {
+    // tmp/nowhere is ../missing-dir.
     const decision = classifyIn("sed -i 's/a/b/' tmp/nowhere/x");
 
-    expect(decision.indeterminate).toBe(true);
     expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual([join(workspace, "missing-dir/x")]);
   });
 
   it("refuses a w file that reaches a protected file outside the workspace", () => {
