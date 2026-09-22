@@ -130,6 +130,10 @@ The new agent's canonical task name will be provided to it along with the messag
   return result;
 }
 
+// Every ReasoningEffort spelling parses here; whether a level applies is the
+// target model's registry contract, checked in validateSpawnModelOverrides.
+// `max` was missing, so an explicit max was refused for every model before
+// that check, including models whose contract lists it (Claude Opus 5.5).
 function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
   if (
     value === "minimal" ||
@@ -137,6 +141,7 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
     value === "medium" ||
     value === "high" ||
     value === "xhigh" ||
+    value === "max" ||
     value === "none"
   ) {
     return value;

@@ -42,6 +42,37 @@ describe("StaticModelsManager", () => {
     ]);
   });
 
+  it("gives Claude Opus 5.5 its documented context, output and effort contract", async () => {
+    // platform.claude.com (2026-09-22): 1M context, 128K max output, efforts
+    // low..max with medium as the API default. Without a registered row the
+    // registry fell back to 200K / 64K and advertised no effort at all.
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "anthropic",
+      metadata: { fetchImpl },
+    });
+    const contract = {
+      contextWindow: 1_000_000,
+      maxOutputTokens: 64_000,
+      maxOutputTokensUpperLimit: 128_000,
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningLevel: "medium",
+      usedFallbackModelMetadata: false,
+    };
+    for (const model of ["claude-opus-5-5", "claude-opus-5-5-20260922"]) {
+      const info = await manager.getModelInfo(model);
+      expect(info, model).toMatchObject({ slug: model, ...contract });
+      expect(info.serviceTiers?.map((tier) => tier.id), model).toEqual(["priority"]);
+    }
+    // The listing spawn_agent validates against carries the same row.
+    const listed = (await manager.listModels()).find(
+      (model) => model.slug === "claude-opus-5-5",
+    );
+    expect(listed).toMatchObject(contract);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("uses curated Z.ai metadata without probing a custom base URL", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const manager = new StaticModelsManager({

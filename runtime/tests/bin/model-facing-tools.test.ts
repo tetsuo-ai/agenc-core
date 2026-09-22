@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import { defaultConfig } from "../config/schema.js";
+import { StaticModelsManager } from "../llm/models-manager.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { EventLog, type Event } from "../session/event-log.js";
 import { resetCronSchedulerForTests } from "../utils/cronScheduler.js";
@@ -3860,6 +3862,67 @@ describe("model-facing tools", () => {
         forkMode: { kind: "full_history" },
         serviceTier: "priority",
       }),
+    );
+  });
+
+  it("validates Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
+    const session = fakeSession();
+    (session.services as unknown as { modelsManager: unknown }).modelsManager =
+      new StaticModelsManager({
+        config: defaultConfig(),
+        fallbackProvider: "anthropic",
+        metadata: { fetchImpl: vi.fn<typeof fetch>() },
+      });
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-opus",
+          agentPath: "/root/opus",
+          nickname: "Opus",
+          role: { name: "runner" },
+          status: {
+            value: { status: "running", turnId: "turn-opus", startedAtMs: 1 },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-opus",
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+    const spawn = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!;
+
+    for (const effort of ["xhigh", "max"] as const) {
+      const result = await spawn.execute({
+        message: "inspect",
+        task_name: `opus_${effort}`,
+        model: "claude-opus-5-5",
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+      expect(result.isError, effort).not.toBe(true);
+      expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+        model: "claude-opus-5-5",
+        reasoningEffort: effort,
+      });
+    }
+
+    const rejected = await spawn.execute({
+      message: "inspect",
+      task_name: "opus_minimal",
+      model: "claude-opus-5-5",
+      reasoning_effort: "minimal",
+      fork_turns: "none",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(JSON.parse(rejected.content).error).toBe(
+      "Reasoning effort `minimal` is not supported for model `claude-opus-5-5`. Supported reasoning efforts: low, medium, high, xhigh, max",
     );
   });
 

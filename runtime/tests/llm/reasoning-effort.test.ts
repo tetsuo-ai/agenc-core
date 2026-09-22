@@ -12,6 +12,8 @@ import catalog from "./desktop-effort-catalog.json";
 import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
 import { buildChatCompletionsRequest } from "../../src/llm/wire/chat-completions.js";
 import { mergeProviderModelLayer } from "../../src/config/provider-model-authority.js";
+import { defaultConfig } from "../../src/config/schema.js";
+import { StaticModelsManager } from "../../src/llm/models-manager.js";
 
 describe("provider-scoped effort contract", () => {
   it.each(listRegisteredModelCatalogEntries())("preserves $provider/$model", entry => {
@@ -95,16 +97,21 @@ it.each(catalog.filter(row => row.provider === "anthropic"))(
 
 // Opus 5.5 is not in the Desktop fixture yet. Before it had its own effort
 // row, the empty contract seeded a configured max as xhigh, clamped it to
-// high, and the wire then dropped output_config.effort altogether.
-it("carries every Claude Opus 5.5 tier from config seed to the wire", () => {
+// high, and the wire then dropped output_config.effort altogether. The turn
+// passes the session model's registry levels, as stream-model does.
+it("carries every Claude Opus 5.5 tier from config seed to the wire", async () => {
   const row = { provider: "anthropic", model: "claude-opus-5-5" };
   const levels = ["low", "medium", "high", "xhigh", "max"] as const;
   expect(resolveReasoningEffort(row).levels).toEqual(levels);
+  const modelInfo = await new StaticModelsManager({
+    config: defaultConfig(),
+    fallbackProvider: "anthropic",
+  }).getModelInfo(row.model);
   for (const effort of levels) {
     const seed = sessionConfigurationFromAgenCConfig({ config: { reasoning_effort: effort },
       workspaceRoot: process.cwd(), ...row }).collaborationMode.reasoningEffort;
     expect(seed).toBe(effort);
-    const normalized = resolveSessionReasoningEffort(seed, [], row);
+    const normalized = resolveSessionReasoningEffort(seed, modelInfo.supportedReasoningLevels, row);
     expect(normalized).toBe(effort);
     const body = buildAnthropicMessagesRequest({ model: row.model, messages: [], tools: [],
       maxTokens: 4096, options: { reasoningEffort: normalized } });

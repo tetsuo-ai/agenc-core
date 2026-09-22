@@ -616,8 +616,47 @@ const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     })),
   );
 
+// Claude Opus 5.5 (platform.claude.com model page, effort and pricing docs,
+// 2026-09-22): 1M context, 128K max output, all five effort levels with
+// medium as the API default. The default output reservation is 64K, the
+// starting point the Opus 5.5 guidance gives for agentic turns, since
+// always-on thinking counts toward max_tokens. Other Claude models have no
+// row here yet and keep the generic Anthropic fallbacks. Fast mode is not a
+// catalog tier: the registry derives it from the Anthropic fast-mode list.
+const ANTHROPIC_OPUS_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
+  provider: "anthropic",
+  model: "claude-opus-5-5",
+  displayName: "Claude Opus 5.5",
+  contextWindow: 1_000_000,
+  maxContextWindow: 1_000_000,
+  maxOutputTokens: 64_000,
+  maxOutputTokensUpperLimit: 128_000,
+  inputModalities: TEXT_IMAGE_MODALITIES,
+  supportsToolUse: true,
+  supportsParallelToolCalls: true,
+  supportsStructuredOutput: true,
+  supportsStructuredOutputWithTools: true,
+  supportsSearchTool: false,
+  supportsVerbosity: false,
+  webSearchToolType: "none",
+  supportsReasoningSummaries: false,
+  defaultReasoningSummary: "auto",
+  supportedReasoningLevels: Object.freeze([
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ] as const satisfies readonly ReasoningEffort[]),
+  defaultReasoningLevel: "medium",
+  additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+  priority: 0,
+  visibility: "list",
+});
+
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
+    ANTHROPIC_OPUS_5_5_ENTRY,
     ...GEMINI_MODEL_CATALOG.filter((entry) =>
       GEMINI_THINKING_MODELS.some((model) => model.curated && model.model === entry.model)
     ),
