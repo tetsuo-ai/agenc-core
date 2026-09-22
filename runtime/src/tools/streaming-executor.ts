@@ -69,8 +69,10 @@ import { resolveTimeoutMs, parseToolArgsWithBigInt } from "./execution.js";
 import { normalizeModelToolArgs } from "./argument-validation.js";
 import {
   formatUnknownToolMessage,
-  suggestAvailableToolName,
+  suggestToolForUnknownName,
+  type ToolSuggestion,
 } from "./tool-name-suggestion.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./system/tool-search-name.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import type { Tool } from "./types.js";
 import {
@@ -546,8 +548,8 @@ export class StreamingToolExecutor {
    * result and mark the tracked tool `completed`. That guarantees
    * every `tool_use` block receives a paired `tool_result` and keeps
    * the model from seeing orphaned tool calls on the next turn. When a
-   * registered tool clearly matches the name (`Read` -> `FileRead`), the
-   * error names it; the call itself is never redirected.
+   * tool the model can use clearly matches the name (`Read` -> `FileRead`),
+   * the error names it; the call itself is never redirected.
    */
   addTool(block: ToolUseBlock, toolCall: LLMToolCall): void {
     if (this.closed || this.isAborting) {
@@ -595,9 +597,11 @@ export class StreamingToolExecutor {
     if (!isKnown) {
       // Never an alias: the call fails here. With a clear match, the error
       // names the tool this session can call instead.
+      const suggestion = this.suggestToolName(toolCall.name);
       const message = formatUnknownToolMessage(
         toolCall.name,
-        this.suggestToolName(toolCall.name),
+        suggestion?.name,
+        suggestion?.loadWith,
       );
       const syntheticResult: ToolDispatchResult = {
         content: JSON.stringify({
@@ -932,24 +936,37 @@ export class StreamingToolExecutor {
   }
 
   /**
-   * The closest tool this session can call for an unknown name. Tools the
-   * model was offered, whose schema it already has, come first; then any
-   * registered tool. Never throws: the call still needs its terminal result.
+   * The closest tool the model can use for an unknown name. Candidates are
+   * the tools this executor can dispatch (registry and router), described by
+   * whether this request offered them, whether they are deferred or hidden,
+   * and whether the router marks them unavailable; `suggestToolForUnknownName`
+   * decides. Never throws: the call still needs its terminal result.
    */
-  private suggestToolName(requested: string): string | undefined {
+  private suggestToolName(requested: string): ToolSuggestion | undefined {
     try {
-      const available = new Set(this.registry.tools.map((tool) => tool.name));
-      for (const spec of this.liveToolDispatch?.router.getSpecs() ?? []) {
-        available.add(spec.tool.name);
-      }
-      const offered =
+      const specs = this.liveToolDispatch?.router.getSpecs() ?? [];
+      const specByName = new Map(specs.map((spec) => [spec.tool.name, spec]));
+      const tools = new Map<string, Tool>();
+      for (const spec of specs) tools.set(spec.tool.name, spec.tool);
+      for (const tool of this.registry.tools) tools.set(tool.name, tool);
+      const offered = new Set(
         this.liveToolDispatch?.options.advertisedToolNames ??
-        this.registry.toLLMTools().map((tool) => tool.function.name);
-      return (
-        suggestAvailableToolName(
-          requested,
-          offered.filter((name) => available.has(name)),
-        ) ?? suggestAvailableToolName(requested, available)
+          this.registry.toLLMTools().map((tool) => tool.function.name),
+      );
+      const candidates = [...tools.values()].map((tool) => {
+        const spec = specByName.get(tool.name);
+        return {
+          name: tool.name,
+          offered: offered.has(tool.name),
+          deferred: tool.metadata?.deferred === true || spec?.deferred === true,
+          hidden: tool.metadata?.hiddenByDefault === true,
+          unavailable: spec?.unavailable === true,
+        };
+      });
+      return suggestToolForUnknownName(
+        requested,
+        candidates,
+        SYSTEM_SEARCH_TOOLS_NAME,
       );
     } catch {
       return undefined;

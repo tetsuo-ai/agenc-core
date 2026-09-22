@@ -5,7 +5,7 @@ import {
   StreamingToolExecutor,
   type StreamingToolUpdate,
 } from "./streaming-executor.js";
-import { routerFromRegistry } from "./router.js";
+import { routerFromRegistry, ToolRouter } from "./router.js";
 import { EventLog } from "../session/event-log.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
@@ -117,6 +117,61 @@ function testTool(overrides: Partial<Tool> & { name: string }): Tool {
     execute: async () => ({ content: "" }),
     ...overrides,
   };
+}
+
+/** A registry whose `toLLMTools` offers only `offered`, like deferred tools. */
+function unknownToolRegistry(
+  tools: readonly Tool[],
+  offered: readonly string[],
+): ToolRegistry {
+  return {
+    tools,
+    toLLMTools: () =>
+      tools
+        .filter((tool) => offered.includes(tool.name))
+        .map((tool) => ({
+          type: "function" as const,
+          function: { name: tool.name, description: "", parameters: {} },
+        })),
+    dispatch: async () => ({ content: "must not dispatch" }),
+  };
+}
+
+/** Queue one unknown call through live dispatch and return its error text. */
+async function unknownToolError(
+  registry: ToolRegistry,
+  name: string,
+  opts: {
+    readonly router?: ToolRouter;
+    readonly advertisedToolNames?: readonly string[];
+  } = {},
+): Promise<string> {
+  const exec = new StreamingToolExecutor({
+    registry,
+    liveToolDispatch: {
+      router: opts.router ?? routerFromRegistry(registry),
+      options: {
+        session: {
+          eventLog: new EventLog(),
+          services: { admissionRequired: false },
+        } as never,
+        turn: { subId: "turn-suggest" } as never,
+        tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        ...(opts.advertisedToolNames !== undefined
+          ? { advertisedToolNames: opts.advertisedToolNames }
+          : {}),
+      },
+    },
+  });
+  exec.addTool(makeBlock("c-unknown", name), makeCall("c-unknown", name));
+  exec.close();
+  const results = [];
+  for await (const result of exec.getRemainingResults()) results.push(result);
+  expect(results).toHaveLength(1);
+  expect(results[0]!.result.isError).toBe(true);
+  return JSON.parse(results[0]!.result.content).content as string;
 }
 
 interface DrainedResult {
@@ -707,50 +762,75 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
   test("unknown tool suggestions prefer a tool the model was offered", async () => {
     const glob = testTool({ name: "Glob" });
     const listDir = testTool({ name: "system.listDir", metadata: { deferred: true } });
-    const registry: ToolRegistry = {
-      tools: [glob, listDir],
-      // A deferred tool is registered but its schema was not sent.
-      toLLMTools: () => [
-        { type: "function", function: { name: "Glob", description: "", parameters: {} } },
-      ],
-      dispatch: async () => ({ content: "must not dispatch" }),
-    };
-    const liveOptions = {
-      session: {
-        eventLog: new EventLog(),
-        services: { admissionRequired: false },
-      } as never,
-      turn: { subId: "turn-suggest" } as never,
-      tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
-      approvalPolicy: "never" as const,
-      sandboxMode: "workspace_write" as const,
-    };
-    const suggestionFor = async (advertisedToolNames?: readonly string[]) => {
-      const exec = new StreamingToolExecutor({
-        registry,
-        liveToolDispatch: {
-          router: routerFromRegistry(registry),
-          options: {
-            ...liveOptions,
-            ...(advertisedToolNames !== undefined ? { advertisedToolNames } : {}),
-          },
-        },
-      });
-      exec.addTool(makeBlock("c-ls", "ls"), makeCall("c-ls", "ls"));
-      exec.close();
-      const results = [];
-      for await (const result of exec.getRemainingResults()) results.push(result);
-      return JSON.parse(results[0]!.result.content).content as string;
-    };
+    // A deferred tool is registered but its schema was not sent.
+    const registry = unknownToolRegistry([glob, listDir], ["Glob"]);
 
-    expect(await suggestionFor()).toContain("The closest available tool is Glob,");
-    expect(await suggestionFor(["Glob", "system.listDir"])).toContain(
-      "The closest available tool is system.listDir,",
+    expect(await unknownToolError(registry, "ls")).toContain(
+      "The closest available tool is Glob,",
     );
-    // With nothing offered that matches, any registered tool still counts.
-    expect(await suggestionFor([])).toContain(
-      "The closest available tool is system.listDir,",
+    expect(
+      await unknownToolError(registry, "ls", {
+        advertisedToolNames: ["Glob", "system.listDir"],
+      }),
+    ).toContain("The closest available tool is system.listDir,");
+    // Nothing offered and no tool search: a deferred tool cannot be loaded.
+    expect(
+      await unknownToolError(registry, "ls", { advertisedToolNames: [] }),
+    ).toBe("<tool_use_error>Error: No such tool available: ls</tool_use_error>");
+  });
+
+  test("unknown tool suggestions skip router specs marked unavailable", async () => {
+    const fileRead = testTool({ name: "FileRead" });
+    // Unavailable specs stay in the router for telemetry only, even when the
+    // registry also lists the name.
+    for (const registered of [[], [fileRead]]) {
+      const registry = unknownToolRegistry(registered, registered.map((tool) => tool.name));
+      const router = new ToolRouter([
+        { tool: fileRead, supportsParallelToolCalls: false, unavailable: true },
+      ]);
+      expect(await unknownToolError(registry, "Read", { router })).toBe(
+        "<tool_use_error>Error: No such tool available: Read</tool_use_error>",
+      );
+    }
+  });
+
+  test("unknown tool suggestions never name a tool withheld from the model", async () => {
+    const search = testTool({ name: "system.searchTools" });
+    // Deferred but hidden from discovery.
+    const bash = testTool({
+      name: "system.bash",
+      metadata: { deferred: true, hiddenByDefault: true },
+    });
+    // Registered and not deferred, but left out of this request.
+    const grep = testTool({ name: "Grep" });
+    const registry = unknownToolRegistry([search, bash, grep], ["system.searchTools"]);
+    const offered = { advertisedToolNames: ["system.searchTools"] };
+    expect(await unknownToolError(registry, "bash", offered)).toBe(
+      "<tool_use_error>Error: No such tool available: bash</tool_use_error>",
     );
+    expect(await unknownToolError(registry, "grep", offered)).toBe(
+      "<tool_use_error>Error: No such tool available: grep</tool_use_error>",
+    );
+  });
+
+  test("unknown tool suggestions name a loadable deferred tool and how to load it", async () => {
+    const search = testTool({ name: "system.searchTools" });
+    const listDir = testTool({ name: "system.listDir", metadata: { deferred: true } });
+    const registry = unknownToolRegistry([search, listDir], ["system.searchTools"]);
+    expect(
+      await unknownToolError(registry, "ls", {
+        advertisedToolNames: ["system.searchTools"],
+      }),
+    ).toBe(
+      "<tool_use_error>Error: No such tool available: ls. " +
+        "The closest available tool is system.listDir, which has its own parameters. " +
+        "Its schema is not loaded yet; system.searchTools with select:system.listDir loads it." +
+        "</tool_use_error>",
+    );
+    // Without the search tool on offer, the deferred tool cannot be loaded.
+    expect(
+      await unknownToolError(registry, "ls", { advertisedToolNames: [] }),
+    ).toBe("<tool_use_error>Error: No such tool available: ls</tool_use_error>");
   });
 
   test("external abort reasons are preserved in synthetic terminal results", async () => {

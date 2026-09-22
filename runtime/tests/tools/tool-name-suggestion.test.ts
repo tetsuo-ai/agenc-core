@@ -111,6 +111,16 @@ describe("formatUnknownToolMessage", () => {
     );
   });
 
+  test("says how to load a deferred suggestion, as a fact", () => {
+    expect(
+      formatUnknownToolMessage("ls", "system.listDir", "system.searchTools"),
+    ).toBe(
+      "No such tool available: ls. " +
+        "The closest available tool is system.listDir, which has its own parameters. " +
+        "Its schema is not loaded yet; system.searchTools with select:system.listDir loads it.",
+    );
+  });
+
   test("names the closest tool as a fact, not a directive", () => {
     expect(formatUnknownToolMessage("edit_file", "Edit")).toBe(
       "No such tool available: edit_file. " +
