@@ -2363,6 +2363,41 @@ describe("main() smoke", () => {
     });
   });
 
+  describe("approval-denied stop", () => {
+    it("exits 2 with the tool-denied marker when the auto-denial ends the turn", async () => {
+      // The one-shot client auto-denies every permission request; that denial
+      // ends the turn as a user decision (turn_aborted approval_denied), which
+      // must read as a denied tool (exit 2), not as an interrupt (130).
+      const agentId = "agent_denied_stop";
+      const sessionId = "session_denied_stop";
+      const permissionRequestId = "req-denied-stop";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>) => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId: "turn-1", eventId: id, event: { id, type, payload } },
+      });
+      await withOneShotTestEnvironment("agenc-denied-stop-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd,
+          oneShotEvents: [
+            transcript("started", "turn_started", { turnId: "turn-1" }),
+            { method: "event.permission_request", params: {
+              sessionId, eventId: "perm_evt", agentId, requestId: permissionRequestId,
+              toolName: "Write", permissions: ["tool.use"],
+            } },
+          ],
+          onToolDecision: ({ method, requestId, emit }) => {
+            if (method === "tool.deny" && requestId === permissionRequestId) {
+              emit(transcript("denied", "turn_aborted", { turnId: "turn-1", reason: "approval_denied" }));
+            }
+          },
+        });
+        expect(await run(() => oneShotCLI("write the notes"), 4000)).toBe(2);
+        expect(daemon.requests.some((request) => request.method === "tool.deny")).toBe(true);
+        expect(stderr()).toContain("tool denied in non-interactive mode");
+      });
+    });
+  });
+
   describe("empty_response stop after the retry ladder (#2502)", () => {
     const emptyMessage = "The model returned no assistant output after 3 retries.";
 

@@ -36,7 +36,10 @@ import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { isDeepStrictEqual } from "node:util";
 import { VERSION } from "../index.js";
-import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
+import {
+  APPROVAL_DENIED_ABORT_REASON,
+  classifyTurnTerminal,
+} from "../contracts/turn-terminal.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
 import {
   classifyCLI,
@@ -1492,6 +1495,8 @@ type DaemonOneShotFinalStatus = {
   readonly message?: string;
   /** `turn_failed` code (`compact_failed`, `max_turns`, …); absent for run death. */
   readonly failureCode?: string;
+  /** The turn ended because a permission request was denied. */
+  readonly approvalDenied?: true;
 };
 
 type OneShotJsonResult = {
@@ -1857,7 +1862,13 @@ function daemonOneShotFinalStatus(
   }, {
     expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
-  return terminal === undefined ? null : {
+  if (terminal === undefined) return null;
+  // A denial ends the turn as an abort, but it is not an interrupt: the run
+  // reports it as a denied tool, with no reason code as its message.
+  if (terminal.outcome === "aborted" && terminal.message === APPROVAL_DENIED_ABORT_REASON) {
+    return { code: terminal.code, approvalDenied: true };
+  }
+  return {
     code: oneShotExitCodeForTerminal(terminal),
     ...(terminal.message !== undefined ? { message: terminal.message } : {}),
     ...(terminal.outcome === "errored" ? { failureCode: terminal.failureCode } : {}),
@@ -2077,7 +2088,11 @@ async function awaitDaemonOneShotRun(params: {
         // from a tool-blocked giveup, and surface a clear stderr marker. A run
         // that denied nothing keeps its normal exit code, so genuine no-tool
         // answers still exit 0 and genuine daemon errors still exit non-zero.
-        if (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) {
+        // A turn the denial itself ended is the same tool-blocked outcome.
+        if (
+          (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) ||
+          finalStatus.approvalDenied === true
+        ) {
           process.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
           await writeFinalResult({
             exitCode: ONE_SHOT_TOOL_DENIED_EXIT_CODE,
