@@ -8,7 +8,6 @@ import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { assertReadOnlyInspectionInvocation } from "../permissions/readonly-inspection.js";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import treeKill from "tree-kill";
 
 import { SandboxManager, type SandboxType } from "../sandbox/engine/index.js";
 import {
@@ -45,6 +44,7 @@ import {
   type IPty,
   type PtyModule,
 } from "../pty/loadPty.js";
+import { signalPtyProcessTree } from "../pty/process-tree.js";
 import {
   hasCurrentWorkspaceOperationLifetime,
   retainCurrentWorkspaceOperation,
@@ -1217,15 +1217,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         return Promise.reject(error);
       }
     }
-    return new Promise<void>((resolvePromise, reject) => {
-      treeKill(pid, "SIGKILL", (error) => {
-        if (error !== undefined && entry.exitState === null) {
-          reject(error);
-          return;
-        }
-        resolvePromise();
-      });
-    });
+    // Signals synchronously; closeProcessStrict then waits for the PTY's exit.
+    signalPtyProcessTree(processHandle, "SIGKILL");
+    return Promise.resolve();
   }
 
   private allocateProcessId(): number {
@@ -1676,24 +1670,18 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   private terminatePty(processHandle: IPty, signal: NodeJS.Signals): void {
-    const killPty = (): void => {
-      try {
-        processHandle.kill(signal);
-      } catch {
-        // Best-effort shutdown.
-      }
-    };
-    const pid = processHandle.pid;
-    if (Number.isInteger(pid) && pid > 0) {
-      try {
-        treeKill(pid, signal, () => {
-          killPty();
-        });
-        return;
-      } catch {
-        // Fall back to the PTY handle below.
-      }
+    if (
+      signalPtyProcessTree(
+        processHandle,
+        signal === "SIGKILL" ? "SIGKILL" : "SIGTERM",
+      )
+    ) {
+      return;
     }
-    killPty();
+    try {
+      processHandle.kill(signal);
+    } catch {
+      // Best-effort shutdown.
+    }
   }
 }

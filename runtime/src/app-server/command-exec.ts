@@ -8,7 +8,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { basename, isAbsolute, normalize, resolve } from "node:path";
 import type { Writable } from "node:stream";
-import treeKill from "tree-kill";
 
 import { AgenCDaemonAgentLifecycleError } from "./agent-lifecycle.js";
 import {
@@ -45,6 +44,7 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { loadPty, type IPty } from "../pty/loadPty.js";
+import { signalPtyProcessTree } from "../pty/process-tree.js";
 import {
   buildScrubbedSpawnEnv,
   isSecretEnvKey,
@@ -1190,25 +1190,16 @@ function terminateSession(session: CommandExecSession): void {
 }
 
 function terminatePtySession(pty: IPty, signal: NodeJS.Signals): void {
-  const killPty = (): void => {
-    try {
-      pty.kill(signal);
-    } catch {
-      // Best-effort shutdown.
-    }
-  };
-  const pid = pty.pid;
-  if (Number.isInteger(pid) && pid > 0) {
-    try {
-      treeKill(pid, signal, () => {
-        killPty();
-      });
-      return;
-    } catch {
-      // Fall back to the PTY handle below.
-    }
+  if (
+    signalPtyProcessTree(pty, signal === "SIGKILL" ? "SIGKILL" : "SIGTERM")
+  ) {
+    return;
   }
-  killPty();
+  try {
+    pty.kill(signal);
+  } catch {
+    // Best-effort shutdown.
+  }
 }
 
 function delay(ms: number): Promise<void> {
