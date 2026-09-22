@@ -11,6 +11,7 @@ import {
   normalizePositiveInteger,
   okResult,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
+  SESSION_TOOL_CATALOG_SCOPE_ARG,
   toOptionalString,
   type CodingToolConfig,
 } from "./coding-common.js";
@@ -208,7 +209,13 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       additionalProperties: false,
     },
     async execute(args) {
-      const catalog = config.getToolCatalog?.() ?? [];
+      // A subagent shares this tool with its parent's registry but cannot call
+      // MCP, disabled or out-of-allowlist tools. Never offer or load those.
+      const scope = Array.isArray(args[SESSION_TOOL_CATALOG_SCOPE_ARG])
+        ? new Set(args[SESSION_TOOL_CATALOG_SCOPE_ARG] as unknown[])
+        : undefined;
+      const catalog = (config.getToolCatalog?.() ?? [])
+        .filter((entry) => scope === undefined || scope.has(entry.name));
       const parsedQuery = parseToolSearchQuery(toOptionalString(args.query));
       const query = parsedQuery.query;
       const explicitSelections = normalizeSelections(args);

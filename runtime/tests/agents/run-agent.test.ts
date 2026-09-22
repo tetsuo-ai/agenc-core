@@ -5003,6 +5003,60 @@ describe("runAgent", () => {
     expect(result.content).toBe("{}");
   });
 
+  it("scopes a child's tool search to the tools the child can call", async () => {
+    // A subagent searched for a browser, was told the Desktop's MCP browser
+    // tools were "now available", and every call failed with "No such tool".
+    const mcpTool = {
+      name: "mcp.agenc-desktop-control.browser_tabs",
+      description: "List the app browser tabs",
+      inputSchema: { type: "object" as const },
+      execute: async () => ({ content: "{}" }),
+    };
+    const parent = buildProductionToolRegistry({
+      workspaceRoot: process.cwd(),
+      requireAdmission: false,
+      mcpToolsProvider: { getTools: () => [mcpTool] },
+    });
+    expect(parent.tools.map((tool) => tool.name)).toContain(mcpTool.name);
+    const child = buildFilteredRegistry(parent, {
+      childConversationId: "child-search",
+      unadmittedDispatchOverride:
+        TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+    });
+    type SearchResult = {
+      loaded: string[];
+      missingSelections: string[];
+      results: { name: string; advertised: boolean }[];
+    };
+    const search = async (args: Record<string, unknown>): Promise<SearchResult> =>
+      JSON.parse(String((await child.dispatch({
+        id: `call-${Object.keys(args).join("-")}`,
+        name: "system.searchTools",
+        arguments: JSON.stringify(args),
+      })).content)) as SearchResult;
+
+    const selected = await search({ select: mcpTool.name });
+    expect(selected.loaded).toEqual([]);
+    expect(selected.missingSelections).toEqual([mcpTool.name]);
+    expect(parent.getDiscoveredToolNames?.().has(mcpTool.name)).toBe(false);
+    const browsed = await search({ query: "browser tabs" });
+    expect(browsed.results.map((entry) => entry.name)).not.toContain(mcpTool.name);
+
+    // Registry dispatch and the executor's direct call both report what the
+    // child was actually sent.
+    const viaDispatch = await search({ select: "exec_command" });
+    expect(viaDispatch.results[0]).toMatchObject({ name: "exec_command", advertised: true });
+    const wrapped = child.tools.find((tool) => tool.name === "system.searchTools");
+    const args: Record<string, unknown> = { select: "exec_command" };
+    Object.defineProperty(args, "__agencAdvertisedToolNames", {
+      value: ["exec_command"],
+      enumerable: false,
+      configurable: true,
+    });
+    const direct = JSON.parse(String((await wrapped!.execute(args)).content)) as SearchResult;
+    expect(direct.results[0]).toMatchObject({ name: "exec_command", advertised: true });
+  });
+
   it("mounts one child rollout and refuses the same identity after terminal", async () => {
     const provider = makeProvider([{ content: "child wrote rollout" }]);
     const cwd = mkdtempSync(join(tmpdir(), "agenc-run-agent-"));

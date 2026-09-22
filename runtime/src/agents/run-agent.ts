@@ -19,6 +19,11 @@
 
 import { normalize } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
+import {
+  SESSION_ADVERTISED_TOOL_NAMES_ARG,
+  SESSION_TOOL_CATALOG_SCOPE_ARG,
+} from "../tools/system/coding-common.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
 import {
   attachToolRuntimeContext,
@@ -2230,9 +2235,10 @@ export function buildFilteredRegistry(
     !mcpOriginToolNames.has(name) &&
     !isMcpWireToolName(name) &&
     (allowed === null || allowed.has(name));
-  const wrappedTools = base.tools
-    .filter((tool) => isEligible(tool.name))
-    .map((tool) => wrapToolForChild(tool, opts));
+  const eligibleTools = base.tools.filter((tool) => isEligible(tool.name));
+  const toolCatalogScope: ReadonlySet<string> = new Set(eligibleTools.map((tool) => tool.name));
+  const wrappedTools = eligibleTools
+    .map((tool) => wrapToolForChild(tool, { ...opts, toolCatalogScope }));
   const wrappedByName = new Map(wrappedTools.map((tool) => [tool.name, tool]));
   const fallbackAdvertisedTools = () =>
     wrappedTools.map((tool) => ({
@@ -2301,6 +2307,13 @@ export function buildFilteredRegistry(
       // SECURITY: strip model-supplied `__agenc*` keys at the child
       // tool-call boundary, before any policy/injection runs.
       const parsedArgs = stripModelSuppliedChildArgs(parseResult.args);
+      if (toolCall.name === SYSTEM_SEARCH_TOOLS_NAME) {
+        Object.defineProperty(parsedArgs, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+          value: Object.freeze([...advertisedNames()]),
+          enumerable: false,
+          configurable: true,
+        });
+      }
       const wrappedTool = wrappedByName.get(toolCall.name);
       if (wrappedTool) {
         const binding = childToolBindings.get(wrappedTool);
@@ -2312,6 +2325,7 @@ export function buildFilteredRegistry(
         const baseTool = binding.source;
         const prepared = await prepareChildToolCall(baseTool, parsedArgs, {
           ...opts,
+          toolCatalogScope,
           ...(binding.policy !== undefined ? { childToolPolicy: binding.policy } : {}),
         });
         if ("result" in prepared) return prepared.result;
@@ -2728,6 +2742,7 @@ function wrapToolForChild(
     readonly childToolPolicy?: ChildToolPolicy;
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
+    readonly toolCatalogScope?: ReadonlySet<string>;
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
@@ -2824,6 +2839,48 @@ function widenChildFilesystemRoots(
   });
 }
 
+/**
+ * The executor injects the names it sent to the model as a non-enumerable
+ * argument. An enumerable key of that name is model-supplied, never trusted.
+ */
+function runtimeAdvertisedToolNames(
+  args: Record<string, unknown>,
+): readonly string[] | undefined {
+  const field = Object.getOwnPropertyDescriptor(args, SESSION_ADVERTISED_TOOL_NAMES_ARG);
+  if (field === undefined || field.enumerable === true || !Array.isArray(field.value)) {
+    return undefined;
+  }
+  return Object.freeze(field.value.filter((name): name is string => typeof name === "string"));
+}
+
+/**
+ * A child's search tool is the parent's, bound to the parent's catalog. The
+ * child registry drops MCP-origin, disabled and out-of-allowlist tools, so the
+ * search must not offer or load them: a subagent was told a Desktop browser
+ * tool was "now available" and every call failed with "No such tool". Child
+ * argument copies also drop the non-enumerable advertised names; carry them.
+ */
+function attachChildToolSearchScope(
+  args: Record<string, unknown>,
+  advertisedToolNames: readonly string[] | undefined,
+  toolCatalogScope: ReadonlySet<string> | undefined,
+): void {
+  if (toolCatalogScope !== undefined) {
+    Object.defineProperty(args, SESSION_TOOL_CATALOG_SCOPE_ARG, {
+      value: Object.freeze([...toolCatalogScope]),
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  if (advertisedToolNames !== undefined) {
+    Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+      value: advertisedToolNames,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+}
+
 async function prepareChildToolCall(
   tool: Tool,
   args: Record<string, unknown>,
@@ -2833,6 +2890,7 @@ async function prepareChildToolCall(
     readonly childToolPolicy?: ChildToolPolicy;
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
+    readonly toolCatalogScope?: ReadonlySet<string>;
   },
 ): Promise<
   | { readonly args: Record<string, unknown> }
@@ -2841,6 +2899,9 @@ async function prepareChildToolCall(
   // SECURITY: strip model-supplied `__agenc*` keys before the child
   // policy/injection runs (idempotent if the caller already stripped).
   const runtimeContext = readToolRuntimeContext(args);
+  const advertisedToolNames = tool.name === SYSTEM_SEARCH_TOOLS_NAME
+    ? runtimeAdvertisedToolNames(args)
+    : undefined;
   const sanitizedArgs = stripModelSuppliedChildArgs(args);
   const childSession = opts.getSession?.();
   if (childSession !== undefined && childSession !== null) {
@@ -2867,6 +2928,9 @@ async function prepareChildToolCall(
   // private keys, so the execution sink does not fall back to the base sandbox.
   if (runtimeContext !== undefined) {
     attachToolRuntimeContext(childArgs, runtimeContext);
+  }
+  if (tool.name === SYSTEM_SEARCH_TOOLS_NAME) {
+    attachChildToolSearchScope(childArgs, advertisedToolNames, opts.toolCatalogScope);
   }
   if (childSession?.services.readOnlyDelegation !== undefined) {
     attachReadOnlyDelegationReadGuard(childArgs, (target) => readOnlyDelegationPathAllowed(childSession, target));
