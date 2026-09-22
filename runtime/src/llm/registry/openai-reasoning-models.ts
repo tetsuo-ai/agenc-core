@@ -2,26 +2,29 @@
  * Verified reasoning models missing from the legacy registry snapshot.
  * Source: https://developers.openai.com/api/docs/models/<model>, 2026-09-06
  * (GPT-5.6 and GPT-6 Astra) and 2026-09-22 (GPT-6 Sol and GPT-6 Luna).
- * These are the positive effort levels supported by AgenC's OAuth path.
- * `none` is not offered here: the turn pipeline treats it as an omitted field.
- * GPT-6 Sol and Luna document `none` as well; omitting the field runs their
- * documented `medium` default, so offering it would be a mislabeled dial.
+ * GPT-6 Sol and Luna also document `none`, which the turn pipeline sends on
+ * the wire for them (omitting the field would run their `medium` default).
+ * Astra takes no `none`, and GPT-5.6 does not document it.
  * Desktop generates its matching rows from this module, not a second enum.
  */
+const POSITIVE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+const EFFORTS_WITH_NONE = ["none", ...POSITIVE_EFFORTS] as const;
+
 export const OPENAI_REASONING_MODELS = [
-  { model: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-  { model: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-  { model: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+  { model: "gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: POSITIVE_EFFORTS },
+  { model: "gpt-5.6-terra", label: "GPT-5.6 Terra", efforts: POSITIVE_EFFORTS },
+  { model: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: POSITIVE_EFFORTS },
   // Keep the existing default order. Adding Astra must not select it for users.
-  { model: "gpt-6-astra", label: "GPT-6 Astra" },
+  { model: "gpt-6-astra", label: "GPT-6 Astra", efforts: POSITIVE_EFFORTS },
   // Appended after Astra for the same reason: the first row stays GPT-5.6 Sol.
-  { model: "gpt-6-sol", label: "GPT-6 Sol" },
-  { model: "gpt-6-luna", label: "GPT-6 Luna" },
-].map((entry) => ({
-  ...entry,
+  { model: "gpt-6-sol", label: "GPT-6 Sol", efforts: EFFORTS_WITH_NONE },
+  { model: "gpt-6-luna", label: "GPT-6 Luna", efforts: EFFORTS_WITH_NONE },
+].map(({ model, label, efforts }) => ({
+  model,
+  label,
   contextWindow: 1_050_000,
   maxOutputTokens: 128_000,
-  efforts: ["low", "medium", "high", "xhigh", "max"] as const,
+  efforts,
   vision: true,
   chatgpt: true,
 }));

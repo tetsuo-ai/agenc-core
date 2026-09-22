@@ -23,15 +23,18 @@ describe("OpenAI OAuth reasoning model contract", () => {
     expect(entry.supportedReasoningLevels).toEqual(efforts);
     expect(resolveProviderModelCapabilities({ provider: "openai", model }).acceptsReasoningEffort).toBe(true);
     expect(chatCompletionsCapabilityHintsForProvider("openai", model).acceptsReasoningEffort).toBe(true);
-    expect(getAvailableEffortLevelsForContext(model, { provider: "openai", environment: {}, home: {} } as never)).toEqual(efforts);
+    // The TUI dial has no None rung for any provider; it lists the rest.
+    expect(getAvailableEffortLevelsForContext(model, { provider: "openai", environment: {}, home: {} } as never))
+      .toEqual(efforts.filter((effort) => effort !== "none"));
     for (const effort of efforts) {
       const configuration = sessionConfigurationFromAgenCConfig({
         config: { ...defaultConfig(), model_provider: "openai", reasoning_effort: effort },
         provider: "openai", workspaceRoot: "/tmp/openai-effort-fixture", model,
       });
       expect(configuration.collaborationMode.reasoningEffort).toBe(effort);
-      expect(effortValueToReasoningEffort(effort, efforts)).toBe(effort);
-      const resolved = resolveSessionReasoningEffort(configuration.collaborationMode.reasoningEffort, entry.supportedReasoningLevels);
+      // A TUI helper, which like the TUI dial has no None rung.
+      if (effort !== "none") expect(effortValueToReasoningEffort(effort, efforts)).toBe(effort);
+      const resolved = resolveSessionReasoningEffort(configuration.collaborationMode.reasoningEffort, entry.supportedReasoningLevels, { provider: "openai", model });
       const request = buildOpenAIResponsesRequest({ model, messages: [{ role: "user", content: "Fixture only" }], tools: [], options: { reasoningEffort: resolved } });
       expect(request.reasoning?.effort).toBe(effort);
     }
@@ -52,7 +55,7 @@ const GPT_6_SOL_AND_LUNA = [
   { model: "gpt-6-sol", label: "GPT-6 Sol" },
   { model: "gpt-6-luna", label: "GPT-6 Luna" },
 ] as const;
-const POSITIVE_OPENAI_TIERS = ["low", "medium", "high", "xhigh", "max"];
+const SOL_AND_LUNA_TIERS = ["none", "low", "medium", "high", "xhigh", "max"];
 
 describe("GPT-6 Sol and GPT-6 Luna", () => {
   test.each(GPT_6_SOL_AND_LUNA)("registers $model with its documented window, output cap and tiers", ({ model, label }) => {
@@ -75,11 +78,9 @@ describe("GPT-6 Sol and GPT-6 Luna", () => {
       additionalSpeedTiers: ["fast"],
       visibility: "list",
     });
-    // The API also takes `none`, but the session pipeline omits the effort
-    // field for `none` and the API then runs its medium default. The dial
-    // offers the positive tiers only, as it does for Astra and GPT-5.6, and
-    // an unset effort is left to that documented medium default.
-    expect(entry?.supportedReasoningLevels).toEqual(POSITIVE_OPENAI_TIERS);
+    // `none` is a real rung: the session pipeline sends it on the wire for
+    // these models. An unset effort is left to the documented medium default.
+    expect(entry?.supportedReasoningLevels).toEqual(SOL_AND_LUNA_TIERS);
     expect(entry?.defaultReasoningLevel).toBeUndefined();
     expect(resolveModelCatalogMetadata({ provider: "openai", model })).toEqual({
       contextWindow: 1_050_000,
@@ -90,13 +91,13 @@ describe("GPT-6 Sol and GPT-6 Luna", () => {
     expect(resolveReasoningEffort({ provider: "openai", model })).toMatchObject({
       registered: true,
       acceptsChatEffort: true,
-      levels: POSITIVE_OPENAI_TIERS,
+      levels: SOL_AND_LUNA_TIERS,
     });
   });
 
   test.each(GPT_6_SOL_AND_LUNA)("sends each offered tier and the Fast service tier to Responses for $model", ({ model }) => {
     const levels = resolveRegisteredModelCatalogEntry({ provider: "openai", model })?.supportedReasoningLevels ?? [];
-    expect(levels).toEqual(POSITIVE_OPENAI_TIERS);
+    expect(levels).toEqual(SOL_AND_LUNA_TIERS);
     for (const effort of levels) {
       const wire = resolveSessionReasoningEffort(effort, levels, { provider: "openai", model });
       const request = buildOpenAIResponsesRequest({
@@ -108,7 +109,28 @@ describe("GPT-6 Sol and GPT-6 Luna", () => {
       expect(request.reasoning?.effort).toBe(effort);
       expect(request.service_tier).toBe("priority");
     }
-    expect(resolveSessionReasoningEffort("none", levels, { provider: "openai", model })).toBeUndefined();
+  });
+
+  test.each(GPT_6_SOL_AND_LUNA)("keeps an explicit none on the wire for $model instead of the medium default", ({ model }) => {
+    const levels = resolveRegisteredModelCatalogEntry({ provider: "openai", model })?.supportedReasoningLevels ?? [];
+    const wire = resolveSessionReasoningEffort("none", levels, { provider: "openai", model });
+    expect(wire).toBe("none");
+    const request = buildOpenAIResponsesRequest({
+      model,
+      messages: [{ role: "user", content: "Fixture only" }],
+      tools: [],
+      options: { reasoningEffort: wire, temperature: 0.2 },
+    });
+    expect(request.reasoning?.effort).toBe("none");
+    // Sampling parameters are accepted only at effort none.
+    expect(request.temperature).toBe(0.2);
+  });
+
+  test("still omits none for OpenAI models that do not take it and for other providers", () => {
+    const astra = resolveRegisteredModelCatalogEntry({ provider: "openai", model: "gpt-6-astra" })?.supportedReasoningLevels ?? [];
+    expect(astra).not.toContain("none");
+    expect(resolveSessionReasoningEffort("none", astra, { provider: "openai", model: "gpt-6-astra" })).toBeUndefined();
+    expect(resolveSessionReasoningEffort("none", ["low", "medium", "high"], { provider: "grok", model: "grok-4.5" })).toBeUndefined();
   });
 
   test("appends the rows after Astra so GPT-5.6 Sol still leads and gpt-5 stays the provider default", () => {

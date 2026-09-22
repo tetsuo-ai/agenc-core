@@ -5,7 +5,8 @@
 `231273663c3e6db36506673a4c5afd526ec40531` (2026-09-22; it reproduces the
 126 rows taken at `7849e260`)
 plus the `gpt-6-sol` and `gpt-6-luna` rows that the Desktop
-`feat/openai-gpt-6-sol-luna` change generates from this Core registry.
+`feat/openai-gpt-6-sol-luna` change generates from this Core registry
+(levels none through max; `none` is sent on the wire for these two models).
 Core lands first, so the contract covers them before Desktop offers them;
 refresh from Desktop main once that change is merged.
 The source is `src/renderer/src/modelCatalog.ts`, including its shared catalog imports.

@@ -153,11 +153,13 @@ describe("LLM registry", () => {
     for (const entry of entries) {
       // gpt-5 predates the xhigh tier and keeps minimal as its floor
       // (Responses API, probed 2026-09-11); every later generation runs
-      // low..xhigh, the 5.6 line and Astra add max.
+      // low..xhigh, the 5.6 line and GPT-6 add max, and GPT-6 Sol and Luna
+      // also take none.
       expect(entry.supportedReasoningLevels).toEqual(
         entry.model === "gpt-5"
           ? ["minimal", "low", "medium", "high"]
           : [
+              ...(entry.model === "gpt-6-sol" || entry.model === "gpt-6-luna" ? ["none"] : []),
               "low",
               "medium",
               "high",

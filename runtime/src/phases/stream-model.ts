@@ -122,10 +122,20 @@ function resolveSessionReasoningEffort(
     );
   }
   const requested = turnEffort ?? getInitialEffortSetting();
-  if (requested === undefined || requested === "none") return undefined;
+  if (requested === undefined) return undefined;
   // Hosted providers can expose an effort contract absent from ModelInfo.
   // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
   const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
+  if (requested === "none") {
+    // OpenAI models that document `none` (GPT-6 Sol and Luna) run a
+    // reasoning default when the field is omitted, so the opt-out has to be
+    // sent literally. Elsewhere `none` still means "send no effort".
+    return selection?.provider === "openai" &&
+      (supportedReasoningLevels?.includes("none") === true ||
+        contract?.levels.includes("none") === true)
+      ? "none"
+      : undefined;
+  }
   if (selection?.provider === "anthropic" && contract?.registered === false) {
     // Settings fallback is legacy configuration, not a literal session choice.
     // Configured max is seeded as xhigh for these older models; an explicit

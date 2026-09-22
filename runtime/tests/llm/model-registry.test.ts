@@ -79,7 +79,10 @@ describe("ModelRegistry", () => {
     expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
       slug: model,
       contextWindow: 1_050_000,
-      supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      // Sol and Luna also take none; Astra does not.
+      supportedReasoningLevels: model === "gpt-6-astra"
+        ? ["low", "medium", "high", "xhigh", "max"]
+        : ["none", "low", "medium", "high", "xhigh", "max"],
       usedFallbackModelMetadata: false,
     });
   });

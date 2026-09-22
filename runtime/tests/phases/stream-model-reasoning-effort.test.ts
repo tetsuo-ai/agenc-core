@@ -194,7 +194,11 @@ test.each(desktopEffortCatalog.filter(row => row.levels.length > 0))(
   "preserves every Desktop session effort on the wire for $provider/$model", row => {
     const modelLevels = resolveRegisteredModelCatalogEntry(row)?.supportedReasoningLevels ?? [];
     for (const effort of row.levels) {
-      // The existing session "none" sentinel omits the wire effort field.
-      expect(resolveSessionReasoningEffort(effort as ReasoningEffort, modelLevels, row)).toBe(effort === "none" ? undefined : effort);
+      // The session "none" sentinel omits the wire effort field, except on
+      // OpenAI models that document none (GPT-6 Sol and Luna), where an
+      // omitted field would run their medium default.
+      const noneOnWire = row.provider === "openai" && modelLevels.includes("none");
+      expect(resolveSessionReasoningEffort(effort as ReasoningEffort, modelLevels, row))
+        .toBe(effort === "none" && !noneOnWire ? undefined : effort);
     }
   });
