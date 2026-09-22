@@ -91,7 +91,9 @@ import {
   resolveContextImageBudgetBytes,
 } from "./query-image-budget.js";
 import {
+  imageRoute,
   rejectedImagesFor,
+  rememberRequestImageRoute,
   withholdImagesForModel,
   withholdUndecodableToolImages,
   type ModelImagePolicy,
@@ -709,6 +711,7 @@ function modelImagePolicy(
   return {
     imageInput: resolveImageInputSupport({ provider, model, overrides }),
     modelLabel: `${provider}/${model}`,
+    route: imageRoute(provider, model),
   };
 }
 
@@ -884,13 +887,20 @@ async function prepareSamplingRequestBoundary(
   state.attachmentsAnchoredForTurn = true;
 
   // Leave out every image the selected model must not receive: all of them
-  // when the registry knows the model is text-only, and any image a
-  // provider refused earlier in this session. Before the byte budget, so the
-  // budget counts only images that are sent.
+  // when the registry knows the model is text-only, and any image this
+  // provider and model refused earlier in this session. Before the byte
+  // budget, so the budget counts only images that are sent.
+  const imagePolicy = modelImagePolicy(
+    session,
+    samplingContext,
+    state,
+    currentConfig,
+  );
+  rememberRequestImageRoute(state, imagePolicy.route);
   const withheldForModel = withholdImagesForModel(
     state.messagesForQuery,
-    modelImagePolicy(session, samplingContext, state, currentConfig),
-    rejectedImagesFor(session),
+    imagePolicy,
+    rejectedImagesFor(session, imagePolicy.route),
   );
   state.messagesForQuery = withheldForModel.messages;
 

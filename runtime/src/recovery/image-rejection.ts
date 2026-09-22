@@ -4,8 +4,9 @@
  * Tool results and user attachments are replayed on every later request, so
  * without this an image the provider cannot accept fails the turn and then
  * every turn after it. Recovery records the refused images for the session
- * (the query projection then replaces each with a short note) and samples
- * again. It first leaves out only the images this request added after the
+ * and the provider and model that refused them (the query projection then
+ * replaces each with a short note on requests to that route only) and
+ * samples again. It first leaves out only the images this request added after the
  * last assistant message, the usual culprit; if the provider refuses again,
  * it leaves out every image. Each step strictly grows the refused set, so
  * recovery ends: a request without images is never treated as an image
@@ -51,17 +52,19 @@ export function isRecoverableImageRejection(
 }
 
 /**
- * Record the images to leave out of the next attempt: those the request
- * added after the last assistant message, or, once those are all refused,
- * every image it still carries. Returns `undefined` when no image is left to
- * remove, so the caller surfaces the failure.
+ * Record the images to leave out of the next attempt on `route` (the
+ * provider and model that refused them): those the request added after the
+ * last assistant message, or, once those are all refused, every image it
+ * still carries. Returns `undefined` when no image is left to remove, so the
+ * caller surfaces the failure.
  */
 export function rejectImagesForRetry(
   session: Session,
   state: Pick<TurnState, "messagesForQuery">,
   streamError: unknown,
+  route: string,
 ): ImageRejectionRecovery | undefined {
-  const already = rejectedImagesFor(session);
+  const already = rejectedImagesFor(session, route);
   const pending = (urls: readonly string[]): string[] =>
     urls.filter((url) => already?.has(imageContentIdentity(url)) !== true);
   let scope: ImageRejectionRecovery["scope"] = "newest";
@@ -76,7 +79,7 @@ export function rejectImagesForRetry(
   const reason = summarizeProviderReason(
     streamError instanceof Error ? streamError.message : String(streamError),
   );
-  const rejected = recordRejectedImages(session, urls, {
+  const rejected = recordRejectedImages(session, route, urls, {
     provider: session.services.provider.name,
     reason,
   });

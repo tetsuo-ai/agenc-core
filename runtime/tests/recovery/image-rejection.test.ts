@@ -31,6 +31,7 @@ const deepseekRefusal = () =>
   );
 
 const OLD_IMAGE = "data:image/png;base64,T0xE";
+const FLASH_ROUTE = "deepseek/deepseek-flash";
 const NEW_IMAGE = "data:image/png;base64,TkVX";
 
 function requestWithImages(): LLMMessage[] {
@@ -114,20 +115,20 @@ describe("rejectImagesForRetry", () => {
     const session = fakeSession();
     const state = stateFor(requestWithImages());
 
-    expect(rejectImagesForRetry(session, state, deepseekRefusal())).toMatchObject({
+    expect(rejectImagesForRetry(session, state, deepseekRefusal(), FLASH_ROUTE)).toMatchObject({
       rejected: 1,
       scope: "newest",
       reason: expect.stringContaining("You have uploaded an unsupported image"),
     });
-    expect(rejectedImagesFor(session)?.size).toBe(1);
+    expect(rejectedImagesFor(session, FLASH_ROUTE)?.size).toBe(1);
 
     // The same request refused again: nothing new is left among the newest.
-    expect(rejectImagesForRetry(session, state, deepseekRefusal())).toMatchObject({
+    expect(rejectImagesForRetry(session, state, deepseekRefusal(), FLASH_ROUTE)).toMatchObject({
       rejected: 1,
       scope: "all",
     });
-    expect(rejectedImagesFor(session)?.size).toBe(2);
+    expect(rejectedImagesFor(session, FLASH_ROUTE)?.size).toBe(2);
 
-    expect(rejectImagesForRetry(session, state, deepseekRefusal())).toBeUndefined();
+    expect(rejectImagesForRetry(session, state, deepseekRefusal(), FLASH_ROUTE)).toBeUndefined();
   });
 });

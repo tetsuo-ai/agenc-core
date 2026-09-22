@@ -338,6 +338,40 @@ describe("one refused image does not brick the session", () => {
     expect(imageUrls(state.history)).toContain(url);
   });
 
+  test("a refusal does not hide the image from a vision model the user switches to", async () => {
+    // Review finding: refusals were kept for the whole session, so after a
+    // switch to a model that accepts the image the request still had a note.
+    const { history, url } = await historyWithValidImage();
+    let route = "deepseek";
+    const { provider, requests } = scriptedProvider(
+      "deepseek",
+      [reply("first answer"), reply("claude answer"), reply("deepseek again")],
+      (messages) => route === "deepseek" && imageUrls(messages).length > 0,
+    );
+    const { session, events } = sessionFor(provider, "deepseek-flash", history);
+    const switchTo = (providerName: string, model: string): void => {
+      route = providerName;
+      (provider as { name: string }).name = providerName;
+      (session as { config: Config }).config = { ...session.config, model };
+    };
+
+    await drain(runTurn(session, ctxFor("deepseek-flash"), "describe the chart"));
+    expect(requests).toHaveLength(2);
+    expect(imageUrls(requests[1]!)).toEqual([]);
+
+    switchTo("anthropic", "claude-sonnet-5");
+    await drain(runTurn(session, ctxFor("claude-sonnet-5"), "and now?"));
+    expect(requests).toHaveLength(3);
+    expect(imageUrls(requests[2]!)).toEqual([url]);
+
+    // Back on the model that refused it, the image stays out without a new failure.
+    switchTo("deepseek", "deepseek-flash");
+    await drain(runTurn(session, ctxFor("deepseek-flash"), "once more"));
+    expect(requests).toHaveLength(4);
+    expect(imageUrls(requests[3]!)).toEqual([]);
+    expect(turnFailures(events)).toEqual([]);
+  });
+
   test("a restarted session with the refused image in its history recovers again", async () => {
     const { history } = await historyWithValidImage();
     const { provider, requests } = scriptedProvider(

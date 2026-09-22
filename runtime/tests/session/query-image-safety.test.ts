@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { LLMMessage } from "../../src/llm/types.js";
 import {
   imageContentIdentity,
+  imageRoute,
   recordRejectedImages,
   rejectedImagesFor,
   requestImageUrls,
@@ -18,6 +19,7 @@ const TINY_PNG = Buffer.from(
 );
 const TINY_PNG_URL = `data:image/png;base64,${TINY_PNG.toString("base64")}`;
 const REMOTE_URL = "https://example.test/diagram.png";
+const FLASH_ROUTE = "deepseek/deepseek-flash";
 
 function toolImage(url: string, callId = "call_1"): LLMMessage {
   return {
@@ -53,7 +55,7 @@ describe("withholdImagesForModel", () => {
     const messages = [userImage(REMOTE_URL), toolImage(TINY_PNG_URL)];
     const result = withholdImagesForModel(
       messages,
-      { imageInput: "unsupported", modelLabel: "deepseek/deepseek-v4-pro" },
+      { imageInput: "unsupported", modelLabel: "deepseek/deepseek-v4-pro", route: "deepseek/deepseek-v4-pro" },
       undefined,
     );
     expect(requestImageUrls(result.messages)).toEqual([]);
@@ -74,7 +76,7 @@ describe("withholdImagesForModel", () => {
       const messages = [userImage(REMOTE_URL), toolImage(TINY_PNG_URL)];
       const result = withholdImagesForModel(
         messages,
-        { imageInput, modelLabel: "deepseek/deepseek-flash" },
+        { imageInput, modelLabel: "deepseek/deepseek-flash", route: FLASH_ROUTE },
         undefined,
       );
       expect(result.messages).toEqual(messages);
@@ -85,20 +87,47 @@ describe("withholdImagesForModel", () => {
   it("replaces only the images a provider refused", () => {
     const session = {};
     const other = `data:image/png;base64,${"A".repeat(8)}`;
-    recordRejectedImages(session, [TINY_PNG_URL], {
+    recordRejectedImages(session, FLASH_ROUTE, [TINY_PNG_URL], {
       provider: "deepseek",
       reason: "unsupported image",
     });
     const result = withholdImagesForModel(
       [toolImage(TINY_PNG_URL), toolImage(other, "call_2")],
-      { imageInput: "supported", modelLabel: "deepseek/deepseek-flash" },
-      rejectedImagesFor(session),
+      { imageInput: "supported", modelLabel: "deepseek/deepseek-flash", route: FLASH_ROUTE },
+      rejectedImagesFor(session, FLASH_ROUTE),
     );
     expect(requestImageUrls(result.messages)).toEqual([other]);
     expect(result.rejected).toBe(1);
     expect(texts(result.messages)).toContain(
       "[Image not shown: deepseek refused the PNG image shot.png (image/png, 67 bytes) returned by FileRead in an earlier request, so it was left out. Provider message: unsupported image]",
     );
+  });
+});
+
+describe("refusals stay with the route that made them", () => {
+  it("withholds a refused image from that route only", () => {
+    // Review finding: a refusal was stored for the whole session, so a vision
+    // model the user switched to still got a note instead of the image.
+    const session = {};
+    recordRejectedImages(session, imageRoute("deepseek", "deepseek-flash"), [TINY_PNG_URL], {
+      provider: "deepseek",
+      reason: "unsupported image",
+    });
+    const messages = [toolImage(TINY_PNG_URL)];
+    const sameRoute = withholdImagesForModel(
+      messages,
+      { imageInput: "supported", modelLabel: "deepseek/deepseek-flash", route: FLASH_ROUTE },
+      rejectedImagesFor(session, imageRoute("DeepSeek", "deepseek-flash")),
+    );
+    expect(requestImageUrls(sameRoute.messages)).toEqual([]);
+    const claudeRoute = imageRoute("anthropic", "claude-sonnet-5");
+    expect(rejectedImagesFor(session, claudeRoute)).toBeUndefined();
+    const otherRoute = withholdImagesForModel(
+      messages,
+      { imageInput: "supported", modelLabel: "anthropic/claude-sonnet-5", route: claudeRoute },
+      rejectedImagesFor(session, claudeRoute),
+    );
+    expect(requestImageUrls(otherRoute.messages)).toEqual([TINY_PNG_URL]);
   });
 });
 
@@ -130,10 +159,10 @@ describe("rejected image bookkeeping", () => {
   it("counts only images not already recorded", () => {
     const session = {};
     const rejection = { provider: "deepseek", reason: "unsupported image" };
-    expect(recordRejectedImages(session, [TINY_PNG_URL, TINY_PNG_URL], rejection)).toBe(1);
-    expect(recordRejectedImages(session, [TINY_PNG_URL, FAKE_PNG_URL], rejection)).toBe(1);
-    expect(rejectedImagesFor(session)?.has(imageContentIdentity(FAKE_PNG_URL))).toBe(true);
-    expect(rejectedImagesFor({})).toBeUndefined();
+    expect(recordRejectedImages(session, FLASH_ROUTE, [TINY_PNG_URL, TINY_PNG_URL], rejection)).toBe(1);
+    expect(recordRejectedImages(session, FLASH_ROUTE, [TINY_PNG_URL, FAKE_PNG_URL], rejection)).toBe(1);
+    expect(rejectedImagesFor(session, FLASH_ROUTE)?.has(imageContentIdentity(FAKE_PNG_URL))).toBe(true);
+    expect(rejectedImagesFor({}, FLASH_ROUTE)).toBeUndefined();
   });
 
   it("finds the images a request added after the last assistant message", () => {

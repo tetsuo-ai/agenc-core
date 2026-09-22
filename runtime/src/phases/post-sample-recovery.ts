@@ -80,6 +80,10 @@ import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
 import { recoverRejectedTextToolCall } from "../recovery/rejected-text-tool-call.js";
 import { rejectImagesForRetry } from "../recovery/image-rejection.js";
+import {
+  imageRoute,
+  requestImageRoute,
+} from "../session/query-image-safety.js";
 
 /** One compaction ladder tier that declined during a 413 collapse, with history unchanged. */
 export interface ContextCollapseTierFailure {
@@ -600,6 +604,8 @@ export async function postSampleRecovery(
           c.session,
           c.state,
           c.streamError ?? mediaErrorText(c.lastMessage),
+          requestImageRoute(c.state) ??
+            imageRoute(c.session.services.provider.name, ctx.modelInfo.slug),
         );
         if (withheld !== undefined) {
           emitWarning(

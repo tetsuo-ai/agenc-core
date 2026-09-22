@@ -8,7 +8,9 @@
  *     (`resolveImageInputSupport` returns `unsupported`),
  *   - a tool-result image whose bytes are not a complete PNG, JPEG, GIF or
  *     WebP image, whatever the model,
- *   - an image a provider already refused earlier in this session.
+ *   - an image the same provider and model already refused earlier in this
+ *     session. Another model, or a vision model the user switches to, still
+ *     receives it.
  *
  * Tool results are replayed on every later request, so an image a provider
  * refuses once is refused again on every turn that follows. On 2026-09-22 a
@@ -37,7 +39,10 @@ import {
   inspectImageDataUrl,
 } from "../utils/image-validation.js";
 
-/** A provider's refusal of one image, kept for the rest of the session. */
+/**
+ * A provider's refusal of one image, kept for the rest of the session and
+ * applied only to requests that go to the same route.
+ */
 export interface ProviderImageRejection {
   /** Provider that refused the request, as the session names it. */
   readonly provider: string;
@@ -49,6 +54,8 @@ export interface ModelImagePolicy {
   readonly imageInput: ImageInputSupport;
   /** `provider/model`, as shown to the model in the note. */
   readonly modelLabel: string;
+  /** The route a refusal is scoped to; see {@link imageRoute}. */
+  readonly route: string;
 }
 
 export interface ImageWithholding {
@@ -63,10 +70,33 @@ const MAX_REJECTED_IMAGES_PER_SESSION = 512;
 const MAX_NOTE_URL_CHARS = 120;
 const MAX_NOTE_REASON_CHARS = 240;
 
+/** Per session: route, then image identity, to the refusal. */
 const rejectedImagesBySession = new WeakMap<
   object,
-  Map<string, ProviderImageRejection>
+  Map<string, Map<string, ProviderImageRejection>>
 >();
+
+/** Per turn: the route of the request most recently prepared. */
+const requestRouteByTurn = new WeakMap<object, string>();
+
+/**
+ * The route a request goes to: the provider and model the stream phase
+ * dispatches to. A refusal says something about that route only, so it is
+ * never applied to a request for another model.
+ */
+export function imageRoute(provider: string, model: string): string {
+  return `${provider.trim().toLowerCase()}/${model.trim().toLowerCase()}`;
+}
+
+/** Record the route of the request this turn is about to send. */
+export function rememberRequestImageRoute(turnKey: object, route: string): void {
+  requestRouteByTurn.set(turnKey, route);
+}
+
+/** The route of the request this turn sent last, if one was prepared. */
+export function requestImageRoute(turnKey: object): string | undefined {
+  return requestRouteByTurn.get(turnKey);
+}
 
 /** Content identity of an image part, independent of object identity. */
 export function imageContentIdentity(url: string): string {
@@ -74,18 +104,24 @@ export function imageContentIdentity(url: string): string {
 }
 
 /**
- * Remember that `provider` refused these images. Returns how many were not
+ * Remember that the route refused these images. Returns how many were not
  * already recorded, so a caller can tell whether a retry changes anything.
  */
 export function recordRejectedImages(
   sessionKey: object,
+  route: string,
   urls: readonly string[],
   rejection: ProviderImageRejection,
 ): number {
-  let rejected = rejectedImagesBySession.get(sessionKey);
+  let routes = rejectedImagesBySession.get(sessionKey);
+  if (routes === undefined) {
+    routes = new Map();
+    rejectedImagesBySession.set(sessionKey, routes);
+  }
+  let rejected = routes.get(route);
   if (rejected === undefined) {
     rejected = new Map();
-    rejectedImagesBySession.set(sessionKey, rejected);
+    routes.set(route, rejected);
   }
   let added = 0;
   for (const url of urls) {
@@ -101,18 +137,20 @@ export function recordRejectedImages(
   return added;
 }
 
-/** Images this session's providers refused, or `undefined` when none. */
+/** Images this route refused in this session, or `undefined` when none. */
 export function rejectedImagesFor(
   sessionKey: object,
+  route: string,
 ): ReadonlyMap<string, ProviderImageRejection> | undefined {
-  const rejected = rejectedImagesBySession.get(sessionKey);
+  const rejected = rejectedImagesBySession.get(sessionKey)?.get(route);
   return rejected !== undefined && rejected.size > 0 ? rejected : undefined;
 }
 
 /**
  * Replace every image the selected model cannot receive: all of them when
- * the model is text-only, and any image a provider refused earlier. Runs
- * before the byte budget, so the budget counts only images that are sent.
+ * the model is text-only, and any image this route refused earlier (the
+ * caller passes that route's refusals). Runs before the byte budget, so the
+ * budget counts only images that are sent.
  */
 export function withholdImagesForModel(
   messages: readonly LLMMessage[],
