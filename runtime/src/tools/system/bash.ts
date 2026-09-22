@@ -9,7 +9,7 @@
  */
 
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve as resolvePath } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import type { BashToolConfig, BashToolInput } from "./types.js";
@@ -936,7 +936,10 @@ export function createBashTool(config?: BashToolConfig): Tool {
     const shellCommand = builtinFallback ?? command;
     if (input.cwd !== undefined && lockCwd) return failure("Per-call cwd override is disabled (lockCwd is enabled)");
     if (input.cwd !== undefined && typeof input.cwd !== "string") return failure("cwd must be a string");
-    const cwd = input.cwd ?? defaultCwd;
+    // A relative cwd means the workspace's, never the daemon's own working
+    // directory: the write policy, the approval and the launch all use this
+    // one absolute path.
+    const cwd = input.cwd === undefined ? defaultCwd : resolvePath(defaultCwd, input.cwd);
     const useShellMode = shellModeEnabled && (builtinFallback !== undefined || isShellModeCommand(command, normalized.args));
     const directArgs = normalized.args ?? [];
     if (useShellMode) {

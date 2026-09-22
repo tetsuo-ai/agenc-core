@@ -75,6 +75,14 @@ const PERMISSION_CASES: ReadonlyArray<readonly [string, Partial<ToolPermissionCo
 ];
 
 describe("system.bash permission keeps the model's fields", () => {
+  test("reads a relative cwd from the workspace, not from the daemon's working directory", async () => {
+    expect(process.cwd()).not.toBe(workspace);
+    const fixture = dispatchFixture({ mode: "bypassPermissions", isBypassPermissionsModeAvailable: true });
+    const result = await fixture.dispatch({ command: "pwd", cwd: "sub" });
+    expect(result.isError).not.toBe(true);
+    expect(String(result.content).trim()).toBe(sub);
+  });
+
   test.each(PERMISSION_CASES)("%s runs shell mode in the requested cwd", async (_label, permission) => {
     const fixture = dispatchFixture(permission);
     const result = await fixture.dispatch({ command: "pwd", cwd: sub, timeoutMs: 45_000 });
