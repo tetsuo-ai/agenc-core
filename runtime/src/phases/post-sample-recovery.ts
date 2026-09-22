@@ -86,6 +86,7 @@ import {
 import {
   imageRoute,
   requestImageRoute,
+  restoreWithheldImages,
 } from "../session/query-image-safety.js";
 
 /** One compaction ladder tier that declined during a 413 collapse, with history unchanged. */
@@ -155,7 +156,8 @@ export async function runContextCollapseOverflowRecovery(params: {
     return { kind: "pass" } as const;
   }
   const recovered = await recoverFromOverflow(
-    toCollapseRuntimeMessages(params.state.messagesForQuery),
+    // Image notes are request-only; compaction must see what history holds.
+    toCollapseRuntimeMessages(restoreWithheldImages(params.state.messagesForQuery)),
     session,
     params.state,
     params.turnContext,
