@@ -38,4 +38,6 @@ export interface ToolRegistry {
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
+  /** Tools the parent keeps for telemetry only; a child never runs them. */
+  getUnavailableToolNames?(): ReadonlySet<string>;
 }
