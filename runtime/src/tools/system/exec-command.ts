@@ -622,18 +622,37 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
       const detach = asBoolean(args.detach) === true;
+      // A read-only child launches in the cwd its trusted inspection resolved
+      // against the child session, not the registry's workspace. Check, gate
+      // and record that same directory.
+      let inspection: ReturnType<typeof readReadOnlyInspectionInvocation>;
+      try {
+        inspection = readReadOnlyInspectionInvocation(args);
+      } catch (error) {
+        // The trusted executable changed after inspection. Nothing has started.
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: safeStringify({ error: message }),
+          isError: true,
+          effectDisposition: confirmedNoEffectDisposition(
+            "tool:system.exec-command:inspection-authority",
+            message,
+          ),
+        };
+      }
+      const effectiveWorkdir = inspection?.cwd ?? workdir;
 
       // Checked here, not in preflight: an earlier call in the same turn may
       // create the directory. Nothing has started, so the refusal is no effect.
-      if (workdir !== undefined) {
+      if (effectiveWorkdir !== undefined) {
         let isDirectory = false;
         try {
-          isDirectory = statSync(workdir).isDirectory();
+          isDirectory = statSync(effectiveWorkdir).isDirectory();
         } catch {
           isDirectory = false;
         }
         if (!isDirectory) {
-          const message = `workdir does not exist: ${requestedWorkdir}. It must exist before the command starts; create it in an earlier command, or run from an existing directory and cd inside the command.`;
+          const message = `workdir does not exist: ${requestedWorkdir ?? effectiveWorkdir}. It must exist before the command starts; create it in an earlier command, or run from an existing directory and cd inside the command.`;
           return {
             content: safeStringify({ error: message }),
             isError: true,
@@ -650,7 +669,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           toolName: "exec_command",
           args: {
             command: cmd,
-            ...(workdir !== undefined ? { cwd: workdir } : {}),
+            ...(effectiveWorkdir !== undefined ? { cwd: effectiveWorkdir } : {}),
           },
           workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
           ...shellWorkspaceMutationPermission(args),
@@ -674,7 +693,6 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
 
       try {
-        const inspection = readReadOnlyInspectionInvocation(args);
         const runtimeSandbox = inspection?.runtimeSandbox ?? runtimeSandboxForExec(
           args,
           config?.cwd ?? process.cwd(),
@@ -764,12 +782,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           codeModeResult: unifiedExecCodeModeResult(output),
           effectDisposition: processObservationDisposition(
             cmd,
-            workdir ?? config?.cwd ?? process.cwd(),
+            effectiveWorkdir ?? config?.cwd ?? process.cwd(),
             output,
           ),
           metadata: {
             command: cmd,
-            cwd: workdir ?? config?.cwd ?? process.cwd(),
+            cwd: effectiveWorkdir ?? config?.cwd ?? process.cwd(),
             tty: tty ?? false,
             exitCode: output.exitCode,
             stdout: output.stdout,

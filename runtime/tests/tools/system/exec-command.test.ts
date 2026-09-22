@@ -15,6 +15,13 @@ import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-std
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 import { attachToolRuntimeContext } from "../runtimes/context.js";
+import {
+  attachReadOnlyInspectionInvocation,
+  inspectReadOnlyCommand,
+  prepareReadOnlyInspectionInvocation,
+} from "../../permissions/readonly-inspection.js";
+import { restrictedFileSystemPolicy } from "../../sandbox/engine/index.js";
+import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 
 const createExecCommandTool = (
   config: Parameters<typeof createUnboundExecCommandTool>[0],
@@ -1073,6 +1080,83 @@ describe("exec_command tool", () => {
       expect(startDetachedProcess).toHaveBeenCalledTimes(1);
       expect(startDetachedProcess.mock.calls[0]![0]).toMatchObject({ workdir: join(root, "svc") });
     });
+
+    // A read-only descendant of a worktree session: the inherited tool keeps
+    // the registry cwd, while the trusted inspection resolves the relative
+    // workdir against the child session and launches there.
+    function readOnlyChildInvocation(childCwd: string, workdir: string) {
+      const sandbox: UnifiedExecRuntimeSandbox = {
+        preference: "require",
+        permissionProfile: {
+          fileSystem: restrictedFileSystemPolicy([{ path: { kind: "special", value: { kind: "root" } }, access: "read" }]),
+          network: "disabled",
+        },
+      };
+      const inspected = inspectReadOnlyCommand("exec_command", { cmd: "ls", workdir }, childCwd);
+      if (!inspected.allowed) throw new Error(inspected.reason);
+      return prepareReadOnlyInspectionInvocation(inspected.invocation, sandbox);
+    }
+
+    test.skipIf(process.platform === "win32")(
+      "checks and records the read-only child's inspection cwd, not the registry workspace",
+      async () => {
+        const childCwd = join(root, "implementation");
+        await mkdir(join(childCwd, "src"), { recursive: true });
+        const invocation = readOnlyChildInvocation(childCwd, "src");
+        const { tool, execCommand } = workdirTool();
+        const args = contextArgs({ cmd: "ls", workdir: "src" });
+        attachReadOnlyInspectionInvocation(args, invocation);
+
+        const result = await tool.execute(args);
+
+        expect(existsSync(join(root, "src"))).toBe(false);
+        expect(result.isError).toBeUndefined();
+        expect(execCommand).toHaveBeenCalledTimes(1);
+        expect(execCommand.mock.calls[0]![0]).toMatchObject({ workdir: join(childCwd, "src") });
+        expect(result.metadata).toMatchObject({ cwd: join(childCwd, "src") });
+      },
+    );
+
+    test.skipIf(process.platform === "win32")(
+      "refuses when the read-only child's inspection cwd is gone, even if the registry workspace has that folder",
+      async () => {
+        const childCwd = join(root, "implementation");
+        await mkdir(join(childCwd, "src"), { recursive: true });
+        await mkdir(join(root, "src"));
+        const invocation = readOnlyChildInvocation(childCwd, "src");
+        // The child's folder is removed after inspection and before the launch.
+        await rm(join(childCwd, "src"), { recursive: true });
+        const { tool, execCommand } = workdirTool();
+        const args = contextArgs({ cmd: "ls", workdir: "src" });
+        attachReadOnlyInspectionInvocation(args, invocation);
+
+        const result = await tool.execute(args);
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("workdir does not exist");
+        expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+        expect(execCommand).not.toHaveBeenCalled();
+      },
+    );
+
+    test.skipIf(process.platform === "win32")(
+      "refuses as no effect, without starting anything, when a read-only invocation has no authority",
+      async () => {
+        await mkdir(join(root, "src"));
+        // A copy is not the invocation that inspection registered.
+        const forged = { ...readOnlyChildInvocation(root, "src") };
+        const { tool, execCommand } = workdirTool();
+        const args = contextArgs({ cmd: "ls", workdir: "src" });
+        attachReadOnlyInspectionInvocation(args, forged);
+
+        const result = await tool.execute(args);
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("invocation authority is missing");
+        expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+        expect(execCommand).not.toHaveBeenCalled();
+      },
+    );
 
     test("refuses a working directory outside the workspace in a prompting session", async () => {
       const { tool, execCommand } = workdirTool();
