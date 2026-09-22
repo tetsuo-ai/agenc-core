@@ -7,6 +7,7 @@ import {
   lexShellCommand,
   type ShellToken,
 } from "../utils/shell/command-line.js";
+import { analyzeSedWrites } from "../utils/shell/sed-writes.js";
 
 const SHELL_WORKSPACE_WRITE_TOOL_NAMES = new Set([
   "exec_command",
@@ -435,9 +436,43 @@ function collectMoveTargets(
   return collection;
 }
 
+/**
+ * `sed` writes its in-place files, their backups, and the files its script
+ * names in `w` commands. The script itself is not a path.
+ */
+function collectSedWriteTargets(
+  args: readonly string[],
+  argsRequiringExpansion: readonly boolean[] | undefined,
+  cwd: string,
+): ShellWriteTargetCollection {
+  const writes = analyzeSedWrites(args, argsRequiringExpansion);
+  const collection = emptyTargetCollection();
+  collection.indeterminate = writes.indeterminate;
+  for (const edit of writes.inPlaceEdits) {
+    const file = normalizeConcreteTargetPath(edit.file, cwd);
+    mergeTargetCollections(collection, file);
+    // A backup is named after its file, so an unknown file has no known backup.
+    if (file.targets.length === 0) continue;
+    for (const backup of edit.backups) {
+      pushUnique(collection.targets, resolvePath(cwd, backup.trim()));
+    }
+  }
+  // sed opens these names itself, so no shell expansion applies to them.
+  for (const file of writes.scriptWrites) {
+    if (isSafePseudoDevicePath(file)) continue;
+    pushUnique(collection.targets, resolvePath(cwd, file.trim()));
+  }
+  for (const command of writes.scriptCommands) {
+    mergeTargetCollections(collection, collectShellCommandWriteTargets(command, cwd));
+  }
+  return collection;
+}
+
 function collectDirectCommandWriteTargets(params: {
   readonly command: string;
   readonly args: readonly string[];
+  /** Which of `args` the shell still expands; absent for an argument vector. */
+  readonly argsRequiringExpansion?: readonly boolean[];
   readonly cwd: string;
 }): ShellWriteTargetCollection {
   const command = basename(params.command);
@@ -502,7 +537,10 @@ function collectDirectCommandWriteTargets(params: {
     }
     return collection;
   }
-  if (command === "sed" || command === "perl") {
+  if (command === "sed") {
+    return collectSedWriteTargets(params.args, params.argsRequiringExpansion, params.cwd);
+  }
+  if (command === "perl") {
     const inPlace = params.args.some((token) => token === "-i" || token.startsWith("-i"));
     if (!inPlace) {
       return emptyTargetCollection();
@@ -564,9 +602,11 @@ function collectSegmentCommandWriteTargets(
     return emptyTargetCollection();
   }
   if (command.requiresExpansion) return indeterminateTargetCollection();
+  const args = stripped.slice(commandIndex + 1);
   return collectDirectCommandWriteTargets({
     command: command.value,
-    args: stripped.slice(commandIndex + 1).map((token) => token.value),
+    args: args.map((token) => token.value),
+    argsRequiringExpansion: args.map((token) => token.requiresExpansion),
     cwd,
   });
 }
