@@ -21,7 +21,11 @@ export type SharpInstance = {
   toBuffer(): Promise<Buffer>
 }
 
-export type SharpFunction = (input: Buffer) => SharpInstance
+export type SharpFunction = (
+  input: Buffer,
+  /** `animated: true` reads every frame of an animation, not just the first. */
+  options?: { animated?: boolean },
+) => SharpInstance
 
 type SharpCreatorOptions = {
   create: {

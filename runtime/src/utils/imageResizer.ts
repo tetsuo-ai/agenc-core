@@ -18,6 +18,7 @@ import { formatFileSize } from './format.js'
 import {
   imageFormatLabel,
   inspectImageBytes,
+  isAnimatedPng,
   type InlineImageFormat,
 } from './image-validation.js'
 import { logError } from './log.js'
@@ -71,24 +72,32 @@ export class ImageDecoderUnavailableError extends ImageResizeError {
 const MAX_DECODER_DETAIL_CHARS = 160
 
 /**
- * Throw unless `buffer` is a complete image that decodes. Paths that hand the
- * caller's original bytes back unchanged must pass this first. The structural
- * check names common defects precisely; the full decode catches what a
- * container walk cannot, such as corrupt compressed data behind valid
- * headers. Sharp's metadata read parses only the header, while a provider
- * decodes every pixel.
+ * The bytes to hand on for `buffer`, which must be a complete image that
+ * decodes: the caller's original bytes, or for an animated PNG its default
+ * image encoded again. Throws otherwise. Paths that would return the
+ * original bytes unchanged must go through this. The structural check names
+ * common defects precisely; the full decode catches what a container walk
+ * cannot, such as corrupt compressed data behind valid headers. Sharp's
+ * metadata read parses only the header, and without `animated` sharp decodes
+ * only the first frame, while a provider may decode every pixel of every
+ * frame. No decoder here reads APNG frames, so those are left behind rather
+ * than handed on unchecked.
  */
-async function assertImageDecodes(
+async function decodedImageBytes(
   sharp: SharpFunction,
   buffer: Buffer,
-): Promise<void> {
+): Promise<Buffer> {
   const inspection = inspectImageBytes(buffer)
   if (!inspection.ok) {
     throw new UndecodableImageError(inspection.reason, inspection.format)
   }
   try {
-    const image = sharp(buffer)
+    if (isAnimatedPng(buffer)) {
+      return await sharp(buffer).png().toBuffer()
+    }
+    const image = sharp(buffer, { animated: true })
     await (typeof image.raw === 'function' ? image.raw() : image).toBuffer()
+    return buffer
   } catch (error) {
     const detail = (error instanceof Error ? error.message : String(error))
       .replace(/\s+/gu, ' ')
@@ -170,8 +179,10 @@ export async function maybeResizeAndDownsampleImageBuffer(
         return { buffer: compressedBuffer, mediaType: 'jpeg' }
       }
       // Return without dimensions if we can't determine them
-      await assertImageDecodes(sharp, imageBuffer)
-      return { buffer: imageBuffer, mediaType: normalizedMediaType }
+      return {
+        buffer: await decodedImageBytes(sharp, imageBuffer),
+        mediaType: normalizedMediaType,
+      }
     }
 
     // Store original dimensions (guaranteed to be defined here)
@@ -189,9 +200,8 @@ export async function maybeResizeAndDownsampleImageBuffer(
       width <= IMAGE_MAX_WIDTH &&
       height <= IMAGE_MAX_HEIGHT
     ) {
-      await assertImageDecodes(sharp, imageBuffer)
       return {
-        buffer: imageBuffer,
+        buffer: await decodedImageBytes(sharp, imageBuffer),
         mediaType: normalizedMediaType,
         dimensions: {
           originalWidth,
@@ -364,7 +374,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // unprocessed only when they decode completely; anything else (such as a
     // PNG signature with no image after it) would be rejected by the
     // provider on this and every later request.
-    await assertImageDecodes(sharp, imageBuffer)
+    const decoded = await decodedImageBytes(sharp, imageBuffer)
     const inspection = inspectImageBytes(imageBuffer)
     if (!inspection.ok) {
       throw new UndecodableImageError(inspection.reason, inspection.format)
@@ -384,7 +394,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
 
     // If original image's base64 encoding is within API limit, allow it through uncompressed
     if (base64Size <= API_IMAGE_MAX_BASE64_SIZE && !overDim) {
-      return { buffer: imageBuffer, mediaType: normalizedExt }
+      return { buffer: decoded, mediaType: normalizedExt }
     }
 
     // Image is too large and we failed to compress it - fail with user-friendly error

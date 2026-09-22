@@ -72,6 +72,66 @@ async function animated(format: "webp" | "gif"): Promise<Buffer> {
     : joined.gif({ loop: 0, delay: [100, 100] }).toBuffer();
 }
 
+/**
+ * The animation with the bitstream of its last frame overwritten after its
+ * header: every chunk bound and frame header is intact, the first frame
+ * decodes, and only decoding the last frame fails.
+ */
+function damageLastWebpFrame(webp: Buffer): Buffer {
+  const out = Buffer.from(webp);
+  const frame = out.lastIndexOf(Buffer.from("ANMF", "latin1"));
+  // ANMF header (8), frame header (16), then the frame's VP8 chunk header (8).
+  const data = frame + 8 + 16 + 8;
+  const size = out.readUInt32LE(frame + 8 + 16 + 4);
+  for (let index = data + 10; index < data + size; index += 1) {
+    out[index] = (index * 37 + 11) & 0xff;
+  }
+  return out;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body) >>> 0);
+  return Buffer.concat([length, body, crc]);
+}
+
+/**
+ * An animated PNG (APNG) whose default image is intact and whose second
+ * frame (fdAT) is garbage. The APNG frame chunks are ancillary, so a PNG
+ * decoder that shows only the default image never reads them.
+ */
+function apngWithDamagedFrame(png: Buffer): Buffer {
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  const control = (sequence: number) => {
+    const data = Buffer.alloc(26);
+    data.writeUInt32BE(sequence, 0);
+    data.writeUInt32BE(width, 4);
+    data.writeUInt32BE(height, 8);
+    data.writeUInt16BE(1, 20);
+    data.writeUInt16BE(10, 22);
+    return pngChunk("fcTL", data);
+  };
+  const animation = Buffer.alloc(8);
+  animation.writeUInt32BE(2, 0);
+  const frameData = Buffer.alloc(40, 0xa5);
+  frameData.writeUInt32BE(2, 0);
+  const ihdrEnd = 8 + 25;
+  const iendStart = png.length - 12;
+  return Buffer.concat([
+    png.subarray(0, ihdrEnd),
+    pngChunk("acTL", animation),
+    control(0),
+    png.subarray(ihdrEnd, iendStart),
+    control(1),
+    pngChunk("fdAT", frameData),
+    png.subarray(iendStart),
+  ]);
+}
+
 async function sharpModule() {
   const imported = await import("sharp");
   return (typeof imported.default === "function"
@@ -238,6 +298,49 @@ describe("maybeResizeAndDownsampleImageBuffer", () => {
     await expect(
       maybeResizeAndDownsampleImageBuffer(animation, animation.length, "webp"),
     ).resolves.toMatchObject({ mediaType: "webp" });
+  });
+
+  it("refuses an animation whose later frame is damaged", async () => {
+    // Review finding: sharp decodes only the first frame unless asked for
+    // all of them, so a WebP whose second frame is garbage passed the full
+    // decode and went out as the original bytes.
+    const sharp = await sharpModule();
+    const damaged = damageLastWebpFrame(await animated("webp"));
+    expect(inspectImageBytes(damaged)).toMatchObject({ ok: true, format: "webp" });
+    await expect(sharp(damaged).raw().toBuffer()).resolves.toBeInstanceOf(Buffer);
+    await expect(
+      maybeResizeAndDownsampleImageBuffer(damaged, damaged.length, "webp"),
+    ).rejects.toThrow("Not a valid WebP image: the image decoder could not read it");
+
+    // A GIF decoder scans every frame before the first one, so a damaged
+    // later GIF frame is refused too.
+    const gif = await animated("gif");
+    const descriptor = gif.lastIndexOf(0x2c);
+    const damagedGif = Buffer.from(gif);
+    damagedGif.fill(0x5a, descriptor + 11, damagedGif.length - 2);
+    await expect(
+      maybeResizeAndDownsampleImageBuffer(damagedGif, damagedGif.length, "gif"),
+    ).rejects.toBeInstanceOf(UndecodableImageError);
+
+    // An intact animation still passes unchanged, every frame included.
+    const intact = await animated("webp");
+    const resized = await maybeResizeAndDownsampleImageBuffer(intact, intact.length, "webp");
+    expect(resized.buffer.equals(intact)).toBe(true);
+  });
+
+  it("hands on only the decoded image of an animated PNG", async () => {
+    // No PNG decoder here reads APNG frames, so none can vouch for them:
+    // the default image is decoded and encoded again, and the frames that
+    // could not be checked are left behind.
+    const sharp = await sharpModule();
+    const apng = apngWithDamagedFrame(await makeImage("png", 20, 10));
+    expect(inspectImageBytes(apng)).toMatchObject({ ok: true, format: "png" });
+    const resized = await maybeResizeAndDownsampleImageBuffer(apng, apng.length, "png");
+    expect(resized.mediaType).toBe("png");
+    expect(resized.buffer.includes(Buffer.from("fdAT", "latin1"))).toBe(false);
+    expect(resized.buffer.includes(Buffer.from("acTL", "latin1"))).toBe(false);
+    expect(inspectImageBytes(resized.buffer)).toMatchObject({ ok: true, width: 20, height: 10 });
+    await expect(sharp(resized.buffer).metadata()).resolves.toMatchObject({ width: 20, height: 10 });
   });
 
   it("returns a valid in-limit image unchanged", async () => {

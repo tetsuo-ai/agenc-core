@@ -115,6 +115,39 @@ describe("FileRead never returns bytes that are not an image as an image", () =>
     expect(result.content).toContain("is not a valid WebP image, so it was not attached");
   });
 
+  it("returns a clear failed read for an animated WebP with a damaged later frame", async () => {
+    // Review finding: only the first frame was decoded, so a damaged second
+    // frame went out as an image.
+    const sharpModule = await import("sharp");
+    const sharp = (typeof sharpModule.default === "function"
+      ? sharpModule.default
+      : sharpModule) as (typeof sharpModule)["default"];
+    const frame = (red: number) =>
+      sharp({
+        create: { width: 16, height: 12, channels: 3, background: { r: red, g: 10, b: 10 } },
+      }).png().toBuffer();
+    const webp = await (sharp as unknown as (
+      input: Buffer[],
+      options: { join: { animated: boolean } },
+    ) => ReturnType<typeof sharp>)([await frame(10), await frame(200)], {
+      join: { animated: true },
+    }).webp({ loop: 0, delay: [100, 100] }).toBuffer();
+    const last = webp.lastIndexOf(Buffer.from("ANMF", "latin1"));
+    const data = last + 8 + 16 + 8;
+    const size = webp.readUInt32LE(last + 8 + 16 + 4);
+    for (let index = data + 10; index < data + size; index += 1) {
+      webp[index] = (index * 37 + 11) & 0xff;
+    }
+    const file = join(root, "animation.webp");
+    await writeFile(file, webp);
+
+    const result = await read(file);
+
+    expect(result.isError).toBe(true);
+    expect(result.contentItems).toBeUndefined();
+    expect(result.content).toContain("is not a valid WebP image, so it was not attached");
+  });
+
   it("still returns a valid image as an image", async () => {
     const file = join(root, "real.png");
     await writeFile(file, await makePng(32, 24));

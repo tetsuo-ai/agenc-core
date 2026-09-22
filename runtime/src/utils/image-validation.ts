@@ -119,6 +119,25 @@ export function inspectImageBytes(bytes: Uint8Array): ImageInspection {
 }
 
 /**
+ * Whether `bytes` are an animated PNG (APNG): an animation control (acTL)
+ * chunk before the image data. The APNG frames live in ancillary chunks
+ * that a PNG decoder showing only the default image never reads, so no
+ * decode here vouches for them.
+ */
+export function isAnimatedPng(bytes: Uint8Array): boolean {
+  if (detectInlineImageFormat(bytes) !== "png") return false;
+  const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = PNG_SIGNATURE.length;
+  while (offset + 8 <= view.length) {
+    const type = ascii(view, offset + 4, offset + 8);
+    if (type === "acTL") return true;
+    if (type === "IDAT" || type === "IEND") return false;
+    offset += 12 + view.readUInt32BE(offset);
+  }
+  return false;
+}
+
+/**
  * Validate the image carried by a `data:<type>;base64,<body>` URL. Returns
  * `undefined` for any other URL: a remote image is fetched by the provider
  * and cannot be checked here.
