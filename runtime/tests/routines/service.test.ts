@@ -299,7 +299,11 @@ describe("daemon-owned local routines", () => {
   it("names a changed workspace and survives a throwing diagnostic sink", async () => {
     const f = setup({ execute: vi.fn(async () => "completed" as const) }, { onRunFailure: () => { throw new Error("sink down"); } });
     const { routine } = f.service.create(f.params);
-    rmSync(f.cwd, { recursive: true }); mkdirSync(f.cwd);
+    // Move the approved directory aside rather than deleting it: its inode
+    // stays allocated, so the replacement is guaranteed a different one.
+    // ext4 and overlayfs reuse a freed inode number immediately, which
+    // made a delete-and-recreate look like the same workspace.
+    renameSync(f.cwd, join(f.home, "replaced-project")); mkdirSync(f.cwd);
     f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
     expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Routine could not run: its workspace changed since it was approved." });
     expect(f.executor.execute).not.toHaveBeenCalled();
