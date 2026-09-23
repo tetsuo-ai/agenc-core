@@ -170,6 +170,7 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     if (disposed) return;
     // A missing root can become writable by others before the watcher sees
     // its creation. Re-evaluate the roots on every reload and drop unsafe ones.
+    // A dropped root returns on the next skills reload after its permissions are fixed.
     const version = lifecycleVersion;
     const options = activeOptions;
     if (options !== null) {
