@@ -255,81 +255,65 @@ describe("C3a relevant memory selection", () => {
     expect(existsSync(databasePath)).toBe(false);
   });
 
+  /** A fresh root with an index path and the given memory directories. */
+  async function emptyMemoryRoots(dirs: readonly string[]): Promise<{
+    readonly databasePath: string;
+    readonly memoryDirs: string[];
+    recall(): ReturnType<typeof findRelevantMemories>;
+  }> {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
+    const databasePath = join(temporaryRoot, "state", "memory-v1.sqlite");
+    await mkdir(join(temporaryRoot, "state"));
+    const memoryDirs = dirs.map((dir) => join(temporaryRoot!, dir));
+    for (const dir of memoryDirs) await mkdir(dir, { recursive: true });
+    const signal = new AbortController().signal;
+    return {
+      databasePath,
+      memoryDirs,
+      recall: () =>
+        findRelevantMemories({
+          query: "browser",
+          memoryDirs: memoryDirs.filter((dir) => !dir.endsWith("/logs")),
+          signal,
+          memoryIndexDatabasePath: databasePath,
+        }),
+    };
+  }
+
   it("does not open the full-corpus index while every memory directory is empty", async () => {
     // Session startup creates both memory directories so the model can write
     // into them. Empty directories hold no memory, so recall must not pay for
     // the index refresh and its contained query helper process.
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
-    const databasePath = join(temporaryRoot, "state", "memory-v1.sqlite");
-    await mkdir(join(temporaryRoot, "state"));
-    const globalDir = join(temporaryRoot, "global");
-    const projectDir = join(temporaryRoot, "project");
-    await mkdir(globalDir);
-    await mkdir(projectDir);
+    const roots = await emptyMemoryRoots(["global", "project"]);
 
-    const result = await findRelevantMemories({
-      query: "browser",
-      memoryDirs: [globalDir, projectDir],
-      signal: new AbortController().signal,
-      memoryIndexDatabasePath: databasePath,
-    });
-
-    expect(result).toEqual([]);
-    expect(existsSync(databasePath)).toBe(false);
+    expect(await roots.recall()).toEqual([]);
+    expect(existsSync(roots.databasePath)).toBe(false);
   });
 
   it("uses the full-corpus index as soon as a memory directory has content", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
-    const databasePath = join(temporaryRoot, "state", "memory-v1.sqlite");
-    await mkdir(join(temporaryRoot, "state"));
-    const globalDir = join(temporaryRoot, "global");
-    const projectDir = join(temporaryRoot, "project");
-    await mkdir(globalDir);
-    await mkdir(projectDir);
-    const signal = new AbortController().signal;
-
-    expect(
-      await findRelevantMemories({
-        query: "browser",
-        memoryDirs: [globalDir, projectDir],
-        signal,
-        memoryIndexDatabasePath: databasePath,
-      }),
-    ).toEqual([]);
-    expect(existsSync(databasePath)).toBe(false);
+    const roots = await emptyMemoryRoots(["global", "project"]);
+    expect(await roots.recall()).toEqual([]);
+    expect(existsSync(roots.databasePath)).toBe(false);
 
     const matching = await memory(
-      projectDir,
+      roots.memoryDirs[1]!,
       "browser.md",
       "Browser automation",
       "Known browser launch gotchas",
     );
-    const result = await findRelevantMemories({
-      query: "browser",
-      memoryDirs: [globalDir, projectDir],
-      signal,
-      memoryIndexDatabasePath: databasePath,
-    });
+    const result = await roots.recall();
 
-    expect(existsSync(databasePath)).toBe(true);
+    expect(existsSync(roots.databasePath)).toBe(true);
     expect(result.map((entry) => entry.path)).toEqual([matching]);
   });
 
   it("keeps the index path when a memory directory holds only a subdirectory", async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
-    const databasePath = join(temporaryRoot, "state", "memory-v1.sqlite");
-    await mkdir(join(temporaryRoot, "state"));
-    const globalDir = join(temporaryRoot, "global");
-    await mkdir(join(globalDir, "logs"), { recursive: true });
+    // The global root holds only an empty logs/ folder.
+    const roots = await emptyMemoryRoots(["global", "global/logs"]);
 
-    await findRelevantMemories({
-      query: "browser",
-      memoryDirs: [globalDir],
-      signal: new AbortController().signal,
-      memoryIndexDatabasePath: databasePath,
-    });
+    await roots.recall();
 
-    expect(existsSync(databasePath)).toBe(true);
+    expect(existsSync(roots.databasePath)).toBe(true);
   });
 
   it("clamps both lexical and selector paths to five memories", async () => {
