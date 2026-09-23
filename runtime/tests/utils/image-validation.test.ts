@@ -132,6 +132,21 @@ function apngWithDamagedFrame(png: Buffer): Buffer {
   ]);
 }
 
+/** A PNG whose animation chunks follow its image data, the order a strict APNG reader would reject. */
+function apngChunksAfterImageData(png: Buffer): Buffer {
+  const animation = Buffer.alloc(8);
+  animation.writeUInt32BE(2, 0);
+  const frameData = Buffer.alloc(40, 0xa5);
+  frameData.writeUInt32BE(2, 0);
+  const iendStart = png.length - 12;
+  return Buffer.concat([
+    png.subarray(0, iendStart),
+    pngChunk("acTL", animation),
+    pngChunk("fdAT", frameData),
+    png.subarray(iendStart),
+  ]);
+}
+
 async function sharpModule() {
   const imported = await import("sharp");
   return (typeof imported.default === "function"
@@ -326,6 +341,22 @@ describe("maybeResizeAndDownsampleImageBuffer", () => {
     const intact = await animated("webp");
     const resized = await maybeResizeAndDownsampleImageBuffer(intact, intact.length, "webp");
     expect(resized.buffer.equals(intact)).toBe(true);
+  });
+
+  it("hands on only the decoded image when a PNG carries bytes no decoder reads", async () => {
+    const png = await makeImage("png", 20, 10);
+    const late = apngChunksAfterImageData(png);
+    expect(inspectImageBytes(late)).toMatchObject({ ok: true, format: "png" });
+    const lateOut = await maybeResizeAndDownsampleImageBuffer(late, late.length, "png");
+    expect(lateOut.buffer.includes(Buffer.from("fdAT", "latin1"))).toBe(false);
+    expect(lateOut.buffer.includes(Buffer.from("acTL", "latin1"))).toBe(false);
+    const trailing = Buffer.concat([png, Buffer.from("TRAILING-PAYLOAD", "latin1")]);
+    const trailingOut = await maybeResizeAndDownsampleImageBuffer(trailing, trailing.length, "png");
+    expect(trailingOut.buffer.includes(Buffer.from("TRAILING-PAYLOAD", "latin1"))).toBe(false);
+    expect(inspectImageBytes(trailingOut.buffer)).toMatchObject({ ok: true, width: 20, height: 10 });
+    // An ordinary PNG still passes through unchanged.
+    const plain = await maybeResizeAndDownsampleImageBuffer(png, png.length, "png");
+    expect(plain.buffer.equals(png)).toBe(true);
   });
 
   it("hands on only the decoded image of an animated PNG", async () => {

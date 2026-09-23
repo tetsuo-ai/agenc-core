@@ -18,7 +18,7 @@ import { formatFileSize } from './format.js'
 import {
   imageFormatLabel,
   inspectImageBytes,
-  isAnimatedPng,
+  pngHasUndecodedParts,
   type InlineImageFormat,
 } from './image-validation.js'
 import { logError } from './log.js'
@@ -92,7 +92,7 @@ async function decodedImageBytes(
     throw new UndecodableImageError(inspection.reason, inspection.format)
   }
   try {
-    if (isAnimatedPng(buffer)) {
+    if (pngHasUndecodedParts(buffer)) {
       return await sharp(buffer).png().toBuffer()
     }
     const image = sharp(buffer, { animated: true })
