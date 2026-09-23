@@ -12,7 +12,8 @@
  * @module
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readlinkSync, rmSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
@@ -38,6 +39,56 @@ const MAX_TABS = 8;
 
 /** All live managers in this process — closed together on daemon shutdown. */
 const activeManagers = new Set<BrowserManager>();
+
+/**
+ * Shared profile directories (the persistent default or a configured
+ * profile_dir) and the manager whose browser is launching or running on each.
+ * Chromium allows one browser per profile: a second launch hands its command
+ * line to the running one through the profile's SingletonLock and exits, which
+ * the CDP pipe reports as closed. Every session of a daemon has its own
+ * manager, so without this a second session could not use the browser while
+ * the first one's was up (luna-mac F2).
+ */
+const sharedProfileHolders = new Map<string, BrowserManager>();
+
+/**
+ * Whether a live Chromium, possibly in another process, holds `profileDir`.
+ * On POSIX, Chromium keeps a SingletonLock symlink to "<host>-<pid>" in the
+ * profile while it runs. A lock this host cannot prove stale counts as held,
+ * which costs only the persistent profile for that launch. Windows keeps no
+ * such link, so there only this process's own holders are known.
+ */
+function sharedProfileHeldElsewhere(profileDir: string): boolean {
+  let target: string;
+  try {
+    target = readlinkSync(join(profileDir, "SingletonLock"));
+  } catch {
+    return false;
+  }
+  const separator = target.lastIndexOf("-");
+  const pid = Number(target.slice(separator + 1));
+  if (separator <= 0 || !Number.isSafeInteger(pid) || pid <= 0) return true;
+  if (target.slice(0, separator) !== hostname()) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * A refusal made before any page was touched: the named tab does not exist,
+ * or no new tab may be opened. Branded as no effect because a bare error from
+ * this mutating tool is filed as an unknown outcome and blocks every later
+ * side-effecting call until /resolve.
+ */
+function refusedBeforePageAction(message: string): BrowserActionError {
+  return markEffectBoundaryNotCrossed(new BrowserActionError(message), {
+    evidenceRef: "tool:Browser:refused-before-page-action",
+    evidenceMaterial: message,
+  });
+}
 
 /** Graceful shutdown hook for the daemon cleanup registry. */
 export async function closeAllBrowserManagers(): Promise<void> {
@@ -103,6 +154,7 @@ export class BrowserManager {
   #shutdownGeneration = 0;
   #launchAuthorityCwd: string | undefined;
   #tempProfileDir: string | undefined;
+  #sharedProfileDir: string | undefined;
   readonly #exitListener = (): void => {
     this.#killNow();
   };
@@ -135,15 +187,18 @@ export class BrowserManager {
       }
       return this.#tempProfileDir;
     }
-    const configured = this.#options.policy.profileDir;
-    if (configured !== undefined) {
-      mkdirSync(configured, { recursive: true, mode: 0o700 });
-      return configured;
-    }
-    if (this.#options.agencHome !== undefined) {
-      const dir = join(this.#options.agencHome, "browser", "profile");
-      mkdirSync(dir, { recursive: true, mode: 0o700 });
-      return dir;
+    const shared =
+      this.#options.policy.profileDir ??
+      (this.#options.agencHome !== undefined
+        ? join(this.#options.agencHome, "browser", "profile")
+        : undefined);
+    if (shared !== undefined) {
+      mkdirSync(shared, { recursive: true, mode: 0o700 });
+      if (this.#claimSharedProfile(shared)) return shared;
+      // Another session's browser holds the shared profile. Chromium would
+      // hand this launch to it and exit, so this browser gets its own fresh
+      // profile instead: nothing is shared with the other session, and the
+      // directory is removed when this browser closes.
     }
     if (this.#tempProfileDir === undefined) {
       this.#tempProfileDir = mkdtempSync(
@@ -151,6 +206,30 @@ export class BrowserManager {
       );
     }
     return this.#tempProfileDir;
+  }
+
+  /**
+   * Hold `dir` for this manager's next browser, unless a browser of another
+   * manager in this process, or a live Chromium anywhere on this host, holds
+   * it. The claim covers the launch window before Chromium writes its own
+   * SingletonLock and lasts until this browser is torn down; from then on
+   * that lock protects a browser that is still exiting.
+   */
+  #claimSharedProfile(dir: string): boolean {
+    const holder = sharedProfileHolders.get(dir);
+    if (holder !== undefined && holder !== this) return false;
+    if (holder === undefined && sharedProfileHeldElsewhere(dir)) return false;
+    sharedProfileHolders.set(dir, this);
+    this.#sharedProfileDir = dir;
+    return true;
+  }
+
+  #releaseSharedProfile(): void {
+    const dir = this.#sharedProfileDir;
+    this.#sharedProfileDir = undefined;
+    if (dir !== undefined && sharedProfileHolders.get(dir) === this) {
+      sharedProfileHolders.delete(dir);
+    }
   }
 
   async #ensureLaunched(): Promise<void> {
@@ -222,6 +301,7 @@ export class BrowserManager {
           : {}),
       });
     } catch (err) {
+      this.#releaseSharedProfile();
       const boundary: BrowserBoundary = {
         child: undefined,
         proxy,
@@ -277,6 +357,7 @@ export class BrowserManager {
       authorityCwd !== this.#options.sandboxExecutionBroker?.cwd
     ) {
       launched.connection.close();
+      this.#releaseSharedProfile();
       await this.#cleanupOwnedBoundary({
         child: launched.child,
         proxy,
@@ -322,8 +403,8 @@ export class BrowserManager {
       throw new BrowserActionError("browser is not running");
     }
     if (this.#tabs.length >= MAX_TABS) {
-      throw new BrowserActionError(
-        `too many open tabs (max ${MAX_TABS}) — close one first`,
+      throw refusedBeforePageAction(
+        `too many open tabs (max ${MAX_TABS}). Close one first.`,
       );
     }
     const sendOptions = signal === undefined ? {} : { signal };
@@ -354,20 +435,21 @@ export class BrowserManager {
     return entry;
   }
 
+  /** The tab `tabId` names, or the active tab; refused before any page action. */
   #tabById(tabId: number | undefined): TabEntry {
-    if (this.#tabs.length === 0) {
-      throw new BrowserActionError(
-        "no open tabs — use the navigate action to open a page first",
-      );
-    }
     const id = tabId ?? this.#activeTabId;
     const entry = this.#tabs.find((tab) => tab.id === id);
-    if (entry === undefined) {
-      throw new BrowserActionError(
-        `no tab with id ${id} — use the tabs action to list open tabs`,
+    if (entry !== undefined) return entry;
+    if (this.#tabs.length === 0) {
+      throw refusedBeforePageAction(
+        tabId === undefined
+          ? "no open tabs. Use the navigate action to open a page first."
+          : `no tab with id ${tabId}: no tab is open yet. Navigate without tab_id to open the first one.`,
       );
     }
-    return entry;
+    throw refusedBeforePageAction(
+      `no tab with id ${id}. Use the tabs action to list open tabs.`,
+    );
   }
 
   /** Navigate the active tab (creating one if needed) or `tabId`. */
@@ -455,6 +537,7 @@ export class BrowserManager {
     this.#connection = undefined;
     this.#child = undefined;
     this.#launchAuthorityCwd = undefined;
+    this.#releaseSharedProfile();
     const proxy = this.#proxy;
     this.#proxy = undefined;
     activeManagers.delete(this);

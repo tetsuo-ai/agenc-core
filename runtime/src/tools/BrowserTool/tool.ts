@@ -479,7 +479,8 @@ export function createBrowserTool(
         },
         tab_id: {
           type: "number",
-          description: "Target tab id (defaults to the active tab).",
+          description:
+            "Target tab id from the tabs action (ids start at 1). Omit for the active tab.",
         },
         max_chars: {
           type: "number",
@@ -611,8 +612,18 @@ export function createBrowserTool(
   };
 }
 
+/**
+ * The tab an action names. Tab ids start at 1, and models that fill every
+ * optional field send tab_id 0 for "not given" (luna-mac F2: navigate with
+ * tab_id 0 was answered "no open tabs"). 0 therefore means the default, the
+ * active tab or the first one navigate opens, exactly like an omitted tab_id;
+ * it can never name a tab, so no other page is chosen for it. An id that names
+ * no open tab is refused by the manager before any page action.
+ */
 function tabIdOf(input: BrowserToolInput): number | undefined {
-  return typeof input.tab_id === "number" && Number.isInteger(input.tab_id)
+  return typeof input.tab_id === "number" &&
+    Number.isInteger(input.tab_id) &&
+    input.tab_id !== 0
     ? input.tab_id
     : undefined;
 }

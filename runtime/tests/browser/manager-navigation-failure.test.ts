@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 
 const { launchBrowserMock } = vi.hoisted(() => ({ launchBrowserMock: vi.fn() }));
 vi.mock("../../src/browser/cdp.js", async (importOriginal) => ({
@@ -26,6 +27,14 @@ vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => ({
 import { BrowserManager } from "../../src/browser/manager.js";
 import { CdpError, type CdpConnection, type CdpSendOptions } from "../../src/browser/cdp.js";
 import { readBrowserNavigationFailureReceipt } from "../../src/browser/page.js";
+import { createBrowserTool } from "../../src/tools/BrowserTool/tool.js";
+import {
+  SandboxExecutionBroker,
+  attachSandboxExecutionBroker,
+} from "../../src/sandbox/execution-broker.js";
+import { disposeSandboxExecutionBroker } from "../../src/sandbox/execution-lifecycle.js";
+import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
+import { bindAdmittedToolHarness } from "../helpers/admitted-tool-harness.js";
 
 let profileRoot = "";
 const managers: BrowserManager[] = [];
@@ -139,5 +148,158 @@ describe("failed browser navigation retains its target", () => {
     expect(error).toBeInstanceOf(CdpError);
     expect(readBrowserNavigationFailureReceipt(error)).toBeUndefined();
     expect(await manager.listTabs()).toHaveLength(1);
+  });
+});
+
+// Live run (luna-mac F2): GPT models fill every optional field, so the first
+// navigate arrived with "tab_id":0 and was answered "no open tabs", which was
+// filed as an unknown outcome and refused the next Browser call until /resolve.
+describe("tab ids a model fills in", () => {
+  const brokers: SandboxExecutionBroker[] = [];
+  afterEach(async () => {
+    for (const broker of brokers.splice(0)) await disposeSandboxExecutionBroker(broker);
+  });
+
+  function browserTool(manager: BrowserManager) {
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: process.cwd() });
+    brokers.push(broker);
+    const tool = createBrowserTool({ manager });
+    const call = (args: Record<string, unknown>) => {
+      const withBroker = { ...args };
+      attachSandboxExecutionBroker(withBroker, broker, "browser");
+      return withBroker;
+    };
+    return { tool, call };
+  }
+
+  it("treats tab_id 0 as the default tab and opens the first page", async () => {
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    const { tool, call } = browserTool(manager);
+    const harness = bindAdmittedToolHarness({ workspaceRoot: process.cwd(), label: "browser-tab-zero" });
+    const dispatch = (callId: string, args: Record<string, unknown>) => {
+      const prepared = call(args);
+      return runAdmittedToolCall({
+        session: harness.session, tool, args: prepared,
+        turnId: "turn-browser-tab-zero", callId,
+        invoke: async ({ crossEffectBoundary }) => { crossEffectBoundary(); return tool.execute(prepared); },
+      });
+    };
+    const first = await dispatch("filled-navigate", { action: "navigate", url: "https://example.com/", tab_id: 0 });
+    expect(first.isError, String(first.content)).not.toBe(true);
+    expect(first.content).toContain("Navigated to https://example.com/");
+    const snapshot = await dispatch("filled-snapshot", { action: "snapshot", tab_id: 0 });
+    expect(snapshot.isError, String(snapshot.content)).not.toBe(true);
+    expect(harness.events.filter((event) => event.msg.type === "effect_unknown_outcome")).toHaveLength(0);
+    expect(await manager.listTabs()).toMatchObject([{ id: 1, active: true }]);
+  });
+
+  it("refuses an unknown tab id with no effect so the next call still runs", async () => {
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    const { tool, call } = browserTool(manager);
+    const harness = bindAdmittedToolHarness({ workspaceRoot: process.cwd(), label: "browser-tab-unknown" });
+    const dispatch = (callId: string, args: Record<string, unknown>) => {
+      const prepared = call(args);
+      return runAdmittedToolCall({
+        session: harness.session, tool, args: prepared,
+        turnId: "turn-browser-tab-unknown", callId,
+        invoke: async ({ crossEffectBoundary }) => { crossEffectBoundary(); return tool.execute(prepared); },
+      });
+    };
+    for (const [callId, args] of [
+      ["no-tabs-yet", { action: "snapshot" }],
+      ["navigate-missing-tab", { action: "navigate", url: "https://example.com/", tab_id: 7 }],
+    ] as const) {
+      const refused = await dispatch(callId, args);
+      expect(refused.isError).toBe(true);
+      expect(refused.effectDisposition?.disposition, callId).toBe("confirmed_no_effect");
+    }
+    const opened = await dispatch("first-navigate", { action: "navigate", url: "https://example.com/" });
+    expect(opened.isError, String(opened.content)).not.toBe(true);
+    for (const [callId, args] of [
+      ["snapshot-missing-tab", { action: "snapshot", tab_id: 9 }],
+      ["click-missing-tab", { action: "click", ref: "e1", tab_id: 9 }],
+      ["close-missing-tab", { action: "close_tab", tab_id: 9 }],
+    ] as const) {
+      const refused = await dispatch(callId, args);
+      expect(refused.isError).toBe(true);
+      expect(String(refused.content)).toMatch(/no tab with id 9/);
+      expect(refused.effectDisposition?.disposition, callId).toBe("confirmed_no_effect");
+    }
+    expect(harness.events.filter((event) => event.msg.type === "effect_unknown_outcome")).toHaveLength(0);
+    await expect(dispatch("after-refusals", { action: "snapshot" })).resolves.toMatchObject({
+      content: expect.any(String),
+    });
+    expect(await manager.listTabs()).toMatchObject([{ id: 1 }]);
+  });
+
+  it("requires a real tab id for select_tab and close_tab", async () => {
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    const { tool, call } = browserTool(manager);
+    for (const action of ["select_tab", "close_tab"] as const) {
+      const refused = await tool.execute(call({ action, tab_id: 0 }));
+      expect(refused.isError).toBe(true);
+      expect(refused.content).toBe(`${action} requires tab_id`);
+      expect(refused.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+    expect(launchBrowserMock).not.toHaveBeenCalled();
+  });
+});
+
+// Live run (luna-mac F2): every session's manager launched Chromium on the one
+// persistent profile. A second session's launch handed itself to the first
+// session's still-running browser through the profile's SingletonLock and
+// exited, so it failed with "browser did not establish a CDP pipe: CDP pipe
+// closed" until the first browser idled out five minutes later.
+describe("one shared profile across sessions", () => {
+  const launchedProfiles = (): string[] =>
+    launchBrowserMock.mock.calls.map(
+      ([options]) => (options as { userDataDir: string }).userDataDir,
+    );
+
+  it("gives a concurrent session its own profile and frees the shared one on close", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    const { manager: first } = fakeManager(async () => ({ frameId: "frame-1" }));
+    const { manager: second } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await Promise.all([first.page().catch(() => {}), second.page().catch(() => {})]);
+
+    const [firstProfile, secondProfile] = launchedProfiles();
+    expect([firstProfile, secondProfile]).toContain(persistent);
+    const firstHoldsShared = firstProfile === persistent;
+    const isolated = firstHoldsShared ? secondProfile! : firstProfile!;
+    expect(isolated).not.toBe(persistent);
+    expect(statSync(isolated).mode & 0o777).toBe(0o700);
+
+    await (firstHoldsShared ? second : first).closeAll();
+    expect(existsSync(isolated)).toBe(false);
+    expect(existsSync(persistent)).toBe(true);
+
+    await (firstHoldsShared ? first : second).closeAll();
+    const { manager: third } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await third.page().catch(() => {});
+    expect(launchedProfiles()[2]).toBe(persistent);
+  });
+
+  it("leaves a profile to the live Chromium that holds its SingletonLock", async () => {
+    if (process.platform === "win32") {
+      expect(process.platform).toBe("win32");
+      return;
+    }
+    const persistent = join(profileRoot, "browser", "profile");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    const lock = join(persistent, "SingletonLock");
+    // A browser in another process: this test process stands in for it.
+    symlinkSync(`${hostname()}-${process.pid}`, lock);
+    const { manager: blocked } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await blocked.page().catch(() => {});
+    expect(launchedProfiles()[0]).not.toBe(persistent);
+    await blocked.closeAll();
+
+    // A lock left by a browser that has exited does not keep the profile.
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    unlinkSync(lock);
+    symlinkSync(`${hostname()}-${exited.pid}`, lock);
+    const { manager: reused } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await reused.page().catch(() => {});
+    expect(launchedProfiles()[1]).toBe(persistent);
   });
 });

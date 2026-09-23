@@ -341,7 +341,10 @@ allow_private_network` opts in for local-dev targets; metadata stays blocked
 regardless, in every address representation). Non-proxied WebRTC UDP is disabled
 so it cannot open a side channel around the proxy. The browser uses a dedicated profile under
 `<agenc_home>/browser/profile`, never the user's real profile, and launches
-lazily on first use. `snapshot` / `screenshot` / `get_text` / `tabs` are
+lazily on first use. While one session's browser holds that profile, a browser
+started by another session gets a fresh private profile that is removed when
+it closes, because Chromium hands a second launch on a held profile to the
+running browser. `snapshot` / `screenshot` / `get_text` / `tabs` are
 read-only and auto-approved; `navigate` and acting actions prompt in default
 mode (`navigate` can be granted a persistent per-domain allow rule). Config:
 `[browser]` (`executable_path`, `headless`, `allow_private_network`,

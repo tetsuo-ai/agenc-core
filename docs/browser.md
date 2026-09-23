@@ -11,7 +11,7 @@ It is a coding-agent capability (not a gateway messaging channel). Related:
 | --- | --- |
 | Tool name | `Browser` |
 | Driver | `runtime/src/browser/` + `runtime/src/tools/BrowserTool/` |
-| Profile | Dedicated dir under `$AGENC_HOME/browser/profile` by default — **never** your personal Chrome profile |
+| Profile | Dedicated dir under `$AGENC_HOME/browser/profile` by default, **never** your personal Chrome profile. Chromium runs one browser per profile, so a session whose browser starts while another session's browser (or another Chromium on this host) holds that profile gets a fresh private profile of its own, removed when that browser closes |
 | Default mode | Headless |
 | Egress | All navigation routes through an **SSRF proxy** that blocks private / loopback / cloud-metadata addresses by default |
 
