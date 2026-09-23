@@ -424,6 +424,7 @@ export function notificationFromDaemonEvent(
         agentId: base.agentId ?? sessionId,
         status: terminalStatus,
         runStatus,
+        turnEvent: { type: "run_terminal", payload },
         ...(typeof payload.finalMessage === "string"
           ? { message: payload.finalMessage }
           : typeof payload.stopReason === "string"

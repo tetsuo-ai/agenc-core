@@ -8,6 +8,7 @@ export const MAX_ROUTINES = 100;
 export const MAX_ROUTINE_RUNS = 50;
 const GENERIC_RUN_FAILURE = "Routine could not run. Check its workspace, provider configuration, and session details.";
 const PERMISSION_DENIED_RUN_FAILURE = "A tool action was blocked by this routine's read-only permissions. Update its instructions to use only read-only actions, then run it again. Open its session for details.";
+const UNKNOWN_OUTCOME_RUN_FAILURE = "An action's outcome could not be confirmed. Open the session for details.";
 /** Raised by Core when the agent's provider has no usable credential. */
 const CREDENTIALS_MISSING = /requires credentials/u;
 
@@ -316,25 +317,31 @@ export class RoutineService {
   /** Called from the existing daemon event fan-out, without lifecycle polling. */
   observeSessionEvent(sessionId: string, event: { method?: unknown; params?: unknown }): void {
     if (this.#closed || !this.#healthy) return;
-    if (event.method === "event.session_event" && record(event.params)) {
+    if (event.method === "event.agent_status" && record(event.params)) {
       const params = event.params;
-      const inner = record(params.event) ? params.event : undefined;
+      const inner = record(params.turnEvent) ? params.turnEvent : undefined;
       const payload = inner && record(inner.payload) ? inner.payload : undefined;
-      if (inner?.type === "run_terminal" && payload && typeof params.eventId === "string" && params.eventId.length > 0 &&
+      if (inner?.type === "run_terminal" && payload && params.sessionId === sessionId &&
+          typeof params.eventId === "string" && params.eventId.length > 0 &&
           typeof params.sequence === "number" && Number.isSafeInteger(params.sequence) && params.sequence > 0 &&
-          (payload.status === "completed" || payload.status === "failed" || payload.status === "cancelled")) {
+          ((payload.status === "completed" && params.status === "idle" && params.runStatus === "completed") ||
+            ((payload.status === "failed" || payload.status === "unknown_outcome") && params.status === "error" && params.runStatus === "errored") ||
+            (payload.status === "cancelled" && params.status === "stopped" && params.runStatus === "stopped"))) {
+        const status = payload.status === "unknown_outcome" ? "failed" : payload.status;
         for (const entry of this.#entries) {
-          const run = entry.runs.find((r) => r.sessionId === sessionId && r.coreRunId !== null &&
-            r.coreRunId === params.agentId && r.coreRunId === params.runId && r.coreRunId === payload.runId &&
-            (r.finishedAt === null || r.status !== payload.status));
+          const run = entry.runs.find((r) => r.sessionId === sessionId && r.agentId !== null && r.coreRunId !== null &&
+            r.agentId === params.agentId && r.coreRunId === params.runId && r.coreRunId === payload.runId &&
+            (r.finishedAt === null || r.status !== status ||
+              (payload.status === "unknown_outcome" && r.error !== UNKNOWN_OUTCOME_RUN_FAILURE)));
           if (!run) continue;
           try {
-            this.#replaceRun(entry, run.id, { status: payload.status, finishedAt: this.#now().toISOString(),
-              error: payload.status === "failed" ? payload.stopReason === "routine_permission_denied" ? PERMISSION_DENIED_RUN_FAILURE
-                : "Core could not complete this run. Open its session for details." : null });
+            this.#replaceRun(entry, run.id, { status, finishedAt: this.#now().toISOString(),
+              error: payload.status === "unknown_outcome" ? UNKNOWN_OUTCOME_RUN_FAILURE
+                : status === "failed" ? payload.stopReason === "routine_permission_denied" ? PERMISSION_DENIED_RUN_FAILURE
+                  : "Core could not complete this run. Open its session for details." : null });
             if (entry.runs[0]?.id === run.id) this.#held.delete(entry.routine.id);
             const active = this.#active.get(entry.routine.id);
-            if (active?.runId === run.id) { active.resolveTerminal(payload.status); this.#active.delete(entry.routine.id); }
+            if (active?.runId === run.id) { active.resolveTerminal(status); this.#active.delete(entry.routine.id); }
           } catch { /* Routine storage failure must not interrupt the owning Core event stream. */ }
           return;
         }

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
 import { createDaemonRoutineExecutor, providerEnvironmentKeys, routineSessionEnvironment } from "../../src/routines/daemon-executor.js";
 import { RoutineExecutionUnsettledError, RoutineService } from "../../src/routines/service.js";
 import type { Routine, RoutineRun } from "../../src/routines/types.js";
@@ -30,14 +31,18 @@ function routineService(f: ReturnType<typeof fixture>) {
   return { service, routine, cleanup: async () => { await service.close(); rmSync(home, { recursive: true, force: true }); } };
 }
 
+function projectedCoreTerminal(run: RoutineRun, status: "completed" | "failed" | "cancelled" | "unknown_outcome", terminalRunId = run.coreRunId, stopReason?: string) {
+  return notificationFromDaemonEvent(run.sessionId!, run.agentId!, {
+    id: "terminal:agent:1", eventId: "terminal:agent:1", sequence: 3,
+    runId: run.coreRunId!, type: "run_terminal",
+    payload: { runId: terminalRunId, status, exitCode: status === "completed" ? 0 : 1,
+      ...(stopReason ? { stopReason } : {}) },
+  });
+}
+
 function failedCoreTerminal(service: RoutineService, routineId: string, terminalRunId?: string, stopReason?: string): void {
   const run = service.runs({ id: routineId }).runs[0]!;
-  service.observeSessionEvent(run.sessionId!, {
-    method: "event.session_event",
-    params: { agentId: run.agentId, runId: run.coreRunId, eventId: "terminal:agent:1", sequence: 3,
-      event: { type: "run_terminal", payload: { runId: terminalRunId ?? run.coreRunId, status: "failed", exitCode: 1,
-        ...(stopReason ? { stopReason } : {}) } } },
-  });
+  service.observeSessionEvent(run.sessionId!, projectedCoreTerminal(run, "failed", terminalRunId ?? run.coreRunId, stopReason));
 }
 
 const AMBIENT = {
@@ -87,6 +92,68 @@ describe("routine agent environment", () => {
 });
 
 describe("routine execution finalization", () => {
+  it("settles only a projected terminal with matching run identity and journal proof", async () => {
+    const f = fixture();
+    f.manager.streamAgentMessage.mockRejectedValue(new Error("turn failed"));
+    f.manager.stopAgent.mockRejectedValue(new Error("stop failed"));
+    const h = routineService(f);
+    try {
+      h.service.run({ id: h.routine.id });
+      await vi.waitFor(() => expect(h.service.runs({ id: h.routine.id }).runs[0]?.error).toContain("could not confirm"));
+      const run = h.service.runs({ id: h.routine.id }).runs[0]!;
+      const projected = projectedCoreTerminal(run, "failed");
+      expect(projected).toMatchObject({ method: "event.agent_status", params: {
+        agentId: run.agentId, runId: run.coreRunId, eventId: "terminal:agent:1", sequence: 3,
+        status: "error", runStatus: "errored",
+        turnEvent: { type: "run_terminal", payload: { runId: run.coreRunId, status: "failed" } },
+      } });
+      const params = projected.params;
+      for (const bad of [
+        { ...params, sessionId: "other-session" },
+        { ...params, agentId: "other-agent" },
+        { ...params, runId: "other-run" },
+        { ...params, turnEvent: { type: "run_terminal", payload: { runId: "other-run", status: "failed" } } },
+        { ...params, turnEvent: { type: "turn_complete", payload: { runId: run.coreRunId, status: "failed" } } },
+        { ...params, status: "idle" },
+        { ...params, eventId: "" },
+        { ...params, sequence: 0 },
+      ]) {
+        h.service.observeSessionEvent(run.sessionId!, { method: "event.agent_status", params: bad });
+        expect(h.service.runs({ id: h.routine.id }).runs[0]).toMatchObject({ status: "running", finishedAt: null });
+      }
+      h.service.observeSessionEvent(run.sessionId!, { method: "event.session_event", params: {
+        ...params, event: { type: "run_terminal", payload: { runId: run.coreRunId, status: "failed" } },
+      } });
+      expect(h.service.runs({ id: h.routine.id }).runs[0]).toMatchObject({ status: "running", finishedAt: null });
+      h.service.observeSessionEvent(run.sessionId!, projected);
+      expect(h.service.runs({ id: h.routine.id }).runs[0]).toMatchObject({ status: "failed", finishedAt: expect.any(String) });
+      expect(h.service.delete({ id: h.routine.id })).toEqual({ deleted: true });
+    } finally { await h.cleanup(); }
+  });
+
+  it("records a projected unknown outcome as failed and releases the held routine", async () => {
+    const f = fixture();
+    f.manager.streamAgentMessage.mockRejectedValue(new Error("turn failed"));
+    f.manager.stopAgent.mockRejectedValue(new Error("stop failed"));
+    const h = routineService(f);
+    try {
+      h.service.run({ id: h.routine.id });
+      await vi.waitFor(() => expect(h.service.runs({ id: h.routine.id }).runs[0]?.error).toContain("could not confirm"));
+      const run = h.service.runs({ id: h.routine.id }).runs[0]!;
+      const projected = projectedCoreTerminal(run, "unknown_outcome");
+      expect(projected).toMatchObject({ method: "event.agent_status", params: {
+        status: "error", runStatus: "errored",
+        turnEvent: { type: "run_terminal", payload: { status: "unknown_outcome" } },
+      } });
+      h.service.observeSessionEvent(run.sessionId!, projected);
+      expect(h.service.runs({ id: h.routine.id }).runs[0]).toMatchObject({
+        status: "failed", finishedAt: expect.any(String),
+        error: "An action's outcome could not be confirmed. Open the session for details.",
+      });
+      expect(h.service.delete({ id: h.routine.id })).toEqual({ deleted: true });
+    } finally { await h.cleanup(); }
+  });
+
   it("preserves the canonical permission denial even when the model finishes its answer", async () => {
     const f = fixture();
     f.manager.streamAgentMessage.mockImplementation(async () => ({ terminal: { code: 0 } }) as never);

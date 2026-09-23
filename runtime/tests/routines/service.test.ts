@@ -2,6 +2,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
 import { MAX_ROUTINE_RUNS, RoutineExecutionUnsettledError, RoutineService, type RoutineExecutor, type RoutineRunFailure } from "../../src/routines/service.js";
 
 const roots: string[] = [];
@@ -217,10 +218,10 @@ describe("daemon-owned local routines", () => {
     f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
     f.service.run({ id: routine.id });
     await vi.waitFor(() => expect(f.service.runs({ id: routine.id }).runs[0]?.error).toContain("could not confirm"));
-    f.service.observeSessionEvent("session-1", { method: "event.session_event", params: {
-      agentId: "agent-1", runId: "agent-1", eventId: "terminal:agent-1:1", sequence: 3,
-      event: { type: "run_terminal", payload: { runId: "agent-1", status: "failed", exitCode: 1 } },
-    } });
+    f.service.observeSessionEvent("session-1", notificationFromDaemonEvent("session-1", "agent-1", {
+      id: "terminal:agent-1:1", eventId: "terminal:agent-1:1", sequence: 3, runId: "agent-1",
+      type: "run_terminal", payload: { runId: "agent-1", status: "failed", exitCode: 1 },
+    }));
     expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "running", finishedAt: null });
     expect(() => f.service.run({ id: routine.id })).toThrow("active run");
   });
