@@ -77,7 +77,7 @@ export function snapshotInstalledPlugin(root: string, storageRoot: string, diges
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const temporary = `${destination}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    cpSync(root, temporary, { recursive: true, dereference: false, errorOnExist: true });
+    cpSync(root, temporary, { recursive: true, dereference: false, verbatimSymlinks: true, errorOnExist: true });
     if (hashInstalledPlugin(temporary) !== digest || hashInstalledPlugin(root) !== digest) {
       throw new Error("Installed plugin changed while creating its snapshot");
     }

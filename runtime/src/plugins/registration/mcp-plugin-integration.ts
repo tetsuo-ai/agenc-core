@@ -353,7 +353,9 @@ async function extractMcpServerRegistrationsFromPlugins(
       });
       continue;
     }
-    const scoped = addPluginScopeToServers(plugin, plugin.mcpServers, options);
+    // Resolve launch templates against the immutable bytes, before a shell
+    // argument can embed an absolute path to the mutable installation.
+    const scoped = addPluginScopeToServers({ ...plugin, root: snapshotRoot }, plugin.mcpServers, options);
     for (const serverName of Object.keys(plugin.mcpServers)) {
       const name = pluginScopedServerIdentifier(plugin.id, serverName);
       const server = scoped[name];

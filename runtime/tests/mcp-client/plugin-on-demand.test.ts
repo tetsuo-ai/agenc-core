@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -79,6 +79,179 @@ beforeEach(() => { spawn.mockReset(); clients.length = 0; setupTransport(); });
 afterEach(async () => { for (const path of homes.splice(0)) await rm(path, { recursive: true, force: true }); });
 
 describe("plugin MCP on-demand lifecycle", () => {
+  it("serializes reconnect disposal with a concurrent call and keeps a starting reconnect budgeted", async () => {
+    const cacheHome = await home();
+    const a = config(cacheHome, "plugin:sample:reconnect-race", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "reconnect-race", digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 0 } } });
+    const b = config(cacheHome, "plugin:sample:budget-race", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "budget-race", digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 0 } } });
+    warm(a); warm(b);
+    const close = deferred(); const connect = deferred<never>();
+    void connect.promise.catch(() => undefined);
+    const manager = new MCPManager([a, b]);
+    try {
+      await manager.start(); await manager.callTool(a.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      const reconnect = manager.reconnectServer(a.name);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      const concurrent = manager.callTool(a.name, "ping", {});
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(spawn).toHaveBeenCalledTimes(1);
+      close.resolve(); await reconnect; await concurrent;
+      const original = spawn.getMockImplementation()!;
+      spawn.mockImplementation(async (...args) => args[0].name === a.name ? connect.promise : original(...args));
+      const restarting = manager.reconnectServer(a.name);
+      await waitFor(() => spawn.mock.calls.length >= 3);
+      const competing = manager.callTool(b.name, "ping", {});
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(spawn.mock.calls.filter(call => call[0].name === b.name)).toHaveLength(0);
+      connect.reject(new Error("fixture cancelled"));
+      await restarting; await competing;
+    } finally { close.resolve(); connect.reject(new Error("fixture cancelled")); await manager.stop(); }
+  });
+
+  it("never launches a shell argument against the mutable plugin root", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const digest = hashInstalledPlugin(root); const snapshotRoot = snapshotInstalledPlugin(root, cacheHome, digest);
+    const cfg = config(cacheHome, "plugin:sample:shell", { command: "sh", args: ["-c", `exec node ${root}/entry.js`], cwd: root,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "shell", digest, pluginRoot: root, snapshotRoot } } });
+    warm(cfg); const manager = new MCPManager([cfg]);
+    try { await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      expect(spawn.mock.calls[0]?.[0].args?.[1]).toBe(`exec node ${snapshotRoot}/entry.js`);
+    } finally { await manager.stop(); }
+  });
+
+  it("resolves plugin root templates against the snapshot and rejects unresolved executable references", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const plugin = { id: "sample", name: "sample", root, source: "sample", enabled: true,
+      contentProvenance: "authority-controlled", manifest: { name: "sample" },
+      mcpServers: { main: { command: "sh", args: ["-c", "exec node ${AGENC_PLUGIN_ROOT}/entry.js"] } },
+    } as unknown as LoadedPlugin;
+    const registrations = await loadPluginMcpServerRegistrations({
+      plugins: [plugin], pluginStorageRoot: cacheHome, workspaceRoot: cacheHome,
+    });
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]!.server.args?.[1]).toBe(`exec node ${registrations[0]!.snapshotRoot}/entry.js`);
+    const cfg = config(cacheHome, "plugin:sample:unresolved", {
+      args: [`--file=${root}ish/entry.js`],
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "unresolved",
+        digest: registrations[0]!.digest, pluginRoot: root, snapshotRoot: registrations[0]!.snapshotRoot } },
+    });
+    warm(cfg); const manager = new MCPManager([cfg]);
+    try { await manager.start();
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { await manager.stop(); }
+  });
+
+  it("snapshots a valid relative link without changing its target text", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "plugin");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    await symlink("entry.js", join(root, "bin.js"));
+    const snapshotRoot = snapshotInstalledPlugin(root, cacheHome, hashInstalledPlugin(root));
+    expect(await readlink(join(snapshotRoot, "bin.js"))).toBe("entry.js");
+  });
+
+  it("waits for discovery after a bridge is published before serving a second call", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:half-ready"); warm(cfg);
+    const discovery = deferred<{ resources: readonly Record<string, unknown>[] }>();
+    setupTransport([descriptor()], { capabilities: { resources: {} } });
+    const original = spawn.getMockImplementation()!;
+    spawn.mockImplementation(async (...args) => { const client = await original(...args);
+      (client as never as { listResources: ReturnType<typeof vi.fn> }).listResources.mockImplementation(() => discovery.promise); return client; });
+    const manager = new MCPManager([cfg]);
+    try { await manager.start(); const first = manager.callTool(cfg.name, "ping", {});
+      await waitFor(() => clients[0]?.listResources.mock.calls.length > 0);
+      const second = manager.callTool(cfg.name, "ping", {});
+      let settled = false; void second.then(() => { settled = true; });
+      await new Promise(resolve => setTimeout(resolve, 10)); expect(settled).toBe(false);
+      discovery.resolve({ resources: [] });
+      expect((await first).isError).not.toBe(true); expect((await second).isError).not.toBe(true);
+    } finally { discovery.resolve({ resources: [] }); await manager.stop(); }
+  });
+
+  it("keeps a live listing active through the idle deadline", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+    setupTransport([descriptor()], { capabilities: { resources: {} } });
+    const manager = new MCPManager([cfg]); const listing = deferred<{ resources: readonly Record<string, unknown>[] }>();
+    try { await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.listResources.mockImplementation(() => listing.promise);
+      const pending = manager.getResourcesByServer(cfg.name);
+      await waitFor(() => clients[0]!.listResources.mock.calls.length >= 2);
+      await new Promise(resolve => setTimeout(resolve, 40));
+      expect(clients[0]!.close).not.toHaveBeenCalled();
+      listing.resolve({ resources: [] }); await pending;
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+    } finally { listing.resolve({ resources: [] }); await manager.stop(); }
+  });
+
+  it.each(["getResources", "getResourcesByServer", "listPrompts", "listPromptsByServer"] as const)(
+    "keeps %s active through the idle deadline", async method => {
+      const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+      setupTransport([descriptor()], { capabilities: { resources: {}, prompts: {} } });
+      const held = deferred<{ resources?: readonly Record<string, unknown>[]; prompts?: readonly Record<string, unknown>[] }>();
+      const manager = new MCPManager([cfg]);
+      try { await manager.start(); await manager.callTool(cfg.name, "ping", {});
+        const client = clients[0] as unknown as { close: ReturnType<typeof vi.fn>; listResources: ReturnType<typeof vi.fn>; listPrompts: ReturnType<typeof vi.fn> };
+        const listing = method.includes("Prompts") ? client.listPrompts : client.listResources;
+        listing.mockImplementation(() => held.promise);
+        const pending = method === "getResources" ? manager.getResources() :
+          method === "getResourcesByServer" ? manager.getResourcesByServer(cfg.name) :
+          method === "listPrompts" ? manager.listPrompts() : manager.listPromptsByServer(cfg.name);
+        await waitFor(() => listing.mock.calls.length >= 2);
+        await new Promise(resolve => setTimeout(resolve, 40));
+        expect(client.close).not.toHaveBeenCalled();
+        held.resolve({ resources: [], prompts: [] }); await pending;
+        await waitFor(() => client.close.mock.calls.length > 0);
+      } finally { held.resolve({ resources: [], prompts: [] }); await manager.stop(); }
+    },
+  );
+
+  it("retires a crash during a resource read before the next read", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:busy-crash", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "busy-crash", digest: "a".repeat(64), idleTimeoutMs: 0 } } }); warm(cfg);
+    setupTransport([descriptor()], { capabilities: { resources: {} } });
+    const read = deferred<{ contents: readonly Record<string, unknown>[] }>();
+    const manager = new MCPManager([cfg]);
+    try { await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.readResource.mockImplementation(() => read.promise);
+      const first = manager.readResource(`mcp.${cfg.name}.fixture://item`);
+      await waitFor(() => clients[0]!.readResource.mock.calls.length > 0);
+      (clients[0] as unknown as { onclose?: () => void }).onclose?.();
+      expect(manager.getConnectionState(cfg.name)?.type).not.toBe("connected");
+      read.resolve({ contents: [{ uri: "fixture://item", text: "old" }] }); await first;
+      await manager.readResource(`mcp.${cfg.name}.fixture://item`);
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally { read.resolve({ contents: [] }); await manager.stop(); }
+  });
+
+  it("returns cold tool search after discovery while close remains pending", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:cold-close", { timeout: 20,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "cold-close", digest: "a".repeat(64), maxProcesses: 1 } } });
+    const other = config(cacheHome, "plugin:sample:after-cold-close", {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "after-cold-close", digest: "a".repeat(64), maxProcesses: 1 } } }); warm(other);
+    const close = deferred(); const manager = new MCPManager([cfg]); const competitor = new MCPManager([other]);
+    try {
+      setupTransport([descriptor()], { capabilities: { resources: {}, prompts: {} },
+        resources: [{ uri: "fixture://item", name: "item" }], prompts: [{ name: "hello" }] });
+      await manager.start();
+      const original = spawn.getMockImplementation()!;
+      spawn.mockImplementation(async (...args) => { const client = await original(...args); client.close.mockImplementation(() => close.promise); return client; });
+      const registry = buildToolRegistry({ workspaceRoot: cacheHome, mcpToolsProvider: manager, requireAdmission: false });
+      const search = registry.dispatch({ id: "cold-close", name: "system.searchTools", arguments: JSON.stringify({ query: "ping" }) });
+      await waitFor(() => clients[0]?.close.mock.calls.length > 0);
+      const result = await Promise.race([search.then(value => ({ done: true, value })), new Promise<{ done: false }>(resolve => setTimeout(() => resolve({ done: false }), 65))]);
+      expect(result.done).toBe(true);
+      if (result.done) expect(result.value.content).toContain(`mcp.${cfg.name}.ping`);
+      expect(await manager.getResourcesByServer(cfg.name)).toHaveLength(1);
+      expect(await manager.listPromptsByServer(cfg.name)).toHaveLength(1);
+      await competitor.start();
+      const competing = competitor.callTool(other.name, "ping", {});
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(spawn).toHaveBeenCalledTimes(1);
+      close.resolve(); await search;
+      await competing;
+    } finally { close.resolve(); await Promise.all([manager.stop(), competitor.stop()]); }
+  });
   it("keeps an evicted generation owned until disposal and waits for it at shutdown", async () => {
     const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
     const close = deferred();
@@ -123,7 +296,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     try {
       await manager.start(); await manager.callTool(cfg.name, "ping", {});
       const oldConfig = manager.getServerConfig(cfg.name)!;
-      const oldOwner = (manager as never as { processOwners: Map<string, object> }).processOwners.get(cfg.name)!;
+      const oldOwner = (manager as never as { pluginLifecycles: Map<string, { reservation: object }> }).pluginLifecycles.get(cfg.name)!.reservation;
       const oldGeneration = (manager as never as { lifecycleGeneration: number }).lifecycleGeneration;
       await manager.refreshServers([replacement]);
       await manager.callTool(cfg.name, "ping", {});
@@ -435,7 +608,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     const search = await registry.dispatch({ id: "find-plugin", name: "system.searchTools", arguments: JSON.stringify({ query: "ping" }) });
     expect(search.content).toContain(`mcp.${cfg.name}.ping`);
     expect(spawn).toHaveBeenCalledTimes(1);
-    expect(first.getConnectionState(cfg.name)?.type).toBe("stopped");
+    await waitFor(() => first.getConnectionState(cfg.name)?.type === "stopped");
     expect(readPluginCatalog({ pluginName: "sample", serverName: cfg.name, version: "1", digest: "a".repeat(64), cacheHome, configFingerprint: fingerprintPluginCatalogConfig({ transport: cfg.transport ?? "stdio", command: cfg.command, args: cfg.args, env: cfg.env, env_vars: cfg.env_vars, cwd: cfg.cwd, endpoint: cfg.endpoint, headers: cfg.headers, pluginSandbox: cfg.pluginSandbox, userConfigDigest: cfg.origin?.pluginServer?.userConfigDigest, parentEnvironment: {} }) })?.tools).toMatchObject([descriptor()]);
     await first.stop();
     spawn.mockClear();
@@ -456,7 +629,7 @@ describe("plugin MCP on-demand lifecycle", () => {
       await manager.start();
       await manager.primeCatalogs();
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(manager.getConnectionState(cfg.name)?.type).toBe("stopped");
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "stopped");
       expect(await manager.getResourcesByServer(cfg.name)).toHaveLength(1);
       expect(await manager.listPromptsByServer(cfg.name)).toHaveLength(1);
       expect(spawn).toHaveBeenCalledTimes(1);
