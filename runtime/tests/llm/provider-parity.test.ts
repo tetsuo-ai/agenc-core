@@ -6,6 +6,7 @@ import { StaticModelsManager } from "./models-manager.js";
 import {
   createProvider,
   readProviderIdentity,
+  KNOWN_PROVIDER_NAMES,
   type ProviderFactoryOptions,
   type ProviderName,
 } from "./provider.js";
@@ -36,6 +37,8 @@ import { OllamaProvider } from "./providers/ollama/adapter.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import { OpenAIProvider } from "./providers/openai/adapter.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
+import { OllamaCloudProvider } from "./providers/ollama-cloud/index.js";
+import { AgenCProvider } from "./providers/agenc/index.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -44,6 +47,14 @@ import type {
   LLMTool,
   LLMToolCall,
 } from "./types.js";
+import { DESKTOP_PLUGIN_TOOLS } from "./fixtures/desktop-plugin-tools.js";
+import { encodeMcpToolNameForWire } from "./wire/mcp-tool-naming.js";
+import { buildToolRegistry } from "../tool-registry.js";
+import type { Tool } from "../tools/types.js";
+import { Server as McpFixtureServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { Client as McpFixtureClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 function withEnv<T>(
   overrides: Record<string, string | undefined>,
@@ -1078,7 +1089,244 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   },
 ];
 
+const MATRIX_PROVIDERS: readonly ProviderParityEntry[] = [
+  ...PROVIDERS,
+  {
+    provider: "ollama-cloud", model: "deepseek-v4.1-flash", env: {},
+    createHarness: (parityCase) => createFetchHarness({
+      factory: (fetchImpl) => new OllamaCloudProvider({
+        apiKey: "ollama-cloud-test", model: "deepseek-v4.1-flash",
+        tools: parityCase.tools ? [...parityCase.tools] : [], fetchImpl,
+      }),
+      payload: buildChatCompletionsPayload("deepseek-v4.1-flash", parityCase),
+    }),
+  },
+  {
+    provider: "agenc", model: "grok-4-fast", env: {},
+    createHarness: (parityCase) => {
+      const delegate = createResponsesHarness({
+        providerFactory: () => new GrokProvider({
+          apiKey: "managed-test", model: "grok-4-fast",
+          tools: parityCase.tools ? [...parityCase.tools] : [],
+        }),
+        payload: buildResponsesApiPayload("grok-4-fast", parityCase),
+      });
+      return {
+        requests: delegate.requests,
+        provider: new AgenCProvider({
+          model: "grok-4-fast", tools: parityCase.tools ? [...parityCase.tools] : [],
+          sessionId: "session-matrix" as any,
+          authBackend: {
+            inferAgencModel: () => ({ provider: "grok", model: "grok-4-fast" }),
+            vendKey: () => ({ kind: "api-key", provider: "grok", sessionId: "session-matrix", apiKey: "managed-test" }),
+          } as any,
+          providerFactory: () => delegate.provider,
+        }),
+      };
+    },
+  },
+  {
+    provider: "grok", model: "grok-4.7", env: {},
+    createHarness: (parityCase) => createResponsesHarness({
+      providerFactory: () => new GrokProvider({ apiKey: "xai-test", model: "grok-4.7", tools: parityCase.tools ? [...parityCase.tools] : [] }),
+      payload: buildResponsesApiPayload("grok-4.7", parityCase),
+    }),
+  },
+  {
+    provider: "anthropic", model: "claude-opus-5-5", env: {},
+    createHarness: (parityCase) => createFetchHarness({
+      factory: (fetchImpl) => new AnthropicProvider({ apiKey: "anthropic-test", model: "claude-opus-5-5", tools: parityCase.tools ? [...parityCase.tools] : [], fetchImpl }),
+      payload: buildAnthropicPayload("claude-opus-5-5", parityCase),
+    }),
+  },
+];
+
 describe("provider parity", () => {
+  it("loads Desktop and plugin MCP definitions through the session tool search", async () => {
+    const servers = new Map<string, Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>>();
+    for (const tool of DESKTOP_PLUGIN_TOOLS) {
+      const qualified = tool.function.name.slice("mcp.".length);
+      const separator = qualified.indexOf(".");
+      const serverName = qualified.slice(0, separator);
+      const rawName = qualified.slice(separator + 1);
+      const definitions = servers.get(serverName) ?? [];
+      definitions.push({ name: rawName, description: tool.function.description, inputSchema: tool.function.parameters });
+      servers.set(serverName, definitions);
+    }
+    const serverTools: Tool[] = [];
+    for (const [serverName, definitions] of servers) {
+      const server = new McpFixtureServer({ name: serverName, version: "1.0.0" }, { capabilities: { tools: {} } });
+      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: definitions }));
+      const client = new McpFixtureClient({ name: "matrix-client", version: "1.0.0" }, { capabilities: {} });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        for (const listed of (await client.listTools()).tools) {
+          serverTools.push({
+            name: `mcp.${serverName}.${listed.name}`,
+            description: listed.description ?? listed.name,
+            inputSchema: listed.inputSchema,
+            execute: async () => ({ content: "fixture" }),
+          });
+        }
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    }
+    const registry = buildToolRegistry({
+      workspaceRoot: "/private/tmp", requireAdmission: false,
+      mcpToolsProvider: { getTools: () => serverTools },
+    });
+    const initial = registry.toLLMTools().map((tool) => tool.function.name);
+    expect(initial).toContain("system.searchTools");
+    expect(initial).not.toContain(DESKTOP_PLUGIN_TOOLS[0]!.function.name);
+    for (const tool of DESKTOP_PLUGIN_TOOLS) {
+      const result = await registry.dispatch({
+        id: `load-${tool.function.name}`, name: "system.searchTools",
+        arguments: JSON.stringify({ select: tool.function.name }),
+      });
+      expect(result.isError, tool.function.name).not.toBe(true);
+    }
+    for (const tool of DESKTOP_PLUGIN_TOOLS) {
+      expect(registry.toLLMTools().find((loaded) => loaded.function.name === tool.function.name)?.function.parameters)
+        .toEqual(tool.function.parameters);
+    }
+  });
+
+  it("round-trips a long Gemini plugin name through call and history", async () => {
+    const tool = DESKTOP_PLUGIN_TOOLS.at(-1)!;
+    const wireName = encodeMcpToolNameForWire(tool.function.name);
+    const requests: Record<string, any>[] = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, any>);
+      return jsonResponse({
+        candidates: [{ content: { role: "model", parts: [{ functionCall: { name: wireName, args: { symbol: "AAPL" } } }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+      });
+    });
+    const provider = new GeminiProvider({
+      credentialPlan: { kind: "api-key", credential: "gemini-test", source: "factory" },
+      endpointPlan: GEMINI_ENDPOINT_PLAN, model: "gemini-2.5-pro", tools: [tool], fetchImpl,
+    });
+    const first = await provider.chat([{ role: "user", content: "Inspect AAPL" }], {
+      toolChoice: { type: "function", name: tool.function.name },
+    });
+    expect(requests[0]?.toolConfig?.functionCallingConfig?.allowedFunctionNames).toEqual([wireName]);
+    expect(first.toolCalls[0]?.name).toBe(tool.function.name);
+    await provider.chat([
+      { role: "user", content: "Inspect AAPL" },
+      { role: "assistant", content: "", toolCalls: first.toolCalls },
+      { role: "tool", toolCallId: first.toolCalls[0]!.id, toolName: tool.function.name, content: "ok" },
+    ]);
+    expect(requests[1]?.contents?.[1]?.parts?.[0]?.functionCall?.name).toBe(wireName);
+    expect(requests[1]?.contents?.[2]?.parts?.[0]?.functionResponse?.name).toBe(wireName);
+  });
+
+  it("decodes a streamed Gemini plugin call before exposing it to the tool executor", async () => {
+    const tool = DESKTOP_PLUGIN_TOOLS.at(-1)!;
+    const wireName = encodeMcpToolNameForWire(tool.function.name);
+    const frame = JSON.stringify({
+      candidates: [{ content: { parts: [{ functionCall: { name: wireName, args: { symbol: "AAPL" } } }] }, finishReason: "STOP" }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(`data: ${frame}\n\n`, { headers: { "content-type": "text/event-stream" } }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: { kind: "api-key", credential: "gemini-test", source: "factory" },
+      endpointPlan: GEMINI_ENDPOINT_PLAN, model: "gemini-2.5-pro", tools: [tool], fetchImpl,
+    });
+    const chunks: unknown[] = [];
+    const response = await provider.chatStream([{ role: "user", content: "Inspect AAPL" }], (chunk) => chunks.push(chunk));
+    expect(response.toolCalls[0]?.name).toBe(tool.function.name);
+    expect(chunks).toContainEqual(expect.objectContaining({
+      toolInputBlockStart: expect.objectContaining({
+        contentBlock: expect.objectContaining({ name: tool.function.name }),
+      }),
+    }));
+  });
+
+  it("keeps Desktop and plugin tools on a Grok 4.7 vision turn", async () => {
+    const parityCase: CanonicalPromptCase = {
+      id: "grok-4-7-vision-tools",
+      messages: [{ role: "user", content: [
+        { type: "text", text: "Inspect this image and list my routines" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" } },
+      ] }],
+      requestMarkers: [], tools: DESKTOP_PLUGIN_TOOLS,
+      expected: { content: "ok", finishReason: "stop", toolCalls: [] },
+    };
+    const entry = MATRIX_PROVIDERS.find((provider) => provider.provider === "grok" && provider.model === "grok-4.7")!;
+    const { provider, requests } = entry.createHarness(parityCase);
+    await provider.chat([...parityCase.messages]);
+    const payload = requests[0]?.payload as Record<string, any>;
+    expect(payload.tools).toHaveLength(DESKTOP_PLUGIN_TOOLS.length);
+  });
+
+  it("covers every registered provider in the wire capture matrix", () => {
+    expect(new Set(MATRIX_PROVIDERS.map((entry) => entry.provider))).toEqual(new Set(KNOWN_PROVIDER_NAMES));
+  });
+
+  it.each(MATRIX_PROVIDERS)("advertises tool search to $provider/$model before MCP discovery", async (entry) => {
+    const search = buildToolRegistry({ workspaceRoot: "/private/tmp", requireAdmission: false })
+      .toLLMTools().find((tool) => tool.function.name === "system.searchTools");
+    expect(search).toBeDefined();
+    const parityCase: CanonicalPromptCase = {
+      id: "desktop-plugin-search-entry",
+      messages: [{ role: "user", content: "Find the Desktop routine and plugin tools" }],
+      requestMarkers: [], tools: [search!],
+      expected: { content: "ok", finishReason: "stop", toolCalls: [] },
+    };
+    const { provider, requests } = entry.createHarness(parityCase);
+    await provider.chat([...parityCase.messages]);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0]!.payload as Record<string, any>;
+    const names: string[] = entry.provider === "gemini"
+      ? payload.tools?.[0]?.functionDeclarations?.map((tool: any) => tool.name) ?? []
+      : entry.provider === "amazon-bedrock"
+        ? payload.toolConfig?.tools?.map((tool: any) => tool.toolSpec.name) ?? []
+        : payload.tools?.map((tool: any) => tool.function?.name ?? tool.name) ?? [];
+    // Gemini accepts dots in declarations; Ollama keeps local catalog names.
+    const expectedName = entry.provider === "gemini" || entry.provider === "ollama"
+      ? search!.function.name : encodeMcpToolNameForWire(search!.function.name);
+    expect(names).toContain(expectedName);
+  });
+
+  it.each(MATRIX_PROVIDERS)("serves Desktop routines and plugin MCP tools to $provider/$model", async (entry) => {
+    const parityCase: CanonicalPromptCase = {
+      id: "desktop-plugin-matrix",
+      messages: [{ role: "user", content: "List my routines and inspect AAPL" }],
+      requestMarkers: [],
+      tools: DESKTOP_PLUGIN_TOOLS,
+      expected: { content: "ok", finishReason: "stop", toolCalls: [] },
+    };
+    const { provider, requests } = entry.createHarness(parityCase);
+    await provider.chat([...parityCase.messages]);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0]!.payload as Record<string, any>;
+    const definitions: Array<{ name: string; schema: Record<string, unknown> }> =
+      entry.provider === "gemini"
+        ? payload.tools?.[0]?.functionDeclarations?.map((tool: any) => ({ name: tool.name, schema: tool.parametersJsonSchema })) ?? []
+        : entry.provider === "amazon-bedrock"
+          ? payload.toolConfig?.tools?.map((tool: any) => ({ name: tool.toolSpec.name, schema: tool.toolSpec.inputSchema.json })) ?? []
+          : entry.provider === "anthropic"
+            ? payload.tools?.map((tool: any) => ({ name: tool.name, schema: tool.input_schema })) ?? []
+            : payload.tools?.map((tool: any) => ({ name: tool.function?.name ?? tool.name, schema: tool.function?.parameters ?? tool.parameters })) ?? [];
+    expect(definitions).toHaveLength(DESKTOP_PLUGIN_TOOLS.length);
+    for (const fixture of DESKTOP_PLUGIN_TOOLS) {
+      const wireName = encodeMcpToolNameForWire(fixture.function.name);
+      const definition = definitions.find((tool) => tool.name === wireName);
+      expect(definition, `${entry.provider}/${entry.model}: ${fixture.function.name}`).toBeDefined();
+      expect(definition!.name).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+      expect(definition!.schema?.type).toBe("object");
+      expect(Object.keys(definition!.schema.properties as Record<string, unknown>)).toEqual(
+        Object.keys(fixture.function.parameters.properties as Record<string, unknown>),
+      );
+      expect(definition!.schema.required).toEqual(fixture.function.parameters.required);
+    }
+  });
   it("constructs every provider and preserves canonical identity/capability/model metadata", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
