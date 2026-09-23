@@ -3915,9 +3915,63 @@ export async function* runAgent(
           })
         : provider;
     if (childProviderBase !== provider) ownedChildProvider = childProviderBase;
+    const withPassiveMessages = (messages: LLMMessage[]): LLMMessage[] => {
+      const received = live.downInbox.drainPassiveCommunications();
+      const input = received.map((message): LLMMessage => {
+        const content = framePassiveAgentInput(
+          live,
+          message.author,
+          message.content,
+        );
+        return {
+          role: "user",
+          content: typeof content === "string" ? content : [...content],
+        };
+      });
+      return [...messages, ...input];
+    };
+    const wrapPrewarm = (
+      handle: LLMProviderStartupPrewarmHandle,
+    ): LLMProviderStartupPrewarmHandle => ({
+      ...handle,
+      chatStream(messages, onChunk, options) {
+        return handle.chatStream(withPassiveMessages(messages), onChunk, options);
+      },
+    });
+    const providerWithMessages: LLMProvider = preserveProviderFactoryState(
+      {
+        ...childProviderBase,
+        chatStream(messages, onChunk, options) {
+          return childProviderBase.chatStream(
+            withPassiveMessages(messages),
+            onChunk,
+            options,
+          );
+        },
+        ...(childProviderBase.prewarmStartup !== undefined
+          ? {
+              prewarmStartup(params: LLMProviderStartupPrewarmParams) {
+                const prewarm = childProviderBase.prewarmStartup!(params);
+                if (
+                  !prewarm ||
+                  typeof (prewarm as Promise<unknown>).then !== "function"
+                ) {
+                  return prewarm
+                    ? wrapPrewarm(prewarm as LLMProviderStartupPrewarmHandle)
+                    : prewarm;
+                }
+                return Promise.resolve(prewarm).then((handle) =>
+                  handle ? wrapPrewarm(handle) : handle,
+                );
+              },
+            }
+          : {}),
+      },
+      childProviderBase,
+    );
     const childProvider = params.onCacheSafeParams
-      ? wrapProviderForAgentSummary(childProviderBase, captureCacheSafeParams)
-      : childProviderBase;
+      ? wrapProviderForAgentSummary(providerWithMessages, captureCacheSafeParams)
+      : providerWithMessages;
     childSession = buildChildSession(
       params,
       childProvider,

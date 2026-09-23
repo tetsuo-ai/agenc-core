@@ -97,6 +97,24 @@ export async function handleMessageStringTool(
   if (!receiverAgentPath) {
     return agentValidationError("target agent is missing an agent_path");
   }
+  if (mode === "queue_only" && agentId !== sessionOrError.conversationId) {
+    const currentStatus = await control.getStatus(agentId);
+    if (
+      currentStatus.status !== "running" &&
+      currentStatus.status !== "pending_init"
+    ) {
+      return confirmedNoAgentEffect(
+        json({
+          ok: false,
+          delivered: false,
+          mode: "send_message",
+          target: receiverAgentPath,
+          status: currentStatus,
+          hint: "This agent has no active model call. Use assign_task to start a new turn on an idle worker.",
+        }),
+      );
+    }
+  }
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",
     payload: {
@@ -163,6 +181,13 @@ export async function handleMessageStringTool(
     mode: mode === "trigger_turn" ? "assign_task" : "send_message",
     target: receiverAgentPath,
     status,
+    ...(mode === "queue_only"
+      ? {
+          delivered: false,
+          delivery: "accepted_unconfirmed",
+          hint: "Queued for the next model call. If this turn ends first, the message will not be read; use assign_task on an idle worker.",
+        }
+      : {}),
     ...(acceptedTask !== undefined
       ? {
           task_id: acceptedTask.taskId,

@@ -1545,6 +1545,82 @@ describe("runAgent", () => {
     );
   });
 
+  it("delivers a passive child message at the next model call", async () => {
+    const provider = makeProvider([
+      {
+        content: "",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: "{}" }],
+        finishReason: "tool_calls",
+      },
+      { content: "done", finishReason: "stop" },
+    ]);
+    const session = makeStubSession({
+      services: {
+        provider,
+        registry: {
+          tools: [{
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute: async () => ({ content: "ok" }),
+          }],
+          toLLMTools: () => [{
+            type: "function",
+            function: { name: "system.echo", description: "echo", parameters: { type: "object" } },
+          }],
+          dispatch: async () => ({ content: "ok" }),
+        } satisfies ToolRegistry,
+      },
+    });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "go" }],
+      taskPrompt: "go",
+    });
+
+    await nextProgressEvent(iter, "tool_call");
+    await control.sendInterAgentCommunication(live.agentId, {
+      author: "/root",
+      recipient: live.agentPath,
+      content: "check the edge case",
+      triggerTurn: false,
+      metadata: createMailboxMetadataRecord("inter_agent_communication", [["deliveryMode", "queue_only"]]),
+    });
+    const { result } = await collectRun(iter);
+    expect(result.outcome).toBe("completed");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    const secondMessages = (provider.chatStream as ReturnType<typeof vi.fn>).mock.calls[1]![0] as LLMMessage[];
+    expect(JSON.stringify(secondMessages)).toContain("check the edge case");
+    expect(live.downInbox.hasPending()).toBe(false);
+  });
+
+  it("cannot deliver a message sent after the child's last model call", async () => {
+    const provider = makeProvider([{ content: "finished" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "go" }],
+      taskPrompt: "go",
+    });
+
+    await nextProgressEvent(iter, "message");
+    await control.sendInterAgentCommunication(live.agentId, {
+      author: "/root",
+      recipient: live.agentPath,
+      content: "too late for this turn",
+      triggerTurn: false,
+      metadata: createMailboxMetadataRecord("inter_agent_communication", [["deliveryMode", "queue_only"]]),
+    });
+    const { result } = await collectRun(iter);
+    expect(result.outcome).toBe("completed");
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(live.downInbox.hasPending()).toBe(false);
+  });
+
   it("ignores array-shaped parent services when resolving the provider", async () => {
     const provider = makeProvider([{ content: "should not run" }]);
     const session = makeStubSession();

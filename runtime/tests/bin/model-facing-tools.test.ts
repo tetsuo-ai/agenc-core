@@ -4746,7 +4746,9 @@ describe("model-facing tools", () => {
       sendInterAgentCommunication: vi.fn(async () => {
         throw new Error("agent with id agent-1 is closed");
       }),
-      getStatus: vi.fn(async () => ({ status: "shutdown" as const })),
+      getStatus: vi.fn()
+        .mockResolvedValueOnce({ status: "running", turnId: "turn-1", startedAtMs: 1 })
+        .mockResolvedValue({ status: "shutdown" as const }),
     };
     _setAgentControlForTesting(session, {
       control: control as never,
