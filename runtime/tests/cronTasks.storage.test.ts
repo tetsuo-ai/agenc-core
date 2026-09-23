@@ -1,4 +1,5 @@
 import "./helpers/cron-os-home.js";
+import { setTimeout as realSleep } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { renameSync, symlinkSync, unlinkSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -47,6 +48,20 @@ let root: string;
 let workspace: string;
 let outside: string;
 const task = (id: string): CronTask => ({ id, cron: "* * * * *", prompt: "synthetic durable work", createdAt: 1_000, recurring: true });
+/**
+ * Durable cron storage does real file I/O while these tests fake the clock.
+ * Advance fake time in steps and let that I/O finish between them, so the
+ * fake clock never runs an hour ahead of a claim that is still reading.
+ */
+async function advanceAlongsideRealIo(ms: number, drain?: () => Promise<void>): Promise<void> {
+  const step = 10_000;
+  for (let elapsed = 0; elapsed < ms; elapsed += step) {
+    await vi.advanceTimersByTimeAsync(Math.min(step, ms - elapsed));
+    if (drain !== undefined) await drain();
+    // node:timers/promises is not faked: a real pause lets file I/O settle.
+    await realSleep(5);
+  }
+}
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "agenc-cron-storage-"));
   workspace = join(root, "workspace");
@@ -289,12 +304,12 @@ describe("cron tools without durable storage", () => {
     setScheduledTasksEnabled(true);
     try {
       const scheduler = await startSessionCronScheduler(session, workspace);
-      await vi.advanceTimersByTimeAsync(60_000);
+      await advanceAlongsideRealIo(60_000, () => scheduler.drain());
       await scheduler.drain();
       expect(submit.mock.calls.map(([prompt]) => prompt)).toEqual(["synthetic durable work"]);
       expect(events.some((event) => event.msg.type === "warning" && event.msg.payload.cause === "scheduled_turn_failed")).toBe(true);
       expect(scheduler.getLastTelemetry()?.nextWakeInMs).not.toBeNull();
-      await vi.advanceTimersByTimeAsync(59 * 60_000);
+      await advanceAlongsideRealIo(59 * 60_000, () => scheduler.drain());
       await scheduler.drain();
       expect(submit.mock.calls.filter(([prompt]) => prompt === "synthetic durable work").length).toBeLessThan(20);
       expect(submit.mock.calls.filter(([prompt]) => prompt === "session work")).toHaveLength(1);
@@ -395,8 +410,9 @@ describe("cron tools without durable storage", () => {
       } finally {
         failure.mockRestore();
       }
-      await vi.advanceTimersByTimeAsync(61 * 60_000);
-      expect(submit).toHaveBeenCalledWith("durable after delete", expect.objectContaining({ onAccepted: expect.any(Function) }));
+      await advanceAlongsideRealIo(61 * 60_000);
+      // vi.waitFor polls on real timers, so the last claim's file I/O can finish.
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledWith("durable after delete", expect.objectContaining({ onAccepted: expect.any(Function) })));
     } finally {
       await Promise.all(closes.map((close) => close()));
       vi.useRealTimers();
