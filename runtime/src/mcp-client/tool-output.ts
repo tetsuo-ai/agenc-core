@@ -1,4 +1,8 @@
 import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { API_IMAGE_MAX_BASE64_SIZE, IMAGE_TARGET_RAW_SIZE } from "../constants/apiLimits.js";
+import type { FunctionCallOutputContentItem } from "../tools/context.js";
+import { inspectImageBytes } from "../utils/image-validation.js";
+import { maybeResizeAndDownsampleImageBuffer } from "../utils/imageResizer.js";
 import {
   getBinaryBlobSavedMessage,
   persistBinaryContent,
@@ -36,6 +40,8 @@ const HARD_LIMIT_MARKER =
 const WORK_LIMIT_MARKER =
   "[Additional MCP output omitted: aggregate safety budget exhausted]";
 const BINARY_OMITTED = "[Invalid or oversized MCP binary content omitted]";
+const IMAGE_OMITTED = "[MCP image omitted: invalid, unsupported, or oversized image]";
+const MAX_MCP_IMAGES_PER_RESULT = 4;
 const BASE64_VALUE_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 
@@ -60,7 +66,9 @@ interface RenderState {
   readonly safeContentBlocks: Array<Record<string, unknown>>;
   readonly textParts: string[];
   readonly binaryArtifacts: BinaryArtifact[];
+  readonly imageItems: FunctionCallOutputContentItem[];
   binaryBytes: number;
+  imagesProcessed: number;
   base64InspectedBytes: number;
   contentBlocksProcessed: number;
   omitted: boolean;
@@ -261,6 +269,92 @@ async function appendBinary(
   );
 }
 
+async function appendImage(
+  state: RenderState,
+  record: Record<string, unknown>,
+  index: number,
+  options: NormalizeMcpToolOutputOptions,
+): Promise<void> {
+  const encoded = record.data ?? record.blob;
+  if (
+    state.imagesProcessed >= MAX_MCP_IMAGES_PER_RESULT ||
+    typeof encoded !== "string" ||
+    encoded.length > API_IMAGE_MAX_BASE64_SIZE
+  ) {
+    appendStaticText(state, IMAGE_OMITTED);
+    return;
+  }
+  state.imagesProcessed += 1;
+
+  const bytes = decodeBase64WithinBudget(state, encoded);
+  const declaredMime = sanitizeMimeType(state, record.mimeType ?? record.mediaType);
+  if (bytes === undefined || bytes.length > IMAGE_TARGET_RAW_SIZE) {
+    appendStaticText(state, IMAGE_OMITTED);
+    return;
+  }
+  const inspection = inspectImageBytes(bytes);
+  const normalizedDeclaredMime = declaredMime?.split(";", 1)[0]?.trim().toLowerCase()
+    .replace(/^image\/jpg$/u, "image/jpeg");
+  if (
+    !inspection.ok ||
+    (declaredMime !== undefined && normalizedDeclaredMime !== inspection.mediaType)
+  ) {
+    appendStaticText(state, IMAGE_OMITTED);
+    return;
+  }
+
+  let image: Awaited<ReturnType<typeof maybeResizeAndDownsampleImageBuffer>>;
+  try {
+    image = await maybeResizeAndDownsampleImageBuffer(
+      bytes,
+      bytes.length,
+      inspection.format,
+    );
+  } catch {
+    appendStaticText(state, IMAGE_OMITTED);
+    return;
+  }
+  const mediaType = `image/${image.mediaType}`;
+  const base64 = image.buffer.toString("base64");
+  if (
+    !/^(?:image\/(?:png|jpeg|gif|webp))$/u.test(mediaType) ||
+    base64.length > API_IMAGE_MAX_BASE64_SIZE
+  ) {
+    appendStaticText(state, IMAGE_OMITTED);
+    return;
+  }
+  state.imageItems.push({
+    type: "input_image",
+    image_url: `data:${mediaType};base64,${base64}`,
+  });
+
+  const persisted = await persistBinaryContent(
+    bytes,
+    inspection.mediaType,
+    `${options.callId}-binary-${index}`,
+  );
+  if ("error" in persisted) {
+    appendStaticText(state, "[MCP image could not be persisted]");
+    return;
+  }
+  state.binaryBytes += bytes.byteLength;
+  state.binaryArtifacts.push({
+    filepath: persisted.filepath,
+    mimeType: inspection.mediaType,
+    size: persisted.size,
+    contentType: "image",
+  });
+  appendStaticText(
+    state,
+    getBinaryBlobSavedMessage(
+      persisted.filepath,
+      inspection.mediaType,
+      persisted.size,
+      "MCP image: ",
+    ),
+  );
+}
+
 async function appendResource(
   state: RenderState,
   record: Record<string, unknown>,
@@ -339,7 +433,7 @@ async function renderContentBlock(
       }
       return;
     case "image":
-      await appendBinary(state, record, "image", index, options);
+      await appendImage(state, record, index, options);
       return;
     case "audio":
       await appendBinary(state, record, "audio", index, options);
@@ -442,8 +536,8 @@ function boundedCodeModeResult(
 
 /**
  * Normalize an untrusted MCP CallToolResult into the runtime ToolResult shape.
- * Binary blocks are persisted and replaced by references; their raw base64 is
- * never copied into model-facing, metadata, or code-mode output.
+ * Image blocks are validated and attached to the model-facing result. Other
+ * binary blocks are persisted and replaced by references.
  */
 export async function normalizeMcpToolOutput(
   options: NormalizeMcpToolOutputOptions,
@@ -455,7 +549,9 @@ export async function normalizeMcpToolOutput(
     safeContentBlocks: [],
     textParts: [],
     binaryArtifacts: [],
+    imageItems: [],
     binaryBytes: 0,
+    imagesProcessed: 0,
     base64InspectedBytes: 0,
     contentBlocksProcessed: 0,
     omitted: false,
@@ -584,6 +680,9 @@ export async function normalizeMcpToolOutput(
 
   return {
     content,
+    ...(state.imageItems.length > 0
+      ? { contentItems: [{ type: "input_text" as const, text: content }, ...state.imageItems] }
+      : {}),
     isError,
     codeModeResult,
     metadata: {
