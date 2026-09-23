@@ -97,4 +97,30 @@ describe("skill root walk", () => {
       { root: f.root, loadedCount: 3, droppedCount: 2 },
     ]);
   });
+
+  it("counts symlinked skills in shallowest-first order before applying the cap", async () => {
+    const f = fixture();
+    const elsewhere = tmpRoot("scan-linked-cap");
+    writeSkill(elsewhere, "linked");
+    writeSkill(f.root, "ordinary/deep");
+    symlinkSync(join(elsewhere, "linked"), join(f.root, "linked"));
+    process.env.AGENC_MAX_SKILL_FILES_PER_ROOT = "1";
+
+    const snapshot = await f.load();
+    expect(localNames(snapshot)).toEqual(["linked"]);
+    expect(snapshot.truncatedRoots).toEqual([
+      { root: f.root, loadedCount: 1, droppedCount: 1 },
+    ]);
+  });
+
+  it("sorts ordinary and symlinked skills alphabetically at the same depth", async () => {
+    const f = fixture();
+    const elsewhere = tmpRoot("scan-linked-tie");
+    writeSkill(elsewhere, "alpha");
+    writeSkill(f.root, "zulu");
+    symlinkSync(join(elsewhere, "alpha"), join(f.root, "alpha"));
+    process.env.AGENC_MAX_SKILL_FILES_PER_ROOT = "1";
+
+    expect(localNames(await f.load())).toEqual(["alpha"]);
+  });
 });

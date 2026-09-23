@@ -166,7 +166,7 @@ describe("parsed SKILL.md reuse", () => {
 });
 
 describe("cached frontmatter keeps the parser's shape", () => {
-  it("keeps a __proto__ key a plain field, as js-yaml returns it", async () => {
+  it("keeps a __proto__ key a plain field while honoring a raw safety flag", async () => {
     // js-yaml defines "__proto__" as an own field. Copying it with a plain
     // assignment would make it the prototype, so "description" below would
     // start answering "sneaky" through it.
@@ -182,7 +182,7 @@ describe("cached frontmatter keeps the parser's shape", () => {
         (entry) => entry.name === "proto",
       );
       expect(skill?.description).toBe("Plain heading");
-      expect(skill?.disableModelInvocation).toBe(false);
+      expect(skill?.disableModelInvocation).toBe(true);
     }
   });
 });

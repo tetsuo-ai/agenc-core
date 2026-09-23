@@ -535,7 +535,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
   const maxFiles = maxSkillFilesPerRoot();
   const rootRealPath = (await getFileIdentity(root)) ?? resolve(root);
   const visited = new Set<string>([rootRealPath]);
-  const loaded: ScannedSkillFile[] = [];
+  const loaded: Array<ScannedSkillFile & { readonly depth: number }> = [];
   let droppedCount = 0;
   const pendingLinks: PendingLink[] = [];
   const topLevel: string[] = [];
@@ -550,7 +550,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
         SCAN_CONCURRENCY,
         (frame) => readDirEntries(frame.path),
       );
-      const found: ScannedSkillFile[] = [];
+      const found: Array<ScannedSkillFile & { readonly depth: number }> = [];
       const next: ScanFrame[] = [];
       level.forEach((frame, index) => {
         if (frame.depth === 1) topLevel.push(frame.path);
@@ -561,7 +561,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
             // handled by the caller).
             if (frame.top === null) continue;
             if (isSkillFile(entry.name)) {
-              found.push({ path, identity: join(frame.realPath, entry.name) });
+              found.push({ path, identity: join(frame.realPath, entry.name), depth: frame.depth });
               topsWithSkills.add(frame.top);
             } else if (
               frame.depth === 1 &&
@@ -584,12 +584,12 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
           }
         }
       });
-      // Past the cap the walk keeps going but only counts, so the snapshot
-      // can say how many skills this root holds that were never loaded.
-      for (const file of found.sort(byPath)) {
-        if (loaded.length >= maxFiles) droppedCount += 1;
-        else loaded.push(file);
-      }
+      // A later symlink can lead to a shallower file than one already found.
+      // Keep the best candidates across both walks before applying the cap.
+      for (const file of found) loaded.push(file);
+      loaded.sort((a, b) => a.depth - b.depth || byPath(a, b));
+      droppedCount += Math.max(0, loaded.length - maxFiles);
+      loaded.length = Math.min(loaded.length, maxFiles);
       level = next;
     }
   };
@@ -660,20 +660,15 @@ function implicitAliasesForSkillName(name: string): readonly string[] {
 }
 
 /**
- * A top-level `disable-model-invocation: true` line is authoritative even if
- * YAML recovery changes its value or another frontmatter field is invalid.
+ * Any `disable-model-invocation: true` line is authoritative even if YAML
+ * recovery changes its value or another frontmatter field is invalid.
  */
 function hasRawDisableModelInvocation(yamlText: string): boolean {
   const lines = yamlText.split(/\r?\n/u);
-  const contentLines = lines.filter((line) => line.trim() !== "" && !/^\s*#/u.test(line));
-  const rootIndent = contentLines.reduce(
-    (smallest, line) => Math.min(smallest, /^([ \t]*)/u.exec(line)?.[1]?.length ?? 0),
-    Infinity,
-  );
-  return contentLines.some((line) => {
-    const match = /^([ \t]*)disable-model-invocation[ \t]*:[ \t]*(.*)$/iu.exec(line);
-    if (match === null || match[1]?.length !== rootIndent) return false;
-    const rawValue = (match[2] ?? "").trim();
+  return lines.some((line) => {
+    const match = /^[ \t]*disable-model-invocation[ \t]*:[ \t]*(.*)$/iu.exec(line);
+    if (match === null) return false;
+    const rawValue = (match[1] ?? "").trim();
     const quoted = /^(['"])(.*)\1(?:[ \t]+#.*)?$/u.exec(rawValue);
     const value = quoted?.[2] ?? rawValue;
     return parseBooleanFrontmatter(value);

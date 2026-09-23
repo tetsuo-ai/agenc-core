@@ -131,6 +131,18 @@ describe("frontmatter the canonical parser accepts", () => {
     ]);
   });
 
+  it.each([
+    "  disable-model-invocation: true",
+    "    DISABLE-MODEL-INVOCATION: 'TrUe' # safety",
+    '  disable-model-invocation: "TRUE" # safety',
+  ])("keeps an indented raw flag hidden despite an unindented invalid line: %s", async (flag) => {
+    const { snapshot } = await snapshotOf({
+      hidden: ["---", "invalid unindented line", "  description: Hidden skill", flag, "---", "Body", ""].join("\n"),
+    });
+    expect(snapshot.skills.find((skill) => skill.name === "hidden")?.disableModelInvocation).toBe(true);
+    expect(buildSkillListingWithinBudget(snapshot.skills).listedNames).not.toContain("hidden");
+  });
+
   it("does not invent the flag from a value that only mentions it", async () => {
     const { snapshot } = await snapshotOf({
       mention: [
