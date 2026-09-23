@@ -92,15 +92,21 @@ describe("routine agent environment", () => {
 });
 
 describe("routine execution finalization", () => {
-  it("settles only a projected terminal with matching run identity and journal proof", async () => {
+  /** A routine's run held open, its stream and stop both rejected, waiting for a canonical terminal. */
+  async function runAwaitingUnconfirmedTerminal() {
     const f = fixture();
     f.manager.streamAgentMessage.mockRejectedValue(new Error("turn failed"));
     f.manager.stopAgent.mockRejectedValue(new Error("stop failed"));
     const h = routineService(f);
+    h.service.run({ id: h.routine.id });
+    await vi.waitFor(() => expect(h.service.runs({ id: h.routine.id }).runs[0]?.error).toContain("could not confirm"));
+    const run = h.service.runs({ id: h.routine.id }).runs[0]!;
+    return { h, run };
+  }
+
+  it("settles only a projected terminal with matching run identity and journal proof", async () => {
+    const { h, run } = await runAwaitingUnconfirmedTerminal();
     try {
-      h.service.run({ id: h.routine.id });
-      await vi.waitFor(() => expect(h.service.runs({ id: h.routine.id }).runs[0]?.error).toContain("could not confirm"));
-      const run = h.service.runs({ id: h.routine.id }).runs[0]!;
       const projected = projectedCoreTerminal(run, "failed");
       expect(projected).toMatchObject({ method: "event.agent_status", params: {
         agentId: run.agentId, runId: run.coreRunId, eventId: "terminal:agent:1", sequence: 3,
@@ -132,14 +138,8 @@ describe("routine execution finalization", () => {
   });
 
   it("records a projected unknown outcome as failed and releases the held routine", async () => {
-    const f = fixture();
-    f.manager.streamAgentMessage.mockRejectedValue(new Error("turn failed"));
-    f.manager.stopAgent.mockRejectedValue(new Error("stop failed"));
-    const h = routineService(f);
+    const { h, run } = await runAwaitingUnconfirmedTerminal();
     try {
-      h.service.run({ id: h.routine.id });
-      await vi.waitFor(() => expect(h.service.runs({ id: h.routine.id }).runs[0]?.error).toContain("could not confirm"));
-      const run = h.service.runs({ id: h.routine.id }).runs[0]!;
       const projected = projectedCoreTerminal(run, "unknown_outcome");
       expect(projected).toMatchObject({ method: "event.agent_status", params: {
         status: "error", runStatus: "errored",
