@@ -556,6 +556,7 @@ describe("KimiProvider", () => {
       },
     ]);
     const messages = bodyAt(fetchImpl).messages as Array<Record<string, unknown>>;
+    expect(messages).toHaveLength(3);
     expect(messages[2]).toMatchObject({
       role: "tool",
       content: [

@@ -1623,6 +1623,7 @@ describe("OpenAIProvider", () => {
       provenance: "provider",
       cachedInputTokens: 3,
       reasoningOutputTokens: 2,
+      cacheWritesUnreported: true,
     });
 
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;

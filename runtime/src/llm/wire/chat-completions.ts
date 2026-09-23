@@ -300,9 +300,13 @@ function toChatCompletionsMessages(
   } else if (acceptsDirectImageInput === false) {
     imageSafeMessages = assertNoDirectImageInput(normalized);
   }
+  // Kimi's global wire accepts image arrays in tool results. Keep those
+  // intact; other unspecified Chat Completions wires strip unsupported images.
+  const defaultToolResultImagePolicy =
+    imageInputContract === "kimi_global" ? undefined : "strip";
   const prepared = applyToolResultImagePolicyForWire(
     imageSafeMessages,
-    toolResultImagePolicy ?? "strip",
+    toolResultImagePolicy ?? defaultToolResultImagePolicy,
   );
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
   if (systemSuffix !== undefined && systemSuffix.length > 0) {

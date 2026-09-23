@@ -124,6 +124,29 @@ const BASE_USAGE = {
   provenance: "provider",
 } as const;
 
+// These entries use the shared Chat Completions parser. Its usage payload has
+// no cache-write count, so admission must conservatively price possible writes.
+// Responses, Anthropic, and Bedrock can report writes; Gemini and Ollama use
+// their own usage formats and must not inherit this wire-specific marker.
+const CHAT_COMPLETIONS_PROVIDERS: ReadonlySet<ProviderName> = new Set([
+  "lmstudio",
+  "openai-compatible",
+  "openrouter",
+  "groq",
+  "deepseek",
+  "meta",
+  "cerebras",
+  "zai",
+  "zai-coding-plan",
+  "kimi",
+  "qwen",
+  "qwen-token-plan",
+  "mistral",
+  "nvidia-nim",
+  "minimax",
+  "github",
+]);
+
 interface ExpectedToolCall {
   readonly name: string;
   readonly arguments: string;
@@ -1110,7 +1133,12 @@ describe("provider parity", () => {
         expect(response.finishReason).toBe(parityCase.expected.finishReason);
         assertToolCalls(response.toolCalls, parityCase.expected.toolCalls);
         expect(response.model).toBe(entry.model);
-        expect(response.usage).toEqual(BASE_USAGE);
+        expect(response.usage).toEqual({
+          ...BASE_USAGE,
+          ...(CHAT_COMPLETIONS_PROVIDERS.has(entry.provider)
+            ? { cacheWritesUnreported: true }
+            : {}),
+        });
         expect(response.requestMetrics?.messageCount).toBeGreaterThan(0);
         expect(response.requestMetrics?.toolCount).toBe(
           parityCase.tools?.length ?? 0,
