@@ -874,6 +874,7 @@ export interface CollabAgentSpawnBeginEvent {
   readonly taskName?: string;
   readonly agentType?: string;
   readonly model: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
 }
 
@@ -890,6 +891,7 @@ export interface CollabAgentSpawnEndEvent {
   readonly taskName?: string;
   readonly agentType?: string;
   readonly model: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus;
 }
@@ -920,6 +922,7 @@ export interface CollabAgentStatusEvent {
   readonly agentRoleDisplayName?: string;
   readonly prompt?: string;
   readonly model?: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus | CollabAgentTaskStatus;
   /**

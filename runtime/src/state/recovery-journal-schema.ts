@@ -1397,7 +1397,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       prompt: isString,
       model: isString,
     },
-    { taskName: isString, agentType: isString, reasoningEffort: isString },
+    { taskName: isString, agentType: isString, provider: isString, reasoningEffort: isString },
   ),
   collab_agent_spawn_end: objectShape(
     {
@@ -1416,6 +1416,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       newAgentRoleDisplayName: isString,
       taskName: isString,
       agentType: isString,
+      provider: isString,
       reasoningEffort: isString,
     },
   ),
@@ -1434,6 +1435,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       agentRoleDisplayName: isString,
       prompt: isString,
       model: isString,
+      provider: isString,
       reasoningEffort: isString,
       toolUseCount: isNonNegativeInteger,
       tokenCount: isNonNegativeInteger,

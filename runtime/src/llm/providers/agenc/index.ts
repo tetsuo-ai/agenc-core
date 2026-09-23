@@ -239,6 +239,12 @@ export class AgenCProvider implements LLMProvider {
     if (model === undefined) {
       throw new Error("AgenCProvider model inference returned an empty model");
     }
+    const approved = this.#config.providerOptions?.extra?.approvedConcreteDestination as
+      | { readonly provider: string; readonly model: string } | undefined;
+    if (approved !== undefined &&
+        (provider !== approved.provider || model !== approved.model)) {
+      throw new Error(`Managed child destination changed from approved ${approved.provider}/${approved.model}`);
+    }
     if (this.#config.providerOptions?.extra?.canonicalEndpointRequired === true &&
         provider === "grok" && model.toLowerCase().startsWith("grok-composer")) {
       throw new Error("Cross-provider Grok Composer children cannot use the CLI transport");

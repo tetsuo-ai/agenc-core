@@ -26,6 +26,7 @@ import { resolveProviderBaseURLEnvironment } from "../llm/registry/provider-ingr
 import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import { createPinnedProviderFetch } from "../llm/credential-redirect-fetch.js";
 import { isGrokComposerModel } from "../llm/providers/grok/acp-adapter.js";
+import { assertSupportedCrossProviderAuth } from "../llm/cross-provider-auth.js";
 
 export type { ReadSavedProviderApiKey } from "../llm/provider-options.js";
 
@@ -48,6 +49,8 @@ export interface PreparedProviderBinding {
   readonly binding: ProviderBinding;
   readonly expectedRevision: number;
   readonly managedDefaultOutputCap: boolean;
+  readonly billingSource?: "byok" | "sign_in" | "managed" | "local";
+  readonly authProfile?: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
 }
 
 export interface ProviderPreparationRuntime {
@@ -203,6 +206,7 @@ export class SessionProviderService {
     | ResolveProviderPreparationRequest
     | undefined;
   readonly #crossProviderProvenance: boolean;
+  readonly #destinationLock: ProviderSelection | undefined;
   #binding: ProviderBinding;
 
   constructor(params: {
@@ -216,6 +220,7 @@ export class SessionProviderService {
     readonly subscriptionTier?: AuthSubscriptionTier;
     readonly resolvePreparationRequest?: ResolveProviderPreparationRequest;
     readonly crossProviderProvenance?: boolean;
+    readonly destinationLock?: ProviderSelection;
   }) {
     this.#environment = snapshotProviderEnvironment(params.environment ?? {});
     const initialBinding = bindingFromProvider({
@@ -231,6 +236,8 @@ export class SessionProviderService {
     this.#crossProviderProvenance = params.crossProviderProvenance === true ||
       pinnedChildProviders.has(params.initialProvider) ||
       initialBinding.factoryOptions.extra?.canonicalEndpointRequired === true;
+    this.#destinationLock = params.destinationLock === undefined
+      ? undefined : Object.freeze({ ...params.destinationLock });
     this.#credentialHome = initialBinding.factoryOptions.credentialHome;
     this.#readSavedApiKey = params.readSavedApiKey;
     this.#authBackend = params.authBackend;
@@ -248,7 +255,7 @@ export class SessionProviderService {
   }
 
   /** Give a child an independent binding with the same captured authority sources. */
-  forkForChild(provider: LLMProvider, selection: ProviderSelection): SessionProviderService {
+  forkForChild(provider: LLMProvider, selection: ProviderSelection, destinationLock?: ProviderSelection): SessionProviderService {
     return new SessionProviderService({
       initialProvider: provider,
       initialProviderName: selection.provider,
@@ -262,6 +269,7 @@ export class SessionProviderService {
         ? { resolvePreparationRequest: this.#resolvePreparationRequest } : {}),
       crossProviderProvenance: this.#crossProviderProvenance || pinnedChildProviders.has(provider) ||
         readProviderFactoryOptions(provider).extra?.canonicalEndpointRequired === true,
+      ...(destinationLock !== undefined ? { destinationLock } : {}),
     });
   }
 
@@ -270,7 +278,27 @@ export class SessionProviderService {
     requested?: ProviderFactoryOptions,
     runtime: ProviderPreparationRuntime = {},
   ): Promise<PreparedProviderBinding> {
+    if (this.#destinationLock !== undefined &&
+        (selection.provider !== this.#destinationLock.provider ||
+         selection.model !== this.#destinationLock.model)) {
+      throw new Error(`This child is bound to ${this.#destinationLock.provider}/${this.#destinationLock.model}; a new execution plan is required to switch provider or model.`);
+    }
     return this.#prepare(selection, requested, runtime, false);
+  }
+
+  async resolveManagedChildDestination(model: string): Promise<ProviderSelection> {
+    if (this.#authBackend === undefined || this.#sessionId === undefined) {
+      throw new Error("AgenC managed child needs an authenticated session");
+    }
+    const inferred = await this.#authBackend.inferAgencModel({
+      provider: "agenc", requestedModel: model, sessionId: this.#sessionId,
+      ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
+    });
+    const provider = resolveBuiltInProviderSlug(inferred.provider);
+    if (provider === undefined || provider === "agenc" || !inferred.model?.trim()) {
+      throw new Error("AgenC managed child resolved an invalid concrete destination");
+    }
+    return Object.freeze({ provider, model: inferred.model.trim() });
   }
 
   /** Prepare a child, pinning durable cross-provider children to the registry endpoint. */
@@ -279,8 +307,9 @@ export class SessionProviderService {
     requested?: ProviderFactoryOptions,
     runtime: ProviderPreparationRuntime = {},
     crossProviderProvenance = false,
+    approvedConcreteDestination?: ProviderSelection,
   ): Promise<PreparedProviderBinding> {
-    return this.#prepare(selection, requested, runtime, true, crossProviderProvenance);
+    return this.#prepare(selection, requested, runtime, true, crossProviderProvenance, approvedConcreteDestination);
   }
 
   async #prepare(
@@ -289,6 +318,7 @@ export class SessionProviderService {
     runtime: ProviderPreparationRuntime,
     child: boolean,
     crossProviderProvenance = false,
+    approvedConcreteDestination?: ProviderSelection,
   ): Promise<PreparedProviderBinding> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
     if (provider === undefined) {
@@ -311,6 +341,12 @@ export class SessionProviderService {
     const runtimeOptions = preparation.runtime ?? {};
     const canonicalEndpointRequired = this.#crossProviderProvenance ||
       (child && (crossProviderProvenance || provider !== this.#binding.provider));
+    if (child && canonicalEndpointRequired && provider === "agenc" &&
+        (approvedConcreteDestination === undefined ||
+         approvedConcreteDestination.provider === "agenc" ||
+         !approvedConcreteDestination.model.trim())) {
+      throw new Error("Managed AgenC child requires an approved concrete provider and model execution plan");
+    }
     if (canonicalEndpointRequired) {
       const info = resolveBuiltInProviderInfo(provider)!;
       const envBaseURL = resolveProviderBaseURLEnvironment(provider, this.#environment);
@@ -399,6 +435,15 @@ export class SessionProviderService {
       },
     );
     requireProviderRuntimeCredential(provider, authority);
+    const authProfile = provider === "agenc" || authority.managedCredential
+      ? "managed" as const
+      : authority.factoryOptions.extra?.authMode === "oauth"
+        ? "sign_in" as const
+        : provider === "amazon-bedrock"
+          ? "aws_sigv4" as const
+          : provider === "ollama" || provider === "lmstudio" ||
+            (provider === "openai-compatible" && !authority.factoryOptions.apiKey)
+            ? "local" as const : "api_key" as const;
     if (canonicalEndpointRequired) {
       const info = resolveBuiltInProviderInfo(provider)!;
       const effective = authority.factoryOptions;
@@ -434,12 +479,7 @@ export class SessionProviderService {
       if (provider === "grok" && isGrokComposerModel(model)) {
         throw new Error("Cross-provider Grok Composer children cannot use the CLI transport");
       }
-      if (provider === "grok" && effective.extra?.authMode === "oauth") {
-        throw new Error("Cross-provider Grok children cannot use OAuth refresh outside the pinned transport");
-      }
-      if (provider === "openai" && effective.extra?.authMode === "oauth") {
-        throw new Error("Cross-provider OpenAI children cannot use OAuth refresh outside the pinned transport");
-      }
+      assertSupportedCrossProviderAuth(provider, authProfile);
     }
     const factoryOptions = canonicalEndpointRequired
       ? { ...authority.factoryOptions, extra: {
@@ -451,6 +491,8 @@ export class SessionProviderService {
               : fetch,
           ),
           ...(provider === "agenc" ? {
+            ...(approvedConcreteDestination !== undefined
+              ? { approvedConcreteDestination: Object.freeze({ ...approvedConcreteDestination }) } : {}),
             agencDelegateFetchFactory: (concreteProvider: ProviderName): typeof fetch =>
               createPinnedProviderFetch(
                 [resolveBuiltInProviderInfo(concreteProvider)!.baseURL],
@@ -465,6 +507,10 @@ export class SessionProviderService {
     if (canonicalEndpointRequired) pinnedChildProviders.add(instance);
     return Object.freeze({
       expectedRevision,
+      authProfile,
+      billingSource: authProfile === "managed" ? "managed" as const
+        : authProfile === "sign_in" ? "sign_in" as const
+        : authProfile === "local" ? "local" as const : "byok" as const,
       managedDefaultOutputCap:
         authority.managedCredential &&
         runtimeOptions.applyManagedDefaultOutputCap === true,

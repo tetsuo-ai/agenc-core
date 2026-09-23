@@ -3276,6 +3276,9 @@ export interface SessionNativeWorkerSnapshot extends JsonObject {
   readonly nickname: string;
   readonly role: string;
   readonly prompt?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
   readonly status: "pending_init" | "running" | "idle" | "completed" | "errored" | "shutdown" | "not_found" | "interrupted";
   readonly error?: string;
   readonly toolUseCount: number;

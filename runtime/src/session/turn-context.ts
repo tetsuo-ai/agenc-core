@@ -69,6 +69,8 @@ export interface ModelServiceTier {
 
 export interface ModelInfo {
   readonly slug: string;
+  /** Provider that supplied this catalog or discovery result. */
+  readonly provider?: string;
   readonly contextWindow?: number;
   readonly effectiveContextWindowPercent: number;
   readonly maxOutputTokens?: number;

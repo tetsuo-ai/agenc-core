@@ -167,12 +167,64 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
-  it("uses the live model list for a same-provider slug even when the catalog assigns it elsewhere", async () => {
-    const { tool } = await crossProviderFixture(["deepseek"]);
+  it("refuses a model known to lack client-side tools unless tool_free is explicit", async () => {
+    const { tool } = await crossProviderFixture(["grok"]);
+    const refused = await tool.execute({ message: "inspect", task_name: "worker", model: "grok-4.20-multi-agent-0309" });
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toContain("client-side tool calling");
+    expect(mockDelegate).not.toHaveBeenCalled();
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
-    const result = await tool.execute({ message: "inspect", task_name: "worker", model: "deepseek-v4-pro" });
+    const allowed = await tool.execute({ message: "summarize", task_name: "worker", model: "grok-4.20-multi-agent-0309", tool_free: true });
+    expect(allowed.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].plan?.scope.tools).toEqual([]);
+  });
+
+  it("does not inherit a same-named service tier across providers", async () => {
+    const { session } = await crossProviderFixture(["openai"]);
+    Object.assign(session.sessionConfiguration, { serviceTier: "priority" });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "inspect", task_name: "worker", provider: "openai", model: "gpt-5.4",
+    });
     expect(result.isError).not.toBe(true);
-    expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
+    const delegated = mockDelegate.mock.calls[0]?.[0];
+    expect(delegated?.plan?.serviceTier ?? delegated?.serviceTier).toBeUndefined();
+  });
+
+  it("reports a role-selected destination and effort in spawn events and result", async () => {
+    const { session } = await crossProviderFixture(["openai"]);
+    const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
+    Object.assign(session, { emit: (event: typeof events[number]) => events.push(event) });
+    const options = makeOptions(session);
+    const roleOptions = {
+      ...options,
+      ensureAgentControl: () => {
+        const original = options.ensureAgentControl(session);
+        return { ...original, control: { ...original.control,
+          roleCatalog: { require: () => ({ name: "research", config: {
+            model: "openai/gpt-5.4", reasoningEffort: "high",
+          } }) },
+        } };
+      },
+    } as unknown as MultiAgentV2Options;
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(roleOptions).execute({
+      message: "inspect", task_name: "worker", agent_type: "research",
+    });
+    expect(result.isError).not.toBe(true);
+    for (const event of events.filter((entry) => entry.msg.type.startsWith("collab_agent_spawn_"))) {
+      expect(event.msg.payload).toMatchObject({ provider: "openai", model: "gpt-5.4", reasoningEffort: "high" });
+    }
+    expect(result.content).toContain('"provider":"openai"');
+    expect(result.content).toContain('"model":"gpt-5.4"');
+  });
+
+  it("refuses a foreign bare slug instead of treating the flattened list as local", async () => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    const result = await tool.execute({ message: "inspect", task_name: "worker", model: "deepseek-v4-pro" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("deepseek/deepseek-v4-pro");
+    expect(mockDelegate).not.toHaveBeenCalled();
   });
 
   it("keeps a slash-containing local model on its current provider", async () => {
@@ -221,10 +273,14 @@ describe("spawn_agent isolation", () => {
     const result = await tool.execute({ message: "inspect", task_name: "worker", ...selection });
     expect(result.isError).not.toBe(true);
     expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({
-      providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" },
-      modelInfo: expect.objectContaining({ slug: "deepseek-v4-pro", contextWindow: 1_048_576 }),
+      plan: expect.objectContaining({
+        route: { provider: "deepseek", model: "deepseek-v4-pro" },
+        destination: expect.objectContaining({ provider: "deepseek", model: "deepseek-v4-pro" }),
+        modelInfo: expect.objectContaining({ slug: "deepseek-v4-pro", contextWindow: 1_048_576 }),
+      }),
     }));
     expect(tool.description).toContain("deepseek/deepseek-v4-pro");
+    expect(tool.description).toContain("BYOK API key at the provider's canonical endpoint");
   });
 
   it.each([
@@ -303,7 +359,7 @@ describe("spawn_agent isolation", () => {
     expect(result.isError).not.toBe(true);
     expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({
       parent: fixture.child,
-      providerSelection: { provider: "openai", model: "gpt-5.4" },
+      plan: expect.objectContaining({ route: { provider: "openai", model: "gpt-5.4" } }),
     }));
     expect(mockDelegate.mock.calls[0]?.[0].parent.services.sandboxExecutionBroker)
       .toBe(fixture.child.services.sandboxExecutionBroker);
@@ -386,6 +442,7 @@ describe("spawn_agent isolation", () => {
       ...base,
       modelInfo: await modelsManager.getModelInfo("gemini-3.1-pro-preview"),
       sessionConfiguration: { ...base.sessionConfiguration, collaborationMode: { model: "gemini-3.1-pro-preview" } },
+      providerService: { current: () => ({ provider: "gemini", model: "gemini-3.1-pro-preview" }) },
       services: { ...base.services, modelsManager },
     } as Session;
     for (const effort of ["low", "medium", "high", "none", "minimal", "xhigh", "max"] as const) {
@@ -407,7 +464,9 @@ describe("spawn_agent isolation", () => {
       });
       if (["low", "medium", "high", "none"].includes(effort)) {
         expect(result.isError).not.toBe(true);
-        expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({ reasoningEffort: effort }));
+        expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({
+          plan: expect.objectContaining({ reasoningEffort: effort }),
+        }));
       } else {
         expect(result.isError).toBe(true);
         expect(String(result.content)).toMatch(/is not supported for model|invalid reasoning_effort/u);

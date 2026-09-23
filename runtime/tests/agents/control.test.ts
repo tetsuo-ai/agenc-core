@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { createMultiAgentV2Tools } from "../../src/agents/v2/index.js";
 import { injectChildToolArgs } from "../../src/agents/run-agent.js";
+import { createChildExecutionPlan } from "../../src/agents/cross-provider.js";
 import {
   AgentControl,
   AgentAssignmentRejectedError,
@@ -27,6 +28,7 @@ import { ThreadManager } from "./thread-manager.js";
 import {
   SimpleMailbox,
   type InterAgentCommunication,
+  type Session,
 } from "../session/session.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import {
@@ -1139,6 +1141,43 @@ describe("AgentControl", () => {
         .toEqual(live.metadata.crossProvider);
       expect(control.getAgentConfigSnapshot(live.agentId)?.crossProvider)
         .toEqual(live.metadata.crossProvider);
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("persists the complete child plan and rechecks its policy on resume", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-child-plan-edge-"));
+    const rolloutStore = openRolloutStore({ cwd, sessionId: "plan-root" });
+    try {
+      const session = stubSession({ cwd, conversationId: "plan-root", rolloutStore });
+      let allowed = ["deepseek"];
+      const config = () => ({ model_provider: "grok", model: "grok-4.6",
+        agents: { cross_provider_enabled: true, allowed_providers: allowed } });
+      Object.assign(session, {
+        modelInfo: { slug: "grok-4.6", provider: "grok" },
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
+        services: { ...session.services, configStore: { current: config } },
+      });
+      const control = new AgentControl({ session, registry: new AgentRegistry() });
+      registerDurableSessionRoot(control, cwd, "plan-root");
+      const plan = await createChildExecutionPlan({
+        session, selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+        modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true } as Session["modelInfo"],
+        parentPath: "/root", taskId: "spawn-plan", taskName: "worker", toolFree: false, forkedHistory: false,
+      });
+      const live = await control.spawn({ parentPath: "/root", agentName: "worker",
+        providerSelection: plan.route, executionPlan: plan });
+      expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.metadata.executionPlan).toEqual(plan);
+      expect(control.getAgentConfigSnapshot(live.agentId)?.executionPlan).toEqual(plan);
+      expect(control.listAgents().find((agent) => agent.agentName === live.agentPath))
+        .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+      expect(control.snapshotNativeWorkers(session.conversationId).find((agent) => agent.agentId === live.agentId))
+        .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+      allowed = ["deepseek", "openai"];
+      await expect(control.resume({ parentPath: "/root", metadata: live.metadata }))
+        .rejects.toThrow(/execution plan.*policy changed/u);
     } finally {
       rolloutStore.close();
       rmSync(cwd, { recursive: true, force: true });

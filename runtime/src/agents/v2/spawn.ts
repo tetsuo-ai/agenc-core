@@ -17,11 +17,13 @@ import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
 import {
   allowedChildPairs,
+  createChildExecutionPlan,
   childModelInfo,
   childProviderPolicy,
   currentChildProvider,
   resolveChildSelection,
 } from "../cross-provider.js";
+import { CROSS_PROVIDER_AUTH_DESCRIPTION } from "../../llm/cross-provider-auth.js";
 import {
   assertValidAgentName,
   depthOfAgentPath,
@@ -124,7 +126,7 @@ The new agent's canonical task name will be provided to it along with the messag
   const cfg = session?.config?.multiAgentV2;
   const policy = session === null ? undefined : childProviderPolicy(session);
   const pairs = session === null ? [] : allowedChildPairs(session);
-  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml.${policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairs.map(({ provider, model }) => `${provider}/${model}`).join(", ") || "none"}.` : ""}`;
+  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairs.map(({ provider, model }) => `${provider}/${model}`).join(", ") || "none"}.` : ""}`;
   if (sessionIsPlanning(session) || sessionReadOnlyDelegation(session) !== undefined) {
     return `${base}\n${policyDescription}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
   }
@@ -273,6 +275,7 @@ function validateSpawnModelOverrides(opts: {
 function resolveSpawnServiceTier(opts: {
   readonly session: Session;
   readonly modelInfo: ModelInfo;
+  readonly crossProvider: boolean;
   readonly requestedServiceTier?: string;
   readonly roleServiceTier?: string;
 }): { readonly serviceTier?: string } | ToolResult {
@@ -303,7 +306,7 @@ function resolveSpawnServiceTier(opts: {
   for (const candidate of [
     opts.roleServiceTier,
     opts.requestedServiceTier,
-    parentServiceTier,
+    ...(opts.crossProvider ? [] : [parentServiceTier]),
   ]) {
     if (
       candidate !== undefined &&
@@ -320,7 +323,9 @@ function buildSpawnModelSchema(
 ): Record<string, unknown> {
   const currentSlug = session?.modelInfo?.slug;
   const slugs = session === null ? undefined : [
-    ...(session.services.modelsManager?.tryListModels() ?? []).map((candidate) => candidate.slug),
+    ...(session.services.modelsManager?.tryListModels() ?? [])
+      .filter((candidate) => candidate.provider === undefined || candidate.provider === currentChildProvider(session).provider)
+      .map((candidate) => candidate.slug),
     ...allowedChildPairs(session).map(({ provider, model }) => `${provider}/${model}`),
   ];
   const inheritClause = currentSlug
@@ -402,6 +407,10 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknow
       },
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
+      tool_free: {
+        type: "boolean",
+        description: "Run this child with no client-side tools. Required when selecting a model without client-side tool calling.",
+      },
       fork_turns: {
         type: "string",
         description:
@@ -451,6 +460,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "provider",
         "reasoning_effort",
         "service_tier",
+        "tool_free",
         "fork_turns",
         "fork_context",
         "isolation",
@@ -478,6 +488,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       typeof args.fork_context !== "boolean"
     ) {
       return spawnValidationError("fork_context must be a boolean");
+    }
+    if (args.tool_free !== undefined && typeof args.tool_free !== "boolean") {
+      return spawnValidationError("tool_free must be a boolean");
     }
     const prompt = stringValue(args.message);
     if (!prompt || prompt.trim().length === 0) {
@@ -558,23 +571,26 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     const requestedServiceTier = stringValue(args.service_tier);
     const callId = callIdFromArgs(args, "agent");
+    let reportedProvider = requestedProvider ?? currentChildProvider(session).provider;
+    let reportedModel = model ?? session.sessionConfiguration.collaborationMode.model;
+    let reportedEffort = reasoningEffort ?? session.sessionConfiguration.collaborationMode.reasoningEffort;
 
-    emit(session, {
-      type: "collab_agent_spawn_begin",
-      payload: {
-        callId,
-        senderThreadId: current.threadId,
-        prompt,
-        taskName,
-        agentType: role,
-        model: model ?? session.sessionConfiguration.collaborationMode.model,
-        reasoningEffort:
-          reasoningEffort ??
-          session.sessionConfiguration.collaborationMode.reasoningEffort,
-      },
-    });
+    let begun = false;
+    const emitSpawnBegin = (): void => {
+      if (begun) return;
+      begun = true;
+      emit(session, {
+        type: "collab_agent_spawn_begin",
+        payload: {
+          callId, senderThreadId: current.threadId, prompt, taskName,
+          agentType: role, model: reportedModel, provider: reportedProvider,
+          reasoningEffort: reportedEffort,
+        },
+      });
+    };
 
     const emitSpawnFailureEnd = (reason: string): void => {
+      emitSpawnBegin();
       emit(session, {
         type: "collab_agent_spawn_end",
         payload: {
@@ -583,10 +599,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           prompt,
           taskName,
           agentType: role,
-          model: model ?? session.sessionConfiguration.collaborationMode.model,
-          reasoningEffort:
-            reasoningEffort ??
-            session.sessionConfiguration.collaborationMode.reasoningEffort,
+          model: reportedModel,
+          provider: reportedProvider,
+          reasoningEffort: reportedEffort,
           status: {
             status: "errored",
             turnId: callId,
@@ -617,6 +632,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     let targetModelInfo: ModelInfo;
     try {
       selection = await resolveChildSelection(session, requestedProvider, effectiveModel);
+      reportedProvider = selection.provider;
+      reportedModel = selection.model;
       if (selection.provider !== currentChildProvider(session).provider && forkMode !== undefined) {
         return failSpawn("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
       }
@@ -629,8 +646,13 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
     const crossProvider = selection.provider !== currentChildProvider(session).provider;
+    if (targetModelInfo.supportsToolUse === false && args.tool_free !== true) {
+      return failSpawn(`Model \`${selection.provider}/${selection.model}\` does not support client-side tool calling. Set tool_free = true for an explicitly tool-free task.`);
+    }
     const selectedReasoningEffort = effectiveReasoningEffort ??
-      (crossProvider ? targetModelInfo.defaultReasoningLevel : undefined);
+      (crossProvider ? targetModelInfo.defaultReasoningLevel
+        : session.sessionConfiguration.collaborationMode.reasoningEffort);
+    reportedEffort = selectedReasoningEffort;
     const effortError = validateSpawnModelOverrides({
       modelInfo: targetModelInfo,
       ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
@@ -642,6 +664,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const serviceTierResult = resolveSpawnServiceTier({
       session,
       modelInfo: targetModelInfo,
+      crossProvider,
       ...(requestedServiceTier !== undefined ? { requestedServiceTier } : {}),
       ...(roleConfiguredServiceTier !== undefined ? { roleServiceTier: roleConfiguredServiceTier } : {}),
     });
@@ -666,6 +689,19 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     let rejectedEffectDisposition: ToolResult["effectDisposition"];
     try {
       const childAgentPath = joinAgentPath(current.agentPath, taskName);
+      const plan = await createChildExecutionPlan({
+        session, selection, modelInfo: targetModelInfo,
+        parentPath: current.agentPath, taskId: callId, taskName,
+        toolFree: args.tool_free === true, forkedHistory: forkMode !== undefined,
+        ...(resolvedRole?.config.allowlist !== undefined
+          ? { toolAllowlist: resolvedRole.config.allowlist } : {}),
+        ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
+        ...(serviceTierResult.serviceTier !== undefined ? { serviceTier: serviceTierResult.serviceTier } : {}),
+      });
+      reportedProvider = plan.destination.provider;
+      reportedModel = plan.destination.model;
+      reportedEffort = plan.reasoningEffort ?? reportedEffort;
+      emitSpawnBegin();
       const worktreeSlug =
         isolation !== undefined
           ? deriveAgentWorktreeSlug({
@@ -693,17 +729,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         // Keep collab workers alive so assign_task after first completion
         // has a consumer (todo-106). close_agent still tears them down.
         keepAlive: true,
+        ...(args.tool_free === true ? { toolAllowlist: [] } : {}),
         ...(role !== undefined ? { role } : {}),
-        model: selection.model,
-        modelInfo: targetModelInfo,
-        ...(crossProvider
-          ? { providerSelection: selection } : {}),
-        ...(selectedReasoningEffort !== undefined
-          ? { reasoningEffort: selectedReasoningEffort }
-          : {}),
-        ...(serviceTierResult.serviceTier !== undefined
-          ? { serviceTier: serviceTierResult.serviceTier }
-          : {}),
+        plan,
         ...(isolation !== undefined
           ? { isolation, worktreeSlug }
           : {}),
@@ -723,10 +751,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           prompt,
           taskName,
           agentType: role,
-          model: model ?? session.sessionConfiguration.collaborationMode.model,
-          reasoningEffort:
-            reasoningEffort ??
-            session.sessionConfiguration.collaborationMode.reasoningEffort,
+          model: reportedModel,
+          provider: reportedProvider,
+          reasoningEffort: reportedEffort,
           status: {
             status: "errored",
             turnId: callId,
@@ -762,10 +789,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             agentRole: live.role.name,
             agentRoleDisplayName: formatAgentRoleLabel(live.role.name),
             prompt,
-            model: model ?? session.sessionConfiguration.collaborationMode.model,
-            reasoningEffort:
-              reasoningEffort ??
-              session.sessionConfiguration.collaborationMode.reasoningEffort,
+            model: reportedModel,
+            provider: reportedProvider,
+            reasoningEffort: reportedEffort,
             status: snapshot.status,
             // Forward the live per-agent tool-use + token counts so the fan-out
             // rail / fleet panel show real activity for collab-spawned agents
@@ -854,10 +880,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           newAgentRole: live.role.name,
           newAgentRoleDisplayName: formatAgentRoleLabel(live.role.name),
           prompt,
-          model: model ?? session.sessionConfiguration.collaborationMode.model,
-          reasoningEffort:
-            reasoningEffort ??
-            session.sessionConfiguration.collaborationMode.reasoningEffort,
+          model: reportedModel,
+          provider: reportedProvider,
+          reasoningEffort: reportedEffort,
           status: live.status.value,
         },
       });
@@ -867,6 +892,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     return json({
       task_name: live.agentPath,
+      provider: reportedProvider,
+      model: reportedModel,
+      ...(reportedEffort !== undefined ? { reasoning_effort: reportedEffort } : {}),
       ...(!hideSpawnAgentMetadata(session)
         ? { nickname: live.nickname ?? null }
         : {}),

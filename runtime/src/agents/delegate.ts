@@ -50,7 +50,7 @@ import type {
 import type { ReasoningEffort } from "../session/turn-context.js";
 import type { ModelInfo } from "../session/turn-context.js";
 import type { ProviderSelection } from "../session/provider-service.js";
-import { assertCrossProviderAllowed, resolveChildSelection } from "./cross-provider.js";
+import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, resolveChildSelection, type ChildExecutionPlan } from "./cross-provider.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
@@ -95,6 +95,7 @@ export interface DelegateOpts {
   readonly model?: string;
   readonly modelInfo?: ModelInfo;
   readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly isolation?: IsolationMode;
@@ -156,7 +157,8 @@ export type DelegateOutcome =
 
 function delegateModelOptions(
   opts: DelegateOpts,
-): Pick<DelegateOpts, "model" | "modelInfo" | "providerSelection" | "reasoningEffort" | "serviceTier"> {
+): Pick<DelegateOpts, "plan" | "model" | "modelInfo" | "providerSelection" | "reasoningEffort" | "serviceTier"> {
+  if (opts.plan !== undefined) return { plan: opts.plan };
   return {
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
@@ -220,7 +222,21 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     };
   };
 
-  if (opts.providerSelection !== undefined) {
+  if (opts.plan !== undefined) {
+    try {
+      await assertChildExecutionPlan(opts.parent, opts.plan);
+      if (opts.plan.parent.agentPath !== opts.parentPath ||
+          opts.plan.task.id !== (opts.taskId ?? opts.plan.task.id)) {
+        throw new Error("child execution plan task identity changed");
+      }
+      if (opts.plan.crossProvider && forkMode !== undefined) {
+        throw new Error("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+    }
+  } else if (opts.providerSelection !== undefined) {
     try {
       assertCrossProviderAllowed(opts.parent, opts.providerSelection.provider);
       const validated = await resolveChildSelection(
@@ -381,9 +397,10 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       ...(opts.capacityOwnerId !== undefined
         ? { capacityOwnerId: opts.capacityOwnerId }
         : {}),
-      ...(opts.providerSelection !== undefined
-        ? { providerSelection: opts.providerSelection }
+      ...(opts.plan?.crossProvider || opts.providerSelection !== undefined
+        ? { providerSelection: opts.plan?.route ?? opts.providerSelection }
         : {}),
+      ...(opts.plan !== undefined ? { executionPlan: opts.plan } : {}),
     });
   } catch (err) {
     // Teardown worktree if we created one — slot reservation rolled back.
@@ -719,6 +736,7 @@ async function runDelegateAgentLoop(opts: {
   readonly model?: string;
   readonly modelInfo?: ModelInfo;
   readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly resumeManager?: ResumeManager;
@@ -760,6 +778,7 @@ async function runDelegateAgentLoop(opts: {
         ...(opts.model !== undefined ? { model: opts.model } : {}),
         ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
         ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
+        ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }
           : {}),
@@ -809,6 +828,7 @@ async function runDelegateAgentLoop(opts: {
         parentPath: opts.parentPath,
         control: opts.control,
         ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
+        ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
         onRoleProvenanceFailure: opts.onRoleProvenanceFailure,
       });
       if (!restarted) {
@@ -898,6 +918,7 @@ async function restartLiveAgent(opts: {
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
   readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   readonly onRoleProvenanceFailure: () => void;
 }): Promise<LiveAgent | null> {
   const live = opts.thread.live;
@@ -914,10 +935,12 @@ async function restartLiveAgent(opts: {
     return null;
   }
   const persisted = live.metadata.crossProvider;
+  const plan = live.metadata.executionPlan ?? opts.plan;
   const providerSelection = persisted === undefined
     ? opts.providerSelection
     : { provider: persisted.provider, model: persisted.model };
   try {
+    if (plan !== undefined) await assertChildExecutionPlan(opts.parent, plan);
     if (persisted !== undefined && opts.providerSelection !== undefined &&
         (persisted.provider !== opts.providerSelection.provider ||
           persisted.model !== opts.providerSelection.model)) {
@@ -932,8 +955,14 @@ async function restartLiveAgent(opts: {
           validated.model !== providerSelection.model) {
         throw new Error("child provider/model pair changed before restart");
       }
-      const prepared = await opts.parent.providerService.prepareChild(validated, undefined, {}, true);
-      await prepared.binding.instance.dispose?.();
+      const prepared = plan?.route.provider === "agenc"
+        ? await opts.parent.providerService.prepareChild(validated, undefined, {}, true, plan.destination)
+        : await opts.parent.providerService.prepareChild(validated, undefined, {}, true);
+      try {
+        if (plan !== undefined) assertPreparedChildMatchesPlan(plan, prepared);
+      } finally {
+        await prepared.binding.instance.dispose?.();
+      }
     }
   } catch (err) {
     emitWarning(
@@ -961,6 +990,7 @@ async function restartLiveAgent(opts: {
       preferredNickname: live.nickname,
       expectedRoleProvenance: live.metadata,
       ...(providerSelection !== undefined ? { providerSelection } : {}),
+      ...(plan !== undefined ? { executionPlan: plan } : {}),
     });
     if (providerSelection !== undefined &&
         (restarted.metadata.crossProvider?.provider !== providerSelection.provider ||

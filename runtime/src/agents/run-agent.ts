@@ -111,7 +111,7 @@ import {
   type TurnContext,
 } from "../session/turn-context.js";
 import type { ProviderSelection } from "../session/provider-service.js";
-import { assertCrossProviderAllowed, childModelInfo } from "./cross-provider.js";
+import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, childModelInfo, type ChildExecutionPlan } from "./cross-provider.js";
 import type { LiveAgent } from "./control.js";
 import {
   createMailboxMetadata,
@@ -181,6 +181,7 @@ export interface RunAgentParams {
   readonly model?: string;
   readonly modelInfo?: ModelInfo;
   readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   /** Optional child reasoning-effort override. */
   readonly reasoningEffort?: ReasoningEffort;
   /** Optional child service-tier override. */
@@ -3333,7 +3334,7 @@ function buildChildSession(
       providerService: params.parent.providerService.forkForChild(provider, {
         provider: params.providerSelection?.provider ?? params.parent.providerService.current().provider,
         model: params.providerSelection?.model ?? params.parent.providerService.current().model,
-      }),
+      }, params.plan?.crossProvider ? params.plan.route : undefined),
       providerEnvironment: params.parent.providerService.environment(),
       registry,
       ...(params.parent.services.executionAdmission !== undefined
@@ -3384,6 +3385,15 @@ function buildChildSession(
   params.live.configSnapshot = threadConfigSnapshot(
     sessionConfiguration,
   ) as unknown as Record<string, unknown>;
+  if (params.plan !== undefined) {
+    params.live.configSnapshot = {
+      ...params.live.configSnapshot,
+      provider: params.plan.destination.provider,
+      model: params.plan.destination.model,
+      reasoningEffort: params.plan.reasoningEffort,
+      executionPlan: params.plan,
+    };
+  }
   if (params.providerSelection !== undefined) {
     // TODO(phase 4): project provider/model and reconciled child cost into the
     // protocol/native worker status together with the admission run ID.
@@ -3402,6 +3412,7 @@ function buildChildSession(
       child: childSession,
       originator: "agenc-subagent",
       terminalResult,
+      ...(params.plan !== undefined ? { destination: params.plan.destination } : {}),
     });
     if (childRolloutStore) {
       params.live.rolloutPath = childRolloutStore.rolloutPath;
@@ -3750,6 +3761,27 @@ export async function* runAgent(
   if (params.externalSignal?.aborted) onExternalAbort?.();
 
   try {
+    const plan = params.plan ?? live.metadata.executionPlan;
+    if (plan !== undefined) {
+      await assertChildExecutionPlan(parent, plan);
+      if (params.taskId !== undefined && params.taskId !== plan.task.id) {
+        throw new Error("child execution plan task identity changed");
+      }
+      if (live.metadata.executionPlan !== undefined &&
+          JSON.stringify(live.metadata.executionPlan) !== JSON.stringify(plan)) {
+        throw new Error("child execution plan conflicts with durable spawn metadata");
+      }
+      params = {
+        ...params,
+        plan,
+        model: plan.route.model,
+        modelInfo: plan.modelInfo,
+        providerSelection: plan.crossProvider ? plan.route : undefined,
+        reasoningEffort: plan.reasoningEffort,
+        serviceTier: plan.serviceTier,
+        toolAllowlist: plan.scope.tools === "parent_filtered" ? params.toolAllowlist : plan.scope.tools,
+      };
+    } else {
     const selectedProvider = params.providerSelection ?? live.metadata.crossProvider;
     if (selectedProvider !== undefined) {
       if (live.metadata.crossProvider !== undefined &&
@@ -3775,6 +3807,7 @@ export async function* runAgent(
         modelInfo: targetInfo,
         ...(targetEffort !== undefined ? { reasoningEffort: targetEffort } : {}),
       };
+    }
     }
     relayAgentEvent({
       content: `spawned subagent ${live.agentPath} (role=${live.role.name})`,
@@ -3864,14 +3897,22 @@ export async function* runAgent(
     // sources. prepare() does not commit a switch to the parent session.
     let provider = providerFromParent(parent);
     if (params.providerSelection !== undefined) {
-      assertCrossProviderAllowed(parent, params.providerSelection.provider);
-      const prepared = await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true);
-      assertCrossProviderAllowed(parent, params.providerSelection.provider);
+      if (params.plan !== undefined) await assertChildExecutionPlan(parent, params.plan);
+      else assertCrossProviderAllowed(parent, params.providerSelection.provider);
+      const prepared = params.plan?.route.provider === "agenc"
+        ? await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true, params.plan.destination)
+        : await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true);
       provider = prepared.binding.instance;
       ownedPreparedProvider = provider;
+      if (params.plan !== undefined) {
+        assertPreparedChildMatchesPlan(params.plan, prepared);
+        await assertChildExecutionPlan(parent, params.plan);
+      } else assertCrossProviderAllowed(parent, params.providerSelection.provider);
       unsubscribeCrossPolicy = parent.services.configStore?.subscribe((config) => {
         if (config.agents?.cross_provider_enabled !== true ||
-            !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider)) {
+            !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider) ||
+            (params.plan?.route.provider === "agenc" &&
+             !(config.agents.allowed_providers ?? []).includes(params.plan.destination.provider))) {
           live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
         }
       }) ?? null;
@@ -4738,10 +4779,12 @@ export async function* runAgent(
           childRunId: live.agentId,
           cwd: params.worktree?.path ?? parent.sessionConfiguration.cwd,
           model:
+            params.plan?.destination.model ??
             params.model ??
             live.role.config.model ??
             parent.sessionConfiguration.collaborationMode.model,
           modelProvider:
+            params.plan?.destination.provider ??
             readProviderIdentity(parent.services.provider) ??
             parent.services.provider.name,
           originator: "agenc-subagent-preconstruction",

@@ -183,6 +183,7 @@ export function modelRegistryEntryToModelInfo(
   const visibility = catalog?.visibility ?? "list";
   return {
     slug: entry.model,
+    provider: entry.provider,
     ...(entry.metadata.contextWindow !== undefined
       ? { contextWindow: entry.metadata.contextWindow }
       : {}),

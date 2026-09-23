@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
 import { delegate } from "./delegate.js";
+import { createChildExecutionPlan } from "./cross-provider.js";
 import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
@@ -781,6 +782,36 @@ describe("runAgent", () => {
     expect(target.chatStream).toHaveBeenCalledOnce();
     expect(rootProvider.chatStream).not.toHaveBeenCalled();
     expect(live.configSnapshot?.crossProvider).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1" });
+  });
+
+  it("disposes a prepared child when policy is revoked during preparation", async () => {
+    let enabled = true;
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+      loader: async () => ({ agents: { cross_provider_enabled: enabled, allowed_providers: ["deepseek"] } }),
+    });
+    const dispose = vi.fn(async () => {});
+    const target = { ...makeProvider([]), name: "deepseek", dispose,
+      chatStream: vi.fn() } as LLMProvider;
+    const { parent, prepare, modelInfo } = crossProviderRuntime(target, configStore);
+    Object.assign(parent.providerService, {
+      prepareChild: async () => {
+        const prepared = await prepare();
+        enabled = false;
+        await configStore.reload();
+        return prepared;
+      },
+    });
+    const { live } = await spawnLive(parent);
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go",
+      model: "deepseek-v4-pro", modelInfo,
+      providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" },
+    }));
+    expect(result.outcome).toBe("errored");
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(target.chatStream).not.toHaveBeenCalled();
   });
 
   it.each(["Stop", "switch off"])("cancels an active cross-provider stream on %s", async (cause) => {
@@ -5497,9 +5528,13 @@ describe("runAgent", () => {
     const invalidProvider = {
       name: "missing-chat-provider",
     } as unknown as LLMProvider;
+    const planConfigStore = new ConfigStore({ cwd,
+      base: { model_provider: "grok", model: "grok-4.6",
+        agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+    });
     const session = makeStubSession({
       conversationId: "root-preconstruction-failure",
-      services: { provider: invalidProvider },
+      services: { provider: invalidProvider, configStore: planConfigStore },
       sessionConfiguration: mkSessionConfiguration({ cwd }),
       config: { ...mkConfig(), cwd },
     });
@@ -5522,12 +5557,25 @@ describe("runAgent", () => {
 
     try {
       const { live } = await spawnLive(session);
+      const plan = await createChildExecutionPlan({
+        session: { conversationId: session.conversationId,
+          sessionConfiguration: session.sessionConfiguration,
+          services: session.services, config: session.config,
+          modelInfo: session.modelInfo, providerService: {
+          current: () => ({ provider: "grok", model: "grok-4.6" }),
+        } } as Session,
+        selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+        modelInfo: { ...mkModelInfo(), slug: "deepseek-v4-pro", provider: "deepseek" },
+        parentPath: "/root", taskId: "journal-destination", taskName: "worker",
+        toolFree: false, forkedHistory: false,
+      });
       const { result } = await collectRun(
         runAgent({
           live,
           parent: session,
           initialMessages: [{ role: "user", content: "go" }],
           taskPrompt: "go",
+          plan,
         }),
       );
       expect(result).toMatchObject({
@@ -5535,6 +5583,7 @@ describe("runAgent", () => {
         outcome: "errored",
       });
       expect(live.rolloutPath).toBeDefined();
+      expect(readFileSync(live.rolloutPath!, "utf8")).toContain('"modelProvider":"deepseek"');
 
       const inspection = new AgenCDaemonRunInspectionService({
         stateDatabasePaths: () => [
@@ -5552,7 +5601,7 @@ describe("runAgent", () => {
         terminal: true,
         output: {
           available: true,
-          stopReason: "subagent has no provider on parent.services.provider",
+          stopReason: "deepseek provider switch has no canonical preparation request",
           finalMessage: null,
         },
       });

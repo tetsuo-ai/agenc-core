@@ -49,7 +49,8 @@ import {
 } from "./mailbox.js";
 import type { ValidatedMailboxMetadata } from "./mailbox-metadata.js";
 import type { ProviderSelection } from "../session/provider-service.js";
-import { assertCrossProviderAllowed, resolveChildSelection } from "./cross-provider.js";
+import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, resolveChildSelection } from "./cross-provider.js";
+import { liveAgentSession } from "./live-session.js";
 import {
   AgentIdExistsError,
   AgentPathExistsError,
@@ -280,6 +281,9 @@ export interface ListedAgent {
   readonly agentName: string;
   readonly agentStatus: AgentStatus;
   readonly lastTaskMessage?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
 }
 
 /** Current native workers under one parent; closed handles are absent. */
@@ -289,6 +293,9 @@ export interface NativeWorkerSnapshot {
   readonly nickname: string;
   readonly role: string;
   readonly prompt?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
   readonly status: AgentStatus["status"];
   readonly error?: string;
   readonly toolUseCount: number;
@@ -472,12 +479,20 @@ export class AgentControl {
     readonly capacityPermit?: AgentCapacityPermit;
     readonly capacityOwnerId?: string;
     readonly providerSelection?: ProviderSelection;
+    readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
     /** Fail-closed role identity for restart/rehydration spawns. */
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
     >;
   }): Promise<LiveAgent> {
+    if (opts.executionPlan !== undefined &&
+        opts.executionPlan.parent.sessionId === this.session.conversationId) {
+      await assertChildExecutionPlan(this.session, opts.executionPlan);
+    }
+    if (opts.executionPlan !== undefined && opts.executionPlan.parent.agentPath !== opts.parentPath) {
+      throw new Error("child execution plan parent path changed before spawn");
+    }
     if (opts.providerSelection !== undefined) {
       assertCrossProviderAllowed(this.session, opts.providerSelection.provider);
       const validated = await resolveChildSelection(
@@ -507,6 +522,7 @@ export class AgentControl {
     readonly capacityPermit?: AgentCapacityPermit;
     readonly capacityOwnerId?: string;
     readonly providerSelection?: ProviderSelection;
+    readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
@@ -709,6 +725,9 @@ export class AgentControl {
             policy: "user-or-managed-agents-v1",
           },
         };
+      }
+      if (opts.executionPlan !== undefined) {
+        metadata = { ...metadata, executionPlan: opts.executionPlan };
       }
       if (explicitAgentPath === undefined && metadata.agentPath !== undefined) {
         reservation.reserveAgentPath(metadata.agentPath);
@@ -1551,16 +1570,41 @@ export class AgentControl {
     }
 
     const role = resolveResumedAgentRole(this.roleCatalog, metadata);
+    let planParentSession = this.session;
+    if (metadata.executionPlan !== undefined) {
+      try {
+        if (metadata.executionPlan.parent.agentPath !== parentPath) {
+          throw new Error("child execution plan parent path changed");
+        }
+        const planParent = parentPath === ROOT_AGENT_PATH
+          ? this.session : liveAgentSession(this.getLiveByPath(parentPath)!);
+        if (planParent === undefined) throw new Error("parent session is not live for child plan recovery");
+        await assertChildExecutionPlan(planParent, metadata.executionPlan);
+        planParentSession = planParent;
+      } catch (error) {
+        throw new InvalidAgentMetadataError(
+          `cannot resume child execution plan: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     if (metadata.crossProvider !== undefined) {
       try {
-        assertCrossProviderAllowed(this.session, metadata.crossProvider.provider);
+        assertCrossProviderAllowed(planParentSession, metadata.crossProvider.provider);
         const selection = await resolveChildSelection(
-          this.session,
+          planParentSession,
           metadata.crossProvider.provider,
           metadata.crossProvider.model,
         );
-        const prepared = await this.session.providerService.prepareChild(selection, undefined, {}, true);
-        await prepared.binding.instance.dispose?.();
+        const prepared = metadata.executionPlan?.route.provider === "agenc"
+          ? await planParentSession.providerService.prepareChild(selection, undefined, {}, true,
+              metadata.executionPlan.destination)
+          : await planParentSession.providerService.prepareChild(selection, undefined, {}, true);
+        try {
+          if (metadata.executionPlan !== undefined)
+            assertPreparedChildMatchesPlan(metadata.executionPlan, prepared);
+        } finally {
+          await prepared.binding.instance.dispose?.();
+        }
       } catch (error) {
         throw new InvalidAgentMetadataError(
           `cannot resume cross-provider child: ${error instanceof Error ? error.message : String(error)}`,
@@ -1810,6 +1854,9 @@ export class AgentControl {
       ...(agent.metadata.crossProvider !== undefined
         ? { crossProvider: agent.metadata.crossProvider }
         : {}),
+      ...(agent.metadata.executionPlan !== undefined
+        ? { executionPlan: agent.metadata.executionPlan }
+        : {}),
     };
   }
 
@@ -1969,6 +2016,12 @@ export class AgentControl {
       result.push({
         agentName: metadata.agentPath ?? agent.agentId,
         agentStatus: agent.status.value,
+        ...(metadata.executionPlan !== undefined ? {
+          provider: metadata.executionPlan.destination.provider,
+          model: metadata.executionPlan.destination.model,
+          ...(metadata.executionPlan.reasoningEffort !== undefined
+            ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
+        } : {}),
         ...(metadata.lastTaskMessage !== undefined
           ? { lastTaskMessage: metadata.lastTaskMessage }
           : {}),
@@ -1996,6 +2049,12 @@ export class AgentControl {
           agentPath: agent.agentPath,
           nickname: agent.nickname,
           role: agent.role.name,
+          ...(metadata.executionPlan !== undefined ? {
+            provider: metadata.executionPlan.destination.provider,
+            model: metadata.executionPlan.destination.model,
+            ...(metadata.executionPlan.reasoningEffort !== undefined
+              ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
+          } : {}),
           ...(metadata.lastTaskMessage !== undefined ? { prompt: metadata.lastTaskMessage } : {}),
           status: status.status,
           ...(status.status === "errored" ? { error: status.error } : {}),

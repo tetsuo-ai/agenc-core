@@ -228,9 +228,13 @@ export class AgenCThread implements ManagedThread {
       const snapshot = threadConfigSnapshot(
         this.session.sessionConfiguration,
       ) as unknown as Record<string, unknown>;
-      return this.live?.metadata.crossProvider === undefined
-        ? snapshot
-        : { ...snapshot, crossProvider: this.live.metadata.crossProvider };
+      return {
+        ...snapshot,
+        ...(this.live?.metadata.crossProvider !== undefined
+          ? { crossProvider: this.live.metadata.crossProvider } : {}),
+        ...(this.live?.metadata.executionPlan !== undefined
+          ? { executionPlan: this.live.metadata.executionPlan } : {}),
+      };
     }
     return this.live?.configSnapshot;
   }

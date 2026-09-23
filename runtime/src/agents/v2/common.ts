@@ -305,14 +305,23 @@ export function toListedAgentJson(agent: {
   readonly agentName: string;
   readonly agentStatus: AgentStatus;
   readonly lastTaskMessage?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
 }): {
   readonly agent_name: string;
   readonly agent_status: ReturnType<typeof toAgentStatusJson>;
   readonly last_task_message?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoning_effort?: string;
 } {
   return {
     agent_name: agent.agentName,
     agent_status: toAgentStatusJson(agent.agentStatus),
+    ...(agent.provider !== undefined ? { provider: agent.provider } : {}),
+    ...(agent.model !== undefined ? { model: agent.model } : {}),
+    ...(agent.reasoningEffort !== undefined ? { reasoning_effort: agent.reasoningEffort } : {}),
     ...(agent.lastTaskMessage !== undefined
       ? { last_task_message: agent.lastTaskMessage }
       : {}),
