@@ -9,6 +9,7 @@ import {
 } from "../registry.js";
 import { formatAgentRoleLabel } from "../role-presentation.js";
 import {
+  terminalFromAgentStatus,
   toAgentStatusJson,
   type AgentStatus,
 } from "../status.js";
@@ -315,9 +316,12 @@ export function toListedAgentJson(agent: {
   readonly provider?: string;
   readonly model?: string;
   readonly reasoning_effort?: string;
+  readonly terminal?: import("../child-terminal.js").ChildTerminalOutcome;
 } {
+  const terminal = terminalFromAgentStatus(agent.agentStatus);
   return {
     agent_name: agent.agentName,
+    ...(terminal !== undefined ? { terminal } : {}),
     agent_status: toAgentStatusJson(agent.agentStatus),
     ...(agent.provider !== undefined ? { provider: agent.provider } : {}),
     ...(agent.model !== undefined ? { model: agent.model } : {}),

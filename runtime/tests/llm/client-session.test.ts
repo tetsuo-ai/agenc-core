@@ -62,6 +62,18 @@ function streamWithFailure(
 const PROVIDER_PROJECT_HEADER = "Open" + "AI-Project";
 
 describe("ProviderHttpClientSession", () => {
+  test("never retries an OpenAI billing 429 even when ordinary 429 retry is enabled", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: "insufficient_quota", type: "insufficient_quota" } }),
+        { status: 429, headers: { "content-type": "application/json", "retry-after": "1" } }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai", baseURL: "https://example.test/v1", wireApi: "responses",
+      requestRetry: { maxRetries: 3, retry429: true }, fetchImpl,
+    });
+    await expect(session.requestJson({ body: { ping: "pong" } })).rejects.toMatchObject({ status: 429 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     vi.useFakeTimers();
   });

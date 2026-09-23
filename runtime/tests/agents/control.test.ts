@@ -167,6 +167,40 @@ afterEach(() => {
 });
 
 describe("AgentControl", () => {
+  it("snapshots and interrupts a worker with a string status projection", async () => {
+    const session = stubSession();
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const worker = await control.spawn({ parentPath: "/root" });
+    const status = vi.spyOn(worker.status, "value", "get").mockReturnValue("running" as never);
+    try {
+      expect(control.snapshotNativeWorkers(session.conversationId)[0]).toMatchObject({
+        agentId: worker.agentId, status: "running",
+      });
+      expect(control.snapshotNativeWorkers(session.conversationId)[0]).not.toHaveProperty("terminal");
+      control.interrupt(worker.agentId, "user_cancel");
+      expect(worker.status.subject.value).toMatchObject({ status: "interrupted", turnId: worker.agentId });
+    } finally {
+      status.mockRestore();
+      await control.shutdownAll();
+    }
+  });
+
+  it("projects an object status terminal in native worker snapshots", async () => {
+    const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+    const session = stubSession();
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const worker = await control.spawn({ parentPath: "/root" });
+    try {
+      const terminal = childTerminalOutcome({ provider: "fake", model: "fake-model",
+        reason: "completed", dispatch: "sent", completedWork: "done" });
+      worker.status.markIdle("turn-1", terminal);
+      expect(control.snapshotNativeWorkers(session.conversationId)[0]).toMatchObject({
+        agentId: worker.agentId, status: "idle", terminal,
+      });
+    } finally { await control.shutdownAll(); }
+  });
   it("preserves actual turn timing when interrupting a worker by its thread ID", async () => {
     const session = stubSession();
     const control = new AgentControl({ session, registry: new AgentRegistry() });
@@ -2184,6 +2218,44 @@ describe("AgentControl", () => {
     } finally {
       originalRolloutStore.close();
       resumedRolloutStore?.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not redispatch a funds-stopped child after a fresh control plane restart", async () => {
+    const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-funds-restart-"));
+    const sessionId = "funds-stop-fresh-control-plane";
+    const originalStore = openRolloutStore({ cwd, sessionId });
+    let resumedStore: RolloutStore | null = null;
+    try {
+      const session = stubSession({ rolloutStore: originalStore, conversationId: sessionId });
+      const control = new AgentControl({ session, registry: new AgentRegistry(), maxDepth: 3 });
+      const root = await control.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
+      const child = await control.spawn({ parentPath: root.agentPath });
+      control.recordTerminalOutcome(child.agentId, childTerminalOutcome({
+        provider: "deepseek", model: "deepseek-chat", reason: "insufficient_funds",
+        dispatch: "sent", unfinishedWork: "Run tests",
+      }));
+      expect(originalStore.getThreadSpawnEdge(child.agentId)?.status).toBe("closed");
+      await control.shutdownAll("manager_shutdown");
+      originalStore.close();
+
+      resumedStore = openRolloutStore({ cwd, sessionId, resume: true });
+      const resumedSession = stubSession({ rolloutStore: resumedStore, conversationId: sessionId });
+      const resumedControl = new AgentControl({
+        session: resumedSession, registry: new AgentRegistry(), maxDepth: 3,
+      });
+      const result = await resumedControl.resumeAgentFromRollout({
+        rootThreadId: root.agentId, parentPath: "/root", metadata: root.metadata,
+      });
+      expect(result.resumedCount).toBe(1);
+      expect(resumedControl.getLive(child.agentId)).toBeUndefined();
+      expect(resumedStore.getThreadSpawnEdge(child.agentId)?.status).toBe("closed");
+    } finally {
+      originalStore.close();
+      resumedStore?.close();
       rmSync(cwd, { recursive: true, force: true });
     }
   });

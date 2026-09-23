@@ -126,6 +126,8 @@ import {
   AgentStatusTracker,
   formatSubagentNotification,
   isFinal,
+  terminalFromAgentStatus,
+  turnIdFromAgentStatus,
   type AgentStatus,
 } from "./status.js";
 import type { ThreadManager } from "./thread-manager.js";
@@ -299,6 +301,7 @@ export interface NativeWorkerSnapshot {
   readonly reasoningEffort?: string;
   readonly status: AgentStatus["status"];
   readonly error?: string;
+  readonly terminal?: import("./child-terminal.js").ChildTerminalOutcome;
   readonly toolUseCount: number;
   readonly tokenCount: number;
   readonly timing?: import("./status.js").NativeWorkerTiming;
@@ -344,6 +347,7 @@ export interface LiveAgent {
   lastTaskReceipt?: {
     readonly turnId: string;
     readonly outcome: "completed" | "errored" | "interrupted" | "nack";
+    readonly terminal?: import("./child-terminal.js").ChildTerminalOutcome;
   };
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
@@ -1438,7 +1442,7 @@ export class AgentControl {
       agent.abortController.abort(reason);
     }
     const interruptedStatus = agent.status.value;
-    agent.status.markInterrupted("turnId" in interruptedStatus ? interruptedStatus.turnId : agent.agentId, reason);
+    agent.status.markInterrupted(turnIdFromAgentStatus(interruptedStatus) ?? agent.agentId, reason);
 
     // Cascade to descendants.
     for (const descendant of this.descendantsOf(agent.agentPath)) {
@@ -1563,6 +1567,11 @@ export class AgentControl {
     readonly metadata: AgentMetadata;
   }): Promise<LiveAgent | null> {
     const metadata = normalizeAgentMetadata(opts.metadata);
+    if (metadata.terminalOutcome?.reason === "insufficient_funds") {
+      throw new InvalidAgentMetadataError(
+        "resume_blocked: funds-stopped child cannot be redispatched on its provider",
+      );
+    }
     const { parentPath } = opts;
     const threadId = metadata.agentId;
     const agentPath = metadata.agentPath;
@@ -1872,7 +1881,9 @@ export class AgentControl {
   ): Record<string, unknown> | undefined {
     const agent = this.live.get(threadId);
     if (!agent) return undefined;
-    if (agent.configSnapshot) return { ...agent.configSnapshot };
+    if (agent.configSnapshot) return { ...agent.configSnapshot,
+      ...(agent.metadata.terminalOutcome !== undefined
+        ? { terminalOutcome: agent.metadata.terminalOutcome } : {}) };
     return {
       threadId: agent.agentId,
       agentPath: agent.agentPath,
@@ -1886,7 +1897,20 @@ export class AgentControl {
       ...(agent.metadata.executionPlan !== undefined
         ? { executionPlan: agent.metadata.executionPlan }
         : {}),
+      ...(agent.metadata.terminalOutcome !== undefined
+        ? { terminalOutcome: agent.metadata.terminalOutcome } : {}),
     };
+  }
+
+  recordTerminalOutcome(threadId: ThreadId,
+    terminal: import("./child-terminal.js").ChildTerminalOutcome): void {
+    const agent = this.live.get(threadId);
+    if (agent === undefined) return;
+    if (terminal.reason === "insufficient_funds") {
+      this.session.rolloutStore?.setThreadSpawnEdgeStatus(threadId, "closed");
+    }
+    agent.metadata = { ...agent.metadata, terminalOutcome: terminal };
+    this.registry.updateTerminalOutcome(threadId, terminal);
   }
 
   async getStatus(threadId: ThreadId): Promise<AgentStatus> {
@@ -2073,6 +2097,8 @@ export class AgentControl {
         if (agent === undefined) continue;
         pending.push(id);
         const status = agent.status.value;
+        const statusName = typeof status === "string" ? status : status.status;
+        const terminal = terminalFromAgentStatus(status);
         result.push({
           agentId: id,
           agentPath: agent.agentPath,
@@ -2085,8 +2111,10 @@ export class AgentControl {
               ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
           } : {}),
           ...(metadata.lastTaskMessage !== undefined ? { prompt: metadata.lastTaskMessage } : {}),
-          status: status.status,
-          ...(status.status === "errored" ? { error: status.error } : {}),
+          status: statusName,
+          ...(typeof status === "object" && status !== null && status.status === "errored"
+            ? { error: status.error } : {}),
+          ...(terminal !== undefined ? { terminal } : {}),
           toolUseCount: agent.toolCallCount,
           tokenCount: agent.tokenUsage.totalTokens,
           ...(agent.status.timing !== undefined ? { timing: { ...agent.status.timing } } : {}),

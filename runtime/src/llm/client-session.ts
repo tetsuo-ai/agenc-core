@@ -34,6 +34,7 @@ import {
 import { isFallbackTriggeredError } from "../recovery/api-errors.js";
 import { isProviderCapabilityMismatch } from "./capabilities.js";
 import { parseProviderRetryAfterDirective } from "./retry-after.js";
+import { isProviderFundsFailure } from "./funds.js";
 import {
   RECONNECT_RETRY_AFTER_CEILING_MS,
   classifyRetryAfterMilliseconds,
@@ -1200,7 +1201,7 @@ export class ProviderHttpClientSession {
             attemptState.signal,
           );
           attemptState.cleanup();
-          const fallbackDecision = evaluateConfiguredProviderFallback(
+          const fallbackDecision = isProviderFundsFailure(this.config.providerName, error) ? undefined : evaluateConfiguredProviderFallback(
             options.providerFallback ?? this.config.providerFallback,
             error,
             consecutiveFallbackFailures,
@@ -1213,7 +1214,7 @@ export class ProviderHttpClientSession {
           if (
             !options.singleWireAttempt &&
             attempt < retryBudget.maxRetries &&
-            (shouldRetryHttpStatus(response.status, retryBudget) ||
+            (!isProviderFundsFailure(this.config.providerName, error) && shouldRetryHttpStatus(response.status, retryBudget) ||
               shouldRetryFallback)
           ) {
             const retryDelay = resolveRetryDelayMs(
@@ -1277,7 +1278,7 @@ export class ProviderHttpClientSession {
             response,
             attemptState.signal,
           );
-          const fallbackDecision = evaluateConfiguredProviderFallback(
+          const fallbackDecision = isProviderFundsFailure(this.config.providerName, error) ? undefined : evaluateConfiguredProviderFallback(
             options.providerFallback ?? this.config.providerFallback,
             error,
             consecutiveFallbackFailures,
@@ -1290,7 +1291,7 @@ export class ProviderHttpClientSession {
           if (
             !options.singleWireAttempt &&
             attempt < retryBudget.maxRetries &&
-            (shouldRetryHttpStatus(response.status, retryBudget) ||
+            (!isProviderFundsFailure(this.config.providerName, error) && shouldRetryHttpStatus(response.status, retryBudget) ||
               shouldRetryFallback)
           ) {
             attemptState.cleanup();

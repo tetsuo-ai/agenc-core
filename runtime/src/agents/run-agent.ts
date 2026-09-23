@@ -146,6 +146,7 @@ import {
   isFinal,
   type AgentStatus,
 } from "./status.js";
+import { childDispatchCertainty, childTerminalOutcome, type ChildTerminalOutcome, type ChildTerminalReason } from "./child-terminal.js";
 import { asRecord } from "../utils/record.js";
 import {
   attachSandboxExecutionBroker,
@@ -218,6 +219,8 @@ export interface RunAgentParams {
   readonly worktreeBaseCommit?: string;
   /** Internal cleanup evidence, including receipts that cannot be persisted. */
   readonly onWorktreeEvidence?: (evidence: WorktreeTurnEvidence) => void;
+  /** Close the durable spawn edge before recording a funds terminal. */
+  readonly onTerminalFundsStop?: () => Promise<void>;
   /** Backpressured provider-delta sink for bounded workflow handoffs. */
   readonly finalMessageSink?: AssistantOutputStreamSink;
 }
@@ -1014,6 +1017,9 @@ interface TaskTurnReceipt {
   readonly outcome: "completed" | "errored" | "interrupted" | "nack";
   readonly message?: string;
   readonly reason?: string;
+  readonly terminalReason?: ChildTerminalReason;
+  readonly terminalRetryable?: boolean;
+  readonly terminal?: ChildTerminalOutcome;
   readonly toolCallCount: number;
   readonly worktreeEvidence?: WorktreeTurnEvidence;
 }
@@ -1038,6 +1044,11 @@ function projectTaskReceiptForParent(
 ): TaskTurnReceipt {
   return {
     ...receipt,
+    ...(receipt.terminal !== undefined ? { terminal: {
+      ...receipt.terminal,
+      completedWork: truncateReceiptField(receipt.terminal.completedWork),
+      unfinishedWork: truncateReceiptField(receipt.terminal.unfinishedWork),
+    } } : {}),
     ...(receipt.message !== undefined
       ? { message: truncateReceiptField(receipt.message) }
       : {}),
@@ -1121,6 +1132,7 @@ function taskTurnOutcomePayload(
     toolCallCount: receipt.toolCallCount,
     ...(receipt.message !== undefined ? { message: receipt.message } : {}),
     ...(receipt.reason !== undefined ? { reason: receipt.reason } : {}),
+    ...(receipt.terminal !== undefined ? { terminal: receipt.terminal } : {}),
     ...(receipt.worktreeEvidence !== undefined
       ? { worktreeEvidence: receipt.worktreeEvidence }
       : {}),
@@ -1138,6 +1150,7 @@ function statusForTaskTurnReceipt(receipt: TaskTurnReceipt): AgentStatus {
         ...(receipt.message !== undefined
           ? { lastMessage: receipt.message }
           : {}),
+        ...(receipt.terminal !== undefined ? { terminal: receipt.terminal } : {}),
       };
     case "errored":
       return {
@@ -1145,6 +1158,7 @@ function statusForTaskTurnReceipt(receipt: TaskTurnReceipt): AgentStatus {
         turnId: receipt.turnId,
         endedAtMs,
         error: receipt.reason ?? receipt.message ?? "task errored",
+        ...(receipt.terminal !== undefined ? { terminal: receipt.terminal } : {}),
       };
     case "interrupted":
     case "nack":
@@ -1157,6 +1171,7 @@ function statusForTaskTurnReceipt(receipt: TaskTurnReceipt): AgentStatus {
           (receipt.outcome === "nack"
             ? "accepted task was not started"
             : "task interrupted"),
+        ...(receipt.terminal !== undefined ? { terminal: receipt.terminal } : {}),
       };
   }
 }
@@ -1237,6 +1252,9 @@ function sendSubagentNotificationToParent(params: {
               : {}),
             ...(projectedReceipt.reason !== undefined
               ? { reason: projectedReceipt.reason }
+              : {}),
+            ...(projectedReceipt.terminal !== undefined
+              ? { terminal: projectedReceipt.terminal }
               : {}),
             ...(projectedReceipt.worktreeEvidence !== undefined
               ? {
@@ -3460,9 +3478,11 @@ export async function* runAgent(
   let forwardMergedAbort: (() => void) | null = null;
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let currentTaskId = params.taskId;
+  let currentTaskText = params.taskPrompt;
   let currentTurnReceiptCommitted = false;
   let currentCommittedReceipt: TaskTurnReceipt | undefined;
   let currentTurnToolCallCount = 0;
+  let latestChildProgress = "";
   let currentWorktreeBaseCommit = params.worktreeBaseCommit;
   let currentReceiptWorktreeEvidence: WorktreeTurnEvidence | undefined;
   let reuseBlockedReason: string | undefined;
@@ -3561,7 +3581,30 @@ export async function* runAgent(
     options: { readonly deferParentNotification?: boolean } = {},
   ): Promise<boolean> => {
     if (currentTurnReceiptCommitted) return false;
-    let receiptToCommit = receipt;
+    const provider = params.plan?.destination.provider ??
+      params.providerSelection?.provider ??
+      readProviderIdentity(ownedChildProvider ?? parent.services.provider) ??
+      parent.services.provider.name;
+    const model = params.plan?.destination.model ?? params.model ??
+      live.role.config.model ?? parent.sessionConfiguration.collaborationMode.model;
+    const cost = parent.services.executionAdmission?.getUsageSummary?.().agents
+      .find((agent) => agent.runId === live.agentId);
+    let receiptToCommit: TaskTurnReceipt = {
+      ...receipt,
+      terminal: receipt.terminal ?? childTerminalOutcome({
+        provider, model,
+        ...(receipt.terminalReason !== undefined ? { reason: receipt.terminalReason } :
+          receipt.outcome === "completed" ? { reason: "completed" as const } :
+            receipt.outcome === "interrupted" || receipt.outcome === "nack"
+              ? { reason: "parent_cancelled" as const }
+              : { error: new Error(receipt.reason ?? receipt.message ?? "subagent failed") }),
+        ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
+        dispatch: receipt.outcome === "completed" ? "sent" : childSession === null ? "not_sent" : "unknown",
+        completedWork: receipt.message ?? latestChildProgress,
+        unfinishedWork: receipt.outcome === "completed" ? "" : currentTaskText,
+        ...(cost !== undefined && !cost.hasUnknownCost ? { costUsd: cost.costUsd } : {}),
+      }),
+    };
     if (params.worktree !== undefined) {
       let evidence: WorktreeTurnEvidence;
       if (
@@ -3594,10 +3637,20 @@ export async function* runAgent(
                 : "worktree sandbox authority is unavailable",
         };
       }
-      receiptToCommit = { ...receipt, worktreeEvidence: evidence };
+      receiptToCommit = { ...receiptToCommit, worktreeEvidence: evidence };
       // Cleanup must observe evidence on every exit path, independently of
       // progress events or whether this receipt can reach durable storage.
       params.onWorktreeEvidence?.(evidence);
+    }
+    if (receiptToCommit.terminal?.reason === "insufficient_funds") {
+      try {
+        await params.onTerminalFundsStop?.();
+      } catch (error) {
+        reuseBlockedReason = "funds stop spawn edge could not be closed";
+        emitWarning(parent.eventLog, parent.nextInternalSubId(),
+          "funds_stop_spawn_edge_close_failed",
+          error instanceof Error ? error.message : String(error));
+      }
     }
     if (childSession === null) {
       // Session construction has not reached the child-owned EventLog yet.
@@ -3647,6 +3700,7 @@ export async function* runAgent(
     live.lastTaskReceipt = {
       turnId: receiptToCommit.turnId,
       outcome: receiptToCommit.outcome,
+      ...(receiptToCommit.terminal !== undefined ? { terminal: receiptToCommit.terminal } : {}),
     };
     if (
       receiptToCommit.taskId !== undefined &&
@@ -3670,6 +3724,18 @@ export async function* runAgent(
       reuseBlockedReason = `worktree evidence is ${evidence.state}`;
     }
     if (!options.deferParentNotification) {
+      if (receiptToCommit.terminal?.reason === "insufficient_funds") {
+        parent.emit({
+          id: parent.nextInternalSubId(),
+          msg: { type: "subagent_funds_notice", payload: {
+            agentPath: live.agentPath,
+            taskId: receiptToCommit.taskId,
+            taskText: currentTaskText,
+            terminal: projectTaskReceiptForParent(receiptToCommit).terminal!,
+            message: `${provider}/${model} ran out of credits. The child stopped; ask before switching providers.`,
+          } },
+        }, { durable: true });
+      }
       sendParentNotification(receiptToCommit);
     }
     return true;
@@ -3684,6 +3750,8 @@ export async function* runAgent(
   const finishErroredRun = async (opts: {
     readonly message: string;
     readonly error: unknown;
+    readonly terminalReason?: ChildTerminalReason;
+    readonly terminalRetryable?: boolean;
     readonly toolCallCount?: number;
     readonly relayToParent?: boolean;
   }): Promise<RunAgentResult> => {
@@ -3691,6 +3759,22 @@ export async function* runAgent(
       ...taskCorrelation(),
       outcome: "errored",
       reason: opts.message,
+      terminal: childTerminalOutcome({
+        provider: params.plan?.destination.provider ?? params.providerSelection?.provider ??
+          readProviderIdentity(ownedChildProvider ?? parent.services.provider) ?? parent.services.provider.name,
+        model: params.plan?.destination.model ?? params.model ?? live.role.config.model ??
+          parent.sessionConfiguration.collaborationMode.model,
+        error: opts.error,
+        ...(opts.terminalReason !== undefined ? { reason: opts.terminalReason } : {}),
+        ...(opts.terminalRetryable !== undefined ? { retryable: opts.terminalRetryable } : {}),
+        dispatch: childSession === null ? "not_sent" : childDispatchCertainty(opts.error),
+        completedWork: latestChildProgress,
+        unfinishedWork: currentTaskText,
+        ...(parent.services.executionAdmission?.getUsageSummary?.().agents
+          .find((agent) => agent.runId === live.agentId && !agent.hasUnknownCost)?.costUsd !== undefined
+          ? { costUsd: parent.services.executionAdmission.getUsageSummary!().agents
+            .find((agent) => agent.runId === live.agentId)!.costUsd } : {}),
+      }),
       toolCallCount: currentTurnToolCallCount,
     });
     if (receiptCommitted) {
@@ -4092,9 +4176,13 @@ export async function* runAgent(
         }
       }
       nextUserMessage = accepted.nextUserMessage;
+      currentTaskText = live.assignment?.executionPlan?.task.text ??
+        live.metadata.executionPlan?.task.text ??
+        (typeof accepted.nextUserMessage === "string" ? accepted.nextUserMessage : currentTaskText);
       currentTaskId = accepted.taskId;
       turnId = accepted.turnId ?? crypto.randomUUID();
       currentTurnReceiptCommitted = false;
+      latestChildProgress = "";
       currentCommittedReceipt = undefined;
       currentTurnToolCallCount = 0;
       pendingWorkerTerminal = undefined;
@@ -4225,6 +4313,7 @@ export async function* runAgent(
         const event = step.value;
         if (event.type === "assistant_text") {
           turnAssistantText = event.content;
+          if (event.content.trim().length > 0) latestChildProgress = event.content;
           yield {
             kind: "message",
             message: {
@@ -4293,6 +4382,7 @@ export async function* runAgent(
       stopTurnCall();
 
       assistantText = turnAssistantText;
+      if (turnAssistantText.trim().length > 0) latestChildProgress = turnAssistantText;
       // Each sampling iteration emits a durable token_count event. The
       // subscription above projects those counts immediately so a long,
       // tool-using turn does not sit at `tokens 0` until it finishes. Retain
@@ -4324,6 +4414,12 @@ export async function* runAgent(
         stopReason === "deadline_reached" ||
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
+      const boundedTerminalReason: ChildTerminalReason | undefined =
+        stopReason === "max_budget_usd" ? "cost_cap_reached" :
+        stopReason === "effect_review_required" ? "effect_outcome_unknown" :
+        stopReason === "compact_failed" ? "context_insufficient" :
+        stopReason === "empty_response" ? "model_refused" :
+        boundedStop ? "timeout" : undefined;
       // A bounded stop in a keep-alive (interactive) run is a per-turn
       // outcome: the backstop's message already reached the transcript,
       // and the user must be able to keep prompting. Ending the run here
@@ -4367,6 +4463,8 @@ export async function* runAgent(
           message,
           error:
             terminalError instanceof Error ? terminalError : new Error(message),
+          ...(boundedTerminalReason !== undefined ? { terminalReason: boundedTerminalReason } : {}),
+          ...(boundedStop ? { terminalRetryable: false } : {}),
           toolCallCount,
         });
         yield { kind: "run_error", error: message, ...taskCorrelation() };
@@ -4438,6 +4536,8 @@ export async function* runAgent(
           ...taskCorrelation(),
           outcome: boundedStop ? "errored" : "completed",
           ...(turnFailureMessage !== undefined ? { reason: turnFailureMessage } : {}),
+          ...(boundedTerminalReason !== undefined ? { terminalReason: boundedTerminalReason } : {}),
+          ...(boundedStop ? { terminalRetryable: false } : {}),
           ...(assistantText ? { message: assistantText } : {}),
           toolCallCount: turnToolCallCount,
         };
@@ -4469,7 +4569,7 @@ export async function* runAgent(
           throw new Error("committed task receipt payload is unavailable");
         }
         if (reuseBlockedReason === undefined) {
-          live.status.markIdle(completedTurnId);
+          live.status.markIdle(completedTurnId, currentCommittedReceipt?.terminal);
           pendingWorkerTerminal = turnFailureMessage !== undefined
             ? { status: "errored", turnId: completedTurnId, error: turnFailureMessage }
             : {
@@ -4794,6 +4894,7 @@ export async function* runAgent(
           live.lastTaskReceipt = {
             turnId: committedReceipt.turnId,
             outcome: committedReceipt.outcome,
+            ...(committedReceipt.terminal !== undefined ? { terminal: committedReceipt.terminal } : {}),
           };
           if (
             committedReceipt.taskId !== undefined &&
@@ -4906,16 +5007,19 @@ export async function* runAgent(
       live.status.markCompleted(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.message,
+        currentCommittedReceipt?.terminal,
       );
     } else if (pendingWorkerTerminal?.status === "errored") {
       live.status.markErrored(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.error,
+        currentCommittedReceipt?.terminal,
       );
     } else if (pendingWorkerTerminal?.status === "interrupted") {
       live.status.markInterrupted(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.reason,
+        currentCommittedReceipt?.terminal,
       );
     }
   }

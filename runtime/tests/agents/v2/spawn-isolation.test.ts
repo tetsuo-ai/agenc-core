@@ -17,6 +17,7 @@ import { validationErrorToolResult } from "../../../src/tools/results.js";
 import { bindLiveAgentSession } from "../../../src/agents/live-session.js";
 import type { LiveAgent } from "../../../src/agents/control.js";
 import { BehaviorSubject } from "../../../src/utils/behavior-subject.js";
+import { childTerminalOutcome } from "../../../src/agents/child-terminal.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
 const ROLE_CATALOG = new AgentRoleCatalog(ROLE_WORKSPACE);
@@ -183,6 +184,25 @@ describe("spawn_agent isolation", () => {
     const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "grok", model: "grok-4.6" });
     expect(result.isError).not.toBe(true);
     expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
+  });
+
+  it.each(["string", "object"] as const)("projects a %s live status safely", async (shape) => {
+    const session = makeSession();
+    const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
+    Object.assign(session, { emit: (event: typeof events[number]) => events.push(event) });
+    const terminal = childTerminalOutcome({ provider: "grok", model: "test-model",
+      reason: "completed", dispatch: "sent", completedWork: "done" });
+    const thread = fakeThread(false, { threadId: `thread-${shape}` }) as {
+      live: { status: { value: unknown } };
+    };
+    thread.live.status.value = shape === "string" ? "running" : { status: "idle", terminal };
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: thread as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({ message: "inspect", task_name: `worker_${shape}` });
+    expect(result.isError).not.toBe(true);
+    const statuses = events.filter((event) => event.msg.type === "collab_agent_status");
+    expect(statuses.length).toBeGreaterThan(0);
+    if (shape === "string") expect(statuses[0]!.msg.payload).not.toHaveProperty("terminal");
+    else expect(statuses[0]!.msg.payload.terminal).toEqual(terminal);
   });
 
   it("refuses a provider outside the operator allowlist", async () => {

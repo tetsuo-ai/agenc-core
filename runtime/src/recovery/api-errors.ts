@@ -21,6 +21,7 @@ import {
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
   LLMProviderError,
+  LLMFundsError,
 } from "../llm/errors.js";
 import {
   parsePromptTooLongTokenCounts,
@@ -449,6 +450,7 @@ export function isResampleableStreamInterruption(
 
 function isExplicitNonTransientProviderError(err: unknown): boolean {
   return (
+    err instanceof LLMFundsError ||
     err instanceof LLMAuthenticationError ||
     err instanceof LLMContextWindowExceededError ||
     err instanceof LLMMessageValidationError ||

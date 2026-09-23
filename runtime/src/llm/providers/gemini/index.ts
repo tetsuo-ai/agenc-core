@@ -11,7 +11,7 @@ import {
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
-import { LLMProviderError } from "../../errors.js";
+import { LLMProviderError, mapLLMError } from "../../errors.js";
 import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
 import type {
   LLMChatOptions,
@@ -2779,7 +2779,7 @@ function mapProviderError(error: unknown): never {
     throw error;
   }
   if (error instanceof ProviderHttpError) {
-    throw new LLMProviderError("gemini", error.message, error.status);
+    throw mapLLMError("gemini", error, 0);
   }
   if (error instanceof LLMProviderError) {
     throw error;

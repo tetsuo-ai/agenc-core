@@ -17,7 +17,7 @@ import {
   type InterAgentCommunication,
 } from "./mailbox.js";
 import type { MailboxMetadataBuilder } from "./mailbox-metadata.js";
-import type { AgentStatus } from "./status.js";
+import { turnIdFromAgentStatus, type AgentStatus } from "./status.js";
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import type { AgentPath, AgentRegistry, ThreadId } from "./registry.js";
 import type { AgentControl, LiveAgent } from "./control.js";
@@ -690,7 +690,7 @@ async function submitToLiveAgent(
         live.abortController.abort(op.reason ?? "interrupt");
       }
       const interruptedStatus = live.status.value;
-      live.status.markInterrupted("turnId" in interruptedStatus ? interruptedStatus.turnId : live.agentId, op.reason ?? "interrupt");
+      live.status.markInterrupted(turnIdFromAgentStatus(interruptedStatus) ?? live.agentId, op.reason ?? "interrupt");
       return live.agentId;
     }
     case "shutdown":

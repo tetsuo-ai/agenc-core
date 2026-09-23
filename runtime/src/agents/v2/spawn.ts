@@ -11,6 +11,7 @@ import {
 import type { Session } from "../../session/session.js";
 import type { ModelInfo, ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
+import { terminalFromAgentStatus } from "../status.js";
 import { liveAgentSession } from "../live-session.js";
 import { READ_ONLY_DELEGATION_PROMPT, sessionIsPlanning, sessionReadOnlyDelegation } from "../readonly-delegation.js";
 import type { ForkMode } from "../fork-context.js";
@@ -127,7 +128,7 @@ The new agent's canonical task name will be provided to it along with the messag
   const cfg = session?.config?.multiAgentV2;
   const policy = session === null ? undefined : childProviderPolicy(session);
   const pairs = session === null ? [] : allowedChildPairs(session);
-  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. Using one asks the user for consent at the moment of use, even when enabled. If consent_denied or consent_unavailable is returned, continue the subtask yourself and do not retry the same request. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairs.map(({ provider, model }) => `${provider}/${model}`).join(", ") || "none"}.` : ""}`;
+  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. Using one asks the user for consent at the moment of use, even when enabled. If consent_denied or consent_unavailable is returned, continue the subtask yourself and do not retry the same request. If a child reports insufficient_funds, tell the user exactly what work finished and what remains, then ask before trying another provider. Never retry that child on the exhausted provider. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairs.map(({ provider, model }) => `${provider}/${model}`).join(", ") || "none"}.` : ""}`;
   if (sessionIsPlanning(session) || sessionReadOnlyDelegation(session) !== undefined) {
     return `${base}\n${policyDescription}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
   }
@@ -785,6 +786,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const emitTaskStatus = (snapshot: BackgroundTaskSnapshot): void => {
       if (snapshot.status === "pending" || !projection.active()) return;
       try {
+        const terminal = terminalFromAgentStatus(live.status.value) ?? live.lastTaskReceipt?.terminal;
         emit(session, {
           type: "collab_agent_status",
           payload: {
@@ -812,6 +814,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
               ? { tokenCount: snapshot.progress.tokenCount }
               : {}),
             ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
+            ...(terminal !== undefined ? { terminal } : {}),
           },
         });
       } finally {

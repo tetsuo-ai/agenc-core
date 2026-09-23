@@ -64,6 +64,7 @@ import {
   WorktreePreconditionError,
 } from "./worktree.js";
 import { runAgent } from "./run-agent.js";
+import { terminalFromAgentStatus } from "./status.js";
 import { ResumeManager } from "./resume.js";
 import {
   missingSandboxExecutionBoundary,
@@ -765,6 +766,7 @@ async function runDelegateAgentLoop(opts: {
           : {}),
         ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
         onWorktreeEvidence: opts.onWorktreeEvidence,
+        onTerminalFundsStop: () => opts.control.markThreadSpawnEdgeClosed(live.agentId),
         ...(opts.finalMessageSink !== undefined
           ? { finalMessageSink: opts.finalMessageSink }
           : {}),
@@ -778,6 +780,12 @@ async function runDelegateAgentLoop(opts: {
       },
       opts.finalMessageSink,
     );
+
+    const terminal = opts.thread.live.status.value;
+    const terminalOutcome = terminalFromAgentStatus(terminal);
+    if (terminalOutcome !== undefined) {
+      opts.control.recordTerminalOutcome(opts.thread.live.agentId, terminalOutcome);
+    }
 
     if (result.outcome !== "errored") {
       opts.resumeManager?.recordSuccess(live.agentId);

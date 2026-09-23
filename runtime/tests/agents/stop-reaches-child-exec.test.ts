@@ -140,10 +140,11 @@ function journalEvents(path: string): Event[] {
 function lastUserIndexWith(messages: readonly LLMMessage[], marker: string): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
-    if (
-      message.role === "user" &&
-      JSON.stringify(message.content ?? "").includes(marker)
-    ) {
+    // Terminal receipts repeat the task under unfinishedWork. Treat only a
+    // direct user request as a fixture command, not a quoted child receipt.
+    const directText = JSON.stringify(message.content ?? "")
+      .split("<subagent_notification>", 1)[0]!;
+    if (message.role === "user" && directText.includes(marker)) {
       return index;
     }
   }

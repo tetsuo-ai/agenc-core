@@ -1935,6 +1935,19 @@ export interface SessionClearResult extends JsonObject {
     readonly clearedAt: string;
 }
 
+/** Child terminal outcome carried by worker snapshots and session events. */
+export interface ChildTerminalOutcomeWire extends JsonObject {
+    readonly provider: string;
+    readonly model: string;
+    readonly reason: "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient" | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled" | "policy_revoked" | "resume_blocked" | "cost_cap_reached" | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
+    readonly retryable: boolean;
+    readonly retryAfterMs?: number;
+    readonly dispatch: "not_sent" | "sent" | "unknown";
+    readonly completedWork: string;
+    readonly unfinishedWork: string;
+    readonly costUsd?: number;
+}
+
 /** Counters from the daemon-owned in-process session. */
 export interface SessionNativeWorkerSnapshot extends JsonObject {
     readonly agentId: string;
@@ -1947,6 +1960,7 @@ export interface SessionNativeWorkerSnapshot extends JsonObject {
     readonly reasoningEffort?: string;
     readonly status: "pending_init" | "running" | "idle" | "completed" | "errored" | "shutdown" | "not_found" | "interrupted";
     readonly error?: string;
+    readonly terminal?: ChildTerminalOutcomeWire;
     readonly toolUseCount: number;
     readonly tokenCount: number;
     /** Current assignment's Unix-ms execution interval, when known by the daemon. */

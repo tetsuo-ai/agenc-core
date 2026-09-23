@@ -74,19 +74,25 @@ describe("cross-provider consent grants", () => {
 function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean } = {}) {
   let stopped = false;
   let answerable = options.answerable !== false;
+  const eventListeners = new Set<(event: unknown) => void>();
   const session = {
     conversationId: "root-session",
     services: { runtimeOptions: { nonInteractive: options.nonInteractive === true } },
     abortController: new AbortController(),
     markStoppedByUser: () => { stopped = true; },
-    eventLog: { subscribe: () => () => {} },
+    eventLog: { subscribe: (listener: (event: unknown) => void) => {
+      eventListeners.add(listener); return () => { eventListeners.delete(listener); };
+    } },
     onBeforeDurableClose: () => () => {},
     ...(options.autonomousTick ? { activeTurn: { unsafePeek: () => ({ turnId: "tick" }) }, currentRootHumanTurn: () => null } : {}),
   } as unknown as Session;
   const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => answerable });
   const close = broker.register(session, { isActive: () => true, workflow: options.workflow === true });
   if (options.goal) restoreSessionGoal(session, { objective: "unattended work", status: "active" } as never);
-  return { session, broker, close, stopped: () => stopped, setAnswerable: (value: boolean) => { answerable = value; } };
+  return { session, broker, close, stopped: () => stopped, setAnswerable: (value: boolean) => { answerable = value; },
+    publishFunds: (taskText: string) => { for (const listener of eventListeners) listener({
+      msg: { type: "subagent_funds_notice", payload: { taskText } },
+    }); } };
 }
 
 async function pendingDecision(fixture: ReturnType<typeof interactiveFixture>, task: ChildExecutionPlan = plan) {
@@ -140,6 +146,32 @@ describe("live cross-provider consent", () => {
       const question = await pendingDecision(fixture, wider);
       fixture.broker.resolve("root-session", question.pending.requestId, { kind: "denied" });
       expect((await question.promise).kind).toBe("consent_denied");
+    } finally { fixture.close(); }
+  });
+
+  it("asks for fresh consent when a funds-stopped task switches provider", async () => {
+    const fixture = interactiveFixture();
+    try {
+      const first = await pendingDecision(fixture);
+      fixture.broker.resolve("root-session", first.pending.requestId, { kind: "approved_for_session" },
+        { approvalKind: "cross_provider_spawn" });
+      expect((await first.promise).kind).toBe("granted");
+      const switched = { ...plan,
+        route: { provider: "openrouter", model: "openai/gpt-5" },
+        destination: { ...plan.destination, provider: "openrouter", model: "openai/gpt-5" },
+        task: { ...plan.task, id: "funds-replacement" } };
+      // This provider already has a session grant for the same disclosure
+      // scope. A funds stop on the original provider must still ask again.
+      const earlier = { ...switched, task: { ...switched.task, id: "earlier-openrouter", text: "Other work" } };
+      const prior = await pendingDecision(fixture, earlier);
+      fixture.broker.resolve("root-session", prior.pending.requestId, { kind: "approved_for_session" },
+        { approvalKind: "cross_provider_spawn" });
+      expect((await prior.promise).kind).toBe("granted");
+      fixture.publishFunds("Read the design");
+      const next = await pendingDecision(fixture, switched);
+      expect(next.pending.crossProvider).toMatchObject({ provider: "openrouter", model: "openai/gpt-5" });
+      fixture.broker.resolve("root-session", next.pending.requestId, { kind: "denied" });
+      expect((await next.promise).kind).toBe("consent_denied");
     } finally { fixture.close(); }
   });
 

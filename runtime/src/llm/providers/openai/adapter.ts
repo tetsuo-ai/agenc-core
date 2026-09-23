@@ -24,6 +24,7 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMProviderError,
+  LLMFundsError,
   LLMStreamTruncatedError,
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
@@ -31,6 +32,7 @@ import {
   LLMServerError,
   mapLLMError,
 } from "../../errors.js";
+import { isProviderFundsFailure } from "../../funds.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -522,6 +524,9 @@ function mapOpenAIHttpFailureToError(args: {
       args.status,
     );
   }
+  if (isProviderFundsFailure(args.providerName, {
+    status: args.status, body: args.body, message: args.message,
+  })) return new LLMFundsError(args.providerName, args.status);
   if (isZaiInsufficientBalanceFailure(args)) {
     return new LLMProviderError(
       args.providerName,
@@ -729,6 +734,7 @@ export class OpenAIProvider implements LLMProvider {
     consecutiveFailures: number,
     model: string = this.config.model,
   ): ProviderFallbackDecision | null {
+    if (isProviderFundsFailure(this.name, error)) return null;
     if (!this.config.providerFallback) return null;
     const decision = evaluateProviderFallback({
       ...this.config.providerFallback,

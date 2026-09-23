@@ -44,6 +44,7 @@ interface ApprovalOwner {
   readonly undeliverable: Set<string>;
   readonly sessionEpoch: string;
   readonly consentSessionGrants: Set<string>;
+  readonly fundsStoppedTasks: Set<string>;
   readonly deniedConsentPayloads: Set<string>;
 }
 
@@ -89,9 +90,20 @@ export class LiveApprovalBroker {
       undeliverable: new Set(),
       sessionEpoch: randomUUID(),
       consentSessionGrants: new Set(),
+      fundsStoppedTasks: new Set(),
       deniedConsentPayloads: new Set(),
     };
     this.#owners.set(session.conversationId, owner);
+    // A restored or test session may carry an event log without live
+    // subscriptions; registration must not fail because of it.
+    const rootEventLog = session.eventLog;
+    const unsubscribeRootFunds = typeof rootEventLog?.subscribe === "function"
+      ? rootEventLog.subscribe((event) => {
+        if (event.msg.type === "subagent_funds_notice") {
+          owner.fundsStoppedTasks.add(event.msg.payload.taskText);
+        }
+      })
+      : () => {};
     const unsubscribePolicy = session.services.configStore?.subscribe?.(() => {
       // Revoking or changing the operator allowlist retires session grants.
       owner.consentSessionGrants.clear();
@@ -115,6 +127,10 @@ export class LiveApprovalBroker {
       const ids = new Map<string, string>();
       requestIds.set(requestingSession, ids);
       const unsubscribe = requestingSession.eventLog.subscribe((event) => {
+        if (event.msg.type === "subagent_funds_notice") {
+          owner.fundsStoppedTasks.add(event.msg.payload.taskText);
+          return;
+        }
         if (
           event.msg.type !== "request_permissions" &&
           event.msg.type !== "permission_decision"
@@ -201,6 +217,7 @@ export class LiveApprovalBroker {
       this.abort(session.conversationId);
       this.#owners.delete(session.conversationId);
       unsubscribeChildren();
+      unsubscribeRootFunds();
       unsubscribePolicy?.();
       for (const cleanup of subscriptions) cleanup();
       session.abortController.signal.removeEventListener("abort", abort);
@@ -310,7 +327,8 @@ export class LiveApprovalBroker {
       sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
       scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey,
     });
-    if (owner.consentSessionGrants.has(disclosure.scopeKey)) {
+    if (!owner.fundsStoppedTasks.has(disclosure.taskText) &&
+        owner.consentSessionGrants.has(disclosure.scopeKey)) {
       return { kind: "granted", grant: grant("session") };
     }
     const callId = `cross-provider-consent:${disclosure.taskId}:${randomUUID()}`;

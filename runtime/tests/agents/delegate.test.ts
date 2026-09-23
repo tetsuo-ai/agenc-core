@@ -20,6 +20,7 @@ vi.mock("../session/event-log.js", async (importOriginal) => ({
 }));
 
 import { AgentStatusTracker } from "./status.js";
+import { childTerminalOutcome } from "./child-terminal.js";
 import { Mailbox } from "./mailbox.js";
 import {
   _resetAgentRolesForTesting,
@@ -268,6 +269,29 @@ describe("delegate lifecycle recovery", () => {
     await outcome.thread.join();
     expect(control.shutdown).not.toHaveBeenCalled();
     expect(control.markThreadSpawnEdgeClosed).toHaveBeenCalledWith("thread-bg");
+  });
+
+  it.each(["string", "object"] as const)("reads a %s child status after its run", async (shape) => {
+    const live = makeLive(`thread-${shape}`, `/root/${shape}`);
+    const terminal = childTerminalOutcome({ provider: "fake", model: "fake-model",
+      reason: "completed", dispatch: "sent", completedWork: "done" });
+    const control = {
+      spawn: vi.fn(async () => live), shutdown: vi.fn(async () => {}),
+      markThreadSpawnEdgeClosed: vi.fn(async () => {}),
+      recordTerminalOutcome: vi.fn(), resumeAgentFromRollout: vi.fn(),
+    };
+    mockRunAgent.mockImplementationOnce(() => {
+      live.status.subject.next((shape === "string" ? "running" : { status: "idle", terminal }) as never);
+      return runResult({ threadId: live.agentId, durationMs: 1, outcome: "completed", finalMessage: "done" });
+    });
+    const outcome = await delegate({ parent: makeParentSession() as never,
+      parentPath: "/root", control: control as never, registry: {} as never,
+      taskPrompt: "run separately" });
+    expect(outcome.kind).toBe("async_launched");
+    if (outcome.kind !== "async_launched") throw new Error("expected async launch");
+    await outcome.thread.join();
+    if (shape === "string") expect(control.recordTerminalOutcome).not.toHaveBeenCalled();
+    else expect(control.recordTerminalOutcome).toHaveBeenCalledWith(live.agentId, terminal);
   });
 
   it("records summary cache params and tool transcript events from async runs", async () => {

@@ -2793,12 +2793,12 @@ describe("runAgent", () => {
   });
 
   it.each([
-    ["max_turns", "subagent exceeded maxTurns"],
-    ["max_budget_usd", "subagent reached the canonical session cost cap"],
-    ["no_progress", "Turn stopped because progress stalled."],
-    ["compact_failed", "compact request does not fit"],
-    ["empty_response", "subagent returned no assistant output after a retry"],
-  ] as const)("publishes an errored %s receipt and accepts the next assignment", async (stopReason, reason) => {
+    ["max_turns", "subagent exceeded maxTurns", "timeout"],
+    ["max_budget_usd", "subagent reached the canonical session cost cap", "cost_cap_reached"],
+    ["no_progress", "Turn stopped because progress stalled.", "timeout"],
+    ["compact_failed", "compact request does not fit", "context_insufficient"],
+    ["empty_response", "subagent returned no assistant output after a retry", "model_refused"],
+  ] as const)("publishes an errored %s receipt and accepts the next assignment", async (stopReason, reason, terminalReason) => {
     let turns = 0;
     const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* () {
       turns += 1;
@@ -2842,6 +2842,8 @@ describe("runAgent", () => {
         reason,
       });
       expect(failedReceipt?.content).toContain('"outcome":"errored"');
+      expect(failedReceipt?.content).toContain(`"reason":"${terminalReason}"`);
+      expect(failedReceipt?.content).toContain('"retryable":false');
 
       const next = nextProgressEvent(iter, "turn_complete");
       control.assignTask(live.agentId, {
@@ -2998,6 +3000,102 @@ describe("runAgent", () => {
         .drain()
         .filter((message) => message.metadata?.lifecycle === "turn"),
     ).toHaveLength(1);
+  });
+
+  it("stops a funds-exhausted child once and projects one typed outcome to journal, mailbox, status, and user notice", async () => {
+    const billing = Object.assign(new Error("Insufficient Balance"), { status: 402 });
+    const provider: LLMProvider = {
+      name: "deepseek",
+      chat: vi.fn(),
+      chatStream: vi.fn().mockRejectedValue(billing),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const outcomes: unknown[] = [];
+    const notices: unknown[] = [];
+    const order: string[] = [];
+    const closeSpawnEdge = vi.fn(async () => { order.push("closed_edge"); });
+    session.eventLog.subscribe((event) => {
+      if (event.msg.type === "subagent_funds_notice") {
+        order.push("user_notice");
+        notices.push(event.msg.payload);
+      }
+    });
+    const { result } = await collectRun(runAgent({
+      live, parent: session,
+      initialMessages: [{ role: "user", content: "build the parser" }],
+      taskPrompt: "build the parser", taskId: "funds-task",
+      onTerminalFundsStop: closeSpawnEdge,
+      onCacheSafeParams: (captured) => {
+        const child = (captured as unknown as { toolUseContext: { admissionSession: Session } })
+          .toolUseContext.admissionSession;
+        child.eventLog.subscribe((event) => {
+          if (event.msg.type === "subagent_turn_outcome") {
+            order.push("durable_outcome");
+            outcomes.push(event.msg.payload);
+          }
+        });
+      },
+    }));
+    expect(result.outcome).toBe("errored");
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(closeSpawnEdge).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["closed_edge", "durable_outcome", "user_notice"]);
+    expect(outcomes).toEqual([expect.objectContaining({
+      terminal: expect.objectContaining({ provider: "deepseek", reason: "insufficient_funds",
+        retryable: false, unfinishedWork: "build the parser" }),
+    })]);
+    expect(notices).toEqual([expect.objectContaining({
+      agentPath: live.agentPath,
+      terminal: expect.objectContaining({ reason: "insufficient_funds" }),
+    })]);
+    expect(live.status.value).toMatchObject({
+      status: "errored", terminal: { reason: "insufficient_funds" },
+    });
+    const terminal = live.status.value;
+    if (terminal.status !== "errored" || terminal.terminal === undefined) throw new Error("missing funds terminal");
+    control.recordTerminalOutcome(live.agentId, terminal.terminal);
+    expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+      terminalOutcome: { reason: "insufficient_funds" },
+    });
+    const recovered = new AgentControl({ session, registry: new AgentRegistry() });
+    await expect(recovered.resume({ parentPath: "/root", metadata: live.metadata }))
+      .rejects.toThrow(/funds-stopped child/u);
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(session.mailbox.drain().some((message) =>
+      typeof message.content === "string" && message.content.includes('"reason":"insufficient_funds"'))).toBe(true);
+  });
+
+  it("keeps parallel funds and completed child receipts distinct", async () => {
+    const provider: LLMProvider = {
+      name: "deepseek", chat: vi.fn(),
+      chatStream: vi.fn(async (messages: LLMMessage[]): Promise<LLMResponse> => {
+        if (JSON.stringify(messages).includes("funds-task"))
+          throw Object.assign(new Error("Insufficient Balance"), { status: 402 });
+        return { content: "finished the other task", toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "fake-model", finishReason: "stop" };
+      }),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const session = makeStubSession({ services: { provider } });
+    const { control, live: fundsChild } = await spawnLive(session);
+    const completedChild = await control.spawn({ parentPath: "/root" });
+    const [funds, completed] = await Promise.all([
+      collectRun(runAgent({ live: fundsChild, parent: session,
+        initialMessages: [{ role: "user", content: "funds-task" }], taskPrompt: "funds-task", taskId: "funds" })),
+      collectRun(runAgent({ live: completedChild, parent: session,
+        initialMessages: [{ role: "user", content: "other-task" }], taskPrompt: "other-task", taskId: "other" })),
+    ]);
+    expect([funds.result.outcome, completed.result.outcome]).toEqual(["errored", "completed"]);
+    const notifications = session.mailbox.drain().filter((item) => item.metadata?.lifecycle === "turn")
+      .map((item) => JSON.parse(String(item.content).split("\n")[1]!));
+    expect(notifications).toHaveLength(2);
+    expect(notifications.find((item) => item.receipt.task_id === "funds")?.receipt.terminal.reason)
+      .toBe("insufficient_funds");
+    expect(notifications.find((item) => item.receipt.task_id === "other")?.receipt.terminal.reason)
+      .toBe("completed");
   });
 
   it("bounds parent receipt reason metadata while retaining the durable full outcome", async () => {
@@ -3436,6 +3534,7 @@ describe("runAgent", () => {
         integrationRef: firstHead,
       });
       expect(firstReceiptContent).toContain(`"integration_ref":"${firstHead}"`);
+      expect(firstReceiptContent).toContain('"terminal":{"provider":');
 
       const secondPromise = nextProgressEvent(iter, "turn_complete");
       await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));

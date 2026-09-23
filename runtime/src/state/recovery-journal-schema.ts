@@ -480,6 +480,16 @@ const isCollabAgentRef = objectShape(
 );
 
 type AgentStatusPayload = EventPayload<"collab_agent_spawn_end">["status"];
+const isChildTerminalOutcome = objectShape(
+  {
+    provider: isString, model: isString,
+    reason: oneOf("completed", "insufficient_funds", "rate_limited", "provider_unavailable", "timeout", "auth_required", "model_unavailable", "context_insufficient", "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied", "consent_unavailable"),
+    retryable: isBoolean,
+    dispatch: oneOf("not_sent", "sent", "unknown"),
+    completedWork: isString, unfinishedWork: isString,
+  },
+  { retryAfterMs: isNumber, costUsd: isNumber },
+);
 const isNativeWorkerTiming = objectShape(
   { turnId: isString, startedAt: isNonNegativeInteger },
   { endedAt: isNonNegativeInteger },
@@ -500,18 +510,21 @@ const isAgentStatus: Validator<AgentStatusPayload> = (
     case "running":
       return isString(value.turnId) && isNumber(value.startedAtMs);
     case "idle":
-      return isString(value.turnId) && isNumber(value.endedAtMs);
+      return isString(value.turnId) && isNumber(value.endedAtMs) &&
+        (value.terminal === undefined || isChildTerminalOutcome(value.terminal));
     case "completed":
       return (
         isString(value.turnId) &&
         isNumber(value.endedAtMs) &&
-        (value.lastMessage === undefined || isString(value.lastMessage))
+        (value.lastMessage === undefined || isString(value.lastMessage)) &&
+        (value.terminal === undefined || isChildTerminalOutcome(value.terminal))
       );
     case "errored":
       return (
         isString(value.turnId) &&
         isNumber(value.endedAtMs) &&
-        isString(value.error)
+        isString(value.error) &&
+        (value.terminal === undefined || isChildTerminalOutcome(value.terminal))
       );
     case "shutdown":
       return isNumber(value.endedAtMs);
@@ -519,7 +532,8 @@ const isAgentStatus: Validator<AgentStatusPayload> = (
       return (
         isString(value.turnId) &&
         isNumber(value.endedAtMs) &&
-        isString(value.reason)
+        isString(value.reason) &&
+        (value.terminal === undefined || isChildTerminalOutcome(value.terminal))
       );
     default:
       return false;
@@ -957,8 +971,13 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       taskId: isString,
       message: isString,
       reason: isString,
+      terminal: isChildTerminalOutcome,
       worktreeEvidence: isWorktreeEvidence,
     },
+  ),
+  subagent_funds_notice: objectShape(
+    { agentPath: isString, taskText: isString, terminal: isChildTerminalOutcome, message: isString },
+    { taskId: isString },
   ),
   turn_complete: objectShape(
     { turnId: isString },
@@ -1420,6 +1439,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       agentType: isString,
       provider: isString,
       reasoningEffort: isString,
+      terminal: isChildTerminalOutcome,
     },
   ),
   collab_agent_status: objectShape(
@@ -1442,6 +1462,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       toolUseCount: isNonNegativeInteger,
       tokenCount: isNonNegativeInteger,
       error: isString,
+      terminal: isChildTerminalOutcome,
     },
   ),
   collab_agent_interaction_begin: objectShape({

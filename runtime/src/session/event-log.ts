@@ -173,6 +173,7 @@ export interface SubagentTurnOutcomeEvent {
   readonly toolCallCount: number;
   readonly message?: string;
   readonly reason?: string;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
   readonly worktreeEvidence?:
     | {
         readonly state: "unverifiable";
@@ -201,6 +202,15 @@ export interface SubagentTurnOutcomeEvent {
         readonly baseIsAncestor: boolean;
         readonly integrationRef?: string;
       };
+}
+
+/** Core-owned user notice, emitted even if the parent model never relays it. */
+export interface SubagentFundsNoticeEvent {
+  readonly agentPath: string;
+  readonly taskId?: string;
+  readonly taskText: string;
+  readonly terminal: import("../agents/child-terminal.js").ChildTerminalOutcome;
+  readonly message: string;
 }
 
 export interface TurnAbortedEvent {
@@ -896,6 +906,7 @@ export interface CollabAgentSpawnEndEvent {
   readonly provider?: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
 }
 
 /**
@@ -940,6 +951,7 @@ export interface CollabAgentStatusEvent {
    */
   readonly tokenCount?: number;
   readonly error?: string;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
 }
 
 export interface CollabAgentInteractionBeginEvent {
@@ -1242,6 +1254,7 @@ export type EventMsg =
       readonly type: "subagent_turn_outcome";
       readonly payload: SubagentTurnOutcomeEvent;
     }
+  | { readonly type: "subagent_funds_notice"; readonly payload: SubagentFundsNoticeEvent }
   | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
   | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
   | { readonly type: "turn_failed"; readonly payload: TurnFailedEvent }
@@ -1507,6 +1520,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "mcp_elicitation_complete",
     "context_compacted",
     "subagent_turn_outcome",
+    "subagent_funds_notice",
     "turn_complete",
     "turn_aborted",
     "turn_failed",
@@ -1585,6 +1599,7 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "error",
     "context_compacted",
     "subagent_turn_outcome",
+    "subagent_funds_notice",
     "protocol_claim",
     "protocol_settle",
     "protocol_slash",

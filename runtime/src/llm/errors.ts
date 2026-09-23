@@ -6,6 +6,7 @@
 
 import { RuntimeError, RuntimeErrorCodes } from "./_deps/runtime-errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "./policy.js";
+import { isProviderFundsFailure } from "./funds.js";
 
 export interface TlsValidationDetails {
   readonly code: string;
@@ -133,6 +134,14 @@ export class LLMProviderError extends RuntimeError {
     this.name = "LLMProviderError";
     this.providerName = providerName;
     this.statusCode = statusCode;
+  }
+}
+
+/** Billing/quota exhaustion is terminal for this child and provider. */
+export class LLMFundsError extends LLMProviderError {
+  constructor(providerName: string, statusCode?: number, message = "provider credits or billing quota exhausted") {
+    super(providerName, message, statusCode);
+    this.name = "LLMFundsError";
   }
 }
 
@@ -470,6 +479,12 @@ export function mapLLMError(
   err: unknown,
   timeoutMs: number,
 ): Error {
+  if (err instanceof LLMFundsError) return err;
+  if (isProviderFundsFailure(providerName, err)) {
+    const rawStatus = (err as { status?: unknown; statusCode?: unknown } | null)?.status ??
+      (err as { statusCode?: unknown } | null)?.statusCode;
+    return new LLMFundsError(providerName, typeof rawStatus === "number" ? rawStatus : undefined);
+  }
   if (
     err instanceof LLMMessageValidationError ||
     err instanceof LLMContextWindowExceededError ||
