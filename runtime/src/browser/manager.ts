@@ -12,7 +12,7 @@
  * @module
  */
 
-import { mkdirSync, mkdtempSync, readlinkSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -50,6 +50,9 @@ const activeManagers = new Set<BrowserManager>();
  * the first one's was up (luna-mac F2).
  */
 const sharedProfileHolders = new Map<string, BrowserManager>();
+const privateProfileDirs = new Set<string>();
+const cleanedTempRoots = new Set<string>();
+const PRIVATE_PROFILE_NAME = /^agenc-browser-(?:child-)?[a-zA-Z0-9]{6}$/;
 
 /**
  * Whether a live Chromium, possibly in another process, holds `profileDir`.
@@ -58,12 +61,12 @@ const sharedProfileHolders = new Map<string, BrowserManager>();
  * which costs only the persistent profile for that launch. Windows keeps no
  * such link, so there only this process's own holders are known.
  */
-function sharedProfileHeldElsewhere(profileDir: string): boolean {
+function sharedProfileHeldElsewhere(profileDir: string, unreadableIsHeld = false): boolean {
   let target: string;
   try {
     target = readlinkSync(join(profileDir, "SingletonLock"));
-  } catch {
-    return false;
+  } catch (error) {
+    return unreadableIsHeld && (error as NodeJS.ErrnoException).code !== "ENOENT";
   }
   const separator = target.lastIndexOf("-");
   const pid = Number(target.slice(separator + 1));
@@ -75,6 +78,33 @@ function sharedProfileHeldElsewhere(profileDir: string): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/** Clear profiles orphaned by an earlier daemon before creating a new one. */
+function cleanStalePrivateProfiles(root: string, sharedProfile?: string): void {
+  if (cleanedTempRoots.has(root)) return;
+  // Windows has no Chromium SingletonLock symlink to establish that another
+  // daemon's private profile is idle.
+  if (process.platform === "win32") return;
+  for (const name of readdirSync(root)) {
+    if (!PRIVATE_PROFILE_NAME.test(name)) continue;
+    const path = join(root, name);
+    if (path === sharedProfile) continue;
+    if (privateProfileDirs.has(path)) continue;
+    let info;
+    try {
+      info = lstatSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (!info.isDirectory() || info.isSymbolicLink()) continue;
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) continue;
+    if ((info.mode & 0o077) !== 0) continue;
+    if (sharedProfileHeldElsewhere(path, true)) continue;
+    rmSync(path, { recursive: true, force: true });
+  }
+  cleanedTempRoots.add(root);
 }
 
 /**
@@ -176,22 +206,25 @@ export class BrowserManager {
    * unpredictable 0700 directory and never reuses an existing one.
    */
   #ensureProfileDir(): string {
+    const tempRoot = resolveSessionTempRoot();
+    const shared =
+      this.#options.policy.profileDir ??
+      (this.#options.agencHome !== undefined
+        ? join(this.#options.agencHome, "browser", "profile")
+        : undefined);
+    cleanStalePrivateProfiles(tempRoot, shared);
     // Child sessions get an ephemeral profile. Sharing the root session's
     // persistent cookies/storage across independently sandboxed browser
     // processes would silently collapse their authority boundary.
     if ((this.#options.sandboxExecutionBroker?.forkDepth ?? 0) > 0) {
       if (this.#tempProfileDir === undefined) {
         this.#tempProfileDir = mkdtempSync(
-          join(resolveSessionTempRoot(), "agenc-browser-child-"),
+          join(tempRoot, "agenc-browser-child-"),
         );
+        privateProfileDirs.add(this.#tempProfileDir);
       }
       return this.#tempProfileDir;
     }
-    const shared =
-      this.#options.policy.profileDir ??
-      (this.#options.agencHome !== undefined
-        ? join(this.#options.agencHome, "browser", "profile")
-        : undefined);
     if (shared !== undefined) {
       mkdirSync(shared, { recursive: true, mode: 0o700 });
       if (this.#claimSharedProfile(shared)) return shared;
@@ -202,8 +235,9 @@ export class BrowserManager {
     }
     if (this.#tempProfileDir === undefined) {
       this.#tempProfileDir = mkdtempSync(
-        join(resolveSessionTempRoot(), "agenc-browser-"),
+        join(tempRoot, "agenc-browser-"),
       );
+      privateProfileDirs.add(this.#tempProfileDir);
     }
     return this.#tempProfileDir;
   }
@@ -458,13 +492,18 @@ export class BrowserManager {
     tabId?: number,
     signal?: AbortSignal,
   ): Promise<BrowserPage> {
-    await this.#ensureLaunched();
-    this.#touchIdle();
     if (this.#tabs.length === 0 && tabId === undefined) {
+      await this.#ensureLaunched();
+      this.#touchIdle();
       const entry = await this.#createTab(url, signal);
       return entry.page;
     }
     const entry = this.#tabById(tabId);
+    await this.#ensureLaunched();
+    if (!this.#tabs.includes(entry)) {
+      throw new BrowserActionError("tab closed during browser launch");
+    }
+    this.#touchIdle();
     this.#activeTabId = entry.id;
     await entry.page.navigate(url, signal);
     return entry.page;
@@ -481,9 +520,12 @@ export class BrowserManager {
 
   /** Get the page for an action; throws when there are no tabs. */
   async page(tabId?: number): Promise<BrowserPage> {
-    await this.#ensureLaunched();
-    this.#touchIdle();
     const entry = this.#tabById(tabId);
+    await this.#ensureLaunched();
+    if (!this.#tabs.includes(entry)) {
+      throw new BrowserActionError("tab closed during browser launch");
+    }
+    this.#touchIdle();
     this.#activeTabId = entry.id;
     return entry.page;
   }
@@ -560,6 +602,7 @@ export class BrowserManager {
     }
     if (this.#tempProfileDir !== undefined) {
       rmSync(this.#tempProfileDir, { recursive: true, force: true });
+      privateProfileDirs.delete(this.#tempProfileDir);
       this.#tempProfileDir = undefined;
     }
   }
@@ -705,6 +748,7 @@ export class BrowserManager {
   #cleanupTempProfile(): void {
     if (this.#tempProfileDir !== undefined) {
       rmSync(this.#tempProfileDir, { recursive: true, force: true });
+      privateProfileDirs.delete(this.#tempProfileDir);
       this.#tempProfileDir = undefined;
     }
   }

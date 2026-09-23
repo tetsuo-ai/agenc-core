@@ -258,6 +258,19 @@ function refusal(content: unknown): ToolResult {
   );
 }
 
+function cronRefusal(toolName: "CronCreate" | "CronDelete" | "CronList", message: string): ToolResult {
+  return validationErrorToolResult(
+    `tool:${toolName}:before-schedule-change`,
+    safeStringify({ error: message }),
+  );
+}
+
+function unsupportedDurableCron(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "DESCRIPTOR_UNSUPPORTED";
+}
+
+const DURABLE_CRON_UNSUPPORTED = "Durable scheduled tasks are not supported on macOS yet.";
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -4697,7 +4710,8 @@ function createCronAndWorkflowTools(
       name: "CronCreate",
       admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
       description:
-        "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session. Workspace-write sandbox mode supports only non-durable session jobs. Delivery-routed jobs (announceChannel/webhook) instead run in an isolated gateway session and post their result to that channel/webhook — they require durable and a running `agenc gateway run`.",
+        "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session. Workspace-write sandbox mode supports only non-durable session jobs. Delivery-routed jobs (announceChannel/webhook) instead run in an isolated gateway session and post their result to that channel/webhook; they require durable and a running `agenc gateway run`." +
+        (process.platform === "darwin" ? ` ${DURABLE_CRON_UNSUPPORTED}` : ""),
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -4748,25 +4762,25 @@ function createCronAndWorkflowTools(
         const schedule = stringValue(args.cron) ?? stringValue(args.schedule);
         const prompt = stringValue(args.prompt);
         if (!schedule || !prompt) {
-          return json({ error: "cron/schedule and prompt are required" }, true);
+          return cronRefusal("CronCreate", "cron/schedule and prompt are required");
         }
         if (!validateCron(schedule)) {
-          return json({ error: "cron expression must have five fields" }, true);
+          return cronRefusal("CronCreate", "cron expression must have five fields");
         }
-        const { addCronTask, nextCronRunMs, normalizeDelivery } =
+        const { addCronTask, nextCronRunMs, normalizeDelivery, readCronFile, cronRestoreFailureNeedsWarning } =
           await import("../utils/cronTasks.js");
         if (nextCronRunMs(schedule, Date.now()) === null) {
-          return json({ error: `invalid cron expression: ${schedule}` }, true);
+          return cronRefusal("CronCreate", `invalid cron expression: ${schedule}`);
         }
         const recurring = boolValue(args.recurring) ?? true;
         const announceChannel = stringValue(args.announceChannel);
         const announceTo = stringValue(args.announceTo);
         const webhookUrl = stringValue(args.webhook);
         if (announceChannel !== undefined && announceTo === undefined) {
-          return json({ error: "announceChannel requires announceTo" }, true);
+          return cronRefusal("CronCreate", "announceChannel requires announceTo");
         }
         if (webhookUrl !== undefined && !/^https?:\/\//i.test(webhookUrl)) {
-          return json({ error: "webhook must be an http(s) URL" }, true);
+          return cronRefusal("CronCreate", "webhook must be an http(s) URL");
         }
         const deliver = normalizeDelivery({
           channel: announceChannel,
@@ -4780,6 +4794,22 @@ function createCronAndWorkflowTools(
         const sessionOnly = readToolRuntimeContext(args)?.sandboxMode === "workspace_write";
         if (sessionOnly && durable) {
           return refusal({ error: "Sandboxed CronCreate supports session-only jobs; durable and delivery jobs require filesystem authority" });
+        }
+        if (durable) {
+          // A read failure precedes any schedule change. Once addCronTask
+          // begins, its failures stay unknown because publication may have run.
+          try {
+            await readCronFile(opts.workspaceRoot);
+          } catch (error) {
+            return cronRefusal("CronCreate", unsupportedDurableCron(error)
+              ? DURABLE_CRON_UNSUPPORTED : errorMessage(error));
+          }
+        } else if (!sessionOnly && process.platform === "darwin" && await cronRestoreFailureNeedsWarning(
+          { code: "DESCRIPTOR_UNSUPPORTED" }, opts.workspaceRoot,
+        )) {
+          // A pre-existing durable record would make this new session job
+          // impossible to list on this host.
+          return cronRefusal("CronCreate", DURABLE_CRON_UNSUPPORTED);
         }
         const id = await addCronTask(
           schedule,
@@ -4835,7 +4865,7 @@ function createCronAndWorkflowTools(
           return refusal({ error: "CronDelete requires an active owning conversation" });
         }
         const id = stringValue(args.id);
-        if (!id) return json({ error: "id is required" }, true);
+        if (!id) return cronRefusal("CronDelete", "id is required");
         if (readToolRuntimeContext(args)?.sandboxMode === "workspace_write") {
           const { removeSessionCronTasks } = await import("../bootstrap/state.js");
           const deleted = removeSessionCronTasks([id], conversationId) > 0;
@@ -4847,12 +4877,27 @@ function createCronAndWorkflowTools(
           });
           return json({ deleted, id });
         }
-        const { listAllCronTasks, removeCronTasks } =
+        const { listAllCronTasks, listSessionCronTasks, removeCronTasks, cronRestoreFailureNeedsWarning } =
           await import("../utils/cronTasks.js");
-        const before = await listAllCronTasks(
-          opts.workspaceRoot,
-          conversationId,
-        );
+        let before;
+        try {
+          before = await listAllCronTasks(opts.workspaceRoot, conversationId);
+        } catch (error) {
+          if (!unsupportedDurableCron(error)) {
+            return cronRefusal("CronDelete", errorMessage(error));
+          }
+          const sessionTask = listSessionCronTasks(conversationId).some((task) => task.id === id);
+          if (!sessionTask && await cronRestoreFailureNeedsWarning(error, opts.workspaceRoot)) {
+            return cronRefusal("CronDelete", DURABLE_CRON_UNSUPPORTED);
+          }
+          const { removeSessionCronTasks } = await import("../bootstrap/state.js");
+          const deleted = removeSessionCronTasks([id], conversationId) > 0;
+          if (deleted) await startCronSchedulerRunner({
+            conversationId, workspaceRoot: opts.workspaceRoot,
+            session: session ?? undefined, sessionOnly: true,
+          });
+          return json({ deleted, id });
+        }
         const existed = before.some((task) => task.id === id);
         await removeCronTasks([id], opts.workspaceRoot, conversationId);
         await startCronSchedulerRunner({
@@ -4879,16 +4924,27 @@ function createCronAndWorkflowTools(
         properties: {},
         additionalProperties: false,
       },
-      execute: async () => {
+      execute: async (args) => {
         const conversationId = opts.getSession()?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
           return refusal({ error: "CronList requires an active owning conversation" });
         }
-        const { listAllCronTasks } = await import("../utils/cronTasks.js");
-        const tasks = await listAllCronTasks(
-          opts.workspaceRoot,
-          conversationId,
-        );
+        const { listAllCronTasks, listSessionCronTasks, cronRestoreFailureNeedsWarning } =
+          await import("../utils/cronTasks.js");
+        let tasks;
+        if (readToolRuntimeContext(args)?.sandboxMode === "workspace_write") {
+          tasks = listSessionCronTasks(conversationId);
+        } else {
+          try {
+            tasks = await listAllCronTasks(opts.workspaceRoot, conversationId);
+          } catch (error) {
+            if (!unsupportedDurableCron(error)) throw error;
+            if (await cronRestoreFailureNeedsWarning(error, opts.workspaceRoot)) {
+              return cronRefusal("CronList", DURABLE_CRON_UNSUPPORTED);
+            }
+            tasks = listSessionCronTasks(conversationId);
+          }
+        }
         return json({
           crons: tasks.map((task) => ({
             id: task.id,

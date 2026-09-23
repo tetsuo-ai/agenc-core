@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +22,10 @@ vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../src/utils/supervisedProcess.js")>(),
   terminateProcessTreeAndWait: vi.fn(async () => {}),
   signalProcessTree: vi.fn(),
+}));
+vi.mock("../../src/session/runtime-options.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/session/runtime-options.js")>(),
+  resolveSessionTempRoot: () => profileRoot,
 }));
 
 import { BrowserManager } from "../../src/browser/manager.js";
@@ -48,7 +52,7 @@ afterEach(async () => {
   launchBrowserMock.mockReset();
 });
 
-function fakeManager(navigation: (options: CdpSendOptions) => Promise<Record<string, unknown>>) {
+function fakeManager(navigation: (options: CdpSendOptions) => Promise<Record<string, unknown>>, profileDir?: string) {
   let created = 0;
   let currentUrl = "about:blank";
   const connection = {
@@ -85,6 +89,7 @@ function fakeManager(navigation: (options: CdpSendOptions) => Promise<Record<str
     policy: {
       executablePath: process.execPath,
       headless: true, allowPrivateNetwork: false, noSandbox: false, navigationTimeoutMs: 1_000,
+      ...(profileDir !== undefined ? { profileDir } : {}),
     },
   });
   managers.push(manager);
@@ -213,6 +218,8 @@ describe("tab ids a model fills in", () => {
       expect(refused.isError).toBe(true);
       expect(refused.effectDisposition?.disposition, callId).toBe("confirmed_no_effect");
     }
+    expect(launchBrowserMock).not.toHaveBeenCalled();
+    expect(existsSync(join(profileRoot, "browser", "profile"))).toBe(false);
     const opened = await dispatch("first-navigate", { action: "navigate", url: "https://example.com/" });
     expect(opened.isError, String(opened.content)).not.toBe(true);
     for (const [callId, args] of [
@@ -260,7 +267,7 @@ describe("one shared profile across sessions", () => {
     const persistent = join(profileRoot, "browser", "profile");
     const { manager: first } = fakeManager(async () => ({ frameId: "frame-1" }));
     const { manager: second } = fakeManager(async () => ({ frameId: "frame-1" }));
-    await Promise.all([first.page().catch(() => {}), second.page().catch(() => {})]);
+    await Promise.all([first.newTab(), second.newTab()]);
 
     const [firstProfile, secondProfile] = launchedProfiles();
     expect([firstProfile, secondProfile]).toContain(persistent);
@@ -275,7 +282,7 @@ describe("one shared profile across sessions", () => {
 
     await (firstHoldsShared ? first : second).closeAll();
     const { manager: third } = fakeManager(async () => ({ frameId: "frame-1" }));
-    await third.page().catch(() => {});
+    await third.newTab();
     expect(launchedProfiles()[2]).toBe(persistent);
   });
 
@@ -290,7 +297,7 @@ describe("one shared profile across sessions", () => {
     // A browser in another process: this test process stands in for it.
     symlinkSync(`${hostname()}-${process.pid}`, lock);
     const { manager: blocked } = fakeManager(async () => ({ frameId: "frame-1" }));
-    await blocked.page().catch(() => {});
+    await blocked.newTab();
     expect(launchedProfiles()[0]).not.toBe(persistent);
     await blocked.closeAll();
 
@@ -299,7 +306,39 @@ describe("one shared profile across sessions", () => {
     unlinkSync(lock);
     symlinkSync(`${hostname()}-${exited.pid}`, lock);
     const { manager: reused } = fakeManager(async () => ({ frameId: "frame-1" }));
-    await reused.page().catch(() => {});
+    await reused.newTab();
     expect(launchedProfiles()[1]).toBe(persistent);
+  });
+
+  it.skipIf(process.platform === "win32")("removes only stale private profiles before the next launch", async () => {
+    const stale = await mkdtemp(join(profileRoot, "agenc-browser-"));
+    const staleChild = await mkdtemp(join(profileRoot, "agenc-browser-child-"));
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    symlinkSync(`${hostname()}-${exited.pid}`, join(staleChild, "SingletonLock"));
+    const live = await mkdtemp(join(profileRoot, "agenc-browser-"));
+    symlinkSync(`${hostname()}-${process.pid}`, join(live, "SingletonLock"));
+    const uncertain = await mkdtemp(join(profileRoot, "agenc-browser-"));
+    writeFileSync(join(uncertain, "SingletonLock"), "unreadable lock format");
+    const unrelated = join(profileRoot, "unrelated");
+    mkdirSync(unrelated);
+    const linked = join(profileRoot, "agenc-browser-child-abcdef");
+    symlinkSync(unrelated, linked, "dir");
+    const shared = join(profileRoot, "browser", "profile");
+    mkdirSync(shared, { recursive: true });
+    const configuredShared = join(profileRoot, "agenc-browser-abcdef");
+    mkdirSync(configuredShared, { mode: 0o700 });
+    writeFileSync(join(configuredShared, "marker"), "keep");
+
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }), configuredShared);
+    await manager.navigate("about:blank");
+
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(staleChild)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(uncertain)).toBe(true);
+    expect(existsSync(linked)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+    expect(existsSync(shared)).toBe(true);
+    expect(readFileSync(join(configuredShared, "marker"), "utf8")).toBe("keep");
   });
 });

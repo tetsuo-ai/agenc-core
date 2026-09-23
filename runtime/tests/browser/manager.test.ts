@@ -14,7 +14,7 @@
  *    the dir name contains the pid → the not-predictable assertion → red.
  */
 
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
@@ -96,6 +96,14 @@ function track(mgr: BrowserManager): BrowserManager {
   return mgr;
 }
 
+beforeEach(() => {
+  // The hermetic macOS runner cannot bind loopback sockets. These tests
+  // exercise manager lifecycle with a fake child, not proxy networking.
+  if (process.platform === "darwin") {
+    vi.spyOn(BrowserProxy.prototype, "start").mockResolvedValue(4321);
+  }
+});
+
 afterEach(async () => {
   terminationSeam.failuresRemaining = 0;
   while (managers.length > 0) {
@@ -104,6 +112,7 @@ afterEach(async () => {
   await closeAllBrowserManagers().catch(() => {});
   terminationSeam.calls = [];
   launchBrowserMock.mockReset();
+  vi.restoreAllMocks();
 });
 
 interface FakeChild extends EventEmitter {
@@ -248,7 +257,7 @@ describe("BrowserManager launch failure", () => {
         policy: { ...BASE_POLICY, profileDir: "/dev/null/nope" },
       }),
     );
-    await expect(mgr.page()).rejects.toBeTruthy();
+    await expect(mgr.newTab()).rejects.toBeTruthy();
     expect(stopSpy).toHaveBeenCalled();
     expect(launchBrowserMock).not.toHaveBeenCalled();
     stopSpy.mockRestore();
@@ -268,8 +277,8 @@ describe("BrowserManager shutdown/launch race", () => {
     );
 
     const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
-    // Trigger launch; page() parks on the pending launchBrowser.
-    const launchTriggered = mgr.page().catch(() => {});
+    // Trigger launch; newTab() parks on the pending launchBrowser.
+    const launchTriggered = mgr.newTab().catch(() => {});
     await tick(); // let #launch reach the launchBrowser await
 
     // Shutdown races the in-flight launch.
@@ -293,7 +302,7 @@ describe("BrowserManager shutdown/launch race", () => {
           child: tree.child,
           connection: makeFakeConnection(),
         });
-        await mgr.page().catch(() => {});
+        await mgr.newTab().catch(() => {});
         await waitFor(() => existsSync(tree.marker));
         expect(existsSync(tree.marker)).toBe(true);
         const descendant = readDescendant(tree.marker);
@@ -332,13 +341,13 @@ describe("BrowserManager shutdown/launch race", () => {
             };
           });
 
-        await mgr.page().catch(() => {});
+        await mgr.newTab().catch(() => {});
         await waitFor(() => existsSync(tree.marker));
         expect(existsSync(tree.marker)).toBe(true);
         await waitFor(() => tree.child.exitCode !== null);
         expect(tree.child.exitCode).not.toBeNull();
 
-        await mgr.page().catch(() => {});
+        await mgr.newTab().catch(() => {});
 
         expect(aliveAtRelaunch).toBe(false);
       } finally {
@@ -356,7 +365,7 @@ describe("BrowserManager shutdown/launch race", () => {
       connection: makeFakeConnection(),
     });
     const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
-    await mgr.page().catch(() => {});
+    await mgr.newTab().catch(() => {});
 
     terminationSeam.failuresRemaining = 1;
     await expect(mgr.closeAll()).rejects.toThrow(
@@ -364,7 +373,7 @@ describe("BrowserManager shutdown/launch race", () => {
     );
     expect(launchBrowserMock).toHaveBeenCalledTimes(1);
 
-    await expect(mgr.page()).rejects.toThrow(
+    await expect(mgr.newTab()).rejects.toThrow(
       "injected process-tree cleanup failure",
     );
     expect(launchBrowserMock).toHaveBeenCalledTimes(1);
@@ -380,14 +389,14 @@ describe("BrowserManager shutdown/launch race", () => {
       connection: makeFakeConnection(),
     });
     const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
-    await mgr.page().catch(() => {});
+    await mgr.newTab().catch(() => {});
 
     terminationSeam.failuresRemaining = 1;
     child.exitCode = 23;
     child.emit("exit", 23, null);
     await waitFor(() => terminationSeam.calls.length === 1);
 
-    await expect(mgr.page()).rejects.toThrow(
+    await expect(mgr.newTab()).rejects.toThrow(
       "injected process-tree cleanup failure",
     );
     expect(launchBrowserMock).toHaveBeenCalledTimes(1);
@@ -409,7 +418,7 @@ describe("BrowserManager shutdown/launch race", () => {
       });
     const first = track(new BrowserManager({ policy: BASE_POLICY }));
     const second = track(new BrowserManager({ policy: BASE_POLICY }));
-    await Promise.all([first.page().catch(() => {}), second.page().catch(() => {})]);
+    await Promise.all([first.newTab().catch(() => {}), second.newTab().catch(() => {})]);
 
     terminationSeam.failuresRemaining = 1;
     await expect(closeAllBrowserManagers()).rejects.toMatchObject({
@@ -440,14 +449,14 @@ describe("BrowserManager fallback temp profile", () => {
           resolveAgentRuntimeOptions({}, { sessionTempRoot: rootA }),
           async () => {
             await Promise.resolve();
-            await managerA.page().catch(() => {});
+            await managerA.newTab().catch(() => {});
           },
         ),
         runWithAgentRuntimeOptions(
           resolveAgentRuntimeOptions({}, { sessionTempRoot: rootB }),
           async () => {
             await Promise.resolve();
-            await managerB.page().catch(() => {});
+            await managerB.newTab().catch(() => {});
           },
         ),
       ]);
@@ -485,7 +494,7 @@ describe("BrowserManager fallback temp profile", () => {
       const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
       await runWithAgentRuntimeOptions(
         resolveAgentRuntimeOptions({}, { sessionTempRoot: sessionRoot }),
-        () => mgr.page().catch(() => {}),
+        () => mgr.newTab().catch(() => {}),
       );
 
       const created = readdirSync(sessionRoot).filter(
@@ -526,7 +535,7 @@ describe("BrowserManager fallback temp profile", () => {
       }),
     );
 
-    await mgr.page().catch(() => {});
+    await mgr.newTab().catch(() => {});
 
     const launchOptions = launchBrowserMock.mock.calls[0]?.[0] as {
       userDataDir: string;

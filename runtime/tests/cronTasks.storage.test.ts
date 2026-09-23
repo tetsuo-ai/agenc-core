@@ -9,10 +9,12 @@ import { CronDeliveryOutboxStore } from "../src/gateway/cron-outbox.js";
 import { addSessionCronTask, getSessionCronTasks, resetStateForTests, setScheduledTasksEnabled } from "../src/bootstrap/state.js";
 import { EventLog, type Event } from "../src/session/event-log.js";
 import { startSessionCronScheduler } from "../src/session/session-cron-scheduler.js";
+import { resetCronSchedulerForTests } from "../src/utils/cronScheduler.js";
 import type { Session } from "../src/session/session.js";
 import { cronLockAuthorityRoot } from "../src/sandbox/cron-authority-protection.js";
 import { acquireCronStorageLock, withCronStorage } from "../src/utils/cron-storage.js";
 import { appendCronTask, cronRestoreFailureNeedsWarning, getCronFilePath, readCronFile, readCronTasks, writeCronTasks, type CronTask } from "../src/utils/cronTasks.js";
+import * as cronTasks from "../src/utils/cronTasks.js";
 
 const hooks = vi.hoisted(() => ({
   beforeRename: undefined as ((from: string, to: string) => void) | undefined,
@@ -56,10 +58,115 @@ afterEach(async () => {
   hooks.beforeMkdir = undefined;
   hooks.descriptorUnavailable = false;
   vi.unstubAllEnvs();
+  await resetCronSchedulerForTests();
+  resetStateForTests();
   await rm(root, { recursive: true, force: true });
 });
 
-describe("descriptor-confined durable cron storage", () => {
+describe("cron tools without durable storage", () => {
+  test("session jobs can be created, listed, and deleted without durable I/O", async () => {
+    hooks.descriptorUnavailable = true;
+    const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
+    const tools = createModelFacingTools({ workspaceRoot: workspace,
+      getSession: () => ({ conversationId: "cron-session-only" }) as Session,
+    });
+    const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
+    const created = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "session work" });
+    expect(created.isError).toBeFalsy();
+    const id = (JSON.parse(String(created.content)) as { cron: { id: string } }).cron.id;
+    expect((JSON.parse(String((await tool("CronList").execute({})).content)) as { crons: { id: string }[] }).crons)
+      .toContainEqual(expect.objectContaining({ id }));
+    const deleted = await tool("CronDelete").execute({ id });
+    expect(JSON.parse(String(deleted.content))).toEqual({ deleted: true, id });
+    expect(getSessionCronTasks()).toEqual([]);
+    expect(await readdir(workspace)).toEqual([]);
+  });
+
+  test("cron pre-change failures settle as no effect and durable refusal is plain", async () => {
+    hooks.descriptorUnavailable = true;
+    const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
+    const tools = createModelFacingTools({ workspaceRoot: workspace,
+      getSession: () => ({ conversationId: "cron-refusals" }) as Session,
+    });
+    const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
+    for (const args of [
+      { prompt: "missing schedule" },
+      { cron: "* * *", prompt: "bad schedule" },
+      { cron: "* * * * *", prompt: "missing recipient", announceChannel: "stdio" },
+      { cron: "* * * * *", prompt: "bad webhook", webhook: "ftp://example.test/hook" },
+    ]) {
+      const result = await tool("CronCreate").execute(args);
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+    const durable = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "durable work", durable: true });
+    expect(durable.isError).toBe(true);
+    expect(String(durable.content)).toContain("Durable scheduled tasks are not supported on macOS yet.");
+    expect(durable.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    const missing = await tool("CronDelete").execute({});
+    expect(missing.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect(getSessionCronTasks()).toEqual([]);
+    expect(await readdir(workspace)).toEqual([]);
+  });
+
+  test("durable storage still fails closed before a write", async () => {
+    hooks.descriptorUnavailable = true;
+    await expect(appendCronTask(task("new"), workspace)).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+    expect(await readdir(workspace)).toEqual([]);
+  });
+
+  test("schedule read failures settle before CronCreate or CronDelete changes anything", async () => {
+    const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
+    const tools = createModelFacingTools({ workspaceRoot: workspace,
+      getSession: () => ({ conversationId: "cron-read-error" }) as Session,
+    });
+    const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
+    const read = vi.spyOn(cronTasks, "readCronFile").mockRejectedValueOnce(new Error("schedule read failed"));
+    const list = vi.spyOn(cronTasks, "listAllCronTasks").mockRejectedValueOnce(new Error("schedule read failed"));
+    try {
+      const create = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "durable work", durable: true });
+      expect(create.isError).toBe(true);
+      expect(String(create.content)).toContain("schedule read failed");
+      expect(create.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      const remove = await tool("CronDelete").execute({ id: "missing" });
+      expect(remove.isError).toBe(true);
+      expect(String(remove.content)).toContain("schedule read failed");
+      expect(remove.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(getSessionCronTasks()).toEqual([]);
+      expect(await readdir(workspace)).toEqual([]);
+    } finally {
+      read.mockRestore();
+      list.mockRestore();
+    }
+  });
+
+  test("an existing durable record gets a plain refusal before creating an unlistable job", async () => {
+    const metadata = join(workspace, ".agenc");
+    await mkdir(metadata, { mode: 0o700 });
+    const file = getCronFilePath(workspace);
+    const body = JSON.stringify({ tasks: [task("prior-durable")] });
+    await writeFile(file, body, { mode: 0o600 });
+    hooks.descriptorUnavailable = true;
+    const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
+    const tools = createModelFacingTools({ workspaceRoot: workspace,
+      getSession: () => ({ conversationId: "cron-prior-durable" }) as Session,
+    });
+    const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
+    const listed = await tool("CronList").execute({});
+    const deleted = await tool("CronDelete").execute({ id: "prior-durable" });
+    const created = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "session job" });
+    for (const result of [listed, deleted, created]) {
+      expect(result.isError).toBe(true);
+      expect(String(result.content)).toContain("Durable scheduled tasks are not supported on macOS yet.");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+    expect(getSessionCronTasks()).toEqual([]);
+    expect(await readFile(file, "utf8")).toBe(body);
+  });
+});
+
+describe.skipIf(process.platform === "darwin")("descriptor-confined durable cron storage", () => {
+
   test("default in-memory creation still fires when durable storage is unavailable", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
@@ -143,7 +250,9 @@ describe("descriptor-confined durable cron storage", () => {
       getSession: () => ({ conversationId: "cron-list-diagnostic" }) as Session,
     }).find((tool) => tool.name === "CronList")!;
     hooks.descriptorUnavailable = true;
-    await expect(list.execute({})).rejects.toThrow(/descriptor-confined I\/O is unsupported/);
+    const result = await list.execute({});
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("Durable scheduled tasks are not supported on macOS yet.");
   });
 
   test("reports a session warning for failed durable loading without submitting model work", async () => {

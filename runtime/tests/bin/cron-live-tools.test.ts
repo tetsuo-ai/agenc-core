@@ -98,6 +98,21 @@ describe("live Cron tools drive the real scheduler", () => {
     });
     const local = JSON.parse(String(localResult.content)).cron;
     expect(local.durable).toBe(false);
+    if (process.platform === "darwin") {
+      const listed = JSON.parse(String((await tools.get("CronList")!.execute({})).content)) as { crons: { id: string }[] };
+      expect(listed.crons).toContainEqual(expect.objectContaining({ id: local.id }));
+      const delivery = await tools.get("CronCreate")!.execute({
+        cron: "*/5 * * * *", prompt: "delivery check",
+        announceChannel: "stdio", announceTo: "test-recipient",
+      });
+      expect(delivery.isError).toBe(true);
+      expect(String(delivery.content)).toContain("Durable scheduled tasks are not supported on macOS yet.");
+      expect(delivery.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(JSON.parse(String((await tools.get("CronDelete")!.execute({ id: local.id })).content))).toEqual({
+        deleted: true, id: local.id,
+      });
+      return;
+    }
     expect(await listAllCronTasks(tempRoot)).toEqual([]);
     expect(await listAllCronTasks(tempRoot, conversationId)).toContainEqual(
       expect.objectContaining({ id: local.id, durable: false }),
@@ -113,7 +128,7 @@ describe("live Cron tools drive the real scheduler", () => {
     );
   });
 
-  it("CronCreate persists into the scheduler's store; CronList/CronDelete round-trip", async () => {
+  it.skipIf(process.platform === "darwin")("CronCreate persists into the scheduler's store; CronList/CronDelete round-trip", async () => {
     const tools = cronTools();
     const created = await tools.get("CronCreate")!.execute({
       cron: "*/5 * * * *",
@@ -171,7 +186,7 @@ describe("live Cron tools drive the real scheduler", () => {
       await tools.get("CronCreate")!.execute({
         cron: "* * * * *",
         prompt: "cron fired: run the check",
-        durable: true,
+        durable: process.platform !== "darwin",
         recurring: true,
       });
       expect(getCommandQueueSnapshot()).toHaveLength(0);
@@ -196,7 +211,7 @@ describe("live Cron tools drive the real scheduler", () => {
     }
   });
 
-  it("re-arms persisted jobs after a scheduler restart (daemon restart path)", async () => {
+  it.skipIf(process.platform === "darwin")("re-arms persisted jobs after a scheduler restart (daemon restart path)", async () => {
     vi.useFakeTimers({
       toFake: ["setTimeout", "clearTimeout", "Date", "performance"],
     });
