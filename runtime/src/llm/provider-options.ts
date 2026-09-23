@@ -25,6 +25,7 @@ import {
   resolveStoredChatGptSubscriptionCredentials,
 } from "./providers/openai/chatgpt-backend.js";
 import {
+  allowsOpenAICompatibleKeyFallback,
   resolveProviderBaseURLEnvironment,
   resolveProviderCredentialEnvironment,
   missingProviderCredentialEnvironmentLabel,
@@ -474,10 +475,18 @@ function resolveProviderCredentialAuthorityCore(
     throw new Error("OpenAI API-key selection conflicts with OAuth factory options");
   }
   const home = requested.credentialHome;
+  const requestedBaseURL = nonEmpty(requested.baseURL);
+  const configuredBaseURL = requestedBaseURL ??
+    resolveProviderBaseURLEnvironment(provider, snapshot)?.value;
+  const credentialEnv =
+    provider === "openai-compatible" &&
+    !allowsOpenAICompatibleKeyFallback(configuredBaseURL)
+      ? { ...snapshot, OPENAI_API_KEY: undefined }
+      : snapshot;
   const credentialEnvironment =
     provider === "gemini"
       ? undefined
-      : resolveProviderCredentialEnvironment(provider, snapshot);
+      : resolveProviderCredentialEnvironment(provider, credentialEnv);
   const environmentApiKey =
     credentialEnvironment?.kind === "api-key"
       ? credentialEnvironment.apiKey?.value
@@ -506,7 +515,6 @@ function resolveProviderCredentialAuthorityCore(
   if (authToken !== undefined) {
     apiKey = undefined;
   }
-  const requestedBaseURL = nonEmpty(requested.baseURL);
   let baseURL =
     requestedBaseURL ??
     resolveProviderBaseURLEnvironment(provider, snapshot)?.value;

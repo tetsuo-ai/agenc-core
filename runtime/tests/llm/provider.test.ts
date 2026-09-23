@@ -2224,7 +2224,9 @@ describe("createProvider", () => {
       for (const envVar of primaryCredentialEnvVars) {
         const resolved = resolveProviderFactoryOptions(
           provider as ProviderName,
-          {},
+          provider === "openai-compatible" && envVar === "OPENAI_API_KEY"
+            ? { baseURL: "https://compatible.example/v1" }
+            : {},
           { [envVar]: `${provider}-key` },
         );
         if (provider === "gemini") {

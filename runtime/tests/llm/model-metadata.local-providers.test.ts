@@ -256,9 +256,29 @@ describe("local providers resolve the real context window", () => {
         "http://127.0.0.1:11434/v1/models",
         "http://127.0.0.1:11434/api/show",
       ]);
+      expect(calls[0]!.authorization).toBeUndefined();
       expect(calls[1]!.authorization).toBeUndefined();
     });
   }
+
+  test("the default compatible metadata probe does not borrow the OpenAI key", async () => {
+    const { impl, calls } = recordingFetch({
+      "http://localhost:8000/v1/models": {
+        json: { data: [{ id: "local-model", max_model_len: 8192 }] },
+      },
+    });
+    await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_API_KEY: "hosted-openai-key" },
+    }).resolve({
+      provider: "openai-compatible",
+      model: "local-model",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(calls[0]?.url).toBe("http://localhost:8000/v1/models");
+    expect(calls[0]?.authorization).toBeUndefined();
+  });
 
   test.each([
     ["the default hosted origin", undefined, "https://api.openai.com/v1/models"],

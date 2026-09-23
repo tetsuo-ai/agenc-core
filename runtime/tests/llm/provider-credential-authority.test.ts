@@ -831,6 +831,32 @@ describe("provider credential authority", () => {
     }
   });
 
+  test("only borrows an OpenAI key for an explicitly configured compatible URL", async () => {
+    const { providerOptions } = await loadCredentialModules();
+    const env = { OPENAI_API_KEY: "hosted-openai-key" };
+    const unconfigured = providerOptions.resolveProviderCredentialAuthority(
+      "openai-compatible",
+      { model: "local-model" },
+      env,
+    );
+    expect(unconfigured.factoryOptions.apiKey).toBeUndefined();
+    expect(unconfigured.credential.status).toBe("optional");
+
+    const configured = providerOptions.resolveProviderCredentialAuthority(
+      "openai-compatible",
+      { model: "local-model", baseURL: "http://127.0.0.1:9000/v1" },
+      env,
+    );
+    expect(configured.factoryOptions.apiKey).toBe("hosted-openai-key");
+
+    const ollama = providerOptions.resolveProviderCredentialAuthority(
+      "openai-compatible",
+      { model: "local-model", baseURL: "http://127.0.0.1:11434/v1" },
+      env,
+    );
+    expect(ollama.factoryOptions.apiKey).toBeUndefined();
+  });
+
   test("reports the missing credential label for an ordinary API-key provider", async () => {
     const { providerOptions } = await loadCredentialModules();
 

@@ -6,6 +6,7 @@ import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
 import { rememberSuccessfulLookup } from "./remember-successful-lookup.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {
+  allowsOpenAICompatibleKeyFallback,
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "./registry/provider-ingress.js";
@@ -241,7 +242,7 @@ export class ModelMetadataResolver {
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
     if (provider === "ollama-cloud" && baseUrl.replace(/\/+$/, "") !== OLLAMA_CLOUD_BASE_URL) return undefined;
-    const headers = authHeaders(provider, this.env);
+    const headers = authHeaders(provider, params.config, this.env);
     // Ollama serves no context length over its OpenAI-compatible surface, so
     // the native endpoint is the only place the real number exists.
     if (provider !== "ollama" && provider !== "ollama-cloud") {
@@ -950,10 +951,18 @@ function modelsUrlFromBaseUrl(baseUrl: string): string {
 
 function authHeaders(
   provider: string,
+  config: AgenCConfig,
   env: Readonly<Record<string, string | undefined>>,
 ): Readonly<Record<string, string>> | undefined {
-  const apiKey = envApiKey(provider, env);
-  return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+  const credential = resolveProviderApiKeyEnvironment(provider, env);
+  if (
+    provider === "openai-compatible" &&
+    credential?.envVar === "OPENAI_API_KEY" &&
+    !allowsOpenAICompatibleKeyFallback(
+      envBaseUrl(provider, env) ?? readProviderConfig(config, provider)?.base_url?.trim(),
+    )
+  ) return undefined;
+  return credential ? { Authorization: `Bearer ${credential.value}` } : undefined;
 }
 
 function envBaseUrl(
@@ -961,13 +970,6 @@ function envBaseUrl(
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
   return resolveProviderBaseURLEnvironment(provider, env)?.value;
-}
-
-function envApiKey(
-  provider: string,
-  env: Readonly<Record<string, string | undefined>>,
-): string | undefined {
-  return resolveProviderApiKeyEnvironment(provider, env)?.value;
 }
 
 function defaultProviderBaseUrl(provider: string): string | undefined {

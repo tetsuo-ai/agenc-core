@@ -213,10 +213,12 @@ type VideoBackendResolution =
 function environmentVideoBackend(
   kind: "openai" | "minimax",
   env: NodeJS.ProcessEnv,
+  sessionBaseURL?: string,
 ): VideoBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment(kind, env);
   if (credential === undefined) return undefined;
   const baseURL =
+    sessionBaseURL ??
     resolveProviderBaseURLEnvironment(kind, env)?.value ??
     (kind === "openai" ? DEFAULT_OPENAI_BASE_URL : DEFAULT_MINIMAX_BASE_URL);
   try {
@@ -249,7 +251,13 @@ function resolveVideoBackend(
   const providerIdentity = readProviderIdentity(provider as never);
 
   if (providerIdentity === "openai" || providerIdentity === "minimax") {
-    const backend = environmentVideoBackend(providerIdentity, env);
+    const backend = environmentVideoBackend(
+      providerIdentity,
+      env,
+      provider === undefined
+        ? undefined
+        : readProviderFactoryOptions(provider as never).baseURL,
+    );
     if (backend !== undefined) return { backend };
   }
 

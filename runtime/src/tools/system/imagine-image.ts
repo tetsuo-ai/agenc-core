@@ -401,10 +401,12 @@ function zaiEnvironmentBackend(
  */
 function openaiEnvironmentBackend(
   env: NodeJS.ProcessEnv,
+  sessionBaseURL?: string,
 ): ImageBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment("openai", env);
   if (credential === undefined) return undefined;
   const baseURL =
+    sessionBaseURL ??
     resolveProviderBaseURLEnvironment("openai", env)?.value ??
     DEFAULT_OPENAI_BASE_URL;
   try {
@@ -524,7 +526,12 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
   // authorize it, so a session running on the ChatGPT OAuth grant alone
   // falls through to the independent backends below.
   if (providerIdentity === "openai") {
-    const backend = openaiEnvironmentBackend(env);
+    const backend = openaiEnvironmentBackend(
+      env,
+      provider === undefined
+        ? undefined
+        : readProviderFactoryOptions(provider as never).baseURL,
+    );
     if (backend !== undefined) return { backend };
   }
 
