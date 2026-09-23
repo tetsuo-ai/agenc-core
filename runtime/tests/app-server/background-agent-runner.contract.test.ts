@@ -1009,9 +1009,15 @@ function makeTopLevelRunner(opts: {
     sendInput: vi.fn(async () => {}),
     interrupt: vi.fn(),
     openThreadSpawnChildren: vi.fn(() => []),
+    stopOpenSpawnChildren: vi.fn(),
     liveThreadSpawnChildren: vi.fn(() => new Map()),
     clearConversationHistory: vi.fn(async () => {}),
   };
+  control.stopOpenSpawnChildren.mockImplementation((parentThreadId: string, reason: string) => {
+    for (const [childThreadId] of control.openThreadSpawnChildren(parentThreadId)) {
+      control.interrupt(childThreadId, reason);
+    }
+  });
   const bootstrap = vi.fn(async () => ({
     workspaceRoot,
     modelInfo: { slug: "base-model", contextWindow: 65_536 },

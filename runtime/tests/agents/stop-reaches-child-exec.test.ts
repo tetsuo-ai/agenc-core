@@ -8,8 +8,8 @@
  * the child's call from what the process did, and leave the session taking
  * the next prompt with nothing for `/resolve`. A service the child started
  * with `detach: true` is kept, and its call settles the same way. A process
- * the child's call already returned with a session id is kept too; that call
- * settled when it returned.
+ * the child's call already returned with a session id is stopped by the
+ * owner's Stop after that call has settled.
  *
  * The child's tool wrapper copies the call's arguments, and the copies used
  * to drop the executor's non-enumerable `__abortSignal`: the Stop ended the
@@ -23,7 +23,6 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -64,6 +63,22 @@ import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manage
 import { AsyncQueue } from "../../src/utils/async-queue.js";
 import { enterCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 
+// These commands use exec, so each shell has no descendants. The test runner
+// sandbox denies ps; use Node's exit observation for the manager's post-exit
+// check while retaining real processes, signals, and manager status changes.
+vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../src/utils/supervisedProcess.js")>();
+  return {
+    ...original,
+    terminateProcessTreeAndReport: async (child: { exitCode: number | null; signalCode: string | null }) => {
+      if (child.exitCode === null && child.signalCode === null) {
+        throw new Error("the process has not exited");
+      }
+      return { residualProcessesTerminated: false };
+    },
+  };
+});
+
 const STOP_REASON = "cancelled from AgenC Desktop";
 const ROOT_TASK = "root-task: delegate the long command";
 const CHILD_TASK = "child-task: run the long command";
@@ -79,20 +94,8 @@ const usage = {
   provenance: "provider" as const,
 };
 
-// A duration no other process on the host is likely to use, so cleanup can
-// confirm a leftover PID is still this fixture before signalling it.
+// A duration no other process on the host is likely to use.
 const CHILD_SLEEP_SECONDS = "299.731";
-
-/** The command line of `pid`, or undefined once it is gone. */
-function commandOf(pid: number): string | undefined {
-  try {
-    return execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
-      encoding: "utf8",
-    }).trim();
-  } catch {
-    return undefined;
-  }
-}
 
 function processIsRunning(pid: number): boolean {
   try {
@@ -166,7 +169,12 @@ function untilAborted(signal: AbortSignal | undefined): Promise<never> {
 
 interface ScenarioOptions {
   /** The sub-agent's exec_command arguments, given the pid file to write. */
-  readonly childExec: (pidFile: string) => Readonly<Record<string, unknown>>;
+  readonly childExec: (
+    pidFile: string,
+    detachedPidFile: string,
+    callIndex: number,
+  ) => Readonly<Record<string, unknown>>;
+  readonly childExecCount?: number;
   /**
    * Hold the sub-agent's next model call open until its turn is aborted, so
    * the Stop lands after the command's call has returned.
@@ -177,8 +185,10 @@ interface ScenarioOptions {
 interface Scenario {
   readonly root: Session;
   readonly control: AgentControl;
+  readonly manager: UnifiedExecProcessManager;
   readonly cwd: string;
   readonly pidFile: string;
+  readonly detachedPidFile: string;
   readonly followUpMarker: string;
   /** Child sessions in spawn order. */
   readonly children: Session[];
@@ -208,6 +218,7 @@ function createScenario(options: ScenarioOptions): Scenario {
   mkdirSync(join(cwd, "tmp"));
   process.env.AGENC_HOME = home;
   const pidFile = join(cwd, "tmp", "child.pid");
+  const detachedPidFile = join(cwd, "tmp", "detached.pid");
   const followUpMarker = join(cwd, "tmp", "follow-up.txt");
 
   const kernel = new ExecutionAdmissionKernel({
@@ -254,10 +265,11 @@ function createScenario(options: ScenarioOptions): Scenario {
     ): Promise<LLMResponse> => {
       const child = lastUserIndexWith(messages, CHILD_TASK);
       if (child !== -1) {
-        if (toolResultsAfter(messages, child) === 0) {
+        const callIndex = toolResultsAfter(messages, child);
+        if (callIndex < (options.childExecCount ?? 1)) {
           return response("", {
             name: "exec_command",
-            args: { ...options.childExec(pidFile) },
+            args: { ...options.childExec(pidFile, detachedPidFile, callIndex) },
           });
         }
         if (options.holdChildAfterExec === true) {
@@ -439,8 +451,10 @@ function createScenario(options: ScenarioOptions): Scenario {
   return {
     root,
     control,
+    manager,
     cwd,
     pidFile,
+    detachedPidFile,
     followUpMarker,
     children,
     childHeld,
@@ -460,17 +474,16 @@ function createScenario(options: ScenarioOptions): Scenario {
     },
     cleanup: async () => {
       unobserve();
-      const leftover = readPid(pidFile);
-      // Only signal the PID while it is still the fixture's sleep, so a
-      // reused PID can never be killed.
-      if (
-        leftover !== undefined &&
-        commandOf(leftover) === `sleep ${CHILD_SLEEP_SECONDS}`
-      ) {
-        try {
-          process.kill(leftover, "SIGKILL");
-        } catch {
-          // already gone
+      for (const path of [pidFile, detachedPidFile]) {
+        const leftover = readPid(path);
+        // The fixture just wrote this PID and each test completes well before
+        // its sleep duration. Kill detached fixtures after the assertions.
+        if (leftover !== undefined) {
+          try {
+            process.kill(leftover, "SIGKILL");
+          } catch {
+            // already gone
+          }
         }
       }
       await control.shutdownAll("test cleanup").catch(() => {});
@@ -501,9 +514,7 @@ async function ownerStop(scenario: Scenario): Promise<void> {
     scenario.root.conversationId,
   );
   expect(children).toHaveLength(1);
-  for (const [childThreadId] of children) {
-    scenario.control.interrupt(childThreadId, STOP_REASON);
-  }
+  scenario.control.stopOpenSpawnChildren(scenario.root.conversationId, STOP_REASON);
 }
 
 /** Wait until the child's run has closed its canonical journal. */
@@ -524,12 +535,13 @@ async function childRunClosed(child: Session): Promise<Event[]> {
 /** The journal events of the sub-agent's one exec_command call, by type. */
 function execCallEvents(
   events: readonly Event[],
+  index = 0,
 ): (type: string) => Event[] {
-  const execCall = events.find(
+  const execCall = events.filter(
     (event) =>
       event.msg.type === "tool_call_started" &&
       event.msg.payload.toolName === "exec_command",
-  );
+  )[index];
   expect(execCall).toBeDefined();
   const callId = (execCall!.msg.payload as { readonly callId: string }).callId;
   return (type) =>
@@ -706,13 +718,21 @@ describe.skipIf(process.platform === "win32")(
       expect(processIsRunning(pid)).toBe(true);
     });
 
-    it("keeps a process the sub-agent yielded before the Stop, and takes the next prompt", async () => {
+    it("ends the child's yielded shell but keeps its detached service, the root shell, and a foreign shell", async () => {
       const scenario = createScenario({
-        childExec: (pidFile) => ({
-          cmd: `echo $$ > ${JSON.stringify(pidFile)}; exec sleep ${CHILD_SLEEP_SECONDS}`,
-          // The call returns the running process with a session id.
-          yield_time_ms: 250,
-        }),
+        childExec: (pidFile, detachedPidFile, callIndex) =>
+          callIndex === 0
+            ? {
+                cmd: `echo $$ > ${JSON.stringify(detachedPidFile)}; exec sleep ${CHILD_SLEEP_SECONDS}`,
+                detach: true,
+                yield_time_ms: 250,
+              }
+            : {
+                cmd: `echo $$ > ${JSON.stringify(pidFile)}; exec sleep ${CHILD_SLEEP_SECONDS}`,
+                // The call returns the running process with a session id.
+                yield_time_ms: 250,
+              },
+        childExecCount: 2,
         holdChildAfterExec: true,
       });
       cleanups.push(scenario.cleanup);
@@ -725,13 +745,33 @@ describe.skipIf(process.platform === "win32")(
       );
       // The command's call is over; the sub-agent is waiting on its model.
       await scenario.childHeld;
+      const detachedPid = readPid(scenario.detachedPidFile);
+      expect(detachedPid).toBeDefined();
+      expect(processIsRunning(detachedPid!)).toBe(true);
+      const child = scenario.children[0]!;
+      const yielded = scenario.manager.listOwnedProcesses({ ownerId: child.conversationId });
+      expect(yielded).toHaveLength(1);
+      expect(yielded[0]?.status).toBe("running");
+
+      const rootProcess = await scenario.manager.execCommand({
+        cmd: `exec sleep ${CHILD_SLEEP_SECONDS}`,
+        yield_time_ms: 250,
+        ownerId: scenario.root.conversationId,
+      });
+      const foreignProcess = await scenario.manager.execCommand({
+        cmd: `exec sleep ${CHILD_SLEEP_SECONDS}`,
+        yield_time_ms: 250,
+        ownerId: "another-conversation",
+      });
+      expect(rootProcess.session_id).toBeDefined();
+      expect(foreignProcess.session_id).toBeDefined();
 
       await ownerStop(scenario);
+      expect(scenario.manager.listOwnedProcesses({ ownerId: child.conversationId })[0]?.status).toBe("stopping");
 
       await scenario.rootTurnDone();
-      const child = scenario.children[0]!;
       const events = await childRunClosed(child);
-      const forCall = execCallEvents(events);
+      const forCall = execCallEvents(events, 1);
       // That call settled when it returned; nothing of it was in flight.
       expect(forCall("effect_unknown_outcome")).toEqual([]);
       expect(forCall("effect_result")).toEqual([
@@ -744,10 +784,24 @@ describe.skipIf(process.platform === "win32")(
           }),
         }),
       ]);
-      expect(processIsRunning(pid)).toBe(true);
+      await waitFor(
+        () => (processIsRunning(pid) ? undefined : true),
+        PROCESS_GONE_BOUND_MS,
+        "the yielded sub-agent command to end after the Stop",
+      );
+      await waitFor(
+        () => scenario.manager.listOwnedProcesses({ ownerId: child.conversationId })[0]?.status === "killed" ? true : undefined,
+        PROCESS_GONE_BOUND_MS,
+        "the yielded sub-agent command to be observed exited",
+      );
+      expect(scenario.manager.listOwnedProcesses({ ownerId: scenario.root.conversationId })[0]?.status).toBe("running");
+      expect(scenario.manager.listOwnedProcesses({ ownerId: "another-conversation" })[0]?.status).toBe("running");
+      expect(processIsRunning(detachedPid!)).toBe(true);
       expectNothingToResolve(scenario, child);
       await expectFollowUpRuns(scenario);
-      expect(processIsRunning(pid)).toBe(true);
+      expect(scenario.manager.listOwnedProcesses({ ownerId: scenario.root.conversationId })[0]?.status).toBe("running");
+      expect(scenario.manager.listOwnedProcesses({ ownerId: "another-conversation" })[0]?.status).toBe("running");
+      expect(processIsRunning(detachedPid!)).toBe(true);
     });
   },
 );

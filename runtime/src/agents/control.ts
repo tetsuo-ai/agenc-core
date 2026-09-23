@@ -1376,6 +1376,20 @@ export class AgentControl {
     }
   }
 
+  /** Stop open spawn children and their yielded exec sessions for an owner Stop. */
+  stopOpenSpawnChildren(parentThreadId: ThreadId, reason: string): void {
+    // Snapshot first because interrupting a child can close its spawn edge.
+    // The thread id is also the child conversation id stamped on its exec calls.
+    const descendants = this.liveThreadSpawnDescendants(parentThreadId);
+    for (const [childThreadId] of this.openThreadSpawnChildren(parentThreadId)) {
+      this.interrupt(childThreadId, reason);
+    }
+    const manager = this.session.services.unifiedExecManager;
+    for (const childThreadId of descendants) {
+      manager.terminateOwnedProcesses?.({ ownerId: childThreadId });
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // Shutdown
   // ─────────────────────────────────────────────────────────────────

@@ -4510,11 +4510,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       void active.thread.submit({ type: "interrupt", reason }).catch(() => {
         /* interrupt delivery surfaces via session events */
       });
-      for (const [childThreadId] of active.control.openThreadSpawnChildren(
-        active.thread.threadId,
-      )) {
-        active.control.interrupt(childThreadId, reason);
-      }
+      active.control.stopOpenSpawnChildren(active.thread.threadId, reason);
       active.lastActiveAt = this.#now();
     }
     return true;
@@ -4561,11 +4557,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     try {
       active.bootstrap.session.markStoppedByUser?.();
     } finally {
-      for (const [childThreadId] of active.control.openThreadSpawnChildren(
-        active.thread.threadId,
-      )) {
-        active.control.interrupt(childThreadId, reason);
-      }
+      active.control.stopOpenSpawnChildren(active.thread.threadId, reason);
       active.lastActiveAt = this.#now();
     }
     return { cancelled: true, activeTurnId: expectedTurnId };
