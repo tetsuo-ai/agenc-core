@@ -38,6 +38,12 @@ async function check(input: Record<string, unknown>): Promise<PermissionResult> 
 }
 
 describe("Browser tool contract", () => {
+  test("rejects an unsupported key without touching a browser or gating later tools", async () => {
+    const result = await createBrowserTool().execute({ action: "press_key", key: "Control+a" });
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect(result.content).toContain("Tab");
+  });
   test("declares the deferred, side-effecting catalog contract", () => {
     const tool = createBrowserTool();
     expect(tool.name).toBe(BROWSER_TOOL_NAME);

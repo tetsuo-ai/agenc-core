@@ -103,6 +103,8 @@ const NAMED_KEYS: Readonly<Record<string, NamedKey>> = {
   End: { keyCode: 35, key: "End", code: "End" },
 };
 
+export const BROWSER_NAMED_KEYS = Object.freeze(Object.keys(NAMED_KEYS));
+
 export class BrowserPage {
   readonly #conn: CdpConnection;
   readonly #targetId: string;

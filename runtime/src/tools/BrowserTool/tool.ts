@@ -25,6 +25,7 @@ import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
 import { BrowserManager } from "../../browser/manager.js";
 import {
+  BROWSER_NAMED_KEYS,
   readBrowserNavigationFailureReceipt,
   readBrowserNavigationPolicyRefusal,
 } from "../../browser/page.js";
@@ -263,7 +264,8 @@ export function createBrowserTool(
       case "type":
         return str(input.ref) === undefined ? "type requires a ref" : undefined;
       case "press_key":
-        return str(input.key) === undefined ? "press_key requires a key" : undefined;
+        return BROWSER_NAMED_KEYS.includes(str(input.key) ?? "")
+          ? undefined : `press_key requires one of: ${BROWSER_NAMED_KEYS.join(", ")}`;
       case "select_tab":
         return tabIdOf(input) === undefined ? "select_tab requires tab_id" : undefined;
       case "close_tab":
@@ -458,6 +460,7 @@ export function createBrowserTool(
         },
         key: {
           type: "string",
+          enum: BROWSER_NAMED_KEYS,
           description: "Named key to press (press_key), e.g. Enter, Tab.",
         },
         direction: {
