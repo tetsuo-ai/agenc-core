@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { OllamaProvider } from "./adapter.js";
 import { withOllamaHealthSidecar } from "./health.js";
+import { isTransientProviderError } from "../../../../src/recovery/api-errors.js";
 import type { LLMChatOptions, LLMMessage } from "../../../../src/llm/types.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -624,6 +625,35 @@ describe("providers/ollama entrypoint", () => {
     ).rejects.toThrow(
       "Cannot connect to Ollama at http://localhost:11434. Is the server running?",
     );
+  });
+
+  test("maps the refusal the ollama SDK really throws to the same Ollama error", async () => {
+    // The SDK calls global fetch, and undici rejects a refused connection with
+    // TypeError("fetch failed") carrying the code on its cause, not on the
+    // error itself. The check above only ever saw hand-built errors, so a
+    // stopped Ollama reached the user as "ollama error: fetch failed".
+    const refused = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:11434"), {
+        code: "ECONNREFUSED",
+      }),
+    });
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+      host: "http://127.0.0.1:11434",
+    });
+    setClient(provider, { chat: vi.fn().mockRejectedValue(refused) });
+
+    const error = await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(
+      "Cannot connect to Ollama at http://127.0.0.1:11434. Is the server running?",
+    );
+    // Still an outage the turn waits out: a runtime started a moment later
+    // (the desktop starts a stopped one) must be picked up, not failed.
+    expect(isTransientProviderError(error)).toBe(true);
   });
 
   test("health sidecar aborts long streams when Ollama goes down (after 2 consecutive failures)", async () => {
