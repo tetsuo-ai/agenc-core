@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 const { launchBrowserMock } = vi.hoisted(() => ({ launchBrowserMock: vi.fn() }));
 vi.mock("../../src/browser/cdp.js", async (importOriginal) => ({
@@ -43,6 +43,7 @@ import { bindAdmittedToolHarness } from "../helpers/admitted-tool-harness.js";
 let profileRoot = "";
 const managers: BrowserManager[] = [];
 const PROFILE_MARKER = ".agenc-profile-owner";
+const PROFILE_RECOVERY_MARKER = ".agenc-profile-recovery";
 
 beforeEach(async () => {
   profileRoot = await mkdtemp(join(tmpdir(), "agenc-browser-navigation-test-"));
@@ -313,6 +314,140 @@ describe("one shared profile across sessions", () => {
     expect(launchedProfiles()[1]).not.toBe(persistent);
   });
 
+  it("reclaims a shared profile after a recovery owner dies", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    for (const name of [PROFILE_MARKER, PROFILE_RECOVERY_MARKER]) {
+      const path = join(persistent, name);
+      writeFileSync(path, JSON.stringify({
+        pid: exited.pid, startedAt: Date.now() - 10_000,
+      }));
+      const old = new Date(Date.now() - 90_000);
+      utimesSync(path, old, old);
+    }
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toBe(persistent);
+    expect(existsSync(join(persistent, PROFILE_RECOVERY_MARKER))).toBe(false);
+  });
+
+  it("reclaims an old empty claim left by a crash before the marker write", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    const path = join(persistent, PROFILE_MARKER);
+    writeFileSync(path, "");
+    const old = new Date(Date.now() - 90_000);
+    utimesSync(path, old, old);
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toBe(persistent);
+  });
+
+  it.skipIf(process.platform === "win32")("does not reclaim a dead daemon's claim while its detached browser is still starting", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true, stdio: "ignore",
+    });
+    try {
+      writeFileSync(join(persistent, PROFILE_MARKER), JSON.stringify({
+        pid: exited.pid, startedAt: Date.now() - 10_000, browserPid: child.pid,
+      }));
+      const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+      await manager.newTab();
+      expect(existsSync(join(persistent, "SingletonLock"))).toBe(false);
+      expect(launchedProfiles()[0]).not.toBe(persistent);
+    } finally {
+      if (child.pid !== undefined) process.kill(child.pid, "SIGKILL");
+    }
+  });
+
+  it("reclaims a marker whose live pid belongs to a different process", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    writeFileSync(join(persistent, PROFILE_MARKER), JSON.stringify({
+      pid: process.pid, startedAt: Date.now() - 60_000,
+    }));
+    const old = new Date(Date.now() - 90_000);
+    utimesSync(join(persistent, PROFILE_MARKER), old, old);
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toBe(persistent);
+  });
+
+  it.skipIf(process.platform === "win32")("removes a private profile whose owner pid was reused", async () => {
+    const privateDir = await mkdtemp(join(profileRoot, "agenc-browser-"));
+    writeFileSync(join(privateDir, PROFILE_MARKER), JSON.stringify({
+      pid: process.pid, startedAt: Date.now() - 60_000,
+    }));
+    const old = new Date(Date.now() - 90_000);
+    utimesSync(join(privateDir, PROFILE_MARKER), old, old);
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await manager.newTab();
+    expect(existsSync(privateDir)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps a dead daemon's private profile while its detached browser is starting", async () => {
+    const privateDir = await mkdtemp(join(profileRoot, "agenc-browser-"));
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true, stdio: "ignore",
+    });
+    try {
+      writeFileSync(join(privateDir, PROFILE_MARKER), JSON.stringify({
+        pid: exited.pid, startedAt: Date.now() - 90_000, browserPid: child.pid,
+      }));
+      const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+      await manager.newTab();
+      expect(existsSync(privateDir)).toBe(true);
+    } finally {
+      if (child.pid !== undefined) process.kill(child.pid, "SIGKILL");
+    }
+  });
+
+  it("waits for the unrecorded child startup window before reclaiming a dead claim", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    writeFileSync(join(persistent, PROFILE_MARKER), JSON.stringify({
+      pid: exited.pid, startedAt: Date.now() - 10_000,
+    }));
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await manager.newTab();
+    expect(launchedProfiles()[0]).not.toBe(persistent);
+  });
+
+  it.skipIf(process.platform === "win32")("reclaims a dead gated claim before Chromium was released", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    writeFileSync(join(persistent, PROFILE_MARKER), JSON.stringify({
+      pid: exited.pid, startedAt: Date.now() - 10_000, gated: true,
+    }));
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toBe(persistent);
+  });
+
+  it("records the spawned browser pid in the shared claim before CDP is ready", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    const { manager, connection } = fakeManager(async () => ({ frameId: "frame-1" }));
+    const child = new EventEmitter() as ChildProcess;
+    Object.defineProperty(child, "pid", { value: process.pid });
+    launchBrowserMock.mockImplementationOnce(async (options: {
+      onSpawn?: (child: ChildProcess) => void;
+    }) => {
+      options.onSpawn?.(child);
+      expect(JSON.parse(readFileSync(join(persistent, PROFILE_MARKER), "utf8"))).toMatchObject({
+        browserPid: process.pid,
+      });
+      return { child, connection };
+    });
+    await manager.newTab();
+  });
+
   it.skipIf(process.platform === "win32")("keeps a private profile while its daemon is launching", async () => {
     const launching = await mkdtemp(join(profileRoot, "agenc-browser-child-"));
     writeFileSync(join(launching, PROFILE_MARKER), JSON.stringify({
@@ -347,6 +482,8 @@ describe("one shared profile across sessions", () => {
       pid: exited.pid,
       startedAt: Date.now() - 10_000,
     }));
+    const old = new Date(Date.now() - 90_000);
+    utimesSync(join(persistent, PROFILE_MARKER), old, old);
     const { manager: reused } = fakeManager(async () => ({ frameId: "frame-1" }));
     await reused.newTab();
     expect(launchedProfiles()[1]).toBe(persistent);
@@ -357,9 +494,12 @@ describe("one shared profile across sessions", () => {
     const staleChild = await mkdtemp(join(profileRoot, "agenc-browser-child-"));
     const exited = spawnSync(process.execPath, ["-e", ""]);
     for (const dir of [stale, staleChild]) {
-      writeFileSync(join(dir, PROFILE_MARKER), JSON.stringify({
+      const path = join(dir, PROFILE_MARKER);
+      writeFileSync(path, JSON.stringify({
         pid: exited.pid, startedAt: Date.now() - 10_000,
       }));
+      const old = new Date(Date.now() - 90_000);
+      utimesSync(path, old, old);
     }
     symlinkSync(`${hostname()}-${exited.pid}`, join(staleChild, "SingletonLock"));
     const live = await mkdtemp(join(profileRoot, "agenc-browser-"));

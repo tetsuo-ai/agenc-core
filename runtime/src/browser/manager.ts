@@ -13,11 +13,12 @@
  */
 
 import {
-  closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync,
-  openSync, readFileSync, readdirSync, readlinkSync, rmSync, unlinkSync,
-  writeFileSync,
+  closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync,
+  openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync,
+  unlinkSync, writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -61,43 +62,65 @@ const PRIVATE_PROFILE_NAME = /^agenc-browser-(?:child-)?[a-zA-Z0-9]{6}$/;
 const PROFILE_MARKER = ".agenc-profile-owner";
 const PROFILE_RECOVERY_MARKER = ".agenc-profile-recovery";
 const processStartedAt = Math.round(Date.now() - process.uptime() * 1_000);
+// Older, ungated launches can die between spawn(2) and recording the child's
+// PID. During that interval absence of SingletonLock does not prove it idle.
+const UNRECORDED_BROWSER_START_MS = 60_000;
+
+interface ProfileOwnerMarker {
+  readonly pid: number;
+  readonly startedAt: number;
+  readonly id: string;
+  readonly browserPid?: number;
+  readonly gated?: boolean;
+}
+
+function writeMarkerAtomically(path: string, marker: string, replace = false): boolean {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  let written = false;
+  try {
+    writeFileSync(fd, marker, "utf8");
+    written = true;
+  } finally {
+    closeSync(fd);
+    if (!written) unlinkSync(temporary);
+  }
+  try {
+    if (replace) renameSync(temporary, path);
+    else linkSync(temporary, path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    try { unlinkSync(temporary); } catch { /* The claim itself remains authoritative. */ }
+  }
+}
 
 /** An exclusive claim protects the interval before Chromium writes its lock. */
 function claimProfileMarker(dir: string, name = PROFILE_MARKER): string | undefined {
   const marker = JSON.stringify({
     pid: process.pid, startedAt: processStartedAt, id: randomUUID(),
+    gated: process.platform !== "win32",
   });
-  const path = join(dir, name);
-  let fd: number;
-  try {
-    fd = openSync(
-      path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600,
-    );
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
-    throw error;
-  }
-  try {
-    writeFileSync(fd, marker, "utf8");
-  } catch (error) {
-    unlinkSync(path);
-    throw error;
-  } finally {
-    closeSync(fd);
-  }
-  return marker;
+  return writeMarkerAtomically(join(dir, name), marker) ? marker : undefined;
 }
 
 /** Serialize removal of a dead shared claim before creating a fresh one. */
 function claimSharedProfileMarker(dir: string): string | undefined {
   const recoveryPath = join(dir, PROFILE_RECOVERY_MARKER);
-  if (existsSync(recoveryPath)) return undefined;
+  if (existsSync(recoveryPath)) {
+    if (!markerOwnerProvablyDead(dir, PROFILE_RECOVERY_MARKER, true)) return undefined;
+    unlinkSync(recoveryPath);
+  }
   const marker = claimProfileMarker(dir);
-  if (marker !== undefined || !markerOwnerProvablyDead(dir)) return marker;
+  if (marker !== undefined || !markerOwnerProvablyDead(dir, PROFILE_MARKER, true) ||
+      unrecordedOrLiveBrowserMayStart(dir)) return marker;
   const recovery = claimProfileMarker(dir, PROFILE_RECOVERY_MARKER);
   if (recovery === undefined) return undefined;
   try {
-    if (!markerOwnerProvablyDead(dir)) return undefined;
+    if (!markerOwnerProvablyDead(dir, PROFILE_MARKER, true) ||
+        unrecordedOrLiveBrowserMayStart(dir)) return undefined;
     unlinkSync(join(dir, PROFILE_MARKER));
     return claimProfileMarker(dir);
   } finally {
@@ -105,28 +128,76 @@ function claimSharedProfileMarker(dir: string): string | undefined {
   }
 }
 
-function markerOwnerProvablyDead(dir: string): boolean {
-  const path = join(dir, PROFILE_MARKER);
+function processStartedAtMs(pid: number): number | undefined {
+  if (pid === process.pid) return processStartedAt;
+  if (process.platform !== "darwin" && process.platform !== "linux") return undefined;
+  try {
+    const output = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8", timeout: 5_000,
+      env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
+    }).trim();
+    const startedAt = Date.parse(output);
+    return Number.isFinite(startedAt) ? startedAt : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readProfileMarker(dir: string, name: string): { owner?: ProfileOwnerMarker; modifiedAt: number } | undefined {
+  const path = join(dir, name);
   try {
     const info = lstatSync(path);
-    if (!info.isFile() || info.isSymbolicLink()) return false;
+    if (!info.isFile() || info.isSymbolicLink()) return undefined;
     const owner: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof owner !== "object" || owner === null) return false;
+    if (typeof owner !== "object" || owner === null) return { modifiedAt: info.mtimeMs };
     const { pid, startedAt } = owner as { pid?: unknown; startedAt?: unknown };
     if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 ||
         typeof startedAt !== "number" || !Number.isFinite(startedAt) || startedAt <= 0) {
-      return false;
+      return { modifiedAt: info.mtimeMs };
     }
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    return { owner: owner as ProfileOwnerMarker, modifiedAt: info.mtimeMs };
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      try { return { modifiedAt: lstatSync(path).mtimeMs }; } catch { return undefined; }
     }
-  } catch {
-    // Missing, incomplete, or unreadable claims cannot prove that a daemon died.
-    return false;
+    return undefined;
   }
+}
+
+function markerOwnerProvablyDead(dir: string, name = PROFILE_MARKER, oldIncomplete = false): boolean {
+  const marker = readProfileMarker(dir, name);
+  if (marker === undefined) return false;
+  if (marker.owner === undefined) {
+    return oldIncomplete && Date.now() - marker.modifiedAt >= UNRECORDED_BROWSER_START_MS;
+  }
+  const { pid, startedAt } = marker.owner;
+  try {
+    process.kill(pid, 0);
+    const observedStart = processStartedAtMs(pid);
+    // A live, unrelated process may have reused the numeric PID. If the OS
+    // cannot give us its start time, retain the claim rather than guess.
+    return observedStart !== undefined && observedStart > startedAt + 2_000;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+function unrecordedOrLiveBrowserMayStart(dir: string): boolean {
+  const marker = readProfileMarker(dir, PROFILE_MARKER);
+  if (marker === undefined) return true;
+  const browserPid = marker.owner?.browserPid;
+  if (typeof browserPid === "number" && Number.isSafeInteger(browserPid) && browserPid > 0) {
+    try {
+      process.kill(browserPid, 0);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") return true;
+    }
+  }
+  // A gated launch cannot exec Chromium until its PID is in this marker. If
+  // the owner died before that update, the gate pipe closes without launch.
+  if (browserPid === undefined && marker.owner?.gated === true) return false;
+  return browserPid === undefined && Date.now() - marker.modifiedAt < UNRECORDED_BROWSER_START_MS;
 }
 
 /**
@@ -176,7 +247,8 @@ function cleanStalePrivateProfiles(root: string, sharedProfile?: string): void {
     if (!info.isDirectory() || info.isSymbolicLink()) continue;
     if (typeof process.getuid === "function" && info.uid !== process.getuid()) continue;
     if ((info.mode & 0o077) !== 0) continue;
-    if (!markerOwnerProvablyDead(path) || sharedProfileHeldElsewhere(path, true)) continue;
+    if (!markerOwnerProvablyDead(path) || unrecordedOrLiveBrowserMayStart(path) ||
+        sharedProfileHeldElsewhere(path, true)) continue;
     rmSync(path, { recursive: true, force: true });
   }
   cleanedTempRoots.add(root);
@@ -361,6 +433,22 @@ export class BrowserManager {
     }
   }
 
+  #recordBrowserPid(dir: string, child: ChildProcess): void {
+    if (child.pid === undefined) return;
+    const path = join(dir, PROFILE_MARKER);
+    const marker = readFileSync(path, "utf8");
+    if (dir === this.#sharedProfileDir && marker !== this.#sharedProfileMarker) {
+      throw new Error("browser profile claim changed before child identity was recorded");
+    }
+    const owner = JSON.parse(marker) as ProfileOwnerMarker;
+    if (owner.pid !== process.pid || owner.startedAt !== processStartedAt) {
+      throw new Error("browser profile owner changed before child identity was recorded");
+    }
+    const updated = JSON.stringify({ ...owner, browserPid: child.pid });
+    writeMarkerAtomically(path, updated, true);
+    if (dir === this.#sharedProfileDir) this.#sharedProfileMarker = updated;
+  }
+
   async #ensureLaunched(): Promise<void> {
     const requestGeneration = this.#shutdownGeneration;
     while (true) {
@@ -425,6 +513,7 @@ export class BrowserManager {
         headless: this.#options.policy.headless,
         noSandbox: this.#options.policy.noSandbox,
         proxyPort,
+        onSpawn: (child) => this.#recordBrowserPid(userDataDir, child),
         ...(this.#options.sandboxExecutionBroker !== undefined
           ? { sandboxExecutionBroker: this.#options.sandboxExecutionBroker }
           : {}),

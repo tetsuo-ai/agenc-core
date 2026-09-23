@@ -335,6 +335,8 @@ export interface LaunchBrowserOptions {
   readonly proxyPort: number;
   /** Authenticated session boundary for the Chromium process. */
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  /** Persist the detached child identity before waiting for CDP readiness. */
+  readonly onSpawn?: (child: ChildProcess) => void;
 }
 
 export interface LaunchedBrowser {
@@ -416,17 +418,60 @@ export async function launchBrowser(
     },
     { lifecycleParticipant: "browser" },
   );
+  // The POSIX gate does not exec Chromium until its PID has been persisted in
+  // the profile marker. A daemon crash before publication closes fd 5, so the
+  // gated child exits without ever opening the profile.
+  const gated = process.platform !== "win32";
   const child = preparedSpawn.spawnLifecycleParticipant(
     "browser",
     (spawnCommand) =>
-      spawn(spawnCommand.program, [...spawnCommand.args], {
+      spawn(gated ? "/bin/sh" : spawnCommand.program,
+        gated
+          ? ["-c", 'IFS= read -r gate <&5 || exit 0; [ "$gate" = go ] || exit 0; exec "$@"',
+            "agenc-browser-gate", spawnCommand.program, ...spawnCommand.args]
+          : [...spawnCommand.args], {
         cwd: spawnCommand.cwd,
         env: spawnCommand.env,
-        argv0: spawnCommand.argv0,
-        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+        ...(!gated ? { argv0: spawnCommand.argv0 } : {}),
+        stdio: gated
+          ? ["ignore", "ignore", "pipe", "pipe", "pipe", "pipe"]
+          : ["ignore", "ignore", "pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
       }),
   );
+  if (child.pid !== undefined) {
+    try {
+      options.onSpawn?.(child);
+    } catch (error) {
+      try {
+        await terminateProcessTreeAndWait(child, { label: "browser launch marker" });
+      } catch (cleanupError) {
+        throw new BrowserLaunchCleanupError(
+          "browser launch marker update failed and cleanup remains incomplete",
+          child,
+          cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)),
+        );
+      }
+      throw error;
+    }
+    if (gated) {
+      const gate = (child.stdio as unknown as Array<Writable | null | undefined> | undefined)?.[5];
+      if (gate === null || gate === undefined) {
+        try {
+          await terminateProcessTreeAndWait(child, { label: "browser launch gate" });
+        } catch (cleanupError) {
+          throw new BrowserLaunchCleanupError(
+            "browser launch gate pipe was unavailable and cleanup remains incomplete",
+            child,
+            cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)),
+          );
+        }
+        throw new CdpError("browser launch gate pipe was unavailable");
+      }
+      gate.on("error", () => { /* Child exit is reported by spawnError below. */ });
+      gate.end("go\n");
+    }
+  }
 
   let stderrTail = "";
   // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
