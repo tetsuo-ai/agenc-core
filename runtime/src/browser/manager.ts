@@ -13,7 +13,8 @@
  */
 
 import {
-  closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync,
+  closeSync, constants, existsSync, fchmodSync, fstatSync, linkSync, lstatSync,
+  mkdirSync, mkdtempSync,
   openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync,
   unlinkSync, writeFileSync,
 } from "node:fs";
@@ -39,7 +40,7 @@ import {
   terminateProcessTreeAndWait,
 } from "../utils/supervisedProcess.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
-import { resolveProjectTrustRootSync } from "../permissions/trust/project-trust.js";
+import { resolveBrowserProjectRootSync } from "./profile-root.js";
 
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 const MAX_TABS = 8;
@@ -269,6 +270,47 @@ function cleanStalePrivateProfiles(root: string, sharedProfile?: string): void {
   cleanedTempRoots.add(root);
 }
 
+/** Check a persistent profile component without following its final symlink. */
+function ensurePrivateProfileDirectory(path: string, recursive: boolean): boolean {
+  if (process.platform === "win32") {
+    const created = !existsSync(path);
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    return created;
+  }
+  let created = false;
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    try {
+      mkdirSync(path, { recursive, mode: 0o700 });
+      created = true;
+    } catch (mkdirError) {
+      if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
+    }
+  }
+  const info = lstatSync(path);
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error(`browser profile path is not a regular directory: ${path}`);
+  }
+  const uid = process.getuid?.();
+  if (uid === undefined || info.uid !== uid) {
+    throw new Error(`browser profile directory is not owned by this user: ${path}`);
+  }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isDirectory() || opened.dev !== info.dev || opened.ino !== info.ino ||
+        opened.uid !== uid) {
+      throw new Error(`browser profile directory changed during validation: ${path}`);
+    }
+    if ((opened.mode & 0o777) !== 0o700) fchmodSync(fd, 0o700);
+  } finally {
+    closeSync(fd);
+  }
+  return created;
+}
+
 /**
  * A refusal made before any page was touched: the named tab does not exist,
  * or no new tab may be opened. Branded as no effect because a bare error from
@@ -298,8 +340,10 @@ export async function closeAllBrowserManagers(): Promise<void> {
 
 export interface BrowserManagerOptions {
   readonly agencHome?: string;
-  /** Realpathed trust root for the session's initial working directory. */
+  /** Canonical browser project root for the session's initial workspace. */
   readonly projectRoot?: string;
+  /** Session root markers used by trust and workspace transition recomputes. */
+  readonly projectRootMarkers?: readonly string[];
   readonly policy: BrowserPolicy;
   /** Authenticated session boundary for the Chromium process. */
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
@@ -352,6 +396,7 @@ export class BrowserManager {
   #tempProfileDir: string | undefined;
   #sharedProfileDir: string | undefined;
   #sharedProfileMarker: string | undefined;
+  #profilePathWarningLogged = false;
   readonly #exitListener = (): void => {
     this.#killNow();
   };
@@ -359,9 +404,10 @@ export class BrowserManager {
   constructor(options: BrowserManagerOptions) {
     this.#options = options;
     this.#initialAuthorityCwd = options.sandboxExecutionBroker?.cwd;
-    this.#initialProjectRoot = options.projectRoot ?? resolveProjectTrustRootSync({
-      cwd: this.#initialAuthorityCwd ?? process.cwd(),
-    });
+    this.#initialProjectRoot = options.projectRoot ?? resolveBrowserProjectRootSync(
+      this.#initialAuthorityCwd ?? process.cwd(),
+      options.projectRootMarkers,
+    );
   }
 
   get running(): boolean {
@@ -383,7 +429,10 @@ export class BrowserManager {
     // this manager. Recompute the root if its authority cwd has changed.
     const projectRoot = currentCwd === this.#initialAuthorityCwd
       ? this.#initialProjectRoot
-      : resolveProjectTrustRootSync({ cwd: currentCwd ?? process.cwd() });
+      : resolveBrowserProjectRootSync(
+        currentCwd ?? process.cwd(),
+        this.#options.projectRootMarkers,
+      );
     const profilesRoot = this.#options.agencHome !== undefined
       ? join(this.#options.agencHome, "browser", "profiles")
       : undefined;
@@ -404,17 +453,26 @@ export class BrowserManager {
       return this.#tempProfileDir;
     }
     if (shared !== undefined) {
-      const creatingProjectProfile = this.#options.policy.profileDir === undefined &&
-        projectProfile !== undefined && !existsSync(projectProfile);
-      if (creatingProjectProfile && profilesRoot !== undefined) {
-        mkdirSync(profilesRoot, { recursive: true, mode: 0o700 });
+      let usable = true;
+      if (this.#options.policy.profileDir === undefined && profilesRoot !== undefined) {
+        try {
+          ensurePrivateProfileDirectory(profilesRoot, true);
+          const created = ensurePrivateProfileDirectory(shared, false);
+          if (created && this.#options.agencHome !== undefined &&
+              existsSync(join(this.#options.agencHome, "browser", "profile"))) {
+            console.info("[Browser] Existing legacy browser profile left unused; created a project profile.");
+          }
+        } catch (error) {
+          usable = false;
+          if (!this.#profilePathWarningLogged) {
+            console.warn(`[Browser] Refusing persistent browser profile; using a private temporary profile: ${String(error)}`);
+            this.#profilePathWarningLogged = true;
+          }
+        }
+      } else {
+        mkdirSync(shared, { recursive: true, mode: 0o700 });
       }
-      mkdirSync(shared, { recursive: true, mode: 0o700 });
-      if (creatingProjectProfile && this.#options.agencHome !== undefined &&
-          existsSync(join(this.#options.agencHome, "browser", "profile"))) {
-        console.info("[Browser] Existing legacy browser profile left unused; created a project profile.");
-      }
-      if (this.#claimSharedProfile(shared)) return shared;
+      if (usable && this.#claimSharedProfile(shared)) return shared;
       // Another session's browser holds the shared profile. Chromium would
       // hand this launch to it and exit, so this browser gets its own fresh
       // profile instead: nothing is shared with the other session, and the

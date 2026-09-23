@@ -24,7 +24,7 @@ import type { PermissionResult, PermissionUpdate } from "../../permissions/types
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
 import { BrowserManager } from "../../browser/manager.js";
-import { resolveProjectTrustRootSync } from "../../permissions/trust/project-trust.js";
+import { resolveBrowserProjectRootSync } from "../../browser/profile-root.js";
 import {
   BROWSER_NAMED_KEYS,
   readBrowserNavigationFailureReceipt,
@@ -86,6 +86,8 @@ export interface CreateBrowserToolOptions {
   readonly agencHome?: string;
   /** Already-layered canonical `[browser]` snapshot for this session. */
   readonly config?: BrowserConfig;
+  /** Session root markers, from the same layered config used for trust. */
+  readonly projectRootMarkers?: readonly string[];
   /** Inject a lifecycle-owned manager (tests). When absent one is created lazily. */
   readonly manager?: BrowserManager;
 }
@@ -184,7 +186,11 @@ export function createBrowserTool(
         const agencHome = safeAgencHome(options.agencHome);
         created = new BrowserManager({
           ...(agencHome !== undefined ? { agencHome } : {}),
-          projectRoot: resolveProjectTrustRootSync({ cwd: sandboxExecutionBroker.cwd }),
+          projectRoot: resolveBrowserProjectRootSync(
+            sandboxExecutionBroker.cwd,
+            options.projectRootMarkers,
+          ),
+          projectRootMarkers: options.projectRootMarkers,
           policy,
           sandboxExecutionBroker,
         });

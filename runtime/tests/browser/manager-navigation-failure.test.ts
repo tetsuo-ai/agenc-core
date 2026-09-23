@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
-const { launchBrowserMock, markerReadSeam } = vi.hoisted(() => ({
+const { launchBrowserMock, markerReadSeam, ownershipSeam } = vi.hoisted(() => ({
   launchBrowserMock: vi.fn(),
   markerReadSeam: { path: "", replace: undefined as undefined | (() => void) },
+  ownershipSeam: { path: "" },
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -24,6 +25,12 @@ vi.mock("node:fs", async (importOriginal) => {
       }
       return result;
     }) as typeof actual.readFileSync,
+    lstatSync: ((path: Parameters<typeof actual.lstatSync>[0], ...args: unknown[]) => {
+      const info = (actual.lstatSync as (...args: unknown[]) => ReturnType<typeof actual.lstatSync>)(path, ...args);
+      return String(path) === ownershipSeam.path
+        ? Object.assign(Object.create(Object.getPrototypeOf(info)), info, { uid: info.uid + 1 })
+        : info;
+    }) as typeof actual.lstatSync,
   };
 });
 vi.mock("../../src/browser/cdp.js", async (importOriginal) => ({
@@ -55,7 +62,7 @@ import {
   SandboxExecutionBroker,
   attachSandboxExecutionBroker,
 } from "../../src/sandbox/execution-broker.js";
-import { disposeSandboxExecutionBroker } from "../../src/sandbox/execution-lifecycle.js";
+import { disposeSandboxExecutionBroker, transitionSandboxExecutionBroker } from "../../src/sandbox/execution-lifecycle.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
 import { bindAdmittedToolHarness } from "../helpers/admitted-tool-harness.js";
 
@@ -78,6 +85,7 @@ afterEach(async () => {
   launchBrowserMock.mockReset();
   markerReadSeam.path = "";
   markerReadSeam.replace = undefined;
+  ownershipSeam.path = "";
   vi.restoreAllMocks();
 });
 
@@ -85,6 +93,7 @@ function fakeManager(
   navigation: (options: CdpSendOptions) => Promise<Record<string, unknown>>,
   profileDir?: string,
   sandboxExecutionBroker?: SandboxExecutionBroker,
+  projectRootMarkers?: readonly string[],
 ) {
   let created = 0;
   let currentUrl = "about:blank";
@@ -122,6 +131,7 @@ function fakeManager(
     ...(sandboxExecutionBroker === undefined
       ? { projectRoot: profileRoot }
       : { sandboxExecutionBroker }),
+    ...(projectRootMarkers !== undefined ? { projectRootMarkers } : {}),
     policy: {
       executablePath: process.execPath,
       headless: true, allowPrivateNetwork: false, noSandbox: false, navigationTimeoutMs: 1_000,
@@ -293,6 +303,137 @@ describe("project-scoped browser profiles", () => {
     launchBrowserMock.mock.calls.map(
       ([options]) => (options as { userDataDir: string }).userDataDir,
     );
+
+  async function launchThroughTool(cwd: string, projectRootMarkers?: readonly string[]): Promise<void> {
+    fakeManager(async () => ({})); // Give each launch a fresh fake CDP connection.
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd });
+    const tool = createBrowserTool({
+      agencHome: profileRoot,
+      config: { executable_path: process.execPath },
+      projectRootMarkers,
+    });
+    const args: Record<string, unknown> = { action: "new_tab", url: "about:blank" };
+    attachSandboxExecutionBroker(args, broker, "browser");
+    try {
+      expect((await tool.execute(args)).isError).toBeUndefined();
+    } finally {
+      await disposeSandboxExecutionBroker(broker);
+    }
+  }
+
+  it("uses the configured trust markers for distinct browser profile keys", async () => {
+    writeFileSync(join(profileRoot, "package.json"), "{}");
+    const first = join(profileRoot, "first");
+    const second = join(profileRoot, "second");
+    mkdirSync(first);
+    mkdirSync(second);
+    writeFileSync(join(first, ".project"), "");
+    writeFileSync(join(second, ".project"), "");
+
+    await launchThroughTool(first, [".project"]);
+    await launchThroughTool(second, [".project"]);
+    await launchThroughTool(second, ["package.json"]);
+
+    expect(launchedProfiles()).toEqual([
+      projectProfile(first), projectProfile(second), projectProfile(profileRoot),
+    ]);
+  });
+
+  it("keys a symlinked workspace by its real project", async () => {
+    const lexical = join(profileRoot, "lexical");
+    const realProject = join(profileRoot, "real");
+    const realWorkspace = join(realProject, "src");
+    mkdirSync(join(lexical, ".git"), { recursive: true });
+    mkdirSync(join(realProject, ".git"), { recursive: true });
+    mkdirSync(realWorkspace);
+    symlinkSync(realWorkspace, join(lexical, "workspace"), "dir");
+
+    await launchThroughTool(join(lexical, "workspace"));
+
+    expect(launchedProfiles()).toEqual([projectProfile(realProject)]);
+  });
+
+  it("recomputes a transitioned workspace with the same trust markers", async () => {
+    const first = join(profileRoot, "first");
+    const second = join(profileRoot, "second");
+    writeFileSync(join(profileRoot, "package.json"), "{}");
+    for (const project of [first, second]) {
+      mkdirSync(project);
+      writeFileSync(join(project, ".project"), "");
+    }
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: first });
+    const { manager, connection } = fakeManager(async () => ({}), undefined, broker, [".project"]);
+    await manager.newTab();
+    await manager.closeAll();
+    await transitionSandboxExecutionBroker(broker, second);
+    connection.closed = false;
+    await manager.newTab();
+
+    expect(launchedProfiles()).toEqual([projectProfile(first), projectProfile(second)]);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a planted project profile symlink and warns once", async () => {
+    const first = join(profileRoot, "first");
+    const second = join(profileRoot, "second");
+    mkdirSync(first);
+    mkdirSync(second);
+    const target = projectProfile(first);
+    mkdirSync(target, { recursive: true, mode: 0o700 });
+    symlinkSync(target, projectProfile(second), "dir");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: second });
+    const { manager, connection } = fakeManager(async () => ({}), undefined, broker);
+    await manager.newTab();
+    await manager.closeAll();
+    connection.closed = false;
+    await manager.newTab();
+
+    expect(launchedProfiles()).toHaveLength(2);
+    expect(launchedProfiles().every((path) => path.startsWith(join(profileRoot, "agenc-browser-")))).toBe(true);
+    expect(existsSync(join(target, PROFILE_MARKER))).toBe(false);
+    expect(warning).toHaveBeenCalledTimes(1);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a symlinked profiles root", async () => {
+    const elsewhere = join(profileRoot, "elsewhere");
+    mkdirSync(elsewhere, { mode: 0o700 });
+    mkdirSync(join(profileRoot, "browser"));
+    symlinkSync(elsewhere, join(profileRoot, "browser", "profiles"), "dir");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { manager } = fakeManager(async () => ({}));
+    await manager.newTab();
+
+    expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(warning).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform === "win32")("tightens existing profile directories to 0700", async () => {
+    const persistent = projectProfile();
+    const profiles = join(profileRoot, "browser", "profiles");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    chmodSync(profiles, 0o755);
+    chmodSync(persistent, 0o755);
+    const { manager } = fakeManager(async () => ({}));
+    await manager.newTab();
+
+    expect(launchedProfiles()[0]).toBe(persistent);
+    expect(statSync(profiles).mode & 0o777).toBe(0o700);
+    expect(statSync(persistent).mode & 0o777).toBe(0o700);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a profile reported as foreign owned", async () => {
+    const persistent = projectProfile();
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    ownershipSeam.path = persistent;
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { manager } = fakeManager(async () => ({}));
+    await manager.newTab();
+
+    expect(launchedProfiles()[0]).not.toBe(persistent);
+    expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+    expect(warning).toHaveBeenCalledOnce();
+  });
 
   it("reuses the same profile across sessions in one project", async () => {
     const project = join(profileRoot, "project");
