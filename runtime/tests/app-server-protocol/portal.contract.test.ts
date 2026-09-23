@@ -4,7 +4,7 @@ import {
   AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH,
   AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT,
 } from "../app-server/daemon-cli.js";
-import { isAgenCDaemonMethod } from "../app-server/protocol/index.js";
+import { AGENC_DAEMON_PROTOCOL_VERSION, isAgenCDaemonMethod } from "../app-server/protocol/index.js";
 import {
   AGENC_PORTAL_CLIENT_CAPABILITIES,
   AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
@@ -129,8 +129,8 @@ describe("AgenC portal protocol contract", () => {
       id: "initialize",
       method: "initialize",
       params: {
-        protocolVersion: "1.16.0",
-        protocol: { version: "1.16.0" },
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
         clientName: "agenc-portal",
         capabilities: AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
       },

@@ -14,6 +14,7 @@ import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycl
 import { AgenCInProcessDaemonTransport } from "../../src/app-server/transport/in-process.js";
 import {
   JSON_RPC_VERSION,
+  AGENC_DAEMON_PROTOCOL_VERSION,
   type AgenCDaemonSessionNotification,
   type JsonObject,
 } from "../../src/app-server/protocol/index.js";
@@ -404,7 +405,7 @@ describe("agenc-sdk client over the in-process transport", () => {
     const initialized = await daemon.client.initialize();
     expect(initialized).toMatchObject({
       type: "initialized",
-      protocol: { version: "1.16.0" },
+      protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
     });
 
     const session = await daemon.client.createSession({

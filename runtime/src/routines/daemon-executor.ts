@@ -180,8 +180,8 @@ export function createDaemonRoutineExecutor(options: {
         const desktopTools = options.prepareSession
           ? await options.prepareSession({ sessionId: agent.sessionId, routineId: routine.id, runId: run.id, cwd: routine.cwd }, context.signal)
           : { status: "unavailable", reason: "No Desktop client is connected." } as const;
-        if (context.signal.aborted) return await finishCancellation();
         context.setDesktopTools?.(desktopTools);
+        if (context.signal.aborted) return await finishCancellation();
         const content = desktopTools.status === "attached" ? routine.instructions
           : `Desktop tools (browser, terminal, windows) are unavailable in this run: ${(desktopTools.reason ?? "unknown reason").replace(/[.!?]+$/u, "")}.\n${routine.instructions}`;
         const messageId = `routine_message_${randomUUID()}`;
@@ -189,6 +189,9 @@ export function createDaemonRoutineExecutor(options: {
           sessionId: agent.sessionId, content,
           messageId, streamId: `routine_stream_${randomUUID()}`,
           acceptedAt: new Date().toISOString(), ifBusy: "reject", methodName: "message.stream",
+          // This daemon-owned dispatch is local only after Desktop confirmed
+          // the attachment. Keep the routine's permission mode independent.
+          localMcpAccess: desktopTools.status === "attached",
         }), cancellationOutcome, terminal]);
         if (typeof result === "string") { finalized = true; return result; }
         if (context.signal.aborted) return await finishCancellation();

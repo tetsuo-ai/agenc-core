@@ -21,6 +21,7 @@ export class RoutineSessionPreparation {
     const aborted = new Promise<RoutineDesktopTools>(resolve => { resolveAbort = resolve; });
     const onAbort = () => resolveAbort(unavailable("Routine was cancelled."));
     signal.addEventListener("abort", onAbort, { once: true });
+    const deadlineAt = Date.now() + this.timeoutMs;
     const deadline = new Promise<RoutineDesktopTools>(resolve => {
       timeout = setTimeout(() => resolve(unavailable("Desktop did not answer within 4 seconds.")), this.timeoutMs);
       timeout.unref?.();
@@ -36,7 +37,7 @@ export class RoutineSessionPreparation {
       this.#pending.set(requestId, resolveAnswer);
       const delivery = this.clients.broadcastCapabilityEvent(input.sessionId, ROUTINE_SESSION_PREPARE_CAPABILITY, {
         jsonrpc: "2.0", method: "routine.session.prepare", params: { ...input, requestId },
-      } as JsonObject, { bufferOnFailure: false }).then(delivered =>
+      } as JsonObject, { bufferOnFailure: false, signal, deadlineAt }).then(delivered =>
         delivered.deliveredClientIds.length > 0 ? answer : unavailable("Desktop disconnected before preparation."));
       return await Promise.race([delivery, answer, deadline, aborted]);
     } catch { return unavailable("Desktop could not receive the preparation request."); }

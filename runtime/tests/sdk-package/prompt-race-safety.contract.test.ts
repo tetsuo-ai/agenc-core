@@ -15,6 +15,7 @@ import {
   type JsonObject,
 } from "../../../packages/agenc-sdk/src/index";
 import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
+import { AGENC_SDK_DAEMON_PROTOCOL_VERSION } from "../../../packages/agenc-sdk/src/protocol.js";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -77,7 +78,7 @@ class PromptTransport implements AgencTransport {
     readonly response: Deferred<AgencDaemonResponse<"message.send">>;
   }> = [];
   client?: AgencClient;
-  initializeVersion = "1.16.0";
+  initializeVersion: string = AGENC_SDK_DAEMON_PROTOCOL_VERSION;
   initializeFailures = 0;
   attachRuntimeOptions: unknown;
   attachRuntimeSettings: unknown = VALID_ATTACH_RUNTIME_SETTINGS;
@@ -123,7 +124,8 @@ class PromptTransport implements AgencTransport {
               this.initializeVersion === "1.9.0" ||
               this.initializeVersion === "1.10.0" ||
               this.initializeVersion === "1.11.0" ||
-              this.initializeVersion === "1.16.0",
+              this.initializeVersion === "1.16.0" ||
+              this.initializeVersion === AGENC_SDK_DAEMON_PROTOCOL_VERSION,
           },
         },
       });
@@ -450,7 +452,7 @@ describe("agenc-sdk prompt race safety", () => {
       );
       expect(initializes).toHaveLength(2);
       expect(initializes.map((request) => request.params)).toEqual([
-        expect.objectContaining({ protocol: { version: "1.16.0" } }),
+        expect.objectContaining({ protocol: { version: AGENC_SDK_DAEMON_PROTOCOL_VERSION }, capabilities: {}, clientName: "agenc-sdk" }),
         expect.objectContaining({ protocol: { version } }),
       ]);
       expect(client.negotiatedProtocolVersion).toBe(version);
