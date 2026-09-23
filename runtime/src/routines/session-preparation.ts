@@ -7,10 +7,17 @@ export const ROUTINE_SESSION_PREPARE_CAPABILITY = "routine.session.prepare.v1";
 /** Four seconds bounds a local socket attach, even if Desktop disappears mid-request. */
 export const ROUTINE_SESSION_PREPARE_TIMEOUT_MS = 4_000;
 const unavailable = (reason: string): RoutineDesktopTools => ({ status: "unavailable", reason });
+const DECLINED_WITHOUT_REASON = "Desktop declined to attach its tools.";
+
+interface PendingPreparation {
+  readonly resolve: (outcome: RoutineDesktopTools) => void;
+  readonly deadlineAt: number;
+  readonly signal: AbortSignal;
+}
 
 /** One-shot requests. The random request id also rejects late and duplicate answers. */
 export class RoutineSessionPreparation {
-  readonly #pending = new Map<string, (outcome: RoutineDesktopTools) => void>();
+  readonly #pending = new Map<string, PendingPreparation>();
   constructor(private readonly clients: Pick<AgenCDaemonClientMultiplexer, "hasClientWithCapability" | "broadcastCapabilityEvent">,
     private readonly timeoutMs = ROUTINE_SESSION_PREPARE_TIMEOUT_MS) {}
 
@@ -34,7 +41,7 @@ export class RoutineSessionPreparation {
       requestId = randomUUID();
       let resolveAnswer!: (value: RoutineDesktopTools) => void;
       const answer = new Promise<RoutineDesktopTools>(resolve => { resolveAnswer = resolve; });
-      this.#pending.set(requestId, resolveAnswer);
+      this.#pending.set(requestId, { resolve: resolveAnswer, deadlineAt, signal });
       const delivery = this.clients.broadcastCapabilityEvent(input.sessionId, ROUTINE_SESSION_PREPARE_CAPABILITY, {
         jsonrpc: "2.0", method: "routine.session.prepare", params: { ...input, requestId },
       } as JsonObject, { bufferOnFailure: false, signal, deadlineAt }).then(delivered =>
@@ -49,13 +56,20 @@ export class RoutineSessionPreparation {
   }
 
   respond(params: RoutineSessionPrepareResponse, capable: boolean): { accepted: boolean } {
+    // The wire schema makes a decline's reason optional; a present reason must
+    // still be short, single-line text.
     if (!capable || typeof params.requestId !== "string" || !/^[a-f0-9-]{36}$/u.test(params.requestId) ||
       (params.status !== "attached" && params.status !== "declined") ||
-      (params.status === "declined" && (typeof params.reason !== "string" || !params.reason.trim() || params.reason.length > 200 || /[\u0000-\u001f\u007f]/u.test(params.reason)))) return { accepted: false };
-    const resolve = this.#pending.get(params.requestId);
-    if (!resolve) return { accepted: false };
+      (params.status === "declined" && params.reason !== undefined && (typeof params.reason !== "string" || !params.reason.trim() || params.reason.length > 200 || /[\u0000-\u001f\u007f]/u.test(params.reason)))) return { accepted: false };
+    const pending = this.#pending.get(params.requestId);
+    if (!pending) return { accepted: false };
     this.#pending.delete(params.requestId);
-    resolve(params.status === "attached" ? { status: "attached", reason: null } : { status: "declined", reason: params.reason!.trim() });
+    // A delayed timer callback must not let an expired or cancelled request
+    // be answered: the deadline and the signal decide, not the timer.
+    if (pending.signal.aborted || Date.now() >= pending.deadlineAt) return { accepted: false };
+    pending.resolve(params.status === "attached"
+      ? { status: "attached", reason: null }
+      : { status: "declined", reason: params.reason?.trim() || DECLINED_WITHOUT_REASON });
     return { accepted: true };
   }
 }

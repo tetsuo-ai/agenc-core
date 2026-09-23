@@ -50,6 +50,27 @@ describe("bounded routine session preparation", () => {
     expect(f.broker.respond({ requestId: notification.params.requestId, status: "declined", reason: "Desktop window is not open." }, true)).toEqual({ accepted: true });
     expect(await waiting).toEqual({ status: "declined", reason: "Desktop window is not open." });
   });
+  it("refuses an answer that arrives after the deadline, before the timer runs", async () => {
+    const f = fixture(true, 200);
+    const waiting = f.broker.prepare(input, new AbortController().signal);
+    await vi.waitFor(() => expect(f.clients.broadcastCapabilityEvent).toHaveBeenCalledOnce());
+    const notification = f.clients.broadcastCapabilityEvent.mock.calls[0]?.[2] as any;
+    // The event loop was busy: the clock passed the deadline, the timer has not fired.
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 201);
+    try {
+      expect(f.broker.respond({ requestId: notification.params.requestId, status: "attached" }, true)).toEqual({ accepted: false });
+    } finally { clock.mockRestore(); }
+    expect(await waiting).toEqual({ status: "unavailable", reason: "Desktop did not answer within 4 seconds." });
+  });
+  it("accepts a decline without a reason, as the wire schema allows", async () => {
+    const f = fixture();
+    const waiting = f.broker.prepare(input, new AbortController().signal);
+    await vi.waitFor(() => expect(f.clients.broadcastCapabilityEvent).toHaveBeenCalledOnce());
+    const notification = f.clients.broadcastCapabilityEvent.mock.calls[0]?.[2] as any;
+    expect(f.broker.respond({ requestId: notification.params.requestId, status: "declined" }, true)).toEqual({ accepted: true });
+    expect(await waiting).toEqual({ status: "declined", reason: "Desktop declined to attach its tools." });
+  });
   it("unblocks immediately on cancellation", async () => {
     const f = fixture(); const controller = new AbortController();
     const waiting = f.broker.prepare(input, controller.signal);
