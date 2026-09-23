@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
@@ -276,6 +277,23 @@ export function formatPluginList(result: PluginListResult): string {
   return lines.join("\n");
 }
 
+async function assertPrivateSnapshotTree(path: string): Promise<void> {
+  const stats = await lstat(path);
+  if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) {
+    throw new Error("plugin snapshot contains a link or special file");
+  }
+  if (!stats.isDirectory()) return;
+  for (const child of await readdir(path)) {
+    await assertPrivateSnapshotTree(join(path, child));
+  }
+}
+
+function installedAssetPath(snapshotRoot: string, installedRoot: string, path: string): string | undefined {
+  const child = relative(snapshotRoot, path);
+  return child !== "" && child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child)
+    ? join(installedRoot, child) : undefined;
+}
+
 export async function listInstalledPlugins(
   options: PluginOperationOptions,
 ): Promise<PluginListResult> {
@@ -296,7 +314,19 @@ export async function listInstalledPlugins(
       try {
         snapshotDir = await mkdtemp(join(options.sessionTempRoot, "plugin-inventory-"));
         const snapshotRoot = join(snapshotDir, "root");
-        await cp(plugin.root, snapshotRoot, { recursive: true, dereference: false });
+        const sourceHandle = await open(plugin.root,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try {
+          if (!(await sourceHandle.stat()).isDirectory()) {
+            throw new Error("plugin source root is not a directory");
+          }
+          await cp(plugin.root, snapshotRoot, { recursive: true, dereference: false });
+        } finally {
+          await sourceHandle.close();
+        }
+        // A root swapped after opening can be copied as a symlink. Check the
+        // entire private tree before any snapshot path is loaded or inspected.
+        await assertPrivateSnapshotTree(snapshotRoot);
         const copied = await createPluginFromPath(snapshotRoot, {
           source: plugin.source, enabled: plugin.enabled,
           contentProvenance: plugin.contentProvenance,
@@ -307,10 +337,24 @@ export async function listInstalledPlugins(
         }
         const snapshotPlugin = { ...copied.plugin, id: plugin.id, enabled: plugin.enabled };
         const snapshotSummary = summarizeLoadedPlugin(snapshotPlugin);
+        let installedInterface: Omit<PluginManifestInterface, "logo"> | undefined;
+        if (snapshotSummary.interface !== undefined) {
+          const { composerIcon, screenshots, ...interfaceRest } = snapshotSummary.interface;
+          const installedIcon = composerIcon === undefined ? undefined
+            : installedAssetPath(snapshotRoot, plugin.root, composerIcon);
+          installedInterface = { ...interfaceRest,
+            ...(installedIcon !== undefined ? { composerIcon: installedIcon } : {}),
+            screenshots: screenshots.flatMap((path) => {
+              const installed = installedAssetPath(snapshotRoot, plugin.root, path);
+              return installed === undefined ? [] : [installed];
+            }),
+          };
+        }
+        const installedLogo = snapshotSummary.logoPath === undefined ? undefined
+          : installedAssetPath(snapshotRoot, plugin.root, snapshotSummary.logoPath);
         const summary = { ...snapshotSummary, root: plugin.root,
-          ...(snapshotSummary.logoPath !== undefined
-            ? { logoPath: join(plugin.root, relative(snapshotRoot, snapshotSummary.logoPath)) }
-            : {}) };
+          ...(installedInterface !== undefined ? { interface: installedInterface } : {}),
+          ...(installedLogo !== undefined ? { logoPath: installedLogo } : {}) };
         const registeredCommands = await loadPluginCommands({
           pluginStorageRoot: options.pluginStorageRoot,
           workspaceRoot,
@@ -333,7 +377,8 @@ export async function listInstalledPlugins(
               ...(command.argumentHint !== undefined ? { argumentHint: command.argumentHint } : {}) })),
           ...(skills.length > 0 ? { skills } : {}) }, error };
       } catch {
-        return { plugin: { ...summarizeLoadedPlugin(plugin), verificationState: "failed" as const },
+        return { plugin: { id: plugin.id, name: plugin.name, enabled: plugin.enabled,
+          root: plugin.root, source: plugin.source, verificationState: "failed" as const },
           error: `${plugin.id}: failed to inspect installed plugin snapshot` };
       } finally {
         if (snapshotDir !== undefined) {

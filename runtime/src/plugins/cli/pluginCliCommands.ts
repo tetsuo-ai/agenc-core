@@ -220,7 +220,13 @@ export async function runAgenCPluginCli(
         try {
           await refreshStaleMarketplaces(options);
           freshResult = pluginListWithCatalog(result,
-            await buildMarketplaceCatalog(options, undefined, true, true));
+            await buildMarketplaceCatalog(options, undefined, true, true,
+              (marketplaceName, row) => result.plugins.some((plugin) => {
+                if (row.name !== plugin.name) return false;
+                if (plugin.marketplace !== undefined) return plugin.marketplace === marketplaceName;
+                const location = row.source.type === "git" ? row.source.url : row.source.path;
+                return plugin.sourceLocation === location;
+              })));
         } catch {
           // Local installed inventory remains usable if a marketplace is broken.
         }

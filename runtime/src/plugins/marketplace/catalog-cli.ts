@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { normalizeSkillDisplayName, skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
-import { verifiedAdvertisedPluginPayloadDigest, verifiedAdvertisedPluginPayloadDigestFromManifestHash } from "../resolution.js";
+import { verifiedAdvertisedPluginPayloadDigest } from "../resolution.js";
 import { updateMarketplaceInventory } from "./inventory.js";
 
 import {
@@ -308,9 +308,10 @@ async function fetchBounded(
  * honest way to show a plugin's own logo on its card is to read the
  * plugin manifest at the pinned commit, take the `logo` it declares, and
  * fetch exactly that file. The bytes are cached under the marketplace
- * store keyed by commit + path, so a catalog is one network round trip
- * per plugin on first sight and none afterwards. Every failure is
- * silent: a missing logo is a generic card, never a broken catalog.
+ * store keyed by commit + path. Display cards reuse that cache; signed
+ * inventory comparisons refetch because a sidecar cannot prove that its
+ * signed bytes belong to the pinned commit. Every failure is silent: a
+ * missing logo is a generic card, never a broken catalog.
  */
 interface MarketplaceComponentRow {
   readonly name: string;
@@ -475,18 +476,39 @@ function metaFromSidecar(value: unknown, logoPath: string | undefined): Prefetch
   };
 }
 
+const cardFetches = new Map<string, Promise<PrefetchedCardMeta | undefined>>();
+
 async function prefetchPinnedCardMeta(
   options: MarketplaceOperationOptions,
   plugin: MarketplacePlugin,
   includePayloadDigest = false,
 ): Promise<PrefetchedCardMeta | undefined> {
-  const fetcher = options.fetcher ?? (globalThis.fetch as unknown as Fetcher);
-  if (typeof fetcher !== "function") return undefined;
   const manifestUrl = pinnedRawUrl(plugin.source, ".agenc-plugin/plugin.json");
   if (manifestUrl === undefined) return undefined;
+  const flightKey = `${logoCacheRoot(options)}:${options.agencHome ?? ""}:${includePayloadDigest}:${manifestUrl}`;
+  const current = cardFetches.get(flightKey);
+  if (current !== undefined) return current;
+  const pending = prefetchPinnedCardMetaOnce(options, plugin, includePayloadDigest, manifestUrl);
+  cardFetches.set(flightKey, pending);
+  try {
+    return await pending;
+  } finally {
+    cardFetches.delete(flightKey);
+  }
+}
+
+async function prefetchPinnedCardMetaOnce(
+  options: MarketplaceOperationOptions,
+  plugin: MarketplacePlugin,
+  includePayloadDigest: boolean,
+  manifestUrl: string,
+): Promise<PrefetchedCardMeta | undefined> {
+  const fetcher = options.fetcher ?? (globalThis.fetch as unknown as Fetcher);
+  if (typeof fetcher !== "function") return undefined;
   const cacheRoot = logoCacheRoot(options);
   const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
   let staleCached: PrefetchedCardMeta | undefined;
+  let staleSidecar: Record<string, unknown> = {};
   try {
     const cachedRaw: unknown = JSON.parse(
       await readFile(join(cacheRoot, `${key}.meta.json`), "utf8"),
@@ -506,29 +528,22 @@ async function prefetchPinnedCardMeta(
           // Meta survives a pruned logo file.
         }
       }
-      // A sidecar digest is only a hint. Rebuild it from signed material so
-      // cache edits and publisher revocation cannot authenticate an advert.
-      let verifiedDigest: string | undefined;
-      if (includePayloadDigest && options.agencHome !== undefined &&
-        typeof cached.signedManifestSha256 === "string" &&
-        typeof cached.signedSignature === "string") {
-        try {
-          verifiedDigest = await verifiedAdvertisedPluginPayloadDigestFromManifestHash(
-            cached.signedManifestSha256,
-            Buffer.from(cached.signedSignature, "base64"),
-            { agencHome: options.agencHome },
-          );
-        } catch { /* The cached signature or current trust is invalid. */ }
-      }
+      // A signed sidecar does not prove that its bytes came from this pin.
+      // A digest for updates must come from a fresh pinned fetch.
       const { payloadDigest: _untrustedDigest, ...display } = metaFromSidecar(cached, logoPath);
-      const metadata: PrefetchedCardMeta = { ...display,
-        ...(verifiedDigest !== undefined ? { payloadDigest: verifiedDigest } : {}) };
+      const metadata: PrefetchedCardMeta = display;
+      const now = (options.now ?? (() => new Date()))().getTime();
+      if (typeof cached.manifestRetryAfter === "string" &&
+          Date.parse(cached.manifestRetryAfter) > now) return metadata;
       if (cached.cardMetadataVersion === CARD_METADATA_VERSION &&
-        (!includePayloadDigest || verifiedDigest !== undefined ||
+        (!includePayloadDigest ||
           (typeof cached.digestRetryAfter === "string" &&
-            Date.parse(cached.digestRetryAfter) > (options.now ?? (() => new Date()))().getTime())))
+            Date.parse(cached.digestRetryAfter) > now)))
         return metadata;
       staleCached = metadata;
+      const { signedManifestSha256: _hash, signedSignature: _signature,
+        payloadDigest: _digest, ...displaySidecar } = cached;
+      staleSidecar = displaySidecar;
     }
   } catch {
     // Not cached yet.
@@ -538,7 +553,16 @@ async function prefetchPinnedCardMeta(
     manifestUrl,
     MANIFEST_PREFETCH_MAX_BYTES,
   );
-  if (manifestBytes === undefined) return staleCached;
+  if (manifestBytes === undefined) {
+    const retry = { ...staleSidecar,
+      manifestRetryAfter: new Date((options.now ?? (() => new Date()))().getTime() +
+        OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() };
+    try {
+      await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+      await writeFile(join(cacheRoot, `${key}.meta.json`), `${JSON.stringify(retry)}\n`, { mode: 0o600 });
+    } catch { /* A cache failure never breaks the catalog. */ }
+    return staleCached;
+  }
   const signatureUrl = includePayloadDigest
     ? pinnedRawUrl(plugin.source, ".agenc-plugin/signature.json") : undefined;
   const signatureBytes = signatureUrl === undefined ? undefined
@@ -621,10 +645,6 @@ async function prefetchPinnedCardMeta(
       : {}),
     ...(description !== undefined ? { description } : {}),
     ...(version !== undefined ? { version } : {}),
-    ...(payloadDigest !== undefined && signatureBytes !== undefined
-      ? { signedManifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
-          signedSignature: Buffer.from(signatureBytes).toString("base64") }
-      : {}),
     ...(includePayloadDigest && options.agencHome !== undefined && payloadDigest === undefined
       ? { digestRetryAfter: new Date((options.now ?? (() => new Date()))().getTime() +
         OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() } : {}),
@@ -654,11 +674,13 @@ async function catalogRowsForMarketplace(
   lastRefreshTime: string,
   includePayloadDigests: boolean,
   includeAllProducts: boolean,
+  selectPlugin?: (marketplaceName: string, plugin: MarketplacePlugin) => boolean,
 ): Promise<readonly MarketplaceCatalogPluginRow[]> {
   const rows: MarketplaceCatalogPluginRow[] = [];
   for (const plugin of marketplace.plugins) {
     if (plugin.policy.installation === "NOT_AVAILABLE") continue;
     if (!includeAllProducts && !marketplacePluginSupportsProduct(plugin.policy, product)) continue;
+    if (selectPlugin !== undefined && !selectPlugin(marketplace.name, plugin)) continue;
     const manifestLogo = await resolveLogoPath(marketplace.root, plugin);
     const prefetched = await prefetchPinnedCardMeta(options, plugin, includePayloadDigests);
     let localPayloadDigest: string | undefined;
@@ -728,6 +750,7 @@ export async function buildMarketplaceCatalog(
   product?: string,
   includePayloadDigests = false,
   includeAllProducts = false,
+  selectPlugin?: (marketplaceName: string, plugin: MarketplacePlugin) => boolean,
 ): Promise<MarketplaceCatalogDocument> {
   const index = await readMarketplaceIndex(options);
   const records = Object.values(index.marketplaces).sort((left, right) =>
@@ -749,7 +772,7 @@ export async function buildMarketplaceCatalog(
         sourceType: record.sourceType,
         source: record.source,
         plugins: await catalogRowsForMarketplace(options, marketplace, product, record.updatedAt,
-          includePayloadDigests, includeAllProducts),
+          includePayloadDigests, includeAllProducts, selectPlugin),
       });
     } catch (error) {
       errors.push({

@@ -230,6 +230,43 @@ describe("agenc plugin CLI", () => {
     expect(fetches).toBe(2);
   });
 
+  it("throttles a failing installed pin across three polls and skips unrelated pins", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const opts = options(agencHome, workspaceRoot, createIo());
+    const pluginRoot = await writePlugin(root, "alpha");
+    const installed = await installPluginOp({ ...opts, source: pluginRoot });
+    await writeFile(join(installed.destination, ".agenc-plugin", "agenc-install.json"), JSON.stringify({
+      source: "https://github.com/team/plugins.git", marketplace: "team",
+      resolutionKind: "local", signatureRequired: false,
+    }));
+    const market = join(root, "market");
+    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: ["alpha", "unrelated"].map((name) => ({ name,
+        source: { source: "git", url: "https://github.com/team/plugins.git",
+          sha: name === "alpha" ? "a".repeat(40) : "b".repeat(40) },
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+      })),
+    }));
+    await addMarketplaceOp({ ...opts, source: market, name: "team" });
+    const requests: string[] = [];
+    const fetcher: NonNullable<AgenCPluginCliOptions["fetcher"]> = async (url) => {
+      requests.push(url);
+      return jsonResponse({ error: "missing" }, false, 404);
+    };
+    for (let poll = 0; poll < 3; poll++) {
+      expect(await runAgenCPluginCli({ kind: "list", json: true }, { ...opts,
+        fetcher, io: createIo() })).toBe(0);
+    }
+    expect(requests).toEqual([
+      `https://raw.githubusercontent.com/team/plugins/${"a".repeat(40)}/.agenc-plugin/plugin.json`,
+    ]);
+    const key = createHash("sha256").update(requests[0]!).digest("hex").slice(0, 24);
+    const sidecar = JSON.parse(await readFile(join(opts.pluginStorageRoot, "marketplaces",
+      ".logo-cache", `${key}.meta.json`), "utf8"));
+    expect(Date.parse(sidecar.manifestRetryAfter)).toBeGreaterThan(opts.now!().getTime());
+  });
+
   it("reports a valid unsigned local-marketplace install as unsigned-local", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const source = join(root, "market");

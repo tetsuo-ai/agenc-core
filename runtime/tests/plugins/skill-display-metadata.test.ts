@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { normalizeSkillDisplayName, skillDisplayNameFromMarkdown } from "../../src/plugins/skill-display-metadata.js";
-import { buildMarketplaceCatalog } from "../../src/plugins/marketplace/catalog-cli.js";
+import { buildMarketplaceCatalog, OFFICIAL_MARKETPLACE_REFRESH_MS } from "../../src/plugins/marketplace/catalog-cli.js";
 import { addMarketplaceOp } from "../../src/plugins/marketplace/marketplace.js";
 import { installPluginOp, listInstalledPlugins } from "../../src/plugins/cli/pluginOperations.js";
 
@@ -35,8 +35,11 @@ async function catalogFixture() {
   const cacheDir = join(options.pluginStorageRoot, "marketplaces", ".logo-cache");
   const key = createHash("sha256").update(MANIFEST_URL).digest("hex").slice(0, 24);
   const cache = join(cacheDir, `${key}.meta.json`);
-  const get = async () => (await buildMarketplaceCatalog({ ...options, fetcher }, "desktop")).marketplaces[0]!.plugins[0]!;
-  return { ...options, fetcher, get, cache, cacheDir };
+  let nowMs = Date.parse("2026-09-23T00:00:00Z");
+  const get = async () => (await buildMarketplaceCatalog({ ...options, fetcher,
+    now: () => new Date(nowMs) }, "desktop")).marketplaces[0]!.plugins[0]!;
+  const advance = (ms: number) => { nowMs += ms; };
+  return { ...options, fetcher, get, advance, cache, cacheDir };
 }
 
 describe("skill display metadata", () => {
@@ -70,7 +73,12 @@ describe("skill display metadata", () => {
     await writeFile(fixture.cache, JSON.stringify(old));
     fixture.fetcher.mockRejectedValueOnce(new Error("offline"));
     expect((await fixture.get()).skills).toEqual(old.skills);
-    expect(JSON.parse(await readFile(fixture.cache, "utf8"))).toEqual(old);
+    expect(JSON.parse(await readFile(fixture.cache, "utf8"))).toMatchObject({ ...old,
+      manifestRetryAfter: new Date(Date.parse("2026-09-23T00:00:00Z") +
+        OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
+    expect((await fixture.get()).skills).toEqual(old.skills);
+    expect(fixture.fetcher).toHaveBeenCalledTimes(1);
+    fixture.advance(OFFICIAL_MARKETPLACE_REFRESH_MS + 1);
     expect((await fixture.get()).skills).toEqual([{ name: "calidad", displayName: "Code Quality", description: "Review source code." }]);
     expect(JSON.parse(await readFile(fixture.cache, "utf8")).cardMetadataVersion).toBe(1);
   });
