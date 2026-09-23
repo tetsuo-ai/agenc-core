@@ -35,7 +35,7 @@ import {
 } from "../../llm/provider.js";
 import {
   isDirectXaiInferenceHost,
-  resolveXaiBearerTokenForBaseUrl,
+  tryResolveXaiBearerTokenForBaseUrl,
 } from "../../llm/xai-capability-config.js";
 import {
   resolveProviderApiKeyEnvironment,
@@ -249,6 +249,7 @@ function resolveVideoBackend(
   const env = opts.env ?? process.env;
   const provider = opts.getSession()?.services?.provider;
   const providerIdentity = readProviderIdentity(provider as never);
+  let oauthBaseUrlError: string | undefined;
 
   if (providerIdentity === "openai" || providerIdentity === "minimax") {
     const backend = environmentVideoBackend(
@@ -265,9 +266,11 @@ function resolveVideoBackend(
     const factory = readProviderFactoryOptions(provider as never);
     const sessionKey =
       typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-    const bearer = resolveXaiBearerTokenForBaseUrl(
+    const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
       opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
     );
+    oauthBaseUrlError = xaiResolution.oauthBaseUrlError;
+    const bearer = xaiResolution.bearer;
     if (bearer !== undefined) {
       return {
         backend: {
@@ -283,10 +286,12 @@ function resolveVideoBackend(
   }
 
   // Without a usable Grok session key, use only independent xAI authority.
-  const bearer = resolveXaiBearerTokenForBaseUrl(
+  const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
     opts.home, env,
     resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
   );
+  oauthBaseUrlError ??= xaiResolution.oauthBaseUrlError;
+  const bearer = xaiResolution.bearer;
   if (bearer !== undefined) {
     const baseURL =
       resolveProviderBaseURLEnvironment("grok", env)?.value ??
@@ -312,7 +317,7 @@ function resolveVideoBackend(
   if (independent !== undefined) return { backend: independent };
 
   return {
-    error:
+    error: oauthBaseUrlError ??
       "ImagineVideo needs a media credential: OPENAI_API_KEY for Sora, " +
       "MINIMAX_API_KEY for Hailuo, or an independent xAI media credential " +
       "via /grok-login, XAI_API_KEY, or GROK_API_KEY.",

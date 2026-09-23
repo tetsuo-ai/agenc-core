@@ -356,6 +356,27 @@ export function resolveXaiBearerTokenForBaseUrl(
   return credential.value;
 }
 
+/** A URL-bound sign-in cannot serve this xAI candidate; other backends may. */
+export function tryResolveXaiBearerTokenForBaseUrl(
+  home: HomeContext,
+  env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
+  baseURL: string,
+  sessionApiKey?: string,
+): { readonly bearer?: string; readonly oauthBaseUrlError?: string } {
+  try {
+    return { bearer: resolveXaiBearerTokenForBaseUrl(
+      home, env, baseURL, sessionApiKey,
+    ) };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(
+      "xAI sign-in credentials are bound to the first-party xAI API endpoint.",
+    )) {
+      return { oauthBaseUrlError: error.message };
+    }
+    throw error;
+  }
+}
+
 export interface ResolvedGrokProviderCredential {
   readonly value?: string;
   /** True when the selected value is a tracked xAI OAuth bearer. */
