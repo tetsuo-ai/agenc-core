@@ -41,10 +41,12 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * revision: a 1.0 through 1.14 client still negotiates successfully, because
  * negotiation compares versions and not method sets, but those calls now
  * answer `METHOD_NOT_FOUND`. Nothing outside this repository used them.
+ * 1.16 adds project trust for a working directory (`project.trustStatus`,
+ * `project.trust`), resolved to the project root a session there would use.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.15.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.16.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -164,6 +166,8 @@ export const AGENC_DAEMON_METHODS = [
   "tool.cancel",
   "elicitation.respond",
   "permission.list",
+  "project.trustStatus",
+  "project.trust",
   "fs.fuzzy_search",
   "commandExec.start",
   "commandExec.write",
@@ -898,6 +902,22 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "List effective permissions for an agent or session.",
+  },
+  "project.trustStatus": {
+    method: "project.trustStatus",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Report the project root a session started in a directory would use, and whether that root is trusted.",
+  },
+  "project.trust": {
+    method: "project.trust",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Record trust for the project root a session started in a directory would use.",
   },
   "fs.fuzzy_search": {
     method: "fs.fuzzy_search",
@@ -2096,6 +2116,39 @@ export interface PermissionListParams extends JsonObject {
   readonly sessionId?: string;
 }
 
+/**
+ * Trust is keyed by project root, never by the folder a client picked: a
+ * session resolves its cwd to the nearest ancestor holding a configured
+ * project-root marker (`project_root_markers`) and looks that root up exactly.
+ */
+export interface ProjectTrustStatusParams extends JsonObject {
+  /** Absolute path of an existing directory, as a session would start in it. */
+  readonly cwd: string;
+}
+
+export interface ProjectTrustStatusResult extends JsonObject {
+  /** `cwd` in its canonical on-disk spelling. */
+  readonly cwd: string;
+  /** The root trust is keyed by: the nearest marker ancestor, else `cwd`. */
+  readonly projectRoot: string;
+  readonly trusted: boolean;
+}
+
+export interface ProjectTrustParams extends JsonObject {
+  /** Absolute path of an existing directory, as a session would start in it. */
+  readonly cwd: string;
+}
+
+export interface ProjectTrustResult extends JsonObject {
+  /** `cwd` in its canonical on-disk spelling. */
+  readonly cwd: string;
+  /** The root that is now trusted. */
+  readonly projectRoot: string;
+  readonly trusted: true;
+  /** Whether `projectRoot` was trusted before this call. */
+  readonly alreadyTrusted: boolean;
+}
+
 export interface FuzzyFileSearchParams extends JsonObject {
   readonly query: string;
   readonly roots: readonly string[];
@@ -2531,6 +2584,8 @@ export type AgenCDaemonRequest =
       ElicitationRespondParams
     >
   | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
+  | AgenCDaemonRequestWithParams<"project.trustStatus", ProjectTrustStatusParams>
+  | AgenCDaemonRequestWithParams<"project.trust", ProjectTrustParams>
   | AgenCDaemonRequestWithParams<"fs.fuzzy_search", FuzzyFileSearchParams>
   | AgenCDaemonRequestWithParams<"commandExec.start", CommandExecStartParams>
   | AgenCDaemonRequestWithParams<"commandExec.write", CommandExecWriteParams>
@@ -3894,6 +3949,8 @@ export interface AgenCDaemonResultByMethod {
   readonly "tool.cancel": ToolDecisionResult;
   readonly "elicitation.respond": ElicitationRespondResult;
   readonly "permission.list": PermissionListResult;
+  readonly "project.trustStatus": ProjectTrustStatusResult;
+  readonly "project.trust": ProjectTrustResult;
   readonly "fs.fuzzy_search": FuzzyFileSearchResponse;
   readonly "commandExec.start": CommandExecResponse;
   readonly "commandExec.write": CommandExecWriteResponse;

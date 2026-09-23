@@ -126,6 +126,8 @@ const expectedMethods = [
   "tool.cancel",
   "elicitation.respond",
   "permission.list",
+  "project.trustStatus",
+  "project.trust",
   "fs.fuzzy_search",
   "commandExec.start",
   "commandExec.write",
@@ -1067,6 +1069,18 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
+        id: "trust-status",
+        method: "project.trustStatus",
+        params: { cwd: "/workspace/packages/web" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "trust",
+        method: "project.trust",
+        params: { cwd: "/workspace/packages/web" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
         id: 16,
         method: "fs.fuzzy_search",
         params: {
@@ -1204,6 +1218,14 @@ describe("AgenC daemon protocol surface", () => {
 
   it("rejects unlisted methods and malformed payloads outside the F-03a surface", () => {
     const validate = compileRequestValidator(readProtocolSchema());
+
+    for (const method of ["project.trustStatus", "project.trust"]) {
+      for (const params of [{}, { cwd: "" }, { cwd: "/workspace", projectRoot: "/" }]) {
+        expect(
+          validate({ jsonrpc: JSON_RPC_VERSION, id: method, method, params }),
+        ).toBe(false);
+      }
+    }
 
     expect(
       validate({

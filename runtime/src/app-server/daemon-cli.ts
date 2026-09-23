@@ -135,6 +135,7 @@ import type { AgenCNativePeerCredentialBinding } from "./transport/peer-credenti
 import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
 import { AgenCDaemonHealthService } from "./health.js";
 import { AgenCDaemonRunInspectionService } from "./run-inspection.js";
+import { AgenCProjectTrustService } from "./project-trust.js";
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 import { closeAllBrowserManagers } from "../browser/manager.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
@@ -4018,6 +4019,12 @@ async function runAgenCDaemonForegroundLocked(
       }),
       workflow: workflowStartService,
       csvJobReview: new AgenCCsvJobReviewStateService(csvAgentJobsRepositories),
+      // Sessions this daemon starts read trust from its home, with the
+      // operator's root markers; a reload replaces activeConfig.
+      projectTrust: new AgenCProjectTrustService({
+        agencHome: authStartup.daemonHome,
+        projectRootMarkers: () => activeConfig.project_root_markers,
+      }),
       daemonIdentity,
       initializeAuthenticator: (params) =>
         cookieAuthenticator.authenticateInitializeParams(params),

@@ -84,6 +84,8 @@
     "tool.cancel",
     "elicitation.respond",
     "permission.list",
+    "project.trustStatus",
+    "project.trust",
     "fs.fuzzy_search",
     "commandExec.start",
     "commandExec.write",
@@ -3027,6 +3029,32 @@
         }
       }
     },
+    "ProjectTrustStatusParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "cwd"
+      ]
+    },
+    "ProjectTrustParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "cwd"
+      ]
+    },
     "FuzzyFileSearchParams": {
       "type": "object",
       "additionalProperties": false,
@@ -3933,6 +3961,12 @@
         },
         {
           "$ref": "#/definitions/PermissionListRequest"
+        },
+        {
+          "$ref": "#/definitions/ProjectTrustStatusRequest"
+        },
+        {
+          "$ref": "#/definitions/ProjectTrustRequest"
         },
         {
           "$ref": "#/definitions/FuzzyFileSearchRequest"
@@ -5434,6 +5468,54 @@
         },
         "params": {
           "$ref": "#/definitions/PermissionListParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "ProjectTrustStatusRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "project.trustStatus"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectTrustStatusParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "ProjectTrustRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "project.trust"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectTrustParams"
         }
       },
       "required": [

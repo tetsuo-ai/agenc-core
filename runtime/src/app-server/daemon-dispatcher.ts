@@ -88,6 +88,7 @@ import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
 } from "./workspace-cwd.js";
+import type { AgenCDaemonProjectTrustService } from "./project-trust.js";
 import {
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
@@ -138,6 +139,7 @@ import {
   type MessageSendParams,
   type MessageStreamParams,
   type PermissionListParams,
+  type ProjectTrustStatusParams,
   type RequestCancelParams,
   type RequestId,
   type SessionAttachParams,
@@ -261,6 +263,8 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "session.processes.list": 13,
   "session.processes.stop": 13,
   "session.goal": 14,
+  "project.trustStatus": 16,
+  "project.trust": 16,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -300,6 +304,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly remote: RemoteService | undefined;
   readonly ownerTelegram: OwnerTelegramService | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
+  readonly projectTrust: AgenCDaemonProjectTrustService | undefined;
 }
 
 function buildServerCapabilities(
@@ -370,6 +375,13 @@ function buildServerCapabilities(
     "tool.cancel": hasMethod(agentManager, "cancelTool"),
     "elicitation.respond": hasMethod(agentManager, "respondToElicitation"),
     "permission.list": hasMethod(agentManager, "listPermissions"),
+    // Same gate as remote.*: trust widens what sessions may do in a project.
+    "project.trustStatus":
+      inputs.projectTrust !== undefined &&
+      inputs.initializeAuthenticator !== undefined,
+    "project.trust":
+      inputs.projectTrust !== undefined &&
+      inputs.initializeAuthenticator !== undefined,
     "fs.fuzzy_search": hasMethod(inputs.fuzzyFileSearch, "search"),
     "commandExec.start":
       inputs.allowUnadmittedCommandExecStart &&
@@ -569,6 +581,11 @@ export interface AgenCDaemonDispatcherOptions {
   readonly ownerTelegram?: OwnerTelegramService;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
+  /**
+   * Project trust resolved the way sessions resolve it. Answered only on
+   * authenticated local connections, like `remote.*`.
+   */
+  readonly projectTrust?: AgenCDaemonProjectTrustService;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -697,6 +714,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #ownerTelegram: OwnerTelegramService | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
+  readonly #projectTrust: AgenCDaemonProjectTrustService | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -731,6 +749,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#remote = options.remote;
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
+    this.#projectTrust = options.projectTrust;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -755,6 +774,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       remote: this.#remote,
       ownerTelegram: this.#ownerTelegram,
       csvJobReview: this.#csvJobReview,
+      projectTrust: this.#projectTrust,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -1519,6 +1539,9 @@ export class AgenCDaemonJsonRpcDispatcher {
         return this.#reloadDaemonConfig(id);
       case "daemon.shutdown":
         return this.#shutdownDaemon(id, validateDaemonShutdownParams(params));
+      case "project.trustStatus":
+      case "project.trust":
+        return this.#dispatchProjectTrust(id, method, connection, params);
       case "auth.login":
       case "auth.whoami":
       case "auth.logout":
@@ -1571,6 +1594,31 @@ export class AgenCDaemonJsonRpcDispatcher {
       id,
       await this.#daemonControl.shutdown(params.instanceId),
     );
+  }
+
+  /**
+   * Trust widens what every session in a project may do, so these methods
+   * follow the strictest existing gate, the one `remote.*` and `telegram.*`
+   * use: an authenticated local connection only. A browser or relay
+   * connection is also refused earlier by its RemoteAccessBoundary allowlist.
+   */
+  async #dispatchProjectTrust(
+    id: RequestId,
+    method: "project.trustStatus" | "project.trust",
+    connection: AgenCDaemonJsonRpcConnection,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    if (
+      this.#projectTrust === undefined ||
+      this.#initializeAuthenticator === undefined ||
+      connection.remoteAccess !== undefined
+    ) {
+      return methodNotImplementedResponse(id, method);
+    }
+    const validated = validateProjectTrustParams(params, method);
+    return method === "project.trust"
+      ? successResponse(id, await this.#projectTrust.trust(validated))
+      : successResponse(id, this.#projectTrust.status(validated));
   }
 
   async #dispatchAuthMethod(
@@ -4393,6 +4441,24 @@ function validateThreadRealtimeTransport(value: unknown): void {
   throw invalidParams(
     "thread/realtime/start transport type must be websocket or webrtc",
   );
+}
+
+/** An absolute, existing directory, normalized like an `agent.create` cwd. */
+function validateProjectTrustParams(
+  params: JsonObject,
+  methodName: "project.trustStatus" | "project.trust",
+): ProjectTrustStatusParams {
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["cwd"],
+  });
+  validateRequiredString(validated, methodName, "cwd");
+  try {
+    return { cwd: requireAbsoluteWorkspaceCwd(validated.cwd, methodName) };
+  } catch (error) {
+    if (error instanceof WorkspaceCwdError) throw invalidParams(error.message);
+    throw error;
+  }
 }
 
 function validateRequiredString(

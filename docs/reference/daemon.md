@@ -184,7 +184,7 @@ parsing or dispatch, including when the terminating newline arrives in the
 chunk that crosses the limit. Multiple bounded lines can share a chunk.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.15.0`**
+- Protocol version constant: **`1.16.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -224,6 +224,9 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
   sets, so a 1.0 through 1.14 client still completes `initialize` against a
   1.15 daemon; those specific calls answer `METHOD_NOT_FOUND`. No published
   package used them.
+- Protocol 1.16 adds `project.trustStatus` and `project.trust`. A client that
+  negotiates 1.15 or older sees both advertised `false` and gets
+  `METHOD_NOT_FOUND`, so it keeps whatever it did before.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
@@ -245,6 +248,7 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 | `tool.approve` / `tool.deny` / `tool.cancel`                                                                | Permission settlement                                                                                              |
 | `elicitation.respond`                                                                                       | User-input / MCP elicitation reply                                                                                 |
 | `permission.list`                                                                                           | List pending / granted permissions                                                                                 |
+| `project.trustStatus` / `project.trust`                                                                     | Read or record trust for the project root a session started in `cwd` would use. See [Project trust](#project-trust) (protocol 1.16) |
 | `fs.fuzzy_search`                                                                                           | Workspace fuzzy file search                                                                                        |
 | `commandExec.start` / `commandExec.write` / `commandExec.resize` / `commandExec.terminate`                  | Reserved PTY/command-exec. `start` is advertised `false`                                                           |
 | `health.ping` / `health.ready` / `health.stats`                                                             | Liveness and stats                                                                                                 |
@@ -324,6 +328,34 @@ UTF-8 bytes. The result contains `commandId`, `content`, `stdout`, `stderr`,
 `exitCode`, `timedOut`, `truncated`, and `isError`. Each text result field is
 limited to 100,000 UTF-8 bytes. The method supports `request.cancel` and is not
 part of the public SDK method set.
+
+### Project trust
+
+Core keys trust by project root, not by folder. A session resolves its cwd to
+the nearest ancestor that holds one of the configured `project_root_markers`
+(default `.git`, `package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`,
+`.hg`), or the cwd itself when none does, and looks that root up exactly in
+`<AGENC_HOME>/trusted-projects.json`. A client that records the folder the user
+picked therefore records trust nothing reads when that folder sits inside a
+repository.
+
+`project.trustStatus { cwd }` and `project.trust { cwd }` resolve the root the
+same way a session started in `cwd` does. `cwd` must be an absolute path to an
+existing directory; it is canonicalized first, and the markers are the daemon's
+operator configuration, read again after `daemon.reload`. Both return `cwd` and
+`projectRoot` in canonical spelling. `project.trustStatus` adds `trusted`;
+`project.trust` records trust for `projectRoot`, keeps the other records in the
+file, and returns `trusted: true` with `alreadyTrusted`.
+
+Trust widens what every session in the project may do, so both methods use the
+gate `remote.*` and `telegram.*` use: they are advertised and answered only on
+an authenticated local connection (cookie or peer credentials). Remote browser
+and Telegram connections are refused by their `RemoteAccessBoundary` allowlist.
+
+Bypass consent stays keyed to the exact canonical cwd. A session that starts in
+bypass mode records that consent only when its project is trusted, and the
+restore path checks the same exact cwd, so trusting the root is what lets a
+bypass session in a subfolder continue after a daemon restart.
 
 ### Race-safe turns and transcript sync (protocol 1.2+)
 

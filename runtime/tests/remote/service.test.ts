@@ -149,7 +149,7 @@ describe("browser workspace boundary", () => {
   it("denies all daemon, config and unscoped methods even to a controller", async () => {
     const f = fixture(); const grant = { ...f.params, workspaceId: "workspace", allowFiles: true, allowApprovals: true };
     const access = new RemoteAccessBoundary(grant, () => true, f.lookup, f.privateHome);
-    for (const method of ["remote.approve", "auth.whoami", "agent.attach", "session.applyConfig", "permission.list", "commandExec.start", "session.create"]) await expect(access.authorize(method, { sessionId: "allowed" })).rejects.toMatchObject({ code: "REMOTE_METHOD_DENIED" });
+    for (const method of ["remote.approve", "auth.whoami", "agent.attach", "session.applyConfig", "permission.list", "commandExec.start", "session.create", "project.trustStatus", "project.trust"]) await expect(access.authorize(method, { sessionId: "allowed" })).rejects.toMatchObject({ code: "REMOTE_METHOD_DENIED" });
     await expect(access.authorize("session.transcript.v2", { sessionId: "outside" })).rejects.toMatchObject({ code: "REMOTE_SESSION_DENIED" });
     expect(JSON.stringify(await access.sessions())).not.toMatch(/cwd|credentials|runtimeOptions/);
   });

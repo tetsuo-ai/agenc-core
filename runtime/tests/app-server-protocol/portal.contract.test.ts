@@ -129,8 +129,8 @@ describe("AgenC portal protocol contract", () => {
       id: "initialize",
       method: "initialize",
       params: {
-        protocolVersion: "1.15.0",
-        protocol: { version: "1.15.0" },
+        protocolVersion: "1.16.0",
+        protocol: { version: "1.16.0" },
         clientName: "agenc-portal",
         capabilities: AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
       },

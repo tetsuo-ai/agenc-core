@@ -10,6 +10,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,6 +39,7 @@ import type { NativeWorkerSnapshot } from "../../src/agents/control.js";
 import type { AgenCDaemonTuiClient } from "../../src/tui/daemon-session.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import { AgenCProjectTrustService } from "./project-trust.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
@@ -101,9 +103,18 @@ import {
   type CanonicalSettingsAuthority,
 } from "../utils/settings/canonicalAuthority.js";
 import {
+  ConfigStore,
   COORDINATED_CONFIG_STORE_PUBLICATION,
   type CoordinatedConfigStorePublishOptions,
 } from "../config/store.js";
+import { resolveHomeContext } from "../config/home.js";
+import { RuntimeStateRepository } from "../config/runtime-state-repository.js";
+import { initializeToolPermissionContext } from "../permissions/settings.js";
+import { loadBypassPermissionsConsent } from "../permissions/bypass-consent-state.js";
+import {
+  resolveProjectTrustStateSync,
+  trustedProjectsPath,
+} from "../permissions/trust/project-trust.js";
 import {
   registerSandboxExecutionLifecycleParticipant,
   transitionSandboxExecutionBroker,
@@ -396,6 +407,8 @@ function makeTopLevelRunner(opts: {
   readonly canonicalRuntimeSettings?: boolean;
   readonly workspaceRoot?: string;
   readonly persistedBypassConsent?: readonly string[];
+  /** A real runtime-state repository, read from disk as after a restart. */
+  readonly stateRepository?: RuntimeStateRepository;
   readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
   readonly flushDeferredSessionStartHook?: ReturnType<typeof vi.fn>;
   readonly runtimeSimpleMode?: boolean;
@@ -633,7 +646,7 @@ function makeTopLevelRunner(opts: {
   const workspaceRoot = opts.workspaceRoot ?? process.cwd();
   const persistedBypassConsent = new Set(opts.persistedBypassConsent ?? []);
   const runtimeStateNamespaces = new Map<string, JsonRecord>();
-  const stateRepository = {
+  const stateRepository = opts.stateRepository ?? {
     reload: vi.fn(() => ({})),
     getNamespace: vi.fn((namespace: string): JsonRecord =>
       runtimeStateNamespaces.get(namespace) ?? (namespace === "permissions" && persistedBypassConsent.size > 0
@@ -11352,6 +11365,154 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).toHaveBeenCalledOnce();
     expect(stub.thread.shutdown).not.toHaveBeenCalled();
     expect(control.shutdown).not.toHaveBeenCalled();
+  });
+});
+
+describe("bypass continuation in a folder inside a repository", () => {
+  // Live suite scenario s14: a Bypass session started in a folder inside a
+  // git repository could not be continued after a daemon restart.
+  async function startBypassSessionInSubfolder(
+    recordTrust: (paths: { readonly home: string; readonly sub: string }) => Promise<void>,
+  ) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-bypass-subfolder-")));
+    const home = join(root, "home");
+    const repo = join(root, "repo");
+    const sub = join(repo, "packages", "web");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(sub, { recursive: true });
+    const env = { ...process.env, AGENC_HOME: home };
+    const openState = () => new RuntimeStateRepository(
+      resolveHomeContext({ AGENC_HOME: home, HOME: root }, { platformHome: root }),
+      { storage: "disk" },
+    );
+    await recordTrust({ home, sub });
+
+    // Startup, the way bootstrap does it: resolve trust for the session cwd,
+    // then build the permission context with the explicit bypass choice.
+    const startupState = openState();
+    const configStore = new ConfigStore({
+      home,
+      cwd: sub,
+      env,
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedDropInDir: join(root, "managed", "config.d"),
+      stateRepository: startupState,
+    });
+    await configStore.reload();
+    const projectTrust = resolveProjectTrustStateSync({
+      agencHome: home,
+      env,
+      cwd: sub,
+      projectRootMarkers: configStore.current().project_root_markers,
+    });
+    const { toolPermissionContext } = await initializeToolPermissionContext({
+      env: { home, cwd: sub, configStore },
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
+      projectTrust,
+    });
+    startupState.close();
+
+    // The daemon restarts: only what reached disk survives.
+    const restartedState = openState();
+    const runId = `session-bypass-subfolder-${projectTrust}`;
+    const settings = bypassRestoreSettings("bypassPermissions", sub);
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      canonicalRuntimeSettings: true,
+      rolloutItems: [runtimeSettingsRolloutItem(runId, settings)],
+      workspaceRoot: sub,
+      stateRepository: restartedState,
+    });
+    return {
+      sub,
+      projectTrust,
+      toolPermissionContext,
+      restartedState,
+      harness,
+      restore: () =>
+        harness.runner.restoreAgent({
+          agentId: runId,
+          objective: "continue the bypass session",
+          explicitColdResume: true,
+          runtimeSettings: settings,
+        }),
+      cleanup: () => {
+        restartedState.close();
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("refuses to continue when only the picked folder was recorded as trusted", async () => {
+    const started = await startBypassSessionInSubfolder(async ({ home, sub }) => {
+      // What AgenC Desktop recorded before it asked Core: the exact folder.
+      writeFileSync(
+        trustedProjectsPath({ agencHome: home }),
+        `${JSON.stringify({
+          version: 1,
+          trustedProjects: [{ path: sub, trustedAt: "2026-09-23T00:00:00.000Z" }],
+        })}\n`,
+      );
+    });
+    try {
+      expect(started.projectTrust).toBe("untrusted");
+      // The explicit bypass flag still starts the session, but consent is
+      // never persisted for an untrusted project.
+      expect(started.toolPermissionContext.mode).toBe("bypassPermissions");
+      expect(
+        loadBypassPermissionsConsent(started.restartedState, started.sub, { reload: true }),
+      ).toEqual([]);
+      await expect(started.restore()).rejects.toThrow(
+        /restored bypass permission mode requires persisted exact-cwd consent/u,
+      );
+    } finally {
+      started.cleanup();
+    }
+  });
+
+  it("continues after project.trust records the repository root", async () => {
+    const started = await startBypassSessionInSubfolder(async ({ home, sub }) => {
+      const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+        agentManager: {} as never,
+        initializeAuthenticator: () => true,
+        projectTrust: new AgenCProjectTrustService({
+          agencHome: home,
+          projectRootMarkers: () => undefined,
+        }),
+      });
+      const connection = dispatcher.createConnection();
+      await connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "init",
+        method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } },
+      });
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "trust",
+          method: "project.trust",
+          params: { cwd: sub },
+        }),
+      ).resolves.toMatchObject({ result: { trusted: true } });
+    });
+    try {
+      expect(started.projectTrust).toBe("trusted");
+      // Trust is keyed to the repository root; consent stays keyed to the
+      // exact folder the session runs in, which is what restore checks.
+      expect(
+        loadBypassPermissionsConsent(started.restartedState, started.sub, { reload: true }),
+      ).toEqual([started.sub]);
+      await expect(started.restore()).resolves.toBe(true);
+      expect(started.harness.permissionModeRegistry.current()).toMatchObject({
+        mode: "bypassPermissions",
+        bypassPermissionsAcceptedIn: [started.sub],
+      });
+    } finally {
+      started.cleanup();
+    }
   });
 });
 
