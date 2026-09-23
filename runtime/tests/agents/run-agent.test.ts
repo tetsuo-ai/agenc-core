@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
 import { delegate } from "./delegate.js";
-import { createChildExecutionPlan } from "./cross-provider.js";
+import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
 import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
@@ -748,6 +748,25 @@ describe("runAgent", () => {
     return { parent, rootProvider, prepare, modelInfo };
   }
 
+  async function authorizedCrossProviderPlan(parent: Session, modelInfo: ModelInfo) {
+    Object.assign(parent.services, { crossProviderConsent: {
+      ownerSessionId: parent.conversationId, sessionEpoch: "run-agent-test-human",
+      request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+        kind: "granted" as const,
+        grant: { kind: "once" as const, ownerSessionId: parent.conversationId,
+          sessionEpoch: "run-agent-test-human", taskId: disclosure.taskId,
+          scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+      }),
+    } });
+    const proposed = await createChildExecutionPlan({ session: parent,
+      selection: { provider: "deepseek", model: "deepseek-v4-pro" }, modelInfo,
+      parentPath: "/root", taskId: "run-agent-test-task", taskName: "worker", taskText: "go",
+      toolFree: false, forkedHistory: false });
+    const authorized = await authorizeChildExecutionPlan(parent, proposed);
+    if (authorized.kind !== "granted") throw new Error("fixture consent failed");
+    return authorized.plan;
+  }
+
   it("binds a cross-provider child to its own provider, model data, and parent authority", async () => {
     const configStore = new ConfigStore({
       cwd: "/tmp",
@@ -774,7 +793,8 @@ describe("runAgent", () => {
     } satisfies LLMProvider;
     const { parent, rootProvider, prepare, modelInfo } = crossProviderRuntime(target, configStore);
     ({ live } = await spawnLive(parent));
-    const { result } = await collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "deepseek-v4-pro", modelInfo, providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" } }));
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    const { result } = await collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
     expect(result.outcome).toBe("completed");
     expect(prepare).toHaveBeenCalledWith(
       { provider: "deepseek", model: "deepseek-v4-pro" }, undefined, {}, true,
@@ -795,6 +815,7 @@ describe("runAgent", () => {
     const target = { ...makeProvider([]), name: "deepseek", dispose,
       chatStream: vi.fn() } as LLMProvider;
     const { parent, prepare, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
     Object.assign(parent.providerService, {
       prepareChild: async () => {
         const prepared = await prepare();
@@ -806,11 +827,10 @@ describe("runAgent", () => {
     const { live } = await spawnLive(parent);
     const { result } = await collectRun(runAgent({ live, parent,
       initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go",
-      model: "deepseek-v4-pro", modelInfo,
-      providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" },
+      plan,
     }));
     expect(result.outcome).toBe("errored");
-    expect(dispose).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledTimes(2); // consent plan preflight and revoked run preparation
     expect(target.chatStream).not.toHaveBeenCalled();
   });
 
@@ -838,13 +858,14 @@ describe("runAgent", () => {
       }),
     } satisfies LLMProvider;
     const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
     const terminateOwnedProcesses = vi.fn(() => ({ results: [] as [] }));
     Object.assign(parent.services, { unifiedExecManager: { terminateOwnedProcesses } });
     const control = new AgentControl({ session: parent, registry: new AgentRegistry() });
     control.registerSessionRoot(parent.conversationId);
     const live = await control.spawn({ parentPath: "/root" });
     expect(control.openThreadSpawnChildren(parent.conversationId).map(([id]) => id)).toContain(live.agentId);
-    const run = collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "deepseek-v4-pro", modelInfo, providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" } }));
+    const run = collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
     await active;
     if (cause === "Stop") control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
     else {
@@ -5557,7 +5578,16 @@ describe("runAgent", () => {
 
     try {
       const { live } = await spawnLive(session);
-      const plan = await createChildExecutionPlan({
+      Object.assign(session.services, { crossProviderConsent: {
+        ownerSessionId: session.conversationId, sessionEpoch: "test-interactive-session",
+        request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const,
+          grant: { kind: "once" as const, ownerSessionId: session.conversationId,
+            sessionEpoch: "test-interactive-session", taskId: disclosure.taskId,
+            scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+        }),
+      } });
+      const proposedPlan = await createChildExecutionPlan({
         session: { conversationId: session.conversationId,
           sessionConfiguration: session.sessionConfiguration,
           services: session.services, config: session.config,
@@ -5566,9 +5596,13 @@ describe("runAgent", () => {
         } } as Session,
         selection: { provider: "deepseek", model: "deepseek-v4-pro" },
         modelInfo: { ...mkModelInfo(), slug: "deepseek-v4-pro", provider: "deepseek" },
-        parentPath: "/root", taskId: "journal-destination", taskName: "worker",
+        parentPath: "/root", taskId: "journal-destination", taskName: "worker", taskText: "go",
         toolFree: false, forkedHistory: false,
       });
+      const authorized = await authorizeChildExecutionPlan(session, proposedPlan);
+      expect(authorized.kind).toBe("granted");
+      if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+      const plan = authorized.plan;
       const { result } = await collectRun(
         runAgent({
           live,

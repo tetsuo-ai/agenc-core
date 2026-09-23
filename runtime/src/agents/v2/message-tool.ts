@@ -6,6 +6,8 @@ import {
 } from "../control.js";
 import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
+import { authorizeChildExecutionPlan, type ChildExecutionPlan } from "../cross-provider.js";
+import { liveAgentSession } from "../live-session.js";
 import {
   agentValidationError,
   callIdFromArgs,
@@ -97,6 +99,23 @@ export async function handleMessageStringTool(
   if (!receiverAgentPath) {
     return agentValidationError("target agent is missing an agent_path");
   }
+  let assignedPlan: ChildExecutionPlan | undefined;
+  if (mode === "trigger_turn" && live?.metadata.executionPlan?.crossProvider) {
+    const caller = current.threadId === sessionOrError.conversationId
+      ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
+    if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live; continue this task yourself");
+    const previous = live.metadata.executionPlan;
+    const proposed: ChildExecutionPlan = { ...previous,
+      task: { id: callId, name: previous.task.name, text: message, attachments: [] },
+      consentGrant: null,
+    };
+    const consent = await authorizeChildExecutionPlan(caller, proposed);
+    if (consent.kind !== "granted") {
+      return confirmedNoAgentEffect(json({ code: consent.kind, error: consent.reason,
+        action: "Continue this subtask yourself on the current provider; do not retry the same cross-provider request." }, true));
+    }
+    assignedPlan = consent.plan;
+  }
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",
     payload: {
@@ -118,6 +137,7 @@ export async function handleMessageStringTool(
         recipient: receiverAgentPath,
         content: message,
         taskId: callId,
+        ...(assignedPlan !== undefined ? { executionPlan: assignedPlan } : {}),
       });
     } else if (agentId === sessionOrError.conversationId) {
       await control.sendInterAgentCommunication(agentId, {

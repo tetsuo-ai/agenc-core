@@ -428,6 +428,14 @@ function createScenario(options: ScenarioOptions): Scenario {
       mcpStartupCancellationToken: { cancel: () => {}, isCancelled: () => false },
       provider,
       ...(providerService !== undefined ? { providerService } : {}),
+      ...(options.crossProvider ? { crossProviderConsent: {
+        ownerSessionId: "stop-root", sessionEpoch: "stop-test-human",
+        request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const,
+          grant: { kind: "once" as const, ownerSessionId: "stop-root", sessionEpoch: "stop-test-human",
+            taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+        }),
+      } } : {}),
       registry,
       hooks: { executeStop: async () => ({}) },
       admissionRequired: true,

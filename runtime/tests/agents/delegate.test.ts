@@ -44,6 +44,8 @@ import { createProvider } from "../llm/provider.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import { defaultConfig } from "../config/schema.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
+import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
+import type { Session } from "../session/session.js";
 import { EventLog } from "../session/event-log.js";
 import {
   computeAgentInvocationEnvelopeDigest,
@@ -53,6 +55,24 @@ import {
 const mockRunAgent = vi.mocked(runAgent);
 const mockForkSubagent = vi.mocked(forkSubagent);
 const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
+
+async function grantedTestPlan(parent: Session, pair: { provider: string; model: string },
+  modelInfo: Session["modelInfo"], taskText: string, taskId: string, parentPath: string) {
+  const ownerSessionId = parent.services.crossProviderConsent?.ownerSessionId ?? parent.conversationId;
+  Object.assign(parent.services, { crossProviderConsent: {
+    ownerSessionId, sessionEpoch: "delegate-test-human",
+    request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+      kind: "granted" as const,
+      grant: { kind: "once" as const, ownerSessionId, sessionEpoch: "delegate-test-human",
+        taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+    }),
+  } });
+  const proposed = await createChildExecutionPlan({ session: parent, selection: pair, modelInfo,
+    parentPath, taskId, taskName: "worker", taskText, toolFree: false, forkedHistory: false });
+  const authorized = await authorizeChildExecutionPlan(parent, proposed);
+  if (authorized.kind !== "granted") throw new Error("fixture consent failed");
+  return authorized.plan;
+}
 
 function makeLive(
   agentId: string,
@@ -771,6 +791,8 @@ describe("delegate lifecycle recovery", () => {
         },
       });
       const pair = { provider: "deepseek", model: "deepseek-v4-pro" };
+      const plan = await grantedTestPlan(harness.parent as Session, pair,
+        await modelsManager.getModelInfo(pair.model), "inspect", "delegate-restart", "/root");
       const spawnSpy = vi.spyOn(harness.control, "spawn");
       const resumeManager = {
         recordFailure: vi.fn(() => ({ kind: "restart" as const, reason: "hard_error" })),
@@ -792,11 +814,10 @@ describe("delegate lifecycle recovery", () => {
           control: harness.control,
           registry: harness.registry,
           taskPrompt: "inspect",
+          taskId: "delegate-restart",
           runInBackground: false,
           forceSynchronous: true,
-          providerSelection: pair,
-          model: pair.model,
-          modelInfo: await modelsManager.getModelInfo(pair.model),
+          plan,
           resumeManager: resumeManager as never,
         });
         expect(outcome.kind).toBe("sync_completed");
@@ -864,17 +885,21 @@ describe("delegate lifecycle recovery", () => {
           { provider: "grok", model: "grok-4.6" },
         ),
       };
+      const nestedPair = { provider: "openrouter", model: "openai/gpt-4o-mini" };
+      const nestedPlan = await grantedTestPlan(childParent as Session, nestedPair,
+        { slug: nestedPair.model, provider: nestedPair.provider, supportsToolUse: true } as Session["modelInfo"],
+        "nested inspect", "nested-task", params.live.agentPath);
       nestedOutcome = await delegate({
         parent: childParent as never,
         parentPath: params.live.agentPath,
         control,
         registry: harness.registry,
         taskPrompt: "nested inspect",
+        taskId: "nested-task",
         agentName: "nested",
         runInBackground: false,
         forceSynchronous: true,
-        providerSelection: { provider: "openrouter", model: "openai/gpt-4o-mini" },
-        model: "openai/gpt-4o-mini",
+        plan: nestedPlan,
       });
       return { threadId: outerId, durationMs: 1, outcome: "completed" as const };
     })());

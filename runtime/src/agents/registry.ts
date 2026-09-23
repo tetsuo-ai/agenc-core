@@ -651,6 +651,13 @@ export class AgentRegistry {
     this.byPath.set(path, { ...prev, lastTaskMessage: message });
   }
 
+  updateExecutionPlan(threadId: ThreadId, plan: import("./cross-provider.js").ChildExecutionPlan): void {
+    const entry = this.findEntryByThreadId(threadId);
+    if (!entry) return;
+    const [path, prev] = entry;
+    this.byPath.set(path, { ...prev, executionPlan: plan });
+  }
+
   /** Reserve an agentPath before child startup. */
   reserveAgentPathForReservation(path: AgentPath): void {
     assertValidAgentPath(path);

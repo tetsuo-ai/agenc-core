@@ -2594,6 +2594,9 @@ export class AgenCDaemonAgentManager {
       return this.#approveWorkflowTool(params);
     }
     const { agentId, sessionId } = await this.#resolvePermissionOwner(params.sessionId);
+    if (this.#approvalBroker?.pending(agentId, params.requestId)?.ctx.approvalKind === "cross_provider_spawn") {
+      return this.#approveCrossProviderConsent(agentId, params);
+    }
     const responseKey = this.#approvalBroker?.pending(agentId, params.requestId)?.responseKey ?? params.requestId;
     const allowAllToolsForSession = params.allowAllToolsForSession === true;
     if (allowAllToolsForSession && params.scope !== "session") {
@@ -2704,6 +2707,9 @@ export class AgenCDaemonAgentManager {
     if (pending === undefined) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
     }
+    if (pending.ctx.approvalKind === "cross_provider_spawn") {
+      return this.#approveCrossProviderConsent(params.sessionId, params);
+    }
     if (params.allowAllToolsForSession === true) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Workflow permission mode is frozen; approve the requested tool without promoting the run mode");
     }
@@ -2734,6 +2740,22 @@ export class AgenCDaemonAgentManager {
         : "rpc_approved_once",
       ...(params.scope !== undefined ? { scope: params.scope } : {}),
     });
+    return { requestId: params.requestId, decision: "approved" };
+  }
+
+  #approveCrossProviderConsent(ownerRunId: string, params: ToolApproveParams): ToolDecisionResult {
+    if (params.approvalKind !== "cross_provider_spawn" ||
+        params.allowAllToolsForSession === true || params.scope === "agent" ||
+        params.exitPlan !== undefined) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT",
+        "cross_provider_spawn requires a consent-aware client, once or session scope, and cannot enable tool bypass");
+    }
+    const decision = params.scope === "session" ? APPROVED_FOR_SESSION : APPROVED;
+    if (!this.#approvalBroker?.resolve(ownerRunId, params.requestId, decision,
+      { approvalKind: "cross_provider_spawn" })) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT",
+        `AgenC daemon cross-provider consent is not pending: ${params.requestId}`);
+    }
     return { requestId: params.requestId, decision: "approved" };
   }
 
@@ -2768,6 +2790,11 @@ export class AgenCDaemonAgentManager {
   async denyTool(params: ToolDenyParams): Promise<ToolDecisionResult> {
     const reason = normalizeNonEmpty(params.reason);
     const decision = reason === undefined ? DENIED : { kind: "denied" as const, reason };
+    const consentOwner = this.#approvalBroker?.pending(params.sessionId, params.requestId);
+    if (consentOwner?.ctx.approvalKind === "cross_provider_spawn") {
+      this.#approvalBroker!.resolve(params.sessionId, params.requestId, decision);
+      return { requestId: params.requestId, decision: "denied" };
+    }
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
       if (!this.#approvalBroker.resolve(params.sessionId, params.requestId, decision)) {
         throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
@@ -2779,6 +2806,10 @@ export class AgenCDaemonAgentManager {
       return { requestId: params.requestId, decision: "denied" };
     }
     const { agentId } = await this.#resolvePermissionOwner(params.sessionId);
+    if (this.#approvalBroker?.pending(agentId, params.requestId)?.ctx.approvalKind === "cross_provider_spawn") {
+      this.#approvalBroker.resolve(agentId, params.requestId, decision);
+      return { requestId: params.requestId, decision: "denied" };
+    }
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
       requestId: params.requestId,
       decision,

@@ -3133,6 +3133,9 @@
             "session",
             "agent"
           ]
+        },
+        "approvalKind": {
+          "const": "cross_provider_spawn"
         }
       },
       "required": [
@@ -3657,6 +3660,35 @@
         "toolName"
       ]
     },
+    "CrossProviderSpawnDisclosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "cross_provider_spawn" },
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "endpoint": { "type": "string" },
+        "billingSource": { "enum": ["byok", "sign_in", "managed", "local"] },
+        "taskId": { "type": "string", "minLength": 1 },
+        "taskText": { "type": "string" },
+        "attachments": { "type": "array", "items": { "type": "string" } },
+        "workspace": { "type": "string" },
+        "sandboxMode": { "type": "string" },
+        "fileReadAllowlist": { "type": "array", "items": { "type": "string" } },
+        "fileReadDenylist": { "type": "array", "items": { "type": "string" } },
+        "dataScope": { "enum": ["task_only", "forked_history"] },
+        "tools": { "oneOf": [{ "const": "parent_filtered" }, { "type": "array", "items": { "type": "string" } }] },
+        "network": { "type": "boolean" },
+        "search": { "type": "boolean" },
+        "price": { "oneOf": [{ "const": "price unknown" }, { "type": "object", "additionalProperties": false, "properties": { "inputUsdPer1K": { "type": "number" }, "outputUsdPer1K": { "type": "number" } }, "required": ["inputUsdPer1K", "outputUsdPer1K"] }] },
+        "maxModelCalls": { "type": ["integer", "null"], "minimum": 1 },
+        "futureToolResultsGoToProvider": { "const": true },
+        "scopeKey": { "type": "string" },
+        "payloadKey": { "type": "string" },
+        "denialKey": { "type": "string" }
+      },
+      "required": ["kind", "provider", "model", "endpoint", "billingSource", "taskId", "taskText", "attachments", "workspace", "sandboxMode", "fileReadAllowlist", "fileReadDenylist", "dataScope", "tools", "network", "search", "price", "maxModelCalls", "futureToolResultsGoToProvider", "scopeKey", "payloadKey", "denialKey"]
+    },
     "EventPermissionRequestParams": {
       "type": "object",
       "additionalProperties": false,
@@ -3687,6 +3719,12 @@
         "requestId": {
           "type": "string",
           "minLength": 1
+        },
+        "kind": {
+          "const": "cross_provider_spawn"
+        },
+        "crossProvider": {
+          "$ref": "#/definitions/CrossProviderSpawnDisclosure"
         },
         "callId": {
           "type": "string",

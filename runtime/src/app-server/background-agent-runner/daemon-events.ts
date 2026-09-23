@@ -310,6 +310,12 @@ export function notificationFromDaemonEvent(
         ...(typeof payload.toolName === "string"
           ? { toolName: payload.toolName }
           : {}),
+        ...(payload.kind === "cross_provider_spawn"
+          ? { kind: payload.kind }
+          : {}),
+        ...(payload.kind === "cross_provider_spawn" && isJsonObject(payload.crossProvider)
+          ? { crossProvider: payload.crossProvider as unknown as import("../protocol/index.js").CrossProviderSpawnDisclosure }
+          : {}),
         ...(typeof payload.turnId === "string"
           ? { turnId: payload.turnId }
           : {}),

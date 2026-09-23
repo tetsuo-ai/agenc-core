@@ -869,6 +869,8 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   request_permissions: objectShape(
     { callId: isString, toolName: isString, permissions: isStringArray },
     {
+      kind: literal("cross_provider_spawn"),
+      crossProvider: isRecord,
       turnId: isString,
       reason: isString,
       input: isRecord,

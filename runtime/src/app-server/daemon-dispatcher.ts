@@ -4389,12 +4389,15 @@ function isValidMessageContentBlock(block: unknown): boolean {
 function validateToolApproveParams(params: JsonObject): ToolApproveParams {
   const validated = validateObjectShape(params, {
     methodName: "tool.approve",
-    stringFields: ["sessionId", "requestId", "scope"],
+    stringFields: ["sessionId", "requestId", "scope", "approvalKind"],
     objectFields: ["exitPlan", "askUserQuestionInput"],
     valueFields: ["allowAllToolsForSession"],
   });
   validateRequiredString(validated, "tool.approve", "sessionId");
   validateRequiredString(validated, "tool.approve", "requestId");
+  if (validated.approvalKind !== undefined && validated.approvalKind !== "cross_provider_spawn") {
+    throw invalidParams("tool.approve param 'approvalKind' must be cross_provider_spawn");
+  }
   if (
     validated.scope !== undefined &&
     validated.scope !== "once" &&

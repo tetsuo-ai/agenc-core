@@ -1018,6 +1018,8 @@ export interface ToolApproveParams extends JsonObject {
     readonly sessionId: string;
     readonly requestId: string;
     readonly scope?: "once" | "session" | "agent";
+    /** Required to approve a cross-provider request; old clients fail closed. */
+    readonly approvalKind?: "cross_provider_spawn";
     /** Opt in to bypassing future tool prompts for this daemon session only. */
     readonly allowAllToolsForSession?: boolean;
     readonly exitPlan?: ExitPlanApprovalPayload;
@@ -1342,6 +1344,35 @@ export interface AgentLogsResult extends JsonObject {
     readonly toolOutputs?: readonly AgentToolOutputLog[];
 }
 
+/** Exact data-transfer question shown before a cross-provider child can run. */
+export interface CrossProviderSpawnDisclosure extends JsonObject {
+    readonly kind: "cross_provider_spawn";
+    readonly provider: string;
+    readonly model: string;
+    readonly endpoint: string;
+    readonly billingSource: "byok" | "sign_in" | "managed" | "local";
+    readonly taskId: string;
+    readonly taskText: string;
+    readonly attachments: readonly string[];
+    readonly workspace: string;
+    readonly sandboxMode: string;
+    readonly fileReadAllowlist: readonly string[];
+    readonly fileReadDenylist: readonly string[];
+    readonly dataScope: "task_only" | "forked_history";
+    readonly tools: "parent_filtered" | readonly string[];
+    readonly network: boolean;
+    readonly search: boolean;
+    readonly price: {
+        readonly inputUsdPer1K: number;
+        readonly outputUsdPer1K: number;
+    } | "price unknown";
+    readonly maxModelCalls: number | null;
+    readonly futureToolResultsGoToProvider: true;
+    readonly scopeKey: string;
+    readonly payloadKey: string;
+    readonly denialKey: string;
+}
+
 export type FileWriteApprovalPreview = {
     readonly kind: "existing";
     readonly content: string;
@@ -1354,6 +1385,8 @@ export type FileWriteApprovalPreview = {
 
 export interface PendingToolApproval extends JsonObject {
     readonly requestId: string;
+    readonly kind?: "cross_provider_spawn";
+    readonly crossProvider?: CrossProviderSpawnDisclosure;
     readonly ownerRunId: string;
     readonly sessionId: string;
     readonly sourceAgentNickname?: string;
@@ -1909,6 +1942,9 @@ export interface SessionNativeWorkerSnapshot extends JsonObject {
     readonly nickname: string;
     readonly role: string;
     readonly prompt?: string;
+    readonly provider?: string;
+    readonly model?: string;
+    readonly reasoningEffort?: string;
     readonly status: "pending_init" | "running" | "idle" | "completed" | "errored" | "shutdown" | "not_found" | "interrupted";
     readonly error?: string;
     readonly toolUseCount: number;
@@ -2611,6 +2647,8 @@ export interface EventToolRequestParams extends AgenCEventBaseParams {
 
 export interface EventPermissionRequestParams extends AgenCEventBaseParams {
     readonly requestId: string;
+    readonly kind?: "cross_provider_spawn";
+    readonly crossProvider?: CrossProviderSpawnDisclosure;
     readonly callId?: string;
     /** Set when a spawned sub-agent (or a nested one) asks through its owner. */
     readonly sourceConversationId?: string;

@@ -435,6 +435,8 @@ export type FileWriteApprovalPreview =
 export interface RequestPermissionsEvent {
   readonly callId: string;
   readonly toolName: string;
+  readonly kind?: "cross_provider_spawn";
+  readonly crossProvider?: Readonly<Record<string, unknown>>;
   readonly permissions: ReadonlyArray<string>;
   readonly turnId?: string;
   readonly reason?: string;

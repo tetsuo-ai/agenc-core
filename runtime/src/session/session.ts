@@ -1453,6 +1453,7 @@ export interface SessionServices {
   readonly querySource?: QuerySource;
   readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly approvalResolver?: ApprovalResolver;
+  readonly crossProviderConsent?: import("../agents/cross-provider.js").CrossProviderConsentService;
   /** Maintenance may use existing grants but must defer new interactive approval. */
   readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly permissionAuditLogger?: PermissionAuditLogger;

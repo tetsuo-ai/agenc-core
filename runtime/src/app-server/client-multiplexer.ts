@@ -819,6 +819,18 @@ export class AgenCDaemonClientMultiplexer {
     );
   }
 
+  /** A consent prompt needs an attached human client, not a possible future reconnect. */
+  async hasAttachedClientWithCapability(sessionId: string, capability: string): Promise<boolean> {
+    return await this.#state.with(async (state) => {
+      const route = state.sessions.get(sessionId);
+      if (route === undefined) return false;
+      return [...route.clientAttachmentIds.keys()].some((clientId) => {
+        const client = state.clients.get(clientId);
+        return client !== undefined && !client.evicted && client.capabilities.has(capability);
+      });
+    });
+  }
+
   /**
    * Deliver a client action to initialized clients advertising an exact
    * capability, independently of transcript/session attachment. A Ledger action

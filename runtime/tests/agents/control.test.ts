@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { createMultiAgentV2Tools } from "../../src/agents/v2/index.js";
 import { injectChildToolArgs } from "../../src/agents/run-agent.js";
-import { createChildExecutionPlan } from "../../src/agents/cross-provider.js";
+import { authorizeChildExecutionPlan, createChildExecutionPlan } from "../../src/agents/cross-provider.js";
 import {
   AgentControl,
   AgentAssignmentRejectedError,
@@ -1110,7 +1110,7 @@ describe("AgentControl", () => {
     expect(registry.activeCount).toBe(1);
   });
 
-  it("persists the cross-provider pair and policy in the spawn edge", async () => {
+  it("refuses a cross-provider child without a consent plan before persisting an edge", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-cross-provider-edge-"));
     const rolloutStore = openRolloutStore({ cwd, sessionId: "cross-provider-root" });
     try {
@@ -1128,19 +1128,11 @@ describe("AgentControl", () => {
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry });
       registerDurableSessionRoot(control, cwd, "cross-provider-root");
-      const live = await control.spawn({
+      await expect(control.spawn({
         parentPath: "/root",
         providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" },
-      });
-      expect(live.metadata.crossProvider).toEqual({
-        provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1",
-      });
-      expect(registry.agentMetadataForThread(live.agentId)?.crossProvider)
-        .toEqual(live.metadata.crossProvider);
-      expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.metadata.crossProvider)
-        .toEqual(live.metadata.crossProvider);
-      expect(control.getAgentConfigSnapshot(live.agentId)?.crossProvider)
-        .toEqual(live.metadata.crossProvider);
+      })).rejects.toThrow(/consent_unavailable/u);
+      expect(registry.activeCount).toBe(0);
     } finally {
       rolloutStore.close();
       rmSync(cwd, { recursive: true, force: true });
@@ -1162,11 +1154,24 @@ describe("AgentControl", () => {
       });
       const control = new AgentControl({ session, registry: new AgentRegistry() });
       registerDurableSessionRoot(control, cwd, "plan-root");
-      const plan = await createChildExecutionPlan({
+      Object.assign(session.services, { crossProviderConsent: {
+        ownerSessionId: "plan-root", sessionEpoch: "test-interactive-session",
+        request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const,
+          grant: { kind: "once" as const, ownerSessionId: "plan-root", sessionEpoch: "test-interactive-session",
+            taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+        }),
+      } });
+      const proposedPlan = await createChildExecutionPlan({
         session, selection: { provider: "deepseek", model: "deepseek-v4-pro" },
         modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true } as Session["modelInfo"],
-        parentPath: "/root", taskId: "spawn-plan", taskName: "worker", toolFree: false, forkedHistory: false,
+        parentPath: "/root", taskId: "spawn-plan", taskName: "worker", taskText: "inspect",
+        toolFree: false, forkedHistory: false,
       });
+      const authorized = await authorizeChildExecutionPlan(session, proposedPlan);
+      expect(authorized.kind).toBe("granted");
+      if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+      const plan = authorized.plan;
       const live = await control.spawn({ parentPath: "/root", agentName: "worker",
         providerSelection: plan.route, executionPlan: plan });
       expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.metadata.executionPlan).toEqual(plan);
@@ -1184,7 +1189,7 @@ describe("AgentControl", () => {
     }
   });
 
-  it.each(["provider removed", "credential gone"])("refuses cross-provider recovery when %s", async (failure) => {
+  it.each(["provider removed", "credential gone"])("refuses legacy cross-provider recovery without a consent plan when %s", async (failure) => {
     const session = stubSession();
     let allowed = ["deepseek"];
     let credentialReady = true;
@@ -1206,9 +1211,7 @@ describe("AgentControl", () => {
     };
     if (failure === "provider removed") allowed = [];
     else credentialReady = false;
-    await expect(control.resume({ parentPath: "/root", metadata })).rejects.toThrow(
-      failure === "provider removed" ? /allowed_providers/u : /credential is missing/u,
-    );
+    await expect(control.resume({ parentPath: "/root", metadata })).rejects.toThrow(/resume_blocked/u);
     expect(registry.activeCount).toBe(0);
   });
 

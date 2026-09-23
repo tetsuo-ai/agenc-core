@@ -18,6 +18,7 @@ import type { AgentThread } from "../thread.js";
 import {
   allowedChildPairs,
   createChildExecutionPlan,
+  authorizeChildExecutionPlan,
   childModelInfo,
   childProviderPolicy,
   currentChildProvider,
@@ -126,7 +127,7 @@ The new agent's canonical task name will be provided to it along with the messag
   const cfg = session?.config?.multiAgentV2;
   const policy = session === null ? undefined : childProviderPolicy(session);
   const pairs = session === null ? [] : allowedChildPairs(session);
-  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairs.map(({ provider, model }) => `${provider}/${model}`).join(", ") || "none"}.` : ""}`;
+  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. Using one asks the user for consent at the moment of use, even when enabled. If consent_denied or consent_unavailable is returned, continue the subtask yourself and do not retry the same request. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairs.map(({ provider, model }) => `${provider}/${model}`).join(", ") || "none"}.` : ""}`;
   if (sessionIsPlanning(session) || sessionReadOnlyDelegation(session) !== undefined) {
     return `${base}\n${policyDescription}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
   }
@@ -689,15 +690,22 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     let rejectedEffectDisposition: ToolResult["effectDisposition"];
     try {
       const childAgentPath = joinAgentPath(current.agentPath, taskName);
-      const plan = await createChildExecutionPlan({
+      const proposedPlan = await createChildExecutionPlan({
         session, selection, modelInfo: targetModelInfo,
-        parentPath: current.agentPath, taskId: callId, taskName,
+        parentPath: current.agentPath, taskId: callId, taskName, taskText: prompt,
         toolFree: args.tool_free === true, forkedHistory: forkMode !== undefined,
         ...(resolvedRole?.config.allowlist !== undefined
           ? { toolAllowlist: resolvedRole.config.allowlist } : {}),
         ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
         ...(serviceTierResult.serviceTier !== undefined ? { serviceTier: serviceTierResult.serviceTier } : {}),
       });
+      const consent = await authorizeChildExecutionPlan(session, proposedPlan);
+      if (consent.kind !== "granted") {
+        emitSpawnFailureEnd(consent.reason);
+        return confirmedNoSpawn(json({ code: consent.kind, error: consent.reason,
+          action: "Continue this subtask yourself on the current provider; do not retry the same cross-provider request." }, true));
+      }
+      const plan = consent.plan;
       reportedProvider = plan.destination.provider;
       reportedModel = plan.destination.model;
       reportedEffort = plan.reasoningEffort ?? reportedEffort;

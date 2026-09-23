@@ -49,7 +49,7 @@ import {
 } from "./mailbox.js";
 import type { ValidatedMailboxMetadata } from "./mailbox-metadata.js";
 import type { ProviderSelection } from "../session/provider-service.js";
-import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, resolveChildSelection } from "./cross-provider.js";
+import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, consentGrantCoversPlan, resolveChildSelection } from "./cross-provider.js";
 import { liveAgentSession } from "./live-session.js";
 import {
   AgentIdExistsError,
@@ -231,6 +231,7 @@ export class AgentAssignmentRejectedError extends Error {
 
 export interface AgentAssignmentAdmission {
   readonly taskId: string;
+  readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
   readonly turnId: string;
   readonly author: AgentPath;
   readonly acceptedAtMs: number;
@@ -321,7 +322,7 @@ export interface LiveAgent {
   /** Per-agent AbortController — triggered by `interrupt()`. */
   readonly abortController: AbortController;
   /** Cached metadata snapshot at spawn time. */
-  readonly metadata: AgentMetadata;
+  metadata: AgentMetadata;
   /** Live child transcript, updated by the child run loop. */
   readonly messages: LLMMessage[];
   /** Scratch memory entries associated with this child. */
@@ -486,6 +487,17 @@ export class AgentControl {
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
     >;
   }): Promise<LiveAgent> {
+    if (opts.providerSelection !== undefined && opts.executionPlan?.crossProvider !== true) {
+      throw new Error("consent_unavailable: cross-provider child construction requires a granted execution plan");
+    }
+    if (opts.executionPlan?.crossProvider) {
+      const consent = this.session.services.crossProviderConsent;
+      if (consent === undefined || !consentGrantCoversPlan(opts.executionPlan,
+          consent.ownerSessionId, opts.executionPlan.task.text,
+          opts.executionPlan.task.attachments, consent.sessionEpoch)) {
+        throw new Error("resume_blocked: cross-provider child construction requires a live, in-scope consent grant");
+      }
+    }
     if (opts.executionPlan !== undefined &&
         opts.executionPlan.parent.sessionId === this.session.conversationId) {
       await assertChildExecutionPlan(this.session, opts.executionPlan);
@@ -1190,6 +1202,7 @@ export class AgentControl {
       readonly recipient: AgentPath;
       readonly content: string;
       readonly taskId: string;
+      readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
     },
   ): { readonly taskId: string; readonly turnId: string } {
     const agent = this.requireLive(threadId);
@@ -1220,6 +1233,14 @@ export class AgentControl {
         `agent ${agent.agentPath} is not an idle reusable worker`,
       );
     }
+    if (agent.metadata.executionPlan?.crossProvider &&
+        (assignment.executionPlan === undefined ||
+         assignment.executionPlan.task.id !== assignment.taskId ||
+         assignment.executionPlan.task.text !== assignment.content ||
+         assignment.executionPlan.consentGrant === null)) {
+      throw new AgentAssignmentRejectedError("worker_not_idle",
+        "resume_blocked: cross-provider worker's new task has no matching human consent grant");
+    }
 
     const admission: AgentAssignmentAdmission = {
       taskId: assignment.taskId,
@@ -1227,6 +1248,7 @@ export class AgentControl {
       author: assignment.author,
       acceptedAtMs: Date.now(),
       state: "accepted",
+      ...(assignment.executionPlan !== undefined ? { executionPlan: assignment.executionPlan } : {}),
     };
     agent.assignment = admission;
     try {
@@ -1256,6 +1278,10 @@ export class AgentControl {
       throw error;
     }
     this.registry.updateLastTaskMessage(threadId, assignment.content);
+    if (assignment.executionPlan !== undefined) {
+      agent.metadata = { ...agent.metadata, executionPlan: assignment.executionPlan };
+      this.registry.updateExecutionPlan(threadId, assignment.executionPlan);
+    }
     return { taskId: admission.taskId, turnId: admission.turnId };
   }
 
@@ -1589,6 +1615,9 @@ export class AgentControl {
     }
     if (metadata.crossProvider !== undefined) {
       try {
+        if (metadata.executionPlan === undefined) {
+          throw new Error("resume_blocked: cross-provider child has no persisted consent plan");
+        }
         assertCrossProviderAllowed(planParentSession, metadata.crossProvider.provider);
         const selection = await resolveChildSelection(
           planParentSession,

@@ -111,7 +111,7 @@ import {
   type TurnContext,
 } from "../session/turn-context.js";
 import type { ProviderSelection } from "../session/provider-service.js";
-import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, childModelInfo, type ChildExecutionPlan } from "./cross-provider.js";
+import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, consentGrantCoversPlan, type ChildExecutionPlan } from "./cross-provider.js";
 import type { LiveAgent } from "./control.js";
 import {
   createMailboxMetadata,
@@ -3774,6 +3774,9 @@ export async function* runAgent(
       params = {
         ...params,
         plan,
+        ...(plan.crossProvider && plan.budgetAllocation !== null
+          ? { maxTurns: Math.min(params.maxTurns ?? Number.POSITIVE_INFINITY,
+              plan.budgetAllocation.maxModelCalls) } : {}),
         model: plan.route.model,
         modelInfo: plan.modelInfo,
         providerSelection: plan.crossProvider ? plan.route : undefined,
@@ -3782,32 +3785,9 @@ export async function* runAgent(
         toolAllowlist: plan.scope.tools === "parent_filtered" ? params.toolAllowlist : plan.scope.tools,
       };
     } else {
-    const selectedProvider = params.providerSelection ?? live.metadata.crossProvider;
-    if (selectedProvider !== undefined) {
-      if (live.metadata.crossProvider !== undefined &&
-          (selectedProvider.provider !== live.metadata.crossProvider.provider ||
-           selectedProvider.model !== live.metadata.crossProvider.model)) {
-        throw new Error("cross-provider child pair conflicts with durable spawn metadata");
+      if (params.providerSelection !== undefined || live.metadata.crossProvider !== undefined) {
+        throw new Error("consent_unavailable: cross-provider dispatch requires a granted execution plan");
       }
-      assertCrossProviderAllowed(parent, selectedProvider.provider);
-      const targetInfo = await childModelInfo(parent, selectedProvider);
-      const targetEffort = params.reasoningEffort ?? live.role.config.reasoningEffort ?? targetInfo.defaultReasoningLevel;
-      if (targetEffort !== undefined && targetEffort !== "none" &&
-          !targetInfo.supportedReasoningLevels.includes(targetEffort)) {
-        throw new Error(`Reasoning effort \`${targetEffort}\` is not supported for model \`${selectedProvider.model}\`. Choose a supported effort.`);
-      }
-      const targetTier = params.serviceTier ?? live.role.config.serviceTier;
-      if (targetTier !== undefined && !(targetInfo.serviceTiers ?? []).some((tier) => tier.id === targetTier)) {
-        throw new Error(`Service tier \`${targetTier}\` is not supported for model \`${selectedProvider.model}\`. Choose a supported tier.`);
-      }
-      params = {
-        ...params,
-        providerSelection: selectedProvider,
-        model: selectedProvider.model,
-        modelInfo: targetInfo,
-        ...(targetEffort !== undefined ? { reasoningEffort: targetEffort } : {}),
-      };
-    }
     }
     relayAgentEvent({
       content: `spawned subagent ${live.agentPath} (role=${live.role.name})`,
@@ -3897,8 +3877,8 @@ export async function* runAgent(
     // sources. prepare() does not commit a switch to the parent session.
     let provider = providerFromParent(parent);
     if (params.providerSelection !== undefined) {
-      if (params.plan !== undefined) await assertChildExecutionPlan(parent, params.plan);
-      else assertCrossProviderAllowed(parent, params.providerSelection.provider);
+      if (params.plan === undefined) throw new Error("consent_unavailable: child provider dispatch has no granted plan");
+      await assertChildExecutionPlan(parent, params.plan);
       const prepared = params.plan?.route.provider === "agenc"
         ? await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true, params.plan.destination)
         : await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true);
@@ -3907,7 +3887,7 @@ export async function* runAgent(
       if (params.plan !== undefined) {
         assertPreparedChildMatchesPlan(params.plan, prepared);
         await assertChildExecutionPlan(parent, params.plan);
-      } else assertCrossProviderAllowed(parent, params.providerSelection.provider);
+      }
       unsubscribeCrossPolicy = parent.services.configStore?.subscribe((config) => {
         if (config.agents?.cross_provider_enabled !== true ||
             !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider) ||
@@ -4101,6 +4081,16 @@ export async function* runAgent(
       readonly taskId?: string;
       readonly turnId?: string;
     }): void => {
+      if (params.plan?.crossProvider && accepted.taskId !== undefined) {
+        const taskPlan = live.assignment?.executionPlan ?? live.metadata.executionPlan;
+        const epoch = parent.services.crossProviderConsent?.sessionEpoch;
+        if (taskPlan === undefined || epoch === undefined ||
+            taskPlan.task.id !== accepted.taskId ||
+            !consentGrantCoversPlan(taskPlan, parent.services.crossProviderConsent!.ownerSessionId,
+              taskPlan.task.text, taskPlan.task.attachments, epoch)) {
+          throw new Error("resume_blocked: reusable cross-provider worker has no grant for this task");
+        }
+      }
       nextUserMessage = accepted.nextUserMessage;
       currentTaskId = accepted.taskId;
       turnId = accepted.turnId ?? crypto.randomUUID();

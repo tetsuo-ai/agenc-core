@@ -237,30 +237,8 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
     }
   } else if (opts.providerSelection !== undefined) {
-    try {
-      assertCrossProviderAllowed(opts.parent, opts.providerSelection.provider);
-      const validated = await resolveChildSelection(
-        opts.parent,
-        opts.providerSelection.provider,
-        opts.providerSelection.model,
-      );
-      if (validated.provider !== opts.providerSelection.provider ||
-          validated.model !== opts.providerSelection.model ||
-          (opts.model !== undefined && opts.model !== validated.model) ||
-          (opts.modelInfo !== undefined && opts.modelInfo.slug !== validated.model)) {
-        throw new Error("child provider, model, and model metadata must match the validated pair");
-      }
-      if (forkMode !== undefined) {
-        throw new Error("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
-      }
-      // Credential readiness is checked before the durable child spawn edge.
-      // The run checks again immediately before the first provider call.
-      const prepared = await opts.parent.providerService.prepareChild(validated, undefined, {}, true);
-      await prepared.binding.instance.dispose?.();
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
-    }
+    const reason = "consent_unavailable: a cross-provider child requires a human-granted execution plan";
+    return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
   }
 
   if (opts.invocationEnvelope !== undefined) {

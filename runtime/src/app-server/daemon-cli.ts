@@ -115,6 +115,7 @@ import {
   type JsonValue,
   type SessionStatus,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+  AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
 } from "./protocol/index.js";
 import { sessionEventDelivery } from "./approval-delivery.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
@@ -3561,7 +3562,10 @@ async function runAgenCDaemonForegroundLocked(
       },
     );
     let runner = options.runner;
-    const approvalBroker = new LiveApprovalBroker();
+    const approvalBroker = new LiveApprovalBroker({
+      canAnswerCrossProviderConsent: (sessionId) =>
+        clientMultiplexer.hasAttachedClientWithCapability(sessionId, AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY),
+    });
     let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
     if (runner === undefined) {
       configuredRunner = new AgenCDelegateBackgroundAgentRunner({

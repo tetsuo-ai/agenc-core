@@ -1,4 +1,5 @@
 import type { Session } from "../session/session.js";
+import { createHash } from "node:crypto";
 import type { AgenCConfig, AgentsConfig } from "../config/schema.js";
 import { buildProviderModelCatalog } from "../config/provider-model-authority.js";
 import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
@@ -9,6 +10,53 @@ import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import { assertSupportedCrossProviderAuth, type ChildAuthProfile, type ChildBillingSource } from "../llm/cross-provider-auth.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
+import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
+
+export interface CrossProviderConsentGrant {
+  readonly kind: "once" | "session";
+  readonly ownerSessionId: string;
+  /** Changes when the root interactive session ends, including across restart. */
+  readonly sessionEpoch: string;
+  readonly taskId: string;
+  readonly scopeKey: string;
+  readonly payloadKey: string;
+}
+
+export interface CrossProviderSpawnDisclosure {
+  readonly kind: "cross_provider_spawn";
+  readonly provider: string;
+  readonly model: string;
+  readonly endpoint: string;
+  readonly billingSource: ChildBillingSource;
+  readonly taskId: string;
+  readonly taskText: string;
+  readonly attachments: readonly string[];
+  readonly workspace: string;
+  readonly sandboxMode: string;
+  readonly fileReadAllowlist: readonly string[];
+  readonly fileReadDenylist: readonly string[];
+  readonly dataScope: "task_only" | "forked_history";
+  readonly tools: "parent_filtered" | readonly string[];
+  readonly network: boolean;
+  readonly search: boolean;
+  readonly price: { readonly inputUsdPer1K: number; readonly outputUsdPer1K: number } | "price unknown";
+  readonly maxModelCalls: number | null;
+  readonly futureToolResultsGoToProvider: true;
+  readonly scopeKey: string;
+  readonly payloadKey: string;
+  /** Equivalent re-asks within the same parent turn use this key. */
+  readonly denialKey: string;
+}
+
+export type CrossProviderConsentOutcome =
+  | { readonly kind: "granted"; readonly grant: CrossProviderConsentGrant }
+  | { readonly kind: "consent_denied" | "consent_unavailable"; readonly reason: string };
+
+export interface CrossProviderConsentService {
+  readonly ownerSessionId: string;
+  readonly sessionEpoch: string;
+  request(session: Session, disclosure: CrossProviderSpawnDisclosure): Promise<CrossProviderConsentOutcome>;
+}
 
 export interface ChildExecutionPlan {
   readonly version: 1;
@@ -23,23 +71,20 @@ export interface ChildExecutionPlan {
   readonly catalogRevision: string;
   readonly requiredCapabilities: { readonly clientTools: boolean };
   readonly parent: { readonly sessionId: string; readonly agentPath: string };
-  readonly task: { readonly id: string; readonly name: string };
-  readonly scope: { readonly tools: "parent_filtered" | readonly string[]; readonly data: "task_only" | "forked_history"; readonly cwd: string };
+  readonly task: { readonly id: string; readonly name: string; readonly text: string; readonly attachments: readonly string[]; readonly parentTurnId?: string };
+  readonly scope: { readonly tools: "parent_filtered" | readonly string[]; readonly data: "task_only" | "forked_history"; readonly cwd: string;
+    readonly sandboxMode?: string; readonly fileReadAllowlist?: readonly string[];
+    readonly fileReadDenylist?: readonly string[]; readonly networkEnabled?: boolean };
   readonly policyRevision: string;
-  readonly consentGrant: null; // Round B replaces this with a scoped grant.
-  readonly budgetAllocation: null; // Budget accounting allocates this later.
+  readonly consentGrant: CrossProviderConsentGrant | null;
+  readonly budgetAllocation: { readonly maxModelCalls: number } | null;
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly crossProvider: boolean;
 }
 
 function fingerprint(value: unknown): string {
-  const serialized = JSON.stringify(value);
-  let hash = 2166136261;
-  for (let i = 0; i < serialized.length; i++) {
-    hash = Math.imul(hash ^ serialized.charCodeAt(i), 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function freezeValue<T>(value: T): T {
@@ -79,6 +124,8 @@ export async function createChildExecutionPlan(params: {
   readonly parentPath: string;
   readonly taskId: string;
   readonly taskName: string;
+  readonly taskText: string;
+  readonly attachments?: readonly string[];
   readonly toolFree: boolean;
   readonly forkedHistory: boolean;
   readonly reasoningEffort?: ReasoningEffort;
@@ -132,7 +179,10 @@ export async function createChildExecutionPlan(params: {
     catalogRevision: catalogRevision(session),
     requiredCapabilities: Object.freeze({ clientTools: !params.toolFree }),
     parent: Object.freeze({ sessionId: session.conversationId, agentPath: params.parentPath }),
-    task: Object.freeze({ id: params.taskId, name: params.taskName }),
+    task: Object.freeze({ id: params.taskId, name: params.taskName, text: params.taskText,
+      attachments: Object.freeze([...(params.attachments ?? [])]),
+      ...(session.activeTurn?.unsafePeek()?.turnId !== undefined
+        ? { parentTurnId: session.activeTurn.unsafePeek()!.turnId } : {}) }),
     scope: Object.freeze({ tools: params.toolFree ? Object.freeze([]) :
       Array.isArray(session.services.registry?.tools)
         ? Object.freeze(session.services.registry.tools
@@ -140,17 +190,114 @@ export async function createChildExecutionPlan(params: {
             .filter((name) => params.toolAllowlist === undefined || params.toolAllowlist.includes(name)))
         : "parent_filtered" as const,
       data: params.forkedHistory ? "forked_history" as const : "task_only" as const,
-      cwd: session.sessionConfiguration.cwd }),
+      cwd: session.sessionConfiguration.cwd,
+      sandboxMode: session.sessionConfiguration.sandboxPolicy?.value ?? "unknown",
+      fileReadAllowlist: Object.freeze([...(session.sessionConfiguration.fileSystemSandboxPolicy?.allowRead ?? [])]),
+      fileReadDenylist: Object.freeze([...(session.sessionConfiguration.fileSystemSandboxPolicy?.denyRead ?? [])]),
+      networkEnabled: session.sessionConfiguration.networkSandboxPolicy?.enabled !== false }),
     policyRevision: policyRevision(session),
     consentGrant: null,
-    budgetAllocation: null,
+    budgetAllocation: crossProvider ? Object.freeze({
+      maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32)),
+    }) : null,
     ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
     ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}),
     crossProvider,
   });
 }
 
+export function buildCrossProviderDisclosure(
+  plan: ChildExecutionPlan,
+  taskText: string = plan.task.text,
+  attachments: readonly string[] = plan.task.attachments,
+): CrossProviderSpawnDisclosure {
+  const tools = plan.scope.tools;
+  const search = resolveRegisteredModelCatalogEntry({ provider: plan.destination.provider,
+    model: plan.destination.model })?.supportsSearchTool === true ||
+    tools === "parent_filtered" || tools.some((tool) => /search|browse/iu.test(tool));
+  const network = plan.scope.networkEnabled !== false && (search ||
+    tools.some((tool) => /web|fetch|network|http|exec|shell/iu.test(tool)));
+  const scopeKey = fingerprint({ destination: plan.destination, data: plan.scope.data,
+    cwd: plan.scope.cwd, tools, network, search, sandboxMode: plan.scope.sandboxMode,
+    fileReadAllowlist: plan.scope.fileReadAllowlist, fileReadDenylist: plan.scope.fileReadDenylist,
+    attachments, budget: plan.budgetAllocation });
+  const payloadKey = fingerprint({ scopeKey, taskId: plan.task.id, taskText, attachments });
+  const parentTurnId = sessionTurnIdForPlan(plan);
+  const denialKey = fingerprint({ scopeKey, parentTurnId, taskText, attachments });
+  const cost = resolveModelCostEntry({ provider: plan.destination.provider, model: plan.destination.model }, DEFAULT_MODEL_COSTS);
+  return Object.freeze({
+    kind: "cross_provider_spawn" as const,
+    provider: plan.destination.provider, model: plan.destination.model,
+    endpoint: plan.destination.endpoint, billingSource: plan.destination.billingSource,
+    taskId: plan.task.id, taskText, attachments: Object.freeze([...attachments]),
+    workspace: plan.scope.cwd, sandboxMode: plan.scope.sandboxMode ?? "unknown",
+    fileReadAllowlist: plan.scope.fileReadAllowlist ?? [],
+    fileReadDenylist: plan.scope.fileReadDenylist ?? [],
+    dataScope: plan.scope.data, tools,
+    network, search,
+    price: cost === null ? "price unknown" as const : {
+      inputUsdPer1K: cost.entry.inputUsdPer1K, outputUsdPer1K: cost.entry.outputUsdPer1K,
+    },
+    maxModelCalls: plan.budgetAllocation?.maxModelCalls ?? null,
+    futureToolResultsGoToProvider: true as const, scopeKey, payloadKey, denialKey,
+  });
+}
+
+function sessionTurnIdForPlan(plan: ChildExecutionPlan): string {
+  return plan.task.parentTurnId ?? plan.parent.sessionId;
+}
+
+export function withChildConsentGrant(plan: ChildExecutionPlan, grant: CrossProviderConsentGrant): ChildExecutionPlan {
+  return Object.freeze({ ...plan, consentGrant: Object.freeze({ ...grant }) });
+}
+
+export function consentGrantCoversPlan(
+  plan: ChildExecutionPlan,
+  ownerSessionId: string,
+  taskText: string = plan.task.text,
+  attachments: readonly string[] = plan.task.attachments,
+  sessionEpoch?: string,
+): boolean {
+  if (!plan.crossProvider) return true;
+  const grant = plan.consentGrant;
+  if (grant === null || grant === undefined || grant.ownerSessionId !== ownerSessionId ||
+      (sessionEpoch !== undefined && grant.sessionEpoch !== sessionEpoch) ||
+      grant.taskId !== plan.task.id) return false;
+  const disclosure = buildCrossProviderDisclosure(plan, taskText, attachments);
+  return grant.scopeKey === disclosure.scopeKey &&
+    (grant.kind === "session" || grant.payloadKey === disclosure.payloadKey);
+}
+
+/** The only path that turns a proposed cross-provider plan into a dispatchable one. */
+export async function authorizeChildExecutionPlan(session: Session, plan: ChildExecutionPlan): Promise<
+  { readonly kind: "granted"; readonly plan: ChildExecutionPlan } |
+  { readonly kind: "consent_denied" | "consent_unavailable"; readonly reason: string }
+> {
+  if (!plan.crossProvider) return { kind: "granted", plan };
+  const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;
+  if (service === undefined) return { kind: "consent_unavailable", reason: "No attached client can answer cross-provider consent. Continue this task yourself." };
+  const outcome = await service.request(session, buildCrossProviderDisclosure(plan));
+  if (outcome.kind !== "granted") return outcome;
+  const granted = withChildConsentGrant(plan, outcome.grant);
+  if (!consentGrantCoversPlan(granted, service.ownerSessionId, plan.task.text,
+      plan.task.attachments, service.sessionEpoch)) {
+    return { kind: "consent_unavailable", reason: "Consent grant did not cover this exact child task. Continue this task yourself." };
+  }
+  return { kind: "granted", plan: granted };
+}
+
 export async function assertChildExecutionPlan(session: Session, plan: ChildExecutionPlan): Promise<void> {
+  if (plan.crossProvider) {
+    if (plan.budgetAllocation === null || !Number.isSafeInteger(plan.budgetAllocation.maxModelCalls) ||
+        plan.budgetAllocation.maxModelCalls < 1 || plan.budgetAllocation.maxModelCalls > 32) {
+      throw new Error("resume_blocked: cross-provider plan has no bounded model-call allocation");
+    }
+    const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;
+    if (service === undefined || !consentGrantCoversPlan(plan, service.ownerSessionId,
+        plan.task.text, plan.task.attachments, service.sessionEpoch)) {
+      throw new Error("resume_blocked: cross-provider child has no live, in-scope human consent grant");
+    }
+  }
   if (plan.parent.sessionId !== session.conversationId) throw new Error("child execution plan parent changed");
   if (plan.policyRevision !== policyRevision(session)) throw new Error("child execution plan policy changed");
   if (plan.catalogRevision !== catalogRevision(session)) throw new Error("child execution plan catalog changed");

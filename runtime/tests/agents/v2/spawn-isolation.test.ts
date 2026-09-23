@@ -138,6 +138,14 @@ describe("spawn_agent isolation", () => {
         ...base.services,
         modelsManager,
         configStore: { current: () => config },
+        crossProviderConsent: {
+          ownerSessionId: "conv-1", sessionEpoch: "test-interactive-session",
+          request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+            kind: "granted" as const,
+            grant: { kind: "once" as const, ownerSessionId: "conv-1", sessionEpoch: "test-interactive-session",
+              taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+          }),
+        },
       },
     } as unknown as Session;
     return { session, tool: createSpawnAgentTool(makeOptions(session)) };
@@ -148,6 +156,24 @@ describe("spawn_agent isolation", () => {
     const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro" });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("cross_provider_enabled = true");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch the task payload before a human grant", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    const request = vi.fn(async (_session: Session, disclosure: { taskText: string }) => {
+      expect(disclosure.taskText).toBe("read the confidential design");
+      expect(mockDelegate).not.toHaveBeenCalled();
+      return { kind: "consent_denied" as const, reason: "User denied" };
+    });
+    Object.assign(session.services, { crossProviderConsent: {
+      ownerSessionId: session.conversationId, sessionEpoch: "test-interactive-session", request,
+    } });
+    const result = await tool.execute({ message: "read the confidential design", task_name: "worker",
+      provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(request).toHaveBeenCalledOnce();
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("consent_denied");
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
@@ -350,6 +376,14 @@ describe("spawn_agent isolation", () => {
         ...fixture.child.services,
         configStore: { current: () => config },
         modelsManager: new StaticModelsManager({ config, fallbackProvider: "deepseek" }),
+        crossProviderConsent: {
+          ownerSessionId: "conv-1", sessionEpoch: "test-interactive-session",
+          request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+            kind: "granted" as const,
+            grant: { kind: "once" as const, ownerSessionId: "conv-1", sessionEpoch: "test-interactive-session",
+              taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+          }),
+        },
       },
     });
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
