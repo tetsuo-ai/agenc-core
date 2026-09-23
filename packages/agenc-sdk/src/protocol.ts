@@ -22,7 +22,7 @@ export type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.16.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.17.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
@@ -99,6 +99,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "routine.run",
   "routine.runs",
   "routine.cancel",
+  "routine.session.prepare.respond",
   "csvJob.review.list",
   "csvJob.review.show",
   "csvJob.review.resolve",
@@ -155,6 +156,7 @@ export type AgencDaemonMethod = (typeof AGENC_SDK_DAEMON_METHODS)[number];
  */
 export const AGENC_SDK_DAEMON_NOTIFICATION_METHODS = [
   "routine.updated",
+  "routine.session.prepare",
   "commandExec.outputDelta",
   "event.message_chunk",
   "event.tool_request",

@@ -56,6 +56,7 @@
     "routine.run",
     "routine.runs",
     "routine.cancel",
+    "routine.session.prepare.respond",
     "csvJob.review.list",
     "csvJob.review.show",
     "csvJob.review.resolve",
@@ -102,6 +103,7 @@
   ],
   "x-agenc-notifications": [
     "routine.updated",
+    "routine.session.prepare",
     "commandExec.outputDelta",
     "event.message_chunk",
     "event.tool_request",
@@ -1032,6 +1034,7 @@
             }
           ]
         },
+        "desktopTools": { "$ref": "#/definitions/RoutineDesktopTools" },
         "error": {
           "anyOf": [
             {
@@ -1222,6 +1225,143 @@
         "executionMode",
         "maxRoutines",
         "maxRunsPerRoutine"
+      ]
+    },
+    "RoutineDesktopTools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "attached",
+            "declined",
+            "unavailable"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "reason"
+      ]
+    },
+    "RoutineSessionPrepareEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "routineId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "requestId",
+        "sessionId",
+        "routineId",
+        "runId",
+        "cwd"
+      ]
+    },
+    "RoutineSessionPrepareResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "status": {
+          "enum": [
+            "attached",
+            "declined"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "requestId",
+        "status"
+      ]
+    },
+    "RoutineSessionPrepareResponseRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "routine.session.prepare.respond"
+        },
+        "params": {
+          "$ref": "#/definitions/RoutineSessionPrepareResponse"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "RoutineSessionPrepareNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "routine.session.prepare"
+        },
+        "params": {
+          "$ref": "#/definitions/RoutineSessionPrepareEvent"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
       ]
     },
     "RoutineUpdatedEvent": {
@@ -3921,6 +4061,7 @@
         { "$ref": "#/definitions/RoutineRunRequest" },
         { "$ref": "#/definitions/RoutineRunsRequest" },
         { "$ref": "#/definitions/RoutineCancelRequest" },
+        { "$ref": "#/definitions/RoutineSessionPrepareResponseRequest" },
         {
           "$ref": "#/definitions/InitializeRequest"
         },
@@ -4094,6 +4235,7 @@
     "AgenCDaemonNotification": {
       "oneOf": [
         { "$ref": "#/definitions/RoutineUpdatedNotification" },
+        { "$ref": "#/definitions/RoutineSessionPrepareNotification" },
         {
           "$ref": "#/definitions/CommandExecOutputDeltaNotification"
         },

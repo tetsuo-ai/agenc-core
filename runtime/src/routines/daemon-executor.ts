@@ -4,6 +4,7 @@ import { join, relative, isAbsolute } from "node:path";
 import type { AgenCDaemonAgentManager } from "../app-server/agent-lifecycle.js";
 import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import type { RoutineDesktopTools } from "./types.js";
 import { RoutineExecutionUnsettledError, type RoutineExecutor } from "./service.js";
 
 /** Tool execution needs the user's PATH, exactly as every desktop-created session gets it. */
@@ -115,6 +116,7 @@ export function createDaemonRoutineExecutor(options: {
   environment?: Readonly<Record<string, string | undefined>>;
   /** Provider a routine without an explicit one runs on (the daemon's configured default). */
   defaultProvider?: () => string | undefined;
+  prepareSession?: (input: { sessionId: string; routineId: string; runId: string; cwd: string }, signal: AbortSignal) => Promise<RoutineDesktopTools>;
 }): RoutineExecutor {
   const authority = Object.freeze({
     ...options.runtimeOptions,
@@ -175,9 +177,16 @@ export function createDaemonRoutineExecutor(options: {
         if (!agent.sessionId) throw new Error("Core did not create a routine session.");
         context.bind({ agentId, sessionId: agent.sessionId, coreRunId: agentId });
         if (context.signal.aborted) return await finishCancellation();
+        const desktopTools = options.prepareSession
+          ? await options.prepareSession({ sessionId: agent.sessionId, routineId: routine.id, runId: run.id, cwd: routine.cwd }, context.signal)
+          : { status: "unavailable", reason: "No Desktop client is connected." } as const;
+        if (context.signal.aborted) return await finishCancellation();
+        context.setDesktopTools?.(desktopTools);
+        const content = desktopTools.status === "attached" ? routine.instructions
+          : `Desktop tools (browser, terminal, windows) are unavailable in this run: ${(desktopTools.reason ?? "unknown reason").replace(/[.!?]+$/u, "")}.\n${routine.instructions}`;
         const messageId = `routine_message_${randomUUID()}`;
         const result = await Promise.race([options.agentManager.streamAgentMessage({
-          sessionId: agent.sessionId, content: routine.instructions,
+          sessionId: agent.sessionId, content,
           messageId, streamId: `routine_stream_${randomUUID()}`,
           acceptedAt: new Date().toISOString(), ifBusy: "reject", methodName: "message.stream",
         }), cancellationOutcome, terminal]);

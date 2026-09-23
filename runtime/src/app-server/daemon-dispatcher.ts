@@ -1,3 +1,4 @@
+import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } from "../routines/session-preparation.js";
 /**
  * JSON-RPC request dispatcher for the local AgenC daemon.
  *
@@ -276,6 +277,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "session.goal": 14,
   "project.trustStatus": 16,
   "project.trust": 16,
+  "routine.session.prepare.respond": 17,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -312,6 +314,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly routines: RoutineService | undefined;
+  readonly routinePreparation?: RoutineSessionPreparation;
   readonly remote: RemoteService | undefined;
   readonly ownerTelegram: OwnerTelegramService | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
@@ -351,6 +354,7 @@ function buildServerCapabilities(
     "routine.run": inputs.routines !== undefined,
     "routine.runs": inputs.routines !== undefined,
     "routine.cancel": inputs.routines !== undefined,
+    "routine.session.prepare.respond": inputs.routinePreparation !== undefined,
     "csvJob.review.list": hasMethod(inputs.csvJobReview, "list"),
     "csvJob.review.show": hasMethod(inputs.csvJobReview, "show"),
     "csvJob.review.resolve": hasMethod(inputs.csvJobReview, "resolve"),
@@ -589,6 +593,7 @@ export interface AgenCDaemonDispatcherOptions {
   /** M5 verified-change workflow `run.start` seam (omit = not implemented). */
   readonly workflow?: AgenCDaemonWorkflowStartService;
   readonly routines?: RoutineService;
+  readonly routinePreparation?: RoutineSessionPreparation;
   readonly remote?: RemoteService;
   readonly ownerTelegram?: OwnerTelegramService;
   /** Workspace-scoped CSV unknown-outcome review service. */
@@ -723,6 +728,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
   readonly #routines: RoutineService | undefined;
+  readonly #routinePreparation: RoutineSessionPreparation | undefined;
   readonly #remote: RemoteService | undefined;
   readonly #ownerTelegram: OwnerTelegramService | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
@@ -759,6 +765,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#runInspection = options.runInspection;
     this.#workflow = options.workflow;
     this.#routines = options.routines;
+    this.#routinePreparation = options.routinePreparation;
     this.#remote = options.remote;
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
@@ -784,6 +791,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       sessionManager: this.#sessionManager,
       workflow: this.#workflow,
       routines: this.#routines,
+      routinePreparation: this.#routinePreparation,
       remote: this.#remote,
       ownerTelegram: this.#ownerTelegram,
       csvJobReview: this.#csvJobReview,
@@ -1068,6 +1076,9 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "audio.whisper.transcribe":
         if (!this.#whisper || connection.remoteAccess) return methodNotImplementedResponse(id, method);
         return successResponse(id, await this.#whisper.transcribe(params, signal));
+      case "routine.session.prepare.respond":
+        if (!this.#routinePreparation || connection.remoteAccess || connection.initializeState?.clientCapabilities[ROUTINE_SESSION_PREPARE_CAPABILITY] !== true) return methodNotImplementedResponse(id, method);
+        return successResponse(id, this.#routinePreparation.respond(params as never, true));
       case "routine.capabilities": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const capabilities = this.#routines.capabilities(params);
@@ -1928,10 +1939,11 @@ export class AgenCDaemonJsonRpcDispatcher {
       capabilities[AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY] === true;
     // Registered so the daemon can count it as able to show a pending
     // approval it never received live; it gets no extra notifications.
+    const preparesRoutineSession = capabilities[ROUTINE_SESSION_PREPARE_CAPABILITY] === true;
     const listsPendingApprovals =
       capabilities[AGENC_PENDING_APPROVALS_LIST_CAPABILITY] === true;
     if (
-      (!receivesLedgerActions && !receivesMobileStatus && !listsPendingApprovals) ||
+      (!receivesLedgerActions && !receivesMobileStatus && !listsPendingApprovals && !preparesRoutineSession) ||
       this.#clientMultiplexer === undefined ||
       connection.sendNotification === undefined
     ) {

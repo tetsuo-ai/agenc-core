@@ -15,6 +15,7 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import { RoutineSessionPreparation } from "../routines/session-preparation.js";
 import {
   AgenCRealtimeRpcService,
   TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
@@ -1730,5 +1731,31 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         data: { code: "SESSION_NOT_FOUND" },
       },
     });
+  });
+});
+
+
+describe("routine preparation dispatcher handshake", () => {
+  it("delivers only to a capable initialized client and accepts its one-shot response", async () => {
+    const sessionManager = new AgenCDaemonSessionManager({ createSessionId: () => "session_prepare" });
+    await sessionManager.createSession({ agentId: "agent_prepare", cwd: await workspaces.create() });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({ sessionManager });
+    const routinePreparation = new RoutineSessionPreparation(clientMultiplexer);
+    const notifications: JsonObject[] = [];
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: new AgenCDaemonAgentManager(), sessionManager, clientMultiplexer, routinePreparation });
+    const capable = dispatcher.createConnection({ sendNotification: message => { notifications.push(message); } });
+    const other = dispatcher.createConnection();
+    await capable.dispatch(request("init-capable", "initialize", { protocol: { version: "1.17.0" }, capabilities: { "routine.session.prepare.v1": true } }));
+    await other.dispatch(request("init-other", "initialize", { protocol: { version: "1.17.0" }, capabilities: {} }));
+    const waiting = routinePreparation.prepare({ sessionId: "session_prepare", routineId: "routine_one", runId: "routine_run_one", cwd: "/workspace" }, new AbortController().signal);
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    const notification = notifications[0] as { method: string; params: { requestId: string } };
+    expect(notification.method).toBe("routine.session.prepare");
+    const answer = { requestId: notification.params.requestId, status: "attached" };
+    expect(await other.dispatch(request("wrong-client", "routine.session.prepare.respond", answer))).toHaveProperty("error");
+    expect(await capable.dispatch(request("prepared", "routine.session.prepare.respond", answer))).toMatchObject({ result: { accepted: true } });
+    expect(await waiting).toEqual({ status: "attached", reason: null });
+    await dispatcher.closeConnection(other);
+    await dispatcher.closeConnection(capable);
   });
 });

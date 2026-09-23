@@ -409,3 +409,20 @@ describe("daemon-owned local routines", () => {
     if (process.platform !== "win32") { chmodSync(join(f.home, "routines"), 0o755); expect(() => new RoutineService({ home: f.home, executor: f.executor })).toThrow("private directory"); }
   });
 });
+
+describe("routine Desktop preparation record", () => {
+  it("persists a declined reason through run completion and reload", async () => {
+    const executor: RoutineExecutor = { execute: vi.fn(async (_routine, _run, context) => {
+      context.setDesktopTools?.({ status: "declined", reason: "Desktop window is not open." });
+      return "completed" as const;
+    }) };
+    const f = setup(executor);
+    const routine = f.service.create(f.params).routine;
+    f.service.run({ id: routine.id });
+    await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]?.desktopTools).toEqual({ status: "declined", reason: "Desktop window is not open." });
+    await f.service.close();
+    const restored = new RoutineService({ home: f.home, executor }); services.push(restored);
+    expect(restored.runs({ id: routine.id }).runs[0]?.desktopTools).toEqual({ status: "declined", reason: "Desktop window is not open." });
+  });
+});

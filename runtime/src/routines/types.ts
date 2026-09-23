@@ -5,6 +5,16 @@ export type RoutineSchedule =
   | { readonly kind: "manual" }
   | { readonly kind: "cron"; readonly expression: string };
 export type RoutineRunStatus = "starting" | "running" | "waiting_permission" | "completed" | "failed" | "cancelled" | "interrupted";
+export interface RoutineDesktopTools extends JsonObject {
+  readonly status: "attached" | "declined" | "unavailable";
+  readonly reason: string | null;
+}
+export interface RoutineSessionPrepareEvent extends JsonObject {
+  readonly requestId: string; readonly sessionId: string; readonly routineId: string; readonly runId: string; readonly cwd: string;
+}
+export interface RoutineSessionPrepareResponse extends JsonObject {
+  readonly requestId: string; readonly status: "attached" | "declined"; readonly reason?: string;
+}
 export interface RoutineRun extends JsonObject {
   readonly id: string;
   readonly routineId: string;
@@ -16,6 +26,7 @@ export interface RoutineRun extends JsonObject {
   readonly sessionId: string | null;
   readonly coreRunId: string | null;
   readonly error: string | null;
+  readonly desktopTools?: RoutineDesktopTools;
 }
 /**
  * The permission mode a scheduled run starts in. Nobody is attached to a

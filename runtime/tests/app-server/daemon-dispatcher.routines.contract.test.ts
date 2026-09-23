@@ -26,6 +26,10 @@ import { RoutineService } from "../../src/routines/service.js";
 import type { Routine, RoutineRun } from "../../src/routines/types.js";
 import type { AgentRuntimeOptions } from "../../src/session/runtime-options.js";
 
+/** This harness has no Desktop client, so a routine run starts with the unavailable-tools line. */
+const withoutDesktopTools = (instructions: string): string =>
+  `Desktop tools (browser, terminal, windows) are unavailable in this run: No Desktop client is connected.\n${instructions}`;
+
 const NOW = "2026-09-06T12:00:00.000Z";
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -303,7 +307,7 @@ describe("routine dispatcher and daemon execution contract", () => {
     })));
     expect(accepted.run.status).toBe("starting");
     const submitted = await h.submission.promise;
-    expect(submitted.params.content).toBe(changed.instructions);
+    expect(submitted.params.content).toBe(withoutDesktopTools(changed.instructions));
     expect(h.starts).toHaveLength(1);
     h.terminal.resolve(0);
     await vi.waitFor(async () => expect((await h.history(changed.id))[0]?.status).toBe("completed"));
@@ -331,7 +335,7 @@ describe("routine dispatcher and daemon execution contract", () => {
       });
       expect(h.starts[0]).not.toHaveProperty("initialContent");
       expect(submitted.params).toMatchObject({
-        content: routine.instructions, originalContent: routine.instructions, ifBusy: "reject",
+        content: withoutDesktopTools(routine.instructions), originalContent: withoutDesktopTools(routine.instructions), ifBusy: "reject",
       });
       expect((await h.history(routine.id))[0]).toMatchObject({
         id: initial.id, status: "running", agentId: submitted.agentId,

@@ -171,6 +171,7 @@ import {
 } from "../session/runtime-options.js";
 import { RoutineService } from "../routines/service.js";
 import { createDaemonRoutineExecutor } from "../routines/daemon-executor.js";
+import { RoutineSessionPreparation } from "../routines/session-preparation.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
 import { BUILT_IN_PROVIDER_BASE_URLS, resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import {
@@ -3926,11 +3927,13 @@ async function runAgenCDaemonForegroundLocked(
       shuttingDown = true;
       resolveRpcShutdown();
     });
+    const routinePreparation = new RoutineSessionPreparation(clientMultiplexer);
     try {
       routines = new RoutineService({
         home: authStartup.daemonHome,
         executor: createDaemonRoutineExecutor({
           agentManager,
+          prepareSession: (input, signal) => routinePreparation.prepare(input, signal),
           environment: host.env,
           defaultProvider: () => resolveBuiltInProviderSlug(activeConfig.model_provider),
           runtimeOptions: resolveAgentRuntimeOptions(
@@ -4001,6 +4004,7 @@ async function runAgenCDaemonForegroundLocked(
       agentManager,
       routines,
       clientMultiplexer,
+      routinePreparation,
       sessionManager,
       fuzzyAllowedRoots: [primaryCwd],
       commandExec,

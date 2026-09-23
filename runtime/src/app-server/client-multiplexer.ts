@@ -831,6 +831,7 @@ export class AgenCDaemonClientMultiplexer {
     sessionId: string,
     capability: string,
     event: JsonObject,
+    options: { bufferOnFailure?: boolean } = {},
   ): Promise<AgenCSessionBroadcastResult> {
     const evictedClientIds: EvictedClient[] = [];
     const rejectedDeliveries: AgenCSessionBroadcastFailure[] = [];
@@ -849,6 +850,7 @@ export class AgenCDaemonClientMultiplexer {
           }
         }
         if (target === undefined) {
+          if (options.bufferOnFailure === false) return { deliveries: [] as EnqueuedDelivery[], bufferAfterDelivery: false };
           const buffered = state.capabilityBuffers.get(capability) ?? [];
           bufferCapabilityEvent(
             buffered,
@@ -874,13 +876,13 @@ export class AgenCDaemonClientMultiplexer {
           deliveries: delivery === null ? [] : [delivery],
           // A cap-triggered eviction returns no delivery. Preserve the action
           // just like an asynchronous socket-send failure below.
-          bufferAfterDelivery: delivery === null,
+          bufferAfterDelivery: delivery === null && options.bufferOnFailure !== false,
         };
       },
     );
     await this.#evictSlowClients(evictedClientIds);
     const result = await settleDeliveries(deliveries);
-    if (bufferAfterDelivery || result.failed.length > 0) {
+    if (options.bufferOnFailure !== false && (bufferAfterDelivery || result.failed.length > 0)) {
       await this.#state.with(async (state) => {
         if (!(await this.#isSessionLive(sessionId))) return [];
         const buffered = state.capabilityBuffers.get(capability) ?? [];

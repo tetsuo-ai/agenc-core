@@ -12,7 +12,7 @@ import {
   routineWiderThanCaller,
   type RoutinePermissionGrant,
 } from "./permission-authority.js";
-import type { Routine, RoutineCapabilities, RoutineConfig, RoutinePermissionMode, RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineUpdatedEvent, RoutineWorkspaceExpectation } from "./types.js";
+import type { Routine, RoutineCapabilities, RoutineConfig, RoutinePermissionMode, RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineUpdatedEvent, RoutineWorkspaceExpectation, RoutineDesktopTools } from "./types.js";
 
 export { RoutineError } from "./errors.js";
 
@@ -89,6 +89,13 @@ type Document = { version: 1; entries: Entry[] };
 export class RoutineExecutionUnsettledError extends Error {}
 function invalid(message: string): never { throw new RoutineError("ROUTINE_INVALID_ARGUMENT", message); }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
+function validDesktopTools(value: unknown): value is RoutineDesktopTools {
+  if (!record(value) || Object.keys(value).some(key => key !== "status" && key !== "reason")) return false;
+  if (value.status === "attached") return value.reason === null;
+  return (value.status === "declined" || value.status === "unavailable") &&
+    typeof value.reason === "string" && value.reason.length > 0 && value.reason.length <= 200 &&
+    !/[\u0000-\u001f\u007f]/u.test(value.reason);
+}
 function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!record(value)) return invalid("Routine parameters must be an object.");
   if (Object.keys(value).some((key) => !keys.includes(key))) return invalid("Routine parameters contain unsupported fields.");
@@ -231,6 +238,7 @@ export interface RoutineExecutionContext {
   readonly signal: AbortSignal;
   readonly terminal?: Promise<"completed" | "failed" | "cancelled">;
   bind(ids: { agentId: string; sessionId: string; coreRunId: string }): void;
+  setDesktopTools?(outcome: RoutineDesktopTools): void;
 }
 export interface RoutineExecutor {
   /** A permission denial is a failed run with a fixed, actionable public explanation. */
@@ -271,7 +279,8 @@ export class RoutineService {
         entry.routine = { ...r, ...validated, cwd: r.cwd };
         const runIds = new Set<string>();
         for (const run of entry.runs) {
-          object(run, ["id", "routineId", "status", "trigger", "startedAt", "finishedAt", "agentId", "sessionId", "coreRunId", "error"]);
+          object(run, ["id", "routineId", "status", "trigger", "startedAt", "finishedAt", "agentId", "sessionId", "coreRunId", "error", "desktopTools"]);
+          if (run.desktopTools !== undefined && !validDesktopTools(run.desktopTools)) throw new Error("invalid desktop tools outcome");
           if (!record(run) || typeof run.id !== "string" || !/^routine_run_[a-f0-9-]{36}$/.test(run.id) || run.routineId !== r.id || ![...ACTIVE, "completed", "failed", "cancelled", "interrupted"].includes(run.status) || !validDate(run.startedAt) || (run.finishedAt !== null && !validDate(run.finishedAt)) || !["manual", "schedule"].includes(run.trigger)) throw new Error("invalid run");
           if (runIds.has(run.id) || ACTIVE.has(run.status) !== (run.finishedAt === null)) throw new Error("invalid run lifecycle");
           runIds.add(run.id);
@@ -446,7 +455,7 @@ export class RoutineService {
         if (controller.signal.aborted) status = "cancelled";
         else {
           if (realpathSync(snapshot.cwd) !== snapshot.cwd || !sameIdentity(identity(snapshot.cwd), cwdIdentity)) throw new Error("workspace changed");
-          const outcome = await this.#executor.execute(snapshot, run, { signal: controller.signal, terminal, bind: (ids) => { this.#replaceRun(entry, run.id, { ...ids, status: "running" }); } });
+          const outcome = await this.#executor.execute(snapshot, run, { signal: controller.signal, terminal, bind: (ids) => { this.#replaceRun(entry, run.id, { ...ids, status: "running" }); }, setDesktopTools: (desktopTools) => { this.#replaceRun(entry, run.id, { desktopTools }); } });
           status = outcome === "permission_denied" ? "failed" : outcome;
           if (outcome === "permission_denied") error = describePermissionDenial(snapshot.permissionMode);
         }

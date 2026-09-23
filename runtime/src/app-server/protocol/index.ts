@@ -11,7 +11,7 @@ import type { FileWriteApprovalPreview } from "../../session/event-log.js";
 import type { WhisperStatus, WhisperTranscription } from "../../audio/whisper.js";
 export type { WhisperStatus, WhisperTranscription, WhisperInstallParams, WhisperTranscribeParams, WhisperLanguage, WhisperTask, WhisperCompute } from "../../audio/whisper.js";
 import type { ProviderModelSelectionOutcome } from "../../contracts/provider-model-selection.js";
-import type { RoutineCapabilities, RoutineListResult, RoutineResult, RoutineDeleteResult, RoutineRunResult, RoutineRunsResult, RoutineIdParams, RoutineCreateParams, RoutineUpdateParams, RoutineDeleteParams, RoutineRunParams, RoutineRunsParams, RoutineCancelParams, RoutineUpdatedEvent } from "../../routines/types.js";
+import type { RoutineCapabilities, RoutineListResult, RoutineResult, RoutineDeleteResult, RoutineRunResult, RoutineRunsResult, RoutineIdParams, RoutineCreateParams, RoutineUpdateParams, RoutineDeleteParams, RoutineRunParams, RoutineRunsParams, RoutineCancelParams, RoutineUpdatedEvent, RoutineSessionPrepareEvent, RoutineSessionPrepareResponse } from "../../routines/types.js";
 export type * from "../../routines/types.js";
 
 /** JSON-RPC version required on daemon requests, responses, and notifications. */
@@ -43,10 +43,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * answer `METHOD_NOT_FOUND`. Nothing outside this repository used them.
  * 1.16 adds project trust for a working directory (`project.trustStatus`,
  * `project.trust`), resolved to the project root a session there would use.
+ * 1.17 adds a bounded routine session preparation handshake.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.16.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.17.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -135,6 +136,7 @@ export const AGENC_DAEMON_METHODS = [
   "routine.run",
   "routine.runs",
   "routine.cancel",
+  "routine.session.prepare.respond",
   "csvJob.review.list",
   "csvJob.review.show",
   "csvJob.review.resolve",
@@ -460,6 +462,7 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
 
 export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "routine.updated",
+  "routine.session.prepare",
   "commandExec.outputDelta",
   "event.message_chunk",
   "event.tool_request",
@@ -676,6 +679,7 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
   "routine.run": { method: "routine.run", direction: "client-to-server", params: "required", result: "object", description: "Local daemon routine run (routine contract v1)." },
   "routine.runs": { method: "routine.runs", direction: "client-to-server", params: "required", result: "object", description: "Local daemon routine runs (routine contract v1)." },
   "routine.cancel": { method: "routine.cancel", direction: "client-to-server", params: "required", result: "object", description: "Local daemon routine cancel (routine contract v1)." },
+  "routine.session.prepare.respond": { method: "routine.session.prepare.respond", direction: "client-to-server", params: "required", result: "object", description: "Answer a bounded routine session preparation request." },
   "csvJob.review.list": {
     method: "csvJob.review.list",
     direction: "client-to-server",
@@ -1165,6 +1169,7 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
 
 export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
   "routine.updated": { method: "routine.updated", direction: "server-to-client", params: "required", description: "Invalidate local routine state for clients opting into routine.updated.v1." },
+  "routine.session.prepare": { method: "routine.session.prepare", direction: "server-to-client", params: "required", description: "Ask a capable Desktop client to attach session tools before dispatch." },
   "commandExec.outputDelta": {
     method: "commandExec.outputDelta",
     direction: "server-to-client",
@@ -2377,6 +2382,7 @@ export interface AgenCDaemonNotificationWithParams<
 
 export interface AgenCDaemonNotificationParamsByMethod {
   readonly "routine.updated": RoutineUpdatedEvent;
+  readonly "routine.session.prepare": RoutineSessionPrepareEvent;
   readonly "commandExec.outputDelta": CommandExecOutputDeltaParams;
   readonly "event.message_chunk": EventMessageChunkParams;
   readonly "event.tool_request": EventToolRequestParams;
@@ -2510,6 +2516,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"routine.run", RoutineRunParams>
   | AgenCDaemonRequestWithParams<"routine.runs", RoutineRunsParams>
   | AgenCDaemonRequestWithParams<"routine.cancel", RoutineCancelParams>
+  | AgenCDaemonRequestWithParams<"routine.session.prepare.respond", RoutineSessionPrepareResponse>
   | AgenCDaemonRequestWithParams<"initialize", InitializeParams>
   | AgenCDaemonRequestWithParams<"request.cancel", RequestCancelParams>
   | AgenCDaemonRequestWithParams<"agent.create", AgentCreateParams>
@@ -3918,6 +3925,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "routine.run": RoutineRunResult;
   readonly "routine.runs": RoutineRunsResult;
   readonly "routine.cancel": RoutineRunResult;
+  readonly "routine.session.prepare.respond": { readonly accepted: boolean };
   readonly "csvJob.review.list": CsvJobReviewListResult;
   readonly "csvJob.review.show": CsvJobReviewShowResult;
   readonly "csvJob.review.resolve": CsvJobReviewResolveResult;
