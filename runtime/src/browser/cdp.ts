@@ -562,16 +562,31 @@ export async function launchBrowser(
     } catch (error) {
       const cleanupError = toError(error);
       throw new BrowserLaunchCleanupError(
-        `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. Cleanup also failed: ${cleanupError.message}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+        `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. Cleanup also failed: ${cleanupError.message}. ${launchFailureHint(stderrTail)}`,
         child,
         cleanupError,
       );
     }
     throw new CdpError(
-      `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+      `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. ${launchFailureHint(stderrTail)}`,
     );
   }
   return { child, connection };
+}
+
+/**
+ * Chromium aborts with one of these when its own sandbox cannot start, which is
+ * what happens inside AgenC's Linux sandbox: the setuid helper loses its bit on
+ * a nosuid mount, and nested user namespaces are not available.
+ */
+const CHROMIUM_OWN_SANDBOX_ABORT =
+  /SUID sandbox helper binary was found, but is not configured correctly|No usable sandbox!/;
+
+/** The next step for a launch failure, chosen from what Chromium printed. */
+export function launchFailureHint(stderrTail: string): string {
+  return CHROMIUM_OWN_SANDBOX_ABORT.test(stderrTail)
+    ? "Chromium's own sandbox cannot start inside AgenC's sandbox on this system. Set [browser] no_sandbox = true to run it under AgenC's sandbox alone."
+    : "If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.";
 }
 
 function toError(error: unknown): Error {
