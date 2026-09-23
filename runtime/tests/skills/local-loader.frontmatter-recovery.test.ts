@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { parseBooleanFrontmatter } from "../../src/utils/frontmatterParser.js";
 import {
   buildSkillListingWithinBudget,
   loadLocalSkillsSnapshot,
@@ -77,6 +78,32 @@ describe("frontmatter the canonical parser accepts", () => {
     const { listedNames } = buildSkillListingWithinBudget(snapshot.skills);
     expect(listedNames).toContain("plain-skill");
     expect(listedNames).not.toContain("settle-autonomous");
+  });
+
+  it.each([
+    "true # safety",
+    "TRUE # safety",
+    '"true" # safety',
+    "'TrUe' # safety",
+    "  true  # safety",
+  ])("keeps a model-hidden skill hidden with %s", async (flag) => {
+    const { snapshot } = await snapshotOf({
+      hidden: `---\ndescription: mode: prompt-free\ndisable-model-invocation: ${flag}\n---\n# Hidden\n`,
+    });
+    expect(snapshot.skills.find((skill) => skill.name === "hidden")?.disableModelInvocation).toBe(true);
+    expect(buildSkillListingWithinBudget(snapshot.skills).listedNames).not.toContain("hidden");
+  });
+
+  it("accepts a trailing YAML comment in the normal boolean parser", () => {
+    expect(parseBooleanFrontmatter(" TRUE # safety ")).toBe(true);
+    expect(parseBooleanFrontmatter("false # safety")).toBe(false);
+  });
+
+  it("honors a top-level flag with indentation before the key", async () => {
+    const { snapshot } = await snapshotOf({
+      hidden: "---\n  description: mode: prompt-free\n  disable-model-invocation: TRUE # safety\n---\n# Hidden\n",
+    });
+    expect(snapshot.skills.find((skill) => skill.name === "hidden")?.disableModelInvocation).toBe(true);
   });
 
   it("honors the flag even when the rest of the frontmatter cannot be parsed", async () => {

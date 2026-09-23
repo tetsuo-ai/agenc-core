@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   readdir,
   readFile,
@@ -23,7 +24,10 @@ import { discoverPluginSkillRootsWithProvenance } from "../plugins/loader.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
-import { quoteProblematicValues } from "../utils/frontmatterParser.js";
+import {
+  parseBooleanFrontmatter,
+  quoteProblematicValues,
+} from "../utils/frontmatterParser.js";
 import { isRecord } from "../utils/record.js";
 import { getAgenCHomeDir } from "../utils/envUtils.js";
 import {
@@ -656,13 +660,25 @@ function implicitAliasesForSkillName(name: string): readonly string[] {
 }
 
 /**
- * A `disable-model-invocation: true` line at the top level of frontmatter
- * that does not parse. The flag is the author's statement that the model
- * must not load the skill; a YAML error elsewhere in the block does not
- * make that statement any less true, so it is kept when nothing else is.
+ * A top-level `disable-model-invocation: true` line is authoritative even if
+ * YAML recovery changes its value or another frontmatter field is invalid.
  */
-const DISABLE_MODEL_INVOCATION_LINE_RE =
-  /^disable-model-invocation:[ \t]*(?:true|"true"|'true')[ \t]*(?:#.*)?$/mu;
+function hasRawDisableModelInvocation(yamlText: string): boolean {
+  const lines = yamlText.split(/\r?\n/u);
+  const contentLines = lines.filter((line) => line.trim() !== "" && !/^\s*#/u.test(line));
+  const rootIndent = contentLines.reduce(
+    (smallest, line) => Math.min(smallest, /^([ \t]*)/u.exec(line)?.[1]?.length ?? 0),
+    Infinity,
+  );
+  return contentLines.some((line) => {
+    const match = /^([ \t]*)disable-model-invocation[ \t]*:[ \t]*(.*)$/iu.exec(line);
+    if (match === null || match[1]?.length !== rootIndent) return false;
+    const rawValue = (match[2] ?? "").trim();
+    const quoted = /^(['"])(.*)\1(?:[ \t]+#.*)?$/u.exec(rawValue);
+    const value = quoted?.[2] ?? rawValue;
+    return parseBooleanFrontmatter(value);
+  });
+}
 
 function splitFrontmatter(raw: string): SplitFrontmatter {
   if (!raw.startsWith("---")) {
@@ -671,6 +687,7 @@ function splitFrontmatter(raw: string): SplitFrontmatter {
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n)?([\s\S]*)$/u.exec(raw);
   if (!match) return { frontmatter: {}, markdown: raw };
   const yamlText = match[1] ?? "";
+  const modelProof = hasRawDisableModelInvocation(yamlText);
   let parsed: unknown;
   try {
     parsed = loadYaml(yamlText);
@@ -687,7 +704,6 @@ function splitFrontmatter(raw: string): SplitFrontmatter {
       const detail =
         (error instanceof Error ? error.message : String(error)).split("\n")[0] ??
         "";
-      const modelProof = DISABLE_MODEL_INVOCATION_LINE_RE.test(yamlText);
       return {
         frontmatter: modelProof ? { "disable-model-invocation": true } : {},
         markdown: match[2] ?? raw,
@@ -698,17 +714,22 @@ function splitFrontmatter(raw: string): SplitFrontmatter {
     }
   }
   if (parsed === null || parsed === undefined) {
-    return { frontmatter: {}, markdown: match[2] ?? "" };
+    return {
+      frontmatter: modelProof ? { "disable-model-invocation": true } : {},
+      markdown: match[2] ?? "",
+    };
   }
   if (typeof parsed !== "object" || Array.isArray(parsed)) {
     return {
-      frontmatter: {},
+      frontmatter: modelProof ? { "disable-model-invocation": true } : {},
       markdown: match[2] ?? "",
       warning: "frontmatter is not a YAML mapping; its fields were ignored",
     };
   }
   return {
-    frontmatter: parsed as Record<string, unknown>,
+    frontmatter: modelProof
+      ? { ...(parsed as Record<string, unknown>), "disable-model-invocation": true }
+      : parsed as Record<string, unknown>,
     markdown: match[2] ?? "",
   };
 }
@@ -765,19 +786,18 @@ interface ParsedSkillFile {
 }
 
 /**
- * Parsed SKILL.md files for the whole process, keyed by path and checked
- * against size, mtime, ctime, inode and device on every scan. A 1,822-skill
- * catalog is otherwise read and YAML-parsed in full (7.7 MB) by every
+ * Parsed SKILL.md files for the whole process, keyed by path and verified
+ * against the content hash on every scan. A 1,822-skill catalog is otherwise
+ * YAML-parsed in full (7.7 MB) by every
  * session the daemon opens, by every /skills and every watcher reload,
- * although an edit touches one file. ctime cannot be set from user space,
- * so an edit that restores size and mtime is still seen. Model aliases and
+ * although an edit touches one file. Model aliases and
  * other settings-dependent fields are derived from the cached frontmatter on
  * every build, never cached themselves.
  */
 const PARSED_SKILL_FILE_CACHE_LIMIT = 10_000;
 const parsedSkillFiles = new Map<
   string,
-  { readonly signature: string; readonly parsed: ParsedSkillFile }
+  { readonly contentHash: string; readonly parsed: ParsedSkillFile }
 >();
 let skillFileParseCount = 0;
 
@@ -791,7 +811,7 @@ const LEAD_LINE_MAX_CHARS = 512;
 
 function firstNonBlankLine(markdown: string): string {
   for (const line of markdown.split("\n")) {
-    if (line.trim().length > 0) return line.slice(0, LEAD_LINE_MAX_CHARS);
+    if (line.trim().length > 0) return line.trim().slice(0, LEAD_LINE_MAX_CHARS);
   }
   return "";
 }
@@ -827,23 +847,15 @@ async function readParsedSkillFile(
   filePath: string,
   warnings: SkillLoadWarning[],
 ): Promise<ParsedSkillFile | null> {
-  let signature: string;
   try {
     const stats = await stat(filePath);
     if (!stats.isFile()) return null;
-    signature = `${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}:${stats.dev}`;
   } catch {
     return null;
   }
-  const cached = parsedSkillFiles.get(filePath);
-  if (cached !== undefined && cached.signature === signature) {
-    parsedSkillFiles.delete(filePath);
-    parsedSkillFiles.set(filePath, cached);
-    return cached.parsed;
-  }
-  let raw: string;
+  let bytes: Buffer;
   try {
-    raw = await readFile(filePath, "utf8");
+    bytes = await readFile(filePath);
   } catch (error) {
     warnings.push({
       path: filePath,
@@ -851,6 +863,14 @@ async function readParsedSkillFile(
     });
     return null;
   }
+  const contentHash = createHash("sha256").update(bytes).digest("hex");
+  const cached = parsedSkillFiles.get(filePath);
+  if (cached !== undefined && cached.contentHash === contentHash) {
+    parsedSkillFiles.delete(filePath);
+    parsedSkillFiles.set(filePath, cached);
+    return cached.parsed;
+  }
+  const raw = bytes.toString("utf8");
   skillFileParseCount += 1;
   const { frontmatter, markdown, warning } = splitFrontmatter(raw);
   const parsed: ParsedSkillFile = {
@@ -860,7 +880,7 @@ async function readParsedSkillFile(
     markdownLength: markdown.length,
   };
   parsedSkillFiles.delete(filePath);
-  parsedSkillFiles.set(filePath, { signature, parsed });
+  parsedSkillFiles.set(filePath, { contentHash, parsed });
   while (parsedSkillFiles.size > PARSED_SKILL_FILE_CACHE_LIMIT) {
     const oldest = parsedSkillFiles.keys().next().value;
     if (oldest === undefined) break;
@@ -894,7 +914,7 @@ async function loadSkillFile(
   if (!canonicalFields.hasUserSpecifiedDescription && warning === undefined) {
     warnings.push({
       path: filePath,
-      reason: `no description in frontmatter, so the listing shows its first line instead: ${JSON.stringify(canonicalFields.description)}`,
+      reason: "no description in frontmatter",
     });
   }
   const {

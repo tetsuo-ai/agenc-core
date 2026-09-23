@@ -62,7 +62,7 @@ describe("skills the loader could not use are reported", () => {
     );
   });
 
-  it("says when a skill has no description and what the listing shows instead", async () => {
+  it("reports a missing description without exposing the fallback body line", async () => {
     const f = fixture();
     const bare = writeFile(join(f.root, "bare", "SKILL.md"), "# Tech Debt Analysis\n\nFind debt.\n");
     writeFile(join(f.root, "described", "SKILL.md"), "---\ndescription: Has one\n---\nBody\n");
@@ -70,9 +70,16 @@ describe("skills the loader could not use are reported", () => {
     expect(snapshot.warnings).toEqual([
       {
         path: bare,
-        reason: 'no description in frontmatter, so the listing shows its first line instead: "Tech Debt Analysis"',
+        reason: "no description in frontmatter",
       },
     ]);
+  });
+
+  it("trims indentation before limiting the fallback description", async () => {
+    const f = fixture();
+    writeFile(join(f.root, "indented", "SKILL.md"), `${" ".repeat(600)}Useful description\n`);
+    const snapshot = await f.load();
+    expect(snapshot.skills.find((skill) => skill.name === "indented")?.description).toBe("Useful description");
   });
 
   it("does not report the helper directories of a plugin skill", async () => {

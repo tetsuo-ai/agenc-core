@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -63,6 +63,8 @@ describe("skill watcher noise", () => {
     writeFileSync(join(skill, "SKILL.md"), "---\ndescription: Slides\n---\n");
     writeFileSync(join(skill, "scripts", "build.py"), "print(1)\n");
     writeFileSync(join(root, ".DS_Store"), "finder");
+    writeFileSync(join(skill, ".SKILL.md.swp"), "scratch");
+    writeFileSync(join(skill, "4913"), "scratch");
     const onReload = await reloadsFor(root, [
       join(skill, "scripts", "build.py"),
       join(root, ".DS_Store"),
@@ -86,6 +88,24 @@ describe("skill watcher noise", () => {
     const onReload = await reloadsFor(root, changed);
     expect(onReload).toHaveBeenCalledTimes(1);
     expect(onReload).toHaveBeenCalledWith({ changedPaths: [...changed].sort() });
+  });
+
+  it("reloads when an imported skill directory has a scratch-looking name", async () => {
+    const root = tempDir("noise-root");
+    const staging = tempDir("noise-staging");
+    mkdirSync(join(staging, "new.tmp"));
+    writeFileSync(join(staging, "new.tmp", "SKILL.md"), "---\ndescription: Imported\n---\nBody\n");
+    const imported = join(root, "new.tmp");
+    renameSync(join(staging, "new.tmp"), imported);
+    const onReload = await reloadsFor(root, [imported]);
+    expect(onReload).toHaveBeenCalledWith({ changedPaths: [imported] });
+  });
+
+  it("reloads when a vanished scratch-looking path might have been a directory", async () => {
+    const root = tempDir("noise-root");
+    const vanished = join(root, "gone.tmp");
+    const onReload = await reloadsFor(root, [vanished]);
+    expect(onReload).toHaveBeenCalledWith({ changedPaths: [vanished] });
   });
 });
 

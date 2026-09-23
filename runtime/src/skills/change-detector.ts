@@ -227,28 +227,13 @@ async function clearCommandCaches(): Promise<void> {
 }
 
 /**
- * Names that never hold a skill and churn on their own: Finder metadata and
- * editor scratch files (vim's 4913 write probe is gone before it could be
- * checked on disk).
- */
-function isScratchFileName(name: string): boolean {
-  return (
-    name === ".DS_Store" ||
-    name === "4913" ||
-    name.startsWith(".#") ||
-    name.endsWith("~") ||
-    /\.(?:swp|swo|swx|tmp)$/u.test(name)
-  );
-}
-
-/**
  * Whether a change at this path can alter the skill catalog. The loader
  * reads SKILL.md files and the directories that lead to them, nothing else,
  * so an existing regular file under any other name (a skill's scripts,
  * references, logs, caches) cannot add, remove or edit a skill. Anything
- * that is gone, a directory, a link or a SKILL.md still reloads. On the
- * audited catalog four bursts of such writes (Finder's .DS_Store in the
- * root, script files beside a SKILL.md) caused four full reloads.
+ * that is gone, a directory, a link or a SKILL.md still reloads, including
+ * scratch-looking names that could belong to a directory. On the audited
+ * catalog four bursts of regular file writes caused four full reloads.
  */
 function shouldIgnorePath(path: string): boolean {
   const parts = path.split(/[\\/]/u);
@@ -257,7 +242,6 @@ function shouldIgnorePath(path: string): boolean {
   if (name.toLowerCase() === "skill.md") return false;
   // A plugin manifest names the skills' owner; a root can sit on a plugin.
   if (parts.includes(".agenc-plugin")) return false;
-  if (isScratchFileName(name)) return true;
   try {
     return lstatSync(path).isFile();
   } catch {

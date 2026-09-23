@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  renameSync,
   rmSync,
   statSync,
   utimesSync,
@@ -9,7 +10,23 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const staleStat = vi.hoisted(() => ({
+  path: "",
+  value: null as import("node:fs").Stats | null,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...original,
+    stat: (path: string) =>
+      path === staleStat.path && staleStat.value !== null
+        ? Promise.resolve(staleStat.value)
+        : original.stat(path),
+  };
+});
 
 import {
   buildSkillListingWithinBudget,
@@ -86,6 +103,34 @@ describe("parsed SKILL.md reuse", () => {
     expect(statSync(file).size).toBe(size);
     expect(statSync(file).mtimeMs).toBe(mtime.getTime());
     expect(await f.description("skill-0")).toBe("does jib 0");
+  });
+
+  it("reparses a replacement even when stat identity appears unchanged", async () => {
+    const f = fixture(1);
+    const file = f.files[0]!;
+    writeFileSync(file, "---\ndescription: does job 0\ndisable-model-invocation: false\n---\n# skill-0\nBody\n");
+    const first = await loadLocalSkillsSnapshot(f.options);
+    expect(first.skills.find((skill) => skill.name === "skill-0")?.disableModelInvocation).toBe(false);
+    const before = skillFileParseCountForTest();
+    const oldStat = statSync(file);
+    const replacement = "---\ndescription: does job 0\ndisable-model-invocation: true \n---\n# skill-0\nBody\n";
+    const staged = join(f.root, "replacement.md");
+    writeFileSync(staged, replacement);
+    const { atime, mtime } = oldStat;
+    utimesSync(staged, atime, mtime);
+    renameSync(staged, file);
+    expect(statSync(file).size).toBe(oldStat.size);
+    expect(Math.abs(statSync(file).mtimeMs - oldStat.mtimeMs)).toBeLessThan(1);
+    staleStat.path = file;
+    staleStat.value = oldStat;
+    try {
+      const second = await loadLocalSkillsSnapshot(f.options);
+      expect(second.skills.find((skill) => skill.name === "skill-0")?.disableModelInvocation).toBe(true);
+      expect(skillFileParseCountForTest() - before).toBe(1);
+    } finally {
+      staleStat.path = "";
+      staleStat.value = null;
+    }
   });
 
   it("drops a deleted skill and takes a new one", async () => {

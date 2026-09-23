@@ -329,10 +329,11 @@ export function coerceDescriptionToString(
 
 /**
  * Parse a boolean frontmatter value.
- * Only returns true for literal true or "true" string.
+ * Accept a true value even if recovery preserved a trailing YAML comment.
  */
 export function parseBooleanFrontmatter(value: unknown): boolean {
-  return value === true || value === 'true'
+  return value === true ||
+    (typeof value === 'string' && /^true(?:[ \t]+#.*)?$/iu.test(value.trim()))
 }
 
 /**
