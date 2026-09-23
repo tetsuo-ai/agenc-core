@@ -216,6 +216,12 @@ export interface AgentConfig {
   readonly retention?: AgentRunRetentionConfig;
 }
 
+/** Operator authority for routing subagents to another provider. */
+export interface AgentsConfig {
+  readonly cross_provider_enabled?: boolean;
+  readonly allowed_providers?: readonly string[];
+}
+
 /**
  * GOAL #4b Stage 1 — durable / checkpointed turns.
  *
@@ -904,6 +910,7 @@ export interface AgenCConfig {
 
   // ── AgenC-specific additions ──────────────────────────────────────
   readonly agent?: AgentConfig;
+  readonly agents?: AgentsConfig;
   readonly durableTurns?: DurableTurnsConfig;
   readonly completion_gate?: CompletionGateConfig;
   readonly goal?: GoalConfig;
@@ -1047,6 +1054,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "agencMdExcludes",
   "pluginTrustMessage",
   "agent",
+  "agents",
   "stream_watchdog_timeout_ms",
   "provider_outage_wait_ms",
   "provider_outage_retry_ms",
@@ -1166,6 +1174,10 @@ export function defaultConfig(): AgenCConfig {
     fileCheckpointingEnabled: true,
     transcriptPersistenceEnabled: true,
     promptSuggestionEnabled: false,
+    agents: Object.freeze({
+      cross_provider_enabled: false,
+      allowed_providers: Object.freeze([]),
+    }) as AgentsConfig,
     agent: Object.freeze({
       // Default budget is intentionally empty: caps are designed for
       // explicit `agenc agent start` background agents, but the daemon
@@ -1310,6 +1322,12 @@ export class InvalidProviderConfigError extends InvalidNamedConfigError {
 export class InvalidAgentConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("agent", "InvalidAgentConfigError", field, detail);
+  }
+}
+
+export class InvalidAgentsConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("agents", "InvalidAgentsConfigError", field, detail);
   }
 }
 
@@ -2124,6 +2142,37 @@ export function validateAgentConfig(raw: unknown): AgentConfig | undefined {
   const retention = validateAgentRetention(record.retention);
   if (retention !== undefined) out.retention = retention;
   return Object.freeze(out as AgentConfig);
+}
+
+export function validateAgentsConfig(raw: unknown): AgentsConfig | undefined {
+  if (raw === undefined) return undefined;
+  const fail = (field: string, detail: string): InvalidAgentsConfigError =>
+    new InvalidAgentsConfigError(field, detail);
+  const record = requirePlainObject(raw, "", fail);
+  rejectUnknownFields(record, new Set(["cross_provider_enabled", "allowed_providers"]), fail);
+  const enabled = record.cross_provider_enabled;
+  if (enabled !== undefined && typeof enabled !== "boolean") {
+    throw fail("cross_provider_enabled", "expected boolean");
+  }
+  const allowed = record.allowed_providers;
+  if (allowed !== undefined && !Array.isArray(allowed)) {
+    throw fail("allowed_providers", "expected array of provider names");
+  }
+  const providers: string[] = [];
+  for (const item of (allowed as readonly unknown[] | undefined) ?? []) {
+    const provider = typeof item === "string" ? resolveBuiltInProviderSlug(item) : undefined;
+    if (provider === undefined) {
+      throw fail("allowed_providers", `unknown provider ${JSON.stringify(item)}`);
+    }
+    if (providers.includes(provider)) {
+      throw fail("allowed_providers", `duplicate provider ${JSON.stringify(provider)}`);
+    }
+    providers.push(provider);
+  }
+  return Object.freeze({
+    ...(enabled !== undefined ? { cross_provider_enabled: enabled } : {}),
+    ...(allowed !== undefined ? { allowed_providers: Object.freeze(providers) } : {}),
+  });
 }
 
 const PER_TOOL_CONFIG_KEYS: ReadonlySet<string> = new Set([
@@ -3512,6 +3561,10 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
   }
   if (config.agent !== undefined) {
     out.agent = validateAgentConfig(config.agent);
+    changed = true;
+  }
+  if (config.agents !== undefined) {
+    out.agents = validateAgentsConfig(config.agents);
     changed = true;
   }
   if (config.plugins !== undefined) {

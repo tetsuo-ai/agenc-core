@@ -460,6 +460,7 @@ export type SessionSource =
 
 /** The original config blob (large). */
 export interface Config {
+  readonly agents?: import("../config/schema.js").AgentsConfig;
   readonly model: string;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningEffort?: ReasoningEffort;

@@ -340,6 +340,8 @@ otherwise.
 | `transcriptPersistenceEnabled` | `true` |
 | `promptSuggestionEnabled` | `false` |
 | `agent.budget` | no caps |
+| `agents.cross_provider_enabled` | `false`. User or managed config may enable cross-provider subagents. |
+| `agents.allowed_providers` | `[]`. Built-in provider names permitted for cross-provider subagents. |
 | `agent.retention.completed_days` | `30` |
 | `agent.retention.failed_days` | `90` |
 | `agent.retention.snapshot_days` | `3` |

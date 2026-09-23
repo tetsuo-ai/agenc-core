@@ -48,6 +48,8 @@ import {
   requireMailboxMetadataKind,
 } from "./mailbox.js";
 import type { ValidatedMailboxMetadata } from "./mailbox-metadata.js";
+import type { ProviderSelection } from "../session/provider-service.js";
+import { assertCrossProviderAllowed, resolveChildSelection } from "./cross-provider.js";
 import {
   AgentIdExistsError,
   AgentPathExistsError,
@@ -469,12 +471,25 @@ export class AgentControl {
     readonly depthCap?: number;
     readonly capacityPermit?: AgentCapacityPermit;
     readonly capacityOwnerId?: string;
+    readonly providerSelection?: ProviderSelection;
     /** Fail-closed role identity for restart/rehydration spawns. */
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
     >;
   }): Promise<LiveAgent> {
+    if (opts.providerSelection !== undefined) {
+      assertCrossProviderAllowed(this.session, opts.providerSelection.provider);
+      const validated = await resolveChildSelection(
+        this.session,
+        opts.providerSelection.provider,
+        opts.providerSelection.model,
+      );
+      if (validated.provider !== opts.providerSelection.provider ||
+          validated.model !== opts.providerSelection.model) {
+        throw new Error("child provider/model pair changed before spawn");
+      }
+    }
     if (this.threadManager) {
       return this.threadManager.spawnLiveAgent(opts);
     }
@@ -491,6 +506,7 @@ export class AgentControl {
     readonly depthCap?: number;
     readonly capacityPermit?: AgentCapacityPermit;
     readonly capacityOwnerId?: string;
+    readonly providerSelection?: ProviderSelection;
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
@@ -685,6 +701,15 @@ export class AgentControl {
           ? { agentPath: explicitAgentPath }
           : {}),
       });
+      if (opts.providerSelection !== undefined) {
+        metadata = {
+          ...metadata,
+          crossProvider: {
+            ...opts.providerSelection,
+            policy: "user-or-managed-agents-v1",
+          },
+        };
+      }
       if (explicitAgentPath === undefined && metadata.agentPath !== undefined) {
         reservation.reserveAgentPath(metadata.agentPath);
       }
@@ -1526,6 +1551,22 @@ export class AgentControl {
     }
 
     const role = resolveResumedAgentRole(this.roleCatalog, metadata);
+    if (metadata.crossProvider !== undefined) {
+      try {
+        assertCrossProviderAllowed(this.session, metadata.crossProvider.provider);
+        const selection = await resolveChildSelection(
+          this.session,
+          metadata.crossProvider.provider,
+          metadata.crossProvider.model,
+        );
+        const prepared = await this.session.providerService.prepare(selection);
+        await prepared.binding.instance.dispose?.();
+      } catch (error) {
+        throw new InvalidAgentMetadataError(
+          `cannot resume cross-provider child: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
 
     // Idempotency is exact identity, never merely a matching id or path. A
     // partial match would let resume overwrite one live map while leaving the
@@ -1766,6 +1807,9 @@ export class AgentControl {
       agentRole: agent.role.name,
       depth: agent.depth,
       roleConfig: agent.role.config,
+      ...(agent.metadata.crossProvider !== undefined
+        ? { crossProvider: agent.metadata.crossProvider }
+        : {}),
     };
   }
 

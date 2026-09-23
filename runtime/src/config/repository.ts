@@ -632,6 +632,7 @@ function sanitizeRepositoryLayer(
 
   for (const key of [
     "auth",
+    "agents",
     "profiles",
     "providers",
     "attachments",

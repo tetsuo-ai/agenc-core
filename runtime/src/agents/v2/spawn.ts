@@ -15,6 +15,15 @@ import { liveAgentSession } from "../live-session.js";
 import { READ_ONLY_DELEGATION_PROMPT, sessionIsPlanning, sessionReadOnlyDelegation } from "../readonly-delegation.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
+import { buildProviderModelCatalog } from "../../config/provider-model-authority.js";
+import {
+  allowedChildPairs,
+  childCatalogConfig,
+  childModelInfo,
+  childProviderPolicy,
+  currentChildProvider,
+  resolveChildSelection,
+} from "../cross-provider.js";
 import {
   assertValidAgentName,
   depthOfAgentPath,
@@ -115,8 +124,11 @@ ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.`;
   const cfg = session?.config?.multiAgentV2;
+  const policy = session === null ? undefined : childProviderPolicy(session);
+  const pairs = session === null ? [] : allowedChildPairs(session);
+  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml.${policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairs.map(({ provider, model }) => `${provider}/${model}`).join(", ") || "none"}.` : ""}`;
   if (sessionIsPlanning(session) || sessionReadOnlyDelegation(session) !== undefined) {
-    return `${base}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
+    return `${base}\n${policyDescription}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
   }
   // The delegation rules (when to delegate, how to design subtasks, what to
   // do after delegating, parallel patterns) live in the static `# Subagents`
@@ -127,7 +139,7 @@ The new agent's canonical task name will be provided to it along with the messag
   if (cfg?.usageHintEnabled && cfg.usageHintText) {
     result = `${result}\n${cfg.usageHintText}`;
   }
-  return result;
+  return `${result}\n${policyDescription}`;
 }
 
 // Every ReasoningEffort spelling parses here; whether a level applies is the
@@ -241,51 +253,31 @@ function formatSupportedServiceTiers(modelInfo: ModelInfo): string {
   return supported.length > 0 ? supported.join(", ") : "none";
 }
 
-async function validateSpawnModelOverrides(opts: {
-  readonly session: Session;
-  readonly model?: string;
+function validateSpawnModelOverrides(opts: {
+  readonly modelInfo: ModelInfo;
   readonly reasoningEffort?: ReasoningEffort;
-}): Promise<ToolResult | null> {
-  if (opts.model === undefined && opts.reasoningEffort === undefined) {
-    return null;
-  }
-  const modelsManager = opts.session.services.modelsManager;
-  const currentModel = opts.session.modelInfo.slug;
-  const model = opts.model ?? currentModel;
-  if (opts.model !== undefined) {
-    const listed =
-      modelsManager.tryListModels() ?? (await modelsManager.listModels());
-    if (!listed.some((candidate) => candidate.slug === opts.model)) {
-      const available = listed.map((candidate) => candidate.slug).join(", ");
-      return agentValidationError(
-        `Unknown model \`${opts.model}\` for spawn_agent. Available models: ${available}`,
-      );
-    }
-  }
+}): ToolResult | null {
   if (
     opts.reasoningEffort !== undefined &&
     opts.reasoningEffort !== "none"
   ) {
-    const modelInfo =
-      opts.model === undefined
-        ? opts.session.modelInfo
-        : await modelsManager.getModelInfo(model);
+    const modelInfo = opts.modelInfo;
     if (!modelInfo.supportedReasoningLevels.includes(opts.reasoningEffort)) {
       const supported = modelInfo.supportedReasoningLevels.join(", ");
       return agentValidationError(
-        `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${model}\`. Supported reasoning efforts: ${supported}`,
+        `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${modelInfo.slug}\`. Supported reasoning efforts: ${supported}`,
       );
     }
   }
   return null;
 }
 
-async function resolveSpawnServiceTier(opts: {
+function resolveSpawnServiceTier(opts: {
   readonly session: Session;
-  readonly model?: string;
+  readonly modelInfo: ModelInfo;
   readonly requestedServiceTier?: string;
   readonly roleServiceTier?: string;
-}): Promise<{ readonly serviceTier?: string } | ToolResult> {
+}): { readonly serviceTier?: string } | ToolResult {
   const parentServiceTier = opts.session.sessionConfiguration.serviceTier;
   if (
     opts.requestedServiceTier === undefined &&
@@ -294,25 +286,20 @@ async function resolveSpawnServiceTier(opts: {
   ) {
     return {};
   }
-  const model =
-    opts.model ??
-    opts.session.sessionConfiguration.collaborationMode.model ??
-    opts.session.modelInfo.slug;
-  if (!model) {
-    return agentValidationError(
-      "spawn_agent could not resolve the child model for service tier validation",
-    );
-  }
-  const modelInfo =
-    model === opts.session.modelInfo.slug
-      ? opts.session.modelInfo
-      : await opts.session.services.modelsManager.getModelInfo(model);
+  const modelInfo = opts.modelInfo;
+  const model = modelInfo.slug;
   if (
     opts.requestedServiceTier !== undefined &&
     !modelSupportsServiceTier(modelInfo, opts.requestedServiceTier)
   ) {
     return agentValidationError(
       `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
+    );
+  }
+  if (opts.roleServiceTier !== undefined &&
+      !modelSupportsServiceTier(modelInfo, opts.roleServiceTier)) {
+    return agentValidationError(
+      `Role service tier \`${opts.roleServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
     );
   }
   for (const candidate of [
@@ -334,10 +321,12 @@ function buildSpawnModelSchema(
   session: Session | null,
 ): Record<string, unknown> {
   const currentSlug = session?.modelInfo?.slug;
-  const slugs = session?.services?.modelsManager
-    ?.tryListModels()
-    ?.map((candidate) => candidate.slug)
-    .filter((slug): slug is string => typeof slug === "string" && slug.length > 0);
+  const slugs = session === null ? undefined : [
+    ...(session.services.configStore !== undefined
+      ? buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true })[currentChildProvider(session).provider] ?? []
+      : (session.services.modelsManager?.tryListModels() ?? []).map((candidate) => candidate.slug)),
+    ...allowedChildPairs(session).map(({ provider, model }) => `${provider}/${model}`),
+  ];
   const inheritClause = currentSlug
     ? `omit to inherit the parent's current model (\`${currentSlug}\`)`
     : "omit to inherit the parent's current model";
@@ -348,8 +337,8 @@ function buildSpawnModelSchema(
       enum: uniqueSlugs,
       description:
         `Optional model override; ${inheritClause}. ` +
-        `If set, must be one of this provider's models: ${uniqueSlugs.join(", ")}. ` +
-        "Do NOT use cross-provider aliases like sonnet/opus/haiku.",
+        `If set, use a model from the active provider or an allowed qualified provider/model pair: ${uniqueSlugs.join(", ")}. ` +
+        "Do not use cross-provider aliases like sonnet/opus/haiku.",
     };
   }
   return {
@@ -357,7 +346,7 @@ function buildSpawnModelSchema(
     description:
       `Optional model override; ${inheritClause}. ` +
       "If set, it must be one of the active provider's model slugs. " +
-      "Do NOT use cross-provider aliases like sonnet/opus/haiku.",
+      "When cross-provider spawning is enabled, use provider/model for another provider. Do not use cross-provider aliases like sonnet/opus/haiku.",
   };
 }
 
@@ -411,6 +400,10 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknow
           ].join("\n\n"),
       },
       model: buildSpawnModelSchema(opts.getSession()),
+      provider: {
+        type: "string",
+        description: "Optional provider for the child model. Cross-provider choices require [agents] cross_provider_enabled and an allowed provider/model pair.",
+      },
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
       fork_turns: {
@@ -459,6 +452,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "task_name",
         "agent_type",
         "model",
+        "provider",
         "reasoning_effort",
         "service_tier",
         "fork_turns",
@@ -473,6 +467,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       "task_name",
       "agent_type",
       "model",
+      "provider",
       "reasoning_effort",
       "service_tier",
       "fork_turns",
@@ -541,6 +536,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     // definition whose exact name is also a built-in alias disappear.
     const role = rawRole;
     const model = stringValue(args.model);
+    const requestedProvider = stringValue(args.provider);
     const rawReasoningEffort = stringValue(args.reasoning_effort);
     const reasoningEffort = parseReasoningEffort(rawReasoningEffort);
     if (rawReasoningEffort !== undefined && reasoningEffort === undefined) {
@@ -550,14 +546,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const taskName = normalizeSpawnTaskName(rawTaskName);
     const forkMode = parseForkTurns(args.fork_turns);
     if (forkMode !== undefined && "content" in forkMode) return forkMode;
-    if (
-      forkMode?.kind === "full_history" &&
-      (role !== undefined || model !== undefined || reasoningEffort !== undefined)
-    ) {
-      return spawnValidationError(
-        "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
-      );
-    }
     const rawIsolation = stringValue(args.isolation);
     if (
       rawIsolation !== undefined &&
@@ -624,113 +612,45 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
-    let overrideError: ToolResult | null;
-    try {
-      overrideError = await validateSpawnModelOverrides({
-        session,
-        ...(model !== undefined ? { model } : {}),
-        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      });
-    } catch (error) {
-      return failSpawn(error instanceof Error ? error.message : String(error));
-    }
-    if (overrideError) {
-      const overrideReason =
-        typeof overrideError.content === "string"
-          ? (() => {
-              try {
-                const parsed = JSON.parse(overrideError.content) as {
-                  error?: unknown;
-                };
-                return typeof parsed.error === "string"
-                  ? parsed.error
-                  : overrideError.content;
-              } catch {
-                return overrideError.content;
-              }
-            })()
-          : "spawn_agent override validation failed";
-      emitSpawnFailureEnd(overrideReason);
-      return confirmedNoSpawn(overrideError);
-    }
     const roleConfiguredModel = roleModel(resolvedRole);
     const roleConfiguredReasoningEffort = roleReasoningEffort(resolvedRole);
     const roleConfiguredServiceTier = roleServiceTier(resolvedRole);
     const effectiveModel = roleConfiguredModel ?? model;
-    const effectiveReasoningEffort =
-      roleConfiguredReasoningEffort ?? reasoningEffort;
-    let roleOverrideError: ToolResult | null = null;
-    if (
-      roleConfiguredModel !== undefined ||
-      roleConfiguredReasoningEffort !== undefined
-    ) {
-      try {
-        roleOverrideError = await validateSpawnModelOverrides({
-          session,
-          ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-          ...(effectiveReasoningEffort !== undefined
-            ? { reasoningEffort: effectiveReasoningEffort }
-            : {}),
-        });
-      } catch (error) {
-        return failSpawn(
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    }
-    if (roleOverrideError) {
-      const overrideReason =
-        typeof roleOverrideError.content === "string"
-          ? (() => {
-              try {
-                const parsed = JSON.parse(roleOverrideError.content) as {
-                  error?: unknown;
-                };
-                return typeof parsed.error === "string"
-                  ? parsed.error
-                  : roleOverrideError.content;
-              } catch {
-                return roleOverrideError.content;
-              }
-            })()
-          : "spawn_agent role override validation failed";
-      emitSpawnFailureEnd(overrideReason);
-      return confirmedNoSpawn(roleOverrideError);
-    }
-    let serviceTierResult: Awaited<
-      ReturnType<typeof resolveSpawnServiceTier>
-    >;
+    const effectiveReasoningEffort = roleConfiguredReasoningEffort ?? reasoningEffort;
+    let selection: Awaited<ReturnType<typeof resolveChildSelection>>;
+    let targetModelInfo: ModelInfo;
     try {
-      serviceTierResult = await resolveSpawnServiceTier({
-        session,
-        ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-        ...(requestedServiceTier !== undefined
-          ? { requestedServiceTier }
-          : {}),
-        ...(roleConfiguredServiceTier !== undefined
-          ? { roleServiceTier: roleConfiguredServiceTier }
-          : {}),
-      });
+      selection = await resolveChildSelection(session, requestedProvider, effectiveModel);
+      if (selection.provider !== currentChildProvider(session).provider && forkMode !== undefined) {
+        return failSpawn("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
+      }
+      if (forkMode?.kind === "full_history" &&
+          (role !== undefined || model !== undefined || requestedProvider !== undefined || reasoningEffort !== undefined)) {
+        return failSpawn("Full-history forked agents inherit the parent agent type, model, provider, and reasoning effort; omit agent_type, model, provider, and reasoning_effort, or spawn without a full-history fork.");
+      }
+      targetModelInfo = await childModelInfo(session, selection);
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
+    const crossProvider = selection.provider !== currentChildProvider(session).provider;
+    const selectedReasoningEffort = effectiveReasoningEffort ??
+      (crossProvider ? targetModelInfo.defaultReasoningLevel : undefined);
+    const effortError = validateSpawnModelOverrides({
+      modelInfo: targetModelInfo,
+      ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
+    });
+    if (effortError !== null) {
+      emitSpawnFailureEnd(effortError.content);
+      return confirmedNoSpawn(effortError);
+    }
+    const serviceTierResult = resolveSpawnServiceTier({
+      session,
+      modelInfo: targetModelInfo,
+      ...(requestedServiceTier !== undefined ? { requestedServiceTier } : {}),
+      ...(roleConfiguredServiceTier !== undefined ? { roleServiceTier: roleConfiguredServiceTier } : {}),
+    });
     if ("content" in serviceTierResult) {
-      const overrideReason =
-        typeof serviceTierResult.content === "string"
-          ? (() => {
-              try {
-                const parsed = JSON.parse(serviceTierResult.content) as {
-                  error?: unknown;
-                };
-                return typeof parsed.error === "string"
-                  ? parsed.error
-                  : serviceTierResult.content;
-              } catch {
-                return serviceTierResult.content;
-              }
-            })()
-          : "spawn_agent service tier validation failed";
-      emitSpawnFailureEnd(overrideReason);
+      emitSpawnFailureEnd(serviceTierResult.content);
       return confirmedNoSpawn(serviceTierResult);
     }
     if (!taskName) {
@@ -778,9 +698,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         // has a consumer (todo-106). close_agent still tears them down.
         keepAlive: true,
         ...(role !== undefined ? { role } : {}),
-        ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-        ...(effectiveReasoningEffort !== undefined
-          ? { reasoningEffort: effectiveReasoningEffort }
+        model: selection.model,
+        modelInfo: targetModelInfo,
+        ...(crossProvider
+          ? { providerSelection: selection } : {}),
+        ...(selectedReasoningEffort !== undefined
+          ? { reasoningEffort: selectedReasoningEffort }
           : {}),
         ...(serviceTierResult.serviceTier !== undefined
           ? { serviceTier: serviceTierResult.serviceTier }

@@ -1108,6 +1108,71 @@ describe("AgentControl", () => {
     expect(registry.activeCount).toBe(1);
   });
 
+  it("persists the cross-provider pair and policy in the spawn edge", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-cross-provider-edge-"));
+    const rolloutStore = openRolloutStore({ cwd, sessionId: "cross-provider-root" });
+    try {
+      const session = stubSession({ cwd, conversationId: "cross-provider-root", rolloutStore });
+      const config = {
+        model_provider: "grok",
+        model: "grok-4.6",
+        agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+      };
+      Object.assign(session, {
+        modelInfo: { slug: "grok-4.6" },
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
+        services: { ...session.services, configStore: { current: () => config } },
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      registerDurableSessionRoot(control, cwd, "cross-provider-root");
+      const live = await control.spawn({
+        parentPath: "/root",
+        providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" },
+      });
+      expect(live.metadata.crossProvider).toEqual({
+        provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1",
+      });
+      expect(registry.agentMetadataForThread(live.agentId)?.crossProvider)
+        .toEqual(live.metadata.crossProvider);
+      expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.metadata.crossProvider)
+        .toEqual(live.metadata.crossProvider);
+      expect(control.getAgentConfigSnapshot(live.agentId)?.crossProvider)
+        .toEqual(live.metadata.crossProvider);
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["provider removed", "credential gone"])("refuses cross-provider recovery when %s", async (failure) => {
+    const session = stubSession();
+    let allowed = ["deepseek"];
+    let credentialReady = true;
+    const prepare = vi.fn(async () => {
+      if (!credentialReady) throw new Error("DeepSeek credential is missing; add a saved API key");
+      return { binding: { instance: { dispose: vi.fn() } } };
+    });
+    Object.assign(session, {
+      modelInfo: { slug: "grok-4.6" },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }), prepare },
+      services: { ...session.services, configStore: { current: () => ({ model_provider: "grok", model: "grok-4.6", agents: { cross_provider_enabled: true, allowed_providers: allowed } }) } },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const metadata: AgentMetadata = {
+      agentId: "cross-recovery", agentPath: "/root/cross_recovery", agentNickname: "cross",
+      agentRole: "scanner", ...roleProvenance(control, "scanner"), depth: 1,
+      crossProvider: { provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1" },
+    };
+    if (failure === "provider removed") allowed = [];
+    else credentialReady = false;
+    await expect(control.resume({ parentPath: "/root", metadata })).rejects.toThrow(
+      failure === "provider removed" ? /allowed_providers/u : /credential is missing/u,
+    );
+    expect(registry.activeCount).toBe(0);
+  });
+
   it("resume() fails closed for named legacy metadata without workspace provenance", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();

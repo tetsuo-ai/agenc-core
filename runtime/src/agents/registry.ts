@@ -39,6 +39,12 @@ export const ROOT_AGENT_PATH = "/root" as AgentPath;
 export const MEMORY_AGENT_PATH = "/morpheus" as AgentPath;
 
 export interface AgentMetadata {
+  /** Durable routing decision and operator policy origin for child recovery. */
+  readonly crossProvider?: {
+    readonly provider: string;
+    readonly model: string;
+    readonly policy: "user-or-managed-agents-v1";
+  };
   readonly executionConstraint?: ReadOnlyDelegationConstraint;
   readonly agentId?: ThreadId;
   readonly agentPath?: AgentPath;
@@ -128,6 +134,15 @@ export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
     "lastTaskMessage",
     false,
   );
+  const crossProvider = record.crossProvider;
+  if (crossProvider !== undefined && (
+    typeof crossProvider !== "object" || crossProvider === null || Array.isArray(crossProvider) ||
+    typeof (crossProvider as Record<string, unknown>).provider !== "string" ||
+    typeof (crossProvider as Record<string, unknown>).model !== "string" ||
+    (crossProvider as Record<string, unknown>).policy !== "user-or-managed-agents-v1"
+  )) {
+    throw new InvalidAgentMetadataError("invalid agent metadata crossProvider");
+  }
   return {
     depth: record.depth,
     ...(executionConstraint !== undefined ? { executionConstraint } : {}),
@@ -136,6 +151,7 @@ export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
     ...(agentNickname !== undefined ? { agentNickname } : {}),
     ...roleMetadata,
     ...(lastTaskMessage !== undefined ? { lastTaskMessage } : {}),
+    ...(crossProvider !== undefined ? { crossProvider: crossProvider as NonNullable<AgentMetadata["crossProvider"]> } : {}),
   };
 }
 

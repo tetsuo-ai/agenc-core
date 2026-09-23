@@ -106,9 +106,12 @@ import {
 import { TerminalRunEpochOpenError } from "../session/rollout-store.js";
 import {
   threadConfigSnapshot,
+  type ModelInfo,
   type ReasoningEffort,
   type TurnContext,
 } from "../session/turn-context.js";
+import type { ProviderSelection } from "../session/provider-service.js";
+import { assertCrossProviderAllowed, childModelInfo } from "./cross-provider.js";
 import type { LiveAgent } from "./control.js";
 import {
   createMailboxMetadata,
@@ -176,6 +179,8 @@ export interface RunAgentParams {
   readonly timeoutMs?: number;
   /** Optional child model override. */
   readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly providerSelection?: ProviderSelection;
   /** Optional child reasoning-effort override. */
   readonly reasoningEffort?: ReasoningEffort;
   /** Optional child service-tier override. */
@@ -3029,16 +3034,20 @@ function cloneSessionConfiguration(
     readonly model?: string;
     readonly reasoningEffort?: ReasoningEffort;
     readonly serviceTier?: string;
+    readonly crossProvider?: boolean;
   } = {},
 ): Session["sessionConfiguration"] {
   const base = parent.sessionConfiguration;
   const cwd = worktree?.path ?? base.cwd;
-  const serviceTier =
+  const serviceTier = overrides.crossProvider === true
+    ? overrides.serviceTier
+    :
     overrides.serviceTier !== undefined
       ? overrides.serviceTier
       : base.serviceTier;
+  const { reasoningEffort: _parentReasoningEffort, ...withoutParentReasoningEffort } = base.collaborationMode;
   const collaborationMode = {
-    ...base.collaborationMode,
+    ...(overrides.crossProvider === true ? withoutParentReasoningEffort : base.collaborationMode),
     ...(overrides.model !== undefined ? { model: overrides.model } : {}),
     ...(overrides.reasoningEffort !== undefined
       ? { reasoningEffort: overrides.reasoningEffort }
@@ -3047,7 +3056,7 @@ function cloneSessionConfiguration(
   return {
     ...base,
     cwd,
-    ...(serviceTier !== undefined ? { serviceTier } : {}),
+    ...(serviceTier !== undefined || overrides.crossProvider === true ? { serviceTier } : {}),
     collaborationMode,
     sessionSource: {
       kind: "subagent",
@@ -3103,7 +3112,9 @@ function buildChildConfig(
 function buildChildModelInfo(
   parent: Session,
   sessionConfiguration: Session["sessionConfiguration"],
+  modelInfo?: ModelInfo,
 ): Session["modelInfo"] {
+  if (modelInfo !== undefined) return modelInfo;
   return {
     ...parent.modelInfo,
     slug: sessionConfiguration.collaborationMode.model,
@@ -3237,6 +3248,7 @@ function prepareChildSessionAuthority(
       ...(childServiceTier !== undefined
         ? { serviceTier: childServiceTier }
         : {}),
+      ...(params.providerSelection !== undefined ? { crossProvider: true } : {}),
     },
   );
   const sandboxExecutionBroker =
@@ -3306,7 +3318,7 @@ function buildChildSession(
         : {}),
     },
     initialState: {
-      sessionConfiguration,
+      sessionConfiguration: { ...sessionConfiguration, provider },
       history: [],
     },
     features: params.parent.features,
@@ -3318,7 +3330,10 @@ function buildChildSession(
       // A provider service is session-owned. Do not let the parent's service
       // survive the spread above and silently override the forked provider in
       // the ChildSession constructor.
-      providerService: undefined,
+      providerService: params.parent.providerService.forkForChild(provider, {
+        provider: params.providerSelection?.provider ?? params.parent.providerService.current().provider,
+        model: params.providerSelection?.model ?? params.parent.providerService.current().model,
+      }),
       providerEnvironment: params.parent.providerService.environment(),
       registry,
       ...(params.parent.services.executionAdmission !== undefined
@@ -3364,11 +3379,22 @@ function buildChildSession(
     },
     jsRepl: params.parent.jsRepl,
     config: buildChildConfig(params.parent, sessionConfiguration),
-    modelInfo: buildChildModelInfo(params.parent, sessionConfiguration),
+    modelInfo: buildChildModelInfo(params.parent, sessionConfiguration, params.modelInfo),
   });
   params.live.configSnapshot = threadConfigSnapshot(
     sessionConfiguration,
   ) as unknown as Record<string, unknown>;
+  if (params.providerSelection !== undefined) {
+    // TODO(phase 4): project provider/model and reconciled child cost into the
+    // protocol/native worker status together with the admission run ID.
+    params.live.configSnapshot = {
+      ...params.live.configSnapshot,
+      crossProvider: {
+        ...params.providerSelection,
+        policy: "user-or-managed-agents-v1",
+      },
+    };
+  }
 
   try {
     const childRolloutStore = mountChildRunJournal({
@@ -3416,6 +3442,8 @@ export async function* runAgent(
   const { live, parent } = params;
   let childSession: ChildSession | null = null;
   let ownedChildProvider: LLMProvider | null = null;
+  let ownedPreparedProvider: LLMProvider | null = null;
+  let unsubscribeCrossPolicy: (() => void) | null = null;
   let childSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let unsubscribeChildUsage: (() => void) | null = null;
   let forwardMergedAbort: (() => void) | null = null;
@@ -3722,6 +3750,32 @@ export async function* runAgent(
   if (params.externalSignal?.aborted) onExternalAbort?.();
 
   try {
+    const selectedProvider = params.providerSelection ?? live.metadata.crossProvider;
+    if (selectedProvider !== undefined) {
+      if (live.metadata.crossProvider !== undefined &&
+          (selectedProvider.provider !== live.metadata.crossProvider.provider ||
+           selectedProvider.model !== live.metadata.crossProvider.model)) {
+        throw new Error("cross-provider child pair conflicts with durable spawn metadata");
+      }
+      assertCrossProviderAllowed(parent, selectedProvider.provider);
+      const targetInfo = await childModelInfo(parent, selectedProvider);
+      const targetEffort = params.reasoningEffort ?? live.role.config.reasoningEffort ?? targetInfo.defaultReasoningLevel;
+      if (targetEffort !== undefined && targetEffort !== "none" &&
+          !targetInfo.supportedReasoningLevels.includes(targetEffort)) {
+        throw new Error(`Reasoning effort \`${targetEffort}\` is not supported for model \`${selectedProvider.model}\`. Choose a supported effort.`);
+      }
+      const targetTier = params.serviceTier ?? live.role.config.serviceTier;
+      if (targetTier !== undefined && !(targetInfo.serviceTiers ?? []).some((tier) => tier.id === targetTier)) {
+        throw new Error(`Service tier \`${targetTier}\` is not supported for model \`${selectedProvider.model}\`. Choose a supported tier.`);
+      }
+      params = {
+        ...params,
+        providerSelection: selectedProvider,
+        model: selectedProvider.model,
+        modelInfo: targetInfo,
+        ...(targetEffort !== undefined ? { reasoningEffort: targetEffort } : {}),
+      };
+    }
     relayAgentEvent({
       content: `spawned subagent ${live.agentPath} (role=${live.role.name})`,
       triggerTurn: false,
@@ -3806,8 +3860,22 @@ export async function* runAgent(
       };
     }
 
-    // Resolve the parent provider (subagents share model access).
-    const provider = providerFromParent(parent);
+    // Resolve a child-owned provider through the session's captured credential
+    // sources. prepare() does not commit a switch to the parent session.
+    let provider = providerFromParent(parent);
+    if (params.providerSelection !== undefined) {
+      assertCrossProviderAllowed(parent, params.providerSelection.provider);
+      const prepared = await parent.providerService.prepare(params.providerSelection);
+      assertCrossProviderAllowed(parent, params.providerSelection.provider);
+      provider = prepared.binding.instance;
+      ownedPreparedProvider = provider;
+      unsubscribeCrossPolicy = parent.services.configStore?.subscribe((config) => {
+        if (config.agents?.cross_provider_enabled !== true ||
+            !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider)) {
+          live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
+        }
+      }) ?? null;
+    }
     if (!provider) {
       const err = new Error(
         "subagent has no provider on parent.services.provider",
@@ -4616,6 +4684,8 @@ export async function* runAgent(
     yield { kind: "run_error", error: message, ...taskCorrelation() };
     return result;
   } finally {
+    unsubscribeCrossPolicy?.();
+    unsubscribeCrossPolicy = null;
     let taskReceiptFinalizeError: unknown;
     revokeLiveSession?.();
     const acceptedNotStarted =
@@ -4731,6 +4801,13 @@ export async function* runAgent(
     if (ownedChildProvider !== null) {
       try {
         await ownedChildProvider.dispose?.();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (ownedPreparedProvider !== null && ownedPreparedProvider !== ownedChildProvider) {
+      try {
+        await ownedPreparedProvider.dispose?.();
       } catch (error) {
         cleanupErrors.push(error);
       }

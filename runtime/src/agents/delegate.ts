@@ -48,6 +48,9 @@ import type {
   RunAgentResult,
 } from "./run-agent.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
+import type { ModelInfo } from "../session/turn-context.js";
+import type { ProviderSelection } from "../session/provider-service.js";
+import { assertCrossProviderAllowed, resolveChildSelection } from "./cross-provider.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
@@ -90,6 +93,8 @@ export interface DelegateOpts {
   readonly role?: string;
   readonly agentName?: string;
   readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly providerSelection?: ProviderSelection;
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly isolation?: IsolationMode;
@@ -151,9 +156,11 @@ export type DelegateOutcome =
 
 function delegateModelOptions(
   opts: DelegateOpts,
-): Pick<DelegateOpts, "model" | "reasoningEffort" | "serviceTier"> {
+): Pick<DelegateOpts, "model" | "modelInfo" | "providerSelection" | "reasoningEffort" | "serviceTier"> {
   return {
     ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+    ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
     ...(opts.reasoningEffort !== undefined
       ? { reasoningEffort: opts.reasoningEffort }
       : {}),
@@ -212,6 +219,33 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       ...(effectDisposition !== undefined ? { effectDisposition } : {}),
     };
   };
+
+  if (opts.providerSelection !== undefined) {
+    try {
+      assertCrossProviderAllowed(opts.parent, opts.providerSelection.provider);
+      const validated = await resolveChildSelection(
+        opts.parent,
+        opts.providerSelection.provider,
+        opts.providerSelection.model,
+      );
+      if (validated.provider !== opts.providerSelection.provider ||
+          validated.model !== opts.providerSelection.model ||
+          (opts.model !== undefined && opts.model !== validated.model) ||
+          (opts.modelInfo !== undefined && opts.modelInfo.slug !== validated.model)) {
+        throw new Error("child provider, model, and model metadata must match the validated pair");
+      }
+      if (forkMode !== undefined) {
+        throw new Error("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
+      }
+      // Credential readiness is checked before the durable child spawn edge.
+      // The run checks again immediately before the first provider call.
+      const prepared = await opts.parent.providerService.prepare(validated);
+      await prepared.binding.instance.dispose?.();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+    }
+  }
 
   if (opts.invocationEnvelope !== undefined) {
     try {
@@ -346,6 +380,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         : {}),
       ...(opts.capacityOwnerId !== undefined
         ? { capacityOwnerId: opts.capacityOwnerId }
+        : {}),
+      ...(opts.providerSelection !== undefined
+        ? { providerSelection: opts.providerSelection }
         : {}),
     });
   } catch (err) {
@@ -680,6 +717,8 @@ async function runDelegateAgentLoop(opts: {
   readonly silent?: boolean;
   readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly providerSelection?: ProviderSelection;
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly resumeManager?: ResumeManager;
@@ -719,6 +758,8 @@ async function runDelegateAgentLoop(opts: {
         ...(opts.deferInteractiveApprovals !== undefined
           ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
         ...(opts.model !== undefined ? { model: opts.model } : {}),
+        ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+        ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }
           : {}),

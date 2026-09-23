@@ -118,6 +118,66 @@ describe("provider credential authority", () => {
     if (provider === "openai") expect(result.factoryOptions).toMatchObject({ baseURL: "https://chatgpt.com/backend-api/codex", extra: { authMode: "oauth" } });
   });
 
+  test("cross-provider child preparation keeps OpenAI sign-in on its first-party endpoint", async () => {
+    const home = await createHome("child-openai-sign-in");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, { accessToken: "child-openai-oauth", accountId: "account" });
+    const [{ SessionProviderService }, { createProvider }, { resolveProviderRuntimeRequest }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+      import("../../src/llm/provider-request.js"),
+    ]);
+    let service!: InstanceType<typeof SessionProviderService>;
+    service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3", baseURL: "http://127.0.0.1:11434" }),
+      environment: { OPENAI_AUTH_MODE: "oauth", OPENAI_BASE_URL: "https://untrusted.example.test/v1" },
+      resolvePreparationRequest: ({ model }) => ({ requested: resolveProviderRuntimeRequest({
+        provider: "openai", model, config: { model_provider: "ollama", model: "llama3.3" },
+        environment: service.environment(), credentialHome: home,
+      }).requested }),
+    });
+    const prepared = await service.prepare({ provider: "openai", model: "gpt-5.4" });
+    expect(prepared.binding.factoryOptions.baseURL).toBe("https://chatgpt.com/backend-api/codex");
+    expect(prepared.binding.factoryOptions.extra?.authMode).toBe("oauth");
+    expect(service.current().provider).toBe("ollama");
+    const child = service.forkForChild(prepared.binding.instance, { provider: "openai", model: "gpt-5.4" });
+    expect(child.current().factoryOptions.baseURL).toBe("https://chatgpt.com/backend-api/codex");
+    await prepared.binding.instance.dispose?.();
+  });
+
+  test("cross-provider child preparation pins xAI sign-in and refuses a custom host", async () => {
+    const home = await createHome("child-xai-sign-in");
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "child-xai-oauth" });
+    const [{ SessionProviderService }, { createProvider }, { resolveProviderRuntimeRequest }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+      import("../../src/llm/provider-request.js"),
+    ]);
+    const makeService = (environment: Record<string, string>) => {
+      let service!: InstanceType<typeof SessionProviderService>;
+      service = new SessionProviderService({
+        initialProvider: createProvider("ollama", { model: "llama3.3", baseURL: "http://127.0.0.1:11434" }),
+        environment,
+        resolvePreparationRequest: ({ model }) => ({ requested: resolveProviderRuntimeRequest({
+          provider: "grok", model, config: { model_provider: "ollama", model: "llama3.3" },
+          environment: service.environment(), credentialHome: home,
+        }).requested }),
+      });
+      return service;
+    };
+    const firstParty = makeService({ GROK_AUTH_MODE: "oauth" });
+    const prepared = await firstParty.prepare({ provider: "grok", model: "grok-4.6" });
+    expect(prepared.binding.factoryOptions.baseURL).toBe("https://api.x.ai/v1");
+    expect(prepared.binding.factoryOptions.apiKey).toBe("child-xai-oauth");
+    const child = firstParty.forkForChild(prepared.binding.instance, { provider: "grok", model: "grok-4.6" });
+    expect(child.current().factoryOptions.baseURL).toBe("https://api.x.ai/v1");
+    const custom = makeService({ GROK_AUTH_MODE: "oauth", XAI_BASE_URL: "https://untrusted.example.test/v1" });
+    await expect(custom.prepare({ provider: "grok", model: "grok-4.6" }))
+      .rejects.toThrow(/xAI sign-in credentials.*custom Grok base URL/u);
+    await prepared.binding.instance.dispose?.();
+  });
+
   test.each(["openai", "grok"] as const)("%s never falls back to paid API credentials when selected OAuth is absent", async (provider) => {
     const home = await createHome(`absent-${provider}`);
     const { providerOptions } = await loadCredentialModules();

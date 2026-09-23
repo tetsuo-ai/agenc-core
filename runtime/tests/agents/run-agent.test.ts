@@ -150,6 +150,7 @@ import {
   waitForInitialization,
 } from "../services/lsp/manager.js";
 import { ConfigStore } from "../config/store.js";
+import { SessionProviderService } from "../session/provider-service.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { createAutoMemoryToolPolicy } from "../../src/services/extractMemories/extractMemories.js";
 import { applyPermissionUpdate } from "../../src/permissions/permission-updates.js";
@@ -715,6 +716,106 @@ describe("wrapProviderForAgentSummary", () => {
 });
 
 describe("runAgent", () => {
+  function crossProviderRuntime(target: LLMProvider, configStore: ConfigStore) {
+    const rootProvider = makeProvider([]);
+    const prepare = vi.fn(async () => ({
+      binding: { provider: "deepseek", model: "deepseek-v4-pro", instance: target },
+    }));
+    const providerService = {
+      current: () => ({ provider: "grok", model: "grok-4.6", instance: rootProvider }),
+      environment: () => Object.freeze({ DEEPSEEK_API_KEY: "captured-target-key" }),
+      prepare,
+      forkForChild: (provider: LLMProvider, selection: { provider: string; model: string }) =>
+        new SessionProviderService({
+          initialProvider: provider,
+          initialProviderName: selection.provider,
+          initialModel: selection.model,
+          environment: { DEEPSEEK_API_KEY: "captured-target-key" },
+        }),
+    } as unknown as SessionServices["providerService"];
+    const parent = makeStubSession({ services: {
+      provider: rootProvider,
+      providerService,
+      configStore,
+      sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "read_only", cwd: "/tmp" }),
+    } });
+    const modelInfo: ModelInfo = {
+      ...mkModelInfo(), slug: "deepseek-v4-pro", contextWindow: 1_048_576,
+      supportedReasoningLevels: ["low", "high", "max"],
+    };
+    return { parent, rootProvider, prepare, modelInfo };
+  }
+
+  it("binds a cross-provider child to its own provider, model data, and parent authority", async () => {
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+    });
+    let live!: Awaited<ReturnType<typeof spawnLive>>["live"];
+    const target = {
+      ...makeProvider([]),
+      name: "deepseek",
+      chatStream: vi.fn(async (): Promise<LLMResponse> => {
+        const child = liveAgentSession(live)!;
+        expect(child.providerService.current()).toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+        expect(child.services.provider).toBe(target);
+        expect(child.sessionConfiguration.provider).toBe(target);
+        expect(child.config.model).toBe("deepseek-v4-pro");
+        expect(child.modelInfo).toMatchObject({ slug: "deepseek-v4-pro", contextWindow: 1_048_576 });
+        expect(child.permissionModeRegistry).toBe(parent.permissionModeRegistry);
+        expect(child.fileReadScope).toBe(parent.fileReadScope);
+        expect(child.sessionConfiguration.sandboxPolicy).toEqual(parent.sessionConfiguration.sandboxPolicy);
+        expect(child.services.sandboxExecutionBroker).not.toBe(parent.services.sandboxExecutionBroker);
+        expect(child.services.registry).not.toBe(parent.services.registry);
+        return { content: "target", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }, model: "deepseek-v4-pro", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const { parent, rootProvider, prepare, modelInfo } = crossProviderRuntime(target, configStore);
+    ({ live } = await spawnLive(parent));
+    const { result } = await collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "deepseek-v4-pro", modelInfo, providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" } }));
+    expect(result.outcome).toBe("completed");
+    expect(prepare).toHaveBeenCalledWith({ provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(target.chatStream).toHaveBeenCalledOnce();
+    expect(rootProvider.chatStream).not.toHaveBeenCalled();
+    expect(live.configSnapshot?.crossProvider).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1" });
+  });
+
+  it.each(["Stop", "switch off"])("cancels an active cross-provider stream on %s", async (cause) => {
+    let enabled = true;
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+      loader: async () => ({ agents: { cross_provider_enabled: enabled, allowed_providers: ["deepseek"] } }),
+    });
+    let started!: () => void;
+    const active = new Promise<void>((resolve) => { started = resolve; });
+    let streamSignal: AbortSignal | undefined;
+    const target = {
+      ...makeProvider([]),
+      name: "deepseek",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _chunk: StreamProgressCallback, options?: LLMChatOptions): Promise<LLMResponse> => {
+        streamSignal = options?.signal;
+        started();
+        await new Promise<void>((resolve) => {
+          if (options?.signal?.aborted) resolve();
+          else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new Error("stream aborted");
+      }),
+    } satisfies LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const { live } = await spawnLive(parent);
+    const run = collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "deepseek-v4-pro", modelInfo, providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" } }));
+    await active;
+    if (cause === "Stop") parent.abortController.abort("stop");
+    else {
+      enabled = false;
+      await configStore.reload();
+    }
+    const { result } = await run;
+    expect(streamSignal?.aborted).toBe(true);
+    expect(result.outcome).not.toBe("completed");
+  });
   it("forks and disposes a factory Grok provider for the child session", async () => {
     const provider = createProvider("grok", {
       apiKey: "xai-test",

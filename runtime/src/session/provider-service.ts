@@ -232,6 +232,22 @@ export class SessionProviderService {
     return this.#environment;
   }
 
+  /** Give a child an independent binding with the same captured authority sources. */
+  forkForChild(provider: LLMProvider, selection: ProviderSelection): SessionProviderService {
+    return new SessionProviderService({
+      initialProvider: provider,
+      initialProviderName: selection.provider,
+      initialModel: selection.model,
+      environment: this.#environment,
+      ...(this.#readSavedApiKey !== undefined ? { readSavedApiKey: this.#readSavedApiKey } : {}),
+      ...(this.#authBackend !== undefined ? { authBackend: this.#authBackend } : {}),
+      ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
+      ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
+      ...(this.#resolvePreparationRequest !== undefined
+        ? { resolvePreparationRequest: this.#resolvePreparationRequest } : {}),
+    });
+  }
+
   async prepare(
     selection: ProviderSelection,
     requested?: ProviderFactoryOptions,

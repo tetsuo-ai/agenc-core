@@ -2,6 +2,8 @@ import { describe, expect, test, vi } from "vitest";
 import { resolveHomeContext } from "../../src/config/home.js";
 import { resolveProviderFactoryOptions } from "../../src/llm/provider-options.js";
 import { createProvider } from "../../src/llm/provider.js";
+import { resolveProviderRuntimeRequest } from "../../src/llm/provider-request.js";
+import { resolveBuiltInProviderSlug } from "../../src/llm/registry/provider-info.js";
 import {
   clearCurrentRuntimeSession,
   runWithCurrentRuntimeSession,
@@ -44,6 +46,46 @@ function completion(label: string): Response {
 }
 
 describe("SessionProviderService", () => {
+  test("forked child and nested child resolve target credentials and endpoint from captured authority", async () => {
+    const mutableEnvironment: Record<string, string> = {
+      DEEPSEEK_BASE_URL: "https://target.example.test/v1",
+    };
+    let savedKey: string | undefined = "target-saved-key";
+    let service!: SessionProviderService;
+    service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-only-key" }),
+      environment: mutableEnvironment,
+      readSavedApiKey: async (provider) => provider === "deepseek" ? savedKey : undefined,
+      resolvePreparationRequest: ({ provider, model }) => {
+        const canonical = resolveBuiltInProviderSlug(provider);
+        if (canonical === undefined) throw new Error("unknown provider");
+        return { requested: resolveProviderRuntimeRequest({
+          provider: canonical,
+          model,
+          config: { model_provider: "openai", model: "gpt-5.4" },
+          environment: service.environment(),
+        }).requested };
+      },
+    });
+    mutableEnvironment.DEEPSEEK_BASE_URL = "https://mutated.example.test/v1";
+    mutableEnvironment.DEEPSEEK_API_KEY = "ambient-after-capture";
+    const first = await service.prepare({ provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(first.binding.factoryOptions).toMatchObject({
+      model: "deepseek-v4-pro",
+      apiKey: "target-saved-key",
+      baseURL: "https://target.example.test/v1",
+    });
+    expect(JSON.stringify(first.binding.factoryOptions)).not.toContain("parent-only-key");
+    expect(service.current()).toMatchObject({ provider: "openai", model: "gpt-5.4" });
+    const child = service.forkForChild(first.binding.instance, { provider: "deepseek", model: "deepseek-v4-pro" });
+    const nested = await child.prepare({ provider: "deepseek", model: "deepseek-flash" });
+    expect(nested.binding.factoryOptions.apiKey).toBe("target-saved-key");
+    savedKey = undefined;
+    await expect(child.prepare({ provider: "deepseek", model: "deepseek-flash" }))
+      .rejects.toThrow(/credential|DEEPSEEK_API_KEY/u);
+    await nested.binding.instance.dispose?.();
+    await first.binding.instance.dispose?.();
+  });
   test("fails closed when a provider has no identity or prepared model", () => {
     const anonymous = Object.freeze({ name: "" });
     expect(() =>

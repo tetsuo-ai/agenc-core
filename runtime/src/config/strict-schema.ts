@@ -674,6 +674,7 @@ const ROOT_FIELD_VALIDATORS = {
   agencMdExcludes: fieldValidator("agencMdExcludes", optionalStringArray),
   pluginTrustMessage: fieldValidator("pluginTrustMessage", optionalString),
   agent: delegatedObjectValidator("agent"),
+  agents: delegatedObjectValidator("agents"),
   durableTurns: validateDurableTurns,
   completion_gate: validateCompletionGate,
   goal: validateGoal,

@@ -116,6 +116,145 @@ describe("spawn_agent isolation", () => {
     mockDelegate.mockReset();
   });
 
+  async function crossProviderFixture(allowed: readonly string[], enabled = true) {
+    const config = {
+      ...defaultConfig(),
+      model_provider: "grok",
+      model: "grok-4.6",
+      agents: { cross_provider_enabled: enabled, allowed_providers: allowed },
+    };
+    const modelsManager = new StaticModelsManager({ config, fallbackProvider: "grok" });
+    const base = makeSession();
+    const session = {
+      ...base,
+      modelInfo: await modelsManager.getModelInfo("grok-4.6"),
+      sessionConfiguration: {
+        ...base.sessionConfiguration,
+        collaborationMode: { model: "grok-4.6" },
+      },
+      config: { ...base.config, agents: config.agents },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
+      services: {
+        ...base.services,
+        modelsManager,
+        configStore: { current: () => config },
+      },
+    } as unknown as Session;
+    return { session, tool: createSpawnAgentTool(makeOptions(session)) };
+  }
+
+  it("keeps cross-provider spawning off by default", async () => {
+    const { tool } = await crossProviderFixture(["deepseek"], false);
+    const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("cross_provider_enabled = true");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it("requires the switch for an explicit pair even on the current provider", async () => {
+    const { tool } = await crossProviderFixture(["grok"], false);
+    const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "grok", model: "grok-4.6" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("cross_provider_enabled = true");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it("refuses a provider outside the operator allowlist", async () => {
+    const { tool } = await crossProviderFixture(["openai"]);
+    const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("allowed_providers");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it("requires an explicit provider for a slug on another provider", async () => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    const result = await tool.execute({ message: "inspect", task_name: "worker", model: "deepseek-v4-pro" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Specify provider and model together");
+  });
+
+  it("keeps a slash-containing local model on its current provider", async () => {
+    const config = {
+      ...defaultConfig(), model_provider: "openrouter", model: "openai/gpt-4o-mini",
+      agents: { cross_provider_enabled: false, allowed_providers: [] },
+    };
+    const modelsManager = new StaticModelsManager({ config, fallbackProvider: "openrouter" });
+    const base = makeSession();
+    const session = {
+      ...base,
+      modelInfo: await modelsManager.getModelInfo("openai/gpt-4o-mini"),
+      sessionConfiguration: { ...base.sessionConfiguration, collaborationMode: { model: "openai/gpt-4o-mini" } },
+      providerService: { current: () => ({ provider: "openrouter", model: "openai/gpt-4o-mini" }) },
+      services: { ...base.services, modelsManager, configStore: { current: () => config } },
+    } as unknown as Session;
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "inspect", task_name: "worker", model: "openai/gpt-4o-mini",
+    });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
+  });
+
+  it.each([
+    { provider: "deepseek", model: "deepseek-v4-pro" },
+    { model: "deepseek/deepseek-v4-pro" },
+  ])("passes a validated target pair and full metadata to the child: %j", async (selection) => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await tool.execute({ message: "inspect", task_name: "worker", ...selection });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({
+      providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" },
+      modelInfo: expect.objectContaining({ slug: "deepseek-v4-pro", contextWindow: 1_048_576 }),
+    }));
+    expect(tool.description).toContain("deepseek/deepseek-v4-pro");
+  });
+
+  it.each([
+    { reasoning_effort: "medium", expected: "Reasoning effort" },
+    { service_tier: "priority", expected: "Service tier" },
+  ])("validates target model metadata: %j", async ({ expected, ...override }) => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro", ...override });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(expected);
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it("validates a role's effective service tier against the target model", async () => {
+    const { session } = await crossProviderFixture(["deepseek"]);
+    const options = makeOptions(session);
+    const roleOptions = {
+      ...options,
+      ensureAgentControl: () => {
+        const original = options.ensureAgentControl(session);
+        return {
+          ...original,
+          control: {
+            ...original.control,
+            roleCatalog: { require: () => ({ name: "priority-role", config: { serviceTier: "priority" } }) },
+          },
+        };
+      },
+    } as unknown as MultiAgentV2Options;
+    const result = await createSpawnAgentTool(roleOptions).execute({
+      message: "inspect", task_name: "worker", agent_type: "priority-role",
+      provider: "deepseek", model: "deepseek-v4-pro",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Role service tier");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it.each(["all", "3"])("requires a clean history for a cross-provider child: %s", async (fork_turns) => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro", fork_turns });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("fork_turns = none");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
   function callerFixture() {
     const root = makeSession();
     const child = { ...makeSession(), conversationId: "calling-child", sessionConfiguration: { ...root.sessionConfiguration, cwd: "/repo/implementation" }, services: { ...root.services, sandboxExecutionBroker: { authority: "child-only" } } } as unknown as Session;
@@ -125,6 +264,35 @@ describe("spawn_agent isolation", () => {
     const opts = makeOptions(root, liveById);
     return { child, live, liveById, revoke, opts, args: { message: "inspect", task_name: "worker", __agencSessionId: live.agentId, __agencSessionIdSig: signSessionId(live.agentId) } };
   }
+
+  it("routes a nested cross-provider spawn from the live child authority", async () => {
+    const fixture = callerFixture();
+    const config = {
+      ...defaultConfig(),
+      model_provider: "deepseek", model: "deepseek-v4-pro",
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
+    };
+    Object.assign(fixture.child, {
+      providerService: { current: () => ({ provider: "deepseek", model: "deepseek-v4-pro" }) },
+      services: {
+        ...fixture.child.services,
+        configStore: { current: () => config },
+        modelsManager: new StaticModelsManager({ config, fallbackProvider: "deepseek" }),
+      },
+    });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(fixture.opts).execute({
+      ...fixture.args, provider: "openai", model: "gpt-5.4",
+    });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({
+      parent: fixture.child,
+      providerSelection: { provider: "openai", model: "gpt-5.4" },
+    }));
+    expect(mockDelegate.mock.calls[0]?.[0].parent.services.sandboxExecutionBroker)
+      .toBe(fixture.child.services.sandboxExecutionBroker);
+    fixture.revoke();
+  });
 
   it("uses the authenticated child's session and retains the root control namespace", async () => {
     const fixture = callerFixture();

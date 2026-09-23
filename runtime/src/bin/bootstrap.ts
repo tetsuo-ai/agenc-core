@@ -518,6 +518,7 @@ function buildDeferredConfig(
   const maxBudgetUsd = maxBudgetUsdFromAgenCConfig(config);
   return {
     model,
+    ...(config.agents !== undefined ? { agents: config.agents } : {}),
     ...(config.model_verbosity !== undefined
       ? { modelVerbosity: config.model_verbosity }
       : {}),

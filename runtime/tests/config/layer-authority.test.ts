@@ -29,6 +29,7 @@ import {
 } from "../../src/config/repository.js";
 import { serializeConfigToml } from "../../src/config/serialize.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
+import { defaultConfig, validateAgentsConfig } from "../../src/config/schema.js";
 import { ConfigStore } from "../../src/config/store.js";
 
 const temporaryDirectories: string[] = [];
@@ -88,6 +89,7 @@ const MANAGED_VALUES = {
 } as const satisfies Record<ManagedOnlyConfigKey, unknown>;
 
 const OPERATOR_VALUES = {
+  agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
   gateway: { defaultAgent: "operator", hooks: { enabled: false } },
   modelOverrides: { "grok-4.6": "grok-4.6-enterprise" },
   allowedMcpServers: [{ serverName: "internal" }],
@@ -97,6 +99,32 @@ const OPERATOR_VALUES = {
 } as const satisfies Record<OperatorOnlyConfigKey, unknown>;
 
 describe("canonical config layer authority", () => {
+  test("cross-provider subagents default off and reject invalid allowlists", () => {
+    expect(defaultConfig().agents).toEqual({
+      cross_provider_enabled: false,
+      allowed_providers: [],
+    });
+    expect(() => validateAgentsConfig({ allowed_providers: ["not-a-provider"] }))
+      .toThrow(/unknown provider/u);
+    expect(() => validateAgentsConfig({ allowed_providers: ["deepseek", "deepseek"] }))
+      .toThrow(/duplicate provider/u);
+    expect(() => validateAgentsConfig({ cross_provider_enabled: "yes" }))
+      .toThrow(/expected boolean/u);
+  });
+
+  test("repository config cannot enable cross-provider subagents", async () => {
+    const root = temporaryRoot();
+    writeConfig(join(root, "project", ".agenc", "config.toml"), {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+    });
+    const loaded = await loadLayeredConfig(repositoryOptions(root));
+    expect(loaded.config.agents).toEqual({ cross_provider_enabled: false, allowed_providers: [] });
+    expect(loaded.ignored).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "agents", scope: "project" }),
+    ]));
+    expect(() => assertConfigPatchAuthority("project", { agents: { cross_provider_enabled: true } }))
+      .toThrow(/operator-only key agents/u);
+  });
   test("keeps the three registries exact, disjoint, and classified", () => {
     expect(MANAGED_ONLY_CONFIG_KEYS).toEqual([
       "availableModels",
@@ -112,6 +140,7 @@ describe("canonical config layer authority", () => {
       "pluginTrustMessage",
     ]);
     expect(OPERATOR_ONLY_CONFIG_KEYS).toEqual([
+      "agents",
       "gateway",
       "modelOverrides",
       "allowedMcpServers",
@@ -199,6 +228,7 @@ describe("canonical config layer authority", () => {
     const root = temporaryRoot();
     writeConfig(join(root, "home", "config.toml"), OPERATOR_VALUES);
     writeConfig(join(root, "project", ".agenc", "config.toml"), {
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
       gateway: { defaultAgent: "project", hooks: { enabled: true } },
       modelOverrides: { "grok-4.6": "project-override" },
       allowedMcpServers: [{ serverName: "project" }],
