@@ -1,10 +1,15 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { findRelevantMemories } from "../../src/memory/find-relevant.js";
+import {
+  closeFullCorpusMemoryIndexes,
+  findRelevantMemories,
+} from "../../src/memory/find-relevant.js";
+import { PersistentMemoryIndex } from "../../src/memory/full-corpus-index.js";
+import { MemoryQueryProcessPool } from "../../src/memory/memory-query-pool.js";
 import type {
   AdmittedMemorySelector,
   MemorySelectorRequest,
@@ -13,6 +18,8 @@ import type {
 let temporaryRoot = "";
 
 afterEach(async () => {
+  closeFullCorpusMemoryIndexes();
+  vi.restoreAllMocks();
   if (temporaryRoot !== "") {
     await rm(temporaryRoot, { recursive: true, force: true });
     temporaryRoot = "";
@@ -307,13 +314,94 @@ describe("C3a relevant memory selection", () => {
     expect(result.map((entry) => entry.path)).toEqual([matching]);
   });
 
-  it("keeps the index path when a memory directory holds only a subdirectory", async () => {
-    // The global root holds only an empty logs/ folder.
-    const roots = await emptyMemoryRoots(["global", "global/logs"]);
+  it("skips the index for MEMORY.md and empty nested folders", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    const logs = join(roots.memoryDirs[0]!, "logs");
+    await mkdir(logs);
+    await writeFile(join(roots.memoryDirs[0]!, "MEMORY.md"), "# Index\n");
 
-    await roots.recall();
+    expect(await roots.recall()).toEqual([]);
+    expect(existsSync(roots.databasePath)).toBe(false);
 
+    const matching = await memory(logs, "browser.md", "Browser", "Browser notes");
+    expect((await roots.recall()).map((entry) => entry.path)).toEqual([
+      matching,
+    ]);
     expect(existsSync(roots.databasePath)).toBe(true);
+  });
+
+  it("reuses the exact ranked result for an unchanged tree and query", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    await memory(roots.memoryDirs[0]!, "browser.md", "Browser", "Browser notes");
+    const refresh = vi.spyOn(PersistentMemoryIndex.prototype, "refresh");
+    const helper = vi.spyOn(MemoryQueryProcessPool.prototype, "query");
+
+    const first = await roots.recall();
+    const refreshes = refresh.mock.calls.length;
+    const queries = helper.mock.calls.length;
+    const second = await roots.recall();
+    const bytes = (value: unknown) =>
+      JSON.stringify(
+        value,
+        (_key, item: unknown) =>
+          typeof item === "bigint" ? item.toString() : item,
+      );
+    expect(bytes(second)).toBe(bytes(first));
+    expect(refresh).toHaveBeenCalledTimes(refreshes);
+    expect(helper).toHaveBeenCalledTimes(queries);
+
+    await findRelevantMemories({
+      query: "notes",
+      memoryDirs: roots.memoryDirs,
+      signal: new AbortController().signal,
+      memoryIndexDatabasePath: roots.databasePath,
+    });
+    expect(refresh).toHaveBeenCalledTimes(refreshes);
+
+    expect(await findRelevantMemories({
+      query: "browser",
+      memoryDirs: roots.memoryDirs,
+      signal: new AbortController().signal,
+      memoryIndexDatabasePath: roots.databasePath,
+      alreadySurfaced: new Set([first[0]!.path]),
+    })).toEqual([]);
+
+    closeFullCorpusMemoryIndexes();
+    expect(bytes(await roots.recall())).toBe(bytes(first));
+  });
+
+  it("sees additions, equal-size edits, renames and deletions at the next recall", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    const root = roots.memoryDirs[0]!;
+    const first = await memory(root, "first.md", "Browser", "Browser notes");
+    expect((await roots.recall()).map((entry) => entry.path)).toEqual([first]);
+
+    const added = await memory(root, "added.md", "Browser", "Browser added");
+    expect((await roots.recall()).map((entry) => entry.path)).toContain(added);
+
+    const originalMtime = (await stat(first)).mtime;
+    await memory(root, "first.md", "Cooking", "Cooking notes");
+    await utimes(first, originalMtime, originalMtime);
+    expect((await roots.recall()).map((entry) => entry.path)).not.toContain(first);
+
+    const renamed = join(root, "renamed.md");
+    await rename(added, renamed);
+    expect((await roots.recall()).map((entry) => entry.path)).toEqual([renamed]);
+
+    await rm(renamed);
+    expect(await roots.recall()).toEqual([]);
+  });
+
+  it("shares a changed root correctly across concurrent session recalls", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    const root = roots.memoryDirs[0]!;
+    await memory(root, "first.md", "Browser", "Browser notes");
+    await roots.recall();
+    const extracted = await memory(root, "extracted.md", "Browser", "Browser extracted");
+
+    const [left, right] = await Promise.all([roots.recall(), roots.recall()]);
+    expect(left.map((entry) => entry.path)).toContain(extracted);
+    expect(right.map((entry) => entry.path)).toContain(extracted);
   });
 
   it("clamps both lexical and selector paths to five memories", async () => {
