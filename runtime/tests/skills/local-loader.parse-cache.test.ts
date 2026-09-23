@@ -120,6 +120,28 @@ describe("parsed SKILL.md reuse", () => {
   });
 });
 
+describe("cached frontmatter keeps the parser's shape", () => {
+  it("keeps a __proto__ key a plain field, as js-yaml returns it", async () => {
+    // js-yaml defines "__proto__" as an own field. Copying it with a plain
+    // assignment would make it the prototype, so "description" below would
+    // start answering "sneaky" through it.
+    const f = fixture(0);
+    const dir = join(f.root, "proto");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "SKILL.md"),
+      "---\n__proto__:\n  description: sneaky\n  disable-model-invocation: true\n---\n# Plain heading\n",
+    );
+    for (let pass = 0; pass < 2; pass++) {
+      const skill = (await loadLocalSkillsSnapshot(f.options)).skills.find(
+        (entry) => entry.name === "proto",
+      );
+      expect(skill?.description).toBe("Plain heading");
+      expect(skill?.disableModelInvocation).toBe(false);
+    }
+  });
+});
+
 describe("listing bytes across snapshot rebuilds", () => {
   it("renders the same listing from a fresh and a cached snapshot", async () => {
     // The listing is sent once per session and kept in the cached prompt

@@ -809,7 +809,15 @@ function detachStrings<T>(value: T): T {
   if (value !== null && typeof value === "object" &&
     Object.getPrototypeOf(value) === Object.prototype) {
     const copy: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value)) copy[key] = detachStrings(entry);
+    for (const [key, entry] of Object.entries(value)) {
+      // defineProperty, so a "__proto__" key stays a plain field.
+      Object.defineProperty(copy, key, {
+        value: detachStrings(entry),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
     return copy as T;
   }
   return value;
