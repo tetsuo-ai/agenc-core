@@ -312,24 +312,40 @@ async function tryFullCorpusRanking(
       refreshed = await index.refresh(roots, options.signal, { explicit: true });
       result = await index.query(roots, normalizedQuery.terms, options.signal);
     }
-    throwIfMemoryRecallAborted(options.signal);
-    if (
-      result.kind === "unavailable" ||
-      result.kind === "query_resource_limited"
-    ) {
-      return null;
-    }
-    const ranked: RankedMemoryHeader[] = [];
-    for (const candidate of result.candidates) {
+    let ranked: RankedMemoryHeader[] = [];
+    let unchangedSnapshot = false;
+    for (;;) {
       throwIfMemoryRecallAborted(options.signal);
-      const header = index.readHeader(candidate);
-      if (header === null) continue;
-      ranked.push({
-        header,
-        exactPhrase: false,
-        distinctTermCoverage: 1,
-        cappedTermOccurrences: 1,
-      });
+      if (
+        result.kind === "unavailable" ||
+        result.kind === "query_resource_limited"
+      ) {
+        return null;
+      }
+      ranked = [];
+      for (const candidate of result.candidates) {
+        throwIfMemoryRecallAborted(options.signal);
+        const header = index.readHeader(candidate);
+        if (header === null) continue;
+        ranked.push({
+          header,
+          exactPhrase: false,
+          distinctTermCoverage: 1,
+          cappedTermOccurrences: 1,
+        });
+      }
+      unchangedSnapshot =
+        snapshot !== null &&
+        JSON.stringify(
+          options.memoryDirs.map((directory) => snapshotMemoryTree(directory)?.signature),
+        ) === snapshot;
+      if (refreshed !== undefined || unchangedSnapshot) break;
+
+      // The skipped query used a generation from before this tree changed.
+      knownFreshTrees.delete(indexKey);
+      needsExplicitRefresh = true;
+      refreshed = await index.refresh(roots, options.signal, { explicit: true });
+      result = await index.query(roots, normalizedQuery.terms, options.signal);
     }
     const matchingGenerations =
       result.freshness.length === roots.length &&
@@ -345,11 +361,6 @@ async function tryFullCorpusRanking(
             root.generationId === result.freshness[index]?.generationId &&
             root.generationToken === result.freshness[index]?.generationToken,
           ));
-    const unchangedSnapshot =
-      snapshot !== null &&
-      JSON.stringify(
-        options.memoryDirs.map((directory) => snapshotMemoryTree(directory)?.signature),
-      ) === snapshot;
     const generations = result.freshness.map(generationKey);
     const provenFresh = refreshed === undefined
       ? knownFresh?.snapshot === snapshot

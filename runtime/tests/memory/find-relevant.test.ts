@@ -407,6 +407,36 @@ describe("C3a relevant memory selection", () => {
     expect(refresh).toHaveBeenCalledTimes(before);
   });
 
+  it("refreshes a known tree when a file appears before the skipped query returns", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    const root = roots.memoryDirs[0]!;
+    await memory(root, "browser.md", "Browser", "Browser notes");
+    await roots.recall(); // Prove this tree fresh for the next, distinct query.
+
+    const actualQuery = PersistentMemoryIndex.prototype.query;
+    let added = "";
+    const query = vi.spyOn(PersistentMemoryIndex.prototype, "query")
+      .mockImplementationOnce(async function (...args) {
+        const result = await actualQuery.apply(this, args);
+        added = await memory(root, "added.md", "Added", "Added notes");
+        return result;
+      });
+    const refresh = vi.spyOn(PersistentMemoryIndex.prototype, "refresh");
+
+    const result = await findRelevantMemories({
+      query: "notes",
+      memoryDirs: roots.memoryDirs,
+      signal: new AbortController().signal,
+      memoryIndexDatabasePath: roots.databasePath,
+    });
+
+    expect(existsSync(added)).toBe(true);
+    expect(result.map((entry) => entry.path)).toContain(added);
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh.mock.calls[0]?.[2]?.explicit).toBe(true);
+  });
+
   it("does not trust a resumed staging generation that missed a new file", async () => {
     const roots = await emptyMemoryRoots(["global"]);
     const root = roots.memoryDirs[0]!;
