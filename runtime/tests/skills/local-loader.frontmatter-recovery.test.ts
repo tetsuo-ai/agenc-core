@@ -179,6 +179,25 @@ describe("frontmatter the canonical parser accepts", () => {
     expect(buildSkillListingWithinBudget(snapshot.skills).listedNames).toContain("example");
   });
 
+  it("trusts valid YAML over the line scan for a flow key at column zero", async () => {
+    // Flow collections ignore indentation, so this key belongs to metadata.
+    const { snapshot } = await snapshotOf({
+      example: [
+        "---",
+        "description: A visible skill",
+        "metadata: {",
+        "disable-model-invocation: true",
+        "}",
+        "disable-model-invocation: false",
+        "---",
+        "# Example",
+        "",
+      ].join("\n"),
+    });
+    expect(snapshot.skills.find((entry) => entry.name === "example")?.disableModelInvocation).toBe(false);
+    expect(buildSkillListingWithinBudget(snapshot.skills).listedNames).toContain("example");
+  });
+
   it("does not use block scalar text as a fallback flag when another field is invalid", async () => {
     const { snapshot } = await snapshotOf({
       example: [
@@ -201,6 +220,7 @@ describe("frontmatter the canonical parser accepts", () => {
     { name: "flow sequence", value: "[", close: "]" },
     { name: "anchored mapping", value: "&example", close: "" },
     { name: "anchored flow mapping", value: "&example {", close: "}" },
+    { name: "anchored flow mapping with no space", value: "&example{", close: "}" },
   ])("does not treat a flag inside a $name as top-level", async ({ value, close, inlineOther }) => {
     const { snapshot } = await snapshotOf({
       example: [

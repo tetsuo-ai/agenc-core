@@ -738,11 +738,18 @@ function splitFrontmatter(raw: string): SplitFrontmatter {
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n)?([\s\S]*)$/u.exec(raw);
   if (!match) return { frontmatter: {}, markdown: raw };
   const yamlText = match[1] ?? "";
-  const modelProof = hasRawDisableModelInvocation(yamlText);
+  const rawFlag = hasRawDisableModelInvocation(yamlText);
+  // The line scan only stands in for the YAML parser. When the text parses as
+  // it is, the parsed flag is the answer: a scan that took a nested or
+  // quoted key for a top-level one hid skills whose frontmatter said false.
+  // It is consulted only when the strict parse failed, where recovery can
+  // turn `true # reason` into a string or drop every field.
+  let modelProof = false;
   let parsed: unknown;
   try {
     parsed = loadYaml(yamlText);
   } catch (error) {
+    modelProof = rawFlag;
     // The canonical parser (utils/frontmatterParser.ts), which commands and
     // MCP skills go through, quotes values holding YAML indicators and parses
     // again: `description: Settle tasks in AUTONOMOUS mode: prompt-free` is
