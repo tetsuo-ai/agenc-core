@@ -3147,11 +3147,17 @@ describe("model-facing tools", () => {
       const missing = await skill.execute({ skill: "missing-skill" });
 
       expect(missing.isError).toBe(true);
-      // Full parity: every name `/skills` shows the user is a name the model
-      // can actually load, bundled ones included.
-      expect(JSON.parse(missing.content).available).toEqual(
-        slashSnapshot.availableSkills.map((entry) => entry.name),
+      // Full parity: every name `/skills` shows the user that the model may
+      // load is offered, bundled ones included. Model-proof skills (batch,
+      // debug) are refused by the Skill tool, so offering them misleads.
+      const offered = JSON.parse(missing.content).available as string[];
+      expect(offered).toEqual(
+        slashSnapshot.availableSkills
+          .filter((entry) => entry.disableModelInvocation !== true)
+          .map((entry) => entry.name),
       );
+      expect(offered).not.toContain("batch");
+      expect(offered).not.toContain("debug");
 
       const retired = await skill.execute({ skill: "legacy-visible" });
       expect(retired.isError).toBe(true);

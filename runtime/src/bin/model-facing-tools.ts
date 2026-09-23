@@ -148,6 +148,10 @@ import {
   isRepositoryControlledSkillSource,
 } from "../skills/repository-skill-boundary.js";
 import {
+  rankSkillsForRequest,
+  type SkillListingEntry,
+} from "../skills/local-loader.js";
+import {
   getInitializationStatus,
   getLspServerManager,
   waitForInitialization,
@@ -2858,10 +2862,11 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
         );
         return refusal({
           error: `skill not found: ${skillName}`,
-          available: [
-            ...(outcome.availableSkills?.map((entry) => entry.name) ?? []),
-            ...bundledNames,
-          ].sort((a, b) => a.localeCompare(b)),
+          ...unknownSkillSuggestions(
+            skillName,
+            outcome.availableSkills ?? [],
+            bundledNames,
+          ),
         });
       }
 
@@ -3001,6 +3006,49 @@ async function listBundledSkillNames(): Promise<string[]> {
 function normalizeSkillName(name: string): string {
   const trimmed = name.trim();
   return trimmed.startsWith("/") ? trimmed.slice(1) : trimmed;
+}
+
+/** Catalogs up to this size are named in full in an unknown-skill refusal. */
+const UNKNOWN_SKILL_FULL_LIST_MAX = 50;
+const UNKNOWN_SKILL_SUGGESTIONS = 20;
+
+/**
+ * What an unknown-skill refusal tells the model about the skills it could
+ * load. A small catalog is named in full. A large one is not: every name of
+ * the audited 1,797-skill catalog made one refusal 45 KB (about 11,000
+ * tokens) for a single mistyped name, most of it names unrelated to the
+ * one asked for. The closest skills by the listing's own relevance ranking,
+ * and the total, answer the question the model actually has. Skills the
+ * model may not load are never offered.
+ */
+function unknownSkillSuggestions(
+  requested: string,
+  skills: readonly SkillListingEntry[],
+  bundledNames: readonly string[],
+): {
+  readonly available: readonly string[];
+  readonly availableCount?: number;
+  readonly note?: string;
+} {
+  const invocable = skills.filter((skill) => skill.disableModelInvocation !== true);
+  const names = [
+    ...new Set([...invocable.map((skill) => skill.name), ...bundledNames]),
+  ].sort((a, b) => a.localeCompare(b));
+  if (names.length <= UNKNOWN_SKILL_FULL_LIST_MAX) return { available: names };
+  const closest = rankSkillsForRequest(
+    [...invocable, ...bundledNames.map((name) => ({ name }))],
+    requested,
+    new Set(),
+    UNKNOWN_SKILL_SUGGESTIONS,
+  ).names;
+  return {
+    available: closest,
+    availableCount: names.length,
+    note:
+      closest.length > 0
+        ? `these are the ${closest.length} installed skills closest to "${requested}" of ${names.length}; the skill listing in this conversation names the ones that fit the task`
+        : `no installed skill name resembles "${requested}" (${names.length} are installed); use a name from the skill listing in this conversation`,
+  };
 }
 
 function isMcpToolName(name: string): boolean {
