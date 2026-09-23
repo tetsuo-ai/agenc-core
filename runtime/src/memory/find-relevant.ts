@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, opendirSync, type Dir } from "node:fs";
 
 import {
   MAX_RELEVANT_MEMORIES,
@@ -215,10 +215,17 @@ async function tryFullCorpusRanking(
   }
   const normalizedQuery = normalizeMemoryQuery(options.query);
   if (normalizedQuery.terms.length === 0) return [];
-  // With no memory directory on disk there is nothing to index. Skip the
-  // open/refresh (root upsert, watcher setup, fsync'd WAL traffic) that would
-  // otherwise run on every turn and let the bounded scan report nothing.
-  if (!options.memoryDirs.some((directory) => existsSync(directory))) {
+  // With no memory on disk there is nothing to index. Skip the open/refresh
+  // (root upsert, watcher setup, fsync'd WAL traffic) and the contained query
+  // helper process that would otherwise run before every model request, and
+  // let the bounded scan report nothing. Session startup creates both memory
+  // directories so the model can write into them, so an existing but empty
+  // directory is the usual shape of "no memory" and must take this path too.
+  if (
+    !options.memoryDirs.some(
+      (directory) => existsSync(directory) && !isEmptyDirectory(directory),
+    )
+  ) {
     return null;
   }
   const index = getFullCorpusIndex(options.memoryIndexDatabasePath);
@@ -255,6 +262,27 @@ async function tryFullCorpusRanking(
       throw options.signal.reason ?? error;
     }
     return null;
+  }
+}
+
+/**
+ * True only when `directory` opens and has no entry at all. Any error (not a
+ * directory, permission, a racing removal) answers false so the caller keeps
+ * the ordinary index path and its own error handling.
+ */
+function isEmptyDirectory(directory: string): boolean {
+  let handle: Dir;
+  try {
+    handle = opendirSync(directory);
+  } catch {
+    return false;
+  }
+  try {
+    return handle.readSync() === null;
+  } catch {
+    return false;
+  } finally {
+    handle.closeSync();
   }
 }
 
