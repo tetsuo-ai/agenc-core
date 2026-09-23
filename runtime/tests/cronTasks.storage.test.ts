@@ -9,6 +9,7 @@ import { CronDeliveryOutboxStore } from "../src/gateway/cron-outbox.js";
 import { addSessionCronTask, getSessionCronTasks, resetStateForTests, setScheduledTasksEnabled } from "../src/bootstrap/state.js";
 import { EventLog, type Event } from "../src/session/event-log.js";
 import { startSessionCronScheduler } from "../src/session/session-cron-scheduler.js";
+import * as sessionCronScheduler from "../src/session/session-cron-scheduler.js";
 import { resetCronSchedulerForTests } from "../src/utils/cronScheduler.js";
 import type { Session } from "../src/session/session.js";
 import { cronLockAuthorityRoot } from "../src/sandbox/cron-authority-protection.js";
@@ -175,17 +176,17 @@ describe("cron tools without durable storage", () => {
     }
   });
 
-  test.skipIf(process.platform !== "linux")("a failed durable claim leaves a real session timer armed", async () => {
-    await writeCronTasks([task("durable-due")], workspace);
+  test.skipIf(process.platform !== "linux")("failed minute durable writes do not consume an hourly session job's budget", async () => {
+    const start = Date.parse("2026-07-07T12:00:30Z");
+    await writeCronTasks([{ ...task("durable-due"), createdAt: start }], workspace);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
-    vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
+    vi.setSystemTime(start);
     const events: Event[] = [];
     const eventLog = new EventLog();
     eventLog.subscribe((event) => events.push(event));
     const closes: Array<() => Promise<void>> = [];
     const abortController = new AbortController();
     const submit = vi.fn(async (prompt: string, options: { onAccepted: () => Promise<void> }) => {
-      if (prompt === "synthetic durable work") hooks.descriptorUnavailable = true;
       await options.onAccepted();
     });
     const session = {
@@ -196,15 +197,27 @@ describe("cron tools without durable storage", () => {
       onTurnDriverReady: (ready: () => void) => { ready(); return () => {}; },
       submit,
     } as unknown as Session;
-    addSessionCronTask({ ...task("session-due"), prompt: "session work", durable: false,
+    addSessionCronTask({ ...task("session-due"), cron: "0 * * * *", createdAt: start,
+      prompt: "session work", durable: false,
       queueOwner: { kind: "session", conversationId: session.conversationId } });
+    hooks.beforeRename = (_from, to) => {
+      if (to.endsWith("/scheduled_tasks.json")) {
+        throw Object.assign(new Error("durable write failed"), { code: "EIO" });
+      }
+    };
     setScheduledTasksEnabled(true);
     try {
       const scheduler = await startSessionCronScheduler(session, workspace);
       await vi.advanceTimersByTimeAsync(60_000);
       await scheduler.drain();
-      expect(submit.mock.calls.map(([prompt]) => prompt)).toEqual(["synthetic durable work", "session work"]);
+      expect(submit.mock.calls.map(([prompt]) => prompt)).toEqual(["synthetic durable work"]);
       expect(events.some((event) => event.msg.type === "warning" && event.msg.payload.cause === "scheduled_turn_failed")).toBe(true);
+      expect(scheduler.getLastTelemetry()?.nextWakeInMs).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(59 * 60_000);
+      await scheduler.drain();
+      expect(submit.mock.calls.filter(([prompt]) => prompt === "synthetic durable work").length).toBeLessThan(20);
+      expect(submit.mock.calls.filter(([prompt]) => prompt === "session work")).toHaveLength(1);
+      expect(scheduler.isPaused()).toBe(false);
       expect(scheduler.getLastTelemetry()?.nextWakeInMs).not.toBeNull();
       expect(getSessionCronTasks().map((entry) => entry.id)).toEqual(["session-due"]);
     } finally {
@@ -240,21 +253,72 @@ describe("cron tools without durable storage", () => {
   });
 
   test("a known session job can be deleted when durable storage cannot be read", async () => {
+    const session = { conversationId: "delete-known-session-job", submit: vi.fn() } as unknown as Session;
+    const start = vi.spyOn(sessionCronScheduler, "startSessionCronScheduler")
+      .mockResolvedValue({} as Awaited<ReturnType<typeof startSessionCronScheduler>>);
     const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
     const tools = createModelFacingTools({ workspaceRoot: workspace,
-      getSession: () => ({ conversationId: "delete-known-session-job" }) as Session,
+      getSession: () => session,
     });
     const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
     const created = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "session job" });
     const id = (JSON.parse(String(created.content)) as { cron: { id: string } }).cron.id;
-    const failure = vi.spyOn(cronTasks, "listAllCronTasks").mockRejectedValueOnce(new Error("storage unavailable"));
+    const failure = vi.spyOn(cronTasks, "listAllCronTasks")
+      .mockRejectedValueOnce(Object.assign(new Error("storage unavailable"), { code: "EIO" }));
     try {
       const deleted = await tool("CronDelete").execute({ id });
       expect(deleted.isError).toBeFalsy();
       expect(JSON.parse(String(deleted.content))).toEqual({ deleted: true, id });
       expect(getSessionCronTasks()).toEqual([]);
+      expect(start).toHaveBeenLastCalledWith(session, workspace, {});
     } finally {
       failure.mockRestore();
+      start.mockRestore();
+    }
+  });
+
+  test.skipIf(process.platform !== "linux")("deleting a session job after one EIO keeps durable scheduling active", async () => {
+    const start = Date.parse("2026-07-07T12:00:30Z");
+    await writeCronTasks([{
+      ...task("durable-after-delete"),
+      cron: "0 * * * *",
+      prompt: "durable after delete",
+      createdAt: start,
+    }], workspace);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    vi.setSystemTime(start);
+    const closes: Array<() => Promise<void>> = [];
+    const abortController = new AbortController();
+    const submit = vi.fn(async (_prompt: string, options: { onAccepted: () => Promise<void> }) => {
+      await options.onAccepted();
+    });
+    const session = {
+      conversationId: "delete-keeps-durable", abortController, eventLog: new EventLog(),
+      services: { mcpStartupCancellationToken: { signal: abortController.signal } },
+      nextInternalSubId: () => "delete-keeps-durable-warning",
+      onBeforeDurableClose: (close: () => Promise<void>) => { closes.push(close); },
+      onTurnDriverReady: (ready: () => void) => { ready(); return () => {}; },
+      submit,
+    } as unknown as Session;
+    const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
+    const tools = createModelFacingTools({ workspaceRoot: workspace, getSession: () => session });
+    const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
+    try {
+      const created = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "session to delete" });
+      const id = (JSON.parse(String(created.content)) as { cron: { id: string } }).cron.id;
+      const failure = vi.spyOn(cronTasks, "listAllCronTasks")
+        .mockRejectedValueOnce(Object.assign(new Error("storage unavailable"), { code: "EIO" }));
+      try {
+        const deleted = await tool("CronDelete").execute({ id });
+        expect(JSON.parse(String(deleted.content))).toEqual({ deleted: true, id });
+      } finally {
+        failure.mockRestore();
+      }
+      await vi.advanceTimersByTimeAsync(61 * 60_000);
+      expect(submit).toHaveBeenCalledWith("durable after delete", expect.objectContaining({ onAccepted: expect.any(Function) }));
+    } finally {
+      await Promise.all(closes.map((close) => close()));
+      vi.useRealTimers();
     }
   });
 

@@ -270,6 +270,11 @@ describe("workflow manifest schema and loader", () => {
       { mode: 0o600 },
     );
 
+    if (process.platform !== "linux") {
+      await expect(loadNamedWorkflowManifest({ name: "safe", roots: [first, second] }))
+        .rejects.toMatchObject({ code: "WORKFLOW_ROOT_OPEN" });
+      return;
+    }
     const loaded = await loadNamedWorkflowManifest({ name: "safe", roots: [first, second] });
     expect(loaded.sourceRoot).toBe(first);
     expect(loaded.document).toMatchObject({
@@ -291,6 +296,19 @@ describe("workflow manifest schema and loader", () => {
       { mode: 0o600 },
     );
     await symlink(join(root, "outside.json"), join(workflows, "linked.json"));
+    if (process.platform !== "linux") {
+      await expect(loadNamedWorkflowManifest({ name: "linked", roots: [workflows] }))
+        .rejects.toMatchObject({ code: "WORKFLOW_ROOT_OPEN" });
+      const candidate = join(workflows, "raced.json");
+      await writeFile(candidate, '{"format_version":2,"kind":"agent_dag","steps":[{"id":"before","message":"before"}]}');
+      let candidateOpened = false;
+      await expect(loadNamedWorkflowManifest({
+        name: "raced", roots: [workflows],
+        hooks: { afterCandidateOpen() { candidateOpened = true; } },
+      })).rejects.toMatchObject({ code: "WORKFLOW_ROOT_OPEN" });
+      expect(candidateOpened).toBe(false);
+      return;
+    }
     await expect(loadNamedWorkflowManifest({ name: "linked", roots: [workflows] })).rejects.toMatchObject({
       code: "WORKFLOW_MANIFEST_UNSAFE",
     });

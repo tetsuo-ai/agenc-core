@@ -176,7 +176,7 @@ export async function startSessionCronScheduler(
       });
     });
   }
-  owner.sessionOnly = options.sessionOnly === true;
+  if (options.sessionOnly !== undefined) owner.sessionOnly = options.sessionOnly;
   if (owner.ready) {
     owner.scheduler.start({
       queueOwner: { kind: "session", conversationId: session.conversationId },

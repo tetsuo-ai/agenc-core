@@ -4731,9 +4731,8 @@ export async function startCronSchedulerRunner(opts: {
     const { startSessionCronScheduler } =
       await import("../session/session-cron-scheduler.js");
     opts.signal?.throwIfAborted();
-    await startSessionCronScheduler(opts.session, opts.workspaceRoot, {
-      sessionOnly: opts.sessionOnly === true,
-    });
+    await startSessionCronScheduler(opts.session, opts.workspaceRoot,
+      opts.sessionOnly === undefined ? {} : { sessionOnly: opts.sessionOnly });
     opts.signal?.throwIfAborted();
     return;
   }
@@ -4937,7 +4936,7 @@ function createCronAndWorkflowTools(
           const deleted = removeSessionCronTasks([id], conversationId) > 0;
           if (deleted) await startCronSchedulerRunner({
             conversationId, workspaceRoot: opts.workspaceRoot,
-            session: session ?? undefined, sessionOnly: true,
+            session: session ?? undefined,
           });
           return json({ deleted, id });
         }

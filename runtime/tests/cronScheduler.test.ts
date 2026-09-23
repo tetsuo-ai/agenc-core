@@ -128,6 +128,7 @@ function makeScheduler(
   tasks: CronTask[],
   enqueue: CronEnqueue,
   floorMs = 1_000,
+  maxInvocationsPerWindow = 60,
 ): CronScheduler {
   return new CronScheduler(
     {
@@ -140,14 +141,35 @@ function makeScheduler(
     },
     // Tiny floor (default) so the floor logic stays exercised but doesn't
     // dominate the virtual-time assertions; callers raise it to exercise the
-    // overlap lease. Window cap left at the generous default.
-    { minIntervalFloorMs: floorMs, dir: undefined },
+    // overlap lease. Most callers use the generous default window cap.
+    { minIntervalFloorMs: floorMs, maxInvocationsPerWindow, dir: undefined },
   );
 }
 
 describe("CronScheduler", () => {
   beforeEach(() => {
     setScheduledTasksEnabled(true);
+  });
+
+  test("failed minute durable claims leave the hourly session turn and invocation budget available", async () => {
+    const clock = new FakeClock(Date.parse("2026-07-07T12:00:30Z"));
+    const durable = task({ id: "failing-durable", cron: "* * * * *", durable: true });
+    const hourly = task({ id: "hourly-session", cron: "0 * * * *", createdAt: clock.nowMs });
+    const attempts: string[] = [];
+    const scheduler = makeScheduler(clock, [durable, hourly], (_command, due) => {
+      attempts.push(due.id);
+      return due.id === durable.id ? "cancelled" : "accepted";
+    }, 1_000, 2);
+
+    scheduler.start(TEST_ACTIVATION);
+    await flush();
+    await advanceAndFlush(clock, 60 * 60_000);
+
+    expect(attempts.filter((id) => id === durable.id).length).toBeLessThan(20);
+    expect(attempts.filter((id) => id === hourly.id)).toHaveLength(1);
+    expect(scheduler.isPaused()).toBe(false);
+    expect(clock.pendingCount()).toBe(1);
+    scheduler.stop();
   });
 
   test.each(["reschedule", "restart"])("does not report a stale failed load after a successful %s", async (transition) => {
