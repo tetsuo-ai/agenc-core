@@ -107,6 +107,7 @@ import {
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+  AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
@@ -1942,8 +1943,13 @@ export class AgenCDaemonJsonRpcDispatcher {
     const preparesRoutineSession = capabilities[ROUTINE_SESSION_PREPARE_CAPABILITY] === true;
     const listsPendingApprovals =
       capabilities[AGENC_PENDING_APPROVALS_LIST_CAPABILITY] === true;
+    // Registered so a session attach on this connection counts as able to
+    // answer cross-provider consent (hasAttachedClientWithCapability).
+    const answersCrossProviderConsent =
+      capabilities[AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY] === true;
     if (
-      (!receivesLedgerActions && !receivesMobileStatus && !listsPendingApprovals && !preparesRoutineSession) ||
+      (!receivesLedgerActions && !receivesMobileStatus && !listsPendingApprovals &&
+        !preparesRoutineSession && !answersCrossProviderConsent) ||
       this.#clientMultiplexer === undefined ||
       connection.sendNotification === undefined
     ) {

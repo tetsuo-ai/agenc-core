@@ -921,7 +921,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
 
   return {
     name: "spawn_agent",
-    description: buildSpawnAgentDescription(opts.getSession()),
+    // Read per request: the tool is built before its session exists, and the
+    // allowed cross-provider pairs follow the live config.
+    get description(): string {
+      return buildSpawnAgentDescription(opts.getSession());
+    },
     metadata: toolMetadata("agent", {
       mutating: true,
       // Spawning mutates collaboration/runtime state, while any child file

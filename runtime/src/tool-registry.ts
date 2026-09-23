@@ -158,6 +158,22 @@ export interface ToolRegistry {
   discoverToolNames?(toolNames: readonly string[]): void;
 }
 
+/**
+ * Copy a tool with some fields replaced. A description getter stays a getter:
+ * spawn_agent describes the live session's allowed cross-provider pairs, and
+ * this registry is built before the session exists. Every other field is
+ * copied by value, as a spread does, so input schemas keep the shape strict
+ * argument validation has always checked.
+ */
+function extendTool(tool: Tool, fields: Partial<Tool>): Tool {
+  const next = { ...tool, ...fields } as Tool;
+  const description = Object.getOwnPropertyDescriptor(tool, "description");
+  if (description?.get !== undefined && !Object.prototype.hasOwnProperty.call(fields, "description")) {
+    Object.defineProperty(next, "description", { get: description.get, enumerable: true, configurable: true });
+  }
+  return next;
+}
+
 function toolToLLMTool(tool: Tool): LLMTool {
   return {
     type: "function",
@@ -214,8 +230,7 @@ function tagTool(tool: Tool, opts: { readonly serverId?: string } = {}): Tool {
       baseClass.kind === "shared_read" || baseClass.kind === "shared_server");
   const recoveryCategory = resolveToolRecoveryCategory(tool, isReadOnly);
 
-  return {
-    ...tool,
+  return extendTool(tool, {
     concurrencyClass: baseClass,
     ...(serverId ? { serverId } : {}),
     isReadOnly,
@@ -223,7 +238,7 @@ function tagTool(tool: Tool, opts: { readonly serverId?: string } = {}): Tool {
     supportsParallelToolCalls,
     requiresApproval,
     isConcurrencySafe,
-  };
+  });
 }
 
 function resolveToolRecoveryCategory(
@@ -284,7 +299,7 @@ function withMetadata(
       : {}),
     ...(updates.mutating !== undefined ? { mutating: updates.mutating } : {}),
   };
-  return { ...tool, metadata };
+  return extendTool(tool, { metadata });
 }
 
 function catalogEntryForTool(
@@ -361,14 +376,13 @@ function buildBuiltinToolSurface(
     tools.push(
       ...group.tools.map((tool) => {
         if (tool.admissionEstimate !== undefined) return tool;
-        return {
-          ...tool,
+        return extendTool(tool, {
           admissionEstimate: () => ({
             maxInputTokens: 0,
             maxOutputTokens: 0,
             maxCostUsd: group.admissionDefault === "local_zero" ? 0 : null,
           }),
-        } satisfies Tool;
+        });
       }),
     );
   }
@@ -971,7 +985,7 @@ export function buildToolRegistry(
     if (!toolConfigAllowsTool(options.toolsConfig, tool.name)) return null;
     const config = resolvePerToolConfig(options.toolsConfig, tool.name);
     if (config.defaultPermissionMode === undefined) return tool;
-    return { ...tool, defaultPermissionMode: config.defaultPermissionMode };
+    return extendTool(tool, { defaultPermissionMode: config.defaultPermissionMode });
   }
 
   function configuredTools(tools: readonly Tool[]): Tool[] {
