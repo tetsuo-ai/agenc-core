@@ -97,24 +97,6 @@ export async function handleMessageStringTool(
   if (!receiverAgentPath) {
     return agentValidationError("target agent is missing an agent_path");
   }
-  if (mode === "queue_only" && agentId !== sessionOrError.conversationId) {
-    const currentStatus = await control.getStatus(agentId);
-    if (
-      currentStatus.status !== "running" &&
-      currentStatus.status !== "pending_init"
-    ) {
-      return confirmedNoAgentEffect(
-        json({
-          ok: false,
-          delivered: false,
-          mode: "send_message",
-          target: receiverAgentPath,
-          status: currentStatus,
-          hint: "This agent has no active model call. Use assign_task to start a new turn on an idle worker.",
-        }),
-      );
-    }
-  }
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",
     payload: {
@@ -127,6 +109,8 @@ export async function handleMessageStringTool(
   let deliveryError: unknown;
   let acceptedTask:
     { readonly taskId: string; readonly turnId: string } | undefined;
+  let passiveAdmission:
+    ReturnType<typeof control.sendPassiveMessageToActiveAgent> | undefined;
   try {
     if (mode === "trigger_turn") {
       acceptedTask = control.assignTask(agentId, {
@@ -135,8 +119,18 @@ export async function handleMessageStringTool(
         content: message,
         taskId: callId,
       });
-    } else {
+    } else if (agentId === sessionOrError.conversationId) {
       await control.sendInterAgentCommunication(agentId, {
+        author: current.agentPath,
+        recipient: receiverAgentPath,
+        content: message,
+        triggerTurn: false,
+        metadata: createMailboxMetadataRecord("inter_agent_communication", [
+          ["deliveryMode", mode],
+        ]),
+      });
+    } else {
+      passiveAdmission = control.sendPassiveMessageToActiveAgent(agentId, {
         author: current.agentPath,
         recipient: receiverAgentPath,
         content: message,
@@ -176,6 +170,18 @@ export async function handleMessageStringTool(
       true,
     );
   }
+  if (passiveAdmission?.accepted === false) {
+    return confirmedNoAgentEffect(
+      json({
+        ok: false,
+        delivered: false,
+        mode: "send_message",
+        target: receiverAgentPath,
+        status: passiveAdmission.status,
+        hint: "This child is idle or finished. Use assign_task to start an idle worker's next turn.",
+      }),
+    );
+  }
   return json({
     ok: true,
     mode: mode === "trigger_turn" ? "assign_task" : "send_message",
@@ -185,7 +191,9 @@ export async function handleMessageStringTool(
       ? {
           delivered: false,
           delivery: "accepted_unconfirmed",
-          hint: "Queued for the next model call. If this turn ends first, the message will not be read; use assign_task on an idle worker.",
+          hint: agentId === sessionOrError.conversationId
+            ? "Queued for the root mailbox's next drain."
+            : "Queued for the child's next turn. If the child finishes first, the message is lost.",
         }
       : {}),
     ...(acceptedTask !== undefined

@@ -4,7 +4,7 @@ import type { AgentStatus } from "../../../src/agents/status.js";
 import type { MultiAgentV2Options } from "../../../src/agents/v2/common.js";
 import { createSendMessageTool } from "../../../src/agents/v2/send-message.js";
 
-function fixture(initialStatus: AgentStatus) {
+function fixture(initialStatus: AgentStatus, onBegin?: () => void) {
   let status = initialStatus;
   const sendInterAgentCommunication = vi.fn(async () => {});
   const live = {
@@ -20,11 +20,21 @@ function fixture(initialStatus: AgentStatus) {
     resolveAgentReference: vi.fn(() => live.agentId),
     getStatus: vi.fn(async () => status),
     sendInterAgentCommunication,
+    sendPassiveMessageToActiveAgent: vi.fn((id: string, communication: unknown) => {
+      const currentStatus = status;
+      if (currentStatus.status !== "running" && currentStatus.status !== "pending_init") {
+        return { accepted: false, status: currentStatus };
+      }
+      void sendInterAgentCommunication(id, communication);
+      return { accepted: true, status: currentStatus };
+    }),
   };
   const session = {
     conversationId: "root-session",
     nextInternalSubId: () => "event-1",
-    emit: vi.fn(),
+    emit: vi.fn((event: { msg: { type: string } }) => {
+      if (event.msg.type === "collab_agent_interaction_begin") onBegin?.();
+    }),
   } as unknown as Session;
   const opts = {
     getSession: () => session,
@@ -50,9 +60,10 @@ describe("send_message delivery report", () => {
       delivery: "accepted_unconfirmed",
       status: { status: "running" },
     });
-    expect(body.hint).toContain("If this turn ends first");
+    expect(body.hint).toContain("If the child finishes first");
     expect(f.sendInterAgentCommunication).toHaveBeenCalledOnce();
     expect(f.tool.description).toContain("Does not trigger a new turn");
+    expect(f.tool.description).toContain("next turn");
   });
 
   it.each([
@@ -66,6 +77,20 @@ describe("send_message delivery report", () => {
     expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_no_effect" });
     expect(body).toMatchObject({ ok: false, delivered: false, status });
     expect(body.hint).toContain("assign_task");
+    expect(f.sendInterAgentCommunication).not.toHaveBeenCalled();
+  });
+
+  it("refuses a child that becomes idle before the message is enqueued", async () => {
+    let setIdle: () => void = () => {};
+    const f = fixture(
+      { status: "running", turnId: "turn-1", startedAtMs: 1 },
+      () => setIdle(),
+    );
+    setIdle = () => f.setStatus({ status: "idle", turnId: "turn-1", endedAtMs: 2 });
+
+    const { result, body } = await f.send();
+    expect(result.isError).toBe(true);
+    expect(body).toMatchObject({ ok: false, delivered: false, status: { status: "idle" } });
     expect(f.sendInterAgentCommunication).not.toHaveBeenCalled();
   });
 });

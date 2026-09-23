@@ -1094,9 +1094,9 @@ describe("runAgent", () => {
     const childDispose = vi.fn(async () => {});
     const childProvider: LLMProvider = {
       ...makeProvider([{ content: "summary seed" }]),
-      forkForSession: nestedFork,
       dispose: childDispose,
     };
+    Object.setPrototypeOf(childProvider, { forkForSession: nestedFork });
     const parentBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
       cwd: "/tmp",
@@ -1545,7 +1545,7 @@ describe("runAgent", () => {
     );
   });
 
-  it("delivers a passive child message at the next model call", async () => {
+  it("keeps a passive child message out of the current turn's model calls", async () => {
     const provider = makeProvider([
       {
         content: "",
@@ -1592,11 +1592,11 @@ describe("runAgent", () => {
     expect(result.outcome).toBe("completed");
     expect(provider.chatStream).toHaveBeenCalledTimes(2);
     const secondMessages = (provider.chatStream as ReturnType<typeof vi.fn>).mock.calls[1]![0] as LLMMessage[];
-    expect(JSON.stringify(secondMessages)).toContain("check the edge case");
-    expect(live.downInbox.hasPending()).toBe(false);
+    expect(JSON.stringify(secondMessages)).not.toContain("check the edge case");
+    expect(live.downInbox.hasPending()).toBe(true);
   });
 
-  it("cannot deliver a message sent after the child's last model call", async () => {
+  it("does not read a message sent after the child's last model call", async () => {
     const provider = makeProvider([{ content: "finished" }]);
     const session = makeStubSession({ services: { provider } });
     const { control, live } = await spawnLive(session);
@@ -1618,7 +1618,7 @@ describe("runAgent", () => {
     const { result } = await collectRun(iter);
     expect(result.outcome).toBe("completed");
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
-    expect(live.downInbox.hasPending()).toBe(false);
+    expect(live.downInbox.hasPending()).toBe(true);
   });
 
   it("ignores array-shaped parent services when resolving the provider", async () => {

@@ -1284,6 +1284,45 @@ export class AgentControl {
     this.registry.updateLastTaskMessage(threadId, communication.content);
   }
 
+  /** Check active-child admission and enqueue without yielding between them. */
+  sendPassiveMessageToActiveAgent(
+    threadId: ThreadId,
+    communication: {
+      readonly author: string;
+      readonly recipient: string;
+      readonly content: string;
+      readonly triggerTurn: false;
+      readonly metadata?: ValidatedMailboxMetadata;
+    },
+  ): { readonly accepted: boolean; readonly status: AgentStatus } {
+    const agent = this.requireLive(threadId);
+    const status = agent.status.value;
+    if (status.status !== "running" && status.status !== "pending_init") {
+      return { accepted: false, status };
+    }
+    const metadata = requireMailboxMetadataKind(
+      communication.metadata,
+      "inter_agent_communication",
+    );
+    try {
+      const delivery = agent.downInbox.send({
+        ...communication,
+        direction: "down",
+        metadata,
+      });
+      if (delivery === "dropped") {
+        throw new MailboxCapacityError(agent.downInbox.threadId);
+      }
+    } catch (error) {
+      if (error instanceof MailboxClosedError) {
+        throw new ThreadNotFoundError(threadId);
+      }
+      throw error;
+    }
+    this.registry.updateLastTaskMessage(threadId, communication.content);
+    return { accepted: true, status };
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // Interrupt
   // ─────────────────────────────────────────────────────────────────

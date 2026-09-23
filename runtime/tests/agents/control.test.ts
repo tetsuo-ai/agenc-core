@@ -1480,6 +1480,35 @@ describe("AgentControl", () => {
     expect(meta?.lastTaskMessage).toBe("iac payload");
   });
 
+  it("checks child activity in the same operation that queues a passive message", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const live = await control.spawn({ parentPath: "/root" });
+    const communication = {
+      author: "/root",
+      recipient: live.agentPath,
+      content: "context note",
+      triggerTurn: false as const,
+      metadata: createMailboxMetadataRecord("inter_agent_communication"),
+    };
+    live.status.markRunning("turn-1");
+    const send = vi.spyOn(live.downInbox, "send");
+
+    expect(control.sendPassiveMessageToActiveAgent(live.agentId, communication)).toMatchObject({
+      accepted: true,
+      status: { status: "running" },
+    });
+    expect(send).toHaveBeenCalledOnce();
+    live.status.markIdle("turn-1");
+    expect(control.sendPassiveMessageToActiveAgent(live.agentId, communication)).toMatchObject({
+      accepted: false,
+      status: { status: "idle" },
+    });
+    expect(send).toHaveBeenCalledOnce();
+    expect(live.downInbox.size).toBe(1);
+  });
+
   it("rejects control-kind metadata on inter-agent communication", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
