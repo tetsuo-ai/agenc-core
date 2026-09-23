@@ -1,8 +1,24 @@
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const frozenMemoryStat = vi.hoisted(() => ({
+  path: "",
+  value: undefined as import("node:fs").BigIntStats | undefined,
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) =>
+      args[0] === frozenMemoryStat.path && frozenMemoryStat.value !== undefined
+        ? frozenMemoryStat.value
+        : Reflect.apply(actual.lstatSync, actual, args),
+  };
+});
 
 import {
   closeFullCorpusMemoryIndexes,
@@ -20,6 +36,8 @@ let temporaryRoot = "";
 afterEach(async () => {
   closeFullCorpusMemoryIndexes();
   vi.restoreAllMocks();
+  frozenMemoryStat.path = "";
+  frozenMemoryStat.value = undefined;
   if (temporaryRoot !== "") {
     await rm(temporaryRoot, { recursive: true, force: true });
     temporaryRoot = "";
@@ -356,7 +374,7 @@ describe("C3a relevant memory selection", () => {
       signal: new AbortController().signal,
       memoryIndexDatabasePath: roots.databasePath,
     });
-    expect(refresh).toHaveBeenCalledTimes(refreshes);
+    expect(refresh).toHaveBeenCalledTimes(refreshes + 1);
 
     expect(await findRelevantMemories({
       query: "browser",
@@ -368,6 +386,131 @@ describe("C3a relevant memory selection", () => {
 
     closeFullCorpusMemoryIndexes();
     expect(bytes(await roots.recall())).toBe(bytes(first));
+  });
+
+  it("refreshes a first query before caching when a watcher has not delivered an addition", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    const root = roots.memoryDirs[0]!;
+    await memory(root, "cooking.md", "Cooking", "Cooking notes");
+    const seeded = new PersistentMemoryIndex({ databasePath: roots.databasePath });
+    const seededRefresh = await seeded.refresh(
+      [{ path: root, role: "global" }],
+      new AbortController().signal,
+      { explicit: true },
+    );
+    seeded.close();
+
+    const matching = await memory(root, "browser.md", "Browser", "Browser notes");
+    const actualRefresh = PersistentMemoryIndex.prototype.refresh;
+    vi.spyOn(PersistentMemoryIndex.prototype, "refresh").mockImplementationOnce(
+      function (...args) {
+        return args[2]?.explicit === true
+          ? actualRefresh.apply(this, args)
+          : Promise.resolve(seededRefresh);
+      },
+    );
+    expect((await roots.recall()).map((entry) => entry.path)).toEqual([matching]);
+    expect((await roots.recall()).map((entry) => entry.path)).toEqual([matching]);
+  });
+
+  it("invalidates a cached result when content changes under frozen file timestamps", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    const root = roots.memoryDirs[0]!;
+    const path = await memory(root, "topic.md", "Browser", "Browser notes");
+    expect((await roots.recall()).map((entry) => entry.path)).toEqual([path]);
+
+    frozenMemoryStat.value = lstatSync(path, { bigint: true });
+    frozenMemoryStat.path = path;
+    await memory(root, "topic.md", "Cooking", "Cooking notes");
+    expect(await roots.recall()).toEqual([]);
+  });
+
+  it("settles an aborted request while it waits for the index lock", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    await memory(roots.memoryDirs[0]!, "browser.md", "Browser", "Browser notes");
+    const originalRefresh = PersistentMemoryIndex.prototype.refresh;
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    vi.spyOn(PersistentMemoryIndex.prototype, "refresh").mockImplementationOnce(
+      async function (...args) {
+        entered();
+        await blocked;
+        return originalRefresh.apply(this, args);
+      },
+    );
+    const first = roots.recall();
+    await started;
+    const controller = new AbortController();
+    const reason = new Error("cancel queued recall");
+    const waiting = findRelevantMemories({
+      query: "browser",
+      memoryDirs: roots.memoryDirs,
+      signal: controller.signal,
+      memoryIndexDatabasePath: roots.databasePath,
+    });
+    controller.abort(reason);
+    const outcome = await Promise.race([
+      waiting.then(() => "resolved", (error: unknown) => error),
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve("still waiting"), 100),
+      ),
+    ]);
+    const next = roots.recall();
+    release();
+    await first;
+    await waiting.catch(() => undefined);
+    expect(outcome).toBe(reason);
+    expect(await next).toHaveLength(1);
+  });
+
+  it("evicts old root snapshots along with ranked results", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-find-"));
+    const databasePath = join(temporaryRoot, "memory-v1.sqlite");
+    const roots: string[] = [];
+    for (let index = 0; index < 65; index += 1) {
+      const root = join(temporaryRoot, `root-${index}`);
+      await mkdir(root);
+      await memory(root, "browser.md", "Browser", "Browser notes");
+      roots.push(root);
+    }
+    const status = (spec: { path: string; role: "global" | "project" }) => ({
+      rootId: spec.path,
+      canonicalRoot: spec.path,
+      role: spec.role,
+      generationId: 1,
+      generationToken: "complete",
+      state: "complete",
+      ageMs: 0,
+      watcherHealth: "healthy",
+      auditCursor: null,
+    } as const);
+    const refresh = vi.spyOn(PersistentMemoryIndex.prototype, "refresh")
+      .mockImplementation(async (specs) => ({
+        kind: "complete",
+        roots: specs.map(status),
+      }));
+    vi.spyOn(PersistentMemoryIndex.prototype, "query")
+      .mockImplementation(async (specs) => ({
+        kind: "complete",
+        candidates: [],
+        freshness: specs.map(status),
+      }));
+    const recall = (root: string) => findRelevantMemories({
+      query: "browser",
+      memoryDirs: [root],
+      signal: new AbortController().signal,
+      memoryIndexDatabasePath: databasePath,
+    });
+    for (const root of roots) await recall(root);
+    const before = refresh.mock.calls.length;
+    await recall(roots[0]!);
+    expect(refresh).toHaveBeenCalledTimes(before + 1);
   });
 
   it("sees additions, equal-size edits, renames and deletions at the next recall", async () => {

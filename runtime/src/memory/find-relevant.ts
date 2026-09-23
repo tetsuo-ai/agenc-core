@@ -1,4 +1,5 @@
-import { lstatSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 
 import {
@@ -52,6 +53,8 @@ type NormalizedFindRelevantMemoriesOptions = Required<
 
 const fullCorpusIndexes = new Map<string, PersistentMemoryIndex>();
 const MAX_RECALL_SNAPSHOT_ENTRIES = 2_048;
+const MAX_RECALL_SNAPSHOT_FILE_BYTES = 1_048_576;
+const MAX_RECALL_SNAPSHOT_BYTES = 8_388_608;
 const MAX_CACHED_RECALLS = 64;
 
 interface MemoryTreeSnapshot {
@@ -64,14 +67,12 @@ interface CachedRecall {
   readonly ranked: readonly RankedMemoryHeader[];
 }
 
-const lastIndexSnapshots = new Map<string, string>();
 const cachedRecalls = new Map<string, CachedRecall>();
 const pendingIndexRecalls = new Map<string, Promise<void>>();
 
 export function closeFullCorpusMemoryIndexes(): void {
   for (const index of fullCorpusIndexes.values()) index.close();
   fullCorpusIndexes.clear();
-  lastIndexSnapshots.clear();
   cachedRecalls.clear();
 }
 
@@ -260,9 +261,7 @@ async function tryFullCorpusRanking(
   const recallKey = JSON.stringify([indexKey, normalizedQuery.terms]);
   const cached = snapshot === null ? undefined : cachedRecalls.get(recallKey);
   if (cached?.snapshot === snapshot) {
-    // Reuse only a response already produced by the contained query helper.
-    // The manifest also covers file ctime, so an equal-size, restored-mtime
-    // edit invalidates this response before the next request.
+    // The signature includes the content of every memory file.
     return cached.ranked.filter(
       (entry) => !options.alreadySurfaced.has(entry.header.filePath),
     );
@@ -275,22 +274,13 @@ async function tryFullCorpusRanking(
     }),
   );
   try {
-    // Watcher delivery can lag a model or extractor write. A changed tree
-    // requires an explicit rebuild so the very next request sees the edit,
-    // even when its query was never cached before.
-    const previousSnapshot = lastIndexSnapshots.get(indexKey);
-    const changed =
-      snapshot !== null &&
-      previousSnapshot !== undefined &&
-      previousSnapshot !== snapshot;
-    const alreadyFresh = snapshot !== null && previousSnapshot === snapshot;
-    const refreshed = alreadyFresh
-      ? null
-      : await index.refresh(
-          roots,
-          options.signal,
-          changed ? { explicit: true } : {},
-        );
+    // A normal refresh may return a complete generation before its watcher
+    // reports a new file. Rebuild on a cache miss and cache only that generation.
+    const refreshed = await index.refresh(
+      roots,
+      options.signal,
+      snapshot === null ? {} : { explicit: true },
+    );
     const result = await index.query(
       roots,
       normalizedQuery.terms,
@@ -317,13 +307,19 @@ async function tryFullCorpusRanking(
     }
     if (
       snapshot !== null &&
-      (alreadyFresh ||
-        refreshed?.roots.every((root) => root.state === "complete")) &&
+      refreshed.roots.length === roots.length &&
+      result.freshness.length === roots.length &&
+      refreshed.roots.every((root, index) =>
+        root.state === "complete" &&
+        root.generationId !== null &&
+        root.generationId === result.freshness[index]?.generationId &&
+        root.generationToken === result.freshness[index]?.generationToken,
+      ) &&
       JSON.stringify(
         options.memoryDirs.map((directory) => snapshotMemoryTree(directory)?.signature),
-      ) === snapshot
+      ) === snapshot &&
+      !options.signal.aborted
     ) {
-      lastIndexSnapshots.set(indexKey, snapshot);
       cachedRecalls.delete(recallKey);
       cachedRecalls.set(recallKey, { snapshot, ranked });
       if (cachedRecalls.size > MAX_CACHED_RECALLS) {
@@ -345,6 +341,7 @@ function snapshotMemoryTree(root: string): MemoryTreeSnapshot | null {
   const entries: string[] = [];
   const pending = [root];
   let hasIndexableMemory = false;
+  let memoryBytes = 0n;
   try {
     while (pending.length > 0) {
       if (entries.length >= MAX_RECALL_SNAPSHOT_ENTRIES) return null;
@@ -359,6 +356,26 @@ function snapshotMemoryTree(root: string): MemoryTreeSnapshot | null {
         return null;
       }
       const name = relative(root, path);
+      let contentHash: string | null = null;
+      if (stats.isFile() && basename(path).endsWith(".md")) {
+        memoryBytes += stats.size;
+        if (
+          stats.size > BigInt(MAX_RECALL_SNAPSHOT_FILE_BYTES) ||
+          memoryBytes > BigInt(MAX_RECALL_SNAPSHOT_BYTES)
+        ) return null;
+        contentHash = createHash("sha256").update(readFileSync(path)).digest("hex");
+        const after = lstatSync(path, { bigint: true });
+        if (
+          stats.dev !== after.dev ||
+          stats.ino !== after.ino ||
+          stats.mode !== after.mode ||
+          stats.size !== after.size ||
+          stats.mtimeNs !== after.mtimeNs ||
+          stats.ctimeNs !== after.ctimeNs
+        ) {
+          return null;
+        }
+      }
       entries.push(
         JSON.stringify([
           name,
@@ -368,6 +385,7 @@ function snapshotMemoryTree(root: string): MemoryTreeSnapshot | null {
           stats.size.toString(),
           stats.mtimeNs.toString(),
           stats.ctimeNs.toString(),
+          contentHash,
         ]),
       );
       if (path === root && !stats.isDirectory()) return null;
@@ -415,17 +433,40 @@ async function withIndexLock<T>(
   const current = new Promise<void>((resolve) => {
     release = resolve;
   });
-  pendingIndexRecalls.set(databasePath, current);
+  const tail = previous === undefined ? current : previous.then(() => current);
+  pendingIndexRecalls.set(databasePath, tail);
+  void tail.then(() => {
+    if (pendingIndexRecalls.get(databasePath) === tail) {
+      pendingIndexRecalls.delete(databasePath);
+    }
+  });
   try {
-    if (previous !== undefined) await previous;
+    if (previous !== undefined) await waitForIndexLock(previous, signal);
     throwIfMemoryRecallAborted(signal);
     return await run();
   } finally {
-    if (pendingIndexRecalls.get(databasePath) === current) {
-      pendingIndexRecalls.delete(databasePath);
-    }
     release();
   }
+}
+
+function waitForIndexLock(
+  previous: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(
+        signal.reason ?? new DOMException("Memory recall aborted", "AbortError"),
+      );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void previous.then(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    });
+    if (signal.aborted) onAbort();
+  });
 }
 
 function getFullCorpusIndex(databasePath: string): PersistentMemoryIndex {
