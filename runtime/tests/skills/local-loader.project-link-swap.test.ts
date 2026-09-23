@@ -140,4 +140,24 @@ describe("project skill real-path reads", () => {
     expect(swapped).toBe(true);
     expect(rendered?.content ?? "").not.toContain("unsafe body");
   });
+
+  it("does not read through a folder swapped above SKILL.md between the check and the read", async () => {
+    if (process.platform === "win32") return;
+    const f = fixture();
+    const services = createLocalSkillsServices(f.options);
+    expect((await services.skillsManager.resolveSkill("linked"))?.description).toBe("safe");
+    // O_NOFOLLOW guards only the last component: here the folder holding the
+    // checked SKILL.md becomes a link to an unsafe one as the read opens it.
+    let swapped = false;
+    openHook.run = (path) => {
+      if (swapped || !path.endsWith(join("linked", "SKILL.md"))) return;
+      swapped = true;
+      renameSync(f.safeDir, `${f.safeDir}-old`);
+      symlinkSync(f.unsafeDir, f.safeDir);
+    };
+
+    const rendered = await services.skillsManager.renderSkill({ name: "linked" });
+    expect(swapped).toBe(true);
+    expect(rendered?.content ?? "").not.toContain("unsafe body");
+  });
 });

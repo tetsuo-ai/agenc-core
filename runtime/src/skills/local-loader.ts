@@ -359,10 +359,31 @@ async function projectSkillPathIsSafe(path: string, allowMissing = false): Promi
   return true;
 }
 
-async function projectSkillRealPathIsSafe(path: string): Promise<boolean> {
+/** Device and inode of the file a safety check approved. */
+interface CheckedFile {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+/**
+ * The identity of a project skill file at its recorded real path, or null when
+ * that path is no longer a regular file in a safe location. A read compares
+ * what it opened with this identity and refuses any other file.
+ */
+async function checkedProjectSkillFile(path: string): Promise<CheckedFile | null> {
+  let checked: CheckedFile;
+  try {
+    // lstat: a link here is refused, never resolved to its target's identity.
+    const stats = await lstat(path, { bigint: true });
+    if (!stats.isFile()) return null;
+    checked = { dev: stats.dev, ino: stats.ino };
+  } catch {
+    return null;
+  }
   // A recorded real path may later be replaced by a link. Reject it rather
   // than following the replacement to a different file.
-  return (await getFileIdentity(path)) === path && await projectSkillPathIsSafe(path);
+  if ((await getFileIdentity(path)) !== path || !(await projectSkillPathIsSafe(path))) return null;
+  return checked;
 }
 
 /** Check every directory that can let another user replace a project root. */
@@ -752,14 +773,22 @@ async function findSkillFiles(root: SkillRoot): Promise<SkillFileScan> {
 /**
  * Read a SKILL.md without following a link at its last component, and only
  * when the opened descriptor is a regular file (null otherwise). A project
- * skill is read through a real path that passed the safety check; opening it
- * this way means a file swapped for a link after that check is refused, not
- * followed, and the check and the read concern the same file.
+ * skill is read through a real path that passed the safety check, with the
+ * identity that check saw: the open can still reach another file where
+ * O_NOFOLLOW does not exist (Windows) or through a folder swapped above the
+ * file, and such a file is refused.
  */
-async function readRegularFileNoFollow(path: string): Promise<Buffer | null> {
+async function readRegularFileNoFollow(
+  path: string,
+  checked?: CheckedFile,
+): Promise<Buffer | null> {
   const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try {
-    if (!(await handle.stat()).isFile()) return null;
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile()) return null;
+    if (checked !== undefined && (opened.dev !== checked.dev || opened.ino !== checked.ino)) {
+      return null;
+    }
     return await handle.readFile();
   } finally {
     await handle.close();
@@ -1028,10 +1057,11 @@ async function readParsedSkillFile(
   filePath: string,
   warnings: SkillLoadWarning[],
   readPath = filePath,
+  checked?: CheckedFile,
 ): Promise<ParsedSkillFile | null> {
   let bytes: Buffer;
   try {
-    const read = await readRegularFileNoFollow(readPath);
+    const read = await readRegularFileNoFollow(readPath, checked);
     if (read === null) return null;
     bytes = read;
   } catch (error) {
@@ -1074,14 +1104,17 @@ async function loadSkillFile(
 ): Promise<LoadedSkillFile | null> {
   const filePath = file.path;
   let readPath = filePath;
+  let checked: CheckedFile | undefined;
   if (root.scope === "project") {
-    if (file.identity === null || !(await projectSkillRealPathIsSafe(file.identity))) {
+    const checkedFile = file.identity === null ? null : await checkedProjectSkillFile(file.identity);
+    if (file.identity === null || checkedFile === null) {
       warnings.push({ path: filePath, reason: "skipped unsafe project skill path" });
       return null;
     }
     readPath = file.identity;
+    checked = checkedFile;
   }
-  const parsedFile = await readParsedSkillFile(filePath, warnings, readPath);
+  const parsedFile = await readParsedSkillFile(filePath, warnings, readPath, checked);
   if (parsedFile === null) return null;
   const { frontmatter, warning } = parsedFile;
   if (warning !== undefined) warnings.push({ path: filePath, reason: warning });
@@ -1497,15 +1530,18 @@ async function loadSkillContent(
   }
   let raw: string;
   let readPath = skill.path;
+  let checked: CheckedFile | undefined;
   if (skill.scope === "project") {
     const realPath = skill.projectRealPath;
-    if (realPath === undefined || !(await projectSkillRealPathIsSafe(realPath))) {
+    const checkedFile = realPath === undefined ? null : await checkedProjectSkillFile(realPath);
+    if (realPath === undefined || checkedFile === null) {
       throw new Error(`Project skill is no longer in a safe location: ${skill.path}`);
     }
     readPath = realPath;
+    checked = checkedFile;
   }
   try {
-    const read = await readRegularFileNoFollow(readPath);
+    const read = await readRegularFileNoFollow(readPath, checked);
     if (read === null) return null;
     raw = read.toString("utf8");
   } catch {
