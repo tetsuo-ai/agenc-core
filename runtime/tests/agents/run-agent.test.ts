@@ -389,6 +389,33 @@ async function stopKeepAliveRun(
   return (await collectRun(iter)).result;
 }
 
+async function sendQueuedMessageDuringRun(
+  session: Session,
+  waitForKind: RunAgentProgressEvent["kind"],
+  content: string,
+): Promise<{
+  result: RunAgentResult;
+  live: Awaited<ReturnType<typeof spawnLive>>["live"];
+}> {
+  const { control, live } = await spawnLive(session);
+  const iter = runAgent({
+    live,
+    parent: session,
+    initialMessages: [{ role: "user", content: "go" }],
+    taskPrompt: "go",
+  });
+  await nextProgressEvent(iter, waitForKind);
+  await control.sendInterAgentCommunication(live.agentId, {
+    author: "/root",
+    recipient: live.agentPath,
+    content,
+    triggerTurn: false,
+    metadata: createMailboxMetadataRecord("inter_agent_communication", [["deliveryMode", "queue_only"]]),
+  });
+  const { result } = await collectRun(iter);
+  return { result, live };
+}
+
 async function spawnLive(session: Session, roleName?: string) {
   const registry = new AgentRegistry();
   const control = new AgentControl({
@@ -1572,23 +1599,11 @@ describe("runAgent", () => {
         } satisfies ToolRegistry,
       },
     });
-    const { control, live } = await spawnLive(session);
-    const iter = runAgent({
-      live,
-      parent: session,
-      initialMessages: [{ role: "user", content: "go" }],
-      taskPrompt: "go",
-    });
-
-    await nextProgressEvent(iter, "tool_call");
-    await control.sendInterAgentCommunication(live.agentId, {
-      author: "/root",
-      recipient: live.agentPath,
-      content: "check the edge case",
-      triggerTurn: false,
-      metadata: createMailboxMetadataRecord("inter_agent_communication", [["deliveryMode", "queue_only"]]),
-    });
-    const { result } = await collectRun(iter);
+    const { result, live } = await sendQueuedMessageDuringRun(
+      session,
+      "tool_call",
+      "check the edge case",
+    );
     expect(result.outcome).toBe("completed");
     expect(provider.chatStream).toHaveBeenCalledTimes(2);
     const secondMessages = (provider.chatStream as ReturnType<typeof vi.fn>).mock.calls[1]![0] as LLMMessage[];
@@ -1599,23 +1614,11 @@ describe("runAgent", () => {
   it("does not read a message sent after the child's last model call", async () => {
     const provider = makeProvider([{ content: "finished" }]);
     const session = makeStubSession({ services: { provider } });
-    const { control, live } = await spawnLive(session);
-    const iter = runAgent({
-      live,
-      parent: session,
-      initialMessages: [{ role: "user", content: "go" }],
-      taskPrompt: "go",
-    });
-
-    await nextProgressEvent(iter, "message");
-    await control.sendInterAgentCommunication(live.agentId, {
-      author: "/root",
-      recipient: live.agentPath,
-      content: "too late for this turn",
-      triggerTurn: false,
-      metadata: createMailboxMetadataRecord("inter_agent_communication", [["deliveryMode", "queue_only"]]),
-    });
-    const { result } = await collectRun(iter);
+    const { result, live } = await sendQueuedMessageDuringRun(
+      session,
+      "message",
+      "too late for this turn",
+    );
     expect(result.outcome).toBe("completed");
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
     expect(live.downInbox.hasPending()).toBe(true);
