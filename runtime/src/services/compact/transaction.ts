@@ -263,10 +263,22 @@ function createCompactionAdmissionScope(
   const childSession = Object.assign(Object.create(session) as object, {
     services: { ...session.services, executionAdmission: child },
   }) as typeof session;
-  const unbind = bindExecutionAdmissionJournal(childSession, child);
+  let unbind: () => void;
+  try {
+    unbind = bindExecutionAdmissionJournal(childSession, child);
+  } catch (error) {
+    child.release?.();
+    throw error;
+  }
   return {
     context: { ...context, admissionSession: childSession },
-    unbind,
+    unbind: () => {
+      try {
+        unbind();
+      } finally {
+        child.release?.();
+      }
+    },
   };
 }
 

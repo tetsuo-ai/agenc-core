@@ -154,6 +154,7 @@ import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { createAutoMemoryToolPolicy } from "../../src/services/extractMemories/extractMemories.js";
 import { applyPermissionUpdate } from "../../src/permissions/permission-updates.js";
 import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { MultiProjectFileThreadStore } from "../thread-store/multi-project-store.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -5305,6 +5306,70 @@ describe("runAgent", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")("releases daemon project descriptors after spawned children end", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-child-fd-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-child-fd-parent-"));
+    const provider = makeProvider(Array.from({ length: 20 }, () => ({ content: "done" })));
+    const configStore = new ConfigStore({ home, cwd });
+    const session = makeStubSession({
+      services: { provider, configStore },
+      sessionConfiguration: mkSessionConfiguration({
+        cwd,
+        provider: provider as unknown as SessionConfiguration["provider"],
+      }),
+      config: { ...mkConfig(), cwd },
+    });
+    const parentRollout = new RolloutStore({
+      cwd,
+      sessionId: session.conversationId,
+      agencVersion: "0.2.0",
+      agencHome: home,
+      sessionTempRoot: tmpdir(),
+    });
+    parentRollout.open({
+      sessionId: session.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd,
+      originator: "child-fd-test",
+      agencVersion: "0.2.0",
+      model: session.modelInfo.slug,
+      modelProvider: provider.name,
+    });
+    session.mountRolloutStore(parentRollout);
+    const daemonThreads = new MultiProjectFileThreadStore({
+      primaryCwd: cwd,
+      agencHome: home,
+    });
+    const baseline = readdirSync("/dev/fd").length;
+    const projects: string[] = [];
+    const counts: number[] = [];
+    try {
+      for (let index = 0; index < 20; index++) {
+        const path = mkdtempSync(join(tmpdir(), "agenc-child-fd-worktree-"));
+        projects.push(path);
+        const { live } = await spawnLive(session);
+        const { result } = await collectRun(runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+          worktree: { path, branch: `fd-${index}`, gitRoot: cwd, created: false },
+        }));
+        expect(result.outcome).toBe("completed");
+        daemonThreads.listThreads({ pageSize: 50, archived: false, useStateDbOnly: true });
+        counts.push(readdirSync("/dev/fd").length);
+      }
+      console.info(`child fd counts: baseline=${baseline} closed=${counts.join(",")}`);
+      expect(counts.at(-1)).toBeLessThanOrEqual(baseline + 3);
+    } finally {
+      daemonThreads.close();
+      await session.shutdown();
+      for (const path of projects) rmSync(path, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it("records a failed child terminal when setup stops before Session construction", async () => {
     const previousAgencHome = process.env.AGENC_HOME;

@@ -301,6 +301,9 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly threadStoreForAgentLogs?: (
     route: AgenCDaemonAgentLogThreadStoreRoute,
   ) => ThreadStore | undefined;
+  readonly releaseThreadStoreForAgentLogs?: (
+    route: AgenCDaemonAgentLogThreadStoreRoute,
+  ) => void;
   readonly readAgentToolOutputs?: (
     params: AgenCDaemonAgentToolOutputReadParams,
   ) => Promise<readonly AgentToolOutputLog[]> | readonly AgentToolOutputLog[];
@@ -523,6 +526,9 @@ export class AgenCDaemonAgentManager {
   readonly #threadStoreForAgentLogs:
     | ((route: AgenCDaemonAgentLogThreadStoreRoute) => ThreadStore | undefined)
     | undefined;
+  readonly #releaseThreadStoreForAgentLogs:
+    | ((route: AgenCDaemonAgentLogThreadStoreRoute) => void)
+    | undefined;
   readonly #readAgentToolOutputs:
     | ((
         params: AgenCDaemonAgentToolOutputReadParams,
@@ -603,6 +609,7 @@ export class AgenCDaemonAgentManager {
       : (params) => sessionManager.terminateSession(params));
     this.#threadStore = options.threadStore;
     this.#threadStoreForAgentLogs = options.threadStoreForAgentLogs;
+    this.#releaseThreadStoreForAgentLogs = options.releaseThreadStoreForAgentLogs;
     this.#readAgentToolOutputs = options.readAgentToolOutputs;
     this.#snapshotFlush = options.snapshotFlush;
     this.#broadcastSessionEvent = options.broadcastSessionEvent;
@@ -1838,20 +1845,24 @@ export class AgenCDaemonAgentManager {
     if (threadStore === undefined) return [];
     const sessions: AgentLogSession[] = [];
     const seen = new Set<string>();
-    for (const sessionId of route.sessionIds) {
-      if (seen.has(sessionId)) continue;
-      seen.add(sessionId);
-      try {
-        const thread = threadStore.readThread({
-          threadId: sessionId,
-          includeArchived: true,
-          includeHistory: true,
-        });
-        sessions.push(storedThreadToAgentLogSession(thread));
-      } catch (error) {
-        if (isThreadLogReadMiss(error)) continue;
-        throw error;
+    try {
+      for (const sessionId of route.sessionIds) {
+        if (seen.has(sessionId)) continue;
+        seen.add(sessionId);
+        try {
+          const thread = threadStore.readThread({
+            threadId: sessionId,
+            includeArchived: true,
+            includeHistory: true,
+          });
+          sessions.push(storedThreadToAgentLogSession(thread));
+        } catch (error) {
+          if (isThreadLogReadMiss(error)) continue;
+          throw error;
+        }
       }
+    } finally {
+      this.#releaseThreadStoreForAgentLogs?.(route);
     }
     return sessions;
   }

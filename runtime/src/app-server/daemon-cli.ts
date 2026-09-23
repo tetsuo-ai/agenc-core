@@ -3615,7 +3615,15 @@ async function runAgenCDaemonForegroundLocked(
       agencHome: authStartup.daemonHome,
       runner,
       sessionManager,
-      terminateSession: (params) => clientMultiplexer.terminateSession(params),
+      terminateSession: async (params) => {
+        try {
+          return await clientMultiplexer.terminateSession(params);
+        } finally {
+          // Session teardown owns the last live reference to the project's
+          // snapshot and log databases. This is also reached on Stop/error.
+          snapshotPolicies.releaseSession(params.sessionId);
+        }
+      },
       threadStore,
       // DAE-02: prefer client/workspace env over frozen OS cwd when params omit cwd.
       defaultCwd: () => resolveDaemonDefaultCwd(host.env),
@@ -3692,6 +3700,8 @@ async function runAgenCDaemonForegroundLocked(
       },
       threadStoreForAgentLogs: (route) =>
         snapshotPolicies.threadStoreForAgentLogs(route),
+      releaseThreadStoreForAgentLogs: (route) =>
+        snapshotPolicies.releaseThreadStoreForAgentLogs(route),
       readAgentToolOutputs: ({ agentId, sessionIds }) =>
         snapshotPolicies.readAgentToolOutputs({ agentId, sessionIds }),
       onSnapshotError: (error) =>
@@ -5024,7 +5034,7 @@ interface AgenCDaemonSnapshotPolicyEntry {
   readonly policy: AgenCSessionSnapshotPolicy;
 }
 
-class AgenCDaemonSnapshotPolicyRegistry {
+export class AgenCDaemonSnapshotPolicyRegistry {
   readonly #agencHome: string;
   readonly #defaultCwd: string;
   #snapshotRetention: AgentRunRetentionConfig | undefined;
@@ -5033,6 +5043,8 @@ class AgenCDaemonSnapshotPolicyRegistry {
   readonly #log: (message: string) => void;
   readonly #policies = new Map<string, AgenCDaemonSnapshotPolicyEntry>();
   readonly #sessionPolicyKeys = new Map<string, string>();
+  readonly #liveSessions = new Set<string>();
+  readonly #endedSessions = new Set<string>();
   readonly #threadStores = new Map<string, FileThreadStore>();
   #periodicTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -5054,6 +5066,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
       if (run.currentSessionId === undefined) continue;
       const policy = this.#policyForProjectDir(run.projectDir);
       this.#rememberSession(run.currentSessionId, policy.driver.stateDbPath);
+      this.#liveSessions.add(run.currentSessionId);
       policy.policy.trackSession(run.currentSessionId, run.id);
       if (run.latestSnapshot !== undefined) {
         policy.policy.hydrateSession({
@@ -5131,7 +5144,12 @@ class AgenCDaemonSnapshotPolicyRegistry {
       }
     }
     for (const store of this.#threadStores.values()) {
-      store.close();
+      try {
+        store.close();
+      } catch (error) {
+        errors.push(error);
+        this.#onError(error);
+      }
     }
     for (const [sessionId, key] of this.#sessionPolicyKeys) {
       if (!this.#policies.has(key)) this.#sessionPolicyKeys.delete(sessionId);
@@ -5143,23 +5161,28 @@ class AgenCDaemonSnapshotPolicyRegistry {
   }
 
   recordSessionEvent(sessionId: string, event: JsonObject): void {
+    if (this.#endedSessions.has(sessionId)) return;
     const entry = this.#policyForSession(sessionId);
     entry.policy.recordSessionEvent(sessionId, event);
   }
 
   /** Write the session's snapshot now if it has unflushed changes. */
   flushSession(sessionId: string): void {
+    if (this.#endedSessions.has(sessionId)) return;
     const entry = this.#policyForSession(sessionId);
     entry.policy.flushSession(sessionId);
   }
 
   registerSession(session: AgenCDaemonSnapshotSessionRoute): void {
+    this.#endedSessions.delete(session.sessionId);
     const entry = this.#policyForRoute(session);
     this.#rememberSession(session.sessionId, entry.driver.stateDbPath);
+    this.#liveSessions.add(session.sessionId);
     entry.policy.trackSession(session.sessionId, session.agentId);
   }
 
   recordMessageExchange(exchange: AgenCDaemonMessageExchangeSnapshot): void {
+    if (this.#endedSessions.has(exchange.sessionId)) return;
     const entry = this.#policyForRoute(exchange);
     this.#rememberSession(exchange.sessionId, entry.driver.stateDbPath);
     entry.policy.recordMessageExchange(exchange);
@@ -5168,12 +5191,14 @@ class AgenCDaemonSnapshotPolicyRegistry {
   recordAgentStatusTransition(
     transition: AgenCDaemonAgentStatusSnapshot,
   ): void {
+    if (this.#endedSessions.has(transition.sessionId)) return;
     const entry = this.#policyForRoute(transition);
     this.#rememberSession(transition.sessionId, entry.driver.stateDbPath);
     entry.policy.recordAgentStatusTransition(transition);
   }
 
   recordAgentRun(run: AgenCDaemonAgentRunSnapshot): void {
+    if (run.currentSessionId !== undefined) this.#endedSessions.delete(run.currentSessionId);
     const entry = this.#policyForRoute(run);
     upsertAgentRun(entry.driver, run);
     new StateRunDurabilityRepository(entry.driver).ensureInitialEpoch({
@@ -5182,6 +5207,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
     });
     if (run.currentSessionId !== undefined) {
       this.#rememberSession(run.currentSessionId, entry.driver.stateDbPath);
+      this.#liveSessions.add(run.currentSessionId);
       entry.policy.trackSession(run.currentSessionId, run.id);
     }
   }
@@ -5222,6 +5248,54 @@ class AgenCDaemonSnapshotPolicyRegistry {
     // its conversation tail until the LRU cap (1,024 sessions) evicts it.
     entry.policy.flushSession(terminal.sessionId);
     entry.policy.forgetSession(terminal.sessionId);
+    this.releaseSession(terminal.sessionId);
+  }
+
+  /** Drop a project's daemon handles after its final live session ends. */
+  releaseSession(sessionId: string): void {
+    this.#liveSessions.delete(sessionId);
+    this.#endedSessions.add(sessionId);
+    const key = this.#sessionPolicyKeys.get(sessionId);
+    if (key === undefined) return;
+    const entry = this.#policies.get(key);
+    const errors: unknown[] = [];
+    try {
+      entry?.policy.flushSession(sessionId);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 0) {
+      try {
+        entry?.policy.forgetSession(sessionId);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "session snapshot release failed");
+    for (const liveId of this.#liveSessions) {
+      if (this.#sessionPolicyKeys.get(liveId) === key) {
+        return;
+      }
+    }
+    if (entry !== undefined) {
+      try {
+        entry.policy.close();
+        entry.driver.close();
+        this.#policies.delete(key);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    for (const [storeKey, store] of this.#threadStores) {
+      if (store.getProjectDir() !== dirname(key)) continue;
+      this.#threadStores.delete(storeKey);
+      try {
+        store.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "session snapshot release failed");
   }
 
   threadStoreForAgentLogs(
@@ -5230,63 +5304,84 @@ class AgenCDaemonSnapshotPolicyRegistry {
     return this.#threadStoreForRoute(route);
   }
 
+  releaseThreadStoreForAgentLogs(route: AgenCDaemonAgentLogThreadStoreRoute): void {
+    const key = route.stateProjectDir !== undefined
+      ? `project:${route.stateProjectDir}`
+      : `cwd:${route.cwd ?? this.#defaultCwd}`;
+    const store = this.#threadStores.get(key);
+    if (store === undefined) return;
+    const projectDir = store.getProjectDir();
+    for (const sessionId of this.#liveSessions) {
+      const statePath = this.#sessionPolicyKeys.get(sessionId);
+      if (statePath !== undefined && dirname(statePath) === projectDir) return;
+    }
+    this.#threadStores.delete(key);
+    store.close();
+  }
+
   readAgentToolOutputs(params: {
     readonly agentId: string;
     readonly sessionIds: readonly string[];
   }): readonly AgentToolOutputLog[] {
     void params.agentId;
     const outputs: AgentToolOutputLog[] = [];
-    for (const sessionId of params.sessionIds) {
-      const entry = this.#policyForSession(sessionId);
-      const rows = entry.driver
-        .prepareState<
-          [string],
-          {
-            tool_call_id: string;
-            tool_name: string;
-            status: string;
-            output_partial: string | null;
-            output_log_path: string | null;
-            output_log_bytes: number;
-            started_at: string;
-          }
-        >(
-          `SELECT
-             tool_call_id,
-             tool_name,
-             status,
-             output_partial,
-             output_log_path,
-             output_log_bytes,
-             started_at
-           FROM in_flight_tool_calls
-           WHERE session_id = ?
-           ORDER BY started_at ASC, tool_call_id ASC`,
-        )
-        .all(sessionId);
-      for (const row of rows) {
-        const rotated =
-          row.output_log_path === null
-            ? ""
-            : readRotatedToolOutputLog(row.output_log_path);
-        const output = `${row.output_partial ?? ""}${rotated}`;
-        outputs.push({
-          sessionId,
-          toolCallId: row.tool_call_id,
-          toolName: row.tool_name,
-          status: row.status,
-          output,
-          outputBytes: Buffer.byteLength(output, "utf8"),
-          ...(row.output_log_path !== null
-            ? { outputLogPath: row.output_log_path }
-            : {}),
-          ...(row.output_log_bytes > 0
-            ? { outputLogBytes: row.output_log_bytes }
-            : {}),
-        });
+    try {
+      for (const sessionId of params.sessionIds) {
+        const entry = this.#policyForSession(sessionId);
+        const rows = entry.driver
+          .prepareState<
+            [string],
+            {
+              tool_call_id: string;
+              tool_name: string;
+              status: string;
+              output_partial: string | null;
+              output_log_path: string | null;
+              output_log_bytes: number;
+              started_at: string;
+            }
+          >(
+            `SELECT
+               tool_call_id,
+               tool_name,
+               status,
+               output_partial,
+               output_log_path,
+               output_log_bytes,
+               started_at
+             FROM in_flight_tool_calls
+             WHERE session_id = ?
+             ORDER BY started_at ASC, tool_call_id ASC`,
+          )
+          .all(sessionId);
+        for (const row of rows) {
+          const rotated =
+            row.output_log_path === null
+              ? ""
+              : readRotatedToolOutputLog(row.output_log_path);
+          const output = `${row.output_partial ?? ""}${rotated}`;
+          outputs.push({
+            sessionId,
+            toolCallId: row.tool_call_id,
+            toolName: row.tool_name,
+            status: row.status,
+            output,
+            outputBytes: Buffer.byteLength(output, "utf8"),
+            ...(row.output_log_path !== null
+              ? { outputLogPath: row.output_log_path }
+              : {}),
+            ...(row.output_log_bytes > 0
+              ? { outputLogBytes: row.output_log_bytes }
+              : {}),
+          });
+        }
+      }
+      return outputs;
+    } finally {
+      for (const sessionId of params.sessionIds) {
+        if (this.#endedSessions.has(sessionId)) this.releaseSession(sessionId);
       }
     }
-    return outputs;
   }
 
   #policyForSession(sessionId: string): AgenCDaemonSnapshotPolicyEntry {
@@ -5294,6 +5389,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
     if (key !== undefined) {
       const entry = this.#policies.get(key);
       if (entry !== undefined) return entry;
+      return this.#policyForProjectDir(dirname(key));
     }
     const entry = this.#policyForCwd(this.#defaultCwd);
     this.#rememberSession(sessionId, entry.driver.stateDbPath);

@@ -1305,6 +1305,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       : null;
   const csvAgentJobsRepositories =
     options.csvAgentJobsRepositories ?? ownedCsvAgentJobsRepositories!;
+  const releaseCsvWorkspace = csvAgentJobsRepositories.retainWorkspace?.(workspaceRoot);
   const configuredToolsConfig =
     options.toolRegistryOptions?.toolsConfig ?? startup.config.tools_config;
   // A session nobody can answer (one-shot `agenc -p`) must not offer tools
@@ -1748,6 +1749,16 @@ async function bootstrapLocalRuntimeSessionScoped(
         // The ordinary MCP stop is fail-soft. Its broker participant retries
         // retained cleanup in strict mode before root shutdown can succeed.
         await disposeSandboxExecutionBroker(sandboxExecutionBroker);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        executionAdmission.release?.();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await releaseCsvWorkspace?.();
       } catch (error) {
         errors.push(error);
       }
@@ -2283,6 +2294,9 @@ async function bootstrapLocalRuntimeSessionScoped(
 
     sessionRef = session;
     sessionForShutdown = session;
+    session.registerShutdownResourceRelease(async () => {
+      await releaseCsvWorkspace?.();
+    });
 
     if (rolloutStoreForReturn === null || ctxForReturn === null) {
       // This is unreachable — `onBeforeSessionConfigured` always

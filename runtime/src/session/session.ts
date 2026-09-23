@@ -2528,6 +2528,7 @@ export class Session {
    *  When present, every emitted event is appended; durable events
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
+  private shutdownResourceRelease?: () => void | Promise<void>;
 
   private outOfBandElicitationPauseCount = 0;
 
@@ -3731,6 +3732,11 @@ export class Session {
     return () => {
       this.beforeDurableCloseListeners.delete(listener);
     };
+  }
+
+  /** Release daemon-shared leases after the session has sealed its journal. */
+  registerShutdownResourceRelease(release: () => void | Promise<void>): void {
+    this.shutdownResourceRelease = release;
   }
 
   async submit(
@@ -6009,6 +6015,36 @@ export class Session {
    *   - Emit final shutdown status.
    */
   async shutdown(): Promise<void> {
+    let shutdownError: unknown;
+    try {
+      await this.shutdownCore();
+    } catch (error) {
+      shutdownError = error;
+    }
+    let resourceReleaseError: unknown;
+    try {
+      await this.shutdownResourceRelease?.();
+    } catch (error) {
+      resourceReleaseError = error;
+    }
+    try {
+      this.services.executionAdmission?.release?.();
+    } catch (error) {
+      resourceReleaseError = resourceReleaseError === undefined
+        ? error
+        : new AggregateError([resourceReleaseError, error], "session resource release failed");
+    }
+    if (shutdownError !== undefined && resourceReleaseError !== undefined) {
+      throw new AggregateError(
+        [shutdownError, resourceReleaseError],
+        "session shutdown and resource release failed",
+      );
+    }
+    if (shutdownError !== undefined) throw shutdownError;
+    if (resourceReleaseError !== undefined) throw resourceReleaseError;
+  }
+
+  private async shutdownCore(): Promise<void> {
     const MAX_DRAIN_MS = 2_000;
     this.beginShutdown();
     const mcpDisposeTask = this.prepareOwnedMcpDisposalForShutdown(
