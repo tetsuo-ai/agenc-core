@@ -123,6 +123,21 @@ describe("canonical MCP tool output normalization", () => {
     expect(mocks.persistBinaryContent).toHaveBeenCalledOnce();
   });
 
+  test("rejects a malformed declared image MIME type", async () => {
+    const png = await makePng();
+    const result = await normalizeMcpToolOutput({
+      raw: { content: [{ type: "image", data: png.toString("base64"), mimeType: "image/png\ntext/html" }] },
+      serverName: "srv",
+      toolName: "screenshot",
+      callId: "call-invalid-mime",
+      environment: { MAX_MCP_OUTPUT_TOKENS: "100000" },
+      logger,
+    });
+    expect(result.content).toContain("image omitted");
+    expect(result.contentItems).toBeUndefined();
+    expect(mocks.persistBinaryContent).not.toHaveBeenCalled();
+  });
+
   test.each([
     ["malformed", Buffer.from("iVBORw0KGgoAAAANSUhEUg==", "base64")],
     ["oversized", Buffer.alloc(4 * 1024 * 1024, 0xff)],

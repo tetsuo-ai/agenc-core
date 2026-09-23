@@ -269,6 +269,24 @@ describe("inspectImageDataUrl", () => {
 });
 
 describe("maybeResizeAndDownsampleImageBuffer", () => {
+  it("rejects an animation whose decoded frames exceed the pixel budget before decoding", async () => {
+    const decode = vi.fn(async () => Buffer.alloc(0));
+    vi.resetModules();
+    vi.doMock("../../src/tools/FileReadTool/imageProcessor.js", () => ({
+      getImageProcessor: async () => () => ({
+        metadata: async () => ({ width: 1500, height: 1500, pages: 100, format: "gif" }),
+        raw: () => ({ toBuffer: decode }),
+        toBuffer: decode,
+      }),
+    }));
+    const resizer = await import("../../src/utils/imageResizer.js");
+    const image = await makeImage("png", 2, 2);
+    await expect(
+      resizer.maybeResizeAndDownsampleImageBuffer(image, image.length, "gif"),
+    ).rejects.toThrow(/decoded.*pixel.*budget/iu);
+    expect(decode).not.toHaveBeenCalled();
+  });
+
   it("refuses the fake PNG instead of passing its bytes through", async () => {
     // Sharp throws "Input buffer has corrupt header" for these bytes. The
     // fallback used to return them unchanged because they are under 5 MB.

@@ -195,7 +195,7 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
-  test("preserves mixed text and image tool results without forcing store", () => {
+  test("omits image parts from Chat Completions tool messages", () => {
     const request = buildChatCompletionsRequest({
       model: "gpt-4.1",
       messages: [
@@ -219,7 +219,7 @@ describe("buildChatCompletionsRequest", () => {
             { type: "text", text: "Screenshot captured" },
             {
               type: "image_url",
-              image_url: { url: "https://example.com/cat.png" },
+              image_url: { url: "data:image/png;base64,YWJj" },
             },
           ],
         },
@@ -229,6 +229,7 @@ describe("buildChatCompletionsRequest", () => {
 
     expect("store" in request).toBe(false);
     expect(request.stream).toBe(false);
+    expect(JSON.stringify(request.messages)).not.toContain("YWJj");
     expect(request.messages).toEqual([
       {
         role: "user",
@@ -251,13 +252,7 @@ describe("buildChatCompletionsRequest", () => {
       {
         role: "tool",
         tool_call_id: "call_1",
-        content: [
-          { type: "text", text: "Screenshot captured" },
-          {
-            type: "image_url",
-            image_url: { url: "https://example.com/cat.png" },
-          },
-        ],
+        content: "Screenshot captured\n[Image not shown: this model does not accept image input, so the image in this tool result was left out.]",
       },
     ]);
   });

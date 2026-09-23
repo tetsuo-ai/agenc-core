@@ -287,7 +287,10 @@ async function appendImage(
   state.imagesProcessed += 1;
 
   const bytes = decodeBase64WithinBudget(state, encoded);
-  const declaredMime = sanitizeMimeType(state, record.mimeType ?? record.mediaType);
+  const rawDeclaredMime = record.mimeType ?? record.mediaType;
+  const declaredMime = rawDeclaredMime === undefined
+    ? undefined
+    : sanitizeMimeType(state, rawDeclaredMime);
   if (bytes === undefined || bytes.length > IMAGE_TARGET_RAW_SIZE) {
     appendStaticText(state, IMAGE_OMITTED);
     return;
@@ -297,6 +300,7 @@ async function appendImage(
     .replace(/^image\/jpg$/u, "image/jpeg");
   if (
     !inspection.ok ||
+    (rawDeclaredMime !== undefined && declaredMime === undefined) ||
     (declaredMime !== undefined && normalizedDeclaredMime !== inspection.mediaType)
   ) {
     appendStaticText(state, IMAGE_OMITTED);

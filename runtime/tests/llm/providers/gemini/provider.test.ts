@@ -108,6 +108,28 @@ function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
   });
 }
 
+test("Gemini function responses omit tool images without serializing base64 as text", async () => {
+  const fetchImpl = successfulGeminiFetch();
+  const provider = providerWithFetch(fetchImpl);
+  await provider.chat([
+    { role: "user", content: "inspect" },
+    { role: "assistant", content: "", toolCalls: [{ id: "call-image", name: "system.echo", arguments: "{}" }] },
+    { role: "tool", toolCallId: "call-image", toolName: "system.echo", content: [
+      { type: "text", text: "saved image" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
+    ] },
+  ]);
+  const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+  expect(JSON.stringify(body)).not.toContain("YWJj");
+  expect(body).toMatchObject({ contents: [
+    { role: "user", parts: [{ text: "inspect" }] },
+    { role: "model", parts: [{ functionCall: { name: "system.echo", args: {} } }] },
+    { role: "user", parts: [{ functionResponse: { name: "system.echo", response: {
+      result: "saved image\n[image omitted: this provider cannot receive images in tool results]",
+    } } }] },
+  ] });
+});
+
 type GeminiToolOperation = "chat" | "stream" | "count";
 
 function invokeGeminiWithOptions(

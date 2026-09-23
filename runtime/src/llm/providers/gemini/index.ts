@@ -27,7 +27,7 @@ import type {
   StreamProgressCallback,
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
-import { coerceUsage } from "../../wire/shared.js";
+import { coerceUsage, messageTextContent } from "../../wire/shared.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
   geminiCredentialHeaders,
@@ -197,6 +197,18 @@ function functionResponsePayload(content: string): Record<string, unknown> {
   return parseJsonObjectText(content) ?? { result: content };
 }
 
+function functionResponseText(content: LLMMessage["content"]): string {
+  if (typeof content === "string") return content;
+  const text = content
+    .filter((part) => part.type !== "image_url")
+    .map((part) => messageTextContent([part]))
+    .filter((part) => part.length > 0)
+    .join("\n");
+  const hasImage = content.some((part) => part.type === "image_url");
+  const note = "[image omitted: this provider cannot receive images in tool results]";
+  return hasImage ? (text.length > 0 ? `${text}\n${note}` : note) : text;
+}
+
 function parseDataUrl(
   url: string,
   expectedPrefix: "image" | "application",
@@ -347,9 +359,7 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
             functionResponse: {
               name,
               response: functionResponsePayload(
-                typeof message.content === "string"
-                  ? message.content
-                  : JSON.stringify(message.content),
+                functionResponseText(message.content),
               ),
             },
           },

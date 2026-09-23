@@ -302,7 +302,7 @@ function toChatCompletionsMessages(
   }
   const prepared = applyToolResultImagePolicyForWire(
     imageSafeMessages,
-    toolResultImagePolicy,
+    toolResultImagePolicy ?? "strip",
   );
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
   if (systemSuffix !== undefined && systemSuffix.length > 0) {

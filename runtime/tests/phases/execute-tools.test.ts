@@ -1266,7 +1266,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       "+ approve mutation",
       "function disableSandbox()",
       "raise budget",
-      "data:image/png;base64,AA==",
+      "",
     ]);
   });
 

@@ -4458,6 +4458,38 @@ describe("runAgent", () => {
     },
   );
 
+  it.each(["execute", "dispatch"] as const)("passes MCP image content items through child %s", async (boundary) => {
+    const imageUrl = "data:image/png;base64,YWJj";
+    const registry = buildFilteredRegistry({
+      tools: [{
+        name: "system.image",
+        description: "image",
+        inputSchema: { type: "object" },
+        execute: async () => ({
+          content: "saved image",
+          contentItems: [
+            { type: "input_text" as const, text: "saved image" },
+            { type: "input_image" as const, image_url: imageUrl },
+          ],
+        }),
+      }],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "unexpected" }),
+    }, {
+      childConversationId: "image-child",
+      unadmittedDispatchOverride: TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+      worktree: { path: "/tmp/subagent-wt", branch: "image", gitRoot: "/repo", created: false },
+    });
+    const result = boundary === "execute"
+      ? await registry.tools[0]!.execute({})
+      : await registry.dispatch({ name: "system.image", id: "call-image", arguments: "{}" });
+    expect(result.content).toBe("saved image");
+    expect(result.contentItems).toEqual([
+      { type: "input_text", text: "saved image" },
+      { type: "input_image", image_url: imageUrl },
+    ]);
+  });
+
   it("strips model-supplied __agenc* keys before they reach a wrapped child tool", async () => {
     // SECURITY (audit #1/#2/#4): a child model that emits
     // `__agencSessionAllowedRoots:["/"]` must NOT have it folded into the

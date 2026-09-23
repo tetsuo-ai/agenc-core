@@ -2422,6 +2422,9 @@ function childToolResultToDispatchResult(
 ): ToolDispatchResult {
   return {
     content: result.content,
+    ...(result.contentItems !== undefined
+      ? { contentItems: result.contentItems }
+      : {}),
     ...(result.isError !== undefined ? { isError: result.isError } : {}),
     ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
     ...(result.admissionUsage !== undefined

@@ -69,6 +69,33 @@ export class ImageDecoderUnavailableError extends ImageResizeError {
   }
 }
 
+/** Bound the aggregate pixels an animated image decoder may allocate. */
+export class ImageDecodeBudgetError extends ImageResizeError {
+  constructor() {
+    super('Image exceeds the decoded pixel budget')
+    this.name = 'ImageDecodeBudgetError'
+  }
+}
+
+const MAX_DECODED_IMAGE_PIXELS = 32 * 1024 * 1024
+
+function assertImageDecodeBudget(metadata: {
+  width?: number
+  height?: number
+  pages?: number
+}): void {
+  const { width, height } = metadata
+  const pages = metadata.pages ?? 1
+  if (
+    width !== undefined && height !== undefined &&
+    Number.isFinite(width) && Number.isFinite(height) &&
+    Number.isFinite(pages) && pages > 0 &&
+    width * height * pages > MAX_DECODED_IMAGE_PIXELS
+  ) {
+    throw new ImageDecodeBudgetError()
+  }
+}
+
 const MAX_DECODER_DETAIL_CHARS = 160
 
 /**
@@ -96,9 +123,11 @@ async function decodedImageBytes(
       return await sharp(buffer).png().toBuffer()
     }
     const image = sharp(buffer, { animated: true })
+    assertImageDecodeBudget(await image.metadata())
     await (typeof image.raw === 'function' ? image.raw() : image).toBuffer()
     return buffer
   } catch (error) {
+    if (error instanceof ImageDecodeBudgetError) throw error
     const detail = (error instanceof Error ? error.message : String(error))
       .replace(/\s+/gu, ' ')
       .trim()
@@ -164,6 +193,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
   try {
     const image = sharp(imageBuffer)
     const metadata = await image.metadata()
+    assertImageDecodeBudget(metadata)
 
     const mediaType = metadata.format ?? ext
     // Normalize "jpg" to "jpeg" for media type compatibility
@@ -367,7 +397,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
       },
     }
   } catch (error) {
-    if (error instanceof UndecodableImageError) throw error
+    if (error instanceof UndecodableImageError || error instanceof ImageDecodeBudgetError) throw error
     logError(error as Error)
 
     // Sharp could not read or process the bytes. They may pass through
