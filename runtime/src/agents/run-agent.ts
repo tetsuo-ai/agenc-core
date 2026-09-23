@@ -2865,6 +2865,20 @@ function runtimeAdvertisedToolNames(
 }
 
 /**
+ * The executor hands every tool call the signal that ends it (a Stop, the
+ * turn's abort, a timeout) as a non-enumerable `__abortSignal`. An
+ * enumerable key of that name came from the model and is never the call's
+ * lifetime.
+ */
+function runtimeAbortSignal(
+  args: Record<string, unknown>,
+): AbortSignal | undefined {
+  const field = Object.getOwnPropertyDescriptor(args, "__abortSignal");
+  if (field === undefined || field.enumerable === true) return undefined;
+  return field.value instanceof AbortSignal ? field.value : undefined;
+}
+
+/**
  * A child's search tool is the parent's, bound to the parent's catalog. The
  * child registry drops MCP-origin, disabled and out-of-allowlist tools, so the
  * search must not offer or load them: a subagent was told a Desktop browser
@@ -2910,6 +2924,7 @@ async function prepareChildToolCall(
   // SECURITY: strip model-supplied `__agenc*` keys before the child
   // policy/injection runs (idempotent if the caller already stripped).
   const runtimeContext = readToolRuntimeContext(args);
+  const abortSignal = runtimeAbortSignal(args);
   const advertisedToolNames = tool.name === SYSTEM_SEARCH_TOOLS_NAME
     ? runtimeAdvertisedToolNames(args)
     : undefined;
@@ -2939,6 +2954,18 @@ async function prepareChildToolCall(
   // private keys, so the execution sink does not fall back to the base sandbox.
   if (runtimeContext !== undefined) {
     attachToolRuntimeContext(childArgs, runtimeContext);
+  }
+  // The same copies dropped the call's abort signal, so a Stop never reached
+  // a child's exec: its process kept running and the admitted call was left
+  // an unknown outcome that nothing resolved. With the signal the tool ends
+  // its own work through its usual abort path and reports what it observed.
+  if (abortSignal !== undefined) {
+    Object.defineProperty(childArgs, "__abortSignal", {
+      value: abortSignal,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
   }
   if (tool.name === SYSTEM_SEARCH_TOOLS_NAME) {
     attachChildToolSearchScope(childArgs, advertisedToolNames, opts.toolCatalogScope);
